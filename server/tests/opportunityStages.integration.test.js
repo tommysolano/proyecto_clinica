@@ -172,13 +172,13 @@ test('el filtro por etapa de la bandeja encuentra el chat aunque la etapa no sea
     chatController.listConversations,
     H.mockReq(clinicId, userId, {}, { query: { stage: 'agendado' } })
   );
-  assert.equal(payload.length, 1, 'sale en el filtro de "agendado"');
+  assert.equal(payload.items.length, 1, 'sale en el filtro de "agendado"');
 
   const otra = await H.runController(
     chatController.listConversations,
     H.mockReq(clinicId, userId, {}, { query: { stage: 'perdido' } })
   );
-  assert.equal(otra.payload.length, 0);
+  assert.equal(otra.payload.items.length, 0);
 });
 
 // ─────────── 5. el escritor único no duplica ni pierde el espejo ───────────

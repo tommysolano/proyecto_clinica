@@ -103,6 +103,19 @@ async function buildClinicResolver() {
 // la hora de disparo — mapearla a envío retrasaba toda la campaña a la mañana siguiente.
 const DEFAULT_DRIP_SECONDS = 20;
 const HHMM_RE = /^\d{1,2}:\d{2}$/;
+// Ventana en la que dos importaciones al MISMO flujo se consideran el mismo
+// archivo subido dos veces por error (y no una campaña nueva). Ver el candado
+// anti-duplicado de enrollInWorkflows.
+const REENROLL_GUARD_MS = 30 * 60 * 1000;
+
+/**
+ * ¿A esta ficha se le puede escribir? Consentimiento de WhatsApp, sin baja y
+ * activa. Se evalúa en memoria (no en la consulta) para poder elegir entre
+ * fichas gemelas del mismo número: si una está dada de baja y la otra no, se
+ * usa la buena en vez de dejar al número fuera del envío.
+ */
+const enviable = (c) =>
+  c?.active !== false && c?.marketing?.whatsappOptIn !== false && !c?.marketing?.optOutAt;
 
 /** dripSeconds válido y acotado (1s … 1h). */
 function dripOf(batch) {
@@ -243,18 +256,18 @@ async function enrollInWorkflows(batch, phoneInfo, onProgress) {
   let enrolled = 0;
   let skipped = 0; // contactos NO inscritos por ya tener una inscripción viva (dedup)
   let duplicatedContacts = 0; // fichas gemelas (mismo teléfono, otra sede) descartadas
+  let optedOut = 0;           // números del archivo dados de baja / inactivos
+  let missingContacts = 0;    // números del archivo sin ninguna ficha (fila fallida)
   const createdByWf = new Map(); // workflowId → inscripciones creadas de verdad
 
   for (let i = 0; i < allPhones.length; i += BATCH_SIZE) {
     const chunk = allPhones.slice(i, i + BATCH_SIZE);
+    // Se traen TODAS las fichas del número, con o sin consentimiento: hace falta
+    // ver las descartadas para poder elegir bien entre gemelas y para saber
+    // decirle al usuario por qué a alguien no le llegó nada.
     // eslint-disable-next-line no-await-in-loop
-    const found = await Contact.find({
-      phone: { $in: chunk },
-      active: true,
-      'marketing.whatsappOptIn': true,
-      'marketing.optOutAt': null,
-    })
-      .select('_id phone patient clinic updatedAt')
+    const found = await Contact.find({ phone: { $in: chunk } })
+      .select('_id phone patient clinic updatedAt active marketing')
       .lean();
 
     // UN CONTACTO POR TELÉFONO. El mismo número puede tener dos fichas (una por
@@ -264,14 +277,30 @@ async function enrollInWorkflows(batch, phoneInfo, onProgress) {
     // ESTA campaña: la actualizada más recientemente (el Excel que se acaba de
     // importar). Las nuevas importaciones ya no crean gemelos (findExistingByPhone),
     // pero los que ya existían siguen ahí.
+    //
+    // PERO SE ELIGE ENTRE LAS QUE **SÍ** SE PUEDEN CONTACTAR. Antes el filtro de
+    // consentimiento iba en la consulta, así que si la ficha más reciente estaba
+    // dada de baja (o inactiva) y su gemela no, el número se quedaba fuera del
+    // envío entero: dos fichas del mismo celular y el mensaje no le llegaba a
+    // ninguna. Ahora la baja de una ficha solo descarta ESA ficha.
     const bestByPhone = new Map();
+    const sinConsentimiento = new Set();
     for (const c of found) {
+      if (!enviable(c)) { sinConsentimiento.add(c.phone); continue; }
       const prev = bestByPhone.get(c.phone);
       if (!prev || new Date(c.updatedAt || 0) > new Date(prev.updatedAt || 0)) bestByPhone.set(c.phone, c);
     }
     const contacts = [...bestByPhone.values()];
-    if (contacts.length < found.length) {
-      duplicatedContacts += found.length - contacts.length;
+    // Fichas gemelas descartadas (contactables, pero del mismo número que otra).
+    const contactables = found.filter(enviable).length;
+    if (contacts.length < contactables) duplicatedContacts += contactables - contacts.length;
+    // Números del archivo a los que NO se les va a mandar nada, y por qué. Sin
+    // esto la campaña salía "correcta" y el usuario no tenía forma de saber que a
+    // media lista no le había llegado el mensaje.
+    for (const phone of chunk) {
+      if (bestByPhone.has(phone)) continue;
+      if (sinConsentimiento.has(phone)) optedOut++;
+      else missingContacts++;
     }
 
     for (const contact of contacts) {
@@ -281,19 +310,48 @@ async function enrollInWorkflows(batch, phoneInfo, onProgress) {
         infoByPhone.get(contact.phone)?.clinic || String(contact.clinic || batch.clinic);
       for (const { wf, flows, hour } of perWorkflow) {
         for (const flow of flows) {
-          // Dedup por (flujo, TELÉFONO), SIN mirar el nodo de arranque: si ya hay
-          // una inscripción viva en este flujo para ese número —da igual por dónde
-          // entrara ni con qué ficha— no se le vuelve a inscribir. Filtrar por
-          // `startNodeId` dejaba pasar una segunda inscripción por otro disparador
-          // del mismo diagrama; filtrar por `contactId` dejaba pasar la de la ficha
-          // gemela de otra sede. El mensaje lo recibe un TELÉFONO: ahí va el candado.
+          // ══ EL CANDADO ES CONTRA REPETIR **ESTA** IMPORTACIÓN ══
+          //
+          // Antes bastaba con que el número tuviera CUALQUIER inscripción viva en
+          // este flujo para no volver a inscribirlo. Y una campaña con goteo deja
+          // inscripciones 'waiting' durante horas o días (5.000 contactos a 20 s
+          // son 27 h), así que la siguiente importación al mismo flujo se saltaba
+          // a media lista: el usuario subía el Excel, veía "N contactos NO se
+          // volvieron a encolar" y a esa gente no le llegaba NADA. Lo mismo con
+          // una persona que sale en dos archivos seguidos ("el contacto se
+          // duplica y no le llega a ninguno").
+          //
+          // Una importación NUEVA es un envío NUEVO: se inscribe. Lo que el
+          // candado tiene que evitar es lo otro — que el MISMO lote inscriba dos
+          // veces (el job se reanuda tras un reinicio, dos ticks a la vez) y que
+          // una subida repetida por error a los pocos minutos duplique el gasto.
+          // Para dejar de arrastrar lo pendiente de campañas anteriores está la
+          // opción "cancelar lo pendiente" del asistente (batch.cancelPending).
+          //
+          // Se mira el TELÉFONO además de la ficha: el mensaje lo recibe un
+          // número, y el mismo número puede tener ficha gemela en otra sede.
           // eslint-disable-next-line no-await-in-loop
           const dup = await WorkflowEnrollment.findOne({
             workflow: wf._id,
-            status: { $in: ['active', 'waiting'] },
-            $or: [
-              { 'context.phone': contact.phone },
-              { 'context.contactId': String(contact._id) },
+            $and: [
+              {
+                $or: [
+                  { 'context.phone': contact.phone },
+                  { 'context.contactId': String(contact._id) },
+                ],
+              },
+              {
+                $or: [
+                  // Este mismo lote: nunca dos veces, pase lo que pase.
+                  { 'context.importBatchId': String(batch._id) },
+                  // Otro lote, pero de hace un momento: es el mismo archivo subido
+                  // dos veces por error, no una campaña distinta.
+                  {
+                    status: { $in: ['active', 'waiting'] },
+                    createdAt: { $gte: new Date(Date.now() - REENROLL_GUARD_MS) },
+                  },
+                ],
+              },
             ],
           }).select('_id');
           if (dup) { skipped++; continue; }
@@ -336,10 +394,22 @@ async function enrollInWorkflows(batch, phoneInfo, onProgress) {
     batch.enrollSkipped = skipped;
     if (duplicatedContacts) {
       avisos.push(
-        `${duplicatedContacts} contacto(s) del archivo tenían una ficha repetida en otra sucursal (mismo teléfono): se usó la más reciente y se envió UN solo mensaje a cada número.`
+        `${duplicatedContacts} contacto(s) del archivo tenían una ficha repetida en otra sucursal (mismo teléfono): se usó la más reciente que sí acepta mensajes y se envió UN solo mensaje a cada número.`
       );
-      batch.enrollWarning = avisos.join(' ');
     }
+    // A ESTOS NO LES LLEGA NADA, y hay que decirlo: antes desaparecían en
+    // silencio y la campaña parecía haber salido completa.
+    if (optedOut) {
+      avisos.push(
+        `${optedOut} número(s) del archivo NO recibirán el mensaje porque su ficha está dada de baja o inactiva (se respeta el opt-out). Búscalos en Contactos si crees que es un error.`
+      );
+    }
+    if (missingContacts) {
+      avisos.push(
+        `${missingContacts} número(s) del archivo NO se pudieron encolar porque no quedó ninguna ficha de contacto creada (revisa las filas fallidas del lote).`
+      );
+    }
+    if (avisos.length) batch.enrollWarning = avisos.join(' ');
   }
   for (const [wfId, n] of createdByWf) {
     // eslint-disable-next-line no-await-in-loop
@@ -485,7 +555,52 @@ async function flushBatch(rows, batch) {
     documents.push(resultDocument(batch, entry, outcome, reason, afterByPhone.get(entry.contact.phone)?._id));
   }
   await storeResultDocuments(documents);
+  await applyNamesToConversations(entries);
   return { created, updated, skipped };
+}
+
+/**
+ * EL NOMBRE DEL EXCEL PASA AL CHAT.
+ *
+ * En la bandeja los chats se veían con el apodo del PERFIL de WhatsApp ("Yo…!!!",
+ * emojis, el número pelado) aunque el Excel trajera el nombre real: el nombre solo
+ * se copiaba al chat si estaba VACÍO, así que reimportar no arreglaba nada y el
+ * asesor abría el chat sin saber con quién hablaba.
+ *
+ * Se escribe aquí, al importar —no solo al enviar—, para que el nombre esté bien
+ * desde que termina la carga. Reglas (las mismas de messaging.applyContactName):
+ *   · nunca pisa un nombre escrito a mano (`contactNameEditedAt` / origen 'manual');
+ *   · alcanza también los chats de "número oculto" (@lid) enlazados a ese teléfono;
+ *   · sin filtro de sucursal: el CRM es global y la misma persona puede tener chat
+ *     en varias sedes.
+ * Un solo bulkWrite por tanda de 500 filas.
+ */
+async function applyNamesToConversations(entries) {
+  const Conversation = require('../models/Conversation');
+  const ops = [];
+  const vistos = new Set();
+  for (const { contact } of entries) {
+    const nombre =
+      `${contact.firstName || ''} ${contact.lastName || ''}`.trim() ||
+      String(contact.displayName || '').trim();
+    if (!nombre || !contact.phone || vistos.has(contact.phone)) continue;
+    vistos.add(contact.phone);
+    ops.push({
+      updateMany: {
+        filter: {
+          $or: [{ phone: contact.phone }, { linkedPhone: contact.phone }],
+          contactNameEditedAt: null,
+          contactNameSource: { $ne: 'manual' },
+          contactName: { $ne: nombre },
+        },
+        update: { $set: { contactName: nombre, contactNameSource: 'contact' } },
+      },
+    });
+  }
+  if (!ops.length) return;
+  await Conversation.bulkWrite(ops, { ordered: false }).catch((e) =>
+    console.error('[contactImport] no se pudo actualizar el nombre de los chats:', e.message)
+  );
 }
 
 /**

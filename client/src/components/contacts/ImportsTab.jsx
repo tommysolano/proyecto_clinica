@@ -178,8 +178,9 @@ export default function ImportsTab({ groups, onGroupsChanged }) {
                 )}
                 {b.status === 'done' && b.workflows?.length > 0 && b.enrollSkipped > 0 && (
                   <div className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 mt-1">
-                    ℹ️ {b.enrollSkipped.toLocaleString('es-EC')} contacto(s) NO se volvieron a encolar: ya tenían un
-                    mensaje pendiente de este flujo (no se duplica).
+                    ℹ️ {b.enrollSkipped.toLocaleString('es-EC')} contacto(s) NO se volvieron a encolar: ya estaban
+                    en cola por esta misma importación o por otra de hace unos minutos (para no cobrar el mensaje
+                    dos veces). Una importación de otro día sí les vuelve a escribir.
                   </div>
                 )}
 

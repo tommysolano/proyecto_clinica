@@ -41,6 +41,24 @@ if ! ( cd "$APP_DIR/server" && node scripts/wipeSalesOnce.js --commit ); then
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/wipeSalesOnce.js --commit'"
 fi
 
+# Vigente: borrar las OPORTUNIDADES FANTASMA (ago-2026).
+#
+# Hasta ago-2026, un mensaje que llegaba desde un anuncio creaba solo una oportunidad EN
+# BLANCO. Eran el 54% del embudo (9.464 de 17.485) y falseaban todas las analiticas. El
+# codigo que las creaba se quito, y el 24-ago-2026 se limpio la base a mano con
+# --sin-marca; esta linea barre las que se colaron entre esa limpieza y este despliegue,
+# que es el que por fin corta la fuente en el VPS.
+#
+# Antes de quitar nada guarda una copia en la coleccion `oportunidades_fantasma_backup`
+# (el M0 no tiene backups). Para deshacerlo:
+#   sudo -iu clinica bash -lc 'cd /var/www/clinica/server && node scripts/wipePhantomOpportunitiesOnce.js --restaurar --commit'
+# Para ver que borraria sin borrar nada: el mismo comando sin --commit ni --restaurar.
+# Cuando ya este DONE se puede quitar esta linea sin riesgo (la marca la protege igual).
+if ! ( cd "$APP_DIR/server" && node scripts/wipePhantomOpportunitiesOnce.js --commit ); then
+  echo "ADVERTENCIA: la limpieza de oportunidades fantasma fallo. Reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/wipePhantomOpportunitiesOnce.js --commit'"
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────────────
 # DESACTIVADA A PROPOSITO — dejar la CONTABILIDAD EN CERO para rehacer las pruebas.
 #

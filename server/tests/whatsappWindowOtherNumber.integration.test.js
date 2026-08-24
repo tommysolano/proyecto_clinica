@@ -146,7 +146,7 @@ test('el chat del caso real ya no enseña "ventana abierta" cuando el envío va 
   );
 
   const { payload } = await H.runController(chatController.listConversations, H.mockReq(clinicId, null));
-  const chat = payload.find((c) => c.phone === TEL);
+  const chat = payload.items.find((c) => c.phone === TEL);
   assert.ok(chat, 'el chat sigue en la bandeja');
   assert.equal(chat.window.applies, true, 'cae al número Cloud, así que la ventana aplica');
   assert.equal(chat.window.open, false, 'y está cerrada: es lo que va a decir Meta');

@@ -143,10 +143,20 @@ function skipMessage(reason, channel = 'whatsapp') {
 
 // =================== Conversaciones ===================
 
+// Chats por página en la bandeja. Es lo que se pinta de entrada; el resto llega
+// con "Cargar más". Ver el comentario de paginación en listConversations.
+const DEFAULT_CHAT_PAGE = 25;
+
 exports.listConversations = async (req, res) => {
   try {
     const { status, featured, opportunity, assigned, q, stage, agent, unread, excludeFeatured } = req.query;
     const filter = buildVisibilityFilter(req);
+    // PAGINACIÓN. Con 8.000 chats, la bandeja no pintaba NADA hasta que llegaban
+    // los 300 de golpe (y con ellos su medio megabyte). Ahora entran de 25 en 25 y
+    // el agente pide más si le hace falta; los contadores de las pestañas siguen
+    // siendo el número REAL (ver unreadCounts), no lo que se ha llegado a cargar.
+    const limit = Math.min(300, Math.max(1, Number(req.query.limit) || DEFAULT_CHAT_PAGE));
+    const skip = Math.max(0, Number(req.query.skip) || 0);
 
     if (status) filter.status = status;
     if (featured === 'true') filter.isFeatured = true;
@@ -225,17 +235,26 @@ exports.listConversations = async (req, res) => {
       )
       .populate('assignedTo', 'name email')
       .populate('whatsappAccount', 'label connectionType displayPhone connectedPhone')
-      .sort({ lastMessageAt: -1 })
-      .limit(300)
+      // El ORDEN lo decide el servidor, no el navegador. Con la lista paginada,
+      // reordenar en el cliente solo reordenaría los 25 cargados: "el que más
+      // tiempo lleva esperando primero" habría dejado fuera justamente a los que
+      // más esperan, que están al final de la lista completa.
+      .sort({ lastMessageAt: req.query.sort === 'oldest' ? 1 : -1 })
+      .skip(skip)
+      .limit(limit)
       .lean();
 
     // Número EFECTIVO de salida por chat (y con él la ventana de 24h). Se resuelve
     // en memoria contra la lista de números conectados: un solo query extra para
-    // los 300 chats, en vez de uno por conversación.
+    // toda la página, en vez de uno por conversación.
     const accounts = await loadSendingAccounts();
-    const out = conversations.map((c) => decorateConversation(c, accounts));
+    const items = conversations.map((c) => decorateConversation(c, accounts));
 
-    res.json(out);
+    // `total` es el número REAL de chats que cumplen el filtro, no los que se han
+    // llegado a cargar: es lo que hace que "Cargar más" sepa si queda algo y que
+    // la pestaña pueda decir cuántos hay de verdad.
+    const total = await Conversation.countDocuments(filter);
+    res.json({ items, total, hasMore: skip + items.length < total });
   } catch (err) {
     res.status(500).json({ message: 'Error al listar conversaciones', error: err.message });
   }
@@ -408,12 +427,19 @@ exports.unreadCounts = async (req, res) => {
   try {
     const visible = buildVisibilityFilter(req);
     const base = { ...visible, unreadCount: { $gt: 0 } };
-    const [all, mine, featured] = await Promise.all([
+    // `total`/`totalMine` = chats de la pestaña "Todos" (que excluye los
+    // destacados, igual que el listado). Se cuentan en la BASE, no en la página:
+    // la bandeja carga de 25 en 25 y el número de la pestaña tiene que seguir
+    // siendo el de verdad aunque el agente no haya pulsado "Cargar más".
+    const todos = { ...visible, isFeatured: { $ne: true } };
+    const [all, mine, featured, total, totalMine] = await Promise.all([
       Conversation.countDocuments(base),
       Conversation.countDocuments({ ...base, assignedTo: req.user._id }),
       Conversation.countDocuments({ ...visible, isFeatured: true }),
+      Conversation.countDocuments(todos),
+      Conversation.countDocuments({ ...todos, assignedTo: req.user._id }),
     ]);
-    res.json({ all, mine, featured });
+    res.json({ all, mine, featured, total, totalMine });
   } catch (err) {
     res.status(500).json({ message: 'Error al contar no leídos', error: err.message });
   }
@@ -495,6 +521,8 @@ exports.createConversation = async (req, res) => {
       contactName:
         req.body.contactName ||
         (patient ? `${patient.firstName} ${patient.lastName}` : ''),
+      // Lo escribió (o lo eligió) una persona aquí mismo: no es el apodo del perfil.
+      contactNameSource: 'contact',
       patient: patient?._id || null,
       channel: req.body.channel || 'whatsapp',
       assignedTo: req.user._id,
@@ -527,7 +555,10 @@ exports.updateConversation = async (req, res) => {
     });
     // Renombrar a mano deja sello: a partir de aquí ninguna vía automática (el
     // nombre del contacto importado, el de un envío masivo) puede sobrescribirlo.
-    if (req.body.contactName !== undefined) conv.contactNameEditedAt = new Date();
+    if (req.body.contactName !== undefined) {
+      conv.contactNameEditedAt = new Date();
+      conv.contactNameSource = 'manual';
+    }
     await conv.save();
     // Etiquetar desde el chat también dispara los workflows de 'tag_added'
     // (antes solo el etiquetado masivo de pacientes emitía el evento).
@@ -971,6 +1002,18 @@ const notifyOpportunityStage = (conv, stage) => {
 // Quién hizo el cambio, para el chip del hilo (ver utils/opportunities.js).
 const humanActor = (req) => ({ userId: req.user._id, name: req.user.name });
 
+/**
+ * Atribución de anuncio de la CONVERSACIÓN, recortada a lo que guarda una
+ * oportunidad. La ingesta ya no crea la oportunidad "hueco" del anuncio, así que
+ * el `adId` se copia en el momento del alta — a mano aquí, o desde el paso
+ * `create_opportunity` de una automatización (ver utils/workflowEngine.js).
+ */
+const adAttributionOf = (attribution) => ({
+  adId: attribution?.adId || '',
+  campaign: attribution?.campaign || '',
+  ctwaClid: attribution?.ctwaClid || '',
+});
+
 exports.addOpportunity = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
@@ -998,6 +1041,11 @@ exports.addOpportunity = async (req, res) => {
       createdAt: new Date(),
     };
     opp.name = String(req.body.name || '').trim() || defaultOpportunityName(await withPatientName(conv), opp);
+    // De qué ANUNCIO vino el chat. Se copia a la oportunidad al darla de alta
+    // porque la ingesta ya no crea el "hueco" que antes la traía: sin esto, una
+    // oportunidad creada a mano en un chat que llegó por un anuncio no contaría
+    // como venida de anuncio en las analíticas.
+    if (conv.attribution?.adId) opp.attribution = adAttributionOf(conv.attribution);
     conv.opportunities = [...(conv.opportunities || []), opp];
     // Mantener compat: opportunity principal = última creada.
     syncPrimaryOpportunity(conv);
@@ -3336,6 +3384,60 @@ function mediaPreviewText(type, name) {
 }
 
 /**
+ * Texto de un mensaje para COMPARARLO con su eco de WhatsApp. WhatsApp Web
+ * devuelve el cuerpo con sus propios finales de línea y espacios de sobra: sin
+ * limpiarlos, dos copias del mismo mensaje no se reconocen entre sí.
+ */
+const normalizeEchoText = (s) =>
+  String(s || '').replace(/\r\n/g, '\n').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+
+/**
+ * ¿Este saliente que anuncia WhatsApp es el ECO de un envío NUESTRO?
+ *
+ * EL RECORDATORIO DUPLICADO (ago-2026). Los mensajes con BOTONES —una plantilla
+ * de recordatorio con "Confirmar"/"Cancelar", o un nodo de automatización con un
+ * enlace— no caben tal cual en un número QR: WhatsApp Web no admite botones, así
+ * que el envío les añade al final las líneas de respaldo ("1. Responde: …",
+ * "🔗 Ver ubicación: https://…", ver messaging.appendButtonFallback). El mensaje
+ * que se GUARDA en el chat lleva el texto limpio y los botones aparte, así que el
+ * texto que sale y el que está guardado NO son iguales.
+ *
+ * La comparación de antes era una igualdad exacta contra `body`: el eco no casaba
+ * con nada y se guardaba como un mensaje escrito «desde el teléfono». Al usuario
+ * le llegaba UN mensaje, pero en el chat salían DOS burbujas, la segunda firmada
+ * "WhatsApp (teléfono)" — y parecía que el recordatorio se enviaba dos veces.
+ *
+ * Ahora se comparan los textos normalizados y, SOLO si nuestro mensaje llevaba
+ * botones, se acepta también que el eco empiece por él (el añadido es justo ese
+ * respaldo). El mínimo de longitud evita que un "Ok" nuestro se coma cualquier
+ * mensaje largo que el agente escriba de verdad desde el móvil.
+ */
+async function findOwnEcho({ clinicId, conversationId, body, mediaType, windowMs }) {
+  const recientes = await Message.find({
+    clinic: clinicId,
+    conversation: conversationId,
+    direction: 'out',
+    createdAt: { $gte: new Date(Date.now() - windowMs) },
+  })
+    .sort({ createdAt: -1 })
+    .limit(20)
+    .select('_id body buttons mediaType')
+    .lean();
+  if (!recientes.length) return null;
+  // Sin texto (adjunto suelto): casa por tipo de adjunto, como antes.
+  if (!body) return recientes.find((m) => (m.mediaType || null) === (mediaType || null)) || null;
+  const eco = normalizeEchoText(body);
+  return (
+    recientes.find((m) => {
+      const propio = normalizeEchoText(m.body);
+      if (!propio) return false;
+      if (propio === eco) return true;
+      return (m.buttons || []).length > 0 && propio.length >= 8 && eco.startsWith(propio);
+    }) || null
+  );
+}
+
+/**
  * Ingresa un mensaje SALIENTE que se envió desde el teléfono (número QR),
  * FUERA de nuestro sistema. whatsapp-web.js lo entrega por `message_create` con
  * `fromMe=true`; así el historial del CRM refleja también lo que el agente
@@ -3407,16 +3509,14 @@ async function ingestExternalOutbound({ clinicId, account, externalUserId, phone
   // (c) Dedup por texto reciente: un saliente idéntico creado por nuestro envío
   // hace poco es el mismo mensaje, no uno escrito desde el teléfono. La ventana
   // se estira con los adjuntos, que son justamente los que tardan en salir.
-  const windowMs = mediaType ? 15 * 60 * 1000 : 60 * 1000;
-  const recentSame =
-    inFlight ||
-    (await Message.findOne({
-      clinic: clinicId,
-      conversation: conv._id,
-      direction: 'out',
-      createdAt: { $gte: new Date(Date.now() - windowMs) },
-      ...(finalBody ? { body: finalBody } : { mediaType: mediaType || null }),
-    }).select('_id'));
+  const windowMs = mediaType ? 15 * 60 * 1000 : 3 * 60 * 1000;
+  const recentSame = inFlight || (await findOwnEcho({
+    clinicId,
+    conversationId: conv._id,
+    body: finalBody,
+    mediaType,
+    windowMs,
+  }));
   if (recentSame) {
     // Es nuestro envío: aprovechamos para respaldar el wamid si no lo tenía.
     if (externalId) {
@@ -3512,6 +3612,10 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
       contactName:
         contactName ||
         (patient ? `${patient.firstName || ''} ${patient.lastName || ''}`.trim() : ''),
+      // El nombre que manda WhatsApp es el del PERFIL ("Yo…!!!", emojis, apodos):
+      // se marca como tal para que el del Excel —o el que el propio contacto
+      // escriba en el chat— pueda sustituirlo. Ver messaging.applyContactName.
+      contactNameSource: contactName ? 'profile' : 'contact',
       patient: patient?._id || null,
       channel,
       ...(referral ? { attribution: referral } : {}),
@@ -3571,33 +3675,22 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   if (referral && referral.adId && !conv.attribution?.adId) {
     conv.attribution = referral;
   }
-  // Cada ANUNCIO es una oportunidad distinta: si el mensaje viene de un anuncio
-  // y este chat aún no tiene una oportunidad de ESE anuncio, se crea sola
-  // (etapa 'nuevo') con su atribución — el agente la ve lista en el panel.
-  if (referral && referral.adId) {
-    const hasForAd =
-      (conv.opportunities || []).some((o) => o.attribution?.adId === referral.adId) ||
-      (!(conv.opportunities || []).length &&
-        conv.opportunity?.isOpportunity &&
-        conv.attribution?.adId === referral.adId);
-    if (!hasForAd) {
-      conv.opportunities = [
-        ...(conv.opportunities || []),
-        {
-          isOpportunity: true,
-          stage: 'nuevo',
-          notes: referral.campaign ? `Desde anuncio: ${referral.campaign}` : 'Desde anuncio (click-to-WhatsApp)',
-          attribution: {
-            adId: referral.adId,
-            campaign: referral.campaign || '',
-            ctwaClid: referral.ctwaClid || '',
-          },
-          createdAt: new Date(),
-        },
-      ];
-      syncPrimaryOpportunity(conv);
-    }
-  }
+  // ══ ABRIR UN CHAT **NO** CREA UNA OPORTUNIDAD ══
+  //
+  // Hasta ago-2026, un mensaje que llegaba desde un anuncio creaba aquí mismo una
+  // oportunidad EN BLANCO (sin nombre, sin servicios y sin valor) solo para
+  // guardarle el `adId`, contando con que la automatización de ese anuncio la
+  // rellenara un segundo después. En la práctica el hueco casi nunca se rellenaba
+  // —el chat no entraba en ninguna automatización, o entraba en una que no crea
+  // oportunidad— y el embudo se llenó de miles de oportunidades «Sin nombre» que
+  // nadie sabía de qué eran y que falseaban todas las estadísticas.
+  //
+  // LA REGLA DE AHORA: una oportunidad nace SOLO cuando alguien dice QUÉ es — el
+  // paso "Crear oportunidad" de una automatización, o el agente desde el panel del
+  // chat. La atribución del anuncio se guarda en la CONVERSACIÓN (justo arriba),
+  // que es de donde sale el desglose "de qué anuncio vino cada chat"; el paso
+  // `create_opportunity` y el alta manual la copian a la oportunidad que crean, así
+  // que "cuántas oportunidades vinieron de anuncios" se sigue pudiendo responder.
   // Recuerda por qué número (global) entró el mensaje, para responder por el mismo.
   if (account && String(conv.whatsappAccount || '') !== String(account._id)) {
     conv.whatsappAccount = account._id;
@@ -3734,6 +3827,20 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   conv.window24hExpiresAt = messaging.computeWhatsappWindowExpiresAt(msg.createdAt);
   conv.unreadCount = (conv.unreadCount || 0) + 1;
   if (conv.status === 'closed') conv.status = 'open';
+  // SI EL CONTACTO DICE CÓMO SE LLAMA, el chat se llama así. Casi todos los chats
+  // se veían con el apodo del perfil de WhatsApp ("Yo…!!!", emojis, el número
+  // pelado) aunque la persona hubiera escrito su nombre en el primer mensaje; el
+  // asesor abría el chat sin saber con quién hablaba. `contactNameFromText` es
+  // deliberadamente desconfiada y devuelve '' ante la duda, y `applyContactName`
+  // no deja que esto pise ni lo escrito a mano ni el nombre del Excel.
+  if (finalBody) {
+    const dicho = require('../utils/contactNameFromText').contactNameFromText(finalBody, {
+      // Un mensaje que es SOLO un nombre ("Ana Pérez") se acepta únicamente
+      // cuando el chat aún no tiene ninguno: es la respuesta a "¿cuál es tu nombre?".
+      allowBare: !String(conv.contactName || '').trim(),
+    });
+    if (dicho) messaging.applyContactName(conv, dicho, { source: 'chat' });
+  }
   await conv.save();
   emitToCallCenter('chat:message', { conversationId: conv._id, message: chatMedia.sanitizeMessageForSocket(msg) });
 

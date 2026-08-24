@@ -442,6 +442,13 @@ function personalize(text, patient) {
  * por TELÉFONO: así una inscripción nacida de un chat o de una cita también ve
  * las etiquetas del contacto, no solo las de la ficha de paciente.
  */
+/** Nombre legible de una ficha de contacto del CRM ('' si no tiene ninguno). */
+function contactDisplayName(contact) {
+  if (!contact) return '';
+  const full = `${contact.firstName || ''} ${contact.lastName || ''}`.trim();
+  return full || String(contact.displayName || '').trim();
+}
+
 async function loadEnrollmentContact(ctx = {}, clinicId = null) {
   const Contact = require('../models/Contact');
   const select = 'firstName lastName displayName customFields tags';
@@ -595,11 +602,19 @@ async function applyOpportunityStage(conversation, stage, automationName = '') {
  * el anuncio quedaban en oportunidades distintas, así que no se podía saber qué
  * anuncio trajo qué.
  *
- * Ahora la automatización que nace del anuncio RELLENA su hueco en vez de crear
- * otra. Solo se rellena el hueco de ESE anuncio (`ctx.adId`, que viene de la
- * inscripción) y solo si sigue intacto: en cuanto alguien lo trabaja —le pone
- * nombre, servicios, valor, lo mueve de etapa o le agenda una cita— deja de ser
- * un hueco y la automatización crea la suya aparte.
+ * Se intentó arreglar haciendo que la automatización del anuncio RELLENARA su
+ * hueco en vez de crear otra. No bastó: los chats que no entran en ninguna
+ * automatización —o que entran en una que no crea oportunidad— dejaban el hueco
+ * ahí para siempre, y el embudo siguió llenándose de «Sin nombre».
+ *
+ * DESDE AGO-2026 LA INGESTA YA NO CREA EL HUECO (ver chatController, "abrir un
+ * chat NO crea una oportunidad"): la oportunidad nace solo desde una
+ * automatización o a mano, y la atribución del anuncio se copia en ese momento.
+ * Esta función se queda para los huecos que YA existen en la base: si la
+ * automatización de ese anuncio pasa por uno, lo rellena en vez de dejar dos.
+ * Solo el hueco de ESE anuncio (`ctx.adId`, que viene de la inscripción) y solo
+ * si sigue intacto: en cuanto alguien lo trabaja —nombre, servicios, valor, otra
+ * etapa o una cita— deja de ser un hueco y la automatización crea la suya aparte.
  */
 function adPlaceholderFor(list, adId) {
   const wanted = String(adId || '').trim();
@@ -680,6 +695,23 @@ async function applyOpportunity(conversation, data = {}, { clinicId, patient, ct
     if (notes) target.notes = notes;
   } else {
     const now = new Date();
+    // De qué ANUNCIO vino. La ingesta ya no crea el "hueco" en blanco que antes
+    // traía el `adId` (llenaba el embudo de oportunidades sin nombre), así que la
+    // atribución se copia AQUÍ: la del mensaje que inscribió (`ctx.adId`) y, si no,
+    // la que quedó grabada en el chat. Sin esto, "cuántas oportunidades vinieron de
+    // anuncios" pasaría a valer cero.
+    // El `adId` del MENSAJE que inscribió manda sobre el del chat: si la persona hizo
+    // clic en un segundo anuncio, esta oportunidad es de ESE. El titular y el ctwaClid
+    // salen siempre del chat — la inscripción solo lleva el adId (ver el contexto que
+    // arma `enrollForChatMessage`).
+    const adId = String(ctx?.adId || conversation.attribution?.adId || '').trim();
+    const attribution = adId
+      ? {
+          adId,
+          campaign: conversation.attribution?.campaign || '',
+          ctwaClid: conversation.attribution?.ctwaClid || '',
+        }
+      : null;
     conversation.opportunities = [
       ...list,
       {
@@ -693,6 +725,7 @@ async function applyOpportunity(conversation, data = {}, { clinicId, patient, ct
         notes,
         createdAt: now,
         stageChangedAt: now,
+        ...(attribution ? { attribution } : {}),
         ...(stage === 'ganado' ? { convertedAt: now } : {}),
       },
     ];
@@ -1020,7 +1053,7 @@ async function loadConversationForPatient(clinicId, phone, patientId) {
  * Devuelve null si todo salió bien, o un string con el motivo del fallo (para
  * el registro de ejecución). Los errores inesperados se propagan (throw).
  */
-async function performAction(step, { clinicId, patient, phone, ctx, convRef, automationName = '', workflowButtons = [] }) {
+async function performAction(step, { clinicId, patient, phone, ctx, convRef, contact = null, automationName = '', workflowButtons = [] }) {
   const loadConv = async () => {
     if (!convRef.current) convRef.current = await loadConversationForPatient(clinicId, phone, patient?._id);
     return convRef.current;
@@ -1034,6 +1067,11 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef, aut
   // fichas del mismo número, cogía la vieja: el mensaje salía con los datos de la
   // campaña ANTERIOR.
   const contactId = ctx?.contactId || null;
+  // NOMBRE de esa ficha. Viaja con cada envío para que el chat deje de mostrar el
+  // apodo del perfil de WhatsApp ("Yo…!!!") en cuanto le escribimos con el nombre
+  // que trae el Excel. La conversación se le pasa ya cargada a `messaging.send`,
+  // así que sin esto el nombre del CRM nunca llegaba a la bandeja.
+  const contactName = contactDisplayName(contact);
   switch (step.type) {
     case 'send_message': {
       // Se envía a la CONVERSACIÓN existente del paciente (imprescindible con
@@ -1056,6 +1094,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef, aut
         buttons: workflowButtons,
         isAutoReply: true,
         whatsappAccount,
+        contactName,
       });
       return sendFail(r, conversation?.channel || 'whatsapp');
     }
@@ -1074,6 +1113,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef, aut
         mediaType: step.mediaType || 'image',
         isAutoReply: true,
         whatsappAccount,
+        contactName,
       });
       return sendFail(r, conversation?.channel || 'whatsapp');
     }
@@ -1101,6 +1141,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef, aut
         isAutoReply: true,
         whatsappAccount,
         contactId,
+        contactName,
       });
       return sendFail(r, stepChannel);
     }
@@ -1626,6 +1667,7 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
             phone,
             ctx,
             convRef,
+            contact,
             automationName: workflow.name || '',
             workflowButtons,
           }
@@ -1782,6 +1824,7 @@ async function executeEnrollment(enrollment) {
         buttons: step.buttons || [],
         isAutoReply: true,
         whatsappAccount: ctx.whatsappAccountId || null,
+        contactName: contactDisplayName(contact),
       });
       const fail = sendFail(r, conversation?.channel || 'whatsapp');
       if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
@@ -1809,6 +1852,7 @@ async function executeEnrollment(enrollment) {
           mediaType: step.mediaType || 'image',
           isAutoReply: true,
           whatsappAccount: ctx.whatsappAccountId || null,
+          contactName: contactDisplayName(contact),
         });
         const fail = sendFail(r, conversation?.channel || 'whatsapp');
         if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
@@ -1846,6 +1890,7 @@ async function executeEnrollment(enrollment) {
           appointmentId: ctx.appointmentId || null,
           isAutoReply: true,
           whatsappAccount: ctx.whatsappAccountId || null,
+          contactName: contactDisplayName(contact),
           contactId: ctx.contactId || null,
         });
         const fail = sendFail(r, stepChannel);

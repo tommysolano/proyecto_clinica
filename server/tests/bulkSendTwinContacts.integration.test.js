@@ -169,6 +169,94 @@ test('una inscripción viva bloquea otra del MISMO teléfono aunque sea de la ot
   assert.equal(await WorkflowEnrollment.countDocuments({ workflow: wf._id }), 1);
 });
 
+test('lo que quedó en cola de una campaña ANTERIOR no deja sin mensaje a la de hoy', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const otraSede = new mongoose.Types.ObjectId();
+  const { vieja } = await fichasGemelas(clinicId, otraSede);
+  const wf = await flujoRecordatorio(clinicId);
+
+  // Campaña de ayer: con goteo, 5.000 contactos a 20 s dejan inscripciones
+  // 'waiting' durante más de un día. Antes CUALQUIER inscripción viva bloqueaba
+  // la siguiente importación, así que al subir el Excel de hoy media lista se
+  // quedaba sin recibir nada — y solo se veía como "N no se volvieron a encolar".
+  const ayer = new Date(Date.now() - 26 * 3600e3);
+  await WorkflowEnrollment.collection.insertOne({
+    clinic: clinicId,
+    workflow: wf._id,
+    status: 'waiting',
+    nextRunAt: new Date(Date.now() + 3600e3),
+    context: { phone: TEL, contactId: String(vieja._id), eventType: 'contact_import', importBatchId: 'lote-de-ayer' },
+    createdAt: ayer,
+    updatedAt: ayer,
+    logs: [],
+  });
+
+  const batch = await ContactImport.create({
+    clinic: clinicId, fileName: 'reco-hoy.xlsx', status: 'done',
+    mapping: [{ column: 'Celular', field: 'phone' }],
+    workflows: [wf._id], createdBy: userId, cancelPending: false,
+  });
+
+  assert.equal(await enrollInWorkflows(batch, [TEL]), 1, 'una importación nueva es un envío nuevo');
+  assert.equal(await WorkflowEnrollment.countDocuments({ workflow: wf._id }), 2);
+});
+
+test('reprocesar EL MISMO lote no encola dos veces (el job se reanuda tras un reinicio)', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const otraSede = new mongoose.Types.ObjectId();
+  await fichasGemelas(clinicId, otraSede);
+  const wf = await flujoRecordatorio(clinicId);
+
+  const batch = await ContactImport.create({
+    clinic: clinicId, fileName: 'reco.xlsx', status: 'done',
+    mapping: [{ column: 'Celular', field: 'phone' }],
+    workflows: [wf._id], createdBy: userId,
+  });
+
+  assert.equal(await enrollInWorkflows(batch, [TEL]), 1);
+  assert.equal(await enrollInWorkflows(batch, [TEL]), 0, 'el mismo lote, nunca dos veces');
+  assert.equal(await WorkflowEnrollment.countDocuments({ workflow: wf._id }), 1);
+});
+
+test('si la ficha más reciente está dada de baja, el mensaje sale por su gemela', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const otraSede = new mongoose.Types.ObjectId();
+  const { vieja, nueva } = await fichasGemelas(clinicId, otraSede);
+  // La más nueva pidió no recibir mensajes. Antes el filtro de consentimiento iba
+  // en la consulta y se llevaba por delante al NÚMERO entero: dos fichas del mismo
+  // celular y el mensaje no le llegaba a ninguna.
+  await Contact.updateOne({ _id: nueva._id }, { $set: { 'marketing.optOutAt': new Date() } });
+  const wf = await flujoRecordatorio(clinicId);
+
+  const batch = await ContactImport.create({
+    clinic: clinicId, fileName: 'reco.xlsx', status: 'done',
+    mapping: [{ column: 'Celular', field: 'phone' }],
+    workflows: [wf._id], createdBy: userId,
+  });
+
+  assert.equal(await enrollInWorkflows(batch, [TEL]), 1);
+  const e = await WorkflowEnrollment.findOne({ workflow: wf._id });
+  assert.equal(e.context.contactId, String(vieja._id), 'se usa la ficha que sí acepta mensajes');
+});
+
+test('un número SIN ninguna ficha contactable queda avisado, no desaparece en silencio', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  await Contact.create({
+    clinic: clinicId, phone: TEL, displayName: 'Tommy',
+    marketing: { whatsappOptIn: true, optOutAt: new Date() },
+  });
+  const wf = await flujoRecordatorio(clinicId);
+
+  const batch = await ContactImport.create({
+    clinic: clinicId, fileName: 'reco.xlsx', status: 'done',
+    mapping: [{ column: 'Celular', field: 'phone' }],
+    workflows: [wf._id], createdBy: userId,
+  });
+
+  assert.equal(await enrollInWorkflows(batch, [TEL]), 0);
+  assert.match(batch.enrollWarning || '', /dada de baja o inactiva/i);
+});
+
 // ─────────── 2. el mensaje lleva los datos de ESTA campaña ───────────
 
 test('la plantilla se rellena con la ficha de la inscripción, no con la más vieja del mismo número', async () => {

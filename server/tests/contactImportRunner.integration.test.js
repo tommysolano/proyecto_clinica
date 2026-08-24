@@ -830,3 +830,35 @@ test('QR caído con los reintentos agotados: fallo definitivo y el flujo sigue',
     gw.sendText = orig;
   }
 });
+
+// ─────────── el nombre del Excel llega al chat ───────────
+//
+// El asesor abría el chat y arriba seguía diciendo "Yo…!!!" —el apodo del PERFIL
+// de WhatsApp— aunque el Excel trajera el nombre real. El nombre solo se copiaba
+// al chat cuando estaba VACÍO, así que reimportar no arreglaba nada.
+test('importar pone el nombre del Excel en el chat que ya existía', async () => {
+  const Conversation = require('../models/Conversation');
+  const { clinicId, userId } = await H.seedClinic();
+  const conv = await Conversation.create({
+    clinic: clinicId, channel: 'whatsapp', phone: '593999111222',
+    contactName: 'Yo…!!!', contactNameSource: 'profile',
+  });
+  const editado = await Conversation.create({
+    clinic: clinicId, channel: 'whatsapp', phone: '593988776655',
+    contactName: 'Dome (la del seguro)', contactNameEditedAt: new Date(), contactNameSource: 'manual',
+  });
+
+  const file = writeCsv([
+    ['Nombre', 'Celular', 'Correo', 'Ciudad'],
+    ['Ligia Farfán', '0999111222', '', 'Guayaquil'],
+    ['Dominique Vera', '+593 98 877 6655', '', 'Quito'],
+  ]);
+  await runImport((await makeBatch(clinicId, userId, file))._id);
+
+  assert.equal((await Conversation.findById(conv._id)).contactName, 'Ligia Farfán');
+  assert.equal(
+    (await Conversation.findById(editado._id)).contactName,
+    'Dome (la del seguro)',
+    'lo escrito a mano no lo pisa una importación'
+  );
+});

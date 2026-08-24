@@ -33,7 +33,7 @@ test('la asignacion normal sigue compartida; solo la restriccion de workflow ocu
   );
   assert.equal(asAna.statusCode, 200);
   assert.deepEqual(
-    new Set(asAna.payload.map((conv) => conv.phone)),
+    new Set(asAna.payload.items.map((conv) => conv.phone)),
     new Set(['593111111111', '593222222222', '593333333333'])
   );
 
@@ -42,7 +42,7 @@ test('la asignacion normal sigue compartida; solo la restriccion de workflow ocu
     H.mockReq(clinicId, new H.mongoose.Types.ObjectId(), {}, { role: 'marketing' })
   );
   assert.equal(asMarketing.statusCode, 200);
-  assert.equal(asMarketing.payload.length, 4);
+  assert.equal(asMarketing.payload.items.length, 4);
 });
 
 test('un asesor abre asignaciones normales ajenas pero no una restriccion de workflow ajena', async () => {
@@ -188,8 +188,8 @@ test('la cola exclusiva se comparte fuera de turno y vuelve al asesor en su sigu
     chat.listConversations,
     H.mockReq(clinicId, backup._id, {}, { role: 'call_center' })
   );
-  assert.equal(ownerList.payload.some((item) => String(item._id) === String(conv._id)), false);
-  assert.equal(backupList.payload.some((item) => String(item._id) === String(conv._id)), true);
+  assert.equal(ownerList.payload.items.some((item) => String(item._id) === String(conv._id)), false);
+  assert.equal(backupList.payload.items.some((item) => String(item._id) === String(conv._id)), true);
 
   // Mismo lunes 17:30 de Ecuador: segunda franja activa.
   sync = await syncWorkflowChatRestrictions({
@@ -209,12 +209,12 @@ test('la cola exclusiva se comparte fuera de turno y vuelve al asesor en su sigu
     chat.listConversations,
     H.mockReq(clinicId, backup._id, {}, { role: 'call_center' })
   );
-  assert.equal(ownerList.payload.some((item) => String(item._id) === String(conv._id)), true);
-  assert.equal(backupList.payload.some((item) => String(item._id) === String(conv._id)), false);
+  assert.equal(ownerList.payload.items.some((item) => String(item._id) === String(conv._id)), true);
+  assert.equal(backupList.payload.items.some((item) => String(item._id) === String(conv._id)), false);
 
   const marketingList = await H.runController(
     chat.listConversations,
     H.mockReq(clinicId, new H.mongoose.Types.ObjectId(), {}, { role: 'marketing' })
   );
-  assert.equal(marketingList.payload.some((item) => String(item._id) === String(conv._id)), true);
+  assert.equal(marketingList.payload.items.some((item) => String(item._id) === String(conv._id)), true);
 });

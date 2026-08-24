@@ -461,22 +461,45 @@ async function findConversationForPerson(clinicId, phone, channel) {
 }
 
 /**
- * Pone `nombre` en la conversación SOLO si ahí no hay nada que respetar.
+ * PRIORIDAD DEL NOMBRE DEL CHAT. Cuanto más alto, más manda.
  *
- * El nombre que manda WhatsApp es el del perfil del contacto —"Yo…!!!", emojis,
- * apodos—, así que la clínica necesita poder guardar el real. Puede llegar por
- * tres vías: escrito a mano en el panel, el del contacto importado o el de un
- * envío masivo. La regla es una sola: **lo escrito a mano gana siempre**
- * (`contactNameEditedAt`), y lo automático solo rellena huecos.
+ *   profile (1) — el del PERFIL de WhatsApp: "Yo…!!!", emojis, apodos. Es lo que
+ *                 llega solo con el primer mensaje y casi nunca es el nombre real.
+ *   chat    (2) — el que el propio contacto escribió en la conversación
+ *                 ("me llamo Ana Pérez"). Lo dijo él, así que vale más que su apodo.
+ *   contact (3) — el de la ficha del CRM: el Excel importado y los envíos masivos.
+ *                 Es el dato con el que la clínica trabaja.
+ *   manual  (4) — lo escribió una persona en el panel del chat. No lo pisa nadie.
+ */
+const NAME_SOURCE_RANK = { profile: 1, chat: 2, contact: 3, manual: 4 };
+
+/**
+ * Escribe el nombre de la conversación respetando de dónde viene cada uno.
+ *
+ * ANTES: lo automático solo rellenaba HUECOS. Bastaba con que el chat naciera con
+ * el apodo del perfil de WhatsApp para que ese apodo se quedara para siempre: se
+ * importaba el Excel con el nombre real y en la bandeja seguía apareciendo
+ * "Yo…!!!". Era la queja más repetida del call center — el agente no sabía con
+ * quién estaba hablando aunque el nombre estuviera en el sistema.
+ *
+ * AHORA gana la fuente de más rango (ver NAME_SOURCE_RANK), y a igualdad de rango
+ * gana el más nuevo (una reimportación corrige un nombre mal escrito). Lo escrito
+ * a mano (`contactNameEditedAt`) sigue siendo intocable.
  *
  * Devuelve true si tocó el documento (para que el llamador decida si guardar).
  */
-function applyContactName(conv, nombre) {
+function applyContactName(conv, nombre, { source = 'contact' } = {}) {
   const limpio = String(nombre || '').trim();
   if (!conv || !limpio) return false;
-  if (conv.contactNameEditedAt) return false;
-  if (String(conv.contactName || '').trim()) return false;
+  if (conv.contactNameEditedAt) return false; // lo escrito a mano no lo pisa nadie
+  const actual = String(conv.contactName || '').trim();
+  if (actual === limpio) return false;
+  const nuevo = NAME_SOURCE_RANK[source] || NAME_SOURCE_RANK.contact;
+  // Chats de antes del campo: lo que tengan viene del perfil de WhatsApp.
+  const previo = actual ? NAME_SOURCE_RANK[conv.contactNameSource] || NAME_SOURCE_RANK.profile : 0;
+  if (nuevo < previo) return false;
   conv.contactName = limpio;
+  conv.contactNameSource = source;
   return true;
 }
 
@@ -511,6 +534,10 @@ async function resolveConversation({ clinicId, conversation, channel, to, contac
   conv = await createConversationSafe({
     clinic: clinicId,
     phone,
+    // Nace de un envío NUESTRO: el nombre viene de la ficha (CRM), no del perfil
+    // de WhatsApp, así que se marca como tal para que el apodo del perfil no lo
+    // pise después. Ver applyContactName.
+    contactNameSource: 'contact',
     contactName:
       contactName ||
       (patientDoc ? `${patientDoc.firstName || ''} ${patientDoc.lastName || ''}`.trim() : ''),
@@ -936,6 +963,15 @@ async function send({
   });
   if (!conv) {
     return { ok: false, skipped: true, reason: 'invalid_recipient' };
+  }
+
+  // EL NOMBRE DE LA FICHA MANDA SOBRE EL DEL PERFIL DE WHATSAPP. `resolveConversation`
+  // solo lo aplica cuando busca el chat por teléfono; los envíos masivos y las
+  // automatizaciones le pasan la conversación YA cargada, así que por ese camino el
+  // nombre del Excel no llegaba nunca a la bandeja — el chat seguía diciendo "Yo…!!!"
+  // por muchas veces que se reimportara el archivo.
+  if (contactName && applyContactName(conv, contactName, { source: 'contact' })) {
+    await conv.save();
   }
 
   // Idempotencia: el mismo envío pedido dos veces se manda UNA. Cubre el doble

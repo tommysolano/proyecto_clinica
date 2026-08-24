@@ -79,6 +79,19 @@ const conversationSchema = new mongoose.Schema(
     // el del PERFIL del contacto ("Yo…!!!", emojis, apodos), casi nunca el real;
     // cuando alguien lo corrige a mano, ninguna vía automática puede pisarlo.
     contactNameEditedAt: { type: Date, default: null },
+    // DE DÓNDE salió el nombre que se está mostrando. Antes solo se distinguía
+    // "escrito a mano" de "lo demás", y lo demás no se pisaba nunca: un chat que
+    // nacía con el apodo del perfil de WhatsApp ("Yo…!!!") se quedaba con él para
+    // siempre, aunque después importáramos el Excel con el nombre real o el propio
+    // contacto nos lo escribiera en el chat. Con la fuente se puede aplicar una
+    // prioridad: manual > contacto/Excel > lo que dijo en el chat > perfil de
+    // WhatsApp. Vacío = chats antiguos, que se tratan como 'profile'.
+    // Ver utils/messaging.applyContactName, que es el ÚNICO que escribe esto.
+    contactNameSource: {
+      type: String,
+      enum: ['', 'profile', 'chat', 'contact', 'manual'],
+      default: '',
+    },
     patient: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', default: null },
     channel: {
       type: String,

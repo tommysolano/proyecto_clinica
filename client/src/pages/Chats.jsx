@@ -346,7 +346,7 @@ export default function Chats() {
   const debouncedSearch = useDebounce(search, 300);
   const [stats, setStats] = useState(null);
   // Contadores de chats NO LEÍDOS para los badges del riel (mis chats / grupal).
-  const [unreadCounts, setUnreadCounts] = useState({ mine: 0, all: 0, featured: 0 });
+  const [unreadCounts, setUnreadCounts] = useState({ mine: 0, all: 0, featured: 0, total: 0, totalMine: 0 });
   // Rango del panel de Supervisión. Por defecto, el mes en curso (hora Ecuador).
   const [statsRange, setStatsRange] = useState(() => ({ from: `${todayEc().slice(0, 7)}-01`, to: todayEc() }));
   const [services, setServices] = useState([]);
@@ -418,21 +418,61 @@ export default function Chats() {
   // automático (round-robin) dentro del transferidor sigue siendo de admin/supervisor.
   const canAutoAssign = isSupervisor || isAdmin;
 
+  // ══ LA BANDEJA ENTRA POR PÁGINAS ══
+  //
+  // Antes se pedían los 300 chats de golpe y la lista no pintaba NADA hasta que
+  // llegaban todos: con miles de conversaciones, abrir /chats eran varios segundos
+  // de pantalla en blanco. Ahora entran los primeros 25 y el agente pide más solo
+  // si baja hasta el final. Los números de las pestañas NO dependen de esto: se
+  // cuentan en la base (ver /chats/unread-counts), así que siguen siendo los reales
+  // aunque no se haya cargado ni una página más.
+  const CHATS_PAGE = 25;
+  const [convTotal, setConvTotal] = useState(0);
+  const [convHasMore, setConvHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Cuántos chats hay pedidos ahora mismo. Una recarga (evento en vivo, volver a
+  // la pestaña) tiene que traer LOS MISMOS que había, no volver a 25: si no, la
+  // lista se encogía sola en cuanto llegaba un mensaje.
+  const convLoadedRef = useRef(CHATS_PAGE);
+
   // Solo la respuesta de la última búsqueda actualiza la lista: descarta
   // respuestas fuera de orden que sobrescribirían con datos obsoletos.
   const convReqRef = useRef(0);
-  const loadConversations = async (params = {}) => {
+  const loadConversations = async (params = {}, { append = false } = {}) => {
     const reqId = ++convReqRef.current;
+    const skip = append ? conversations.length : 0;
+    const limit = append ? CHATS_PAGE : Math.max(CHATS_PAGE, convLoadedRef.current);
     try {
-      setLoading(true);
-      const r = await api.get('/chats', { params });
+      if (append) setLoadingMore(true);
+      else setLoading(true);
+      const r = await api.get('/chats', { params: { ...params, limit, skip } });
       if (reqId !== convReqRef.current) return; // respuesta obsoleta: descartar
-      setConversations(r.data || []);
+      // Compat: si el servidor aún devolviera el array pelado (deploy a medias),
+      // se trata como una única página completa en vez de romper la bandeja.
+      const items = Array.isArray(r.data) ? r.data : r.data?.items || [];
+      setConversations((prev) => {
+        if (!append) return items;
+        // Puede haber solapamiento si entró un mensaje nuevo entre página y
+        // página (la lista va por actividad reciente): se de-duplica por id.
+        const ids = new Set(prev.map((c) => String(c._id)));
+        return [...prev, ...items.filter((c) => !ids.has(String(c._id)))];
+      });
+      setConvTotal(Array.isArray(r.data) ? items.length : r.data?.total ?? items.length);
+      setConvHasMore(Array.isArray(r.data) ? false : !!r.data?.hasMore);
+      convLoadedRef.current = skip + items.length;
     } catch (err) {
       if (reqId === convReqRef.current) toast.error(err.response?.data?.message || 'Error al cargar chats');
     } finally {
-      if (reqId === convReqRef.current) setLoading(false);
+      if (reqId === convReqRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
+  };
+
+  const loadMoreConversations = () => {
+    if (loadingMore || !convHasMore) return;
+    loadConversations(paramsForView(), { append: true });
   };
 
   // Recarga de la lista AGRUPADA: en horas punta entran varios mensajes por
@@ -457,6 +497,10 @@ export default function Chats() {
       if (q) params.q = q;
       return params;
     }
+    // El orden va al servidor: la lista entra por páginas, así que ordenarla aquí
+    // solo ordenaría los 25 cargados (y "el que más tiempo lleva esperando"
+    // dejaría fuera precisamente a los que más esperan).
+    if (sortOrder === 'oldest') params.sort = 'oldest';
     if (scope === 'mine') params.assigned = 'me';
     if (filter === 'unread') params.unread = 'true';
     else if (filter === 'featured') params.featured = 'true';
@@ -481,7 +525,13 @@ export default function Chats() {
   const loadUnreadCounts = async () => {
     try {
       const r = await api.get('/chats/unread-counts');
-      setUnreadCounts({ mine: r.data?.mine || 0, all: r.data?.all || 0, featured: r.data?.featured || 0 });
+      setUnreadCounts({
+        mine: r.data?.mine || 0,
+        all: r.data?.all || 0,
+        featured: r.data?.featured || 0,
+        total: r.data?.total || 0,
+        totalMine: r.data?.totalMine || 0,
+      });
     } catch {
       /* noop */
     }
@@ -633,9 +683,13 @@ export default function Chats() {
 
   useEffect(() => {
     if (view === 'board') return; // el tablero de supervisión no usa la lista
+    // Cambiar de pestaña, de alcance o de búsqueda empieza una lista NUEVA: se
+    // vuelve a la primera página (si no, un filtro con 3 resultados heredaría el
+    // "traeme 200" de la pestaña anterior).
+    convLoadedRef.current = CHATS_PAGE;
     loadConversations(paramsForView());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, scope, filter, debouncedSearch]);
+  }, [view, scope, filter, sortOrder, debouncedSearch]);
 
   useEffect(() => {
     // El hilo se vacía SIEMPRE al cambiar de chat. Antes se quedaban a la vista
@@ -678,7 +732,7 @@ export default function Chats() {
       if (view !== 'board') refreshConversations();
       loadUnreadCounts();
     },
-    [activeId, view, scope, filter, debouncedSearch]
+    [activeId, view, scope, filter, sortOrder, debouncedSearch]
   );
   useSocketEvent(
     'chat:message:status',
@@ -707,7 +761,7 @@ export default function Chats() {
       if (view !== 'board') refreshConversations();
       loadUnreadCounts();
     },
-    [view, scope, filter, debouncedSearch]
+    [view, scope, filter, sortOrder, debouncedSearch]
   );
 
   // La asignación normal sigue compartida. Solo una restricción explícita creada
@@ -847,7 +901,7 @@ export default function Chats() {
       document.removeEventListener('visibilitychange', refresh);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, view, scope, filter, debouncedSearch]);
+  }, [activeId, view, scope, filter, sortOrder, debouncedSearch]);
 
   // RESPALDO cuando el tiempo real está CAÍDO: sondea cada 8 s para que los
   // mensajes nuevos aparezcan solos aunque el socket no esté conectado (así nunca
@@ -862,7 +916,7 @@ export default function Chats() {
     }, 8000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [realtimeConnected, activeId, view, scope, filter, debouncedSearch]);
+  }, [realtimeConnected, activeId, view, scope, filter, sortOrder, debouncedSearch]);
 
   // Auto-scroll al final SOLO si el agente ya estaba abajo (o si el hilo acaba de
   // abrirse). Si está leyendo mensajes de más arriba —o acaba de cargar la página
@@ -963,14 +1017,10 @@ export default function Chats() {
     setOpenConvSnap((prev) => (prev && String(prev._id) === String(c._id) ? c : prev));
     if (String(c._id) === String(activeIdRef.current)) setActiveDetail(c);
   };
-  // Lista según el orden elegido. El backend manda destacados arriba + recientes
-  // primero; 'oldest' reordena aquí por llegada pura (sin anclar destacados).
-  const sortedConversations = useMemo(() => {
-    if (sortOrder !== 'oldest') return conversations;
-    return [...conversations].sort(
-      (a, b) => new Date(a.lastMessageAt || 0) - new Date(b.lastMessageAt || 0)
-    );
-  }, [conversations, sortOrder]);
+  // El orden ya viene ordenado del servidor (ver paramsForView): con la lista
+  // paginada tiene que ser así, porque los chats que más llevan esperando están
+  // al FINAL de la lista completa y aquí no se han cargado siquiera.
+  const sortedConversations = conversations;
   const activeWindowClosed = isWhatsappWindowClosed(activeConv);
   const activeOptedOut = isOptedOut(activeConv);
   const activeSendsMedia = channelSendsMedia(activeConv);
@@ -1610,6 +1660,14 @@ export default function Chats() {
                       {scope === 'mine' ? unreadCounts.mine : unreadCounts.all}
                     </span>
                   )}
+                  {/* El total de "Todos" se cuenta en la BASE, no en lo que se ha
+                      llegado a cargar: la lista entra de 25 en 25 y aun así la
+                      pestaña dice cuántos chats hay de verdad. */}
+                  {t.id === 'all' && (scope === 'mine' ? unreadCounts.totalMine : unreadCounts.total) > 0 && (
+                    <span className="ml-1.5 bg-slate-100 text-slate-600 text-[10px] px-1.5 rounded-full">
+                      {(scope === 'mine' ? unreadCounts.totalMine : unreadCounts.total).toLocaleString('es-EC')}
+                    </span>
+                  )}
                   {t.id === 'featured' && unreadCounts.featured > 0 && (
                     <span className="ml-1.5 bg-amber-100 text-amber-700 text-[10px] px-1.5 rounded-full">
                       {unreadCounts.featured}
@@ -1676,16 +1734,42 @@ export default function Chats() {
               ) : conversations.length === 0 ? (
                 <div className="p-8 text-sm text-slate-400 text-center">Sin conversaciones</div>
               ) : (
-                sortedConversations.map((c) => (
-                  <ConversationRow
-                    key={c._id}
-                    conv={c}
-                    active={c._id === activeId}
-                    onSelect={selectConversation}
-                    onToggleFeatured={toggleFeatured}
-                    onToggleRead={toggleRead}
-                  />
-                ))
+                <>
+                  {sortedConversations.map((c) => (
+                    <ConversationRow
+                      key={c._id}
+                      conv={c}
+                      active={c._id === activeId}
+                      onSelect={selectConversation}
+                      onToggleFeatured={toggleFeatured}
+                      onToggleRead={toggleRead}
+                    />
+                  ))}
+                  {/* Pie de la lista: cuántos se están viendo de cuántos hay, y el
+                      botón para traer los siguientes 25. */}
+                  <div className="p-3 text-center">
+                    {convHasMore ? (
+                      <>
+                        <button
+                          onClick={loadMoreConversations}
+                          disabled={loadingMore}
+                          className="w-full py-2 text-sm font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 disabled:opacity-60"
+                        >
+                          {loadingMore ? 'Cargando…' : 'Cargar más chats'}
+                        </button>
+                        <div className="mt-1.5 text-[11px] text-slate-400">
+                          {conversations.length.toLocaleString('es-EC')} de {convTotal.toLocaleString('es-EC')}
+                        </div>
+                      </>
+                    ) : (
+                      convTotal > CHATS_PAGE && (
+                        <div className="text-[11px] text-slate-400">
+                          {convTotal.toLocaleString('es-EC')} chats · no hay más
+                        </div>
+                      )
+                    )}
+                  </div>
+                </>
               )}
             </div>
           </div>

@@ -26,7 +26,7 @@ async function search(clinic, userId, q) {
     H.mockReq(clinic, userId, {}, { role: 'call_center', query: q === undefined ? {} : { q } })
   );
   assert.equal(res.statusCode, 200);
-  return res.payload.map((c) => c.phone);
+  return res.payload.items.map((c) => c.phone);
 }
 
 test('el número se encuentra escrito en cualquier formato', async () => {

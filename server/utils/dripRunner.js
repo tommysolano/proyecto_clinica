@@ -50,12 +50,13 @@ async function conversationFor(clinicId, contact) {
       phone: contact.phone,
       channel: 'whatsapp',
       contactName: nombre,
+      contactNameSource: 'contact',
       patient: contact.patient || null,
     });
-  } else if (messaging.applyContactName(conv, nombre)) {
-    // El chat ya existía sin nombre (el contacto nos escribió antes de importarlo,
-    // o su perfil de WhatsApp no dice nada): la campaña sabe cómo se llama, así que
-    // se lo pone. Nunca pisa un nombre escrito a mano.
+  } else if (messaging.applyContactName(conv, nombre, { source: 'contact' })) {
+    // El chat ya existía con el apodo del perfil de WhatsApp ("Yo…!!!") o sin
+    // nombre: la ficha del CRM sabe cómo se llama la persona, así que ese es el
+    // que se muestra. Nunca pisa un nombre escrito a mano.
     await conv.save();
   }
   return conv;
