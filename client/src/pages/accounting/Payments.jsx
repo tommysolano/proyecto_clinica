@@ -103,7 +103,8 @@ export default function Payments() {
     debounceRef.current = setTimeout(async () => {
       setSearchingPatients(true);
       try {
-        const r = await api.get('/patients', { params: { search: q.trim(), limit: 15 } });
+        // withContact: la cartera identifica al tercero por su cédula.
+        const r = await api.get('/patients', { params: { search: q.trim(), limit: 15, withContact: 1 } });
         setPatientResults(r.data?.patients || r.data?.items || r.data || []);
       } catch { setPatientResults([]); }
       finally { setSearchingPatients(false); }

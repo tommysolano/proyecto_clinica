@@ -14,7 +14,13 @@ const chatMedia = require('../utils/chatMedia');
 const opportunities = require('../utils/opportunities');
 const { verifyMetaSignature } = require('../utils/metaWebhook');
 const { phoneSearchRegex } = require('../utils/phoneNormalize');
-const { workingMsBetween, isWorkingAt } = require('../utils/agentSchedule');
+const {
+  workingMsBetween,
+  isWorkingAt,
+  ecDayKey,
+  ecMinutesOfDay,
+  shiftForDay,
+} = require('../utils/agentSchedule');
 const { restrictionIsActive } = require('../utils/workflowChatRestriction');
 
 /**
@@ -4199,6 +4205,213 @@ function statsDateRange(query) {
   if (!from && !to) return null;
   return { ...(from ? { $gte: from } : {}), ...(to ? { $lte: to } : {}) };
 }
+
+/**
+ * Cuántos días como mucho se listan "en blanco" (turno sin actividad). Más allá
+ * de eso el panel solo enseña los días con mensajes: con un rango de un año y
+ * ocho asesores serían miles de filas vacías que no dicen nada.
+ */
+const AGENT_ACTIVITY_MAX_DAYS = 62;
+
+/** Días 'YYYY-MM-DD' entre dos fechas, ambas incluidas. `null` si son demasiados. */
+function expandDayKeys(fromKey, toKey, max) {
+  const parse = (v) => {
+    const m = String(v || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+  };
+  const from = parse(fromKey);
+  const to = parse(toKey);
+  if (from === null || to === null || to < from) return null;
+  if ((to - from) / 86400000 + 1 > max) return null;
+  const out = [];
+  for (let cur = from; cur <= to; cur += 86400000) {
+    out.push(new Date(cur).toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+/**
+ * GET /api/chats/agent-activity
+ *
+ * «¿Están cumpliendo el horario?», por asesor y por DÍA: a qué hora salió su primer
+ * mensaje, a qué hora el último, cuántos chats atendió a mano y cuántos mensajes
+ * escribió — todo contra el turno configurado en Config. Call Center.
+ *
+ * Qué cuenta como "escrito por la persona" (y qué no):
+ *  · saliente de verdad: `direction:'out'` y `kind:'message'` (los chips internos
+ *    de evento no son mensajes que reciba nadie),
+ *  · con autor: `sentBy`. Lo automático no lleva autor,
+ *  · `isAutoReply:false` — fuera workflows, campañas y respuestas automáticas,
+ *  · `isBroadcast:false` — una difusión a 300 chats no es atender 300 chats.
+ *
+ * Los mensajes escritos DESDE EL TELÉFONO en un número QR (`origin:'phone'`) no
+ * pasan por el sistema y no traen autor: no se pueden atribuir a nadie y quedan
+ * fuera de la cuenta. El panel lo advierte.
+ *
+ * Los días en los que el asesor TENÍA turno y no escribió nada salen igual, con la
+ * fila vacía: son justo los que hay que ver.
+ */
+exports.getAgentActivity = async (req, res) => {
+  try {
+    const clinicOid = new mongoose.Types.ObjectId(req.clinicId);
+    const range = statsDateRange(req.query);
+    // Margen de cortesía antes de dar un día por "entró tarde".
+    const toleranceMinutes = Math.max(0, Number(req.query.toleranceMinutes) || 10);
+
+    const activity = await Message.aggregate([
+      {
+        $match: {
+          clinic: clinicOid,
+          kind: 'message',
+          direction: 'out',
+          sentBy: { $ne: null },
+          isAutoReply: { $ne: true },
+          isBroadcast: { $ne: true },
+          ...(range ? { createdAt: range } : {}),
+        },
+      },
+      {
+        $group: {
+          _id: { agent: '$sentBy', day: dayKey('$createdAt') },
+          firstAt: { $min: '$createdAt' },
+          lastAt: { $max: '$createdAt' },
+          messages: { $sum: 1 },
+          // Un chat con veinte mensajes es UN chat atendido.
+          chats: { $addToSet: '$conversation' },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          agent: '$_id.agent',
+          day: '$_id.day',
+          firstAt: 1,
+          lastAt: 1,
+          messages: 1,
+          chats: { $size: '$chats' },
+        },
+      },
+    ]);
+
+    // Los asesores del call center + cualquiera que haya escrito en el periodo
+    // (un admin que entra a responder también sale en el panel).
+    const activeIds = [...new Set(activity.map((a) => String(a.agent)))];
+    const users = await User.find({
+      $or: [
+        ...(activeIds.length ? [{ _id: { $in: activeIds } }] : []),
+        { active: true, clinics: { $elemMatch: { clinic: clinicOid, role: 'call_center' } } },
+      ],
+    })
+      .select('name email callCenterSchedule')
+      .lean();
+    const userById = new Map(users.map((u) => [String(u._id), u]));
+
+    const dayKeys = expandDayKeys(req.query.from, req.query.to, AGENT_ACTIVITY_MAX_DAYS);
+    const scheduleDaysOmitted = dayKeys === null;
+
+    const byKey = new Map();
+    const keyOf = (agentId, day) => `${agentId}|${day}`;
+
+    // 1) Lo que realmente se escribió.
+    for (const row of activity) {
+      const agentId = String(row.agent);
+      byKey.set(keyOf(agentId, row.day), {
+        day: row.day,
+        agentId,
+        agentName: userById.get(agentId)?.name || 'Usuario eliminado',
+        firstAt: row.firstAt,
+        lastAt: row.lastAt,
+        manualChats: row.chats,
+        manualMessages: row.messages,
+      });
+    }
+
+    // 2) Los días de turno sin actividad (solo si el rango es manejable).
+    if (dayKeys) {
+      for (const user of users) {
+        for (const day of dayKeys) {
+          if (!shiftForDay(user.callCenterSchedule, day)) continue;
+          const key = keyOf(String(user._id), day);
+          if (byKey.has(key)) continue;
+          byKey.set(key, {
+            day,
+            agentId: String(user._id),
+            agentName: user.name,
+            firstAt: null,
+            lastAt: null,
+            manualChats: 0,
+            manualMessages: 0,
+          });
+        }
+      }
+    }
+
+    const rows = [...byKey.values()].map((row) => {
+      const shift = shiftForDay(userById.get(row.agentId)?.callCenterSchedule, row.day);
+      const out = {
+        ...row,
+        shift: shift ? { start: shift.start, end: shift.end } : null,
+        lateMinutes: null,
+        earlyLeaveMinutes: null,
+        // Tenía turno y no escribió ni un mensaje en todo el día.
+        absent: !!shift && row.manualMessages === 0,
+      };
+      if (shift && row.firstAt && row.lastAt) {
+        // En un turno nocturno el reloj sigue corriendo después de medianoche.
+        const first = ecMinutesOfDay(row.firstAt);
+        const last = ecMinutesOfDay(row.lastAt);
+        const firstAdj = shift.overnight && first < shift.startMinutes ? first + 1440 : first;
+        const lastAdj = shift.overnight && last < shift.startMinutes ? last + 1440 : last;
+        out.lateMinutes = Math.max(0, firstAdj - shift.startMinutes);
+        out.earlyLeaveMinutes = Math.max(0, shift.endMinutes - lastAdj);
+      }
+      return out;
+    });
+
+    // Día más reciente primero; dentro del día, por asesor.
+    rows.sort((a, b) => (a.day === b.day ? a.agentName.localeCompare(b.agentName) : b.day.localeCompare(a.day)));
+
+    // Resumen por asesor del periodo entero.
+    const totalsByAgent = new Map();
+    for (const row of rows) {
+      const acc = totalsByAgent.get(row.agentId) || {
+        agentId: row.agentId,
+        agentName: row.agentName,
+        manualChats: 0,
+        manualMessages: 0,
+        activeDays: 0,
+        scheduledDays: 0,
+        absentDays: 0,
+        lateDays: 0,
+        lateMinutes: 0,
+      };
+      acc.manualChats += row.manualChats;
+      acc.manualMessages += row.manualMessages;
+      if (row.manualMessages > 0) acc.activeDays += 1;
+      if (row.shift) acc.scheduledDays += 1;
+      if (row.absent) acc.absentDays += 1;
+      if (row.lateMinutes > toleranceMinutes) {
+        acc.lateDays += 1;
+        acc.lateMinutes += row.lateMinutes;
+      }
+      totalsByAgent.set(row.agentId, acc);
+    }
+    const totals = [...totalsByAgent.values()].sort((a, b) => b.manualChats - a.manualChats);
+
+    res.json({
+      range: { from: req.query.from || '', to: req.query.to || '' },
+      toleranceMinutes,
+      rows,
+      totals,
+      // El panel lo dice en pantalla: sin esto, un rango largo parecería "nadie
+      // faltó nunca" cuando en realidad no se calcularon las ausencias.
+      scheduleDaysOmitted,
+      maxScheduleDays: AGENT_ACTIVITY_MAX_DAYS,
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al obtener la actividad por agente', error: err.message });
+  }
+};
 
 exports.getStats = async (req, res) => {
   try {

@@ -130,6 +130,55 @@ function workingMsBetween(from, to, rawSchedule) {
   return total;
 }
 
+/** Día de la semana (0=domingo) de una fecha 'YYYY-MM-DD' escrita en Ecuador. */
+function ecWeekday(dayKey) {
+  const [y, m, d] = String(dayKey).split('-').map(Number);
+  if (!y || !m || !d) return -1;
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+/** Clave 'YYYY-MM-DD' del día ECUATORIANO de un instante. */
+function ecDayKey(instant) {
+  return new Date(new Date(instant).getTime() - EC_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/** Minutos transcurridos desde la medianoche ecuatoriana de un instante. */
+function ecMinutesOfDay(instant) {
+  const local = new Date(new Date(instant).getTime() - EC_OFFSET_MS);
+  return local.getUTCHours() * 60 + local.getUTCMinutes();
+}
+
+/** Minutos desde medianoche de un 'HH:mm'. */
+function clockMinutes(value) {
+  const [hour, minute] = timeParts(value);
+  return hour * 60 + minute;
+}
+
+/**
+ * Turno del asesor en un día concreto: de la PRIMERA franja a la ÚLTIMA (el hueco
+ * del almuerzo queda dentro, que es lo que se mira para "entró/salió a su hora").
+ * Devuelve `null` si no tiene horario activo o ese día no trabaja.
+ */
+function shiftForDay(rawSchedule, dayKey) {
+  const schedule = normalizeSchedule(rawSchedule);
+  if (!schedule.enabled) return null;
+  const slot = schedule.days.find((d) => d.day === ecWeekday(dayKey));
+  if (!slot?.enabled || !slot.intervals.length) return null;
+  const start = slot.intervals[0].start;
+  const end = slot.intervals[slot.intervals.length - 1].end;
+  const startMinutes = clockMinutes(start);
+  // Turno nocturno (22:00–06:00): el fin cae en el día siguiente.
+  const rawEnd = clockMinutes(end);
+  return {
+    start,
+    end,
+    startMinutes,
+    endMinutes: rawEnd <= startMinutes ? rawEnd + 1440 : rawEnd,
+    overnight: rawEnd <= startMinutes,
+    intervals: slot.intervals,
+  };
+}
+
 function isWorkingAt(rawSchedule, at = new Date()) {
   const schedule = normalizeSchedule(rawSchedule);
   if (!schedule.enabled) return true;
@@ -139,4 +188,15 @@ function isWorkingAt(rawSchedule, at = new Date()) {
   return workingMsBetween(new Date(instant), new Date(instant + 60000), schedule) > 0;
 }
 
-module.exports = { DEFAULT_DAYS, TIME_RE, normalizeSchedule, workingMsBetween, isWorkingAt };
+module.exports = {
+  DEFAULT_DAYS,
+  TIME_RE,
+  normalizeSchedule,
+  workingMsBetween,
+  isWorkingAt,
+  ecWeekday,
+  ecDayKey,
+  ecMinutesOfDay,
+  clockMinutes,
+  shiftForDay,
+};

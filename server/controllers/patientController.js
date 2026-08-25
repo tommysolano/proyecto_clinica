@@ -1,24 +1,53 @@
 const Patient = require('../models/Patient');
 const Appointment = require('../models/Appointment');
 const { emitToClinic } = require('../realtime');
-const { isDoctorRole } = require('../constants/roles');
+const { canReq } = require('../utils/permissions');
 
 // NOTA: los DATOS de los pacientes se comparten entre todas las clínicas
 // (cédula única global). El campo `clinic` queda como referencia de la clínica
 // donde se registró inicialmente, pero las consultas no filtran por clínica.
 
-// Campos sensibles que el rol "doctor" no debe ver ni editar. La regla vale para
-// TODOS los roles de doctor (incluidas las especialidades): el dato de contacto
-// es cosa de recepción/marketing, no de quien atiende.
-const SENSITIVE_FIELDS_FOR_DOCTOR = ['cedula', 'address', 'phone', 'whatsapp', 'email'];
+/**
+ * DATOS DE CONTACTO del paciente: cédula, dirección, teléfono, WhatsApp y correo.
+ *
+ * Los ve SOLO el administrador (capacidad `patients.contactData`). El resto del
+ * personal trabaja con el nombre: quien agenda, quien atiende, quien hace marketing
+ * y quien cobra en mostrador no necesita el número de identificación ni por dónde
+ * contactar al paciente por su cuenta.
+ *
+ * Se censura en el SERVIDOR, no en React: ocultar una columna no es un permiso —
+ * cualquiera abre la pestaña de red y lee el JSON. Lo que no se envía, no se filtra.
+ *
+ * Única excepción, y por obligación legal: quien FACTURA o COBRA (cajero,
+ * contabilidad) necesita identificar al cliente en el comprobante del SRI y en la
+ * cartera. Esos roles reciben los datos solo si la petición los pide expresamente
+ * —`GET /patients?withContact=1`, capacidad `patients.billingData`—, que es lo que
+ * hacen los selectores de cliente de Nueva venta, Cotizaciones y Pagos. La ficha del
+ * paciente (`GET /patients/:id`) y el listado de Clientes NO lo piden: ahí van
+ * censurados para todos menos el admin.
+ */
+const CONTACT_FIELDS = ['cedula', 'address', 'phone', 'whatsapp', 'email'];
 
-const sanitizeForRole = (patient, role) => {
-  if (!patient || !isDoctorRole(role)) return patient;
+/** ¿Este usuario puede ver los datos de contacto del paciente? (solo admin). */
+const canSeeContactData = (req) => canReq(req, 'patients.contactData');
+
+/** ¿La petición es un selector de facturación/cobro que sí puede traerlos? */
+const wantsBillingContact = (req) =>
+  ['1', 'true', 'yes'].includes(String(req.query?.withContact || '').toLowerCase()) &&
+  canReq(req, 'patients.billingData');
+
+const stripContactData = (patient) => {
   const obj = patient.toObject ? patient.toObject() : { ...patient };
-  SENSITIVE_FIELDS_FOR_DOCTOR.forEach((f) => {
+  CONTACT_FIELDS.forEach((f) => {
     obj[f] = undefined;
   });
   return obj;
+};
+
+/** Devuelve el paciente tal cual si el rol puede ver el contacto; si no, censurado. */
+const sanitizeForRole = (patient, req) => {
+  if (!patient || canSeeContactData(req)) return patient;
+  return stripContactData(patient);
 };
 
 /**
@@ -31,13 +60,15 @@ exports.searchReferralCandidates = async (req, res) => {
     const q = (req.query.q || '').trim();
     const regex = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
 
+    // El selector "¿Quién lo refirió?" es un buscador por nombre. Solo el admin
+    // busca (y ve) por cédula o teléfono — ver CONTACT_FIELDS.
+    const showContact = canSeeContactData(req);
     const patientFilter = { active: true };
     if (regex) {
       patientFilter.$or = [
         { firstName: regex },
         { lastName: regex },
-        { cedula: regex },
-        { phone: regex },
+        ...(showContact ? [{ cedula: regex }, { phone: regex }] : []),
       ];
     }
     const patients = await Patient.find(patientFilter)
@@ -45,7 +76,12 @@ exports.searchReferralCandidates = async (req, res) => {
       .limit(15);
 
     const userFilter = { active: true, 'clinics.clinic': req.clinicId };
-    if (regex) userFilter.$or = [{ name: regex }, { cedula: regex }, { email: regex }];
+    if (regex) {
+      userFilter.$or = [
+        { name: regex },
+        ...(showContact ? [{ cedula: regex }, { email: regex }] : []),
+      ];
+    }
     const users = await User.find(userFilter).select('name cedula').limit(15);
 
     const results = [
@@ -53,7 +89,7 @@ exports.searchReferralCandidates = async (req, res) => {
         id: p._id,
         type: 'patient',
         name: `${p.firstName} ${p.lastName}`.trim(),
-        detail: p.cedula || '',
+        detail: showContact ? p.cedula || '' : '',
       })),
       ...users.map((u) => ({
         id: u._id,
@@ -73,14 +109,22 @@ exports.getPatients = async (req, res) => {
   try {
     const { search, page = 1, limit = 20, isNew } = req.query;
     const query = { active: true };
+    // Facturación/cobro: ver CONTACT_FIELDS arriba.
+    const showContact = canSeeContactData(req) || wantsBillingContact(req);
 
     if (search) {
       query.$or = [
         { firstName: { $regex: search, $options: 'i' } },
         { lastName: { $regex: search, $options: 'i' } },
-        { cedula: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
       ];
+      // Buscar por cédula/teléfono es otra forma de LEERLOS (se prueba un número y
+      // el acierto lo confirma), así que solo lo hace quien puede verlos.
+      if (showContact) {
+        query.$or.push(
+          { cedula: { $regex: search, $options: 'i' } },
+          { phone: { $regex: search, $options: 'i' } }
+        );
+      }
     }
 
     if (isNew === 'true' || isNew === '1') {
@@ -100,7 +144,7 @@ exports.getPatients = async (req, res) => {
     const total = await Patient.countDocuments(query);
 
     res.json({
-      patients: patients.map((p) => sanitizeForRole(p, req.role)),
+      patients: showContact ? patients : patients.map(stripContactData),
       total,
       pages: Math.ceil(total / limit),
       currentPage: parseInt(page),
@@ -114,7 +158,7 @@ exports.getPatient = async (req, res) => {
   try {
     const patient = await Patient.findById(req.params.id);
     if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
-    res.json(sanitizeForRole(patient, req.role));
+    res.json(sanitizeForRole(patient, req));
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener paciente' });
   }
@@ -224,6 +268,8 @@ exports.createPatient = async (req, res) => {
       cedula,
       clinic: req.clinicId,
     });
+    // Registrar a alguien SÍ es de recepción (le está dando sus datos en el
+    // mostrador); volver a leerlos después ya no. La respuesta va censurada.
     emitToClinic(req.clinicId, 'patient:created', { id: patient._id });
     // Evento de dominio: dispara workflows con trigger 'patient_created'.
     {
@@ -234,7 +280,7 @@ exports.createPatient = async (req, res) => {
         isFirstVisit: true,
       });
     }
-    res.status(201).json(patient);
+    res.status(201).json(sanitizeForRole(patient, req));
   } catch (error) {
     const detail = describeSaveError(error);
     const isUserError = ['ValidationError', 'CastError'].includes(error?.name) || error?.code === 11000;
@@ -248,9 +294,11 @@ exports.createPatient = async (req, res) => {
 exports.updatePatient = async (req, res) => {
   try {
     const update = cleanPatientBody(req.body);
-    // El doctor NO puede editar cédula, dirección, teléfono, whatsapp ni email.
-    if (isDoctorRole(req.role)) {
-      SENSITIVE_FIELDS_FOR_DOCTOR.forEach((f) => delete update[f]);
+    // Quien no VE los datos de contacto tampoco los edita. No es solo permiso: su
+    // formulario los recibe vacíos, así que sin este filtro un guardado cualquiera
+    // borraría la cédula y el teléfono del paciente sin que nadie lo notara.
+    if (!canSeeContactData(req)) {
+      CONTACT_FIELDS.forEach((f) => delete update[f]);
     }
     // Etiquetas previas: para disparar 'tag_added' solo por las realmente nuevas.
     const prev = Array.isArray(update.tags)
@@ -276,7 +324,7 @@ exports.updatePatient = async (req, res) => {
       }
     }
     emitToClinic(req.clinicId, 'patient:updated', { id: patient._id });
-    res.json(sanitizeForRole(patient, req.role));
+    res.json(sanitizeForRole(patient, req));
   } catch (error) {
     const detail = describeSaveError(error);
     const isUserError = ['ValidationError', 'CastError'].includes(error?.name) || error?.code === 11000;

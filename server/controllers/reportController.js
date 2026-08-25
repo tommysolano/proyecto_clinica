@@ -6,6 +6,7 @@ const Patient = require('../models/Patient');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
 const Treatment = require('../models/Treatment');
+const { canReq } = require('../utils/permissions');
 // Hoja «Ventas» del Excel contable (una fila por venta, con el desglose por forma de pago).
 // Es la MISMA que baja Reportes de Ventas: el formato del contador vive en un solo sitio.
 const { addSalesSheet, findSalesForSheet } = require('../services/salesWorkbook');
@@ -336,33 +337,45 @@ exports.exportPatients = async (req, res) => {
     const patients = await Patient.find({ clinic: req.clinicId, active: true }).sort({
       lastName: 1,
     });
+    // Los datos de contacto son solo del admin (ver CONTACT_FIELDS en
+    // patientController). Un Excel descargable es justo por donde se escaparían
+    // en bloque, así que para el resto del personal esas columnas ni se crean.
+    const showContact = canReq(req, 'patients.contactData');
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Pacientes');
     ws.columns = [
-      { header: 'Cédula', key: 'cedula', width: 14 },
+      ...(showContact ? [{ header: 'Cédula', key: 'cedula', width: 14 }] : []),
       { header: 'Nombres', key: 'first', width: 18 },
       { header: 'Apellidos', key: 'last', width: 18 },
       { header: 'Edad', key: 'age', width: 8 },
       { header: 'Género', key: 'gender', width: 12 },
-      { header: 'Email', key: 'email', width: 26 },
-      { header: 'Teléfono', key: 'phone', width: 14 },
-      { header: 'WhatsApp', key: 'wa', width: 14 },
-      { header: 'Dirección', key: 'address', width: 28 },
+      ...(showContact
+        ? [
+            { header: 'Email', key: 'email', width: 26 },
+            { header: 'Teléfono', key: 'phone', width: 14 },
+            { header: 'WhatsApp', key: 'wa', width: 14 },
+            { header: 'Dirección', key: 'address', width: 28 },
+          ]
+        : []),
       { header: 'Registrado', key: 'created', width: 14 },
     ];
     patients.forEach((p) => {
       const obj = p.toObject({ virtuals: true });
       ws.addRow({
-        cedula: p.cedula,
         first: p.firstName,
         last: p.lastName,
         age: obj.computedAge ?? '',
         gender: p.gender || '',
-        email: p.email || '',
-        phone: p.phone || '',
-        wa: p.whatsapp || '',
-        address: p.address || '',
         created: new Date(p.createdAt).toLocaleDateString('es-EC'),
+        ...(showContact
+          ? {
+              cedula: p.cedula,
+              email: p.email || '',
+              phone: p.phone || '',
+              wa: p.whatsapp || '',
+              address: p.address || '',
+            }
+          : {}),
       });
     });
     styleHeader(ws);

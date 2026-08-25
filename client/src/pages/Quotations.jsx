@@ -82,7 +82,9 @@ export default function Quotations() {
   useEffect(() => {
     Promise.all([
       api.get('/products').then((r) => setProducts(r.data.products || r.data || [])),
-      api.get('/patients').then((r) => setPatients(r.data.patients || r.data || [])),
+      // withContact: la cotización copia cédula/correo/teléfono al facturar.
+      api.get('/patients', { params: { withContact: 1 } })
+        .then((r) => setPatients(r.data.patients || r.data || [])),
     ]).catch(() => {});
     load();
   }, []);

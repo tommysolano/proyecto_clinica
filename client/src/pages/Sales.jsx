@@ -262,7 +262,10 @@ export default function Sales() {
 
   const fetchPatients = async () => {
     try {
-      const res = await api.get('/patients', { params: { limit: 1000 } });
+      // withContact: el comprobante del SRI necesita cédula, correo y teléfono del
+      // cliente. Es la excepción de facturación a la regla "solo el admin ve el
+      // contacto del paciente" (capacidad patients.billingData en el servidor).
+      const res = await api.get('/patients', { params: { limit: 1000, withContact: 1 } });
       setPatients(res.data.patients);
     } catch (err) {
       void err;

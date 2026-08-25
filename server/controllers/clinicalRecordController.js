@@ -41,6 +41,7 @@ const {
 const { specialtyFollowUpHtml } = require('../utils/specialtyFollowUpPrint');
 const { describeCie10 } = require('../utils/cie10Catalog');
 const { emitToClinic } = require('../realtime');
+const { canReq } = require('../utils/permissions');
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
@@ -87,6 +88,23 @@ exports.uploadAttachmentMiddleware = multer({
 }).single('file');
 
 /**
+ * La cabecera de la hoja MSP guarda su PROPIA copia de la cédula, la dirección y
+ * el celular del paciente. Son los mismos datos de contacto que solo ve el
+ * administrador (ver CONTACT_FIELDS en patientController): esconderlos ahí y
+ * dejarlos aquí sería no esconderlos.
+ */
+const RECORD_CONTACT_FIELDS = ['cedula', 'direccion', 'celular'];
+
+const hideContactData = (record, req) => {
+  if (!record || canReq(req, 'patients.contactData')) return record;
+  const obj = record.toObject ? record.toObject() : { ...record };
+  RECORD_CONTACT_FIELDS.forEach((f) => {
+    obj[f] = undefined;
+  });
+  return obj;
+};
+
+/**
  * Obtiene la ficha clínica de un paciente. Si no existe la crea con datos
  * básicos copiados del paciente.
  */
@@ -125,7 +143,7 @@ exports.getOrCreateByPatient = async (req, res) => {
       });
     }
 
-    res.json(record);
+    res.json(hideContactData(record, req));
   } catch (error) {
     res
       .status(500)
@@ -156,6 +174,11 @@ exports.updateByPatient = async (req, res) => {
     for (const k of allowed) {
       if (req.body[k] !== undefined) update[k] = req.body[k];
     }
+    // Quien no ve cédula/dirección/celular tampoco los guarda: su formulario los
+    // recibe vacíos y un guardado cualquiera los borraría de la hoja MSP.
+    if (!canReq(req, 'patients.contactData')) {
+      RECORD_CONTACT_FIELDS.forEach((f) => delete update[f]);
+    }
 
     const record = await ClinicalRecord.findOneAndUpdate(
       { clinic: req.clinicId, patient: patientId },
@@ -163,7 +186,7 @@ exports.updateByPatient = async (req, res) => {
       { new: true, upsert: true, runValidators: true }
     );
 
-    res.json(record);
+    res.json(hideContactData(record, req));
   } catch (error) {
     res
       .status(500)

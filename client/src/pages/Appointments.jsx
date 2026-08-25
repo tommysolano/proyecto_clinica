@@ -342,7 +342,9 @@ export default function Appointments() {
       advanceAmount: Number(apt.advanceAmount || 0),
     });
     setPatientSearch(
-      apt.patient ? `${apt.patient.firstName} ${apt.patient.lastName} - ${apt.patient.cedula}` : ''
+      apt.patient
+        ? [`${apt.patient.firstName} ${apt.patient.lastName}`, apt.patient.cedula].filter(Boolean).join(' - ')
+        : ''
     );
     setModalOpen(true);
   };
@@ -497,7 +499,7 @@ export default function Appointments() {
 
   const handlePatientSelect = (p) => {
     setForm((f) => ({ ...f, patient: p._id }));
-    setPatientSearch(`${p.firstName} ${p.lastName} - ${p.cedula}`);
+    setPatientSearch([`${p.firstName} ${p.lastName}`, p.cedula].filter(Boolean).join(' - '));
     setShowPatientList(false);
   };
 
@@ -1156,7 +1158,7 @@ export default function Appointments() {
                       <span className="font-medium text-slate-800">
                         {p.firstName} {p.lastName}
                       </span>
-                      <span className="text-slate-400 ml-2">{p.cedula}</span>
+                      {p.cedula && <span className="text-slate-400 ml-2">{p.cedula}</span>}
                       {p.phone && (
                         <span className="text-slate-400 ml-2">• {p.phone}</span>
                       )}
@@ -1458,7 +1460,7 @@ export default function Appointments() {
               <div className="bg-emerald-50/50 rounded-xl p-3">
                 <p className="text-xs text-emerald-600 font-medium">Cédula</p>
                 <p className="text-sm text-slate-800 mt-0.5">
-                  {detailModal.patient?.cedula}
+                  {detailModal.patient?.cedula || '—'}
                 </p>
               </div>
               <div className="bg-emerald-50/50 rounded-xl p-3">

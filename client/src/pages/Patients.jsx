@@ -59,6 +59,11 @@ export default function Patients() {
   const { hasRole, clinics, activeClinic } = useAuth();
   const showClinicSelector = (clinics?.length || 0) > 1;
   const canWrite = hasRole('admin', 'cajero', 'call_center');
+  // Cédula, correo, teléfono, WhatsApp y dirección son solo del administrador: al
+  // resto el servidor ni se los envía (ver CONTACT_FIELDS en patientController).
+  const showContact = hasRole('admin');
+  // Nombre + Acciones siempre; cédula, teléfono y email solo para el admin.
+  const columnCount = showContact ? 5 : 2;
   const canDelete = hasRole('admin');
 
   const [patients, setPatients] = useState([]);
@@ -162,9 +167,14 @@ export default function Patients() {
 
   const openEdit = (patient) => {
     setEditing(patient._id);
+    // El paciente llega censurado para quien no ve los datos de contacto: si esos
+    // `undefined` entran al formulario, sus inputs dejan de estar controlados.
+    const visible = Object.fromEntries(
+      Object.entries(patient).filter(([, v]) => v !== undefined && v !== null)
+    );
     setForm({
       ...emptyForm,
-      ...patient,
+      ...visible,
       birthDate: patient.birthDate ? patient.birthDate.split('T')[0] : '',
       age: patient.age ?? '',
     });
@@ -302,7 +312,7 @@ export default function Patients() {
             <HiOutlineMagnifyingGlass className="absolute left-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
             <input
               type="text"
-              placeholder="Buscar por nombre, cédula o teléfono..."
+              placeholder={showContact ? 'Buscar por nombre, cédula o teléfono...' : 'Buscar por nombre...'}
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
@@ -332,10 +342,10 @@ export default function Patients() {
           <table className="tbl">
             <thead>
               <tr className="bg-emerald-50/50 border-b border-emerald-100">
-                <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Cédula</th>
+                {showContact && <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Cédula</th>}
                 <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Nombre</th>
-                <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden md:table-cell">Teléfono</th>
-                <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden lg:table-cell">Email</th>
+                {showContact && <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden md:table-cell">Teléfono</th>}
+                {showContact && <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden lg:table-cell">Email</th>}
                 <th className="text-right px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Acciones</th>
               </tr>
             </thead>
@@ -343,14 +353,14 @@ export default function Patients() {
               {loading ? (
                 Array.from({ length: 6 }).map((_, i) => (
                   <tr key={`sk-${i}`} className="border-b border-emerald-50">
-                    {Array.from({ length: 5 }).map((__, j) => (
+                    {Array.from({ length: columnCount }).map((__, j) => (
                       <td key={j} className="px-6 py-3.5"><div className="skeleton h-4 w-full max-w-[160px]" /></td>
                     ))}
                   </tr>
                 ))
               ) : patients.length === 0 ? (
                 <tr>
-                  <td colSpan="5">
+                  <td colSpan={columnCount}>
                     <div className="empty-state">
                       <HiOutlineUsers className="w-10 h-10 text-slate-300" />
                       <p className="font-medium text-slate-500">No se encontraron pacientes</p>
@@ -361,7 +371,7 @@ export default function Patients() {
               ) : (
                 patients.map((p) => (
                   <tr key={p._id} className="border-b border-emerald-50 hover:bg-emerald-50/30">
-                    <td className="px-6 py-3.5 text-sm text-slate-600">{p.cedula || '—'}</td>
+                    {showContact && <td className="px-6 py-3.5 text-sm text-slate-600">{p.cedula || '—'}</td>}
                     <td className="px-6 py-3.5 text-sm font-medium text-slate-800">
                       {p.firstName} {p.lastName}
                       {(p.marketing?.optOutAt || p.marketing?.whatsappOptIn === false) && (
@@ -370,12 +380,16 @@ export default function Patients() {
                         </span>
                       )}
                     </td>
-                    <td className="px-6 py-3.5 text-sm text-slate-600 hidden md:table-cell">
-                      {p.phone || '—'}
-                    </td>
-                    <td className="px-6 py-3.5 text-sm text-slate-600 hidden lg:table-cell">
-                      {p.email || '—'}
-                    </td>
+                    {showContact && (
+                      <td className="px-6 py-3.5 text-sm text-slate-600 hidden md:table-cell">
+                        {p.phone || '—'}
+                      </td>
+                    )}
+                    {showContact && (
+                      <td className="px-6 py-3.5 text-sm text-slate-600 hidden lg:table-cell">
+                        {p.email || '—'}
+                      </td>
+                    )}
                     <td className="px-6 py-3.5 text-right">
                       <Link
                         to={`/patients/${p._id}`}
@@ -441,6 +455,9 @@ export default function Patients() {
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Al REGISTRAR se piden siempre (la persona los está dando en el
+                mostrador); al EDITAR ya son datos guardados: solo el admin. */}
+            {(showContact || !editing) && (
             <Field label="Cédula / RUC / Pasaporte">
               <div className="relative">
                 <input
@@ -459,6 +476,7 @@ export default function Patients() {
               </div>
               <SriStatus status={cedulaLookup} />
             </Field>
+            )}
             <Field label="Género" required>
               <select
                 name="gender"
@@ -491,6 +509,7 @@ export default function Patients() {
                 className="input"
               />
             </Field>
+            {(showContact || !editing) && (
             <Field label="Email">
               <input
                 name="email"
@@ -501,6 +520,8 @@ export default function Patients() {
               />
               <EmailStatus status={emailCheck} onApplySuggestion={(s) => setForm((f) => ({ ...f, email: s }))} />
             </Field>
+            )}
+            {(showContact || !editing) && (
             <Field label="Teléfono">
               <input
                 name="phone"
@@ -509,6 +530,8 @@ export default function Patients() {
                 className="input"
               />
             </Field>
+            )}
+            {(showContact || !editing) && (
             <Field label="WhatsApp">
               <input
                 name="whatsapp"
@@ -517,6 +540,7 @@ export default function Patients() {
                 className="input"
               />
             </Field>
+            )}
             <Field label="Fecha de nacimiento">
               <DateInput
                 name="birthDate"
@@ -537,9 +561,11 @@ export default function Patients() {
               />
             </Field>
           </div>
-          <Field label="Dirección">
-            <input name="address" value={form.address} onChange={handleChange} className="input" />
-          </Field>
+          {(showContact || !editing) && (
+            <Field label="Dirección">
+              <input name="address" value={form.address} onChange={handleChange} className="input" />
+            </Field>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Field label="¿Cómo nos conoció?">
               <select

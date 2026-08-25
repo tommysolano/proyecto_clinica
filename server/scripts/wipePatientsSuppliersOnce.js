@@ -96,6 +96,7 @@ const { wipeAccounting } = require('./wipeAccountingOnce');
 // ─── Pacientes y lo que cuelga de ellos ──────────────────────────────────────
 const Patient = require('../models/Patient');
 const ClinicalRecord = require('../models/ClinicalRecord');
+const PatientObservation = require('../models/PatientObservation');
 const Appointment = require('../models/Appointment');
 const Treatment = require('../models/Treatment');
 const Referral = require('../models/Referral');
@@ -148,6 +149,7 @@ const GRUPOS = [
   ['Pacientes', [
     ['Pacientes (Patient)', Patient],
     ['Fichas clínicas y seguimientos (ClinicalRecord)', ClinicalRecord],
+    ['Observaciones del paciente (PatientObservation)', PatientObservation],
     ['Citas (Appointment)', Appointment],
     ['Planes de tratamiento (Treatment)', Treatment],
     ['Derivaciones (Referral)', Referral],

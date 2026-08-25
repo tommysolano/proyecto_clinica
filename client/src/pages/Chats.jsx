@@ -13,9 +13,10 @@ import {
   HiOutlineMagnifyingGlass,
   HiOutlineChevronUp,
   HiOutlineChevronDown,
+  HiOutlineChevronRight,
   HiOutlineArrowPath,
   HiOutlinePlus,
-  HiOutlineSparkles,
+  HiOutlineBackspace,
   HiOutlineTag,
   HiOutlineCalendarDays,
   HiOutlineUserCircle,
@@ -358,7 +359,6 @@ export default function Chats() {
   const typingExpiryRef = useRef(new Map());
   // Envío en curso: bloquea el botón (ver sendMessage) y pinta "Enviando…".
   const [sending, setSending] = useState(false);
-  const [suggesting, setSuggesting] = useState(false);
   const [templateDraft, setTemplateDraft] = useState({ name: '', language: 'es', vars: '' });
   const [templates, setTemplates] = useState([]); // plantillas WhatsApp aprobadas
   // Menú unificado del compositor: null (cerrado) | 'auto' | 'templates' | 'saved'
@@ -1086,19 +1086,6 @@ export default function Chats() {
   const composerExpanded =
     composerFocused || draft.trim().length > 0 || !!attachmentDraft;
 
-  const suggestReply = async () => {
-    if (!activeId) return;
-    setSuggesting(true);
-    try {
-      const { data } = await api.post(`/chats/${activeId}/suggest-reply`);
-      if (data.suggestion) setDraft(data.suggestion);
-    } catch (e) {
-      toast.error(e.response?.data?.message || 'No se pudo sugerir respuesta');
-    } finally {
-      setSuggesting(false);
-    }
-  };
-
   const sendMessage = async () => {
     if (!activeId || !activeConv) return;
     // Candado: mientras un envío está en curso NO se acepta otro. Es la mitad del
@@ -1322,6 +1309,23 @@ export default function Chats() {
 
   // Una nota de voz se envía sola: en WhatsApp un audio no admite pie de texto.
   const voiceNoteAttached = attachmentDraft?.type === 'audio';
+
+  // ¿Hay algo preparado para enviar? Texto, adjunto o plantilla elegida.
+  const composerHasContent =
+    draft.trim().length > 0 || !!attachmentDraft || !!templateDraft.name;
+
+  // Deja el compositor en blanco de una sola vez. Es lo que antes costaba dos o
+  // tres pasos: al elegir el mensaje guardado equivocado (los que traen foto o
+  // video) había que borrar el texto a mano Y quitar el adjunto con su ✕.
+  const clearComposer = () => {
+    setDraft('');
+    setAttachmentDraft(null);
+    setTemplateDraft({ name: '', language: 'es', vars: '' });
+    setSlashOpen(false);
+    setSlashQuery('');
+    setPickerTab(null);
+    composerRef.current?.focus();
+  };
 
   // Llamadas de voz por WhatsApp. `calling` dice si el número de ESTE chat puede
   // llamar (solo Cloud API, y con las llamadas habilitadas en Meta); se consulta
@@ -2445,13 +2449,13 @@ export default function Chats() {
                           )}
                           <button
                             type="button"
-                            onClick={suggestReply}
-                            disabled={suggesting || !!activeConv?.blocked || activeOptedOut || activeWindowClosed || voiceNoteAttached}
-                            title="Sugerir respuesta con IA"
-                            className="p-2 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-emerald-400 disabled:opacity-50 cursor-pointer flex items-center gap-1"
+                            onClick={clearComposer}
+                            disabled={!composerHasContent}
+                            title="Limpiar: borra el texto, el adjunto y la plantilla elegida"
+                            className="p-2 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-rose-300 hover:text-rose-600 disabled:opacity-50 cursor-pointer flex items-center gap-1"
                           >
-                            <HiOutlineSparkles className="w-5 h-5" />
-                            <span className="hidden @sm:inline text-xs font-medium">{suggesting ? '…' : 'IA'}</span>
+                            <HiOutlineBackspace className="w-5 h-5" />
+                            <span className="hidden @sm:inline text-xs font-medium">Limpiar</span>
                           </button>
                           <button
                             type="button"
@@ -4130,6 +4134,47 @@ function ContactNameRow({ conv, onUpdated }) {
 }
 
 /**
+ * Sección PLEGABLE del panel del contacto (columna derecha del chat).
+ *
+ * Automatizaciones y Oportunidades arrancan CERRADAS. Abrir un chat soltaba de
+ * golpe el historial de automatizaciones y la lista de oportunidades, y lo que el
+ * agente venía a mirar —quién es el contacto— quedaba debajo de todo eso. El
+ * resumen (cuántas hay, cuántas activas) se lee en la cabecera sin desplegar nada.
+ *
+ * `action` es el botón propio de la sección (refrescar, "Editar / añadir"): va
+ * FUERA del botón que pliega, porque un botón dentro de otro no es HTML válido y
+ * el navegador lo desarma.
+ */
+function CollapsibleSection({ icon: Icon, iconClass = '', title, count = 0, badge = null, action = null, children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          title={open ? 'Contraer' : 'Desplegar'}
+          className="flex items-center gap-1 min-w-0 text-xs font-semibold text-slate-500 hover:text-emerald-600 bg-transparent border-none cursor-pointer p-0 text-left"
+        >
+          <HiOutlineChevronRight
+            className={`w-3.5 h-3.5 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
+          />
+          {Icon && <Icon className={`w-3.5 h-3.5 shrink-0 ${iconClass}`} />}
+          <span className="truncate">
+            {title}
+            {count > 0 ? ` (${count})` : ''}
+          </span>
+          {badge}
+        </button>
+        {action}
+      </div>
+      {open && children}
+    </div>
+  );
+}
+
+/**
  * Automatizaciones que se han ACTIVADO en este chat (inscripciones del contacto).
  *
  * Va justo debajo de los datos del contacto porque es seguimiento puro: el agente
@@ -4171,28 +4216,33 @@ function ChatAutomationsSection({ conv, version = 0 }) {
 
   const live = rows.filter((a) => a.status === 'active' || a.status === 'waiting').length;
 
+  // Las inscripciones se cargan aunque la sección esté plegada: el número y el
+  // aviso de "activa" son justo lo que hace falta ver sin desplegarla.
   return (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <div className="text-xs font-semibold text-slate-500 flex items-center gap-1">
-          <HiOutlineBolt className="w-3.5 h-3.5 text-amber-500" />
-          Automatizaciones{rows.length > 0 ? ` (${rows.length})` : ''}
-          {live > 0 && (
-            <span className="text-[10px] font-medium bg-amber-100 text-amber-700 px-1.5 rounded-full" title="En ejecución o en espera de su próximo paso">
-              {live} activa{live > 1 ? 's' : ''}
-            </span>
-          )}
-        </div>
+    <CollapsibleSection
+      icon={HiOutlineBolt}
+      iconClass="text-amber-500"
+      title="Automatizaciones"
+      count={rows.length}
+      badge={
+        live > 0 ? (
+          <span className="text-[10px] font-medium bg-amber-100 text-amber-700 px-1.5 rounded-full shrink-0" title="En ejecución o en espera de su próximo paso">
+            {live} activa{live > 1 ? 's' : ''}
+          </span>
+        ) : null
+      }
+      action={
         <button
           onClick={() => setTick((t) => t + 1)}
           title="Actualizar"
           aria-label="Actualizar automatizaciones"
           disabled={loading}
-          className="p-1 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 bg-transparent border-none cursor-pointer disabled:opacity-50"
+          className="p-1 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 bg-transparent border-none cursor-pointer disabled:opacity-50 shrink-0"
         >
           <HiOutlineArrowPath className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
         </button>
-      </div>
+      }
+    >
       {loading ? (
         <div className="text-xs text-slate-400">Cargando…</div>
       ) : rows.length === 0 ? (
@@ -4261,7 +4311,7 @@ function ChatAutomationsSection({ conv, version = 0 }) {
           })}
         </div>
       )}
-    </div>
+    </CollapsibleSection>
   );
 }
 
@@ -4358,26 +4408,25 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
         />
       )}
 
-      <div>
-        {(() => {
-          // Todas las oportunidades del chat (una por anuncio/interés). El campo
-          // `opportunity` es solo el espejo de la última; aquí se listan todas.
-          const opsList = (conv.opportunities || []).length
-            ? conv.opportunities
-            : op.isOpportunity
-            ? [op]
-            : [];
-          return (
-            <>
-              <div className="flex items-center justify-between mb-1">
-                <div className="text-xs font-semibold text-slate-500">
-                  Oportunidades{opsList.length > 0 ? ` (${opsList.length})` : ''}
-                </div>
-                <button onClick={onEditOpportunity} className="text-[10px] text-emerald-600 hover:underline">
-                  {opsList.length > 0 ? 'Editar / añadir' : 'Crear'}
-                </button>
-              </div>
-              {opsList.length === 0 ? (
+      {(() => {
+        // Todas las oportunidades del chat (una por anuncio/interés). El campo
+        // `opportunity` es solo el espejo de la última; aquí se listan todas.
+        const opsList = (conv.opportunities || []).length
+          ? conv.opportunities
+          : op.isOpportunity
+          ? [op]
+          : [];
+        return (
+          <CollapsibleSection
+            title="Oportunidades"
+            count={opsList.length}
+            action={
+              <button onClick={onEditOpportunity} className="text-[10px] text-emerald-600 hover:underline shrink-0">
+                {opsList.length > 0 ? 'Editar / añadir' : 'Crear'}
+              </button>
+            }
+          >
+            {opsList.length === 0 ? (
                 <div className="text-xs text-slate-400">No es una oportunidad aún.</div>
               ) : (
                 <div className="space-y-2">
@@ -4429,10 +4478,9 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
                   })}
                 </div>
               )}
-            </>
-          );
-        })()}
-      </div>
+          </CollapsibleSection>
+        );
+      })()}
 
       <ConvTagsSection conv={conv} onUpdated={onUpdated} />
 
@@ -5355,6 +5403,212 @@ function fmtMinutes(min) {
   return `${d} d ${h % 24} h`;
 }
 
+// Hora ecuatoriana de un instante ('07:42 p. m.'). Vacío = no hubo mensaje.
+function fmtHourEc(value) {
+  if (!value) return '—';
+  return new Date(value).toLocaleTimeString('es-EC', {
+    timeZone: 'America/Guayaquil',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+// 'AAAA-MM-DD' → 'lun 24/08'. Se arma a mediodía para que el cambio de día no
+// dependa de la zona horaria del navegador.
+function fmtDayLabelEc(dayKey) {
+  const d = new Date(`${dayKey}T12:00:00`);
+  const wd = d.toLocaleDateString('es-EC', { weekday: 'short' });
+  return `${wd} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Minutos de desvío → '+25 min' / '—'.
+const fmtDeviation = (min) => (min == null || min <= 0 ? '—' : `+${fmtMinutes(min)}`);
+
+/**
+ * CUMPLIMIENTO DE HORARIO (panel de Supervisión).
+ *
+ * Contesta la pregunta de siempre: ¿a qué hora empezó a escribir cada asesor, a
+ * qué hora dejó de hacerlo y cuántos chats atendió DE VERDAD ese día? Solo cuentan
+ * los mensajes que escribió una persona: las automatizaciones y las difusiones no
+ * entran (si entraran, un workflow nocturno haría parecer que el asesor trabajó
+ * hasta las 3 de la mañana).
+ *
+ * Se carga aparte de /chats/stats: es una agregación sobre MENSAJES, mucho más
+ * pesada que las de conversaciones, y no tiene por qué retrasar el resto del panel.
+ */
+function ScheduleComplianceSection({ range }) {
+  // El rango pedido va DENTRO del estado: así "cargando" se deduce de comparar
+  // lo cargado con lo que se pide ahora, sin un setState suelto dentro del
+  // efecto (que dispara un render en cascada y lo marca el linter).
+  const rangeKey = `${range?.from || ''}|${range?.to || ''}`;
+  const [loaded, setLoaded] = useState({ key: null, data: null });
+  const [showAllDays, setShowAllDays] = useState(false);
+  const loading = loaded.key !== rangeKey;
+  const data = loaded.key === rangeKey ? loaded.data : null;
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .get('/chats/agent-activity', {
+        params: {
+          ...(range?.from ? { from: range.from } : {}),
+          ...(range?.to ? { to: range.to } : {}),
+        },
+      })
+      .then((r) => alive && setLoaded({ key: rangeKey, data: r.data }))
+      .catch(() => alive && setLoaded({ key: rangeKey, data: null }));
+    return () => {
+      alive = false;
+    };
+  }, [rangeKey, range?.from, range?.to]);
+
+  const rows = data?.rows || [];
+  const totals = data?.totals || [];
+  const tolerance = data?.toleranceMinutes ?? 10;
+  const visibleRows = showAllDays ? rows : rows.slice(0, 40);
+
+  return (
+    <section className="bg-white border border-slate-200 rounded-xl p-4">
+      <h2 className="font-semibold text-slate-800 mb-2">Cumplimiento de horario</h2>
+
+      {loading ? (
+        <div className="text-sm text-slate-400 py-4">Cargando…</div>
+      ) : (
+        <>
+          {/* Resumen del periodo, por asesor */}
+          <div className="overflow-x-auto">
+            <table className="tbl">
+              <thead className="bg-slate-50 text-slate-600">
+                <tr>
+                  <th className="text-left px-3 py-2">Asesor</th>
+                  <th className="text-right px-3 py-2">Chats atendidos</th>
+                  <th className="text-right px-3 py-2">Mensajes</th>
+                  <th className="text-right px-3 py-2">Días con actividad</th>
+                  <th className="text-right px-3 py-2">Días de turno</th>
+                  <th className="text-right px-3 py-2">Sin actividad</th>
+                  <th className="text-right px-3 py-2">Días con retraso</th>
+                </tr>
+              </thead>
+              <tbody>
+                {totals.map((t) => (
+                  <tr key={t.agentId} className="border-t border-slate-100">
+                    <td className="px-3 py-2 font-medium">{t.agentName}</td>
+                    <td className="px-3 py-2 text-right font-semibold">{t.manualChats}</td>
+                    <td className="px-3 py-2 text-right">{t.manualMessages}</td>
+                    <td className="px-3 py-2 text-right">{t.activeDays}</td>
+                    <td className="px-3 py-2 text-right text-slate-500">
+                      {t.scheduledDays || '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <span className={t.absentDays > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'}>
+                        {t.scheduledDays ? t.absentDays : '—'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <span className={t.lateDays > 0 ? 'text-amber-700 font-semibold' : 'text-slate-400'}>
+                        {t.scheduledDays ? t.lateDays : '—'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+                {totals.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-3 py-6 text-center text-slate-400 text-sm">
+                      Nadie escribió mensajes a mano en este periodo
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Día a día */}
+          <h3 className="text-sm font-semibold text-slate-700 mt-5 mb-2">Día a día</h3>
+          <div className="overflow-x-auto">
+            <table className="tbl">
+              <thead className="bg-slate-50 text-slate-600">
+                <tr>
+                  <th className="text-left px-3 py-2">Día</th>
+                  <th className="text-left px-3 py-2">Asesor</th>
+                  <th className="text-left px-3 py-2">Turno</th>
+                  <th className="text-right px-3 py-2">Primer mensaje</th>
+                  <th className="text-right px-3 py-2">Último mensaje</th>
+                  <th className="text-right px-3 py-2">Entró tarde</th>
+                  <th className="text-right px-3 py-2">Salió antes</th>
+                  <th className="text-right px-3 py-2">Chats</th>
+                  <th className="text-right px-3 py-2">Mensajes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleRows.map((r) => (
+                  <tr
+                    key={`${r.agentId}-${r.day}`}
+                    className={`border-t border-slate-100 ${r.absent ? 'bg-rose-50/60' : ''}`}
+                  >
+                    <td className="px-3 py-2 whitespace-nowrap">{fmtDayLabelEc(r.day)}</td>
+                    <td className="px-3 py-2 font-medium">{r.agentName}</td>
+                    <td className="px-3 py-2 text-slate-500 whitespace-nowrap">
+                      {r.shift ? `${r.shift.start}–${r.shift.end}` : 'Sin horario'}
+                    </td>
+                    <td className="px-3 py-2 text-right whitespace-nowrap">{fmtHourEc(r.firstAt)}</td>
+                    <td className="px-3 py-2 text-right whitespace-nowrap">{fmtHourEc(r.lastAt)}</td>
+                    <td className="px-3 py-2 text-right whitespace-nowrap">
+                      <span className={r.lateMinutes > tolerance ? 'text-amber-700 font-semibold' : 'text-slate-400'}>
+                        {r.absent ? 'No escribió' : fmtDeviation(r.lateMinutes)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-right whitespace-nowrap">
+                      <span className={r.earlyLeaveMinutes > tolerance ? 'text-amber-700 font-semibold' : 'text-slate-400'}>
+                        {r.absent ? '—' : fmtDeviation(r.earlyLeaveMinutes)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-right font-semibold">{r.manualChats}</td>
+                    <td className="px-3 py-2 text-right">{r.manualMessages}</td>
+                  </tr>
+                ))}
+                {rows.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="px-3 py-6 text-center text-slate-400 text-sm">
+                      Sin actividad manual en este periodo
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {rows.length > visibleRows.length && (
+            <button
+              type="button"
+              onClick={() => setShowAllDays(true)}
+              className="mt-2 text-xs text-emerald-600 hover:underline bg-transparent border-none cursor-pointer p-0"
+            >
+              Ver los {rows.length - visibleRows.length} días restantes
+            </button>
+          )}
+
+          <p className="text-[11px] text-slate-400 mt-3">
+            Solo se cuentan los mensajes <strong>escritos por una persona</strong>: quedan fuera las
+            automatizaciones, las respuestas automáticas y los envíos masivos. Un chat con veinte
+            mensajes cuenta como <strong>un</strong> chat atendido. El <strong>turno</strong> es el
+            configurado en Config. Call Center; «entró tarde» y «salió antes» se miden contra él con{' '}
+            {tolerance} min de tolerancia, y las filas en rojo son días de turno en los que el asesor
+            no escribió nada.
+            {data?.scheduleDaysOmitted && (
+              <>
+                {' '}El rango elegido pasa de {data.maxScheduleDays} días: aquí solo salen los días
+                <strong> con actividad</strong>, así que las ausencias no están calculadas. Acorta el
+                rango para verlas.
+              </>
+            )}{' '}
+            Los mensajes escritos <strong>desde el teléfono</strong> en un número QR no pasan por el
+            sistema y no se pueden atribuir a nadie: no entran en esta tabla.
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
 function SupervisorBoard({ stats, reload, agents = [], range, onRangeChange }) {
   const byAgent = stats?.byAgent || [];
   const opps = stats?.opportunities || [];
@@ -5513,6 +5767,8 @@ function SupervisorBoard({ stats, reload, agents = [], range, onRangeChange }) {
         </p>
       </section>
 
+
+      <ScheduleComplianceSection range={range} />
 
       <section className="bg-white border border-slate-200 rounded-xl p-4">
         <h2 className="font-semibold text-slate-800 mb-2">Embudo de oportunidades</h2>

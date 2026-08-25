@@ -144,6 +144,11 @@ const messageSchema = new mongoose.Schema(
     sentBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     sentByName: { type: String, trim: true },
     isAutoReply: { type: Boolean, default: false },
+    // Difusión: el MISMO texto salió a muchos chats a la vez. Lleva persona en
+    // `sentBy`, pero no es atender un chat, así que Supervisión lo descuenta de
+    // "chats atendidos a mano". Las difusiones anteriores a este campo no están
+    // marcadas y ahí sí cuentan (no hay forma de distinguirlas a posteriori).
+    isBroadcast: { type: Boolean, default: false },
     isRead: { type: Boolean, default: false },
   },
   { timestamps: true }

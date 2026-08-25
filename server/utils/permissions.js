@@ -7,6 +7,15 @@
  * cualquiera abre la pestaña de red y lee el costo. Por eso el BACKEND omite los importes
  * (kardex, tomas y sus Excel) cuando el rol no puede verlos: lo que no se envía, no se filtra.
  *
+ * Mismo criterio para `patients.contactData` (cédula, dirección, teléfono, WhatsApp y correo
+ * del paciente): es SOLO del administrador —le basta con `'*'`, no hace falta listarla—, así
+ * que el servidor la borra de la respuesta para todos los demás roles. `patients.billingData`
+ * es su única excepción, explicada abajo.
+ *
+ * `patients.observations.moderate` es la otra capacidad exclusiva del admin: una observación
+ * del paciente la edita quien la escribió, y el admin además de eso (queda registrado como
+ * "modificado por"). Tampoco se lista: `'*'` ya se la da solo a él.
+ *
  * Compatibilidad: `admin` y `contabilidad` conservan todo lo que tenían.
  */
 
@@ -21,12 +30,24 @@ const CAPS = {
     'journal.view',
     // Flujo de caja: ve la proyección/Excel Y configura (clasifica, reglas, saldo, partidas).
     'cashflow.view', 'cashflow.manage',
+    // Ver 'patients.billingData' abajo: cobra cartera y necesita identificar al cliente.
+    'patients.billingData',
   ],
   // La caja ve el inventario para trabajar (cantidades) y puede iniciar/contar una toma,
   // pero NO ve costos, no confirma el ajuste contable, no exporta y no abre asientos.
   // En el FLUJO DE CAJA solo VISUALIZA (proyección + Excel + detalle): la clasificación,
   // el saldo manual, las partidas y las reglas las hace contabilidad/admin (cashflow.manage).
-  cajero: ['inventory.view', 'count.start', 'count.edit', 'warehouse.view', 'sales.report', 'cashflow.view'],
+  //
+  // `patients.billingData` NO es "ver los datos del paciente": la ficha del paciente y el
+  // listado de Clientes le llegan igual de censurados que a todos (eso es
+  // `patients.contactData`, que solo tiene el admin). Es el permiso para que los SELECTORES
+  // de cliente de Nueva venta, Cotizaciones y Pagos —los únicos que lo piden, con
+  // `?withContact=1`— traigan cédula, correo y teléfono: sin ellos el comprobante
+  // electrónico saldría a consumidor final y la cartera quedaría sin identificación.
+  cajero: [
+    'inventory.view', 'count.start', 'count.edit', 'warehouse.view', 'sales.report', 'cashflow.view',
+    'patients.billingData',
+  ],
   // Enfermería y bodega consultan existencias; nada de dinero.
   enfermeria: ['inventory.view', 'count.start', 'count.edit', 'warehouse.view'],
   // Marketing solo mira ventas (sin costos ni márgenes) y no exporta.

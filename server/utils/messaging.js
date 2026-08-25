@@ -1152,6 +1152,9 @@ async function send({
       sentBy: sentBy || null,
       sentByName: sentByName || '',
       isAutoReply,
+      // Queda en el propio mensaje (no solo en la conversación) porque
+      // Supervisión mide "chats atendidos a mano" contando mensajes.
+      isBroadcast: broadcast === true,
     });
   } catch (err) {
     // Dos peticiones a la vez con el mismo `clientId` (doble clic de verdad

@@ -11,6 +11,7 @@ const {
 } = require('../controllers/patientController');
 const patientImport = require('../controllers/patientImportController');
 const scanReview = require('../controllers/scanReviewController');
+const observations = require('../controllers/patientObservationController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
@@ -39,11 +40,47 @@ router.get('/referral-options', requireRole('admin', 'cajero', 'call_center', 'm
 // contabilidad: solo el listado (lo usa el buscador de paciente en "Nueva venta").
 router.get('/', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing', 'contabilidad'), getPatients);
 router.get('/:id', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getPatient);
-// Compras y aplicaciones del paciente (para el seguimiento)
-router.get('/:id/purchases', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getPatientPurchases);
+// Compras y aplicaciones del paciente (bloque dentro de Seguimientos). Es
+// información ECONÓMICA —qué compró, cuánto pagó—: solo administración y
+// contabilidad. Quien atiende ve el avance del tratamiento en la propia ficha.
+router.get('/:id/purchases', requireRole('admin', 'contabilidad'), getPatientPurchases);
 // Crear / editar: incluye doctor (con restricción de campos sensibles en el controller)
 router.post('/', requireRole('admin', 'cajero', 'call_center'), createPatient);
 router.put('/:id', requireRole('admin', 'cajero', 'call_center', 'doctor'), updatePatient);
 router.delete('/:id', requireRole('admin'), deletePatient);
+
+// ─── Observaciones (bitácora libre del paciente) ────────────────────────────
+//
+// Las ESCRIBE cualquiera que pueda abrir la ficha; quién puede MODIFICAR cada una
+// (su autor, o el admin) lo decide el controlador, no la ruta: depende de la
+// observación concreta, no del rol.
+const observationRoles = requireRole(
+  'admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'
+);
+const uploadObservationFiles = observations.handleUploadErrors(observations.uploadMiddleware);
+
+router.get('/:id/observations', observationRoles, observations.validateIds, observations.list);
+router.post('/:id/observations', observationRoles, observations.validateIds, uploadObservationFiles, observations.create);
+router.put('/:id/observations/:obsId', observationRoles, observations.validateIds, observations.update);
+router.delete('/:id/observations/:obsId', observationRoles, observations.validateIds, observations.remove);
+router.post(
+  '/:id/observations/:obsId/attachments',
+  observationRoles,
+  observations.validateIds,
+  uploadObservationFiles,
+  observations.addAttachments
+);
+router.get(
+  '/:id/observations/:obsId/attachments/:attId',
+  observationRoles,
+  observations.validateIds,
+  observations.downloadAttachment
+);
+router.delete(
+  '/:id/observations/:obsId/attachments/:attId',
+  observationRoles,
+  observations.validateIds,
+  observations.deleteAttachment
+);
 
 module.exports = router;

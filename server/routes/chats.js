@@ -32,6 +32,8 @@ const CALL_CENTER_ROLES = ['admin', 'call_center', 'marketing'];
 
 // IMPORTANTE: rutas específicas ANTES de las paramétricas (/:id/...)
 router.get('/stats', requireRole('admin', 'marketing'), ctrl.getStats);
+// Cumplimiento de horario: primer/último mensaje escrito a mano por día y agente.
+router.get('/agent-activity', requireRole('admin', 'marketing'), ctrl.getAgentActivity);
 
 // Mensajes guardados (canned/saved replies)
 router.get('/saved-replies', requireRole(...CALL_CENTER_ROLES), ctrl.listSavedReplies);
