@@ -28,6 +28,10 @@ const TYPE_ROLES = {
   // ahora solo se notaba al entrar a mirar. Va a la campana para enterarse en el
   // momento, y apunta a la pantalla donde se reconecta.
   whatsapp_qr_disconnected: MARKETING_ROLES,
+  // Atención de citas. Van dirigidas a UNA persona (ver el campo `user`), así
+  // que aquí solo se declara qué roles pueden verlas en su campana.
+  appointment_assigned: ['admin', 'doctor', 'optica', 'ginecologia', 'podologia', 'odontologia', 'cosmetologia', 'cardiologia'],
+  appointment_nursing: ['admin', 'enfermero'],
 };
 
 function visibleTypes(req) {
@@ -52,7 +56,13 @@ async function scopeClinics(req) {
 async function baseFilter(req) {
   const types = visibleTypes(req);
   if (types.length === 0) return null;
-  return { clinic: { $in: await scopeClinics(req) }, type: { $in: types } };
+  return {
+    clinic: { $in: await scopeClinics(req) },
+    // Las dirigidas a UNA persona solo las ve esa persona; las de clínica
+    // (plantillas de WhatsApp, calidad del número) siguen filtrándose por tipo.
+    $or: [{ user: null }, { user: req.user._id }],
+    type: { $in: types },
+  };
 }
 
 // GET /notifications?unread=true&limit=30 → { items, unread }

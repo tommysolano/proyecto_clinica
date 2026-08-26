@@ -15,7 +15,11 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
 
-const allRoles = requireRole('admin', 'cajero', 'doctor');
+// 'enfermero' entra aquí desde ago-2026: el enfermero atiende igual que el
+// doctor —pone el suero, cura, aplica el tratamiento— y tiene que poder escribir
+// lo que hizo. Antes el sistema le generaba un seguimiento automático y él no
+// podía ni abrir la ficha.
+const allRoles = requireRole('admin', 'cajero', 'doctor', 'enfermero');
 
 router.get('/:patientId', allRoles, getOrCreateByPatient);
 router.put('/:patientId', allRoles, updateByPatient);

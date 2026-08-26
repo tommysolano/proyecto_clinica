@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import useDebounce from '../hooks/useDebounce';
 import { downloadFile } from '../utils/download';
@@ -27,6 +27,7 @@ import {
 } from 'react-icons/hi2';
 import BulkUploadModal from '../components/BulkUploadModal';
 import DateInput from '../components/DateInput';
+import ServiceItemPicker from '../components/ServiceItemPicker';
 
 const emptyForm = {
   cedula: '',
@@ -50,15 +51,23 @@ const emptyApt = {
   clinic: '',
   date: '',
   startTime: '',
-  room: '',
   reason: '',
-  services: [],
+  // Servicio del catálogo propio de la agenda: { _id, name } o null.
+  serviceItem: null,
+  // Atención inmediata: en vez de agendar para más tarde, se abre la consulta
+  // ya, asignada a quien está registrando al paciente.
+  ahora: false,
 };
 
 export default function Patients() {
+  const navigate = useNavigate();
   const { hasRole, clinics, activeClinic } = useAuth();
   const showClinicSelector = (clinics?.length || 0) > 1;
-  const canWrite = hasRole('admin', 'cajero', 'call_center');
+  // 'doctor' entra aquí porque expande a las especialidades: en óptica el
+  // paciente llega sin cita y quien lo registra es el propio optómetra.
+  const canWrite = hasRole('admin', 'cajero', 'call_center', 'doctor');
+  // Quien atiende puede además abrir la consulta en el momento de registrarlo.
+  const puedeAtenderYa = hasRole('doctor');
   // Cédula, correo, teléfono, WhatsApp y dirección son solo del administrador: al
   // resto el servidor ni se los envía (ver CONTACT_FIELDS en patientController).
   const showContact = hasRole('admin');
@@ -97,28 +106,9 @@ export default function Patients() {
   const emailCheck = useEmailValidation(form.email, { enabled: modalOpen });
 
   // Para crear cita junto al paciente
-  const [rooms, setRooms] = useState([]);
-  const [services, setServices] = useState([]);
   const [aptForm, setAptForm] = useState(emptyApt);
-  const [serviceSearch, setServiceSearch] = useState('');
   const [dayApts, setDayApts] = useState([]);
   const [loadingApts, setLoadingApts] = useState(false);
-
-  useEffect(() => {
-    if (canWrite) {
-      api.get('/rooms').then((r) => setRooms(r.data || [])).catch(() => {});
-      api
-        .get('/products', { params: { limit: 500 } })
-        .then((r) => {
-          const list = (r.data || []).filter(
-            (p) => p.active !== false && (p.category === 'servicio' || p.category === 'programa' || p.unlimited === true)
-          );
-          setServices(list);
-        })
-        .catch(() => {});
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   useEffect(() => {
     if (!aptForm.enabled || !aptForm.date) { setDayApts([]); return; }
@@ -160,7 +150,6 @@ export default function Patients() {
     setEditing(null);
     setForm(emptyForm);
     setAptForm(emptyApt);
-    setServiceSearch('');
     setDayApts([]);
     setModalOpen(true);
   };
@@ -189,7 +178,8 @@ export default function Patients() {
       return;
     }
     // Validaciones de cita inline si está habilitada
-    if (aptForm.enabled && !editing) {
+    // Con 'atender ahora' no hay fecha ni hora que pedir: es esta.
+    if (aptForm.enabled && !editing && !aptForm.ahora) {
       if (!aptForm.date || !aptForm.startTime) {
         toast.error('Completa los datos de la cita (fecha y hora)');
         return;
@@ -217,21 +207,27 @@ export default function Patients() {
       // Crear cita asociada si se solicitó
       if (aptForm.enabled && !editing && createdId) {
         try {
+          if (aptForm.ahora) {
+            // ATENCIÓN INMEDIATA: el servidor crea la cita a la hora actual, ya
+            // asignada a quien la pide, y la deja abierta para atender.
+            const { data } = await api.post('/appointments/walk-in', {
+              patient: createdId,
+              serviceItem: aptForm.serviceItem?._id || null,
+              reason: aptForm.reason,
+            });
+            toast.success('Paciente registrado. Abriendo la consulta…');
+            navigate(`/patients/${createdId}?tab=seguimientos&appointment=${data._id}`);
+            return;
+          }
           const aptClinic = aptForm.clinic || activeClinic?._id;
-          // El catálogo de servicios es COMPARTIDO entre sucursales, así que los
-          // servicios se conservan siempre (aunque se agende en otra sucursal). La
-          // sala (consultorio) sí es propia de cada sucursal: solo se envía si la
-          // cita es en la sucursal activa.
-          const sameClinic = !aptForm.clinic || String(aptForm.clinic) === String(activeClinic?._id);
           await api.post('/appointments', {
             patient: createdId,
             clinic: aptClinic,
             date: aptForm.date,
             startTime: aptForm.startTime,
-            room: sameClinic ? aptForm.room || undefined : undefined,
             reason: aptForm.reason,
             status: 'pendiente',
-            services: (aptForm.services || []).map((id) => ({ product: id })),
+            serviceItem: aptForm.serviceItem?._id || null,
           });
           toast.success('Cita agendada');
         } catch (err) {
@@ -607,10 +603,26 @@ export default function Patients() {
                   onChange={(e) => setAptForm({ ...aptForm, enabled: e.target.checked })}
                   className="w-4 h-4 accent-emerald-600"
                 />
-                Agendar cita inmediatamente para este paciente
+                Agendar cita para este paciente
               </label>
               {aptForm.enabled && (
                 <div className="mt-3 space-y-3 bg-emerald-50/40 rounded-xl p-3">
+                  {puedeAtenderYa && (
+                    <label className="flex items-start gap-2 cursor-pointer bg-white border border-emerald-200 rounded-lg px-3 py-2">
+                      <input
+                        type="checkbox"
+                        checked={aptForm.ahora}
+                        onChange={(e) => setAptForm({ ...aptForm, ahora: e.target.checked })}
+                        className="w-4 h-4 accent-emerald-600 mt-0.5"
+                      />
+                      <span>
+                        <span className="block text-sm font-medium text-slate-700">Atender ahora</span>
+                        <span className="block text-[11px] text-slate-500">
+                          Se crea la cita a esta hora, a tu nombre, y se abre la consulta.
+                        </span>
+                      </span>
+                    </label>
+                  )}
                   {showClinicSelector && (
                     <Field label="Sucursal destino *">
                       <select
@@ -624,7 +636,7 @@ export default function Patients() {
                       </select>
                     </Field>
                   )}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className={"grid grid-cols-1 sm:grid-cols-2 gap-3 " + (aptForm.ahora ? 'hidden' : '')}>
                     <Field label="Fecha" required>
                       <DateInput
                         value={aptForm.date}
@@ -642,21 +654,13 @@ export default function Patients() {
                         className="input"
                       />
                     </Field>
-                    {(!aptForm.clinic || String(aptForm.clinic) === String(activeClinic?._id)) && (
-                      <Field label="Consultorio">
-                        <select
-                          value={aptForm.room}
-                          onChange={(e) => setAptForm({ ...aptForm, room: e.target.value })}
-                          className="input"
-                        >
-                          <option value="">— Sin asignar —</option>
-                          {rooms.map((r) => (
-                            <option key={r._id} value={r._id}>{r.name}</option>
-                          ))}
-                        </select>
-                      </Field>
-                    )}
                   </div>
+                  <Field label="Servicio">
+                    <ServiceItemPicker
+                      value={aptForm.serviceItem}
+                      onChange={(item) => setAptForm({ ...aptForm, serviceItem: item })}
+                    />
+                  </Field>
                   <Field label="Motivo">
                     <textarea
                       value={aptForm.reason}
@@ -691,70 +695,6 @@ export default function Patients() {
                         </div>
                       )}
                     </div>
-                  )}
-                  {(!aptForm.clinic || String(aptForm.clinic) === String(activeClinic?._id)) ? (
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                      Servicios
-                    </label>
-                    <div className="relative mb-1.5">
-                      <HiOutlineMagnifyingGlass className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-                      <input
-                        type="text"
-                        placeholder="Buscar servicio..."
-                        value={serviceSearch}
-                        onChange={(e) => setServiceSearch(e.target.value)}
-                        className="input pl-7 py-1.5 text-xs"
-                      />
-                    </div>
-                    <div className="max-h-36 overflow-y-auto bg-white rounded-lg border border-emerald-100 p-2">
-                      {services.length === 0 ? (
-                        <p className="text-xs text-slate-400 text-center py-2">Sin servicios</p>
-                      ) : (() => {
-                          const filtered = services.filter((s) =>
-                            s.name.toLowerCase().includes(serviceSearch.toLowerCase())
-                          );
-                          return filtered.length === 0 ? (
-                            <p className="text-xs text-slate-400 text-center py-2">Sin resultados</p>
-                          ) : (
-                            filtered.map((s) => {
-                              const checked = aptForm.services.includes(s._id);
-                              return (
-                                <label
-                                  key={s._id}
-                                  className={`flex items-center gap-2 px-2 py-1 rounded text-sm cursor-pointer ${
-                                    checked ? 'bg-emerald-100' : 'hover:bg-emerald-50'
-                                  }`}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={checked}
-                                    onChange={() =>
-                                      setAptForm((prev) => ({
-                                        ...prev,
-                                        services: prev.services.includes(s._id)
-                                          ? prev.services.filter((x) => x !== s._id)
-                                          : [...prev.services, s._id],
-                                      }))
-                                    }
-                                    className="w-4 h-4 accent-emerald-600"
-                                  />
-                                  <span className="flex-1">{s.name}</span>
-                                  <span className="text-xs text-slate-500">
-                                    ${Number(s.salePrice).toFixed(2)}
-                                  </span>
-                                </label>
-                              );
-                            })
-                          );
-                        })()
-                      }
-                    </div>
-                  </div>
-                  ) : (
-                    <p className="text-xs text-slate-500 bg-white rounded-lg border border-emerald-100 p-2">
-                      La sala y los servicios se asignan en la sucursal de destino al gestionar la cita.
-                    </p>
                   )}
                 </div>
               )}

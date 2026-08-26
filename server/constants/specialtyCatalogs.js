@@ -371,6 +371,49 @@ const COSMETOLOGIA_AFECCIONES_CUERO = [
   { key: 'otras', label: 'Otras' },
 ];
 
+
+// ───────────────────────── Cardiología ───────────────────────
+//
+// Hoja «Historia clínica cardiológica». En el seguimiento SOLO vive lo que el
+// formulario general no captura ya: el motivo de consulta, la enfermedad
+// actual, los signos vitales (PA/FC/SatO2/peso/talla/IMC), la impresión
+// diagnóstica con CIE-10 y el plan narrado son campos del seguimiento común y
+// aquí NO se repiten.
+
+// Antecedentes relevantes: cada uno es Sí / No / sin consignar. Dejar constancia
+// de que el paciente NO es hipertenso es un dato clínico, no un hueco.
+const CARDIOLOGIA_ANTECEDENTES = [
+  { key: 'hta', label: 'HTA' },
+  { key: 'dm', label: 'DM' },
+  { key: 'dislipidemia', label: 'Dislipidemia' },
+  { key: 'cardiopatiaIsquemica', label: 'Cardiopatía isquémica' },
+  { key: 'arritmias', label: 'Arritmias' },
+  { key: 'insuficienciaCardiaca', label: 'Insuficiencia cardíaca' },
+  { key: 'acvAit', label: 'ACV / AIT' },
+  { key: 'erc', label: 'ERC' },
+  { key: 'tabaquismo', label: 'Tabaquismo' },
+];
+
+// Estudios relevantes: una línea de resultado por estudio.
+const CARDIOLOGIA_ESTUDIOS = [
+  { key: 'ecocardiograma', label: 'Ecocardiograma' },
+  { key: 'holter', label: 'Holter' },
+  { key: 'mapa', label: 'MAPA' },
+  { key: 'ergometria', label: 'Ergometría' },
+  { key: 'laboratorio', label: 'Laboratorio' },
+];
+
+// Ritmo del electrocardiograma. Lista abierta: se puede elegir uno o escribirlo.
+const CARDIOLOGIA_RITMOS = [
+  'Sinusal',
+  'Sinusal con extrasístoles',
+  'Fibrilación auricular',
+  'Flutter auricular',
+  'Taquicardia supraventricular',
+  'Ritmo de marcapasos',
+  'Bloqueo AV',
+];
+
 // Etiquetas legibles de las opciones cerradas (para la UI y los resúmenes).
 const COSMETOLOGIA_OPTION_LABELS = {
   largo: 'Largo', medio: 'Medio', corto: 'Corto',
@@ -390,6 +433,8 @@ const COSMETOLOGIA_OPTION_LABELS = {
 };
 
 const PODOLOGIA_HALLAZGOS_KEYS = PODOLOGIA_HALLAZGOS.map((c) => c.key);
+const CARDIOLOGIA_ANTECEDENTES_KEYS = CARDIOLOGIA_ANTECEDENTES.map((c) => c.key);
+const CARDIOLOGIA_ESTUDIOS_KEYS = CARDIOLOGIA_ESTUDIOS.map((c) => c.key);
 const COSMETOLOGIA_BIOTIPOS_KEYS = COSMETOLOGIA_BIOTIPOS.map((c) => c.key);
 const COSMETOLOGIA_ARRUGAS_KEYS = COSMETOLOGIA_ARRUGAS.map((c) => c.key);
 const COSMETOLOGIA_ACNE_KEYS = COSMETOLOGIA_ACNE.map((c) => c.key);
@@ -407,6 +452,11 @@ const MALOCLUSION_KEYS = MALOCLUSION.map((c) => c.key);
 const FLUOROSIS_KEYS = FLUOROSIS.map((c) => c.key);
 
 module.exports = {
+  CARDIOLOGIA_ANTECEDENTES,
+  CARDIOLOGIA_ANTECEDENTES_KEYS,
+  CARDIOLOGIA_ESTUDIOS,
+  CARDIOLOGIA_ESTUDIOS_KEYS,
+  CARDIOLOGIA_RITMOS,
   PODOLOGIA_HALLAZGOS,
   PODOLOGIA_HALLAZGOS_KEYS,
   PODOLOGIA_EVALUACION,

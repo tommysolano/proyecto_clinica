@@ -9,6 +9,8 @@
  * hace falta tocar el CSS del controlador.
  */
 const {
+  CARDIOLOGIA_ANTECEDENTES,
+  CARDIOLOGIA_ESTUDIOS,
   PODOLOGIA_HALLAZGOS,
   PODOLOGIA_EVALUACION,
   PODOLOGIA_HALLAZGOS_GENERALES,
@@ -99,6 +101,53 @@ function podologiaHtml(p) {
   ].join('');
 
   return cuerpo ? `<div class="label" style="margin-top:8px">Ficha podológica</div>${cuerpo}` : '';
+}
+
+// ───────────────────────── Cardiología ───────────────────────
+
+function cardiologiaHtml(c) {
+  if (!c) return '';
+  const ecg = c.electrocardiograma || {};
+  const est = c.estudios || {};
+  const plan = c.plan || {};
+
+  // Los antecedentes son de tres estados: se imprime lo que consta, y lo que
+  // consta que NO también — que el paciente niegue ser hipertenso es un dato
+  // clínico, no un hueco.
+  const valor = (key) => {
+    const a = (c.antecedentes || []).find((x) => x.key === key);
+    return typeof a?.value === 'boolean' ? a.value : null;
+  };
+  const positivos = CARDIOLOGIA_ANTECEDENTES.filter((a) => valor(a.key) === true).map((a) => a.label);
+  const negativos = CARDIOLOGIA_ANTECEDENTES.filter((a) => valor(a.key) === false).map((a) => a.label);
+
+  const antecedentes = inline([
+    ['Presenta', positivos.join(', ')],
+    ['Niega', negativos.join(', ')],
+    ['Otros', c.antecedentesOtros],
+    ['Alergias', c.alergias],
+  ]);
+  const electro = inline([
+    ['Ritmo', ecg.ritmo],
+    ['FC', ecg.fc == null ? '' : `${ecg.fc} lpm`],
+    ['Hallazgos', ecg.hallazgos],
+  ]);
+  const estudios = inline(CARDIOLOGIA_ESTUDIOS.map((e) => [e.label, est[e.key]]));
+  const planTexto = inline([
+    ['Estudios solicitados', plan.estudiosSolicitados],
+    ['Próximo control', plan.proximoControl],
+  ]);
+  const medicacion = String(c.medicacionActual || '').trim();
+
+  const cuerpo = [
+    box('Antecedentes relevantes', antecedentes),
+    box('Medicación actual', medicacion ? `<div style="white-space:pre-wrap">${esc(medicacion)}</div>` : ''),
+    box('Electrocardiograma', electro),
+    box('Estudios relevantes', estudios),
+    box('Plan cardiológico', planTexto),
+  ].join('');
+
+  return cuerpo ? `<div class="label" style="margin-top:8px">Ficha cardiológica</div>${cuerpo}` : '';
 }
 
 // ──────────────────────── Odontología ────────────────────────
@@ -267,7 +316,12 @@ function cosmetologiaHtml(c) {
 /** Todo lo que aporte la especialidad de este seguimiento ('' si no aporta nada). */
 function specialtyFollowUpHtml(fu) {
   if (!fu) return '';
-  return [podologiaHtml(fu.podologia), odontologiaHtml(fu.odontologia), cosmetologiaHtml(fu.cosmetologia)].join('');
+  return [
+    cardiologiaHtml(fu.cardiologia),
+    podologiaHtml(fu.podologia),
+    odontologiaHtml(fu.odontologia),
+    cosmetologiaHtml(fu.cosmetologia),
+  ].join('');
 }
 
-module.exports = { specialtyFollowUpHtml, podologiaHtml, odontologiaHtml, cosmetologiaHtml };
+module.exports = { specialtyFollowUpHtml, cardiologiaHtml, podologiaHtml, odontologiaHtml, cosmetologiaHtml };

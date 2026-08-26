@@ -45,7 +45,9 @@ router.get('/:id', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfe
 // contabilidad. Quien atiende ve el avance del tratamiento en la propia ficha.
 router.get('/:id/purchases', requireRole('admin', 'contabilidad'), getPatientPurchases);
 // Crear / editar: incluye doctor (con restricción de campos sensibles en el controller)
-router.post('/', requireRole('admin', 'cajero', 'call_center'), createPatient);
+// 'doctor' EXPANDE a las especialidades (óptica incluida): en óptica el paciente
+// llega sin cita previa y quien lo registra es el propio optómetra.
+router.post('/', requireRole('admin', 'cajero', 'call_center', 'doctor'), createPatient);
 router.put('/:id', requireRole('admin', 'cajero', 'call_center', 'doctor'), updatePatient);
 router.delete('/:id', requireRole('admin'), deletePatient);
 

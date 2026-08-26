@@ -41,6 +41,21 @@ const mspCheckSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/**
+ * Antecedente cardiológico: Sí / No / sin consignar.
+ *
+ * NO es un `mspCheckSchema` (que es booleano) a propósito: en cardiología dejar
+ * escrito que el paciente NO es hipertenso es un hallazgo, no la ausencia de un
+ * dato. Con un booleano, "no marcado" y "consta que no" serían indistinguibles.
+ */
+const cardioAntecedenteSchema = new mongoose.Schema(
+  {
+    key: { type: String, required: true },
+    value: { type: Boolean, default: null },
+  },
+  { _id: false }
+);
+
 // I. Diagnóstico. Hasta 6 por consulta; cada uno con código CIE-10 y si es
 // presuntivo (PRE) y/o definitivo (DEF).
 const diagnosticoSchema = new mongoose.Schema(
@@ -223,9 +238,70 @@ const followUpSchema = new mongoose.Schema(
       },
       // Control prenatal.
       controlPrenatal: {
+        // Texto libre de las fichas anteriores al Score MAMÁ. Se conserva para
+        // que los seguimientos ya guardados se sigan leyendo; los nuevos usan
+        // `scoreMama`.
         signosVitalesScore: { type: String, trim: true, default: '' },
+        // SCORE MAMÁ (MSP · Gerencia Institucional de Disminución Acelerada de
+        // Muerte Materna). Se guarda el DETALLE, no solo el total: la puntuación
+        // de cada parámetro es lo que justifica la decisión clínica, y si mañana
+        // cambian los cortes de la tabla los seguimientos viejos tienen que
+        // seguir mostrando lo que se puntuó ese día.
+        scoreMama: {
+          // Valores medidos (los mismos que los signos vitales del seguimiento;
+          // se copian aquí para que el score quede íntegro por sí solo).
+          fc: { type: Number, default: null },
+          sistolica: { type: Number, default: null },
+          diastolica: { type: Number, default: null },
+          fr: { type: Number, default: null },
+          temperatura: { type: Number, default: null },
+          saturacion: { type: Number, default: null },
+          // 'alerta' | 'confusa' | 'voz' | 'dolor' | 'no_responde'
+          conciencia: { type: String, trim: true, default: '' },
+          // 'negativa' | 'positiva'
+          proteinuria: { type: String, trim: true, default: '' },
+          // Puntaje parcial por parámetro, con la misma clave que arriba.
+          puntajes: {
+            fc: { type: Number, default: null },
+            sistolica: { type: Number, default: null },
+            diastolica: { type: Number, default: null },
+            fr: { type: Number, default: null },
+            temperatura: { type: Number, default: null },
+            saturacion: { type: Number, default: null },
+            conciencia: { type: Number, default: null },
+            proteinuria: { type: Number, default: null },
+          },
+          total: { type: Number, default: null },
+        },
         bebePosicion: { type: String, trim: true, default: '' },
         actividadCardiaca: { type: String, trim: true, default: '' },
+      },
+    },
+    // Datos cardiológicos (rol 'cardiologia'). Hoja «Historia clínica
+    // cardiológica». Solo lo que el seguimiento general NO captura ya: el
+    // motivo, la enfermedad actual, los signos vitales, la impresión
+    // diagnóstica (CIE-10) y el plan narrado son campos comunes y no se repiten.
+    cardiologia: {
+      antecedentes: { type: [cardioAntecedenteSchema], default: [] },
+      antecedentesOtros: { type: String, trim: true, default: '' },
+      alergias: { type: String, trim: true, default: '' },
+      medicacionActual: { type: String, trim: true, default: '' },
+      electrocardiograma: {
+        ritmo: { type: String, trim: true, default: '' },
+        fc: { type: Number, default: null },
+        hallazgos: { type: String, trim: true, default: '' },
+      },
+      // Resultado de cada estudio (ver CARDIOLOGIA_ESTUDIOS).
+      estudios: {
+        ecocardiograma: { type: String, trim: true, default: '' },
+        holter: { type: String, trim: true, default: '' },
+        mapa: { type: String, trim: true, default: '' },
+        ergometria: { type: String, trim: true, default: '' },
+        laboratorio: { type: String, trim: true, default: '' },
+      },
+      plan: {
+        estudiosSolicitados: { type: String, trim: true, default: '' },
+        proximoControl: { type: String, trim: true, default: '' },
       },
     },
     // Datos podológicos (rol 'podologia'). Hoja «Historia clínica podológica».

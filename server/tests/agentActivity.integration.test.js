@@ -104,10 +104,16 @@ test('A1) primer y último mensaje del día, y chats atendidos sin contar dos ve
   assert.equal(new Date(fila.lastAt).toISOString(), ec(DIA, '16:40').toISOString());
   assert.equal(fila.manualChats, 2, 'dos chats, no tres mensajes');
   assert.equal(fila.manualMessages, 3);
-  assert.deepEqual(fila.shift, { start: '08:00', end: '17:00' });
+  assert.equal(fila.shift.start, '08:00');
+  assert.equal(fila.shift.end, '17:00');
+  // Las FRANJAS reales del día, no solo el bloque de la primera a la última:
+  // sin esto, quien trabaja 08–12 y 14–18 aparecía cumpliendo aunque escribiera
+  // a las 13:00, en pleno almuerzo.
+  assert.deepEqual(fila.shift.intervals, [{ start: '08:00', end: '17:00' }]);
   assert.equal(fila.lateMinutes, 5);
   assert.equal(fila.earlyLeaveMinutes, 20);
   assert.equal(fila.absent, false);
+  assert.equal(fila.outOfShiftMessages, 0, 'los tres mensajes caen dentro de su turno');
 });
 
 test('A2) automatizaciones, difusiones, entrantes y chips de evento NO cuentan', async () => {
@@ -177,4 +183,59 @@ test('A5) un rango demasiado largo lo dice en vez de fingir que nadie faltó', a
   const largo = ok(await activity(clinicId, userId, { from: '2026-01-01', to: '2026-12-31' }));
   assert.equal(largo.scheduleDaysOmitted, true, 'el panel debe avisar de que no calculó ausencias');
   assert.equal(largo.rows.length, 0, 'sin actividad, y sin inventar filas de turno');
+});
+
+/**
+ * A6) LAS FRANJAS, NO EL BLOQUE.
+ *
+ * Antes el turno se miraba de la primera franja a la última y el hueco del
+ * almuerzo quedaba DENTRO: quien trabaja 08–12 y 14–18 aparecía cumpliendo
+ * aunque hubiera escrito a la una de la tarde, y quien solo hace tardes no salía
+ * tarde por escribir a las nueve de la mañana.
+ */
+test('A6) los mensajes escritos fuera de las franjas se cuentan aparte', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const partido = {
+    enabled: true,
+    timezone: 'America/Guayaquil',
+    days: Array.from({ length: 7 }, (_, day) => ({
+      day,
+      enabled: day >= 1 && day <= 5,
+      start: '08:00',
+      end: '18:00',
+      // Jornada partida: se come de 12:00 a 14:00.
+      intervals: [{ start: '08:00', end: '12:00' }, { start: '14:00', end: '18:00' }],
+    })),
+  };
+  const ana = await seedAgente(clinicId, 'Ana Partida', partido);
+  const chat = await seedChat(clinicId, '593993333333');
+  const suyo = { sentBy: ana._id, sentByName: 'Ana Partida' };
+
+  await msg(clinicId, chat, ec(DIA, '09:00'), suyo);  // dentro
+  await msg(clinicId, chat, ec(DIA, '13:00'), suyo);  // ALMUERZO
+  await msg(clinicId, chat, ec(DIA, '13:30'), suyo);  // ALMUERZO
+  await msg(clinicId, chat, ec(DIA, '15:00'), suyo);  // dentro
+
+  const data = ok(await activity(clinicId, userId, { from: DIA, to: DIA }));
+  const fila = data.rows.find((r) => r.agentName === 'Ana Partida');
+
+  assert.deepEqual(
+    fila.shift.intervals,
+    [{ start: '08:00', end: '12:00' }, { start: '14:00', end: '18:00' }],
+    'se ven las dos franjas, no un 08–18 corrido',
+  );
+  assert.equal(fila.manualMessages, 4);
+  assert.equal(fila.outOfShiftMessages, 2, 'los dos del almuerzo');
+});
+
+test('A7) sin horario configurado no se acusa a nadie de escribir fuera de turno', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const libre = await seedAgente(clinicId, 'Sin Horario');
+  const chat = await seedChat(clinicId, '593994444444');
+  await msg(clinicId, chat, ec(DIA, '03:00'), { sentBy: libre._id, sentByName: 'Sin Horario' });
+
+  const data = ok(await activity(clinicId, userId, { from: DIA, to: DIA }));
+  const fila = data.rows.find((r) => r.agentName === 'Sin Horario');
+  assert.equal(fila.shift, null);
+  assert.equal(fila.outOfShiftMessages, null, 'sin turno no hay "fuera de turno"');
 });

@@ -8,6 +8,13 @@ const mongoose = require('mongoose');
 const notificationSchema = new mongoose.Schema(
   {
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, index: true },
+    /**
+     * Destinatario. `null` = para toda la clínica según el tipo (así nacieron
+     * las alertas de plantillas de WhatsApp: las ve quien tenga el rol).
+     * Con usuario, es SUYA: "te asignaron esta cita" no le interesa a nadie más
+     * y no puede aparecer en la campana de otro.
+     */
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     type: { type: String, required: true, index: true }, // p.ej. 'template_category_changed'
     severity: { type: String, enum: ['info', 'warning', 'error'], default: 'info' },
     title: { type: String, required: true, trim: true },

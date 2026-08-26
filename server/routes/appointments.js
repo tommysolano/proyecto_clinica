@@ -3,6 +3,7 @@ const {
   getAppointments,
   getAppointment,
   createAppointment,
+  createWalkIn,
   updateAppointment,
   deleteAppointment,
   getTodayAppointments,
@@ -31,6 +32,10 @@ router.get(
   getAppointmentPdf
 );
 router.post('/', requireRole('admin', 'cajero', 'call_center'), createAppointment);
+// ATENCIÓN INMEDIATA: crea la cita ya asignada a quien la pide. 'doctor' expande
+// a las especialidades — nace para óptica, donde el paciente entra sin cita y lo
+// registra el propio optómetra.
+router.post('/walk-in', requireRole('admin', 'doctor'), createWalkIn);
 router.put('/:id', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero'), updateAppointment);
 router.post('/:id/start', requireRole('admin', 'doctor'), startConsultation);
 router.post('/:id/end', requireRole('admin', 'doctor'), endConsultation);

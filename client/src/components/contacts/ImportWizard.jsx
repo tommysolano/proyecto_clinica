@@ -270,7 +270,7 @@ function StepUpload({ busy, onFile }) {
       const url = URL.createObjectURL(new Blob([r.data]));
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'plantilla_contactos_shiluv.xlsx';
+      a.download = 'plantilla_contactos_vikingo.xlsx';
       a.click();
       URL.revokeObjectURL(url);
     } catch {

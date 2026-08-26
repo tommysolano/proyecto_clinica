@@ -22,6 +22,7 @@ const DOCTOR_LIKE_ROLES = [
   'podologia',
   'odontologia',
   'cosmetologia',
+  'cardiologia',
 ];
 
 /** Las especialidades, sin el rol base. Es lo que expande `requireRole('doctor')`. */

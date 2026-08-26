@@ -28,7 +28,7 @@
  * Para forzar que TODOS los dispositivos tiren su caché, sube VERSION.
  */
 
-const VERSION = 'vikingo-v1';
+const VERSION = 'vikingo-v3';
 const CACHE_SHELL = `${VERSION}-shell`;
 const CACHE_ASSETS = `${VERSION}-assets`;
 const INDEX = '/index.html';
@@ -66,6 +66,52 @@ self.addEventListener('message', (event) => {
   if (event.data === 'skip-waiting') self.skipWaiting();
 });
 
+/**
+ * NOTIFICACIÓN PUSH. Llega aunque la app esté cerrada: es el aviso que suena en
+ * el móvil del doctor cuando recepción le asigna una cita, o en el de los
+ * enfermeros cuando una cita pasa a enfermería.
+ */
+self.addEventListener('push', (event) => {
+  let datos = {};
+  try {
+    datos = event.data ? event.data.json() : {};
+  } catch {
+    datos = { title: 'Vikingo', body: event.data ? event.data.text() : '' };
+  }
+  const title = datos.title || 'Vikingo';
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: datos.body || '',
+      icon: '/pwa-192.png',
+      badge: '/pwa-192.png',
+      // `tag` por tipo: si llegan tres avisos del mismo tipo seguidos, el móvil
+      // los apila en vez de llenar la pantalla de bloqueo.
+      tag: datos.type || 'vikingo',
+      renotify: true,
+      data: { url: datos.url || '/' },
+    }),
+  );
+});
+
+/** Al tocar el aviso: si ya hay una ventana abierta se reutiliza, no se abre otra. */
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const destino = event.notification.data?.url || '/';
+  event.waitUntil(
+    (async () => {
+      const ventanas = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const v of ventanas) {
+        if (v.url.includes(self.location.origin)) {
+          await v.focus();
+          if ('navigate' in v) await v.navigate(destino).catch(() => {});
+          return;
+        }
+      }
+      await self.clients.openWindow(destino);
+    })(),
+  );
+});
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
@@ -88,8 +134,14 @@ self.addEventListener('fetch', (event) => {
         try {
           const fresca = await fetch(req);
           if (fresca.ok) {
-            const cache = await caches.open(CACHE_SHELL);
-            cache.put(INDEX, fresca.clone());
+            // waitUntil: guardar el armazón no puede quedarse a medias porque el
+            // navegador apague el service worker en cuanto responde. Es la copia
+            // que se usará cuando no haya cobertura.
+            const copia = fresca.clone();
+            event.waitUntil((async () => {
+              const cache = await caches.open(CACHE_SHELL);
+              await cache.put(INDEX, copia);
+            })());
           }
           return fresca;
         } catch {
@@ -108,10 +160,23 @@ self.addEventListener('fetch', (event) => {
         const guardada = await caches.match(req, { cacheName: CACHE_ASSETS });
         if (guardada) return guardada;
         const fresca = await fetch(req);
-        if (fresca.ok) {
-          const cache = await caches.open(CACHE_ASSETS);
-          await cache.put(req, fresca.clone());
-          recortarCache(cache);
+        // OJO, ESTO NO ES PARANOIA: nginx sirve la SPA con `try_files $uri
+        // /index.html`, así que un chunk que ya no existe NO devuelve 404 —
+        // devuelve 200 con el index.html entero. Si eso se guardara aquí, la
+        // caché quedaría con HTML bajo una URL .js y, como esta rama es
+        // caché-primero y esos ficheros son inmutables, ese fichero volvería
+        // roto PARA SIEMPRE: `import()` fallaría, la recarga de rescate de
+        // utils/lazyPage.js volvería a leerlo de la caché y el usuario se
+        // quedaría en la pantalla de error sin salida salvo borrar los datos del
+        // sitio. Pasa de verdad si alguien pide un chunk justo mientras se está
+        // desplegando. Solo se guarda lo que de verdad es un recurso.
+        if (fresca.ok && !esHtml(fresca)) {
+          const copia = fresca.clone();
+          event.waitUntil((async () => {
+            const cache = await caches.open(CACHE_ASSETS);
+            await cache.put(req, copia);
+            await recortarCache(cache);
+          })());
         }
         return fresca;
       })(),
@@ -119,6 +184,11 @@ self.addEventListener('fetch', (event) => {
   }
   // Todo lo demás (logo, iconos, fuentes) lo gestiona el navegador como siempre.
 });
+
+/** ¿La respuesta es una página HTML? (el index.html de respaldo de nginx). */
+function esHtml(respuesta) {
+  return /text\/html/i.test(respuesta.headers.get('Content-Type') || '');
+}
 
 /** Deja la caché de assets en MAX_ASSETS entradas, tirando las más antiguas. */
 async function recortarCache(cache) {

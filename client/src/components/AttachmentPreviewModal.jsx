@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import Modal from './Modal';
-import { HiOutlineArrowDownTray } from 'react-icons/hi2';
+import { HiOutlineArrowDownTray, HiOutlineArrowTopRightOnSquare } from 'react-icons/hi2';
 import { triggerBlobDownload } from '../utils/download';
 
 /**
@@ -25,6 +25,7 @@ export default function AttachmentPreviewModal({ url, filename, mimeType, onClos
   const [blobUrl, setBlobUrl] = useState(null);
   const [blob, setBlob] = useState(null);
   const [error, setError] = useState('');
+  const [imagenRota, setImagenRota] = useState(false);
 
   useEffect(() => {
     if (!url) return undefined;
@@ -57,7 +58,21 @@ export default function AttachmentPreviewModal({ url, filename, mimeType, onClos
   return (
     <Modal isOpen onClose={onClose} title={filename || 'Archivo adjunto'} size="2xl">
       <div className="space-y-3">
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          {/* "Abrir aparte" NO es un adorno: Safari de iPhone y iPad no dibuja
+              PDFs dentro de un <iframe> (sale un recuadro gris), y con la app
+              instalada como PWA es justo donde se va a mirar una ecografía. Con
+              este enlace el sistema lo abre en su propio visor. */}
+          {blobUrl && !esImagen && (
+            <a
+              href={blobUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-sm text-slate-600 hover:text-emerald-700 hover:border-emerald-300 cursor-pointer no-underline"
+            >
+              <HiOutlineArrowTopRightOnSquare className="w-4 h-4" /> Abrir aparte
+            </a>
+          )}
           <button
             type="button"
             disabled={!blob}
@@ -72,21 +87,36 @@ export default function AttachmentPreviewModal({ url, filename, mimeType, onClos
         {!error && !blobUrl && <p className="text-center text-slate-500 py-10">Abriendo archivo…</p>}
 
         {blobUrl && !esImagen && (
-          <iframe
-            title={filename || 'Archivo adjunto'}
-            src={blobUrl}
-            className="w-full rounded-xl border border-slate-200 bg-slate-50"
-            style={{ height: '72vh' }}
-          />
+          <>
+            <iframe
+              title={filename || 'Archivo adjunto'}
+              src={blobUrl}
+              className="w-full rounded-xl border border-slate-200 bg-slate-50"
+              style={{ height: '72vh' }}
+            />
+            <p className="text-[11px] text-slate-400 text-center">
+              ¿No se ve el documento? Pulsa «Abrir aparte».
+            </p>
+          </>
         )}
         {blobUrl && esImagen && (
           <div className="flex justify-center bg-slate-50 rounded-xl border border-slate-200 p-3">
-            <img
-              src={blobUrl}
-              alt={filename || 'Archivo adjunto'}
-              className="max-w-full object-contain"
-              style={{ maxHeight: '72vh' }}
-            />
+            {imagenRota ? (
+              // Las fotos del iPhone llegan en HEIC y ningún navegador de
+              // escritorio las dibuja: mejor decirlo que dejar el icono roto.
+              <p className="text-sm text-slate-500 py-10 text-center">
+                Este navegador no puede mostrar esta imagen ({mimeType || 'formato desconocido'}).
+                <br />Descárgala para verla.
+              </p>
+            ) : (
+              <img
+                src={blobUrl}
+                alt={filename || 'Archivo adjunto'}
+                onError={() => setImagenRota(true)}
+                className="max-w-full object-contain"
+                style={{ maxHeight: '72vh' }}
+              />
+            )}
           </div>
         )}
       </div>

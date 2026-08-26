@@ -4,8 +4,9 @@ import api from '../api/axios';
 import Modal from '../components/Modal';
 import { downloadFile } from '../utils/download';
 import ProductAutocomplete from '../components/ProductAutocomplete';
+import ServiceItemPicker from '../components/ServiceItemPicker';
 import SameSlotPanel from '../components/SameSlotPanel';
-import AttendChargeModal from '../components/AttendChargeModal';
+import AssignAttentionModal from '../components/AssignAttentionModal';
 import NurseFinishModal from '../components/NurseFinishModal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
@@ -54,7 +55,6 @@ const emptyForm = {
   patient: '',
   // El doctor YA NO se asigna al crear la cita; lo asigna recepción al marcar 'asistida'.
   doctor: '',
-  room: '',
   date: '',
   startTime: '',
   // endTime eliminado del flujo de creación
@@ -63,16 +63,52 @@ const emptyForm = {
   notes: '',
   diagnosis: '',
   treatment: '',
-  services: [],
+  // Servicio del catálogo propio de la agenda: { _id, name } o null.
+  serviceItem: null,
   clinic: '',
-  paidInAdvance: false,
-  advanceAmount: 0,
   // Citas adicionales para agendar en una sola operación (solo al crear).
   // Cada entrada: { date, startTime, reason, services: [productId] }
   extraAppointments: [],
 };
 
 const roleLabels = ROLE_LABELS;
+
+/**
+ * Quién agendó la cita, con su rol. Tres fuentes, en este orden:
+ *  1. el usuario poblado — lo normal;
+ *  2. `createdByName`, el snapshot — cubre a quien ya no está en el sistema;
+ *  3. `createdByRole === 'online'` — la reserva que hizo el propio paciente por
+ *     internet, que no tiene usuario detrás y antes no mostraba nada.
+ */
+function quienAgendo(apt) {
+  if (!apt) return '';
+  if (apt.createdByRole === 'online' && !apt.createdBy) return 'El paciente (reserva online)';
+  const nombre = apt.createdBy?.name || apt.createdByName || '';
+  if (!nombre) return '';
+  const rol = apt.createdByRole ? roleLabels[apt.createdByRole] || apt.createdByRole : '';
+  return rol ? `${nombre} (${rol})` : nombre;
+}
+
+/** Quién movió la cita la última vez, y cuándo. */
+function ultimoReagendamiento(apt) {
+  const h = apt?.rescheduleHistory;
+  if (!Array.isArray(h) || !h.length) return '';
+  const ultimo = h[h.length - 1];
+  const nombre = ultimo.rescheduledByName || ultimo.rescheduledBy?.name || 'alguien';
+  const rol = ultimo.rescheduledByRole ? roleLabels[ultimo.rescheduledByRole] || ultimo.rescheduledByRole : '';
+  const cuando = ultimo.at ? new Date(ultimo.at).toLocaleDateString('es-EC') : '';
+  return `${nombre}${rol ? ` (${rol})` : ''}${cuando ? ` · ${cuando}` : ''}`;
+}
+
+/** Servicio de la cita: el del catálogo de agenda y, si no, el del inventario. */
+function nombreServicio(apt) {
+  if (!apt) return '';
+  return (
+    apt.serviceName ||
+    apt.serviceItem?.name ||
+    (apt.services || []).map((s) => s.name || s.product?.name).filter(Boolean).join(', ')
+  );
+}
 
 // Formatea una fecha ISO usando los componentes de fecha (sin convertir a UTC).
 const formatLocalDate = (iso) => {
@@ -128,7 +164,6 @@ export default function Appointments() {
   const [doctors, setDoctors] = useState([]);
   const [patients, setPatients] = useState([]);
   const [services, setServices] = useState([]);
-  const [rooms, setRooms] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [detailModal, setDetailModal] = useState(null);
@@ -236,20 +271,10 @@ export default function Appointments() {
     }
   };
 
-  const fetchRooms = async () => {
-    try {
-      const res = await api.get('/rooms');
-      setRooms(res.data || []);
-    } catch {
-      // silent
-    }
-  };
-
   useEffect(() => {
     fetchDoctors();
     fetchPatients();
     fetchServices();
-    fetchRooms();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
@@ -325,7 +350,6 @@ export default function Appointments() {
     setForm({
       patient: apt.patient?._id || '',
       doctor: apt.doctor?._id || '',
-      room: apt.room?._id || apt.room || '',
       date: apt.date ? apt.date.split('T')[0] : '',
       startTime: apt.startTime,
       endTime: apt.endTime,
@@ -334,12 +358,12 @@ export default function Appointments() {
       notes: apt.notes || '',
       diagnosis: apt.diagnosis || '',
       treatment: apt.treatment || '',
-      services: (apt.services || [])
-        .map((s) => s.product?._id || s.product || s._id)
-        .filter(Boolean),
+      // El servicio viene poblado del servidor; si la cita es anterior al
+      // catálogo propio, se muestra el nombre que tenga guardado.
+      serviceItem: apt.serviceItem
+        ? { _id: apt.serviceItem._id || apt.serviceItem, name: apt.serviceItem.name || apt.serviceName || '' }
+        : null,
       clinic: apt.clinic || activeClinic?._id || '',
-      paidInAdvance: !!apt.paidInAdvance,
-      advanceAmount: Number(apt.advanceAmount || 0),
     });
     setPatientSearch(
       apt.patient
@@ -355,28 +379,17 @@ export default function Appointments() {
       toast.error('Selecciona un paciente');
       return;
     }
-    // El servicio es obligatorio para la cita principal.
-    if (!Array.isArray(form.services) || form.services.length === 0) {
-      toast.error('Selecciona al menos un servicio para la cita');
-      return;
-    }
-    // Y también para cada cita adicional (cuando se crean varias).
-    if (!editing) {
-      const extras = (form.extraAppointments || []).filter((it) => it.date && it.startTime);
-      const extraSinServicio = extras.findIndex(
-        (it) => !Array.isArray(it.services) || it.services.length === 0
-      );
-      if (extraSinServicio >= 0) {
-        toast.error(`La cita adicional #${extraSinServicio + 2} requiere al menos un servicio`);
-        return;
-      }
-    }
+    // El servicio dejó de ser obligatorio para poder agendar: se puede citar a
+    // alguien y decidir después a qué viene.
     setSaving(true);
     try {
       const basePayload = {
         ...form,
-        services: (form.services || []).map((id) => ({ product: id })),
+        serviceItem: form.serviceItem?._id || null,
       };
+      //  (inventario) ya no se manda: enviarlo vacío BORRARÍA los de
+      // una cita antigua que se esté editando, y con ellos su cobro.
+      delete basePayload.services;
       delete basePayload.extraAppointments;
       if (!basePayload.endTime) delete basePayload.endTime;
       if (editing) {
@@ -393,7 +406,9 @@ export default function Appointments() {
             date: it.date,
             startTime: it.startTime,
             reason: it.reason || basePayload.reason,
-            services: (it.services || []).map((id) => ({ product: id })),
+            // Cada cita adicional puede llevar su propio servicio; si no se
+            // eligió, hereda el de la principal.
+            serviceItem: it.serviceItem?._id || basePayload.serviceItem || null,
           };
           // eslint-disable-next-line no-await-in-loop
           await api.post('/appointments', extraPayload);
@@ -934,19 +949,22 @@ export default function Appointments() {
                             </span>
                           )}
                         </div>
-                        {apt.createdBy && (
+                        {/* Quién agendó. El snapshot del nombre es el respaldo:
+                            si esa persona se dio de baja, el populate viene
+                            vacío pero el nombre debe seguir apareciendo. */}
+                        {quienAgendo(apt) && (
                           <div className="text-[11px] text-slate-400 mt-0.5">
-                            Por: {apt.createdBy.name}
-                            {apt.createdByRole
-                              ? ` (${roleLabels[apt.createdByRole] || apt.createdByRole})`
-                              : ''}
+                            Agendó: {quienAgendo(apt)}
+                          </div>
+                        )}
+                        {ultimoReagendamiento(apt) && (
+                          <div className="text-[11px] text-amber-600 mt-0.5">
+                            Reagendó: {ultimoReagendamiento(apt)}
                           </div>
                         )}
                       </td>
                       <td className="px-6 py-3.5 text-sm text-slate-600 hidden md:table-cell">
-                        {Array.isArray(apt.services) && apt.services.length > 0
-                          ? apt.services.map((s) => s.name || s.product?.name).filter(Boolean).join(', ')
-                          : <span className="text-slate-400 italic">Sin servicio</span>}
+                        {nombreServicio(apt) || <span className="text-slate-400 italic">Sin servicio</span>}
                         {apt.reason && (
                           <div className="text-[11px] text-slate-500 mt-0.5 italic" title={apt.reason}>
                             Motivo: {apt.reason.length > 60 ? apt.reason.slice(0, 60) + '…' : apt.reason}
@@ -973,12 +991,14 @@ export default function Appointments() {
                         </span>
                       </td>
                       <td className="px-6 py-3.5 text-right">
-                        {/* Recepción/cajero: marcar asistencia → cobrar → derivar */}
-                        {canCharge && ['pendiente', 'confirmada'].includes(apt.status) && (
+                        {/* Recepción: a quién pasa el paciente. También en las ya
+                            asistidas, para poder añadir un doctor o mandarla a
+                            enfermería cuando la consulta ya empezó. */}
+                        {canCharge && ['pendiente', 'confirmada', 'asistida'].includes(apt.status) && (
                           <button
                             onClick={() => setAssignModal({ appointment: apt })}
                             className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
-                            title="Recibir paciente: asistencia + cobro + derivación"
+                            title="Asignar atención (doctores o enfermería)"
                           >
                             <HiOutlineUserPlus className="w-4 h-4" />
                           </button>
@@ -1258,69 +1278,20 @@ export default function Appointments() {
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                Consultorio físico
-              </label>
-              <select
-                name="room"
-                value={form.room}
-                onChange={handleChange}
-                className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50/50"
-              >
-                <option value="">— Sin asignar —</option>
-                {rooms.map((r) => (
-                  <option key={r._id} value={r._id}>{r.name}</option>
-                ))}
-              </select>
-            </div>
-            <div className="flex flex-col justify-end">
-              <label className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5 mt-6">
-                <input
-                  type="checkbox"
-                  checked={form.paidInAdvance}
-                  onChange={(e) => setForm({ ...form, paidInAdvance: e.target.checked })}
-                  className="w-4 h-4 accent-emerald-600"
-                />
-                Pagado por adelantado
-              </label>
-              {form.paidInAdvance && (
-                <NumericInput
-                  min={0}
-                  step="0.01"
-                  value={form.advanceAmount}
-                  onChange={(e) => setForm({ ...form, advanceAmount: Number(e.target.value) })}
-                  placeholder="Monto adelantado"
-                  className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
-                />
-              )}
-            </div>
-          </div>
+          {/* Servicio de la AGENDA: catálogo propio, no el inventario. El
+              consultorio y el "pagado por adelantado" se retiraron con el mismo
+              cambio (lo segundo es cobro, y eso va por contabilidad). */}
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
-              Servicios *
+              Servicio
             </label>
-            <ServiceAutocomplete
-              services={services}
-              selectedIds={form.services}
-              onAdd={(id) => setForm((f) => f.services.includes(id) ? f : { ...f, services: [...f.services, id] })}
-              onRemove={(id) => setForm((f) => ({ ...f, services: f.services.filter((s) => s !== id) }))}
+            <ServiceItemPicker
+              value={form.serviceItem}
+              onChange={(item) => setForm((f) => ({ ...f, serviceItem: item }))}
             />
-            {form.services.length === 0 && (
-              <p className="text-[11px] text-rose-600 mt-1">Debes seleccionar al menos un servicio.</p>
-            )}
-            {form.services.length > 0 && (
-              <p className="text-xs text-emerald-600 mt-1">
-                Total estimado: $
-                {form.services
-                  .reduce((sum, id) => {
-                    const s = services.find((x) => x._id === id);
-                    return sum + (s ? Number(s.salePrice) : 0);
-                  }, 0)
-                  .toFixed(2)}
-              </p>
-            )}
+            <p className="text-[11px] text-slate-400 mt-1">
+              Si no encuentras el servicio, escríbelo y se crea para todos.
+            </p>
           </div>
 
           {/* Citas adicionales: solo al crear (no al editar). */}
@@ -1373,26 +1344,14 @@ export default function Appointments() {
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white"
                   />
                   <div>
-                    <label className="text-xs font-medium text-slate-600 block mb-1">Servicios *</label>
-                    <ServiceAutocomplete
-                      services={services}
-                      selectedIds={it.services || []}
-                      onAdd={(id) => setForm((f) => ({
+                    <label className="text-xs font-medium text-slate-600 block mb-1">Servicio</label>
+                    <ServiceItemPicker
+                      value={it.serviceItem || null}
+                      onChange={(item) => setForm((f) => ({
                         ...f,
-                        extraAppointments: f.extraAppointments.map((x, i) =>
-                          i === idx ? { ...x, services: (x.services || []).includes(id) ? x.services : [...(x.services || []), id] } : x
-                        ),
-                      }))}
-                      onRemove={(id) => setForm((f) => ({
-                        ...f,
-                        extraAppointments: f.extraAppointments.map((x, i) =>
-                          i === idx ? { ...x, services: (x.services || []).filter((s) => s !== id) } : x
-                        ),
+                        extraAppointments: f.extraAppointments.map((x, i) => (i === idx ? { ...x, serviceItem: item } : x)),
                       }))}
                     />
-                    {(!it.services || it.services.length === 0) && (
-                      <p className="text-[11px] text-rose-600 mt-1">Selecciona al menos un servicio.</p>
-                    )}
                   </div>
                 </div>
               ))}
@@ -1400,7 +1359,7 @@ export default function Appointments() {
                 type="button"
                 onClick={() => setForm((f) => ({
                   ...f,
-                  extraAppointments: [...(f.extraAppointments || []), { date: '', startTime: '', reason: '', services: [] }],
+                  extraAppointments: [...(f.extraAppointments || []), { date: '', startTime: '', reason: '', serviceItem: null }],
                 }))}
                 className="w-full text-xs py-2 rounded-lg border border-dashed border-emerald-300 text-emerald-700 bg-emerald-50/40 hover:bg-emerald-100 cursor-pointer"
               >
@@ -1546,15 +1505,23 @@ export default function Appointments() {
                 </ul>
               </div>
             )}
-            {detailModal.createdBy && (
-              <div className="bg-emerald-50/50 rounded-xl p-3">
-                <p className="text-xs text-emerald-600 font-medium">Registrado por</p>
-                <p className="text-sm text-slate-800 mt-0.5">
-                  {detailModal.createdBy.name}
-                  {detailModal.createdByRole
-                    ? ` (${roleLabels[detailModal.createdByRole] || detailModal.createdByRole})`
-                    : ''}
-                </p>
+            {(quienAgendo(detailModal) || detailModal.serviceName || detailModal.serviceItem) && (
+              <div className="bg-emerald-50/50 rounded-xl p-3 space-y-1">
+                {nombreServicio(detailModal) && (
+                  <>
+                    <p className="text-xs text-emerald-600 font-medium">Servicio</p>
+                    <p className="text-sm text-slate-800">{nombreServicio(detailModal)}</p>
+                  </>
+                )}
+                {quienAgendo(detailModal) && (
+                  <>
+                    <p className="text-xs text-emerald-600 font-medium pt-1">Agendada por</p>
+                    <p className="text-sm text-slate-800">
+                      {quienAgendo(detailModal)}
+                      {detailModal.conversation ? ' · desde el chat' : ''}
+                    </p>
+                  </>
+                )}
               </div>
             )}
             {(detailModal.origin && detailModal.origin !== 'standalone') && (
@@ -1616,7 +1583,7 @@ export default function Appointments() {
                       className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-100 text-blue-700 hover:bg-blue-200 border-none cursor-pointer"
                     >Confirmar</button>
                   )}
-                  {canCharge && detailModal.status !== 'asistida' && (
+                  {canCharge && !['completada', 'cancelada', 'no_asistio'].includes(detailModal.status) && (
                     <button
                       type="button"
                       onClick={() => {
@@ -1624,7 +1591,7 @@ export default function Appointments() {
                         setDetailModal(null);
                       }}
                       className="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-100 text-emerald-700 hover:bg-emerald-200 border-none cursor-pointer"
-                    >Recibir (asistió + cobro)</button>
+                    >Asignar atención</button>
                   )}
                   {detailModal.status !== 'no_asistio' && (
                     <button
@@ -1700,9 +1667,9 @@ export default function Appointments() {
         )}
       </Modal>
 
-      {/* Flujo de recepción: asistencia → cobro → derivación (doctor o enfermería) */}
+      {/* Recepción: a quién pasa el paciente (uno o varios doctores, o enfermería) */}
       {assignModal && (
-        <AttendChargeModal
+        <AssignAttentionModal
           appointment={assignModal.appointment}
           doctors={doctors}
           onClose={() => setAssignModal(null)}

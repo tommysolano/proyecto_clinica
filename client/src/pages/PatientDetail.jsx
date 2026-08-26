@@ -4,7 +4,7 @@ import api from '../api/axios';
 import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
-import { fmtDate, fmtDateTime, nowEcHHMM } from '../utils/date';
+import { fmtDate, fmtDateTime, nowEcHHMM, todayEc } from '../utils/date';
 import TagEditor from '../components/TagEditor';
 import NumericInput from '../components/NumericInput';
 import Cie10Select from '../components/Cie10Select';
@@ -17,6 +17,9 @@ import {
   calcIMC,
 } from '../constants/mspCatalogs';
 import {
+  CARDIOLOGIA_ANTECEDENTES,
+  CARDIOLOGIA_ESTUDIOS,
+  CARDIOLOGIA_RITMOS,
   PODOLOGIA_HALLAZGOS,
   PODOLOGIA_EVALUACION,
   PODOLOGIA_HALLAZGOS_GENERALES,
@@ -72,6 +75,16 @@ import DateInput from '../components/DateInput';
 import AttachmentPreviewModal from '../components/AttachmentPreviewModal';
 import { cargarPagina } from '../utils/lazyPage';
 import { edadGestacional, fechaProbableParto } from '../constants/gestacion';
+import {
+  SCORE_MAMA_PARAMETROS,
+  SCORE_MAMA_CONCIENCIA,
+  SCORE_MAMA_PROTEINURIA,
+  calcularScoreMama,
+  mezclarScoreMama,
+  scoreMamaDesdeSignos,
+  scoreMamaTieneDatos,
+  scoreMamaTono,
+} from '../constants/scoreMama';
 
 // La curva arrastra recharts (~90 kB comprimidos). Se baja al abrirla, no al
 // entrar en la ficha de un paciente que quizá ni es de ginecología.
@@ -87,6 +100,12 @@ const TABS = [
   // que se consulta. El orden de este arreglo es el orden de las pestañas.
   { id: 'observaciones', label: 'Observaciones', icon: HiOutlineChatBubbleLeftRight },
 ];
+
+// ¿Esta línea de Receta/Derivaciones tiene algo escrito, aparte del nombre?
+// La cantidad nace en 1, así que una fila recién creada NO cuenta como escrita.
+const filaConDatos = (it) =>
+  ['dose', 'frequency', 'duration', 'instructions'].some((k) => String(it?.[k] || '').trim()) ||
+  (String(it?.quantity ?? '').trim() !== '' && Number(it.quantity) !== 1);
 
 // Adjuntos permitidos en seguimientos: PDFs e imágenes.
 const isAllowedAttachment = (file) =>
@@ -165,7 +184,12 @@ export default function PatientDetail() {
     }
   };
 
-  const timerSeconds = aptData?.consultationStartedAt && !aptData?.consultationEndedAt
+  // El cronómetro mide la duración de la CONSULTA médica (avisa a los 14 y a los
+  // 19 minutos). Enfermería no consulta: pone un suero o hace una curación, que
+  // duran lo que tienen que durar. Ponerle un reloj en rojo sería meterle prisa
+  // sin motivo.
+  const esEnfermero = hasRole('enfermero');
+  const timerSeconds = !esEnfermero && aptData?.consultationStartedAt && !aptData?.consultationEndedAt
     ? Math.max(0, Math.floor((now - new Date(aptData.consultationStartedAt).getTime()) / 1000))
     : null;
 
@@ -851,10 +875,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
   const isPodo = hasRole('podologia');
   const isOdonto = hasRole('odontologia');
   const isCosme = hasRole('cosmetologia');
+  const isCardio = hasRole('cardiologia');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
   // Una vez guardado, solo administradores pueden eliminar/editar seguimientos.
   const canDelete = isAdmin;
-  const canUpload = hasRole('admin', 'cajero', 'doctor', 'optica');
+  const canUpload = hasRole('admin', 'cajero', 'doctor', 'optica', 'enfermero');
   // «Compras y aplicaciones» dice qué compró el paciente y cuánto pagó: es
   // información económica, solo para administración y contabilidad. El servidor
   // devuelve 403 al resto (ver routes/patients.js).
@@ -884,7 +909,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
       tipo: '', // 'previo' | 'primera_vez'
       toma: { exocervical: false, endocervical: false, otros: false, otrosDetalle: '' },
     },
-    controlPrenatal: { signosVitalesScore: '', bebePosicion: '', actividadCardiaca: '' },
+    controlPrenatal: { scoreMama: null, bebePosicion: '', actividadCardiaca: '' },
   });
   const emptyPodologia = () => ({
     hallazgosGenerales: {
@@ -910,6 +935,15 @@ function SeguimientosTab({ patientId, appointmentId }) {
     ceo: { c: '', e: '', o: '' },
     observaciones: '',
   });
+  const emptyCardiologia = () => ({
+    antecedentes: [],
+    antecedentesOtros: '',
+    alergias: '',
+    medicacionActual: '',
+    electrocardiograma: { ritmo: '', fc: null, hallazgos: '' },
+    estudios: { ecocardiograma: '', holter: '', mapa: '', ergometria: '', laboratorio: '' },
+    plan: { estudiosSolicitados: '', proximoControl: '' },
+  });
   const emptyCosmetologia = () => ({
     datosEsteticos: { tratamientosEsteticos: '', autotratamientos: '', cosmeticosUsoActual: '' },
     evaluacion: {
@@ -929,7 +963,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
     procedimiento: { procedimiento: '', productos: '', apoyoDomiciliario: '' },
   });
   const emptyForm = () => ({
-    fecha: new Date().toISOString().substring(0, 10),
+    // todayEc, no toISOString: este último da la fecha en UTC y a partir de
+    // las 19:00 de Ecuador ya es el día siguiente — el seguimiento nacía fechado
+    // mañana.
+    fecha: todayEc(),
     tipoConsulta: '',        // B: primera | subsecuente
     descripcion: '',
     enfermedadActual: '',    // E
@@ -948,6 +985,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
     podologia: emptyPodologia(),
     odontologia: emptyOdontologia(),
     cosmetologia: emptyCosmetologia(),
+    cardiologia: emptyCardiologia(),
     vitalSigns: {
       // La hora de la toma la pone el sistema (hora de Ecuador); no se digita.
       hora: nowEcHHMM(),
@@ -1104,9 +1142,14 @@ function SeguimientosTab({ patientId, appointmentId }) {
    * (Enter sobre un botón enfocado es su forma de activarse con el teclado). Los
    * combobox como el de CIE-10 gestionan Enter en su propio onKeyDown, que ya se
    * ha ejecutado cuando el evento llega hasta aquí.
+   *
+   * NO se exime Shift+Enter: el envío implícito del navegador ignora los
+   * modificadores, así que Shift+Enter en un input o en una casilla enviaba el
+   * formulario igual — el mismo accidente, con la tecla de al lado. El salto de
+   * línea de los textarea ya lo garantiza la comprobación de arriba.
    */
   const evitarEnvioConEnter = (e) => {
-    if (e.key !== 'Enter' || e.shiftKey) return;
+    if (e.key !== 'Enter') return;
     const t = e.target;
     if (t.tagName === 'TEXTAREA' || t.tagName === 'BUTTON') return;
     e.preventDefault();
@@ -1119,6 +1162,24 @@ function SeguimientosTab({ patientId, appointmentId }) {
     // que no recetan nada y antes no se dejaban guardar.
     if (!String(form.descripcion || '').trim()) {
       toast.error('El motivo de consulta es obligatorio');
+      return;
+    }
+    // Una línea a medias NO se tira en silencio. Las tablas de Receta y
+    // Derivaciones nacen con una fila en blanco y las vacías se descartan al
+    // guardar; pero si alguien escribió la cantidad y las indicaciones y se
+    // saltó el nombre, descartarla haría desaparecer una derivación de la
+    // historia clínica con un tranquilizador "Seguimiento guardado".
+    const sinNombre = [
+      ['Receta', form.recetaItems],
+      ['Derivaciones', form.derivacionItems],
+    ].flatMap(([titulo, lista]) =>
+      (lista || [])
+        .map((it, i) => ({ titulo, n: i + 1, it }))
+        .filter(({ it }) => !String(it.name || '').trim() && filaConDatos(it)),
+    );
+    if (sinNombre.length) {
+      const { titulo, n } = sinNombre[0];
+      toast.error(`Falta el nombre en la línea ${n} de ${titulo} (o bórrala)`);
       return;
     }
     setSaving(true);
@@ -1148,33 +1209,54 @@ function SeguimientosTab({ patientId, appointmentId }) {
         derivacionItems: conNombre(form.derivacionItems),
         vitalSigns,
       };
+      // Score MAMÁ: se envía con los signos vitales ya incorporados, para que el
+      // score quede completo aunque la ginecóloga solo haya tocado la conciencia
+      // o la proteinuria. El servidor vuelve a puntuar de todos modos.
+      const smEfectivo = mezclarScoreMama(form.ginecologia?.controlPrenatal?.scoreMama, vitalSigns);
+      payload.ginecologia = {
+        ...form.ginecologia,
+        controlPrenatal: {
+          ...(form.ginecologia?.controlPrenatal || {}),
+          scoreMama: scoreMamaTieneDatos(smEfectivo) ? smEfectivo : null,
+        },
+      };
+
       // La ficha de cada especialidad solo se envía desde su propia consulta:
       // así un seguimiento de medicina general no arrastra secciones vacías.
       if (!isGineco) delete payload.ginecologia;
       if (!isPodo) delete payload.podologia;
       if (!isOdonto) delete payload.odontologia;
       if (!isCosme) delete payload.cosmetologia;
+      if (!isCardio) delete payload.cardiologia;
       if (appointmentId) payload.appointmentId = appointmentId;
       const res = await api.post(`/clinical-records/${patientId}/follow-ups`, payload);
-      // Subir PDFs pendientes (seleccionados ANTES de guardar) al seguimiento recién creado.
+
+      // A partir de aquí el seguimiento YA ESTÁ GUARDADO. Los adjuntos van en su
+      // propio try: si falla la subida de un PDF y el error subiera al catch de
+      // fuera, el usuario leería "Error al guardar el seguimiento" con el
+      // formulario intacto, volvería a darle a Guardar y crearía un seguimiento
+      // DUPLICADO en la historia clínica.
       let updated = res.data;
       const newFu = (updated.followUps || []).slice(-1)[0];
+      let fallaronAdjuntos = null;
       if (newFu && pendingFiles.length > 0) {
-        for (const f of pendingFiles) {
-          const fd = new FormData();
-          fd.append('file', f);
-          // eslint-disable-next-line no-await-in-loop
-          const r = await api.post(
-            `/clinical-records/${patientId}/follow-ups/${newFu._id}/attachments`,
-            fd,
-            { headers: { 'Content-Type': 'multipart/form-data' } }
-          );
-          updated = r.data;
+        try {
+          for (const f of pendingFiles) {
+            const fd = new FormData();
+            fd.append('file', f);
+            // eslint-disable-next-line no-await-in-loop
+            const r = await api.post(
+              `/clinical-records/${patientId}/follow-ups/${newFu._id}/attachments`,
+              fd,
+              { headers: { 'Content-Type': 'multipart/form-data' } }
+            );
+            updated = r.data;
+          }
+        } catch (err) {
+          fallaronAdjuntos = err.response?.data?.message || 'No se pudieron subir todos los archivos';
         }
-        setRecord(updated);
-      } else {
-        setRecord(updated);
       }
+      setRecord(updated);
       setForm(emptyForm());
       setPendingFiles([]);
       toast.success(
@@ -1182,6 +1264,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
           ? 'Seguimiento guardado. Cita finalizada.'
           : 'Seguimiento guardado'
       );
+      if (fallaronAdjuntos) {
+        // El seguimiento se guardó: los archivos se vuelven a adjuntar desde la
+        // lista de abajo, sin repetir la consulta.
+        toast.error(`${fallaronAdjuntos}. Adjúntalos desde el seguimiento ya guardado.`, { duration: 8000 });
+      }
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al guardar el seguimiento');
     } finally {
@@ -1553,6 +1640,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
         {isPodo && <PodologiaSection value={form.podologia} onChange={(p) => setForm((f) => ({ ...f, podologia: p }))} />}
         {isOdonto && <OdontologiaSection value={form.odontologia} onChange={(o) => setForm((f) => ({ ...f, odontologia: o }))} />}
         {isCosme && <CosmetologiaSection value={form.cosmetologia} onChange={(c) => setForm((f) => ({ ...f, cosmetologia: c }))} />}
+        {isCardio && <CardiologiaSection value={form.cardiologia} onChange={(c) => setForm((f) => ({ ...f, cardiologia: c }))} />}
 
         {/* Orden de la consulta: cómo va el paciente → a dónde se le deriva →
             qué se le receta → el plan narrado que cierra todo. */}
@@ -1740,6 +1828,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
               const hasPodoData = podologiaHasData(fu.podologia);
               const hasOdontoData = odontologiaHasData(fu.odontologia);
               const hasCosmeData = cosmetologiaHasData(fu.cosmetologia);
+              const hasCardioData = cardiologiaHasData(fu.cardiologia);
               const vs = fu.vitalSigns || {};
               const hasVitals = ['hora', 'temperature', 'bloodPressure', 'heartRate', 'respiratoryRate', 'oxygenSaturation', 'weight', 'height', 'abdominalPerimeter', 'capillaryHemoglobin', 'glucose']
                 .some((k) => vs[k] != null && vs[k] !== '');
@@ -1776,6 +1865,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     {hasPodoData && <PodologiaSummary p={fu.podologia} />}
                     {hasOdontoData && <OdontologiaSummary o={fu.odontologia} />}
                     {hasCosmeData && <CosmetologiaSummary c={fu.cosmetologia} />}
+                    {hasCardioData && <CardiologiaSummary value={fu.cardiologia} />}
                     {fu.enfermedadActual && (
                       <div className="mt-1 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Enfermedad actual:</b> {fu.enfermedadActual}
@@ -2098,7 +2188,8 @@ function ginecoHasData(g) {
     met.otroDetalle ||
     ['exocervical', 'endocervical', 'otros'].some((k) => toma[k]) ||
     toma.otrosDetalle ||
-    ['signosVitalesScore', 'bebePosicion', 'actividadCardiaca'].some((k) => cp[k])
+    ['signosVitalesScore', 'bebePosicion', 'actividadCardiaca'].some((k) => cp[k]) ||
+    scoreMamaTieneDatos(cp.scoreMama)
   );
 }
 
@@ -2114,6 +2205,130 @@ function GChip({ active, onClick, children }) {
     >
       {children}
     </button>
+  );
+}
+
+/**
+ * SCORE MAMÁ (MSP) — tabla del control prenatal.
+ *
+ * Una fila por parámetro: se escribe el valor y el sistema pone el puntaje al
+ * lado y el total abajo, con semáforo. Sustituye al antiguo campo de texto
+ * "Signos vitales / score", donde el puntaje se calculaba a mano y no quedaba
+ * constancia de con qué números se había calculado.
+ *
+ * Los valores que el seguimiento YA tomó arriba (FC, TA, FR, T°, SatO₂) vienen
+ * puestos: se pueden pisar, pero no hay que teclearlos dos veces.
+ */
+function ScoreMamaTabla({ value, vitalSigns, onChange }) {
+  const sm = mezclarScoreMama(value, vitalSigns);
+  const { puntajes, total } = calcularScoreMama(sm);
+  const derivado = scoreMamaDesdeSignos(vitalSigns);
+  const tono = scoreMamaTono(total);
+
+  // Al tocar cualquier celda se sube el objeto COMPLETO (con lo derivado de los
+  // signos vitales ya incorporado): así lo que se guarda es exactamente lo que
+  // se está viendo, sin depender de en qué orden se rellenó.
+  const set = (key, val) => onChange({ ...sm, [key]: val });
+
+  const TONOS = {
+    emerald: 'bg-emerald-50 border-emerald-200 text-emerald-700',
+    amber: 'bg-amber-50 border-amber-200 text-amber-700',
+    red: 'bg-red-50 border-red-300 text-red-700',
+    slate: 'bg-slate-50 border-slate-200 text-slate-500',
+  };
+  const AVISOS = {
+    emerald: 'Puntaje 0 · control normal',
+    amber: 'Puntaje 1-5 · vigilancia y valoración',
+    red: 'Puntaje 6 o más · active la clave obstétrica',
+    slate: 'Sin parámetros consignados',
+  };
+
+  const celdaPuntaje = (p) => (
+    <td className="px-2 py-1 text-center font-semibold">
+      {p == null ? <span className="text-slate-300">—</span> : (
+        <span className={p === 0 ? 'text-emerald-600' : p >= 3 ? 'text-red-600' : 'text-amber-600'}>{p}</span>
+      )}
+    </td>
+  );
+
+  return (
+    <div className="rounded-lg border border-rose-200 bg-white overflow-hidden">
+      <div className="px-3 py-2 bg-rose-50 border-b border-rose-200">
+        <span className="text-xs font-bold text-rose-700 uppercase tracking-wide">Score MAMÁ</span>
+        <span className="ml-2 text-[11px] text-rose-500">MSP · muerte materna</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-slate-100 text-slate-500">
+            <tr>
+              <th className="text-left px-2 py-1 font-semibold">Parámetro</th>
+              <th className="text-left px-2 py-1 font-semibold w-32">Valor</th>
+              <th className="px-2 py-1 font-semibold w-20">Puntaje</th>
+            </tr>
+          </thead>
+          <tbody>
+            {SCORE_MAMA_PARAMETROS.map((p) => (
+              <tr key={p.key} className="border-t border-slate-100">
+                <td className="px-2 py-1 text-slate-700">
+                  {p.label}
+                  <span className="text-slate-400 ml-1">({p.unidad})</span>
+                  {/* Se avisa cuándo el número no lo escribió ella aquí. */}
+                  {derivado[p.key] != null && sm[p.key] === derivado[p.key] && (
+                    <span className="ml-1 text-[10px] text-slate-400">· de signos vitales</span>
+                  )}
+                </td>
+                <td className="px-2 py-1">
+                  <NumericInput
+                    value={sm[p.key] ?? ''}
+                    onChange={(e) => set(p.key, e.target.value === '' ? null : Number(e.target.value))}
+                    className="input text-xs py-1"
+                  />
+                </td>
+                {celdaPuntaje(puntajes[p.key])}
+              </tr>
+            ))}
+            <tr className="border-t border-slate-100">
+              <td className="px-2 py-1 text-slate-700">Estado de conciencia</td>
+              <td className="px-2 py-1">
+                <select
+                  value={sm.conciencia || ''}
+                  onChange={(e) => set('conciencia', e.target.value)}
+                  className="input text-xs py-1"
+                >
+                  <option value="">— Sin dato —</option>
+                  {SCORE_MAMA_CONCIENCIA.map((o) => (
+                    <option key={o.key} value={o.key}>{o.label}</option>
+                  ))}
+                </select>
+              </td>
+              {celdaPuntaje(puntajes.conciencia)}
+            </tr>
+            <tr className="border-t border-slate-100">
+              <td className="px-2 py-1 text-slate-700">Proteinuria</td>
+              <td className="px-2 py-1">
+                <select
+                  value={sm.proteinuria || ''}
+                  onChange={(e) => set('proteinuria', e.target.value)}
+                  className="input text-xs py-1"
+                >
+                  <option value="">— Sin dato —</option>
+                  {SCORE_MAMA_PROTEINURIA.map((o) => (
+                    <option key={o.key} value={o.key}>{o.label}</option>
+                  ))}
+                </select>
+              </td>
+              {celdaPuntaje(puntajes.proteinuria)}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div className={`flex items-center justify-between gap-2 px-3 py-2 border-t ${TONOS[tono]}`}>
+        <span className="text-[11px] font-medium">{AVISOS[tono]}</span>
+        <span className="text-sm font-bold whitespace-nowrap">
+          Total: {total == null ? '—' : total}
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -2303,15 +2518,18 @@ function GinecologiaSection({ value, onChange, vitalSigns, fecha, followUps = []
           {/* Control prenatal */}
           <div>
             <label className="block text-xs font-semibold text-slate-600 mb-1">Control prenatal</label>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-              <Field label="Signos vitales / score">
-                <input
-                  type="text"
-                  value={cp.signosVitalesScore || ''}
-                  onChange={(e) => setCp('signosVitalesScore', e.target.value)}
-                  className="input"
-                />
-              </Field>
+            <ScoreMamaTabla
+              value={cp.scoreMama}
+              vitalSigns={vitalSigns}
+              onChange={(sm) => setCp('scoreMama', sm)}
+            />
+            {/* Fichas anteriores al Score MAMÁ: si tenían texto, se sigue viendo. */}
+            {cp.signosVitalesScore ? (
+              <p className="text-[11px] text-slate-500 mt-1">
+                Registro anterior: {cp.signosVitalesScore}
+              </p>
+            ) : null}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
               <Field label="Bebé — posición">
                 <input
                   type="text"
@@ -2383,6 +2601,11 @@ function GinecologiaSummary({ g, fecha }) {
       {metodos.length > 0 && <span>Anticoncepción: {metodos.join(', ')}</span>}
       {papTipo && <span>{papTipo}</span>}
       {tomas.length > 0 && <span>Toma PAP: {tomas.join(', ')}</span>}
+      {cp.scoreMama?.total != null && (
+        <span className={'font-semibold ' + (cp.scoreMama.total >= 6 ? 'text-red-700' : cp.scoreMama.total >= 1 ? 'text-amber-700' : 'text-emerald-700')}>
+          Score MAMÁ: {cp.scoreMama.total}
+        </span>
+      )}
       {cp.signosVitalesScore && <span>SV/score: {cp.signosVitalesScore}</span>}
       {cp.bebePosicion && <span>Posición: {cp.bebePosicion}</span>}
       {cp.actividadCardiaca && <span>Act. cardíaca: {cp.actividadCardiaca}</span>}
@@ -2403,6 +2626,7 @@ const CHIP_TONES = {
   sky: 'bg-sky-600 text-white border-sky-600',
   cyan: 'bg-cyan-600 text-white border-cyan-600',
   fuchsia: 'bg-fuchsia-600 text-white border-fuchsia-600',
+  rose: 'bg-rose-600 text-white border-rose-600',
 };
 
 // Chip de selección (toggle) de las fichas por especialidad.
@@ -2438,6 +2662,7 @@ const SUMMARY_TONES = {
   sky: { box: 'bg-sky-50 border-sky-100', label: 'text-sky-600' },
   cyan: { box: 'bg-cyan-50 border-cyan-100', label: 'text-cyan-600' },
   fuchsia: { box: 'bg-fuchsia-50 border-fuchsia-100', label: 'text-fuchsia-600' },
+  rose: { box: 'bg-rose-50 border-rose-100', label: 'text-rose-600' },
 };
 
 function SpecialtySummary({ title, tone, children }) {
@@ -2463,6 +2688,200 @@ function hasContent(v) {
   if (Array.isArray(v)) return v.some(hasContent);
   if (typeof v === 'object') return Object.values(v).some(hasContent);
   return true;
+}
+
+// ──────────────── Cardiología (rol cardiologia) ────────────────
+//
+// La hoja del cardiólogo pide varias cosas que el seguimiento YA captura: el
+// motivo de consulta, la enfermedad actual, los signos vitales (PA, FC, SatO₂,
+// peso, talla, IMC), la impresión diagnóstica con CIE-10 y el plan narrado.
+// Aquí abajo va SOLO lo que falta, para no pedir dos veces lo mismo y que los
+// dos registros acaben distintos.
+
+function cardiologiaHasData(c) {
+  // Los antecedentes son de tres estados: "consta que NO es hipertenso" es un
+  // hallazgo, y `hasContent` descarta los `false`. Por eso se miran aparte.
+  return hasContent(c) || (c?.antecedentes || []).some((a) => typeof a?.value === 'boolean');
+}
+
+/** Valor Sí/No/sin dato de un antecedente dentro del arreglo. */
+const antecedenteValor = (lista, key) => {
+  const a = (lista || []).find((x) => x.key === key);
+  return typeof a?.value === 'boolean' ? a.value : null;
+};
+
+function CardiologiaSection({ value, onChange }) {
+  const c = value || {};
+  const ecg = c.electrocardiograma || {};
+  const est = c.estudios || {};
+  const plan = c.plan || {};
+  const set = (k, v) => onChange({ ...c, [k]: v });
+  const setEcg = (k, v) => onChange({ ...c, electrocardiograma: { ...ecg, [k]: v } });
+  const setEst = (k, v) => onChange({ ...c, estudios: { ...est, [k]: v } });
+  const setPlan = (k, v) => onChange({ ...c, plan: { ...plan, [k]: v } });
+
+  // Al pulsar el mismo valor se quita: se vuelve a "sin consignar".
+  const setAntecedente = (key, val) => {
+    const otros = (c.antecedentes || []).filter((a) => a.key !== key);
+    const actual = antecedenteValor(c.antecedentes, key);
+    const nuevos = actual === val ? otros : [...otros, { key, value: val }];
+    onChange({ ...c, antecedentes: nuevos });
+  };
+
+  return (
+    <div className="md:col-span-3 space-y-3">
+      <label className="text-sm font-medium text-slate-700 block">Ficha cardiológica</label>
+
+      <Collapsible title="Antecedentes relevantes" hint="HTA, DM, dislipidemia, arritmias…" defaultOpen>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          {CARDIOLOGIA_ANTECEDENTES.map((a) => {
+            const v = antecedenteValor(c.antecedentes, a.key);
+            return (
+              <div key={a.key} className="flex items-center justify-between gap-2 bg-slate-50 rounded-lg px-2 py-1.5">
+                <span className="text-xs text-slate-700">{a.label}</span>
+                <div className="flex gap-1 shrink-0">
+                  <SChip tone="rose" active={v === true} onClick={() => setAntecedente(a.key, true)}>Sí</SChip>
+                  <SChip tone="rose" active={v === false} onClick={() => setAntecedente(a.key, false)}>No</SChip>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">
+          <Field label="Otros antecedentes">
+            <input
+              type="text"
+              value={c.antecedentesOtros || ''}
+              onChange={(e) => set('antecedentesOtros', e.target.value)}
+              className="input"
+            />
+          </Field>
+          <Field label="Alergias">
+            <input
+              type="text"
+              value={c.alergias || ''}
+              onChange={(e) => set('alergias', e.target.value)}
+              className="input"
+            />
+          </Field>
+        </div>
+      </Collapsible>
+
+      <Collapsible title="Medicación actual" hint="lo que toma hoy el paciente">
+        <textarea
+          rows={2}
+          value={c.medicacionActual || ''}
+          onChange={(e) => set('medicacionActual', e.target.value)}
+          placeholder="Fármaco, dosis y frecuencia"
+          className="input resize-none"
+        />
+      </Collapsible>
+
+      <Collapsible title="Electrocardiograma" hint="ritmo, frecuencia y conclusión" defaultOpen>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          <Field label="Ritmo" className="md:col-span-2">
+            {/* Lista abierta: se elige uno de los habituales o se escribe otro. */}
+            <input
+              type="text"
+              list="cardio-ritmos"
+              value={ecg.ritmo || ''}
+              onChange={(e) => setEcg('ritmo', e.target.value)}
+              placeholder="Sinusal…"
+              className="input"
+            />
+            <datalist id="cardio-ritmos">
+              {CARDIOLOGIA_RITMOS.map((r) => <option key={r} value={r} />)}
+            </datalist>
+          </Field>
+          <Field label="FC (lpm)">
+            <NumericInput
+              value={ecg.fc ?? ''}
+              onChange={(e) => setEcg('fc', e.target.value === '' ? null : Number(e.target.value))}
+              className="input"
+            />
+          </Field>
+          <Field label="Hallazgos / conclusión" className="md:col-span-3">
+            <textarea
+              rows={2}
+              value={ecg.hallazgos || ''}
+              onChange={(e) => setEcg('hallazgos', e.target.value)}
+              className="input resize-none"
+            />
+          </Field>
+        </div>
+      </Collapsible>
+
+      <Collapsible title="Estudios relevantes" hint="ecocardiograma, Holter, MAPA, ergometría, laboratorio">
+        <div className="space-y-2">
+          {CARDIOLOGIA_ESTUDIOS.map((e) => (
+            <Field key={e.key} label={e.label}>
+              <input
+                type="text"
+                value={est[e.key] || ''}
+                onChange={(e2) => setEst(e.key, e2.target.value)}
+                placeholder="Resultado o conclusión"
+                className="input"
+              />
+            </Field>
+          ))}
+        </div>
+      </Collapsible>
+
+      <Collapsible title="Plan cardiológico" hint="estudios solicitados y próximo control">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <Field label="Estudios solicitados">
+            <input
+              type="text"
+              value={plan.estudiosSolicitados || ''}
+              onChange={(e) => setPlan('estudiosSolicitados', e.target.value)}
+              className="input"
+            />
+          </Field>
+          <Field label="Próximo control">
+            <input
+              type="text"
+              value={plan.proximoControl || ''}
+              onChange={(e) => setPlan('proximoControl', e.target.value)}
+              placeholder="En 3 meses, con ecocardiograma…"
+              className="input"
+            />
+          </Field>
+        </div>
+      </Collapsible>
+    </div>
+  );
+}
+
+function CardiologiaSummary({ value }) {
+  const c = value || {};
+  if (!cardiologiaHasData(c)) return null;
+  const ecg = c.electrocardiograma || {};
+  const est = c.estudios || {};
+  const plan = c.plan || {};
+  const positivos = CARDIOLOGIA_ANTECEDENTES
+    .filter((a) => antecedenteValor(c.antecedentes, a.key) === true)
+    .map((a) => a.label);
+  const negativos = CARDIOLOGIA_ANTECEDENTES
+    .filter((a) => antecedenteValor(c.antecedentes, a.key) === false)
+    .map((a) => a.label);
+  const estudios = CARDIOLOGIA_ESTUDIOS.filter((e) => est[e.key]).map((e) => `${e.label}: ${est[e.key]}`);
+  return (
+    <SpecialtySummary title="Cardiología" tone="rose">
+      {positivos.length > 0 && <span><b>Antecedentes:</b> {positivos.join(', ')}</span>}
+      {negativos.length > 0 && <span className="text-slate-400">Niega: {negativos.join(', ')}</span>}
+      {c.antecedentesOtros && <span>Otros: {c.antecedentesOtros}</span>}
+      {c.alergias && <span>Alergias: {c.alergias}</span>}
+      {c.medicacionActual && <span className="w-full whitespace-pre-wrap">Medicación: {c.medicacionActual}</span>}
+      {(ecg.ritmo || ecg.fc != null || ecg.hallazgos) && (
+        <span className="w-full">
+          <b>ECG:</b> {[ecg.ritmo, ecg.fc != null ? `${ecg.fc} lpm` : '', ecg.hallazgos].filter(Boolean).join(' · ')}
+        </span>
+      )}
+      {estudios.length > 0 && <span className="w-full">{estudios.join(' · ')}</span>}
+      {plan.estudiosSolicitados && <span>Solicita: {plan.estudiosSolicitados}</span>}
+      {plan.proximoControl && <span>Próximo control: {plan.proximoControl}</span>}
+    </SpecialtySummary>
+  );
 }
 
 // ──────────────── Podología (rol podologia) ────────────────

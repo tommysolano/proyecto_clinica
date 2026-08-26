@@ -127,6 +127,8 @@ app.use('/api/lookup', require('./routes/lookup'));
 app.use('/api/clinical-records', require('./routes/clinicalRecords'));
 app.use('/api/cie10', require('./routes/cie10'));
 app.use('/api/appointments', require('./routes/appointments'));
+app.use('/api/appointment-service-items', require('./routes/appointmentServiceItems'));
+app.use('/api/push', require('./routes/push'));
 app.use('/api/products', require('./routes/products'));
 app.use('/api/inventory', require('./routes/inventory'));
 app.use('/api/sales', require('./routes/sales'));

@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import api from '../api/axios';
 import { roleSatisfies } from '../utils/roles';
+import { activarPush, desactivarPush } from '../utils/push';
 
 const AuthContext = createContext(null);
 
@@ -63,12 +64,27 @@ export function AuthProvider({ children }) {
     return res.data;
   };
 
+  /**
+   * Notificaciones push del aparato. Se engancha cuando ya hay sucursal activa
+   * porque la suscripción se guarda con ella (y porque hasta ese momento las
+   * peticiones a /push darían 403 por falta de clínica).
+   */
+  useEffect(() => {
+    if (!user || !activeClinic) return;
+    activarPush();
+  }, [user, activeClinic]);
+
   const logout = () => {
-    localStorage.removeItem('token');
-    setUser(null);
-    setActiveClinic(null);
-    setRole(null);
-    setClinics([]);
+    // Antes de soltar el token: la baja del aparato es una llamada autenticada.
+    // Si no se da de baja, quien use después ese ordenador recibiría los avisos
+    // del anterior.
+    desactivarPush().finally(() => {
+      localStorage.removeItem('token');
+      setUser(null);
+      setActiveClinic(null);
+      setRole(null);
+      setClinics([]);
+    });
   };
 
   const hasRole = (...roles) => roleSatisfies(role, roles);

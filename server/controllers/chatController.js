@@ -19,6 +19,7 @@ const {
   isWorkingAt,
   ecDayKey,
   ecMinutesOfDay,
+  clockMinutes,
   shiftForDay,
 } = require('../utils/agentSchedule');
 const { restrictionIsActive } = require('../utils/workflowChatRestriction');
@@ -2201,6 +2202,29 @@ const TZ_EC = 'America/Guayaquil';
 const dayKey = (field) => ({ $dateToString: { format: '%Y-%m-%d', date: field, timezone: TZ_EC } });
 
 /**
+ * Cuántos de los mensajes del día cayeron FUERA de las franjas del asesor.
+ *
+ * `tramos` son cubos de 15 minutos [{ minuto, messages }] y `shift.intervals`
+ * las franjas configuradas. Un tramo cuenta como dentro si su inicio cae en
+ * alguna franja; con franjas en horas y cuartos (que es como se configuran) el
+ * reparto es exacto.
+ *
+ * En un turno nocturno la franja cruza la medianoche y el minuto del día vuelve
+ * a cero: por eso se compara también sumándole un día.
+ */
+function mensajesFueraDeFranja(tramos, shift) {
+  if (!Array.isArray(tramos) || !tramos.length || !shift?.intervals?.length) return 0;
+  const franjas = shift.intervals.map((i) => {
+    const desde = clockMinutes(i.start);
+    const hasta = clockMinutes(i.end);
+    return { desde, hasta: hasta <= desde ? hasta + 1440 : hasta };
+  });
+  const dentro = (minuto) =>
+    franjas.some((f) => (minuto >= f.desde && minuto < f.hasta) || (minuto + 1440 >= f.desde && minuto + 1440 < f.hasta));
+  return tramos.reduce((total, t) => (dentro(t.minuto) ? total : total + t.messages), 0);
+}
+
+/**
  * CÓMO SE LLAMA UNA OPORTUNIDAD EN LOS INFORMES: por SU nombre y nada más.
  *
  * Ojo con `attribution.campaign`: NO es el nombre de una campaña publicitaria, es
@@ -4293,6 +4317,62 @@ exports.getAgentActivity = async (req, res) => {
       },
     ]);
 
+    /**
+     * MENSAJES POR FRANJA. El resumen de arriba solo sabe el primero y el último
+     * del día, y con eso el turno se mira como un bloque de la primera franja a
+     * la última — el hueco del almuerzo queda dentro. Quien trabaja de 08:00 a
+     * 12:00 y de 14:00 a 18:00 aparecía cumpliendo aunque escribiera a las 13:00,
+     * y quien solo hace tardes no salía tarde por escribir a las 09:00.
+     *
+     * Aquí se cuentan los mensajes por tramos de 15 minutos (las franjas se
+     * configuran en horas y cuartos), que es lo que permite decir después
+     * cuántos cayeron DENTRO de sus franjas y cuántos fuera.
+     */
+    const tramos = await Message.aggregate([
+      {
+        $match: {
+          clinic: clinicOid,
+          kind: 'message',
+          direction: 'out',
+          sentBy: { $ne: null },
+          isAutoReply: { $ne: true },
+          isBroadcast: { $ne: true },
+          ...(range ? { createdAt: range } : {}),
+        },
+      },
+      {
+        $group: {
+          _id: {
+            agent: '$sentBy',
+            day: dayKey('$createdAt'),
+            // Minuto del día en hora de Ecuador, redondeado a 15.
+            tramo: {
+              $floor: {
+                $divide: [
+                  {
+                    $add: [
+                      { $multiply: [{ $hour: { date: '$createdAt', timezone: TZ_EC } }, 60] },
+                      { $minute: { date: '$createdAt', timezone: TZ_EC } },
+                    ],
+                  },
+                  15,
+                ],
+              },
+            },
+          },
+          messages: { $sum: 1 },
+        },
+      },
+    ]);
+
+    // agente|día → [{ minuto, messages }]
+    const tramosPorDia = new Map();
+    for (const t of tramos) {
+      const k = `${String(t._id.agent)}|${t._id.day}`;
+      if (!tramosPorDia.has(k)) tramosPorDia.set(k, []);
+      tramosPorDia.get(k).push({ minuto: t._id.tramo * 15, messages: t.messages });
+    }
+
     // Los asesores del call center + cualquiera que haya escrito en el periodo
     // (un admin que entra a responder también sale en el panel).
     const activeIds = [...new Set(activity.map((a) => String(a.agent)))];
@@ -4350,9 +4430,20 @@ exports.getAgentActivity = async (req, res) => {
       const shift = shiftForDay(userById.get(row.agentId)?.callCenterSchedule, row.day);
       const out = {
         ...row,
-        shift: shift ? { start: shift.start, end: shift.end } : null,
+        shift: shift
+          ? {
+            start: shift.start,
+            end: shift.end,
+            // Las franjas REALES del día, no solo el bloque de la primera a la
+            // última: es lo que distingue 08–12 y 14–18 de un 08–18 corrido.
+            intervals: shift.intervals.map((i) => ({ start: i.start, end: i.end })),
+          }
+          : null,
         lateMinutes: null,
         earlyLeaveMinutes: null,
+        // Mensajes escritos fuera de sus franjas (almuerzo, antes de entrar,
+        // después de salir). Sin horario configurado no se puede decir nada.
+        outOfShiftMessages: shift ? mensajesFueraDeFranja(tramosPorDia.get(keyOf(row.agentId, row.day)), shift) : null,
         // Tenía turno y no escribió ni un mensaje en todo el día.
         absent: !!shift && row.manualMessages === 0,
       };
@@ -4730,15 +4821,9 @@ exports.createAppointmentFromChat = async (req, res) => {
       if (isPastLocalDateTime(a.date, a.startTime)) {
         return res.status(400).json({ message: `La cita #${i + 1}: ${PAST_TIME_MESSAGE}` });
       }
-      // El servicio es obligatorio para toda cita nueva.
-      const svcIds = (a.services || [])
-        .map((s) => (typeof s === 'string' ? s : s?.product))
-        .filter(Boolean);
-      if (svcIds.length === 0) {
-        return res
-          .status(400)
-          .json({ message: `La cita #${i + 1} requiere al menos un servicio.` });
-      }
+      // El servicio del INVENTARIO dejó de ser obligatorio: la agenda usa su
+      // propio catálogo (`serviceItem`) desde que se separó lo operativo de lo
+      // contable, y ese tampoco bloquea el agendamiento.
     }
 
     // Normaliza 'YYYY-MM-DD' a fecha local-noon para que el filtro por día coincida.
@@ -4779,6 +4864,17 @@ exports.createAppointmentFromChat = async (req, res) => {
           };
         });
 
+      // Servicio de agenda del catálogo propio (y suma un uso, que ordena el
+      // buscador por lo más pedido).
+      let servicioAgenda = null;
+      if (a.serviceItem) {
+        servicioAgenda = await require('../models/AppointmentServiceItem').findByIdAndUpdate(
+          a.serviceItem,
+          { $inc: { usageCount: 1 } },
+          { new: true }
+        ).catch(() => null);
+      }
+
       const targetClinic = a.clinic || req.clinicId;
       const appointment = await Appointment.create({
         clinic: targetClinic,
@@ -4787,9 +4883,12 @@ exports.createAppointmentFromChat = async (req, res) => {
         startTime: a.startTime,
         reason: a.reason || conv.opportunity?.notes || `Cita desde chat ${conv.phone}`,
         services: serviceItems,
+        serviceItem: servicioAgenda?._id || null,
+        serviceName: servicioAgenda?.name || '',
         status: 'pendiente',
         isFirstVisit: first,
         createdBy: req.user._id,
+        createdByName: req.user.name || '',
         createdByRole: req.role || null,
         // Deja rastro del chat de origen: el panel de Supervisión cuenta por aquí
         // las citas que produjo el call center.

@@ -250,7 +250,14 @@ async function buildKnownVariableResolver(patient, appointmentId, contact = null
       })
     : '';
   const hora = apt?.startTime || '';
-  const servicio = (apt?.services || []).map((s) => s.name).filter(Boolean).join(', ');
+  // Primero el servicio de agenda (catálogo propio); los `services` del
+  // inventario son el respaldo de las citas anteriores al cambio. Si esto queda
+  // vacío, {{servicio}} cae a los campos personalizados del contacto y el
+  // paciente puede recibir el recordatorio de OTRO servicio: peor que en blanco.
+  const servicio =
+    apt?.serviceName ||
+    apt?.serviceItem?.name ||
+    (apt?.services || []).map((s) => s.name).filter(Boolean).join(', ');
   const doctor = apt?.doctor?.name || '';
   const sede = apt?.clinic?.name || '';
 

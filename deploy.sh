@@ -188,4 +188,12 @@ if ! ( cd "$APP_DIR/server" && node scripts/clearPhantomWhatsappWindowOnce.js --
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/clearPhantomWhatsappWindowOnce.js --commit'"
 fi
 
+# Catalogo de SERVICIOS DE AGENDA. Es idempotente (busca por slug antes de crear),
+# asi que puede correr en cada despliegue sin duplicar nada: solo rellena los que
+# falten. Sin esto, la primera vez el selector de servicio saldria vacio.
+if ! ( cd "$APP_DIR/server" && node scripts/seedAppointmentServiceItems.js ); then
+  echo "ADVERTENCIA: no se pudo sembrar el catalogo de servicios de agenda. Reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/seedAppointmentServiceItems.js'"
+fi
+
 echo "==> Despliegue completado: $(date)"

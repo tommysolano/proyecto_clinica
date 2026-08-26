@@ -27,6 +27,41 @@ const rescheduleEntrySchema = new mongoose.Schema(
   { _id: false }
 );
 
+/**
+ * TURNO de atención. Una cita puede pasar por varios profesionales en orden: el
+ * paciente entra con el primero y, cuando ese guarda su seguimiento, la cita
+ * pasa al siguiente. Solo cuando el último termina queda 'completada'.
+ *
+ * Cada turno guarda su propio `followUp` (el _id del seguimiento que escribió
+ * ese profesional), así que dos doctores en la misma cita no se pisan la
+ * historia clínica.
+ *
+ * `kind` distingue al doctor del enfermero porque no se asignan igual: al doctor
+ * se le nombra, y el turno de enfermería sale a la bandeja de TODOS los
+ * enfermeros hasta que uno lo reclama (y ahí se rellena `user`).
+ */
+const appointmentTurnSchema = new mongoose.Schema(
+  {
+    kind: { type: String, enum: ['doctor', 'enfermeria'], default: 'doctor' },
+    // En un turno de enfermería nace null: lo llena quien lo reclame.
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    order: { type: Number, default: 0 },
+    status: {
+      type: String,
+      enum: ['pendiente', 'completado', 'omitido'],
+      default: 'pendiente',
+    },
+    assignedAt: { type: Date, default: Date.now },
+    assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Cuándo lo reclamó (enfermería) o empezó a atender.
+    startedAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null },
+    // Seguimiento que escribió este profesional en su turno.
+    followUp: { type: mongoose.Schema.Types.ObjectId, default: null },
+  },
+  { _id: true }
+);
+
 const appointmentSchema = new mongoose.Schema(
   {
     clinic: {
@@ -40,17 +75,30 @@ const appointmentSchema = new mongoose.Schema(
       ref: 'Patient',
       required: [true, 'El paciente es requerido'],
     },
-    // Doctor: ya NO es requerido al crear la cita. Recepción lo asigna cuando el
-    // paciente llega y se marca el estado en 'asistida'. Esto deja el flujo:
-    //   crear -> (sin doctor) -> recepción 'asistida' + asignar doctor -> doctor atiende -> 'completada'
+    /**
+     * ESPEJO del turno vigente. NO se escribe a mano: lo mantiene
+     * `utils/appointmentTurns.js` a partir de `turns[]`.
+     *
+     * Existe porque unos treinta sitios (agenda, dashboards, comisiones,
+     * reportes, socket, notificaciones) leen `appointment.doctor` como un
+     * escalar. Al pasar a varios doctores por turnos se conserva apuntando a
+     * quien tiene la pelota en este momento —o al último que atendió si ya
+     * terminaron todos— para que todo eso siga funcionando sin reescribirlo.
+     */
     doctor: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       default: null,
     },
-    // Cuándo y quién asignó al doctor
+    // Cuándo y quién asignó al doctor (espejo del turno vigente).
     doctorAssignedAt: { type: Date },
     doctorAssignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    /**
+     * Turnos de atención, en orden. Es la FUENTE ÚNICA de quién atiende la cita:
+     * `doctor`, `attendedByNurse` y el estado se derivan de aquí.
+     * Vacío en las citas anteriores al cambio (y en las que aún no se asignaron).
+     */
+    turns: { type: [appointmentTurnSchema], default: [] },
     date: { type: Date, required: [true, 'La fecha es requerida'] },
     startTime: { type: String, required: [true, 'La hora de inicio es requerida'] },
     endTime: { type: String },
@@ -75,8 +123,23 @@ const appointmentSchema = new mongoose.Schema(
     notes: { type: String, trim: true },
     diagnosis: { type: String, trim: true },
     treatment: { type: String, trim: true },
-    // Servicios solicitados / a facturar (referenciados desde inventario)
+    // Servicios solicitados / a facturar (referenciados desde inventario).
+    // LEGADO: lo llenaba el selector de servicios del formulario, que se retiró
+    // al separar la parte operativa de la contable. Se conserva porque las citas
+    // ya guardadas lo tienen y el cobro, las comisiones y los reportes lo leen.
     services: { type: [appointmentServiceSchema], default: [] },
+    /**
+     * Servicio de la cita — catálogo PROPIO de agenda, no el inventario.
+     * `serviceName` es el snapshot: la lista, los reportes y el recordatorio de
+     * WhatsApp lo leen sin populate y sin romperse si alguien renombra el ítem.
+     */
+    serviceItem: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'AppointmentServiceItem',
+      default: null,
+      index: true,
+    },
+    serviceName: { type: String, trim: true, default: '' },
     // Marca si es la primera cita del paciente (registrado por primera vez).
     // Se calcula al crear: true si el paciente no tenía citas previas.
     isFirstVisit: { type: Boolean, default: false },
@@ -86,8 +149,15 @@ const appointmentSchema = new mongoose.Schema(
     // Enfermero/a que atendió la cita (servicios tipo sueroterapia). Cualquier
     // enfermero del consultorio puede reclamarla; al hacerlo queda asignado.
     attendedByNurse: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    // Cuándo la reclamó (se pone al tomarla, no al terminarla): es lo que hace
+    // que desaparezca de la bandeja de los demás enfermeros.
+    nurseClaimedAt: { type: Date, default: null },
     nurseAttendedAt: { type: Date },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Nombre de quien agendó (snapshot). El populate de `createdBy` se queda en
+    // nada si esa persona se da de baja, y "agendada por" tiene que seguir
+    // diciendo quién fue — igual que ya hacía `rescheduledByName`.
+    createdByName: { type: String, trim: true, default: '' },
     // Rol del usuario que creó la cita (snapshot, útil para comisiones de call_center)
     createdByRole: { type: String },
     // Chat del que nació la cita (solo si se agendó desde el CRM). Es lo que
@@ -108,6 +178,12 @@ const appointmentSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// El doctor busca "mis citas" y el enfermero busca "las de enfermería libres":
+// los dos filtran por dentro de `turns`, que sin índice obliga a recorrer toda
+// la colección de citas de la clínica en cada carga de la agenda.
+appointmentSchema.index({ clinic: 1, 'turns.user': 1, date: 1 });
+appointmentSchema.index({ clinic: 1, 'turns.kind': 1, 'turns.status': 1, date: 1 });
 
 // Mapeo de estados legacy. Mantenemos compatibilidad pero ahora preservamos
 // los estados detallados (cancelada / no_asistio) que antes se descartaban.

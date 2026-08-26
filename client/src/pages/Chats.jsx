@@ -54,6 +54,7 @@ import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent, useSocket } from '../context/SocketContext';
 import SameSlotPanel from '../components/SameSlotPanel';
+import ServiceItemPicker from '../components/ServiceItemPicker';
 import TagEditor from '../components/TagEditor';
 import SuggestInput from '../components/SuggestInput';
 import WhatsappButtons from '../components/WhatsappButtons';
@@ -2556,7 +2557,6 @@ export default function Chats() {
       {appointmentModal && activeConv && (
         <AppointmentFromChatModal
           conv={activeConv}
-          services={services}
           onClose={() => setAppointmentModal(false)}
           onCreated={(c, count) => {
             applyConversationUpdate(c);
@@ -5571,6 +5571,7 @@ function ScheduleComplianceSection({ range }) {
                   <th className="text-right px-3 py-2">Último mensaje</th>
                   <th className="text-right px-3 py-2">Entró tarde</th>
                   <th className="text-right px-3 py-2">Salió antes</th>
+                  <th className="text-right px-3 py-2">Fuera de franja</th>
                   <th className="text-right px-3 py-2">Chats</th>
                   <th className="text-right px-3 py-2">Mensajes</th>
                 </tr>
@@ -5584,7 +5585,11 @@ function ScheduleComplianceSection({ range }) {
                     <td className="px-3 py-2 whitespace-nowrap">{fmtDayLabelEc(r.day)}</td>
                     <td className="px-3 py-2 font-medium">{r.agentName}</td>
                     <td className="px-3 py-2 text-slate-500 whitespace-nowrap">
-                      {r.shift ? `${r.shift.start}–${r.shift.end}` : 'Sin horario'}
+                      {/* TODAS las franjas del día, no el bloque de la primera a
+                          la última: 08–12 y 14–18 no es lo mismo que 08–18. */}
+                      {r.shift
+                        ? (r.shift.intervals || []).map((i) => `${i.start}–${i.end}`).join(', ') || `${r.shift.start}–${r.shift.end}`
+                        : 'Sin horario'}
                     </td>
                     <td className="px-3 py-2 text-right whitespace-nowrap">{fmtHourEc(r.firstAt)}</td>
                     <td className="px-3 py-2 text-right whitespace-nowrap">{fmtHourEc(r.lastAt)}</td>
@@ -5598,13 +5603,20 @@ function ScheduleComplianceSection({ range }) {
                         {r.absent ? '—' : fmtDeviation(r.earlyLeaveMinutes)}
                       </span>
                     </td>
+                    <td className="px-3 py-2 text-right whitespace-nowrap">
+                      {/* Mensajes escritos fuera de sus franjas: en el almuerzo,
+                          antes de entrar o después de salir. */}
+                      <span className={r.outOfShiftMessages > 0 ? 'text-amber-700 font-semibold' : 'text-slate-400'}>
+                        {r.outOfShiftMessages == null ? '—' : r.outOfShiftMessages}
+                      </span>
+                    </td>
                     <td className="px-3 py-2 text-right font-semibold">{r.manualChats}</td>
                     <td className="px-3 py-2 text-right">{r.manualMessages}</td>
                   </tr>
                 ))}
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={9} className="px-3 py-6 text-center text-slate-400 text-sm">
+                    <td colSpan={10} className="px-3 py-6 text-center text-slate-400 text-sm">
                       Sin actividad manual en este periodo
                     </td>
                   </tr>
@@ -5628,7 +5640,9 @@ function ScheduleComplianceSection({ range }) {
             mensajes cuenta como <strong>un</strong> chat atendido. El <strong>turno</strong> es el
             configurado en Config. Call Center; «entró tarde» y «salió antes» se miden contra él con{' '}
             {tolerance} min de tolerancia, y las filas en rojo son días de turno en los que el asesor
-            no escribió nada.
+            no escribió nada. <strong>«Fuera de franja»</strong> son los mensajes escritos fuera de
+            sus horarios —en el almuerzo, antes de entrar o después de salir—; se cuentan por tramos
+            de 15 minutos.
             {data?.scheduleDaysOmitted && (
               <>
                 {' '}El rango elegido pasa de {data.maxScheduleDays} días: aquí solo salen los días
@@ -6076,7 +6090,7 @@ function TransferChatModal({ conv, meId, canAutoAssign, onClose, onTransfer }) {
   );
 }
 
-function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
+function AppointmentFromChatModal({ conv, onClose, onCreated }) {
   const { clinics, activeClinic } = useAuth();
   const today = todayEc();
   // Soporte para agendar múltiples citas en una sola operación.
@@ -6085,7 +6099,8 @@ function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
     date: today,
     startTime: '09:00',
     reason: '',
-    services: [],
+    // Servicio del catálogo propio de la agenda: { _id, name } o null.
+    serviceItem: null,
   });
   const [items, setItems] = useState([emptyAppt()]);
   const [clinicId, setClinicId] = useState(activeClinic?._id || conv.clinic || '');
@@ -6095,33 +6110,13 @@ function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
     setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
   };
 
-  const addService = (idx, productId) => {
-    setItems((prev) =>
-      prev.map((it, i) => {
-        if (i !== idx) return it;
-        if (it.services.some((s) => String(s.product) === String(productId))) return it;
-        return { ...it, services: [...it.services, { product: productId, quantity: 1 }] };
-      })
-    );
-  };
-
-  const removeService = (idx, productId) => {
-    setItems((prev) =>
-      prev.map((it, i) =>
-        i === idx ? { ...it, services: it.services.filter((s) => String(s.product) !== String(productId)) } : it
-      )
-    );
-  };
-
   const submit = async () => {
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       if (!it.date || !it.startTime) {
         return toast.error(`La cita #${i + 1} requiere fecha y hora`);
       }
-      if (!Array.isArray(it.services) || it.services.length === 0) {
-        return toast.error(`La cita #${i + 1} requiere al menos un servicio`);
-      }
+      // El servicio ya no bloquea: se puede agendar y decidir después a qué viene.
     }
     try {
       setSaving(true);
@@ -6131,7 +6126,7 @@ function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
           startTime: it.startTime,
           reason: it.reason,
           clinic: clinicId || undefined,
-          services: it.services,
+          serviceItem: it.serviceItem?._id || null,
         })),
       });
       onCreated(r.data.conversation, (r.data.appointments || []).length || 1);
@@ -6193,16 +6188,11 @@ function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
                 <input value={it.reason} onChange={(e) => updateItem(idx, { reason: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
               </div>
               <div>
-                <label className="text-xs font-medium text-slate-600">Servicios *</label>
-                <ChatServicePicker
-                  services={services}
-                  selectedIds={it.services.map((s) => s.product)}
-                  onAdd={(pid) => addService(idx, pid)}
-                  onRemove={(pid) => removeService(idx, pid)}
+                <label className="text-xs font-medium text-slate-600">Servicio</label>
+                <ServiceItemPicker
+                  value={it.serviceItem || null}
+                  onChange={(item) => updateItem(idx, { serviceItem: item })}
                 />
-                {(!it.services || it.services.length === 0) && (
-                  <p className="text-[11px] text-rose-600 mt-1">Selecciona al menos un servicio.</p>
-                )}
               </div>
               {/* Disponibilidad de horario para esta cita */}
               <SameSlotPanel

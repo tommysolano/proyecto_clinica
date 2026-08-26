@@ -9,6 +9,8 @@ const {
   EXAMEN_SISTEMICO,
 } = require('../constants/mspCatalogs');
 const {
+  CARDIOLOGIA_ANTECEDENTES_KEYS,
+  CARDIOLOGIA_ESTUDIOS_KEYS,
   PODOLOGIA_HALLAZGOS_KEYS,
   PODOLOGIA_PULSO_OPCIONES,
   PODOLOGIA_SENSIBILIDAD_OPCIONES,
@@ -38,9 +40,15 @@ const {
   MALOCLUSION_KEYS,
   FLUOROSIS_KEYS,
 } = require('../constants/specialtyCatalogs');
+const {
+  SCORE_MAMA_NUMERICOS_KEYS,
+  SCORE_MAMA_CONCIENCIA,
+  SCORE_MAMA_PROTEINURIA,
+  calcularScoreMama,
+} = require('../constants/scoreMama');
 const { specialtyFollowUpHtml } = require('../utils/specialtyFollowUpPrint');
 const { describeCie10 } = require('../utils/cie10Catalog');
-const { emitToClinic } = require('../realtime');
+const { emitToClinic, emitToUser, emitToRole } = require('../realtime');
 const { canReq } = require('../utils/permissions');
 const path = require('path');
 const fs = require('fs');
@@ -215,6 +223,7 @@ exports.addFollowUp = async (req, res) => {
       podologia,         // datos podológicos (rol podologia)
       odontologia,       // odontograma FDI (rol odontologia)
       cosmetologia,      // fichas estética facial/capilar (rol cosmetologia)
+      cardiologia,       // ficha cardiológica (rol cardiologia)
       // --- Campos del formulario MSP HCU-form.002 ---
       tipoConsulta,      // B: 'primera' | 'subsecuente'
       enfermedadActual,  // E: enfermedad o problema actual
@@ -295,10 +304,28 @@ exports.addFollowUp = async (req, res) => {
         },
         controlPrenatal: {
           signosVitalesScore: String(cp.signosVitalesScore || '').trim(),
+          scoreMama: sanitizeScoreMama(cp.scoreMama),
           bebePosicion: String(cp.bebePosicion || '').trim(),
           actividadCardiaca: String(cp.actividadCardiaca || '').trim(),
         },
       };
+    };
+
+    /**
+     * SCORE MAMÁ. Los puntajes y el total se RECALCULAN aquí a partir de los
+     * valores medidos: lo que mande el navegador se ignora. Es un puntaje que
+     * decide si se activa la clave obstétrica — no puede depender de que el
+     * cliente esté actualizado ni de que nadie toque la petición.
+     */
+    const sanitizeScoreMama = (sm) => {
+      if (!sm || typeof sm !== 'object') return undefined;
+      const numOrNull = (v) => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
+      const medidos = {};
+      for (const key of SCORE_MAMA_NUMERICOS_KEYS) medidos[key] = numOrNull(sm[key]);
+      medidos.conciencia = SCORE_MAMA_CONCIENCIA.some((o) => o.key === sm.conciencia) ? sm.conciencia : '';
+      medidos.proteinuria = SCORE_MAMA_PROTEINURIA.some((o) => o.key === sm.proteinuria) ? sm.proteinuria : '';
+      const { puntajes, total } = calcularScoreMama(medidos);
+      return { ...medidos, puntajes, total };
     };
 
     // --- Saneadores de las fichas por especialidad ---
@@ -342,6 +369,39 @@ exports.addFollowUp = async (req, res) => {
         },
         hallazgos: checksIn(p.hallazgos, PODOLOGIA_HALLAZGOS_KEYS),
         hallazgosDetalle: txt(p.hallazgosDetalle),
+      };
+    };
+
+    /**
+     * Ficha cardiológica. Los antecedentes son de TRES estados (sí / no / sin
+     * consignar): solo se guarda el que trae un booleano de verdad, para no
+     * convertir "no preguntado" en "el paciente dice que no".
+     */
+    const sanitizeCardiologia = (c) => {
+      if (!c || typeof c !== 'object') return undefined;
+      const numOrNull = (v) => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
+      const ecg = c.electrocardiograma || {};
+      const est = c.estudios || {};
+      const plan = c.plan || {};
+      const estudios = {};
+      for (const key of CARDIOLOGIA_ESTUDIOS_KEYS) estudios[key] = txt(est[key]);
+      return {
+        antecedentes: (Array.isArray(c.antecedentes) ? c.antecedentes : [])
+          .filter((a) => a && CARDIOLOGIA_ANTECEDENTES_KEYS.includes(a.key) && typeof a.value === 'boolean')
+          .map((a) => ({ key: a.key, value: a.value })),
+        antecedentesOtros: txt(c.antecedentesOtros),
+        alergias: txt(c.alergias),
+        medicacionActual: txt(c.medicacionActual),
+        electrocardiograma: {
+          ritmo: txt(ecg.ritmo),
+          fc: numOrNull(ecg.fc),
+          hallazgos: txt(ecg.hallazgos),
+        },
+        estudios,
+        plan: {
+          estudiosSolicitados: txt(plan.estudiosSolicitados),
+          proximoControl: txt(plan.proximoControl),
+        },
       };
     };
 
@@ -668,6 +728,7 @@ exports.addFollowUp = async (req, res) => {
             podologia: sanitizePodologia(podologia),
             odontologia: sanitizeOdontologia(odontologia),
             cosmetologia: sanitizeCosmetologia(cosmetologia),
+            cardiologia: sanitizeCardiologia(cardiologia),
             valor: valor || 0,
             metodoPago: metodoPago || 'efectivo',
             createdBy: req.user._id,
@@ -684,27 +745,62 @@ exports.addFollowUp = async (req, res) => {
         .json({ message: 'Primero debe crear la ficha clínica del paciente' });
     }
 
-    // Si esta consulta nació de una cita 'asistida' del doctor actual, se completa.
+    /**
+     * AVANCE DE TURNO. Una cita puede pasar por varios profesionales: guardar el
+     * seguimiento ya NO la cierra sin más, cierra EL TURNO de quien lo escribió.
+     * Si detrás hay otro, la cita pasa a sus manos y sigue abierta; solo el
+     * último la da por completada.
+     */
+    let siguienteTurno = null;
     if (req.body.appointmentId) {
       try {
         const Appointment = require('../models/Appointment');
+        const { completarTurno } = require('../utils/appointmentTurns');
         const apt = await Appointment.findOne({
           _id: req.body.appointmentId,
           clinic: req.clinicId,
         });
         if (apt && ['asistida', 'pendiente', 'confirmada'].includes(apt.status)) {
-          apt.status = 'completada';
-          apt.consultationEndedAt = new Date();
+          const nuevoFu = (record.followUps || []).slice(-1)[0];
+          const { siguiente, terminado } = completarTurno(apt, {
+            userId: req.user._id,
+            followUpId: nuevoFu?._id,
+          });
+          // Sin turnos (cita anterior al cambio, o asignada a la antigua) se
+          // comporta como siempre: un seguimiento la cierra.
+          if (terminado || !apt.turns?.length) {
+            apt.status = 'completada';
+            apt.consultationEndedAt = new Date();
+          }
           await apt.save();
           emitToClinic(req.clinicId, 'appointment:updated', apt);
+
+          if (siguiente?.user) {
+            siguienteTurno = siguiente;
+            // Al siguiente le llega la cita ahora: aviso en su pantalla y en su móvil.
+            emitToUser(siguiente.user, 'appointment:assigned', apt);
+            const { notificarUsuarios } = require('../utils/pushNotifications');
+            await notificarUsuarios([siguiente.user], {
+              clinicId: req.clinicId,
+              type: 'appointment_assigned',
+              title: 'Te toca atender',
+              body: 'El profesional anterior terminó su parte de la consulta.',
+              url: `/patients/${patientId}?tab=seguimientos&appointment=${apt._id}`,
+            }).catch(() => {});
+          } else if (siguiente) {
+            // Turno de enfermería sin dueño: sale a la bandeja de todos.
+            emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
+          }
         }
       } catch (e) {
-        console.warn('No se pudo cerrar la cita asociada:', e.message);
+        console.warn('No se pudo avanzar el turno de la cita:', e.message);
       }
     }
 
     emitToClinic(req.clinicId, 'clinicalRecord:updated', { patient: patientId });
-    res.status(201).json(record);
+    // `nextTurn` deja que la pantalla diga "pasa al Dr. X" en vez de dar la cita
+    // por terminada cuando no lo está.
+    res.status(201).json(siguienteTurno ? { ...record.toObject(), nextTurn: siguienteTurno } : record);
   } catch (error) {
     res.status(500).json({ message: 'Error al agregar seguimiento', error: error.message });
   }
@@ -893,17 +989,27 @@ exports.printFollowUp = async (req, res) => {
       </table>` : '';
     // Los ítems se guardan juntos en recetaItems; se separan por `isService`
     // (servicios/programas = Derivaciones, el resto = Receta de insumos).
+    //
+    // `celda` ESCAPA el texto. Desde que la receta se escribe a mano (antes los
+    // nombres venían del catálogo de productos), el médico puede teclear
+    // "Ibuprofeno <400 mg>" o "Suero A&D": sin escapar, el navegador se comería
+    // ese trozo al imprimir y el medicamento saldría cambiado en la hoja que se
+    // lleva el paciente.
+    const escHtml = (s) =>
+      String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const celda = (v, extra = '') =>
+      `<td style="padding:6px 8px;border:1px solid #e2e8f0${extra}">${escHtml(v) || '—'}</td>`;
     const recetaRows = (fu.recetaItems || [])
       .filter((it) => !it.isService)
       .map(
         (it) => `
         <tr>
-          <td style="padding:6px 8px;border:1px solid #e2e8f0">${it.name || '—'}</td>
-          <td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:center">${it.quantity || 1}</td>
-          <td style="padding:6px 8px;border:1px solid #e2e8f0">${it.dose || '—'}</td>
-          <td style="padding:6px 8px;border:1px solid #e2e8f0">${it.frequency || '—'}</td>
-          <td style="padding:6px 8px;border:1px solid #e2e8f0">${it.duration || '—'}</td>
-          <td style="padding:6px 8px;border:1px solid #e2e8f0">${it.instructions || '—'}</td>
+          ${celda(it.name)}
+          ${celda(it.quantity || 1, ';text-align:center')}
+          ${celda(it.dose)}
+          ${celda(it.frequency)}
+          ${celda(it.duration)}
+          ${celda(it.instructions)}
         </tr>`
       )
       .join('');
@@ -912,9 +1018,9 @@ exports.printFollowUp = async (req, res) => {
       .map(
         (it) => `
         <tr>
-          <td style="padding:6px 8px;border:1px solid #e2e8f0">${it.name || '—'}</td>
-          <td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:center">${it.quantity || 1}</td>
-          <td style="padding:6px 8px;border:1px solid #e2e8f0">${it.instructions || '—'}</td>
+          ${celda(it.name)}
+          ${celda(it.quantity || 1, ';text-align:center')}
+          ${celda(it.instructions)}
         </tr>`
       )
       .join('');

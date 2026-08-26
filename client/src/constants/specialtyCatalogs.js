@@ -1,8 +1,53 @@
 /**
  * Espejo de server/constants/specialtyCatalogs.js (fichas por especialidad:
- * podología, odontología y cosmetología). Las `key` DEBEN coincidir con las del
- * servidor: son las que se guardan en la base y las que valida el backend.
+ * podología, odontología, cosmetología y cardiología). Las `key` DEBEN coincidir
+ * con las del servidor: son las que se guardan en la base y las que valida el backend.
  */
+
+// ───────────────────────── Cardiología ───────────────────────
+//
+// Hoja «Historia clínica cardiológica». En el seguimiento SOLO vive lo que el
+// formulario general no captura ya: el motivo de consulta, la enfermedad
+// actual, los signos vitales (PA/FC/SatO2/peso/talla/IMC), la impresión
+// diagnóstica con CIE-10 y el plan narrado son campos del seguimiento común y
+// aquí NO se repiten.
+
+// Antecedentes relevantes: cada uno es Sí / No / sin consignar. Dejar constancia
+// de que el paciente NO es hipertenso es un dato clínico, no un hueco.
+export const CARDIOLOGIA_ANTECEDENTES = [
+  { key: 'hta', label: 'HTA' },
+  { key: 'dm', label: 'DM' },
+  { key: 'dislipidemia', label: 'Dislipidemia' },
+  { key: 'cardiopatiaIsquemica', label: 'Cardiopatía isquémica' },
+  { key: 'arritmias', label: 'Arritmias' },
+  { key: 'insuficienciaCardiaca', label: 'Insuficiencia cardíaca' },
+  { key: 'acvAit', label: 'ACV / AIT' },
+  { key: 'erc', label: 'ERC' },
+  { key: 'tabaquismo', label: 'Tabaquismo' },
+];
+
+// Estudios relevantes: una línea de resultado por estudio.
+export const CARDIOLOGIA_ESTUDIOS = [
+  { key: 'ecocardiograma', label: 'Ecocardiograma' },
+  { key: 'holter', label: 'Holter' },
+  { key: 'mapa', label: 'MAPA' },
+  { key: 'ergometria', label: 'Ergometría' },
+  { key: 'laboratorio', label: 'Laboratorio' },
+];
+
+// Ritmo del electrocardiograma. Lista abierta: se puede elegir uno o escribirlo.
+export const CARDIOLOGIA_RITMOS = [
+  'Sinusal',
+  'Sinusal con extrasístoles',
+  'Fibrilación auricular',
+  'Flutter auricular',
+  'Taquicardia supraventricular',
+  'Ritmo de marcapasos',
+  'Bloqueo AV',
+];
+
+export const CARDIOLOGIA_ANTECEDENTES_KEYS = CARDIOLOGIA_ANTECEDENTES.map((c) => c.key);
+export const CARDIOLOGIA_ESTUDIOS_KEYS = CARDIOLOGIA_ESTUDIOS.map((c) => c.key);
 
 // ───────────────────────── Podología ─────────────────────────
 

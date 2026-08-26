@@ -149,7 +149,9 @@ const MENU_GROUPS = [
     ],
   },
   {
-    key: 'marketing', label: 'Fénix', icon: HiOutlineFire, items: [
+    // `alias`: el módulo se llama Fénix, pero el equipo lleva años buscándolo
+    // por "marketing" o "crm" — el buscador del menú sigue encontrándolo así.
+    key: 'marketing', label: 'Fénix', alias: 'marketing crm', icon: HiOutlineFire, items: [
       { path: '/marketing', label: 'Marketing', roles: ['admin', 'marketing'] },
       { path: '/chats', label: 'Chats / WhatsApp', roles: ['admin', 'call_center', 'marketing'] },
       { path: '/contacts', label: 'Contactos', roles: ['admin', 'call_center', 'marketing'] },
@@ -260,13 +262,14 @@ export default function Layout({ children }) {
   const searchItems = [
     { path: '/', label: 'Dashboard', group: 'Inicio', roles: ALL_ROLES },
     ...MENU_GROUPS.flatMap((g) =>
-      g.items.map((it) => ({ path: it.path, label: it.label, group: g.label, roles: it.roles, superOnly: it.superOnly }))
+      g.items.map((it) => ({ path: it.path, label: it.label, group: g.label, alias: g.alias || '', roles: it.roles, superOnly: it.superOnly }))
     ),
     { path: '/settings', label: 'Configuración de Cuenta', group: 'Mi Cuenta', roles: ALL_ROLES },
   ].filter(canSee);
   const nq = norm(query);
   const searchResults = nq
-    ? searchItems.filter((it) => norm(it.label).includes(nq) || norm(it.group).includes(nq))
+    ? searchItems.filter((it) =>
+        norm(it.label).includes(nq) || norm(it.group).includes(nq) || norm(it.alias).includes(nq))
     : [];
 
   // Título de la página actual (derivado de la ruta) para mostrarlo en el header.
