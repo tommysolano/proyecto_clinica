@@ -5,6 +5,7 @@ import Modal from '../components/Modal';
 import { downloadFile } from '../utils/download';
 import ProductAutocomplete from '../components/ProductAutocomplete';
 import ServiceItemPicker from '../components/ServiceItemPicker';
+import { inicioDeMiTurno } from '../utils/appointmentTurns';
 import SameSlotPanel from '../components/SameSlotPanel';
 import AssignAttentionModal from '../components/AssignAttentionModal';
 import toast from 'react-hot-toast';
@@ -143,6 +144,7 @@ const hhmmToMin = (s) => {
   if (!m) return null;
   return Number(m[1]) * 60 + Number(m[2]);
 };
+
 
 export default function Appointments() {
   const navigate = useNavigate();
@@ -291,26 +293,42 @@ export default function Appointments() {
     return () => clearInterval(id);
   }, []);
 
-  // Detectar fin de tiempo programado y disparar el modal
+  /**
+   * Aviso de «tiempo de consulta finalizado».
+   *
+   * Tenía dos fallos que lo hacían saltar cuando no tocaba:
+   *
+   *  1. SIN HORA DE FIN saltaba SIEMPRE, al instante. `hhmmToMin('')` devuelve
+   *     null y `null - startMin` da un número NEGATIVO, así que la condición se
+   *     cumplía en el primer tic. Y la hora de fin se quitó del formulario de
+   *     agendar, o sea que le pasaba a TODAS las citas nuevas. Sin duración
+   *     programada no hay nada que avisar.
+   *  2. Le salía al SEGUNDO doctor con el reloj del primero, porque
+   *     `consultationStartedAt` es de la cita entera. Ahora se mide desde que
+   *     empezó SU turno, y solo se avisa a quien tiene el turno vigente —
+   *     nunca a enfermería, que no lleva cronómetro.
+   */
   useEffect(() => {
-    if (!isDoctor) return;
+    if (!isDoctor || isNurse) return;
     appointments.forEach((apt) => {
-      if (
-        apt.consultationStartedAt &&
-        !apt.consultationEndedAt &&
-        apt.status !== 'completada'
-      ) {
-        const startMs = new Date(apt.consultationStartedAt).getTime();
-        const startMin = hhmmToMin(apt.startTime);
-        const endMin = hhmmToMin(apt.endTime);
-        const durationMs = (endMin - startMin) * 60 * 1000;
-        if (now - startMs >= durationMs && !notifiedRef.current.has(apt._id)) {
-          notifiedRef.current.add(apt._id);
-          setTimeUpModal(apt);
-        }
+      if (apt.consultationEndedAt || apt.status === 'completada') return;
+      // Solo a quien le toca ahora.
+      if (String(apt.currentTurnUser?._id || apt.currentTurnUser || '') !== String(user?.id)) return;
+
+      const startMin = hhmmToMin(apt.startTime);
+      const endMin = hhmmToMin(apt.endTime);
+      if (startMin == null || endMin == null || endMin <= startMin) return;
+
+      const inicio = inicioDeMiTurno(apt);
+      if (!inicio) return;
+
+      const durationMs = (endMin - startMin) * 60 * 1000;
+      if (now - inicio >= durationMs && !notifiedRef.current.has(apt._id)) {
+        notifiedRef.current.add(apt._id);
+        setTimeUpModal(apt);
       }
     });
-  }, [now, appointments, isDoctor]);
+  }, [now, appointments, isDoctor, isNurse, user?.id]);
 
   const canEdit = (apt) => {
     // Una cita completada solo puede ser editada por administradores
@@ -521,6 +539,24 @@ export default function Appointments() {
   };
 
   /**
+   * Enfermería termina su parte.
+   *
+   * No redacta el seguimiento —eso es de quien atiende la consulta—, así que su
+   * turno se cierra desde aquí: queda constancia de la aplicación y, si detrás
+   * hay un doctor, la cita pasa a sus manos en ese momento.
+   */
+  const nurseFinish = async (apt) => {
+    if (!window.confirm(`¿Terminaste con ${apt.patient?.firstName || 'el paciente'}?`)) return;
+    try {
+      await api.post(`/appointments/${apt._id}/nurse-complete`, {});
+      toast.success('Atención registrada');
+      fetchAppointments();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo finalizar');
+    }
+  };
+
+  /**
    * Abre la ficha del paciente para atender esta cita (doctores y enfermería).
    *
    * El cronómetro solo se arranca para el doctor: enfermería no lo usa y esa
@@ -528,11 +564,13 @@ export default function Appointments() {
    * como enfermero solo dejaría un 403 en el camino.
    */
   const abrirAtencion = (apt) => {
-    if (!isNurse && !apt.consultationStartedAt) {
+    // Se arranca si MI turno no ha empezado, no si la cita no ha empezado: con
+    // varios profesionales, el segundo tiene su propio reloj desde cero.
+    if (!isNurse && !inicioDeMiTurno(apt)) {
       api.post(`/appointments/${apt._id}/start`).catch(() => {});
     }
-    // Enfermería entra directa a Seguimientos, que es lo que viene a escribir;
-    // el doctor abre por la ficha, donde repasa antecedentes antes de la consulta.
+    // Enfermería entra a Seguimientos a leer la receta y anotar los sueros; el
+    // doctor abre por la ficha, donde repasa antecedentes antes de la consulta.
     const destino = isNurse ? 'seguimientos' : 'ficha';
     navigate(`/patients/${apt.patient?._id}?appointment=${apt._id}&tab=${destino}`);
   };
@@ -629,10 +667,11 @@ export default function Appointments() {
     });
   };
 
-  // Cronómetro de cita seleccionada
+  // Cronómetro de la cita: cuenta desde que empezó EL TURNO en curso, no desde
+  // que el primer profesional abrió la consulta.
   const elapsedSeconds = (apt) => {
-    if (!apt?.consultationStartedAt) return 0;
-    const start = new Date(apt.consultationStartedAt).getTime();
+    const start = inicioDeMiTurno(apt);
+    if (!start) return 0;
     return Math.max(0, Math.floor((now - start) / 1000));
   };
 
@@ -644,10 +683,12 @@ export default function Appointments() {
 
   return (
     <div>
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Citas y Calendario</h1>
-          <p className="text-sm text-slate-500 mt-1">Agenda y seguimiento de consultas</p>
+      {/* En el móvil el título ya lo lleva la barra superior de la app: repetirlo
+          a tamaño grande con su subtítulo gastaba dos filas antes de la agenda. */}
+      <div className="flex flex-row items-center justify-between gap-2 sm:gap-4 mb-3 sm:mb-6">
+        <div className="min-w-0">
+          <h1 className="text-lg sm:text-2xl font-bold text-slate-800 tracking-tight truncate">Citas y Calendario</h1>
+          <p className="hidden sm:block text-sm text-slate-500 mt-1">Agenda y seguimiento de consultas</p>
         </div>
         <div className="flex gap-2">
           {/* Enfermería, como los doctores, solo ve el día que tiene delante:
@@ -1052,14 +1093,24 @@ export default function Appointments() {
                             Atender
                           </button>
                         )}
-                        {/* Enfermero: volver a la que ya tomó (se cierra al guardar el seguimiento) */}
+                        {/* Enfermero: ver la receta del paciente que ya tomó */}
                         {isNurse && apt.status === 'asistida' && String(apt.attendedByNurse?._id || apt.attendedByNurse) === String(user?.id) && (
                           <button
                             onClick={() => abrirAtencion(apt)}
-                            className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-700 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
-                            title="Seguir atendiendo: abre la ficha"
+                            className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-700 bg-transparent border border-sky-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
+                            title="Ver la receta y anotar los sueros"
                           >
-                            Continuar
+                            Receta
+                          </button>
+                        )}
+                        {/* Enfermero: cerrar su turno (no escribe seguimiento) */}
+                        {isNurse && apt.status === 'asistida' && String(apt.attendedByNurse?._id || apt.attendedByNurse) === String(user?.id) && (
+                          <button
+                            onClick={() => nurseFinish(apt)}
+                            className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-700 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
+                            title="Terminar mi parte"
+                          >
+                            Terminar
                           </button>
                         )}
                         {showDoctorTimer && !inProgress && apt.status !== 'completada' && (

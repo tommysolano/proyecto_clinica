@@ -34,6 +34,21 @@ function isPastLocalDate(value) {
   return day.getTime() < startOfToday().getTime();
 }
 
+/**
+ * ¿La fecha (día calendario, hora local) es POSTERIOR a hoy?
+ *
+ * Lo usa la asignación de atención: dejar preparado el doctor de una cita de
+ * mañana no puede darla por asistida hoy. Una fecha inválida devuelve false,
+ * igual que `isPastLocalDate`: el formato lo comprueba el caller.
+ */
+function isFutureLocalDate(value) {
+  const d = parseLocalDate(value);
+  if (!d || Number.isNaN(d.getTime())) return false;
+  const day = new Date(d);
+  day.setHours(0, 0, 0, 0);
+  return day.getTime() > startOfToday().getTime();
+}
+
 // ¿Dos fechas caen en el mismo día calendario (hora local)?
 function isSameLocalDay(a, b) {
   const da = parseLocalDate(a);
@@ -90,6 +105,7 @@ module.exports = {
   startOfToday,
   parseLocalDate,
   isPastLocalDate,
+  isFutureLocalDate,
   isPastLocalDateTime,
   isSameLocalDay,
   appointmentDateTime,

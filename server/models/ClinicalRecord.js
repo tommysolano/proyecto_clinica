@@ -17,6 +17,27 @@ const recetaItemSchema = new mongoose.Schema(
     // doctor eligió recetar (ej. las ampollas). Se descuentan del inventario; el
     // costo cobrado es el del item compuesto, no la suma de los componentes.
     isComposite: { type: Boolean, default: false },
+
+    /**
+     * SUERO (u otra aplicación que se administra por dosis).
+     *
+     * El doctor receta, por ejemplo, 7 sueros; enfermería los va poniendo a lo
+     * largo de varios días y cada aplicación queda anotada aquí. Es lo que
+     * permite decir "3 de 7 administrados, faltan 4" sin llevar la cuenta en un
+     * papel — que es como se llevaba, y por eso se perdía.
+     */
+    isSerum: { type: Boolean, default: false },
+    administrations: [
+      {
+        at: { type: Date, default: Date.now },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        // Snapshot: si esa persona deja la clínica, la aplicación tiene que
+        // seguir diciendo quién la puso. Es un registro clínico.
+        byName: { type: String, trim: true, default: '' },
+        note: { type: String, trim: true, default: '' },
+      },
+    ],
+
     componentsUsed: [
       {
         product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },

@@ -403,3 +403,209 @@ test('enfermería puede repetirse en la cola (signos antes, aplicación después
   assert.deepEqual(guardada.turns.map((t) => t.kind), ['enfermeria', 'doctor', 'enfermeria']);
   assert.deepEqual(guardada.turns.map((t) => t.order), [0, 1, 2]);
 });
+
+// ───────────── la nota de recepción ─────────────
+
+test('lo que recepción escribe al asignar acaba en Observaciones del paciente', async () => {
+  const PatientObservation = require('../models/PatientObservation');
+  const { clinicId, userId, patient, docA, cita } = await seed();
+
+  const r = await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [{ kind: 'doctor', user: String(docA._id) }],
+      observation: '  Vino con la mamá; pide factura a nombre de la empresa  ',
+    }, params(cita._id)),
+  );
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const obs = await PatientObservation.find({ patient: patient._id }).lean();
+  assert.equal(obs.length, 1);
+  assert.equal(obs[0].text, 'Vino con la mamá; pide factura a nombre de la empresa');
+  assert.equal(String(obs[0].createdBy), String(userId), 'queda a nombre de quien la escribió');
+  // La nota es del PACIENTE, no de la cita: no se copia al motivo de consulta,
+  // que es dato clínico y lo escribe quien atiende.
+  const guardada = await Appointment.findById(cita._id).lean();
+  assert.notEqual(guardada.reason, obs[0].text);
+});
+
+test('asignar sin escribir nada no crea una observación vacía', async () => {
+  const PatientObservation = require('../models/PatientObservation');
+  const { clinicId, userId, patient, docA, cita } = await seed();
+
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [{ kind: 'doctor', user: String(docA._id) }],
+      observation: '   ',
+    }, params(cita._id)),
+  );
+
+  assert.equal(await PatientObservation.countDocuments({ patient: patient._id }), 0);
+});
+
+// ───────────── el reloj de cada turno ─────────────
+
+test('cada doctor arranca su propio cronómetro, no hereda el del anterior', async () => {
+  const { clinicId, userId, patient, docA, docB, cita } = await seed();
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [{ kind: 'doctor', user: String(docA._id) }, { kind: 'doctor', user: String(docB._id) }],
+    }, params(cita._id)),
+  );
+
+  // El primero abre la consulta.
+  await H.runController(
+    appt.startConsultation,
+    H.mockReq(clinicId, docA._id, {}, { role: 'doctor', ...params(cita._id) }),
+  );
+  let guardada = await Appointment.findById(cita._id);
+  const inicioA = guardada.turns[0].startedAt;
+  assert.ok(inicioA, 'el turno del primero guarda su hora de inicio');
+  assert.equal(guardada.turns[1].startedAt, null, 'el segundo todavía no empezó');
+
+  // Termina y pasa al segundo.
+  await H.runController(
+    clinicalRecords.addFollowUp,
+    H.mockReq(clinicId, docA._id, { descripcion: 'Primera parte', appointmentId: String(cita._id) },
+      { role: 'doctor', params: { patientId: String(patient._id) } }),
+  );
+
+  // El segundo abre: su turno estrena reloj.
+  await H.runController(
+    appt.startConsultation,
+    H.mockReq(clinicId, docB._id, {}, { role: 'ginecologia', ...params(cita._id) }),
+  );
+  guardada = await Appointment.findById(cita._id);
+  assert.ok(guardada.turns[1].startedAt, 'el segundo estrena el suyo');
+  assert.ok(
+    guardada.turns[1].startedAt.getTime() >= inicioA.getTime(),
+    'y arranca cuando él entra, no antes',
+  );
+  // El del primero queda intacto, para saber cuánto duró su parte.
+  assert.equal(String(guardada.turns[0].startedAt), String(inicioA));
+});
+
+test('asignar una cita de MAÑANA no la da por asistida', async () => {
+  const { clinicId, userId, docA, patient } = await seed();
+  const manana = new Date(H.docDate());
+  manana.setDate(manana.getDate() + 1);
+  const futura = await Appointment.create({
+    clinic: clinicId, patient: patient._id, date: manana, startTime: '09:00', status: 'pendiente',
+  });
+
+  const r = await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, { steps: [{ kind: 'doctor', user: String(docA._id) }] }, params(futura._id)),
+  );
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const guardada = await Appointment.findById(futura._id).lean();
+  // Dejar preparado el doctor de mañana no puede decir que el paciente ya vino:
+  // si no aparece, autoNoShow tiene que poder marcarla ausente como cualquiera.
+  assert.equal(guardada.status, 'pendiente');
+  assert.equal(guardada.turns.length, 1, 'pero el turno sí queda asignado');
+});
+
+test('2 doctores + enfermería: cuando los dos terminan, la cita LLEGA a enfermería', async () => {
+  const { clinicId, userId, patient, docA, docB, enf1, cita } = await seed();
+
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [
+        { kind: 'doctor', user: String(docA._id) },
+        { kind: 'doctor', user: String(docB._id) },
+        { kind: 'enfermeria' },
+      ],
+    }, params(cita._id)),
+  );
+
+  let guardada = await Appointment.findById(cita._id).lean();
+  assert.deepEqual(
+    guardada.turns.map((t) => t.kind),
+    ['doctor', 'doctor', 'enfermeria'],
+    'los tres turnos quedan guardados',
+  );
+
+  const atender = (doc, role, texto) =>
+    H.runController(
+      clinicalRecords.addFollowUp,
+      H.mockReq(clinicId, doc._id, { descripcion: texto, appointmentId: String(cita._id) },
+        { role, params: { patientId: String(patient._id) } }),
+    );
+
+  await atender(docA, 'doctor', 'Primera parte');
+  await atender(docB, 'ginecologia', 'Segunda parte');
+
+  guardada = await Appointment.findById(cita._id).lean();
+  // La cita NO puede darse por terminada: falta enfermería.
+  assert.equal(guardada.status, 'asistida', 'sigue abierta hasta que enfermería la atienda');
+  assert.equal(guardada.currentTurnKind, 'enfermeria');
+
+  // Y tiene que estar en la bandeja de los enfermeros.
+  const r = await H.runController(
+    appt.getAppointments,
+    H.mockReq(clinicId, enf1._id, {}, { role: 'enfermero', query: {} }),
+  );
+  const lista = Array.isArray(r.payload) ? r.payload : r.payload?.appointments || [];
+  assert.deepEqual(lista.map((a) => String(a._id)), [String(cita._id)], 'le llega a enfermería');
+});
+
+test('reasignar NO borra el turno de enfermería que estaba pendiente', async () => {
+  const { clinicId, userId, docA, docB, cita } = await seed();
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [{ kind: 'doctor', user: String(docA._id) }, { kind: 'enfermeria' }],
+    }, params(cita._id)),
+  );
+
+  // Recepción reabre y añade un segundo doctor. Si el modal reconstruye la cola
+  // sin arrastrar enfermería, el paciente se queda sin ella y nadie se entera.
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [
+        { kind: 'doctor', user: String(docA._id) },
+        { kind: 'doctor', user: String(docB._id) },
+        { kind: 'enfermeria' },
+      ],
+    }, params(cita._id)),
+  );
+
+  const guardada = await Appointment.findById(cita._id).lean();
+  assert.equal(
+    guardada.turns.filter((t) => t.kind === 'enfermeria').length,
+    1,
+    'enfermería sigue ahí, y una sola vez',
+  );
+});
+
+test('enfermería cierra su turno SIN escribir seguimiento y la cita pasa al doctor', async () => {
+  const { clinicId, userId, docA, enf1, cita } = await seed();
+  // Signos vitales primero, doctor después.
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [{ kind: 'enfermeria' }, { kind: 'doctor', user: String(docA._id) }],
+    }, params(cita._id)),
+  );
+
+  await H.runController(appt.nurseClaim, H.mockReq(clinicId, enf1._id, {}, { role: 'enfermero', ...params(cita._id) }));
+
+  // Enfermería ya no redacta la consulta: termina desde la agenda.
+  const r = await H.runController(
+    appt.nurseComplete,
+    H.mockReq(clinicId, enf1._id, {}, { role: 'enfermero', ...params(cita._id) }),
+  );
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const guardada = await Appointment.findById(cita._id).lean();
+  assert.equal(guardada.turns[0].status, 'completado', 'su turno queda cerrado');
+  // Y NO se da por terminada: el doctor todavía tiene que ver al paciente.
+  assert.equal(guardada.status, 'asistida');
+  assert.equal(guardada.currentTurnKind, 'doctor');
+  assert.equal(String(guardada.currentTurnUser), String(docA._id));
+});

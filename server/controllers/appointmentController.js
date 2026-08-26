@@ -15,10 +15,12 @@ const {
   doctorEnTurno,
   filtroCitasDelDoctor,
   turnoEnfermeriaPendiente,
+  turnoVigente,
 } = require('../utils/appointmentTurns');
 const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
 const {
   isPastLocalDate,
+  isFutureLocalDate,
   isPastLocalDateTime,
   isSameLocalDay,
   appointmentDateTime,
@@ -773,8 +775,14 @@ exports.startConsultation = async (req, res) => {
       });
     }
 
-    appointment.consultationStartedAt = new Date();
+    const ahora = new Date();
+    appointment.consultationStartedAt = ahora;
     appointment.consultationEndedAt = undefined;
+    // Y el reloj DE ESTE TURNO. `consultationStartedAt` es de la cita entera: si
+    // el segundo doctor se guiara por él, heredaría el cronómetro del primero y
+    // entraría a la consulta con media hora ya corrida.
+    const turno = turnoVigente(appointment);
+    if (turno) turno.startedAt = ahora;
     await appointment.save();
     res.json(appointment);
   } catch (error) {
@@ -1310,6 +1318,10 @@ exports.assignDoctor = async (req, res) => {
     if (!pasos.length) {
       return res.status(400).json({ message: 'Elige al menos un doctor o marca enfermería' });
     }
+    // Lo que recepción anota al recibir al paciente ("viene con la mamá", "pidió
+    // factura a nombre de la empresa"). No es dato clínico: va a la bitácora de
+    // Observaciones del paciente, que es donde lo va a buscar el resto.
+    const observacion = String(req.body.observation || '').trim();
 
     const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
@@ -1329,7 +1341,24 @@ exports.assignDoctor = async (req, res) => {
     const wasAttended = apt.status === 'asistida' || apt.status === 'completada';
 
     asignarTurnos(apt, { pasos, por: req.user._id });
-    if (apt.status === 'pendiente' || apt.status === 'confirmada') apt.status = 'asistida';
+
+    /**
+     * Asignar da la cita por ASISTIDA, pero SOLO si es de hoy.
+     *
+     * Se hace porque el paso de "marcar asistió" desapareció y `autoNoShow`
+     * marca ausente toda cita que siga 'pendiente' un minuto después de su hora:
+     * sin esto, el paciente que está delante del mostrador quedaría registrado
+     * como que no vino.
+     *
+     * Pero eso vale para el paciente que YA llegó. Dejar preparado el doctor de
+     * una cita de mañana no puede darla por atendida hoy: esa cita sigue
+     * pendiente, y si el paciente no aparece, `autoNoShow` tiene que poder
+     * marcarla ausente como cualquier otra.
+     */
+    const esDeHoy = !isFutureLocalDate(apt.date);
+    if (esDeHoy && (apt.status === 'pendiente' || apt.status === 'confirmada')) {
+      apt.status = 'asistida';
+    }
     await apt.save();
 
     if (apt.referral) {
@@ -1348,6 +1377,23 @@ exports.assignDoctor = async (req, res) => {
       .populate('turns.user', POPULATE_DOCTOR)
       .populate('serviceItem', 'name color nursingService')
       .populate('services.product', 'name code salePrice category');
+
+    // La observación se guarda DESPUÉS de que la asignación esté hecha y en su
+    // propio try: que falle una nota no puede tirar la asignación, que es lo que
+    // el paciente está esperando en el mostrador.
+    if (observacion) {
+      try {
+        const PatientObservation = require('../models/PatientObservation');
+        await PatientObservation.create({
+          clinic: req.clinicId,
+          patient: apt.patient,
+          text: observacion,
+          createdBy: req.user._id,
+        });
+      } catch (e) {
+        console.warn('[citas] no se pudo guardar la observación del paciente:', e.message);
+      }
+    }
 
     emitToClinic(req.clinicId, 'appointment:updated', populated);
     await notificarAsignacion(req, populated, { doctores, enfermeria, anteriores });
@@ -1597,11 +1643,38 @@ exports.nurseComplete = async (req, res) => {
     if (String(apt.attendedByNurse) !== String(req.user._id) && !isAdmin) {
       return res.status(403).json({ message: 'Solo el enfermero/a que reclamó la cita puede finalizarla.' });
     }
-    apt.status = 'completada';
+    /**
+     * Cierra EL TURNO de enfermería, no la cita entera.
+     *
+     * Enfermería puede ir por delante de un doctor (tomar los signos y pasarlo).
+     * Darla por 'completada' aquí dejaba al doctor de detrás sin su paciente y
+     * la consulta sin hacer. Solo se completa si no queda nadie pendiente.
+     */
+    const { completarTurno } = require('../utils/appointmentTurns');
+    const { siguiente, terminado } = completarTurno(apt, { userId: req.user._id });
+
     apt.nurseAttendedAt = new Date();
     if (!apt.consultationStartedAt) apt.consultationStartedAt = new Date();
-    apt.consultationEndedAt = new Date();
+    if (terminado || !(apt.turns || []).length) {
+      apt.status = 'completada';
+      apt.consultationEndedAt = new Date();
+    }
     await apt.save();
+
+    // Al siguiente le llega la cita ahora, en su pantalla y en su móvil.
+    if (siguiente?.user) {
+      emitToUser(siguiente.user, 'appointment:assigned', apt);
+      const { notificarUsuarios } = require('../utils/pushNotifications');
+      await notificarUsuarios([siguiente.user], {
+        clinicId: req.clinicId,
+        type: 'appointment_assigned',
+        title: 'Te toca atender',
+        body: 'Enfermería terminó su parte.',
+        url: `/patients/${apt.patient}?tab=ficha&appointment=${apt._id}`,
+      }).catch(() => {});
+    } else if (siguiente) {
+      emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
+    }
 
     await advanceTreatmentsForAppointment(req.clinicId, apt);
 

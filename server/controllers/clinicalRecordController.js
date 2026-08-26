@@ -113,6 +113,41 @@ const hideContactData = (record, req) => {
 };
 
 /**
+ * Recorta la ficha para ENFERMERÍA: de cada seguimiento solo la RECETA.
+ *
+ * Enfermería entra a ver qué le mandaron poner al paciente y a anotar los
+ * sueros. El motivo de consulta, los diagnósticos, los antecedentes o el examen
+ * físico son historia clínica que su trabajo no necesita, y esconderlos solo en
+ * la pantalla no es esconderlos: la respuesta del servidor se lee entera desde
+ * el navegador. Se quitan AQUÍ.
+ *
+ * Las derivaciones tampoco: son la orden de agendar otro servicio, no algo que
+ * se aplique.
+ */
+const soloRecetaParaEnfermeria = (record, req) => {
+  const esEnfermero = req.role === 'enfermero' && !req.user?.isSuperAdmin;
+  if (!record || !esEnfermero) return record;
+
+  const obj = record.toObject ? record.toObject() : { ...record };
+  obj.followUps = (obj.followUps || [])
+    .map((fu) => ({
+      _id: fu._id,
+      fecha: fu.fecha,
+      kind: fu.kind,
+      createdBy: fu.createdBy,
+      receta: fu.receta || '',
+      recetaItems: (fu.recetaItems || []).filter((it) => !it.isService),
+    }))
+    .filter((fu) => fu.recetaItems.length || fu.receta);
+
+  // La ficha en sí (antecedentes, alergias, hábitos) es del mismo tipo de dato.
+  ['antecedentes', 'antecedentesFamiliares', 'alergias', 'habitos', 'observaciones', 'motivoConsulta'].forEach(
+    (f) => { if (f in obj) obj[f] = undefined; }
+  );
+  return obj;
+};
+
+/**
  * Obtiene la ficha clínica de un paciente. Si no existe la crea con datos
  * básicos copiados del paciente.
  */
@@ -151,7 +186,7 @@ exports.getOrCreateByPatient = async (req, res) => {
       });
     }
 
-    res.json(hideContactData(record, req));
+    res.json(soloRecetaParaEnfermeria(hideContactData(record, req), req));
   } catch (error) {
     res
       .status(500)
@@ -194,7 +229,7 @@ exports.updateByPatient = async (req, res) => {
       { new: true, upsert: true, runValidators: true }
     );
 
-    res.json(hideContactData(record, req));
+    res.json(soloRecetaParaEnfermeria(hideContactData(record, req), req));
   } catch (error) {
     res
       .status(500)
@@ -628,6 +663,11 @@ exports.addFollowUp = async (req, res) => {
         duration: it.duration || '',
         instructions: it.instructions || '',
         isService: Boolean(isService),
+        // Suero: lo marca el doctor a mano en la receta. Solo tiene sentido en
+        // la receta, no en las derivaciones — un servicio no se "administra"
+        // por dosis, se agenda.
+        isSerum: !isService && Boolean(it.isSerum),
+        administrations: [],
         isComposite,
         componentsUsed,
       };
@@ -776,7 +816,11 @@ exports.addFollowUp = async (req, res) => {
           emitToClinic(req.clinicId, 'appointment:updated', apt);
 
           if (siguiente?.user) {
-            siguienteTurno = siguiente;
+            // Con el nombre resuelto: la pantalla dice "pasa al Dr. X" en vez de
+            // un id, y quien acaba de atender sabe a quién le deja el paciente.
+            const User = require('../models/User');
+            const quien = await User.findById(siguiente.user).select('name').lean().catch(() => null);
+            siguienteTurno = { kind: siguiente.kind, user: { _id: siguiente.user, name: quien?.name || '' } };
             // Al siguiente le llega la cita ahora: aviso en su pantalla y en su móvil.
             emitToUser(siguiente.user, 'appointment:assigned', apt);
             const { notificarUsuarios } = require('../utils/pushNotifications');
@@ -791,6 +835,7 @@ exports.addFollowUp = async (req, res) => {
             // Turno de enfermería sin dueño: sale a la bandeja de todos, y les
             // llega al móvil igual que si recepción se la hubiera mandado
             // directa — hasta ahora solo se enteraban con la pestaña abierta.
+            siguienteTurno = { kind: 'enfermeria', user: null };
             emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
             const { notificarRol } = require('../utils/pushNotifications');
             await notificarRol(req.clinicId, 'enfermero', {
@@ -812,6 +857,103 @@ exports.addFollowUp = async (req, res) => {
     res.status(201).json(siguienteTurno ? { ...record.toObject(), nextTurn: siguienteTurno } : record);
   } catch (error) {
     res.status(500).json({ message: 'Error al agregar seguimiento', error: error.message });
+  }
+};
+
+/**
+ * ADMINISTRAR UNA DOSIS de un ítem marcado como suero.
+ *
+ * El doctor receta "7 sueros" y enfermería los va poniendo en días distintos.
+ * Cada aplicación se anota aquí, con quién y cuándo, y de ahí sale el "3 de 7,
+ * faltan 4" que se ve en la receta. Antes esa cuenta se llevaba de memoria o en
+ * un papel, que es como se ponía uno de más o se dejaba de poner el último.
+ *
+ * NO se puede pasar de lo recetado: si el paciente necesita más, hace falta otra
+ * receta del médico. Esa es justamente la línea que un contador libre borraría.
+ */
+exports.administerSerum = async (req, res) => {
+  try {
+    const { patientId, followUpId, itemId } = req.params;
+
+    const record = await ClinicalRecord.findOne({ clinic: req.clinicId, patient: patientId });
+    if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
+
+    const fu = record.followUps.id(followUpId);
+    if (!fu) return res.status(404).json({ message: 'Seguimiento no encontrado' });
+
+    const item = (fu.recetaItems || []).id(itemId);
+    if (!item) return res.status(404).json({ message: 'Ítem de receta no encontrado' });
+    if (!item.isSerum) {
+      return res.status(400).json({ message: 'Este ítem no está marcado como suero' });
+    }
+
+    const recetados = Math.max(0, Number(item.quantity) || 0);
+    const puestos = (item.administrations || []).length;
+    if (recetados && puestos >= recetados) {
+      return res.status(409).json({
+        message: `Ya se administraron los ${recetados} que recetó el doctor. Hace falta una receta nueva.`,
+        code: 'SERUM_COMPLETE',
+      });
+    }
+
+    // El nombre se busca si la sesión no lo trae: este snapshot es lo único que
+    // quedará el día que esa persona salga de la clínica, y una aplicación sin
+    // responsable es un registro clínico a medias.
+    let nombre = req.user.name || '';
+    if (!nombre) {
+      const User = require('../models/User');
+      nombre = (await User.findById(req.user._id).select('name').lean().catch(() => null))?.name || '';
+    }
+
+    item.administrations.push({
+      at: new Date(),
+      by: req.user._id,
+      byName: nombre,
+      note: String(req.body?.note || '').trim(),
+    });
+    await record.save();
+
+    emitToClinic(req.clinicId, 'clinicalRecord:updated', { patient: patientId });
+    res.json(soloRecetaParaEnfermeria(record, req));
+  } catch (error) {
+    res.status(500).json({ message: 'Error al registrar la administración', error: error.message });
+  }
+};
+
+/**
+ * Deshace la ÚLTIMA aplicación registrada de un suero.
+ *
+ * Existe porque un clic de más en un registro clínico no puede ser irreversible:
+ * sin esto, la única salida sería dejar constancia de una dosis que nunca se
+ * puso. La borra quien la registró, o un administrador.
+ */
+exports.undoSerumAdministration = async (req, res) => {
+  try {
+    const { patientId, followUpId, itemId } = req.params;
+
+    const record = await ClinicalRecord.findOne({ clinic: req.clinicId, patient: patientId });
+    if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
+
+    const fu = record.followUps.id(followUpId);
+    if (!fu) return res.status(404).json({ message: 'Seguimiento no encontrado' });
+    const item = (fu.recetaItems || []).id(itemId);
+    if (!item) return res.status(404).json({ message: 'Ítem de receta no encontrado' });
+
+    const ultima = (item.administrations || [])[item.administrations.length - 1];
+    if (!ultima) return res.status(400).json({ message: 'No hay ninguna administración que deshacer' });
+
+    const esAdmin = req.user.isSuperAdmin || req.role === 'admin';
+    if (!esAdmin && String(ultima.by) !== String(req.user._id)) {
+      return res.status(403).json({ message: 'Solo quien la registró (o un administrador) puede deshacerla' });
+    }
+
+    item.administrations.pop();
+    await record.save();
+
+    emitToClinic(req.clinicId, 'clinicalRecord:updated', { patient: patientId });
+    res.json(soloRecetaParaEnfermeria(record, req));
+  } catch (error) {
+    res.status(500).json({ message: 'Error al deshacer la administración', error: error.message });
   }
 };
 

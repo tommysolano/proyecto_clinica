@@ -1,5 +1,5 @@
 import { useEffect, useState, Fragment, useRef, lazy, Suspense } from 'react';
-import { useParams, useSearchParams, Link } from 'react-router-dom';
+import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
@@ -73,6 +73,7 @@ import {
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import AttachmentPreviewModal from '../components/AttachmentPreviewModal';
+import { inicioDeMiTurno } from '../utils/appointmentTurns';
 import { cargarPagina } from '../utils/lazyPage';
 import { edadGestacional, fechaProbableParto } from '../constants/gestacion';
 import {
@@ -189,8 +190,11 @@ export default function PatientDetail() {
   // duran lo que tienen que durar. Ponerle un reloj en rojo sería meterle prisa
   // sin motivo.
   const esEnfermero = hasRole('enfermero');
-  const timerSeconds = !esEnfermero && aptData?.consultationStartedAt && !aptData?.consultationEndedAt
-    ? Math.max(0, Math.floor((now - new Date(aptData.consultationStartedAt).getTime()) / 1000))
+  // Cuenta desde que empezó EL TURNO en curso. `consultationStartedAt` es de la
+  // cita entera: el segundo doctor entraba con el tiempo del primero ya corrido.
+  const inicioTurno = inicioDeMiTurno(aptData);
+  const timerSeconds = !esEnfermero && inicioTurno && !aptData?.consultationEndedAt
+    ? Math.max(0, Math.floor((now - inicioTurno) / 1000))
     : null;
 
   const fmtTimer = (s) =>
@@ -210,7 +214,7 @@ export default function PatientDetail() {
   }
 
   if (!patient) {
-    return <div className="p-4 sm:p-6">Paciente no encontrado.</div>;
+    return <div className="p-3 sm:p-6">Paciente no encontrado.</div>;
   }
 
   // Filtrar tabs visibles según rol.
@@ -230,28 +234,30 @@ export default function PatientDetail() {
   const tabActiva = visibleTabs.some((t) => t.id === tab) ? tab : visibleTabs[0]?.id;
 
   return (
-    <div className="p-4 sm:p-6 max-w-6xl mx-auto">
+    <div className="px-0 py-1 sm:p-6 max-w-6xl mx-auto">
       <Link
         to="/patients"
-        className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-emerald-600 mb-4 no-underline"
+        className="inline-flex items-center gap-1 text-xs sm:text-sm text-slate-500 hover:text-emerald-600 mb-2 sm:mb-4 no-underline"
       >
         <HiOutlineArrowLeft className="w-4 h-4" /> Volver a pacientes
       </Link>
 
-      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4 sm:p-6 mb-6">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-3 sm:p-6 mb-4 sm:mb-6">
         <div className="flex flex-col sm:flex-row sm:items-start gap-4">
-          <div className="flex items-start gap-3 sm:gap-4 min-w-0 flex-1">
-          <div className="w-12 h-12 sm:w-14 sm:h-14 shrink-0 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white font-bold text-lg sm:text-xl">
+          <div className="flex items-start gap-2.5 sm:gap-4 min-w-0 flex-1">
+          <div className="w-10 h-10 sm:w-14 sm:h-14 shrink-0 rounded-xl sm:rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white font-bold text-sm sm:text-xl">
             {patient.firstName?.[0]}
             {patient.lastName?.[0]}
           </div>
           <div className="flex-1 min-w-0">
-            <h1 className="text-xl sm:text-2xl font-bold text-slate-800 tracking-tight break-words">
+            {/* El nombre en dos líneas gigantes se comía media pantalla del
+                teléfono antes de llegar al formulario, que es a lo que se entra. */}
+            <h1 className="text-base sm:text-2xl font-bold text-slate-800 tracking-tight break-words leading-tight">
               {patient.firstName} {patient.lastName}
             </h1>
             {/* Cédula, teléfono y correo son solo del administrador: el servidor ni
                 siquiera los envía al resto (ver CONTACT_FIELDS en patientController). */}
-            <p className="text-sm text-slate-500 mt-1">
+            <p className="text-xs sm:text-sm text-slate-500 mt-0.5 sm:mt-1">
               {hasRole('admin') ? (
                 <>
                   CI: {patient.cedula} {patient.phone ? ` · ${patient.phone}` : ''}
@@ -261,7 +267,7 @@ export default function PatientDetail() {
                 <>Edad: {patient.computedAge ?? patient.age ?? '—'}</>
               )}
             </p>
-            <div className="mt-2">
+            <div className="mt-1.5 sm:mt-2">
               <TagEditor
                 value={patient.tags || []}
                 onChange={async (next) => {
@@ -304,7 +310,7 @@ export default function PatientDetail() {
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                className={`flex items-center gap-2 px-5 py-3 text-sm font-medium border-none cursor-pointer transition-colors whitespace-nowrap ${
+                className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-5 py-2.5 sm:py-3 text-sm font-medium border-none cursor-pointer transition-colors whitespace-nowrap ${
                   tabActiva === t.id
                     ? 'bg-emerald-50 text-emerald-700 border-b-2 border-emerald-600'
                     : 'bg-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50'
@@ -317,7 +323,7 @@ export default function PatientDetail() {
           })}
         </div>
 
-        <div className="p-4 sm:p-6">
+        <div className="p-3 sm:p-6">
           {tabActiva === 'datos' && <DatosTab patient={patient} />}
           {tabActiva === 'ficha' && <FichaTab patientId={id} />}
           {tabActiva === 'seguimientos' && <SeguimientosTab patientId={id} appointmentId={appointmentId} />}
@@ -804,6 +810,9 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
         { key: 'frequency', label: 'Frecuencia', placeholder: 'c/8 h' },
         { key: 'duration', label: 'Duración', placeholder: '7 días' },
         { key: 'instructions', label: 'Indicaciones', placeholder: 'Después de comer' },
+        // Marcarlo como suero es lo que hace que enfermería pueda ir anotando
+        // cada aplicación y que la receta lleve la cuenta ("3 de 7, faltan 4").
+        { key: 'isSerum', label: 'Suero', check: true, ancho: 'w-16', ayuda: 'Se administra por dosis' },
       ]
     : [
         { key: 'quantity', label: 'Cant.', numero: true, ancho: 'w-16' },
@@ -814,7 +823,17 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
   // Un solo sitio donde se decide qué campo pintar: la tabla del escritorio y
   // las tarjetas del móvil comparten los mismos controles.
   const campo = (c, row, idx) =>
-    c.numero ? (
+    c.check ? (
+      <label className="flex items-center gap-1.5 cursor-pointer" title={c.ayuda || ''}>
+        <input
+          type="checkbox"
+          checked={!!row[c.key]}
+          onChange={(e) => onUpdate(idx, c.key, e.target.checked)}
+          className="w-4 h-4 accent-emerald-600 cursor-pointer"
+        />
+        <span className="md:hidden text-xs text-slate-500">{c.ayuda}</span>
+      </label>
+    ) : c.numero ? (
       <NumericInput
         min={1}
         value={row[c.key]}
@@ -913,6 +932,7 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
 }
 
 function SeguimientosTab({ patientId, appointmentId }) {
+  const navigate = useNavigate();
   const { hasRole, user } = useAuth();
   const isOptica = hasRole('optica');
   // Cada especialidad ve SOLO su sección. `hasRole` expande hacia 'doctor', no
@@ -923,6 +943,19 @@ function SeguimientosTab({ patientId, appointmentId }) {
   const isCosme = hasRole('cosmetologia');
   const isCardio = hasRole('cardiologia');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
+
+  /**
+   * ENFERMERÍA: solo lectura, y solo la receta.
+   *
+   * Entra aquí para ver qué le mandaron poner al paciente y para ir anotando
+   * cada suero. No redacta la consulta —eso es de quien la atiende— ni tiene por
+   * qué leer el motivo, los diagnósticos o los antecedentes: es historia clínica
+   * y su trabajo no la necesita.
+   */
+  const soloReceta = hasRole('enfermero') && !isAdmin;
+  const puedeEscribir = !soloReceta;
+  const puedeAdministrarSuero = hasRole('admin', 'doctor', 'enfermero');
+
   // Una vez guardado, solo administradores pueden eliminar/editar seguimientos.
   const canDelete = isAdmin;
   const canUpload = hasRole('admin', 'cajero', 'doctor', 'optica', 'enfermero');
@@ -940,6 +973,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
     frequency: '',
     duration: '',
     instructions: '',
+    isSerum: false,
   });
   const emptyOpticaRx = () => ({
     od: { sph: '', cyl: '', ax: '', add: '', dnp: '', alt: '' },
@@ -1305,16 +1339,37 @@ function SeguimientosTab({ patientId, appointmentId }) {
       setRecord(updated);
       setForm(emptyForm());
       setPendingFiles([]);
-      toast.success(
-        appointmentId
-          ? 'Seguimiento guardado. Cita finalizada.'
-          : 'Seguimiento guardado'
-      );
+
+      /**
+       * Guardar desde una CITA cierra el turno y devuelve a la agenda.
+       *
+       * Antes se quedaba en la ficha del paciente con el formulario en blanco,
+       * que es exactamente igual a "no se guardó nada": había que ir al menú a
+       * volver a la agenda para comprobar que sí. Y el aviso decía siempre "cita
+       * finalizada", aunque detrás quedara otro profesional — el servidor
+       * responde `nextTurn` justo para poder decir la verdad.
+       */
+      const siguiente = updated.nextTurn || res.data?.nextTurn;
+      if (appointmentId) {
+        const quien = siguiente?.user?.name || (siguiente?.kind === 'enfermeria' ? 'enfermería' : null);
+        toast.success(
+          siguiente
+            ? `Seguimiento guardado. Pasa a ${quien || 'el siguiente profesional'}.`
+            : 'Seguimiento guardado. Cita finalizada.'
+        );
+      } else {
+        toast.success('Seguimiento guardado');
+      }
+
       if (fallaronAdjuntos) {
         // El seguimiento se guardó: los archivos se vuelven a adjuntar desde la
         // lista de abajo, sin repetir la consulta.
         toast.error(`${fallaronAdjuntos}. Adjúntalos desde el seguimiento ya guardado.`, { duration: 8000 });
       }
+
+      // Si falló algún adjunto se queda en la ficha, que es donde se vuelven a
+      // subir; si no, a la agenda.
+      if (appointmentId && !fallaronAdjuntos) navigate('/appointments');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al guardar el seguimiento');
     } finally {
@@ -1374,18 +1429,25 @@ function SeguimientosTab({ patientId, appointmentId }) {
   if (loading) return <div className="text-slate-500 text-sm">Cargando...</div>;
   if (!record) return null;
 
-  const followUps = [...(record.followUps || [])].sort(
-    (a, b) => new Date(b.fecha) - new Date(a.fecha)
-  );
+  const followUps = [...(record.followUps || [])]
+    .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))
+    // A enfermería solo le interesan las consultas QUE RECETARON algo: de las
+    // demás vería una tarjeta con la fecha y nada dentro.
+    .filter((fu) => !soloReceta || (fu.recetaItems || []).some((it) => !it.isService) || fu.receta);
 
   return (
-    <div className="space-y-6">
-      {appointmentId && (
-        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-xl p-3">
-          Al guardar este seguimiento, la cita se marcará como <b>completada</b> y quedarás disponible.
+    <div className="space-y-4 sm:space-y-6">
+      {/* Ya no promete que la cita se completa: con varios profesionales, guardar
+          cierra TU turno y puede pasarla al siguiente. Decir "completada" hacía
+          que el segundo doctor creyera que el primero ya había cerrado todo. */}
+      {appointmentId && puedeEscribir && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs sm:text-sm rounded-xl px-3 py-2">
+          Al guardar cierras tu parte de la consulta y vuelves a la agenda.
         </div>
       )}
 
+      {/* Enfermería no redacta la consulta: solo consulta la receta y anota los sueros. */}
+      {puedeEscribir && (
       <form
         onSubmit={submit}
         onKeyDown={evitarEnvioConEnter}
@@ -1789,6 +1851,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
           </button>
         </div>
       </form>
+      )}
 
       {/* Compras y aplicaciones: avance de tratamientos + historial de compras */}
       {canSeePurchases && (treatmentProgress.length > 0 || purchases.length > 0) && (
@@ -1908,40 +1971,48 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     {fu.tipoConsulta && (
                       <span className="inline-block mb-1 ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 capitalize">{fu.tipoConsulta}</span>
                     )}
-                    <div className="font-medium">{fu.descripcion || fu.motivoConsulta}</div>
-                    {hasOpticaData && <OpticaRxSummary rx={fu.opticaRx} />}
-                    {hasGinecoData && <GinecologiaSummary g={fu.ginecologia} fecha={fu.fecha} />}
-                    {hasPodoData && <PodologiaSummary p={fu.podologia} />}
-                    {hasOdontoData && <OdontologiaSummary o={fu.odontologia} />}
-                    {hasCosmeData && <CosmetologiaSummary c={fu.cosmetologia} />}
-                    {hasCardioData && <CardiologiaSummary value={fu.cardiologia} />}
-                    {fu.enfermedadActual && (
+                    {!soloReceta && <div className="font-medium">{fu.descripcion || fu.motivoConsulta}</div>}
+                    {!soloReceta && hasOpticaData && <OpticaRxSummary rx={fu.opticaRx} />}
+                    {!soloReceta && hasGinecoData && <GinecologiaSummary g={fu.ginecologia} fecha={fu.fecha} />}
+                    {!soloReceta && hasPodoData && <PodologiaSummary p={fu.podologia} />}
+                    {!soloReceta && hasOdontoData && <OdontologiaSummary o={fu.odontologia} />}
+                    {!soloReceta && hasCosmeData && <CosmetologiaSummary c={fu.cosmetologia} />}
+                    {!soloReceta && hasCardioData && <CardiologiaSummary value={fu.cardiologia} />}
+                    {!soloReceta && fu.enfermedadActual && (
                       <div className="mt-1 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Enfermedad actual:</b> {fu.enfermedadActual}
                       </div>
                     )}
                     {/* Legacy: seguimientos antiguos que aún tienen el campo. */}
-                    {fu.estudioSintomas && (
+                    {!soloReceta && fu.estudioSintomas && (
                       <div className="mt-1 text-xs text-slate-600">
                         <b>Estudio/síntomas:</b> {fu.estudioSintomas}
                       </div>
                     )}
-                    <ChecksSummary
-                      title="Revisión de órganos y sistemas"
-                      groups={[{ label: '', items: revItems }]}
-                      hallazgos={fu.revisionSistemasHallazgos}
-                      tone="amber"
-                    />
-                    <ChecksSummary
-                      title="Examen físico"
-                      groups={[
-                        { label: 'Regional', items: regItems },
-                        { label: 'Sistémico', items: sisItems },
-                      ]}
-                      hallazgos={fu.examenFisico?.hallazgos}
-                      tone="violet"
-                    />
-                    {Array.isArray(fu.diagnosticos) && fu.diagnosticos.length > 0 && (
+                    {!soloReceta && (
+
+                      <ChecksSummary
+                        title="Revisión de órganos y sistemas"
+                        groups={[{ label: '', items: revItems }]}
+                        hallazgos={fu.revisionSistemasHallazgos}
+                        tone="amber"
+                      />
+
+                    )}
+                    {!soloReceta && (
+
+                      <ChecksSummary
+                        title="Examen físico"
+                        groups={[
+                          { label: 'Regional', items: regItems },
+                          { label: 'Sistémico', items: sisItems },
+                        ]}
+                        hallazgos={fu.examenFisico?.hallazgos}
+                        tone="violet"
+                      />
+
+                    )}
+                    {!soloReceta && Array.isArray(fu.diagnosticos) && fu.diagnosticos.length > 0 && (
                       <div className="mt-2 bg-rose-50 border border-rose-200 rounded p-2">
                         <p className="text-[11px] font-semibold text-rose-600 uppercase mb-1">Diagnósticos</p>
                         <ul className="text-xs text-slate-700 space-y-0.5">
@@ -1959,16 +2030,35 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       // (servicios/programas = Derivaciones, el resto = Receta).
                       const recetaOnly = fu.recetaItems.filter((it) => !it.isService);
                       const derivOnly = fu.recetaItems.filter((it) => it.isService);
-                      const renderItem = (it, i) => (
-                        <li key={i}>
-                          <b>{it.name}</b>
-                          {it.dose ? ` · ${it.dose}` : ''}
-                          {it.frequency ? ` · ${it.frequency}` : ''}
-                          {it.duration ? ` · ${it.duration}` : ''}
-                          {it.instructions ? ` — ${it.instructions}` : ''}
-                          {it.quantity ? ` (x${it.quantity})` : ''}
-                        </li>
-                      );
+                      const renderItem = (it, i) => {
+                        // Un suero no es una línea de texto: es una cuenta abierta.
+                        // Enfermería va poniendo dosis y aquí se ve cuántas
+                        // quedan, que es lo único que hay que mirar para no
+                        // pasarse ni dejarlo a medias.
+                        if (it.isSerum) {
+                          return (
+                            <li key={it._id || i}>
+                              <SueroLinea
+                                item={it}
+                                patientId={patientId}
+                                followUpId={fu._id}
+                                puedeAdministrar={puedeAdministrarSuero}
+                                onCambio={setRecord}
+                              />
+                            </li>
+                          );
+                        }
+                        return (
+                          <li key={it._id || i}>
+                            <b>{it.name}</b>
+                            {it.dose ? ` · ${it.dose}` : ''}
+                            {it.frequency ? ` · ${it.frequency}` : ''}
+                            {it.duration ? ` · ${it.duration}` : ''}
+                            {it.instructions ? ` — ${it.instructions}` : ''}
+                            {it.quantity ? ` (x${it.quantity})` : ''}
+                          </li>
+                        );
+                      };
                       return (
                         <>
                           {recetaOnly.length > 0 && (
@@ -1979,7 +2069,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                               </ul>
                             </div>
                           )}
-                          {derivOnly.length > 0 && (
+                          {!soloReceta && derivOnly.length > 0 && (
                             <div className="mt-2 bg-indigo-50 border border-indigo-200 rounded p-2">
                               <p className="text-[11px] font-semibold text-indigo-600 uppercase mb-1">Derivaciones</p>
                               <ul className="text-xs text-slate-700 space-y-0.5">
@@ -1990,7 +2080,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         </>
                       );
                     })()}
-                    {hasVitals && (
+                    {!soloReceta && hasVitals && (
                       <div className="mt-2 text-[11px] text-slate-600 bg-emerald-50 border border-emerald-100 rounded p-2 flex flex-wrap gap-x-3 gap-y-0.5">
                         {vs.hora && <span>Hora: {vs.hora}</span>}
                         {vs.bloodPressure && <span>TA: {vs.bloodPressure}</span>}
@@ -2012,22 +2102,24 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         <b>Receta:</b> {fu.receta}
                       </div>
                     )}
-                    {fu.planTratamiento && (
+                    {!soloReceta && fu.planTratamiento && (
                       <div className="mt-2 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Plan de tratamiento:</b> {fu.planTratamiento}
                       </div>
                     )}
-                    {fu.evolucion && (
+                    {!soloReceta && fu.evolucion && (
                       <div className="mt-2 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Evolución:</b> {fu.evolucion}
                       </div>
                     )}
                     {/* Legacy: seguimientos antiguos que aún tienen el campo. */}
-                    {fu.observaciones && (
+                    {!soloReceta && fu.observaciones && (
                       <div className="mt-2 text-xs text-slate-600 italic">
                         <b>Observaciones:</b> {fu.observaciones}
                       </div>
                     )}
+                    {!soloReceta && (
+                    <>
                     {/* Adjuntos (PDF o imágenes) */}
                     <div className="mt-2 space-y-1">
                       {(fu.attachments || []).map((att) => (
@@ -2095,9 +2187,12 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         </label>
                       )}
                     </div>
+                    </>
+                    )}
                   </div>
                   <div className="md:w-32 md:shrink-0 md:px-4 md:py-2.5 border-t border-slate-100 pt-2 md:border-t-0 md:pt-0">
                     <div className="flex items-center gap-1 md:justify-end">
+                      {!soloReceta && (
                       <button
                         onClick={() => downloadFollowUpPdf(fu._id)}
                         title="Descargar PDF"
@@ -2105,6 +2200,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       >
                         <HiOutlineArrowDownTray className="w-4 h-4" />
                       </button>
+                      )}
                       <button
                         onClick={() => printFollowUp(fu._id)}
                         title="Imprimir receta"
@@ -2112,6 +2208,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       >
                         <HiOutlinePrinter className="w-4 h-4" />
                       </button>
+                      {!soloReceta && (
                       <button
                         onClick={() => openMspForm(fu._id)}
                         title="Hoja MSP HCU-form.002"
@@ -2119,6 +2216,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       >
                         HCU
                       </button>
+                      )}
                       {canDelete && (
                         <button
                           onClick={() => remove(fu._id)}
@@ -2147,6 +2245,166 @@ function SeguimientosTab({ patientId, appointmentId }) {
         />
       )}
       <FichaStyles />
+    </div>
+  );
+}
+
+// ──────────────── Suero: cuenta de aplicaciones ────────────────
+
+/**
+ * Una línea de receta marcada como SUERO.
+ *
+ * El doctor receta 7; enfermería los va poniendo en días distintos. Aquí se ve
+ * cuántos van y cuántos faltan, y con un clic se anota el siguiente. La cuenta
+ * la lleva el sistema porque llevarla de memoria es como se ponía uno de más o
+ * se dejaba de poner el último.
+ *
+ * El servidor no deja pasar de lo recetado: para más hace falta receta nueva.
+ */
+function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio }) {
+  const [confirmar, setConfirmar] = useState(false);
+  const [nota, setNota] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const recetados = Math.max(0, Number(item.quantity) || 0);
+  const puestos = (item.administrations || []).length;
+  const faltan = Math.max(0, recetados - puestos);
+  const completo = recetados > 0 && faltan === 0;
+
+  const registrar = async () => {
+    setBusy(true);
+    try {
+      const { data } = await api.post(
+        `/clinical-records/${patientId}/follow-ups/${followUpId}/receta/${item._id}/administer`,
+        { note: nota.trim() }
+      );
+      onCambio(data);
+      toast.success(
+        faltan - 1 > 0
+          ? `Suero administrado. Faltan ${faltan - 1}.`
+          : 'Suero administrado. Ya no queda ninguno.'
+      );
+      setConfirmar(false);
+      setNota('');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo registrar');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deshacer = async () => {
+    if (!window.confirm('¿Deshacer la última aplicación registrada?')) return;
+    try {
+      const { data } = await api.delete(
+        `/clinical-records/${patientId}/follow-ups/${followUpId}/receta/${item._id}/administer`
+      );
+      onCambio(data);
+      toast.success('Aplicación deshecha');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo deshacer');
+    }
+  };
+
+  const ultima = (item.administrations || [])[puestos - 1];
+
+  return (
+    <div className="my-1 rounded-lg border border-sky-200 bg-sky-50/70 px-2.5 py-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="text-[10px] font-bold uppercase tracking-wide text-sky-700 bg-sky-100 rounded px-1.5 py-0.5">
+          Suero
+        </span>
+        <b className="text-slate-800">{item.name}</b>
+        {item.dose && <span className="text-slate-600">· {item.dose}</span>}
+        {item.instructions && <span className="text-slate-600">— {item.instructions}</span>}
+      </div>
+
+      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+        <span className={`text-xs font-semibold ${completo ? 'text-emerald-700' : 'text-sky-800'}`}>
+          {puestos} de {recetados || '—'} administrados
+          {recetados > 0 && (completo ? ' · completo' : ` · faltan ${faltan}`)}
+        </span>
+
+        {/* Barra: de un vistazo se ve si va por la mitad o casi termina. */}
+        {recetados > 0 && (
+          <span className="h-1.5 w-24 rounded-full bg-sky-200 overflow-hidden">
+            <span
+              className={`block h-full ${completo ? 'bg-emerald-500' : 'bg-sky-500'}`}
+              style={{ width: `${Math.min(100, (puestos / recetados) * 100)}%` }}
+            />
+          </span>
+        )}
+
+        {puedeAdministrar && !completo && (
+          <button
+            type="button"
+            onClick={() => setConfirmar(true)}
+            className="text-xs font-medium px-2.5 py-1 rounded-lg bg-sky-600 text-white border-none cursor-pointer hover:bg-sky-700"
+          >
+            Administrar
+          </button>
+        )}
+        {puedeAdministrar && puestos > 0 && (
+          <button
+            type="button"
+            onClick={deshacer}
+            className="text-xs text-slate-500 hover:text-red-600 bg-transparent border-none cursor-pointer p-0 underline"
+          >
+            Deshacer la última
+          </button>
+        )}
+      </div>
+
+      {ultima && (
+        <p className="mt-1 text-[11px] text-slate-500 m-0">
+          Última: {fmtDateTime(ultima.at)}
+          {ultima.byName ? ` · ${ultima.byName}` : ''}
+          {ultima.note ? ` · ${ultima.note}` : ''}
+        </p>
+      )}
+
+      <Modal
+        isOpen={confirmar}
+        onClose={() => setConfirmar(false)}
+        title="Administrar suero"
+        size="sm"
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-slate-700 m-0">
+            ¿Confirmas que se le administró <b>{item.name}</b> al paciente?
+          </p>
+          <p className="text-xs text-slate-500 m-0">
+            Van {puestos} de {recetados}. Con este quedarían {Math.max(0, faltan - 1)} por poner.
+          </p>
+          <label className="block text-sm">
+            Nota <span className="text-slate-400 font-normal">(opcional)</span>
+            <input
+              type="text"
+              value={nota}
+              onChange={(e) => setNota(e.target.value)}
+              placeholder="Reacción, vía, observación…"
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2 text-sm"
+            />
+          </label>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirmar(false)}
+              className="px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm text-slate-600 cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={registrar}
+              disabled={busy}
+              className="px-4 py-2 rounded-lg bg-sky-600 text-white text-sm font-medium border-none cursor-pointer disabled:opacity-50"
+            >
+              {busy ? 'Registrando…' : 'Sí, se administró'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

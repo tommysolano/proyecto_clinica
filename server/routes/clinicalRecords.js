@@ -10,6 +10,8 @@ const {
   uploadFollowUpAttachment,
   downloadFollowUpAttachment,
   deleteFollowUpAttachment,
+  administerSerum,
+  undoSerumAdministration,
 } = require('../controllers/clinicalRecordController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
@@ -23,9 +25,24 @@ const allRoles = requireRole('admin', 'cajero', 'doctor', 'enfermero');
 
 router.get('/:patientId', allRoles, getOrCreateByPatient);
 router.put('/:patientId', allRoles, updateByPatient);
-router.post('/:patientId/follow-ups', allRoles, addFollowUp);
+// Escribir un seguimiento: enfermería NO. Entra a la ficha y ve el historial
+// (en su caso, solo la receta), pero la consulta la redacta quien la atiende.
+router.post('/:patientId/follow-ups', requireRole('admin', 'cajero', 'doctor'), addFollowUp);
+
+// Administrar un suero: es el trabajo de enfermería, y el doctor también puede.
+router.post(
+  '/:patientId/follow-ups/:followUpId/receta/:itemId/administer',
+  requireRole('admin', 'doctor', 'enfermero'),
+  administerSerum
+);
+router.delete(
+  '/:patientId/follow-ups/:followUpId/receta/:itemId/administer',
+  requireRole('admin', 'doctor', 'enfermero'),
+  undoSerumAdministration
+);
 router.get('/:patientId/follow-ups/:followUpId/print', allRoles, printFollowUp);
-router.get('/:patientId/follow-ups/:followUpId/msp', allRoles, printMspForm);
+// La hoja MSP es la consulta ENTERA: no es para enfermería, que solo ve receta.
+router.get('/:patientId/follow-ups/:followUpId/msp', requireRole('admin', 'cajero', 'doctor'), printMspForm);
 // Borrar un seguimiento: SOLO administradores. Antes también podían los
 // doctores —y `requireRole` expande 'doctor' a todas las especialidades, así que
 // en la práctica podía cualquier profesional— pero un seguimiento es historia

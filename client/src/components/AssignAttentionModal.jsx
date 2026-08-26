@@ -61,6 +61,9 @@ export default function AssignAttentionModal({ appointment, doctors = [], onClos
       : [];
   });
   const [busy, setBusy] = useState(false);
+  // Nota de recepción al recibir al paciente. No se queda en la cita: va a la
+  // bitácora de Observaciones del paciente, junto a las demás.
+  const [observacion, setObservacion] = useState('');
   const contador = useRef(0);
 
   const porId = useMemo(() => new Map(doctors.map((d) => [String(d._id), d])), [doctors]);
@@ -93,6 +96,7 @@ export default function AssignAttentionModal({ appointment, doctors = [], onClos
     try {
       const { data } = await api.post(`/appointments/${apt._id}/assign-doctor`, {
         steps: cola.map((p) => (p.kind === ENFERMERIA ? { kind: ENFERMERIA } : { kind: 'doctor', user: p.user })),
+        observation: observacion.trim(),
       });
       const nombres = cola.map((p) =>
         p.kind === ENFERMERIA ? 'Enfermería' : porId.get(p.user)?.name || 'Doctor'
@@ -214,6 +218,23 @@ export default function AssignAttentionModal({ appointment, doctors = [], onClos
               aparece a quien le toca.
             </p>
           )}
+        </div>
+
+        {/* Observación del paciente */}
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">
+            Observación <span className="font-normal text-slate-400">(opcional)</span>
+          </label>
+          <textarea
+            value={observacion}
+            onChange={(e) => setObservacion(e.target.value)}
+            rows={2}
+            placeholder="Vino con la mamá, pidió factura a nombre de la empresa…"
+            className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 resize-none"
+          />
+          <p className="text-[11px] text-slate-400 mt-1">
+            Se guarda en <b>Observaciones</b> del paciente, no en la cita.
+          </p>
         </div>
 
         <div className="flex justify-end gap-2 pt-1">

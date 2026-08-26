@@ -185,7 +185,10 @@ export default function NotificationBell() {
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-[min(22rem,calc(100vw-2rem))] bg-white rounded-xl border border-slate-200 shadow-xl shadow-slate-900/10 z-[10001] overflow-hidden">
+        /* En el móvil el panel NO cuelga de la campana: anclado a ella se salía
+           por la izquierda de la pantalla y el título aparecía cortado. Ahí va
+           fijo, de borde a borde. Desde `sm` recupera el desplegable de siempre. */
+        <div className="fixed left-2 right-2 top-16 sm:absolute sm:left-auto sm:right-0 sm:top-auto sm:mt-2 sm:w-88 bg-white rounded-xl border border-slate-200 shadow-xl shadow-slate-900/10 z-[10001] overflow-hidden">
           <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-100">
             <p className="text-sm font-semibold text-slate-800">Notificaciones</p>
             {unread > 0 && (
