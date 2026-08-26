@@ -73,6 +73,7 @@ import {
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import AttachmentPreviewModal from '../components/AttachmentPreviewModal';
+import Modal from '../components/Modal';
 import { inicioDeMiTurno } from '../utils/appointmentTurns';
 import { cargarPagina } from '../utils/lazyPage';
 import { edadGestacional, fechaProbableParto } from '../constants/gestacion';
