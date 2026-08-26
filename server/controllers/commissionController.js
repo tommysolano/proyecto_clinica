@@ -7,12 +7,18 @@ const CommissionPosting = require('../models/CommissionPosting');
 require('../models/Referral');
 const { createEntry, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
+const { DOCTOR_SPECIALTY_ROLES } = require('../constants/roles');
 const ExcelJS = require('exceljs');
 
-const ROLE_LABELS = { admin: 'Administrador', doctor: 'Médico', optica: 'Óptica', ginecologia: 'Ginecología', podologia: 'Podología', odontologia: 'Odontología', cosmetologia: 'Cosmetología', nurse: 'Enfermero/a', call_center: 'Call center', marketing: 'Marketing', contabilidad: 'Contabilidad' };
+const ROLE_LABELS = { admin: 'Administrador', doctor: 'Médico', optica: 'Óptica', ginecologia: 'Ginecología', podologia: 'Podología', odontologia: 'Odontología', cosmetologia: 'Cosmetología', cardiologia: 'Cardiología', nurse: 'Enfermero/a', call_center: 'Call center', marketing: 'Marketing', contabilidad: 'Contabilidad' };
 
 // Especialidades que heredan una regla escrita para el rol 'doctor' (ver matchTarget).
-const DOCTOR_RULE_HEIRS = ['ginecologia', 'podologia', 'odontologia', 'cosmetologia'];
+//
+// Sale de la lista central de especialidades para que una nueva herede sola: esta
+// lista estaba escrita a mano y 'cardiologia' se quedó fuera al crearse, así que
+// una regla "para los doctores" no le pagaba. 'optica' se descuenta a propósito
+// (ver matchTarget).
+const DOCTOR_RULE_HEIRS = DOCTOR_SPECIALTY_ROLES.filter((r) => r !== 'optica');
 
 // ─────────── CRUD de reglas ───────────
 

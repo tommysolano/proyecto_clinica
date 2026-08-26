@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
+import { HiOutlineMagnifyingGlass } from 'react-icons/hi2';
 import api from '../api/axios';
 import SuggestInput from './SuggestInput';
 
@@ -19,7 +20,7 @@ import SuggestInput from './SuggestInput';
  *   value    : { _id, name } | null — el servicio elegido
  *   onChange : (item|null) => void
  */
-export default function ServiceItemPicker({ value, onChange, placeholder = 'Buscar o crear servicio…', autoFocus = false }) {
+export default function ServiceItemPicker({ value, onChange, placeholder = 'Busca un servicio o escribe uno nuevo…', autoFocus = false }) {
   const [items, setItems] = useState([]);
   const [texto, setTexto] = useState(value?.name || '');
   const [creando, setCreando] = useState(false);
@@ -69,6 +70,10 @@ export default function ServiceItemPicker({ value, onChange, placeholder = 'Busc
     }
   };
 
+  // Ya elegido: se tiñe de verde para que se vea de un vistazo que la cita tiene
+  // servicio, sin tener que leer el texto.
+  const elegido = !!value?._id;
+
   return (
     <SuggestInput
       value={texto}
@@ -88,6 +93,15 @@ export default function ServiceItemPicker({ value, onChange, placeholder = 'Busc
       placeholder={creando ? 'Creando…' : placeholder}
       emptyHint="Todavía no hay servicios. Escribe el primero."
       autoFocus={autoFocus}
+      icon={<HiOutlineMagnifyingGlass className="w-4 h-4" />}
+      onClear={() => { setTexto(''); onChange(null); }}
+      className={
+        'w-full pl-10 pr-9 py-2.5 border rounded-xl text-sm outline-none ' +
+        'focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 ' +
+        (elegido
+          ? 'border-emerald-300 bg-emerald-50/60 text-emerald-900 font-medium'
+          : 'border-slate-200 bg-slate-50/50 text-slate-800')
+      }
     />
   );
 }

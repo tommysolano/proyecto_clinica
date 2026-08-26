@@ -8,7 +8,7 @@ import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import EmailStatus from '../components/EmailStatus';
 import useEmailValidation from '../hooks/useEmailValidation';
 import { useAuth } from '../context/AuthContext';
-import { roleSatisfies } from '../utils/roles';
+import { roleSatisfies, ROLE_LABELS } from '../utils/roles';
 import {
   HiOutlineUserPlus,
   HiOutlinePencilSquare,
@@ -16,20 +16,12 @@ import {
   HiOutlineUsers,
 } from 'react-icons/hi2';
 
-const ROLES = [
-  { value: 'admin', label: 'Administrador' },
-  { value: 'cajero', label: 'Cajero' },
-  { value: 'contabilidad', label: 'Contabilidad' },
-  { value: 'doctor', label: 'Doctor' },
-  { value: 'ginecologia', label: 'Ginecología' },
-  { value: 'podologia', label: 'Podología' },
-  { value: 'odontologia', label: 'Odontología' },
-  { value: 'cosmetologia', label: 'Cosmetología' },
-  { value: 'optica', label: 'Óptica' },
-  { value: 'call_center', label: 'Call Center' },
-  { value: 'marketing', label: 'Marketing' },
-  { value: 'enfermero', label: 'Enfermero/a' },
-];
+// Los roles que se pueden asignar salen de ROLE_LABELS (utils/roles.js), que es
+// el espejo en el cliente de VALID_ROLES del servidor. Antes esta lista estaba
+// copiada a mano aquí y se quedó atrás: 'cardiologia' existía en el sistema pero
+// no había forma de elegirlo al crear un usuario. Una especialidad nueva ahora
+// aparece sola en cuanto se registra en su sitio.
+const ROLES = Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label }));
 
 const EMPTY = {
   name: '',

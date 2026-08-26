@@ -9,6 +9,7 @@ import Layout from './components/Layout';
 import Spinner from './components/Spinner';
 import ErrorBoundary from './components/ErrorBoundary';
 import { cargarPagina } from './utils/lazyPage';
+import { DOCTOR_SPECIALTY_ROLES } from './utils/roles';
 // Login va EAGER a propósito: es la primera pantalla y hacerla perezosa añadiría
 // una petición extra en cadena justo antes de poder escribir el usuario.
 import Login from './pages/Login';
@@ -158,15 +159,14 @@ function RoleDashboard() {
   const { role, user, loading } = useAuth();
   if (loading) return null;
   if (!user?.isSuperAdmin && role === 'contabilidad') return <AccountingDashboard />;
+  // Las especialidades usan el dashboard del doctor (WelcomeDashboard toma la
+  // etiqueta del rol, así que cada una se saluda por su nombre). Sale de la lista
+  // central: enumeradas a mano, 'cardiologia' se quedó fuera y caía en el
+  // `default`, que es el dashboard de ADMINISTRADOR.
+  if (role !== 'optica' && DOCTOR_SPECIALTY_ROLES.includes(role)) return <DashboardDoctor />;
   switch (role) {
     case 'cajero': return <DashboardCajero />;
-    // Las especialidades usan el dashboard del doctor (WelcomeDashboard toma la
-    // etiqueta del rol, así que cada una se saluda por su nombre).
-    case 'doctor':
-    case 'ginecologia':
-    case 'podologia':
-    case 'odontologia':
-    case 'cosmetologia': return <DashboardDoctor />;
+    case 'doctor': return <DashboardDoctor />;
     case 'optica': return <DashboardOptica />;
     case 'call_center': return <DashboardCallCenter />;
     case 'marketing': return <DashboardMarketing />;

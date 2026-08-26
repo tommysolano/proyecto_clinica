@@ -7,6 +7,7 @@ import NumericInput from '../components/NumericInput';
 import ProductAutocomplete from '../components/ProductAutocomplete';
 import AccountSelect from '../components/AccountSelect';
 import DateInput from '../components/DateInput';
+import { DOCTOR_SPECIALTY_ROLES } from '../utils/roles';
 
 const ROLES = [
   { value: 'admin', label: 'Administrador' },
@@ -15,6 +16,7 @@ const ROLES = [
   { value: 'podologia', label: 'Podología' },
   { value: 'odontologia', label: 'Odontología' },
   { value: 'cosmetologia', label: 'Cosmetología' },
+  { value: 'cardiologia', label: 'Cardiología' },
   { value: 'optica', label: 'Óptica' },
   { value: 'enfermero', label: 'Enfermero/a' },
   { value: 'cajero', label: 'Cajero' },
@@ -45,13 +47,14 @@ const TRIGGER_HINTS = {
 };
 
 // Triggers sugeridos según el rol seleccionado (el modal se adapta al rol).
+//
+// Las especialidades comparten los del doctor y se generan de la lista central,
+// para que una nueva no se quede con el menú de condiciones equivocado.
+const TRIGGERS_DOCTOR = ['appointment_performed', 'recommendation', 'referral'];
 const TRIGGERS_BY_ROLE = {
   admin: ['admin_service'],
-  doctor: ['appointment_performed', 'recommendation', 'referral'],
-  ginecologia: ['appointment_performed', 'recommendation', 'referral'],
-  podologia: ['appointment_performed', 'recommendation', 'referral'],
-  odontologia: ['appointment_performed', 'recommendation', 'referral'],
-  cosmetologia: ['appointment_performed', 'recommendation', 'referral'],
+  doctor: TRIGGERS_DOCTOR,
+  ...Object.fromEntries(DOCTOR_SPECIALTY_ROLES.map((r) => [r, TRIGGERS_DOCTOR])),
   optica: ['appointment_performed', 'recommendation'],
   enfermero: ['appointment_performed', 'recommendation'],
   cajero: ['sale', 'recommendation'],

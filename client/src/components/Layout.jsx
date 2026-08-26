@@ -34,7 +34,10 @@ import {
 // Menú unificado por grupos. Cada ítem declara qué roles pueden verlo
 // (superOnly = solo isSuperAdmin). Un grupo se muestra si el rol ve al menos
 // uno de sus ítems. El super-admin ve todo.
-const ALL_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'ginecologia', 'podologia', 'odontologia', 'cosmetologia', 'optica', 'call_center', 'marketing', 'enfermero'];
+// Todos los roles del sistema, de ROLE_LABELS. Escrito a mano se quedaba atrás:
+// 'cardiologia' faltaba, y con ello su Dashboard, el escáner y la configuración
+// de cuenta no le salían en el menú.
+const ALL_ROLES = Object.keys(ROLE_LABELS);
 
 const MENU_GROUPS = [
   {

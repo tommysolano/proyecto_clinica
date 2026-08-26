@@ -1283,14 +1283,14 @@ export default function Appointments() {
               cambio (lo segundo es cobro, y eso va por contabilidad). */}
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
-              Servicio
+              Servicio <span className="font-normal text-slate-400">(opcional)</span>
             </label>
             <ServiceItemPicker
               value={form.serviceItem}
               onChange={(item) => setForm((f) => ({ ...f, serviceItem: item }))}
             />
             <p className="text-[11px] text-slate-400 mt-1">
-              Si no encuentras el servicio, escríbelo y se crea para todos.
+              Pincha para ver la lista. Si no está, escríbelo y se crea para todos.
             </p>
           </div>
 

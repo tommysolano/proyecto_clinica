@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { HiOutlineChevronDown, HiOutlinePlus } from 'react-icons/hi2';
+import { HiOutlineChevronDown, HiOutlinePlus, HiOutlineXMark } from 'react-icons/hi2';
 
 /**
  * BUSCADOR DE LO QUE YA EXISTE, con permiso para escribir algo nuevo.
@@ -23,8 +23,18 @@ import { HiOutlineChevronDown, HiOutlinePlus } from 'react-icons/hi2';
  *  - options      : ['Botox'] o [{ name: 'Botox', count: 12 }] — lo que ya existe
  *  - allowCreate  : si false, Enter con texto libre no hace nada (por defecto true)
  *  - emptyHint    : qué decir cuando todavía no hay nada creado
+ *  - icon         : icono a la izquierda (la lupa avisa de que aquí se busca)
+ *  - onClear      : si se pasa, con texto aparece una × para vaciar el campo
  */
 const plano = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+// Aspecto por defecto del campo. Sin esto, quien no pasara `className` se
+// quedaba con el reset de Tailwind —que le quita el borde a TODOS los inputs— y
+// el campo parecía un texto suelto en vez de algo donde escribir. Es lo que le
+// pasó al servicio de la cita: estaba, pero nadie lo encontraba.
+const CLASE_CAMPO =
+  'w-full pl-3.5 pr-9 py-2.5 border border-slate-200 rounded-xl text-sm bg-white ' +
+  'outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500';
 
 export default function SuggestInput({
   value = '',
@@ -32,12 +42,14 @@ export default function SuggestInput({
   onSelect,
   options = [],
   placeholder = '',
-  className = '',
+  className = CLASE_CAMPO,
   allowCreate = true,
   emptyHint = 'Todavía no hay ninguna creada. Escribe la primera.',
   autoFocus = false,
   onKeyDownExtra,
   onBlur,
+  icon = null,
+  onClear = null,
 }) {
   const [abierto, setAbierto] = useState(false);
   const [marcado, setMarcado] = useState(-1);
@@ -130,8 +142,15 @@ export default function SuggestInput({
     onKeyDownExtra?.(e);
   };
 
+  const puedeLimpiar = !!onClear && !!texto.trim();
+
   return (
     <span className="relative inline-flex w-full">
+      {icon && (
+        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 flex text-slate-400">
+          {icon}
+        </span>
+      )}
       <input
         ref={refInput}
         value={texto}
@@ -145,9 +164,22 @@ export default function SuggestInput({
         className={className}
         autoComplete="off"
       />
-      <HiOutlineChevronDown
-        className={`pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 transition-transform ${abierto ? 'rotate-180' : ''}`}
-      />
+      {puedeLimpiar ? (
+        <button
+          type="button"
+          // `onMouseDown`: con `onClick` el campo pierde antes el foco y el
+          // onBlur volvería a confirmar lo que se acaba de borrar.
+          onMouseDown={(e) => { e.preventDefault(); onClear(); setAbierto(false); }}
+          title="Quitar"
+          className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded-md bg-transparent border-none cursor-pointer text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex"
+        >
+          <HiOutlineXMark className="w-4 h-4" />
+        </button>
+      ) : (
+        <HiOutlineChevronDown
+          className={`pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 transition-transform ${abierto ? 'rotate-180' : ''}`}
+        />
+      )}
 
       {abierto && caja && createPortal(
         <div
