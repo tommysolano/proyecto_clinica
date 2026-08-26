@@ -788,8 +788,17 @@ exports.addFollowUp = async (req, res) => {
               url: `/patients/${patientId}?tab=seguimientos&appointment=${apt._id}`,
             }).catch(() => {});
           } else if (siguiente) {
-            // Turno de enfermería sin dueño: sale a la bandeja de todos.
+            // Turno de enfermería sin dueño: sale a la bandeja de todos, y les
+            // llega al móvil igual que si recepción se la hubiera mandado
+            // directa — hasta ahora solo se enteraban con la pestaña abierta.
             emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
+            const { notificarRol } = require('../utils/pushNotifications');
+            await notificarRol(req.clinicId, 'enfermero', {
+              type: 'appointment_nursing',
+              title: 'Cita para enfermería',
+              body: 'El doctor terminó su parte de la consulta.',
+              url: '/appointments',
+            }).catch(() => {});
           }
         }
       } catch (e) {

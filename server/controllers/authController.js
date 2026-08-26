@@ -50,6 +50,49 @@ exports.changePassword = async (req, res) => {
 };
 
 /**
+ * Cambio del PROPIO correo de acceso.
+ *
+ * Pide la contraseña actual: el correo es con lo que se entra al sistema, así
+ * que cambiarlo desde una sesión abierta y sin comprobar nada convierte
+ * cualquier ordenador desatendido en una forma de quedarse con la cuenta.
+ */
+exports.changeEmail = async (req, res) => {
+  try {
+    const { currentPassword, email } = req.body;
+    const limpio = String(email || '').trim().toLowerCase();
+    // Validación deliberadamente simple: lo que importa es que tenga forma de
+    // correo y sea único. Quien se equivoque lo verá al volver a entrar.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(limpio)) {
+      return res.status(400).json({ message: 'Escribe un correo válido' });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+
+    if (limpio === String(user.email || '').toLowerCase()) {
+      return res.status(400).json({ message: 'Ese ya es tu correo actual' });
+    }
+
+    const ok = await bcrypt.compare(currentPassword || '', user.password);
+    if (!ok) return res.status(400).json({ message: 'La contraseña actual es incorrecta' });
+
+    // Dos personas no pueden entrar con el mismo correo.
+    const ocupado = await User.findOne({ email: limpio, _id: { $ne: user._id } }).select('_id').lean();
+    if (ocupado) return res.status(409).json({ message: 'Ese correo ya lo usa otro usuario' });
+
+    user.email = limpio;
+    await user.save();
+    res.json({ message: 'Correo actualizado correctamente', email: user.email });
+  } catch (error) {
+    // El índice único puede saltar igual si dos cambian al mismo correo a la vez.
+    if (error.code === 11000) {
+      return res.status(409).json({ message: 'Ese correo ya lo usa otro usuario' });
+    }
+    res.status(500).json({ message: 'Error al cambiar el correo', error: error.message });
+  }
+};
+
+/**
  * Login: devuelve token sin clínica + lista de clínicas disponibles.
  * El cliente debe llamar a /auth/select-clinic para obtener un token con clinicId.
  */

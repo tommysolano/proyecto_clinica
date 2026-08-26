@@ -252,3 +252,154 @@ test('doctor y enfermería en la misma cita: primero el doctor, luego enfermerí
   // enfermería: comisiones y reportes leen ese campo.
   assert.equal(String(guardada.doctor), String(docA._id));
 });
+
+// ───────────── la cola: a cada uno cuando le toca ─────────────
+//
+// Anunciar la cita a los tres doctores a la vez es peor que no avisar: tres
+// consultorios esperando al mismo paciente. La cita solo existe para quien la
+// tiene AHORA, y para quien ya la atendió (su historial no se le puede borrar).
+
+test('al segundo doctor la cita NO le aparece hasta que el primero guarda', async () => {
+  const { clinicId, userId, patient, docA, docB, cita } = await seed();
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, { doctors: [String(docA._id), String(docB._id)] }, params(cita._id)),
+  );
+
+  const agendaDe = async (doc, role) => {
+    const r = await H.runController(
+      appt.getAppointments,
+      H.mockReq(clinicId, doc._id, {}, { role, query: {} }),
+    );
+    const lista = Array.isArray(r.payload) ? r.payload : r.payload?.appointments || [];
+    return lista.map((a) => String(a._id));
+  };
+
+  assert.deepEqual(await agendaDe(docA, 'doctor'), [String(cita._id)], 'el primero la ve');
+  assert.deepEqual(await agendaDe(docB, 'ginecologia'), [], 'el segundo todavía NO');
+
+  // El primero termina su parte.
+  await H.runController(
+    clinicalRecords.addFollowUp,
+    H.mockReq(clinicId, docA._id, { descripcion: 'Primera parte', appointmentId: String(cita._id) },
+      { role: 'doctor', params: { patientId: String(patient._id) } }),
+  );
+
+  assert.deepEqual(await agendaDe(docB, 'ginecologia'), [String(cita._id)], 'ahora sí le toca');
+  // Y al primero no se le cae del historial por haber pasado el turno.
+  assert.deepEqual(await agendaDe(docA, 'doctor'), [String(cita._id)], 'sigue en su historial');
+});
+
+test('enfermería detrás de un doctor no sale a la bandeja hasta que él termina', async () => {
+  const { clinicId, userId, patient, docA, enf1, cita } = await seed();
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, { doctors: [String(docA._id)], nursing: true }, params(cita._id)),
+  );
+
+  const bandeja = async () => {
+    const r = await H.runController(
+      appt.getAppointments,
+      H.mockReq(clinicId, enf1._id, {}, { role: 'enfermero', query: {} }),
+    );
+    const lista = Array.isArray(r.payload) ? r.payload : r.payload?.appointments || [];
+    return lista.map((a) => String(a._id));
+  };
+
+  assert.deepEqual(await bandeja(), [], 'el paciente sigue con el doctor');
+
+  await H.runController(
+    clinicalRecords.addFollowUp,
+    H.mockReq(clinicId, docA._id, { descripcion: 'Consulta', appointmentId: String(cita._id) },
+      { role: 'doctor', params: { patientId: String(patient._id) } }),
+  );
+
+  assert.deepEqual(await bandeja(), [String(cita._id)], 'ahora le toca a enfermería');
+});
+
+test('el enfermero que atendió conserva la cita aunque el turno pase a otro', async () => {
+  const { clinicId, userId, patient, docA, enf1, cita } = await seed();
+  // Enfermería primero (toma de signos) y el doctor después.
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, { doctors: [String(docA._id)], nursing: true }, params(cita._id)),
+  );
+  // Se reordena para que enfermería vaya delante, como cuando se toman signos.
+  const previa = await Appointment.findById(cita._id);
+  previa.turns = [
+    { ...previa.turns[1].toObject(), order: 0 },
+    { ...previa.turns[0].toObject(), order: 1 },
+  ];
+  require('../utils/appointmentTurns').sincronizarEspejo(previa);
+  await previa.save();
+
+  await H.runController(appt.nurseClaim, H.mockReq(clinicId, enf1._id, {}, { role: 'enfermero', ...params(cita._id) }));
+  await H.runController(
+    clinicalRecords.addFollowUp,
+    H.mockReq(clinicId, enf1._id, { descripcion: 'Signos vitales', appointmentId: String(cita._id) },
+      { role: 'enfermero', params: { patientId: String(patient._id) } }),
+  );
+
+  const r = await H.runController(
+    appt.getAppointments,
+    H.mockReq(clinicId, enf1._id, {}, { role: 'enfermero', query: {} }),
+  );
+  const lista = Array.isArray(r.payload) ? r.payload : r.payload?.appointments || [];
+  assert.deepEqual(lista.map((a) => String(a._id)), [String(cita._id)], 'la que atendió no se le borra');
+
+  const guardada = await Appointment.findById(cita._id);
+  assert.equal(guardada.currentTurnKind, 'doctor', 'la pelota pasó al doctor');
+  assert.equal(guardada.status, 'asistida', 'sigue abierta: falta el doctor');
+});
+
+test('enfermería puede ir PRIMERO: la cola la ordena quien asigna', async () => {
+  const { clinicId, userId, docA, enf1, cita } = await seed();
+
+  // Signos vitales antes de que pase el médico: el caso más común, e imposible
+  // mientras enfermería fue una casilla que siempre caía al final.
+  const r = await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [{ kind: 'enfermeria' }, { kind: 'doctor', user: String(docA._id) }],
+    }, params(cita._id)),
+  );
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const guardada = await Appointment.findById(cita._id);
+  assert.deepEqual(guardada.turns.map((t) => t.kind), ['enfermeria', 'doctor']);
+  assert.equal(guardada.currentTurnKind, 'enfermeria', 'empieza enfermería');
+
+  // Al doctor todavía no le toca.
+  const agenda = await H.runController(
+    appt.getAppointments,
+    H.mockReq(clinicId, docA._id, {}, { role: 'doctor', query: {} }),
+  );
+  const lista = Array.isArray(agenda.payload) ? agenda.payload : agenda.payload?.appointments || [];
+  assert.deepEqual(lista.map((a) => String(a._id)), [], 'el doctor espera a que enfermería termine');
+
+  // Y a los enfermeros sí.
+  const bandeja = await H.runController(
+    appt.getAppointments,
+    H.mockReq(clinicId, enf1._id, {}, { role: 'enfermero', query: {} }),
+  );
+  const suyas = Array.isArray(bandeja.payload) ? bandeja.payload : bandeja.payload?.appointments || [];
+  assert.deepEqual(suyas.map((a) => String(a._id)), [String(cita._id)]);
+});
+
+test('enfermería puede repetirse en la cola (signos antes, aplicación después)', async () => {
+  const { clinicId, userId, docA, cita } = await seed();
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [
+        { kind: 'enfermeria' },
+        { kind: 'doctor', user: String(docA._id) },
+        { kind: 'enfermeria' },
+      ],
+    }, params(cita._id)),
+  );
+
+  const guardada = await Appointment.findById(cita._id);
+  assert.deepEqual(guardada.turns.map((t) => t.kind), ['enfermeria', 'doctor', 'enfermeria']);
+  assert.deepEqual(guardada.turns.map((t) => t.order), [0, 1, 2]);
+});

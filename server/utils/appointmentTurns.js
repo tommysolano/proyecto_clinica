@@ -40,6 +40,17 @@ function turnosTerminados(apt) {
  */
 function sincronizarEspejo(apt) {
   const orden = turnosOrdenados(apt);
+
+  // Clase del turno que tiene la pelota: de esto depende que la cita salga (o no)
+  // en la bandeja de enfermería. Se guarda porque no se puede consultar el
+  // "primer pendiente" de un arreglo desde una query.
+  const enCurso = orden.find((t) => t.status === 'pendiente');
+  apt.currentTurnKind = enCurso ? enCurso.kind : null;
+  // Y QUIÉN lo tiene. No vale el espejo `doctor` para esto: si enfermería va
+  // delante, el espejo ya apunta al doctor de detrás (es su cita, y así la leen
+  // las comisiones y los reportes), pero en su agenda todavía no debe salir.
+  apt.currentTurnUser = enCurso && enCurso.kind === 'doctor' ? enCurso.user || null : null;
+
   const vigente = orden.find((t) => t.status === 'pendiente' && t.kind === 'doctor');
   const ultimoDoctor = [...orden].reverse().find((t) => t.kind === 'doctor' && t.user);
   const elegido = vigente && vigente.user ? vigente : ultimoDoctor;
@@ -64,29 +75,39 @@ function sincronizarEspejo(apt) {
  * Los turnos YA COMPLETADOS se conservan: reasignar a mitad de la atención no
  * puede borrar el trabajo del que ya atendió (ni su seguimiento).
  */
-function asignarTurnos(apt, { doctores = [], enfermeria = false, por = null } = {}) {
+function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, por = null } = {}) {
+  /**
+   * La cola es UNA sola y enfermería es un paso más dentro de ella.
+   *
+   * Antes enfermería era un sí/no que siempre caía al final, y eso dejaba fuera
+   * el caso más común: que enfermería tome los signos ANTES de que pase el
+   * doctor. Con `pasos` el orden lo pone quien asigna. `doctores`+`enfermeria`
+   * se sigue aceptando (clientes viejos) y equivale a los doctores en fila con
+   * enfermería detrás.
+   */
+  const secuencia =
+    Array.isArray(pasos) && pasos.length
+      ? pasos
+      : [
+          ...doctores.filter(Boolean).map((user) => ({ kind: 'doctor', user })),
+          ...(enfermeria ? [{ kind: 'enfermeria' }] : []),
+        ];
+
   const completados = (apt.turns || []).filter((t) => t.status === 'completado');
   let order = completados.length;
   const nuevos = [];
 
-  for (const user of doctores) {
-    if (!user) continue;
-    // Si ese profesional ya atendió su turno, no se le vuelve a poner en cola.
-    if (completados.some((t) => String(t.user) === String(user))) continue;
+  for (const paso of secuencia) {
+    const esEnfermeria = paso?.kind === 'enfermeria';
+    const user = esEnfermeria ? null : paso?.user;
+    if (!esEnfermeria && !user) continue;
+    // A quien ya atendió no se le vuelve a poner en cola: su turno está cerrado
+    // y su seguimiento escrito. (Enfermería sí puede repetirse: tomar signos
+    // antes y aplicar algo después son dos pasos distintos.)
+    if (!esEnfermeria && completados.some((t) => String(t.user) === String(user))) continue;
     nuevos.push({
-      kind: 'doctor',
+      kind: esEnfermeria ? 'enfermeria' : 'doctor',
       user,
-      order: order++,
-      status: 'pendiente',
-      assignedAt: new Date(),
-      assignedBy: por,
-    });
-  }
-
-  if (enfermeria) {
-    nuevos.push({
-      kind: 'enfermeria',
-      user: null,
       order: order++,
       status: 'pendiente',
       assignedAt: new Date(),
@@ -134,11 +155,54 @@ function turnoEnfermeriaPendiente(apt) {
   return turnosOrdenados(apt).find((t) => t.kind === 'enfermeria' && t.status === 'pendiente') || null;
 }
 
+/**
+ * Id de un campo que puede venir poblado o en crudo.
+ *
+ * Los turnos se leen tanto de la cita recién guardada (ObjectId pelado) como de
+ * la poblada que se manda por socket (`turns.user` es el usuario entero). Sin
+ * esto, `String(user)` sobre el documento poblado devuelve "{ _id: ..., name:
+ * 'DocA' }" y el aviso se manda a un id que no existe: la notificación se pierde
+ * y en el log solo queda un "Cast to ObjectId failed".
+ */
+const idDe = (v) => (v && typeof v === 'object' && v._id ? String(v._id) : v ? String(v) : null);
+
 /** Ids de los doctores con turno pendiente (a quienes hay que avisar). */
 function doctoresPendientes(apt) {
   return turnosOrdenados(apt)
     .filter((t) => t.kind === 'doctor' && t.status === 'pendiente' && t.user)
-    .map((t) => String(t.user));
+    .map((t) => idDe(t.user));
+}
+
+/**
+ * El doctor al que le toca AHORA, o null si el turno en curso es de enfermería.
+ *
+ * La cola es estricta: al segundo doctor no se le anuncia nada mientras el
+ * paciente siga con el primero. Anunciárselo a los tres a la vez es peor que no
+ * avisar — tres consultorios esperando al mismo paciente.
+ */
+function doctorEnTurno(apt) {
+  const vigente = turnoVigente(apt);
+  return vigente && vigente.kind === 'doctor' ? idDe(vigente.user) : null;
+}
+
+/**
+ * Condición de Mongo con las citas que un doctor debe ver en su agenda.
+ *
+ * Tres casos, y los tres hacen falta:
+ *  1. La que tiene AHORA (`currentTurnUser`). No se usa el espejo `doctor`: con
+ *     enfermería por delante, el espejo ya apunta al doctor de detrás.
+ *  2. Las que YA atendió, para que no se le caigan del historial al pasar el
+ *     turno al siguiente.
+ *  3. Las citas SIN turnos (anteriores al cambio), donde manda el espejo.
+ */
+function filtroCitasDelDoctor(userId) {
+  return {
+    $or: [
+      { currentTurnUser: userId },
+      { turns: { $elemMatch: { user: userId, status: 'completado' } } },
+      { $and: [{ turns: { $in: [null, []] } }, { doctor: userId }] },
+    ],
+  };
 }
 
 module.exports = {
@@ -150,4 +214,6 @@ module.exports = {
   completarTurno,
   turnoEnfermeriaPendiente,
   doctoresPendientes,
+  doctorEnTurno,
+  filtroCitasDelDoctor,
 };

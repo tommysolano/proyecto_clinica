@@ -99,6 +99,28 @@ const appointmentSchema = new mongoose.Schema(
      * Vacío en las citas anteriores al cambio (y en las que aún no se asignaron).
      */
     turns: { type: [appointmentTurnSchema], default: [] },
+
+    /**
+     * Qué clase de turno tiene la pelota AHORA: 'doctor', 'enfermeria' o null si
+     * ya no queda ninguno pendiente.
+     *
+     * Es un dato derivado de `turns[]`, igual que `doctor`, y lo escribe el mismo
+     * sitio (utils/appointmentTurns.js). Existe porque "¿el turno vigente es el
+     * de enfermería?" no se puede preguntar en una consulta de Mongo sobre el
+     * arreglo, y de eso depende que una cita NO salga en la bandeja de los
+     * enfermeros mientras el paciente siga con el doctor de delante.
+     */
+    currentTurnKind: { type: String, enum: ['doctor', 'enfermeria', null], default: null },
+
+    /**
+     * Y QUIÉN lo tiene, si es un doctor (null cuando le toca a enfermería, que
+     * no tiene dueño hasta que alguien la reclama).
+     *
+     * No sirve `doctor` para esto: ese espejo apunta al doctor de la cita aunque
+     * enfermería vaya por delante — es correcto para comisiones y reportes, pero
+     * en la agenda del doctor la cita no debe salir hasta que le toque.
+     */
+    currentTurnUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     date: { type: Date, required: [true, 'La fecha es requerida'] },
     startTime: { type: String, required: [true, 'La hora de inicio es requerida'] },
     endTime: { type: String },

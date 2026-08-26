@@ -4,10 +4,16 @@ const Patient = require('../models/Patient');
 // Se importa aunque no se use directamente aquí: `populate('serviceItem')` falla
 // con "Schema hasn't been registered" si el modelo no se ha cargado nunca.
 require('../models/AppointmentServiceItem');
+// Igual con el consultorio (ya no se pide al agendar, pero las citas viejas lo
+// tienen y el listado lo sigue poblando) y con la sucursal.
+require('../models/Room');
+require('../models/Clinic');
 const { emitToClinic, emitToUser, emitToRole } = require('../realtime');
 const {
   asignarTurnos,
   doctoresPendientes,
+  doctorEnTurno,
+  filtroCitasDelDoctor,
   turnoEnfermeriaPendiente,
 } = require('../utils/appointmentTurns');
 const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
@@ -152,10 +158,9 @@ exports.getAppointments = async (req, res) => {
     }
 
     if (isDoctorRole(req.role)) {
-      // Su turno (o el histórico, si ya atendió). `doctor` es el espejo del turno
-      // vigente y por sí solo dejaría fuera al doctor que aún no le toca — que
-      // necesita ver la cita en su agenda desde que se la asignan.
-      query.$or = [{ doctor: req.user._id }, { 'turns.user': req.user._id }];
+      // Su turno VIGENTE o uno que ya atendió: al doctor que va segundo la cita
+      // no le aparece hasta que el primero termine (ver filtroCitasDelDoctor).
+      Object.assign(query, filtroCitasDelDoctor(req.user._id));
     }
     // El call center puede ver TODAS las citas agendadas (no solo las suyas).
     if (req.role === 'enfermero') {
@@ -877,7 +882,7 @@ exports.getTodayAppointments = async (req, res) => {
     };
 
     if (isDoctorRole(req.role)) {
-      query.$or = [{ doctor: req.user._id }, { 'turns.user': req.user._id }];
+      Object.assign(query, filtroCitasDelDoctor(req.user._id));
     }
     // El call center puede ver TODAS las citas del día.
     if (req.role === 'enfermero') {
@@ -1234,9 +1239,25 @@ async function filtroEnfermeria(req) {
     $and: [
       {
         $or: [
-          { 'turns.kind': 'enfermeria' },
-          { 'services.product': { $in: nursingProductIds } },
-          { serviceItem: { $in: nursingItemIds } },
+          // Con turnos, solo cuando a enfermería LE TOCA: si delante hay un
+          // doctor que aún no ha guardado su seguimiento, la cita todavía no es
+          // suya y no tiene por qué aparecerles.
+          { currentTurnKind: 'enfermeria' },
+          // Las que este enfermero YA atendió no se le caen de la lista cuando
+          // el turno pasa al siguiente profesional.
+          { attendedByNurse: req.user._id },
+          // Citas sin turnos (anteriores al cambio): manda el servicio, como siempre.
+          {
+            $and: [
+              { turns: { $in: [null, []] } },
+              {
+                $or: [
+                  { 'services.product': { $in: nursingProductIds } },
+                  { serviceItem: { $in: nursingItemIds } },
+                ],
+              },
+            ],
+          },
         ],
       },
       { $or: [{ attendedByNurse: null }, { attendedByNurse: req.user._id }] },
@@ -1246,11 +1267,14 @@ async function filtroEnfermeria(req) {
 }
 
 /**
- * ASIGNA LA ATENCIÓN de la cita: uno o varios doctores EN TURNOS, y/o
- * enfermería. Es lo único que hace recepción cuando llega el paciente.
+ * ASIGNA LA ATENCIÓN de la cita: la cola de profesionales por los que pasa el
+ * paciente. Es lo único que hace recepción cuando llega.
  *
- * Acepta `{ doctors: [id, ...], nursing: bool }` y, por compatibilidad con
- * clientes viejos, también el `{ doctorId }` de antes.
+ * Formato principal: `{ steps: [{kind:'doctor', user}, {kind:'enfermeria'}, …] }`
+ * EN EL ORDEN de atención — enfermería es un paso más, no un añadido al final,
+ * porque lo habitual es que tome los signos ANTES de que pase el doctor.
+ * Se siguen aceptando `{ doctors: [id, …], nursing: bool }` y el `{ doctorId }`
+ * de antes, para los clientes viejos.
  *
  * PONE LA CITA EN 'asistida' AUNQUE NADIE PULSE "asistió". Se quitó ese paso
  * porque se sobreentiende, pero el estado NO es cosmético: `utils/autoNoShow.js`
@@ -1260,13 +1284,30 @@ async function filtroEnfermeria(req) {
  */
 exports.assignDoctor = async (req, res) => {
   try {
-    const doctores = Array.isArray(req.body.doctors)
-      ? req.body.doctors.filter(Boolean).map(String)
-      : req.body.doctorId
-        ? [String(req.body.doctorId)]
-        : [];
-    const enfermeria = !!req.body.nursing;
-    if (!doctores.length && !enfermeria) {
+    // Cola tal cual la mandó recepción. Si viene el formato viejo, se traduce a
+    // pasos: los doctores en fila y enfermería detrás.
+    const pasos = Array.isArray(req.body.steps)
+      ? req.body.steps
+          .map((p) =>
+            p?.kind === 'enfermeria'
+              ? { kind: 'enfermeria' }
+              : p?.user
+                ? { kind: 'doctor', user: String(p.user) }
+                : null
+          )
+          .filter(Boolean)
+      : [
+          ...(Array.isArray(req.body.doctors)
+            ? req.body.doctors.filter(Boolean).map((u) => ({ kind: 'doctor', user: String(u) }))
+            : req.body.doctorId
+              ? [{ kind: 'doctor', user: String(req.body.doctorId) }]
+              : []),
+          ...(req.body.nursing ? [{ kind: 'enfermeria' }] : []),
+        ];
+
+    const doctores = pasos.filter((p) => p.kind === 'doctor').map((p) => p.user);
+    const enfermeria = pasos.some((p) => p.kind === 'enfermeria');
+    if (!pasos.length) {
       return res.status(400).json({ message: 'Elige al menos un doctor o marca enfermería' });
     }
 
@@ -1287,7 +1328,7 @@ exports.assignDoctor = async (req, res) => {
     const anteriores = doctoresPendientes(apt);
     const wasAttended = apt.status === 'asistida' || apt.status === 'completada';
 
-    asignarTurnos(apt, { doctores, enfermeria, por: req.user._id });
+    asignarTurnos(apt, { pasos, por: req.user._id });
     if (apt.status === 'pendiente' || apt.status === 'confirmada') apt.status = 'asistida';
     await apt.save();
 
@@ -1329,21 +1370,31 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
   const servicio = apt.serviceName || apt.serviceItem?.name || '';
   const cuerpo = `${paciente}${servicio ? ` · ${servicio}` : ''} · ${apt.startTime || ''}`;
 
-  for (const id of doctores) {
-    emitToUser(id, 'appointment:assigned', apt);
+  /**
+   * Solo se avisa a QUIEN LE TOCA AHORA. Si se asignan tres doctores en fila,
+   * los otros dos no se enteran hasta que el de delante guarde su seguimiento
+   * (ese aviso lo manda clinicalRecordController al cerrar el turno). Avisarlos
+   * a la vez llenaría tres consultorios esperando al mismo paciente.
+   */
+  const enTurno = doctorEnTurno(apt);
+  // El turno de enfermería tampoco sale a la bandeja mientras haya un doctor
+  // por delante: la cola es la misma para todos.
+  const turnoVigenteEsEnfermeria = enfermeria && !enTurno;
+
+  if (enTurno) emitToUser(enTurno, 'appointment:assigned', apt);
+  // Quien deja de tenerla —o quien sigue en la cola— también se entera, para que
+  // su lista quede al día sin anunciarle nada.
+  for (const id of [...new Set([...anteriores, ...doctores])]) {
+    if (id !== enTurno) emitToUser(id, 'appointment:updated', apt);
   }
-  // Quien deja de tenerla también se entera, para que le desaparezca de la lista.
-  for (const id of anteriores) {
-    if (!doctores.includes(id)) emitToUser(id, 'appointment:updated', apt);
-  }
-  if (enfermeria) {
+  if (turnoVigenteEsEnfermeria) {
     emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
   }
 
   try {
     const { notificarUsuarios, notificarRol } = require('../utils/pushNotifications');
-    if (doctores.length) {
-      await notificarUsuarios(doctores, {
+    if (enTurno) {
+      await notificarUsuarios([enTurno], {
         clinicId: req.clinicId,
         type: 'appointment_assigned',
         title: 'Cita asignada',
@@ -1351,7 +1402,7 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
         url: `/patients/${apt.patient?._id || apt.patient}?tab=seguimientos&appointment=${apt._id}`,
       });
     }
-    if (enfermeria) {
+    if (turnoVigenteEsEnfermeria) {
       await notificarRol(req.clinicId, 'enfermero', {
         type: 'appointment_nursing',
         title: 'Cita para enfermería',
@@ -1457,6 +1508,22 @@ exports.nurseClaim = async (req, res) => {
      * segundo pisaría al primero: dos personas atendiendo al mismo paciente y un
      * único registro. La condición viaja DENTRO del update: la gana uno solo.
      */
+    /**
+     * Y solo si a enfermería LE TOCA. Con la cola ordenada, un turno de
+     * enfermería puede estar detrás de un doctor; la bandeja ya no lo enseña,
+     * pero una pantalla abierta desde antes sí podría mandarlo, y reclamarlo
+     * pondría la cita en manos de enfermería con el paciente aún en consulta.
+     */
+    const enCola = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId })
+      .select('currentTurnKind turns attendedByNurse')
+      .lean();
+    if (enCola && (enCola.turns || []).length && enCola.currentTurnKind === 'doctor') {
+      return res.status(409).json({
+        message: 'Todavía le toca al doctor. La cita pasará a enfermería cuando él termine.',
+        code: 'NOT_YOUR_TURN',
+      });
+    }
+
     const apt = await Appointment.findOneAndUpdate(
       {
         _id: req.params.id,

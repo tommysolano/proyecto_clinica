@@ -210,17 +210,27 @@ export default function PatientDetail() {
   }
 
   if (!patient) {
-    return <div className="p-6">Paciente no encontrado.</div>;
+    return <div className="p-4 sm:p-6">Paciente no encontrado.</div>;
   }
 
-  // Filtrar tabs visibles según rol
+  // Filtrar tabs visibles según rol.
+  //
+  // Quien atiende (doctores, especialidades y enfermería) entra aquí a lo suyo:
+  // la ficha y los seguimientos. La agenda del paciente y la bitácora de
+  // observaciones son trabajo de recepción, y tenerlas delante solo alarga la
+  // fila de pestañas en la pantalla donde menos sitio hay.
+  const soloAtiende = hasRole('doctor', 'enfermero') && !hasRole('admin');
   const visibleTabs = TABS.filter((t) => {
     if (t.id === 'facturas') return hasRole('admin', 'cajero', 'contabilidad');
+    if (t.id === 'citas' || t.id === 'observaciones') return !soloAtiende;
     return true;
   });
+  // Un enlace viejo (?tab=citas) o un rol sin esa pestaña dejaría el panel en
+  // blanco: se cae a la primera que sí puede ver.
+  const tabActiva = visibleTabs.some((t) => t.id === tab) ? tab : visibleTabs[0]?.id;
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
+    <div className="p-4 sm:p-6 max-w-6xl mx-auto">
       <Link
         to="/patients"
         className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-emerald-600 mb-4 no-underline"
@@ -228,14 +238,15 @@ export default function PatientDetail() {
         <HiOutlineArrowLeft className="w-4 h-4" /> Volver a pacientes
       </Link>
 
-      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-6 mb-6">
-        <div className="flex items-start gap-4">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white font-bold text-xl">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4 sm:p-6 mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-start gap-4">
+          <div className="flex items-start gap-3 sm:gap-4 min-w-0 flex-1">
+          <div className="w-12 h-12 sm:w-14 sm:h-14 shrink-0 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white font-bold text-lg sm:text-xl">
             {patient.firstName?.[0]}
             {patient.lastName?.[0]}
           </div>
-          <div className="flex-1">
-            <h1 className="text-2xl font-bold text-slate-800 tracking-tight">
+          <div className="flex-1 min-w-0">
+            <h1 className="text-xl sm:text-2xl font-bold text-slate-800 tracking-tight break-words">
               {patient.firstName} {patient.lastName}
             </h1>
             {/* Cédula, teléfono y correo son solo del administrador: el servidor ni
@@ -266,10 +277,11 @@ export default function PatientDetail() {
               />
             </div>
           </div>
+          </div>
           {timerSeconds !== null && (
-            <div className="flex flex-col items-end gap-1 ml-4 shrink-0">
-              <span className="text-xs text-slate-400">{fmtDate(new Date().toISOString())}</span>
-              <div className={`flex items-center gap-2 px-4 py-2 rounded-xl border font-mono text-2xl font-bold tabular-nums transition-colors ${timerStyle}`}>
+            <div className="flex flex-row sm:flex-col items-center sm:items-end justify-between gap-2 sm:gap-1 shrink-0 border-t sm:border-t-0 border-slate-100 pt-3 sm:pt-0">
+              <span className="hidden sm:block text-xs text-slate-400">{fmtDate(new Date().toISOString())}</span>
+              <div className={`flex items-center gap-2 px-3 sm:px-4 py-2 rounded-xl border font-mono text-xl sm:text-2xl font-bold tabular-nums transition-colors ${timerStyle}`}>
                 <span>⏱</span>
                 <span>{fmtTimer(timerSeconds)}</span>
               </div>
@@ -293,7 +305,7 @@ export default function PatientDetail() {
                 key={t.id}
                 onClick={() => setTab(t.id)}
                 className={`flex items-center gap-2 px-5 py-3 text-sm font-medium border-none cursor-pointer transition-colors whitespace-nowrap ${
-                  tab === t.id
+                  tabActiva === t.id
                     ? 'bg-emerald-50 text-emerald-700 border-b-2 border-emerald-600'
                     : 'bg-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50'
                 }`}
@@ -305,13 +317,13 @@ export default function PatientDetail() {
           })}
         </div>
 
-        <div className="p-6">
-          {tab === 'datos' && <DatosTab patient={patient} />}
-          {tab === 'ficha' && <FichaTab patientId={id} />}
-          {tab === 'seguimientos' && <SeguimientosTab patientId={id} appointmentId={appointmentId} />}
-          {tab === 'citas' && <CitasTab patientId={id} />}
-          {tab === 'observaciones' && <ObservacionesTab patientId={id} />}
-          {tab === 'facturas' && <FacturasTab patientId={id} />}
+        <div className="p-4 sm:p-6">
+          {tabActiva === 'datos' && <DatosTab patient={patient} />}
+          {tabActiva === 'ficha' && <FichaTab patientId={id} />}
+          {tabActiva === 'seguimientos' && <SeguimientosTab patientId={id} appointmentId={appointmentId} />}
+          {tabActiva === 'citas' && <CitasTab patientId={id} />}
+          {tabActiva === 'observaciones' && <ObservacionesTab patientId={id} />}
+          {tabActiva === 'facturas' && <FacturasTab patientId={id} />}
         </div>
       </div>
     </div>
@@ -588,7 +600,7 @@ function MspChecklist({ catalog, value = [], onChange, cols = 'md:grid-cols-3 lg
     emit({ ...byKey, [key]: { ...cur, key, detail } });
   };
   return (
-    <div className={`grid grid-cols-2 ${cols} gap-2`}>
+    <div className={`grid grid-cols-1 sm:grid-cols-2 ${cols} gap-2`}>
       {catalog.map((cat) => {
         const cur = byKey[cat.key];
         const marked = !!cur?.marked;
@@ -799,6 +811,26 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
         { key: 'instructions', label: 'Indicaciones', placeholder: 'Motivo de la derivación o instrucciones', ancho: 'min-w-[200px]' },
       ];
 
+  // Un solo sitio donde se decide qué campo pintar: la tabla del escritorio y
+  // las tarjetas del móvil comparten los mismos controles.
+  const campo = (c, row, idx) =>
+    c.numero ? (
+      <NumericInput
+        min={1}
+        value={row[c.key]}
+        onChange={(e) => onUpdate(idx, c.key, e.target.value === '' ? '' : Number(e.target.value))}
+        className="input text-xs py-1"
+      />
+    ) : (
+      <input
+        type="text"
+        value={row[c.key] || ''}
+        onChange={(e) => onUpdate(idx, c.key, e.target.value)}
+        placeholder={c.placeholder}
+        className="input text-xs py-1"
+      />
+    );
+
   return (
     <div className="md:col-span-3">
       <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
@@ -814,7 +846,11 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
           <HiOutlinePlus className="w-3 h-3" /> Agregar línea
         </button>
       </div>
-      <div className="overflow-x-auto bg-white rounded-lg border border-slate-200">
+      {/* En el escritorio, una línea por fila. En el móvil NO: seis columnas con
+          ancho mínimo obligan a arrastrar la tabla de lado mientras se escribe,
+          que es lo último que quiere quien está con el paciente delante. Ahí
+          cada medicamento es una tarjeta con sus campos uno debajo de otro. */}
+      <div className="hidden md:block overflow-x-auto bg-white rounded-lg border border-slate-200">
         <table className="tbl text-xs">
           <thead className="bg-slate-100 text-slate-600">
             <tr>
@@ -829,22 +865,7 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
               <tr key={idx} className="border-t border-slate-100">
                 {columnas.map((c) => (
                   <td key={c.key} className={`px-2 py-1 ${c.ancho || ''}`}>
-                    {c.numero ? (
-                      <NumericInput
-                        min={1}
-                        value={row[c.key]}
-                        onChange={(e) => onUpdate(idx, c.key, e.target.value === '' ? '' : Number(e.target.value))}
-                        className="input text-xs py-1"
-                      />
-                    ) : (
-                      <input
-                        type="text"
-                        value={row[c.key] || ''}
-                        onChange={(e) => onUpdate(idx, c.key, e.target.value)}
-                        placeholder={c.placeholder}
-                        className="input text-xs py-1"
-                      />
-                    )}
+                    {campo(c, row, idx)}
                   </td>
                 ))}
                 <td className="px-2 py-1 text-right">
@@ -861,6 +882,31 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="md:hidden space-y-2">
+        {items.map((row, idx) => (
+          <div key={idx} className="bg-white rounded-lg border border-slate-200 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">
+                {isReceta ? 'Medicamento' : 'Derivación'} {idx + 1}
+              </span>
+              <button
+                type="button"
+                onClick={() => onRemove(idx)}
+                className="flex items-center gap-1 text-[11px] text-red-500 bg-transparent border-none cursor-pointer p-0"
+              >
+                <HiOutlineTrash className="w-3.5 h-3.5" /> Quitar
+              </button>
+            </div>
+            {columnas.map((c) => (
+              <label key={c.key} className="block">
+                <span className="block text-[11px] font-medium text-slate-500 mb-0.5">{c.label}</span>
+                {campo(c, row, idx)}
+              </label>
+            ))}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -1802,24 +1848,24 @@ function SeguimientosTab({ patientId, appointmentId }) {
         </div>
       )}
 
+      {/* El historial NO es una tabla: la columna del medio lleva la consulta
+          entera (diagnósticos, receta, signos, adjuntos) y en un teléfono se
+          quedaba en un hilo de texto con scroll lateral. En el móvil cada
+          seguimiento es una tarjeta y de `md` en adelante recupera sus tres
+          columnas de siempre. */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <table className="tbl">
-          <thead className="bg-slate-50 text-slate-600">
-            <tr>
-              <th className="text-left px-4 py-2.5 font-semibold">Fecha</th>
-              <th className="text-left px-4 py-2.5 font-semibold">Motivo de consulta</th>
-              <th className="px-4 py-2.5"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {followUps.length === 0 && (
-              <tr>
-                <td colSpan={3} className="text-center py-6 text-slate-400">
-                  No hay seguimientos.
-                </td>
-              </tr>
-            )}
-            {followUps.map((fu) => {
+        <div className="hidden md:flex bg-slate-50 text-slate-600 text-xs font-semibold uppercase tracking-wider px-4 py-2.5 border-b border-slate-200">
+          <span className="w-40 shrink-0">Fecha</span>
+          <span className="flex-1">Motivo de consulta</span>
+          <span className="w-32 shrink-0 text-right">Acciones</span>
+        </div>
+        <div className="divide-y divide-slate-100">
+          {followUps.length === 0 && (
+            <p className="text-center py-6 text-slate-400 text-sm m-0">
+              No hay seguimientos.
+            </p>
+          )}
+          {followUps.map((fu) => {
               const hasOpticaData =
                 fu.opticaRx &&
                 (Object.values(fu.opticaRx.od || {}).some((v) => String(v).trim()) ||
@@ -1837,16 +1883,19 @@ function SeguimientosTab({ patientId, appointmentId }) {
               const regItems = markedItems(EXAMEN_REGIONAL, fu.examenFisico?.regional);
               const sisItems = markedItems(EXAMEN_SISTEMICO, fu.examenFisico?.sistemico);
               return (
-                <tr key={fu._id} className="border-t border-slate-100 align-top">
-                  <td className="px-4 py-2.5 text-slate-600 whitespace-nowrap">
+                <article
+                  key={fu._id}
+                  className="flex flex-col md:flex-row md:items-start gap-2 md:gap-0 p-4 md:p-0 text-sm"
+                >
+                  <div className="md:w-40 md:shrink-0 md:px-4 md:py-2.5 text-slate-600 whitespace-nowrap font-medium md:font-normal">
                     {fmtDate(fu.fecha)}
                     {fu.createdBy?.name && (
-                      <div className="text-[11px] text-emerald-700 mt-0.5 font-medium">
+                      <span className="text-[11px] text-emerald-700 font-medium ml-2 md:ml-0 md:mt-0.5 md:block">
                         Dr. {fu.createdBy.name}
-                      </div>
+                      </span>
                     )}
-                  </td>
-                  <td className="px-4 py-2.5 text-slate-800">
+                  </div>
+                  <div className="flex-1 min-w-0 break-words md:px-4 md:py-2.5 text-slate-800">
                     {fu.kind === 'enfermeria' && (
                       <span className="inline-block mb-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-700">Enfermería</span>
                     )}
@@ -2046,9 +2095,9 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         </label>
                       )}
                     </div>
-                  </td>
-                  <td className="px-4 py-2.5 text-right">
-                    <div className="flex items-center justify-end gap-1">
+                  </div>
+                  <div className="md:w-32 md:shrink-0 md:px-4 md:py-2.5 border-t border-slate-100 pt-2 md:border-t-0 md:pt-0">
+                    <div className="flex items-center gap-1 md:justify-end">
                       <button
                         onClick={() => downloadFollowUpPdf(fu._id)}
                         title="Descargar PDF"
@@ -2080,12 +2129,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         </button>
                       )}
                     </div>
-                  </td>
-                </tr>
+                  </div>
+                </article>
               );
             })}
-          </tbody>
-        </table>
+        </div>
       </div>
 
 
@@ -2448,7 +2496,7 @@ function GinecologiaSection({ value, onChange, vitalSigns, fecha, followUps = []
           {/* G P A C */}
           <div>
             <label className="block text-xs font-semibold text-slate-600 mb-1">Antecedentes obstétricos (G · P · A · C)</label>
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {[
                 { k: 'gestas', l: 'Gestas' },
                 { k: 'partos', l: 'Partos' },
@@ -3472,7 +3520,7 @@ function CitasTab({ patientId }) {
         </div>
       )}
 
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
         <table className="tbl">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
@@ -3910,7 +3958,7 @@ function FacturasTab({ patientId }) {
   if (loading) return <div className="text-slate-500 text-sm">Cargando...</div>;
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+    <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
       <table className="tbl">
         <thead className="bg-slate-50 text-slate-600">
           <tr>

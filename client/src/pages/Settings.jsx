@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
-import { HiOutlineCog6Tooth, HiOutlineKey, HiOutlineSwatch, HiOutlinePencilSquare } from 'react-icons/hi2';
+import { HiOutlineCog6Tooth, HiOutlineKey, HiOutlineSwatch, HiOutlinePencilSquare, HiOutlineEnvelope } from 'react-icons/hi2';
 
 const THEMES = [
   { value: 'green', label: 'Verde (por defecto)', swatch: '#0f766e' },
@@ -21,9 +21,11 @@ function applyTheme(theme) {
 }
 
 export default function Settings() {
-  const { user, hasRole } = useAuth();
+  const { user, hasRole, refreshMe } = useAuth();
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'green');
   const [pwd, setPwd] = useState({ currentPassword: '', newPassword: '', confirm: '' });
+  const [mail, setMail] = useState({ email: '', currentPassword: '' });
+  const [savingMail, setSavingMail] = useState(false);
   const [saving, setSaving] = useState(false);
   // Firma digital (doctor / óptica)
   const showSignature = hasRole('doctor', 'optica') || user?.isSuperAdmin;
@@ -82,6 +84,29 @@ export default function Settings() {
     setTheme(t);
     applyTheme(t);
     toast.success('Paleta de colores actualizada');
+  };
+
+  /**
+   * Cambio del correo de acceso. Al terminar se recarga la sesión: el correo se
+   * ve en la cabecera y en la propia pantalla, y dejarlo con el viejo hace dudar
+   * de si el cambio se guardó.
+   */
+  const submitEmail = async (e) => {
+    e.preventDefault();
+    setSavingMail(true);
+    try {
+      await api.post('/auth/change-email', {
+        email: mail.email.trim(),
+        currentPassword: mail.currentPassword,
+      });
+      toast.success('Correo actualizado. Úsalo la próxima vez que entres.');
+      setMail({ email: '', currentPassword: '' });
+      await refreshMe?.();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo cambiar el correo');
+    } finally {
+      setSavingMail(false);
+    }
   };
 
   const submitPassword = async (e) => {
@@ -194,6 +219,33 @@ export default function Settings() {
           </div>
         </div>
       )}
+
+      {/* Cambiar correo de acceso */}
+      <div className="bg-white rounded-2xl border border-emerald-100 p-6">
+        <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2 mb-1">
+          <HiOutlineEnvelope className="text-emerald-600" /> Cambiar correo
+        </h2>
+        <p className="text-sm text-slate-500 mb-4">
+          Es con lo que entras al sistema. Actual: <b>{user?.email}</b>
+        </p>
+        <form onSubmit={submitEmail} className="space-y-3 max-w-sm">
+          <label className="block text-sm">Correo nuevo
+            <input type="email" value={mail.email} onChange={(e) => setMail({ ...mail, email: e.target.value })}
+              placeholder="nombre@correo.com"
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
+          </label>
+          {/* Se pide la contraseña porque el correo ES el usuario: sin esto,
+              cualquiera que pase por un ordenador desatendido se queda la cuenta. */}
+          <label className="block text-sm">Tu contraseña
+            <input type="password" value={mail.currentPassword} onChange={(e) => setMail({ ...mail, currentPassword: e.target.value })}
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
+          </label>
+          <button type="submit" disabled={savingMail}
+            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium border-none cursor-pointer disabled:opacity-50">
+            {savingMail ? 'Guardando...' : 'Cambiar correo'}
+          </button>
+        </form>
+      </div>
 
       {/* Cambiar contraseña */}
       <div className="bg-white rounded-2xl border border-emerald-100 p-6">

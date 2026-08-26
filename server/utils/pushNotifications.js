@@ -109,7 +109,16 @@ async function enviarASuscripcion(sub, payload) {
  * al teléfono. Que falle uno no impide los otros.
  */
 async function notificarUsuarios(userIds, { clinicId, type, title, body, url, meta = {} }) {
-  const ids = [...new Set((userIds || []).filter(Boolean).map(String))];
+  // Un id puede llegar poblado (el usuario entero) desde una cita con populate.
+  // `String(documento)` daría "{ _id: ..., name: 'Ana' }" y Mongo rechazaría el
+  // lote ENTERO: se perdía la notificación de todos por culpa de uno.
+  const ids = [
+    ...new Set(
+      (userIds || [])
+        .map((u) => (u && typeof u === 'object' && u._id ? String(u._id) : u ? String(u) : null))
+        .filter((u) => /^[0-9a-fA-F]{24}$/.test(u || ''))
+    ),
+  ];
   if (!ids.length) return;
 
   await Notification.create(

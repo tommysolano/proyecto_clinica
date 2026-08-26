@@ -7,7 +7,6 @@ import ProductAutocomplete from '../components/ProductAutocomplete';
 import ServiceItemPicker from '../components/ServiceItemPicker';
 import SameSlotPanel from '../components/SameSlotPanel';
 import AssignAttentionModal from '../components/AssignAttentionModal';
-import NurseFinishModal from '../components/NurseFinishModal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
@@ -173,7 +172,6 @@ export default function Appointments() {
   // Modal para asignar doctor al marcar 'asistida'
   const [assignModal, setAssignModal] = useState(null); // { appointment }
   // Modal de finalización de enfermería (cita reclamada por el enfermero)
-  const [nurseFinish, setNurseFinish] = useState(null); // appointment
   const [filter, setFilter] = useState({
     startDate: '',
     endDate: '',
@@ -185,7 +183,7 @@ export default function Appointments() {
     timeTo: '',
     patientQuery: '',
   });
-  const [view, setView] = useState(isDoctor ? 'list' : 'calendar'); // 'calendar' | 'list'
+  const [view, setView] = useState(isDoctor || isNurse ? 'list' : 'calendar'); // 'calendar' | 'list'
   // Mes visible en la vista calendario
   const [calMonth, setCalMonth] = useState(() => {
     const d = new Date();
@@ -501,15 +499,42 @@ export default function Appointments() {
     }
   };
 
+  /**
+   * El enfermero toma la cita y ENTRA A LA FICHA, igual que un doctor.
+   *
+   * Antes solo se la quedaba y salía un aviso; había que buscar otro botón para
+   * un modal que apuntaba signos vitales y cerraba la cita sin seguimiento. Los
+   * enfermeros escriben su propio seguimiento, así que el camino es el mismo que
+   * el del doctor: reclamar, abrir la ficha y guardar. Ese guardado cierra su
+   * turno y, si detrás hay alguien, le pasa la cita.
+   */
   const nurseClaim = async (apt) => {
     if (!window.confirm(`¿Confirmas que vas a atender a ${apt.patient?.firstName || ''} ${apt.patient?.lastName || ''}?`)) return;
     try {
       await api.post(`/appointments/${apt._id}/nurse-claim`);
-      toast.success('Cita asignada a ti. Finalízala cuando termines.');
-      fetchAppointments();
+      abrirAtencion(apt);
     } catch (err) {
       toast.error(err.response?.data?.message || 'No se pudo reclamar la cita');
+      // Si otro se le adelantó (409), la lista tiene que reflejarlo ya.
+      fetchAppointments();
     }
+  };
+
+  /**
+   * Abre la ficha del paciente para atender esta cita (doctores y enfermería).
+   *
+   * El cronómetro solo se arranca para el doctor: enfermería no lo usa y esa
+   * ruta además es suya (`requireRole('admin', 'doctor')`), así que llamarla
+   * como enfermero solo dejaría un 403 en el camino.
+   */
+  const abrirAtencion = (apt) => {
+    if (!isNurse && !apt.consultationStartedAt) {
+      api.post(`/appointments/${apt._id}/start`).catch(() => {});
+    }
+    // Enfermería entra directa a Seguimientos, que es lo que viene a escribir;
+    // el doctor abre por la ficha, donde repasa antecedentes antes de la consulta.
+    const destino = isNurse ? 'seguimientos' : 'ficha';
+    navigate(`/patients/${apt.patient?._id}?appointment=${apt._id}&tab=${destino}`);
   };
 
   const handlePatientSelect = (p) => {
@@ -625,7 +650,9 @@ export default function Appointments() {
           <p className="text-sm text-slate-500 mt-1">Agenda y seguimiento de consultas</p>
         </div>
         <div className="flex gap-2">
-          {!isDoctor && (
+          {/* Enfermería, como los doctores, solo ve el día que tiene delante:
+              el calendario del mes le llena la pantalla de días que no trabaja. */}
+          {!isDoctor && !isNurse && (
             <div className="inline-flex rounded-xl border border-slate-200 overflow-hidden bg-white">
               {[['calendar', 'Calendario'], ['list', 'Lista']].map(([v, label]) => (
                 <button
@@ -1008,12 +1035,7 @@ export default function Appointments() {
                           apt.status === 'asistida' &&
                           String(apt.doctor?._id || apt.doctor) === String(user?.id) && (
                             <button
-                              onClick={() => {
-                                if (!apt.consultationStartedAt) {
-                                  api.post(`/appointments/${apt._id}/start`).catch(() => {});
-                                }
-                                navigate(`/patients/${apt.patient?._id}?appointment=${apt._id}&tab=ficha`);
-                              }}
+                              onClick={() => abrirAtencion(apt)}
                               className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-600 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
                               title="Atender ahora"
                             >
@@ -1030,14 +1052,14 @@ export default function Appointments() {
                             Atender
                           </button>
                         )}
-                        {/* Enfermero: finalizar la cita que reclamó */}
+                        {/* Enfermero: volver a la que ya tomó (se cierra al guardar el seguimiento) */}
                         {isNurse && apt.status === 'asistida' && String(apt.attendedByNurse?._id || apt.attendedByNurse) === String(user?.id) && (
                           <button
-                            onClick={() => setNurseFinish(apt)}
+                            onClick={() => abrirAtencion(apt)}
                             className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-700 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
-                            title="Terminar y registrar"
+                            title="Seguir atendiendo: abre la ficha"
                           >
-                            Terminar
+                            Continuar
                           </button>
                         )}
                         {showDoctorTimer && !inProgress && apt.status !== 'completada' && (
@@ -1677,13 +1699,6 @@ export default function Appointments() {
         />
       )}
 
-      {nurseFinish && (
-        <NurseFinishModal
-          appointment={nurseFinish}
-          onClose={() => setNurseFinish(null)}
-          onDone={fetchAppointments}
-        />
-      )}
     </div>
   );
 }

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import toast from 'react-hot-toast';
 import {
   HiOutlineBell,
+  HiOutlineBellAlert,
   HiOutlineExclamationTriangle,
   HiOutlineInformationCircle,
   HiOutlineXCircle,
@@ -10,6 +12,7 @@ import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
 import { fmtDateTime } from '../utils/date';
+import { activarPush, estadoPush, probarPush } from '../utils/push';
 
 // A dónde lleva cada tipo de notificación al hacer clic. Todo lo de plantillas
 // termina en la página de Plantillas, que es donde se actúa.
@@ -130,9 +133,39 @@ export default function NotificationBell() {
 
   const openNotification = async (n) => {
     await markRead(n);
-    const to = TYPE_LINK[n.type];
+    // `meta.url` primero: los avisos de cita traen a dónde ir (la ficha del
+    // paciente, la agenda). Sin esto, tocar «Cita asignada» no hacía nada.
+    const to = n.meta?.url || TYPE_LINK[n.type];
     setOpen(false);
     if (to) navigate(to);
+  };
+
+  // ─────────── Avisos en este aparato ───────────
+  //
+  // El permiso se pide AQUÍ, con un clic, y no al cargar la app: pedirlo solo
+  // hacía que la gente lo descartara sin leerlo y Chrome acabara bloqueándolo.
+  const [push, setPush] = useState({ soportado: true, permiso: 'default', suscrito: false });
+  const [pushOcupado, setPushOcupado] = useState(false);
+
+  const refrescarPush = () => estadoPush().then(setPush);
+  useEffect(() => { if (open) refrescarPush(); }, [open]);
+
+  const encenderPush = async () => {
+    setPushOcupado(true);
+    const r = await activarPush({ pedirPermiso: true });
+    await refrescarPush();
+    setPushOcupado(false);
+    if (r === 'ok') toast.success('Avisos activados en este dispositivo');
+    else if (r === 'denegado') toast.error('El navegador tiene bloqueados los avisos de este sitio. Actívalos en sus ajustes.');
+    else if (r === 'sin-soporte') toast.error('Este navegador no admite avisos. Instala la app desde el celular.');
+    else toast.error('No se pudieron activar los avisos');
+  };
+
+  const probar = async () => {
+    setPushOcupado(true);
+    const ok = await probarPush();
+    setPushOcupado(false);
+    if (!ok) toast.error('No se pudo enviar la prueba');
   };
 
   return (
@@ -196,6 +229,41 @@ export default function NotificationBell() {
               );
             })}
           </div>
+
+          {push.soportado && (
+            <div className="border-t border-slate-100 px-3.5 py-2.5 bg-slate-50/70">
+              <div className="flex items-center gap-2">
+                <HiOutlineBellAlert className={`w-4 h-4 shrink-0 ${push.suscrito ? 'text-emerald-600' : 'text-slate-400'}`} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold text-slate-700 m-0">Avisos en este dispositivo</p>
+                  <p className="text-[11px] text-slate-500 m-0 leading-snug">
+                    {push.suscrito
+                      ? 'Te avisamos aunque tengas la app cerrada.'
+                      : push.permiso === 'denied'
+                        ? 'Bloqueados en los ajustes del navegador.'
+                        : 'Actívalos para enterarte cuando te asignen una cita.'}
+                  </p>
+                </div>
+                {push.suscrito ? (
+                  <button
+                    onClick={probar}
+                    disabled={pushOcupado}
+                    className="text-xs px-2 py-1 rounded-lg border border-slate-200 bg-white text-slate-600 hover:text-emerald-700 cursor-pointer disabled:opacity-50 shrink-0"
+                  >
+                    Probar
+                  </button>
+                ) : (
+                  <button
+                    onClick={encenderPush}
+                    disabled={pushOcupado || push.permiso === 'denied'}
+                    className="text-xs px-2.5 py-1 rounded-lg bg-emerald-600 text-white border-none cursor-pointer disabled:opacity-50 shrink-0"
+                  >
+                    {pushOcupado ? '…' : 'Activar'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

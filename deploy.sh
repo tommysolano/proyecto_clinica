@@ -196,4 +196,13 @@ if ! ( cd "$APP_DIR/server" && node scripts/seedAppointmentServiceItems.js ); th
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/seedAppointmentServiceItems.js'"
 fi
 
+# Turno vigente de las citas ya asignadas. La agenda del doctor y la bandeja de
+# enfermeria pasaron a filtrar por currentTurnUser/currentTurnKind; las citas
+# asignadas antes de ese cambio no los tienen y desaparecerian de ambas listas.
+# Es idempotente (recalcula desde turns[]), asi que puede correr siempre.
+if ! ( cd "$APP_DIR/server" && node scripts/backfillCurrentTurn.js --commit ); then
+  echo "ADVERTENCIA: no se pudo rellenar el turno vigente de las citas. Reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/backfillCurrentTurn.js --commit'"
+fi
+
 echo "==> Despliegue completado: $(date)"

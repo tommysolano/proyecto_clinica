@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const { auth, requireClinic } = require('../middleware/auth');
 const PushSubscription = require('../models/PushSubscription');
-const { clavePublica } = require('../utils/pushNotifications');
+const { clavePublica, notificarUsuarios } = require('../utils/pushNotifications');
 
 /**
  * Alta y baja de notificaciones push del navegador.
@@ -42,6 +42,30 @@ router.post('/subscribe', async (req, res) => {
     res.status(201).json({ ok: true, id: sub._id });
   } catch (error) {
     res.status(500).json({ message: 'No se pudo registrar el aparato', error: error.message });
+  }
+});
+
+/**
+ * POST /push/test — un aviso de prueba a los aparatos del propio usuario.
+ *
+ * Sin esto, activar las notificaciones es un acto de fe: el doctor le da al
+ * botón, no pasa nada visible, y no hay forma de saber si fallará justo el día
+ * que le asignen un paciente. Solo se manda a UNO MISMO.
+ */
+router.post('/test', async (req, res) => {
+  try {
+    const subs = await PushSubscription.countDocuments({ user: req.user._id });
+    if (!subs) return res.status(409).json({ message: 'Este aparato todavía no está registrado' });
+    await notificarUsuarios([req.user._id], {
+      clinicId: req.clinicId,
+      type: 'push_test',
+      title: 'Prueba de notificaciones',
+      body: 'Si ves esto, los avisos de citas te van a llegar.',
+      url: '/',
+    });
+    res.json({ ok: true, dispositivos: subs });
+  } catch (error) {
+    res.status(500).json({ message: 'No se pudo enviar la prueba', error: error.message });
   }
 });
 

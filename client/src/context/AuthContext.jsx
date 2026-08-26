@@ -71,7 +71,10 @@ export function AuthProvider({ children }) {
    */
   useEffect(() => {
     if (!user || !activeClinic) return;
-    activarPush();
+    // Sin pedir permiso: si ya está concedido, esto reengancha el aparato en
+    // silencio. Pedirlo aquí, nada más entrar, era lo que hacía que la gente lo
+    // descartara sin leerlo; ahora se pide desde la campana, con un clic.
+    activarPush({ pedirPermiso: false });
   }, [user, activeClinic]);
 
   const logout = () => {

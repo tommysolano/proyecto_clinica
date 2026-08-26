@@ -1,5 +1,6 @@
 const Notification = require('../models/Notification');
 const { resolveCallCenterClinicId } = require('../utils/callCenterClinic');
+const { VALID_ROLES } = require('../constants/roles');
 
 /**
  * Bandeja de notificaciones del header (la campana). Es la vista GENÉRICA de
@@ -32,6 +33,8 @@ const TYPE_ROLES = {
   // que aquí solo se declara qué roles pueden verlas en su campana.
   appointment_assigned: ['admin', 'doctor', 'optica', 'ginecologia', 'podologia', 'odontologia', 'cosmetologia', 'cardiologia'],
   appointment_nursing: ['admin', 'enfermero'],
+  // El aviso de prueba lo pide uno mismo desde la campana: lo ve cualquiera.
+  push_test: VALID_ROLES,
 };
 
 function visibleTypes(req) {

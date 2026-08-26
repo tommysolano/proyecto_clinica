@@ -48,7 +48,7 @@ const MENU_GROUPS = [
   },
   {
     key: 'personas', label: 'Personas', icon: HiOutlineUsers, items: [
-      { path: '/patients', label: 'Clientes', roles: ['admin', 'cajero', 'call_center', 'marketing', 'enfermero'] },
+      { path: '/patients', label: 'Clientes', roles: ['admin', 'cajero', 'call_center', 'marketing'] },
       { path: '/accounting/suppliers', label: 'Proveedores', roles: ['admin', 'contabilidad'] },
     ],
   },
@@ -60,7 +60,7 @@ const MENU_GROUPS = [
   },
   {
     key: 'clinica', label: 'Clínica', icon: HiOutlineHeart, items: [
-      { path: '/treatments', label: 'Tratamientos', roles: ['admin', 'cajero', 'marketing', 'enfermero'] },
+      { path: '/treatments', label: 'Tratamientos', roles: ['admin', 'cajero', 'marketing'] },
       { path: '/referrals', label: 'Derivaciones', roles: ['admin', 'marketing', 'cajero'] },
     ],
   },
