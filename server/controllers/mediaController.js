@@ -3,6 +3,45 @@ const mediaStore = require('../utils/mediaStore');
 const { parseDataUrl } = require('../utils/dataUrl');
 
 /**
+ * Cabecera `Content-Disposition: attachment` para que el navegador GUARDE el
+ * archivo en vez de mostrarlo (o de no hacer nada).
+ *
+ * POR QUÉ HACE FALTA. La descarga de un adjunto del chat se resolvía ENTERA en el
+ * navegador: `fetch()` → Blob → `<a download>` sintético. Eso funciona en el
+ * equipo donde se probó y falla en otros, siempre en silencio:
+ *   - Firefox/Safari abortan la descarga si el object URL se revoca en el mismo
+ *     tick del clic (era justo lo que hacía `triggerBlobDownload`);
+ *   - Chrome BLOQUEA la descarga programática cuando el `await fetch` se comió la
+ *     activación de usuario — basta una conexión lenta o un PDF grande;
+ *   - y un PDF de 22 MB se cargaba entero en memoria antes de empezar a guardar.
+ * Con esta cabecera el enlace se entrega DIRECTO al gestor de descargas del
+ * navegador: sin fetch, sin blob, sin tope de tamaño y sin CORS de por medio.
+ *
+ * El nombre va DOS veces (RFC 6266): `filename` en ASCII para los navegadores
+ * viejos y `filename*` en UTF-8 para conservar tildes y eñes — "MOREIRA MUÑOZ
+ * ITALO.pdf" es un nombre real de producción.
+ */
+function attachmentDisposition(name, mimeType) {
+  let clean = String(name || '')
+    .split(/[\\/]/).pop()            // nunca una ruta, solo el nombre
+    .replace(/[\r\n"\\]/g, '')       // nada que pueda partir la cabecera
+    .trim()
+    .slice(0, 180);
+  if (!clean) clean = 'descarga';
+  if (!/\.[a-z0-9]{1,8}$/i.test(clean)) clean += `.${mediaStore.extensionFor(mimeType)}`;
+  const ascii = clean.replace(/[^\x20-\x7e]/g, '_');
+  // encodeURIComponent deja pasar caracteres que no son `attr-char` (RFC 5987).
+  const utf8 = encodeURIComponent(clean).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${utf8}`;
+}
+
+/** ¿La petición pide GUARDAR el archivo (`?download=1`) en vez de mostrarlo? */
+function wantsDownload(req) {
+  const v = req?.query?.download;
+  return v !== undefined && v !== '' && v !== '0' && v !== 'false';
+}
+
+/**
  * Responde con los bytes de un data URL, atendiendo peticiones con `Range`
  * (206 Parcial): Safari/iOS NO reproduce audio ni video servido por URL si el
  * servidor no soporta rangos.
@@ -46,10 +85,21 @@ function sendDataUrl(res, dataUrl, { fallbackMime = 'application/octet-stream', 
 exports.serveMessageMedia = async (req, res) => {
   try {
     const Message = require('../models/Message');
-    const msg = await Message.findById(req.params.messageId).select('mediaUrl').lean();
+    const msg = await Message.findById(req.params.messageId).select('mediaUrl mediaName mediaType').lean();
     if (!msg?.mediaUrl) return res.status(404).send('Not found');
+    const download = wantsDownload(req);
     // Ya migrado: se redirige a su URL definitiva (cacheable por el navegador).
-    if (!msg.mediaUrl.startsWith('data:')) return res.redirect(302, msg.mediaUrl);
+    // El `?download=1` viaja con la redirección o el destino lo mostraría inline.
+    if (!msg.mediaUrl.startsWith('data:')) {
+      const target = download
+        ? `${msg.mediaUrl}${msg.mediaUrl.includes('?') ? '&' : '?'}download=1`
+        : msg.mediaUrl;
+      return res.redirect(302, target);
+    }
+    if (download) {
+      const mime = parseDataUrl(msg.mediaUrl)?.mimeType || 'application/octet-stream';
+      res.set('Content-Disposition', attachmentDisposition(msg.mediaName, mime));
+    }
     return sendDataUrl(res, msg.mediaUrl, { cache: 'private, max-age=86400', range: req.headers?.range });
   } catch (err) {
     return res.status(500).send('Error');
@@ -80,6 +130,13 @@ exports.serve = async (req, res) => {
       .select('dataUrl storageKey mimeType name')
       .lean();
     if (!img) return res.status(404).send('Not found');
+
+    // `?download=1`: el navegador lo guarda en vez de abrirlo. Ver
+    // `attachmentDisposition` — es lo que permite descargar sin pasar por
+    // fetch+Blob, que fallaba en unos equipos sí y en otros no.
+    if (wantsDownload(req)) {
+      res.set('Content-Disposition', attachmentDisposition(img.name, img.mimeType));
+    }
 
     // Ruta normal desde jul-2026: el archivo está en el disco del servidor y se
     // envía por STREAM. Cargar en memoria un video de 15 MB por cada agente que

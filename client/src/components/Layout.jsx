@@ -18,7 +18,7 @@ import {
   HiOutlineCreditCard,
   HiOutlineUserGroup,
   HiOutlineCalculator,
-  HiOutlineMegaphone,
+  HiOutlineFire,
   HiOutlineDocumentChartBar,
   HiOutlineDocumentText,
   HiOutlineCog6Tooth,
@@ -149,7 +149,7 @@ const MENU_GROUPS = [
     ],
   },
   {
-    key: 'marketing', label: 'Marketing & CRM', icon: HiOutlineMegaphone, items: [
+    key: 'marketing', label: 'Fénix', icon: HiOutlineFire, items: [
       { path: '/marketing', label: 'Marketing', roles: ['admin', 'marketing'] },
       { path: '/chats', label: 'Chats / WhatsApp', roles: ['admin', 'call_center', 'marketing'] },
       { path: '/contacts', label: 'Contactos', roles: ['admin', 'call_center', 'marketing'] },
@@ -277,7 +277,7 @@ export default function Layout({ children }) {
   const matchedTitle = TITLE_MAP
     .filter((p) => p.path !== '/' && location.pathname.startsWith(p.path))
     .sort((a, b) => b.path.length - a.path.length)[0];
-  const pageTitle = location.pathname === '/' ? 'Inicio' : (matchedTitle?.label || 'Shiluv');
+  const pageTitle = location.pathname === '/' ? 'Inicio' : (matchedTitle?.label || 'Vikingo');
   // La página de chats gestiona su propio alto/scroll interno: se le da todo el
   // espacio (padding mínimo) para no desperdiciar la parte superior.
   const isChatsPage = location.pathname.startsWith('/chats');
@@ -299,13 +299,16 @@ export default function Layout({ children }) {
         <div className="flex items-center justify-between px-6 py-6">
           <Link to="/" className="flex items-center gap-3 no-underline">
             <div className="w-11 h-11 bg-white rounded-xl flex items-center justify-center p-1.5 shadow-md">
-              <img src={shiluvLogo} alt="Shiluv" className="w-full h-full object-contain" />
+              <img src={shiluvLogo} alt="Vikingo" className="w-full h-full object-contain" />
             </div>
-            <div>
-              <span className="text-white font-bold text-base block leading-tight">
-                {activeClinic?.nombreComercial || activeClinic?.name || 'Shiluv'}
+            {/* El nombre del SISTEMA manda (Vikingo); debajo, en pequeño, la
+                sucursal activa — que sigue siendo lo que cambia al alternar de
+                clínica y por eso no puede desaparecer de aquí. */}
+            <div className="min-w-0">
+              <span className="text-white font-bold text-base block leading-tight">Vikingo</span>
+              <span className="text-emerald-300 text-[11px] font-medium block truncate">
+                {activeClinic?.nombreComercial || activeClinic?.name || 'Sistema Médico'}
               </span>
-              <span className="text-emerald-300 text-[11px] font-medium">Sistema Médico</span>
             </div>
           </Link>
           <button
@@ -511,7 +514,7 @@ export default function Layout({ children }) {
             <div className="min-w-0">
               <h1 className="text-base sm:text-lg font-bold text-slate-800 tracking-tight truncate leading-tight">{pageTitle}</h1>
               <p className="hidden sm:block text-[11px] text-slate-400 leading-tight">
-                {activeClinic?.nombreComercial || activeClinic?.name || 'Shiluv'}
+                {activeClinic?.nombreComercial || activeClinic?.name || 'Vikingo'}
               </p>
             </div>
           </div>

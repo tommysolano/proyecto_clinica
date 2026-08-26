@@ -43,10 +43,9 @@ async function seedPaciente(clinicId, userId) {
   return patient;
 }
 
-/** Cuerpo mínimo aceptado por addFollowUp (exige motivo y al menos un ítem). */
+/** Cuerpo mínimo aceptado por addFollowUp: solo el motivo de consulta. */
 const baseBody = (extra = {}) => ({
   descripcion: 'Consulta',
-  recetaItems: [{ name: 'Gasas', quantity: 1 }],
   ...extra,
 });
 

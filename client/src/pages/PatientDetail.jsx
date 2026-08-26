@@ -7,7 +7,6 @@ import { useAuth } from '../context/AuthContext';
 import { fmtDate, fmtDateTime, nowEcHHMM } from '../utils/date';
 import TagEditor from '../components/TagEditor';
 import NumericInput from '../components/NumericInput';
-import SearchableSelect from '../components/SearchableSelect';
 import Cie10Select from '../components/Cie10Select';
 import Odontograma from '../components/Odontograma';
 import {
@@ -57,6 +56,8 @@ import {
   HiOutlineCalendar,
   HiOutlineDocumentText,
   HiOutlinePlus,
+  HiOutlineCheck,
+  HiOutlineEye,
   HiOutlineTrash,
   HiOutlinePrinter,
   HiOutlineArrowDownTray,
@@ -68,6 +69,7 @@ import {
   HiOutlineXMark,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
+import AttachmentPreviewModal from '../components/AttachmentPreviewModal';
 import { cargarPagina } from '../utils/lazyPage';
 import { edadGestacional, fechaProbableParto } from '../constants/gestacion';
 
@@ -80,8 +82,10 @@ const TABS = [
   { id: 'ficha', label: 'Ficha clínica', icon: HiOutlineClipboardDocumentList },
   { id: 'seguimientos', label: 'Seguimientos', icon: HiOutlineHeart },
   { id: 'citas', label: 'Citas', icon: HiOutlineCalendar },
-  { id: 'observaciones', label: 'Observaciones', icon: HiOutlineChatBubbleLeftRight },
   { id: 'facturas', label: 'Facturas', icon: HiOutlineDocumentText },
+  // Observaciones cierra la fila: es la bitácora libre del paciente, lo último
+  // que se consulta. El orden de este arreglo es el orden de las pestañas.
+  { id: 'observaciones', label: 'Observaciones', icon: HiOutlineChatBubbleLeftRight },
 ];
 
 // Adjuntos permitidos en seguimientos: PDFs e imágenes.
@@ -730,215 +734,110 @@ function DiagnosticosEditor({ value = [], onChange }) {
 }
 
 // ──────────────────── Seguimientos ────────────────────
-// Tabla editable de ítems. Se reutiliza para la Receta (insumos/medicamentos,
-// variant="receta") y para las Derivaciones (servicios/programas,
-// variant="derivacion"). La variante define columnas y textos; la lógica de
-// productos compuestos es idéntica en ambas.
-function ItemsTable({
-  variant,
-  items,
-  productOptions, // productos elegibles para esta variante
-  allProducts,    // catálogo completo (para resolver compuestos)
-  onAdd,
-  onAddManual,    // si se pasa, habilita agregar ítems de texto libre (manual)
-  onUpdate,
-  onRemove,
-  onToggleComponent,
-  onSetComponentQty,
-}) {
+/**
+ * Tabla de líneas escritas a mano. Se reutiliza para la Receta
+ * (medicamentos/insumos, variant="receta") y para las Derivaciones
+ * (servicios/programas, variant="derivacion").
+ *
+ * TODO ES TEXTO LIBRE, y es deliberado. Antes cada línea obligaba a elegir un
+ * producto del inventario con un buscador —o a pulsar "Manual" para poder
+ * escribir— y eso ataba la consulta clínica al catálogo de lo que la clínica
+ * vende: el médico no podía recetar algo que no estuviera en existencias sin dar
+ * un rodeo. El seguimiento describe lo que se receta y a dónde se deriva; lo que
+ * haya que cobrar se factura por su lado.
+ *
+ * Los campos se ven desde el primer momento (no hay que pulsar "Agregar ítem"
+ * antes de poder escribir) y "Agregar línea" añade la siguiente. Nunca se queda
+ * sin filas: borrar la última la deja en blanco en vez de hacer desaparecer la
+ * tabla.
+ */
+function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
   const isReceta = variant === 'receta';
   const label = isReceta ? 'Receta' : 'Derivaciones';
-  const searchPlaceholder = isReceta
-    ? 'Buscar medicamento o insumo...'
-    : 'Buscar servicio o programa...';
-  const emptyMsg = isReceta
-    ? 'Sin ítems. Agrega medicamentos o insumos.'
-    : 'Sin ítems. Agrega servicios o programas.';
-  const productColLabel = isReceta ? 'Medicamento / Insumo' : 'Servicio / Programa';
-  const colSpan = isReceta ? 7 : 4;
-  // Cada fila usa un combobox con buscador integrado (SearchableSelect), así que
-  // no hace falta un buscador compartido para toda la tabla.
-  const productLabel = (p) => `${p.name}${p.category ? ` (${p.category})` : ''}`;
-  const productSearchText = (p) => `${p.name || ''} ${p.code || ''} ${p.category || ''}`;
+  const hint = isReceta
+    ? 'medicamentos e insumos indicados'
+    : 'servicios o programas a los que se deriva';
+
+  // Columnas por variante. En Derivaciones manda el orden de trabajo: cuántas
+  // sesiones, de qué, y con qué indicaciones.
+  const columnas = isReceta
+    ? [
+        { key: 'name', label: 'Medicamento / Insumo', placeholder: 'Paracetamol 500 mg', ancho: 'min-w-[200px]' },
+        { key: 'quantity', label: 'Cant.', numero: true, ancho: 'w-16' },
+        { key: 'dose', label: 'Dosis', placeholder: '1 tableta' },
+        { key: 'frequency', label: 'Frecuencia', placeholder: 'c/8 h' },
+        { key: 'duration', label: 'Duración', placeholder: '7 días' },
+        { key: 'instructions', label: 'Indicaciones', placeholder: 'Después de comer' },
+      ]
+    : [
+        { key: 'quantity', label: 'Cant.', numero: true, ancho: 'w-16' },
+        { key: 'name', label: 'Servicio / Programa', placeholder: 'Fisioterapia, ecografía, laboratorio…', ancho: 'min-w-[240px]' },
+        { key: 'instructions', label: 'Indicaciones', placeholder: 'Motivo de la derivación o instrucciones', ancho: 'min-w-[200px]' },
+      ];
 
   return (
     <div className="md:col-span-3">
       <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
-        <label className="text-sm font-medium text-slate-700">{label}</label>
-        <div className="flex items-center gap-2">
-          {onAddManual && (
-            <button
-              type="button"
-              onClick={onAddManual}
-              className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-slate-300 bg-white text-slate-600 hover:border-emerald-400 hover:text-emerald-700 cursor-pointer whitespace-nowrap"
-              title="Escribir un medicamento que la clínica no vende"
-            >
-              <HiOutlinePencilSquare className="w-3 h-3" /> Manual
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={onAdd}
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 text-white border-none cursor-pointer whitespace-nowrap"
-          >
-            <HiOutlinePlus className="w-3 h-3" /> Agregar ítem
-          </button>
-        </div>
+        <label className="text-sm font-medium text-slate-700">
+          {label}
+          <span className="ml-2 text-xs font-normal text-slate-400">{hint}</span>
+        </label>
+        <button
+          type="button"
+          onClick={onAdd}
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 text-white border-none cursor-pointer whitespace-nowrap"
+        >
+          <HiOutlinePlus className="w-3 h-3" /> Agregar línea
+        </button>
       </div>
-      {items.length === 0 && (
-        <p className="text-xs text-slate-400 italic">{emptyMsg}</p>
-      )}
-      {items.length > 0 && (
-        <div className="overflow-x-auto bg-white rounded-lg border border-slate-200">
-          <table className="tbl text-xs">
-            <thead className="bg-slate-100 text-slate-600">
-              <tr>
-                <th className="text-left px-2 py-1.5">{productColLabel}</th>
-                <th className="text-left px-2 py-1.5 w-16">Cant.</th>
-                {isReceta && <th className="text-left px-2 py-1.5">Dosis</th>}
-                {isReceta && <th className="text-left px-2 py-1.5">Frecuencia</th>}
-                {isReceta && <th className="text-left px-2 py-1.5">Duración</th>}
-                <th className="text-left px-2 py-1.5">Indicaciones</th>
-                <th className="px-2 py-1.5 w-8"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((row, idx) => (
-                <Fragment key={idx}>
-                  <tr className="border-t border-slate-100">
-                    <td className="px-2 py-1 min-w-[180px]">
-                      {row.manual ? (
-                        <input
-                          type="text"
-                          value={row.name}
-                          onChange={(e) => onUpdate(idx, 'name', e.target.value)}
-                          placeholder="Medicamento (manual)"
-                          className="input text-xs py-1"
-                          autoFocus
-                        />
-                      ) : (
-                        <SearchableSelect
-                          options={productOptions}
-                          value={row.product}
-                          onChange={(val) => onUpdate(idx, 'product', val)}
-                          getLabel={productLabel}
-                          getSearchText={productSearchText}
-                          placeholder="— Seleccionar —"
-                          searchPlaceholder={searchPlaceholder}
-                          size="sm"
-                          menuMinWidth={280}
-                        />
-                      )}
-                    </td>
-                    <td className="px-2 py-1">
+      <div className="overflow-x-auto bg-white rounded-lg border border-slate-200">
+        <table className="tbl text-xs">
+          <thead className="bg-slate-100 text-slate-600">
+            <tr>
+              {columnas.map((c) => (
+                <th key={c.key} className={`text-left px-2 py-1.5 ${c.ancho || ''}`}>{c.label}</th>
+              ))}
+              <th className="px-2 py-1.5 w-8"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((row, idx) => (
+              <tr key={idx} className="border-t border-slate-100">
+                {columnas.map((c) => (
+                  <td key={c.key} className={`px-2 py-1 ${c.ancho || ''}`}>
+                    {c.numero ? (
                       <NumericInput
                         min={1}
-                        value={row.quantity}
-                        onChange={(e) => onUpdate(idx, 'quantity', Number(e.target.value))}
+                        value={row[c.key]}
+                        onChange={(e) => onUpdate(idx, c.key, e.target.value === '' ? '' : Number(e.target.value))}
                         className="input text-xs py-1"
                       />
-                    </td>
-                    {isReceta && (
-                      <td className="px-2 py-1">
-                        <input
-                          type="text"
-                          value={row.dose}
-                          onChange={(e) => onUpdate(idx, 'dose', e.target.value)}
-                          className="input text-xs py-1"
-                          placeholder="500mg"
-                        />
-                      </td>
-                    )}
-                    {isReceta && (
-                      <td className="px-2 py-1">
-                        <input
-                          type="text"
-                          value={row.frequency}
-                          onChange={(e) => onUpdate(idx, 'frequency', e.target.value)}
-                          className="input text-xs py-1"
-                          placeholder="c/8h"
-                        />
-                      </td>
-                    )}
-                    {isReceta && (
-                      <td className="px-2 py-1">
-                        <input
-                          type="text"
-                          value={row.duration}
-                          onChange={(e) => onUpdate(idx, 'duration', e.target.value)}
-                          className="input text-xs py-1"
-                          placeholder="7 días"
-                        />
-                      </td>
-                    )}
-                    <td className="px-2 py-1">
+                    ) : (
                       <input
                         type="text"
-                        value={row.instructions}
-                        onChange={(e) => onUpdate(idx, 'instructions', e.target.value)}
+                        value={row[c.key] || ''}
+                        onChange={(e) => onUpdate(idx, c.key, e.target.value)}
+                        placeholder={c.placeholder}
                         className="input text-xs py-1"
                       />
-                    </td>
-                    <td className="px-2 py-1 text-right">
-                      <button
-                        type="button"
-                        onClick={() => onRemove(idx)}
-                        className="p-1 text-red-500 bg-transparent border-none cursor-pointer"
-                      >
-                        <HiOutlineTrash className="w-3 h-3" />
-                      </button>
-                    </td>
-                  </tr>
-                  {row.isComposite && (() => {
-                    const prod = allProducts.find((p) => p._id === row.product);
-                    const comps = prod?.components || [];
-                    return (
-                      <tr key={`${idx}-comp`} className="bg-amber-50/60">
-                        <td colSpan={colSpan} className="px-3 py-2">
-                          <p className="text-[11px] font-semibold text-amber-800 mb-1">
-                            Componentes de "{row.name}" — elige cuáles {isReceta ? 'recetar' : 'aplicar'}:
-                          </p>
-                          {comps.length === 0 && (
-                            <p className="text-[11px] text-slate-500">Este producto compuesto no tiene componentes configurados.</p>
-                          )}
-                          <div className="flex flex-wrap gap-2">
-                            {comps.map((c) => {
-                              const cp = allProducts.find((p) => p._id === (c.product?._id || c.product));
-                              const cid = c.product?._id || c.product;
-                              const used = (row.componentsUsed || []).find((u) => String(u.product) === String(cid));
-                              return (
-                                <label key={cid} className="flex items-center gap-1 bg-white border border-amber-200 rounded px-2 py-1 text-[11px] cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    checked={!!used}
-                                    onChange={(e) =>
-                                      onToggleComponent(idx, { product: cid, name: cp?.name || '', quantity: c.quantity || 1 }, e.target.checked)
-                                    }
-                                    className="w-3 h-3 accent-amber-600"
-                                  />
-                                  <span>{cp?.name || 'Componente'}</span>
-                                  {used && (
-                                    <NumericInput
-                                      min={1}
-                                      value={used.quantity}
-                                      onChange={(e) => onSetComponentQty(idx, cid, e.target.value)}
-                                      className="w-12 px-1 py-0.5 border border-slate-200 rounded text-[11px]"
-                                    />
-                                  )}
-                                </label>
-                              );
-                            })}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })()}
-                </Fragment>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+                    )}
+                  </td>
+                ))}
+                <td className="px-2 py-1 text-right">
+                  <button
+                    type="button"
+                    onClick={() => onRemove(idx)}
+                    title="Quitar línea"
+                    className="p-1 text-red-500 bg-transparent border-none cursor-pointer"
+                  >
+                    <HiOutlineTrash className="w-3 h-3" />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -962,10 +861,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
   const canSeePurchases = hasRole('admin', 'contabilidad');
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [products, setProducts] = useState([]);
   const fileInputRef = useRef(null);
   const emptyRow = () => ({
-    product: '',
     name: '',
     quantity: 1,
     dose: '',
@@ -1038,8 +935,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
     enfermedadActual: '',    // E
     planTratamiento: '',     // J
     evolucion: '',           // evolución respecto de controles anteriores
-    recetaItems: [],       // solo insumos/medicamentos
-    derivacionItems: [],   // servicios/programas
+    // Con una línea en blanco: los campos se ven desde el inicio, sin tener
+    // que pulsar nada antes de poder escribir. Las vacías se descartan al guardar.
+    recetaItems: [emptyRow()],     // medicamentos/insumos (texto libre)
+    derivacionItems: [emptyRow()], // servicios/programas (texto libre)
     revisionSistemas: [],  // G
     revisionSistemasHallazgos: '', // G: descripción de lo marcado
     examenFisico: { regional: [], sistemico: [], hallazgos: '' }, // H
@@ -1079,6 +978,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
     return () => clearInterval(id);
   }, []);
   const [uploadingFuId, setUploadingFuId] = useState(null);
+  // Adjunto que se está viendo en pantalla: { fuId, att }.
+  const [previewAtt, setPreviewAtt] = useState(null);
   // PDFs seleccionados ANTES de guardar el seguimiento. Se subirán automáticamente
   // tras crear el seguimiento.
   const [pendingFiles, setPendingFiles] = useState([]);
@@ -1115,79 +1016,29 @@ function SeguimientosTab({ patientId, appointmentId }) {
 
   useEffect(() => {
     load();
-    api
-      .get('/products')
-      .then((r) => {
-        const list = Array.isArray(r.data) ? r.data : r.data?.items || [];
-        setProducts(
-          list.filter((p) =>
-            p.isComposite ||
-            ['insumo', 'servicio', 'programa'].includes(String(p.category || '').toLowerCase())
-          )
-        );
-      })
-      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patientId]);
 
   // Los handlers reciben `listKey` porque el formulario tiene DOS listas:
-  // 'recetaItems' (insumos/medicamentos) y 'derivacionItems' (servicios/programas).
+  // 'recetaItems' (medicamentos/insumos) y 'derivacionItems' (servicios/programas).
+  // Ambas son texto libre desde el rediseño (ver ItemsTable).
   const updateRow = (listKey, idx, key, val) => {
     setForm((f) => {
       const items = [...f[listKey]];
       items[idx] = { ...items[idx], [key]: val };
-      if (key === 'product') {
-        const p = products.find((x) => x._id === val);
-        items[idx].name = p?.name || '';
-        items[idx].isComposite = !!p?.isComposite;
-        items[idx].componentsUsed = [];
-      }
       return { ...f, [listKey]: items };
     });
   };
 
-  // Alterna un componente de un item compuesto.
-  const toggleComponent = (listKey, idx, comp, checked) => {
-    setForm((f) => {
-      const items = [...f[listKey]];
-      const used = [...(items[idx].componentsUsed || [])];
-      const pos = used.findIndex((c) => String(c.product) === String(comp.product));
-      if (checked && pos < 0) used.push({ product: comp.product, name: comp.name, quantity: comp.quantity || 1 });
-      if (!checked && pos >= 0) used.splice(pos, 1);
-      items[idx] = { ...items[idx], componentsUsed: used };
-      return { ...f, [listKey]: items };
-    });
-  };
-
-  const setComponentQty = (listKey, idx, productId, qty) => {
-    setForm((f) => {
-      const items = [...f[listKey]];
-      const used = (items[idx].componentsUsed || []).map((c) =>
-        String(c.product) === String(productId) ? { ...c, quantity: Number(qty) } : c
-      );
-      items[idx] = { ...items[idx], componentsUsed: used };
-      return { ...f, [listKey]: items };
-    });
-  };
-
-  // manual=true agrega una fila de texto libre (medicamento que la clínica no
-  // vende / no está en inventario): no lleva `product`, solo `name`.
-  const addRow = (listKey, manual = false) =>
-    setForm((f) => ({ ...f, [listKey]: [...f[listKey], { ...emptyRow(), manual }] }));
+  const addRow = (listKey) =>
+    setForm((f) => ({ ...f, [listKey]: [...f[listKey], emptyRow()] }));
+  // Quitar la última línea la deja EN BLANCO en vez de vaciar la tabla: los
+  // campos tienen que seguir a la vista para poder escribir sin más clics.
   const removeRow = (listKey, idx) =>
-    setForm((f) => ({
-      ...f,
-      [listKey]: f[listKey].filter((_, i) => i !== idx),
-    }));
-
-  // Catálogo dividido: la Receta solo lista insumos/medicamentos; las
-  // Derivaciones listan servicios y programas.
-  const recetaProducts = products.filter(
-    (p) => String(p.category || '').toLowerCase() === 'insumo'
-  );
-  const derivacionProducts = products.filter((p) =>
-    ['servicio', 'programa'].includes(String(p.category || '').toLowerCase())
-  );
+    setForm((f) => {
+      const items = f[listKey].filter((_, i) => i !== idx);
+      return { ...f, [listKey]: items.length ? items : [emptyRow()] };
+    });
 
   // Subida de PDFs adjuntos a un seguimiento existente
   // Sube uno o varios archivos (PDF o imágenes) a un seguimiento existente.
@@ -1241,29 +1092,34 @@ function SeguimientosTab({ patientId, appointmentId }) {
     }
   };
 
+  /**
+   * Impide que ENTER envíe el seguimiento.
+   *
+   * Pasó de verdad: un usuario estaba rellenando un campo, pulsó Enter y el
+   * navegador —que envía el formulario al pulsar Enter en cualquier input—
+   * guardó el seguimiento entero y dio la cita por terminada. El seguimiento
+   * SOLO se envía con el botón "Guardar".
+   *
+   * Se dejan pasar los textarea (necesitan el salto de línea) y los botones
+   * (Enter sobre un botón enfocado es su forma de activarse con el teclado). Los
+   * combobox como el de CIE-10 gestionan Enter en su propio onKeyDown, que ya se
+   * ha ejecutado cuando el evento llega hasta aquí.
+   */
+  const evitarEnvioConEnter = (e) => {
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    const t = e.target;
+    if (t.tagName === 'TEXTAREA' || t.tagName === 'BUTTON') return;
+    e.preventDefault();
+  };
+
   const submit = async (e) => {
     e.preventDefault();
-    if (!form.descripcion) {
-      toast.error('Motivo de consulta requerido');
+    // Único campo obligatorio del seguimiento. Todo lo demás (receta,
+    // derivaciones, diagnósticos, signos vitales…) es opcional: hay consultas
+    // que no recetan nada y antes no se dejaban guardar.
+    if (!String(form.descripcion || '').trim()) {
+      toast.error('El motivo de consulta es obligatorio');
       return;
-    }
-    // Óptica puede guardar sin receta de medicamentos si llenó la RX óptica.
-    const hasOpticaRx = isOptica && (
-      Object.values(form.opticaRx?.od || {}).some((v) => String(v).trim()) ||
-      Object.values(form.opticaRx?.oi || {}).some((v) => String(v).trim())
-    );
-    // Un ítem es válido si tiene producto del inventario O un nombre (manual).
-    const allItems = [...form.recetaItems, ...form.derivacionItems];
-    const hasName = (it) => it.name && it.name.trim();
-    if (!isOptica || !hasOpticaRx) {
-      if (!allItems.length) {
-        toast.error('Debe agregar al menos un ítem en Receta o Derivaciones');
-        return;
-      }
-      if (allItems.some((it) => !it.product && !hasName(it))) {
-        toast.error('Complete el producto/medicamento de cada ítem o elimine los vacíos');
-        return;
-      }
     }
     setSaving(true);
     try {
@@ -1282,8 +1138,14 @@ function SeguimientosTab({ patientId, appointmentId }) {
         capillaryHemoglobin: vs.capillaryHemoglobin === '' ? null : Number(vs.capillaryHemoglobin),
         glucose: vs.glucose === '' ? null : Number(vs.glucose),
       };
+      // Las líneas en blanco de Receta/Derivaciones no viajan: la tabla siempre
+      // muestra una fila vacía lista para escribir, y guardar sin usarla no debe
+      // dejar un ítem fantasma en la historia clínica.
+      const conNombre = (lista) => (lista || []).filter((it) => String(it.name || '').trim());
       const payload = {
         ...form,
+        recetaItems: conNombre(form.recetaItems),
+        derivacionItems: conNombre(form.derivacionItems),
         vitalSigns,
       };
       // La ficha de cada especialidad solo se envía desde su propia consulta:
@@ -1318,10 +1180,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
       toast.success(
         appointmentId
           ? 'Seguimiento guardado. Cita finalizada.'
-          : 'Seguimiento agregado'
+          : 'Seguimiento guardado'
       );
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al agregar');
+      toast.error(err.response?.data?.message || 'Error al guardar el seguimiento');
     } finally {
       setSaving(false);
     }
@@ -1393,6 +1255,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
 
       <form
         onSubmit={submit}
+        onKeyDown={evitarEnvioConEnter}
         className="bg-slate-50 rounded-xl p-4 grid grid-cols-1 gap-3 md:grid-cols-3"
       >
         <Field label="Fecha">
@@ -1665,13 +1528,15 @@ function SeguimientosTab({ patientId, appointmentId }) {
           </Collapsible>
         </div>
 
-        {/* I. Diagnósticos con CIE-10 */}
+        {/* I. Diagnósticos con CIE-10 (plegable, como el resto de bloques
+            largos: se abre cuando el médico lo necesita). */}
         <div className="md:col-span-3">
-          <label className="text-sm font-medium text-slate-700 block mb-2">Diagnósticos (CIE-10)</label>
-          <DiagnosticosEditor
-            value={form.diagnosticos}
-            onChange={(v) => setForm((f) => ({ ...f, diagnosticos: v }))}
-          />
+          <Collapsible title="Diagnósticos" hint="CIE-10, hasta 6">
+            <DiagnosticosEditor
+              value={form.diagnosticos}
+              onChange={(v) => setForm((f) => ({ ...f, diagnosticos: v }))}
+            />
+          </Collapsible>
         </div>
 
         {/* Ficha de la especialidad: va pegada al diagnóstico, antes de recetar. */}
@@ -1689,48 +1554,41 @@ function SeguimientosTab({ patientId, appointmentId }) {
         {isOdonto && <OdontologiaSection value={form.odontologia} onChange={(o) => setForm((f) => ({ ...f, odontologia: o }))} />}
         {isCosme && <CosmetologiaSection value={form.cosmetologia} onChange={(c) => setForm((f) => ({ ...f, cosmetologia: c }))} />}
 
-        <ItemsTable
-          variant="receta"
-          items={form.recetaItems}
-          productOptions={recetaProducts}
-          allProducts={products}
-          onAdd={() => addRow('recetaItems')}
-          onAddManual={() => addRow('recetaItems', true)}
-          onUpdate={(idx, key, val) => updateRow('recetaItems', idx, key, val)}
-          onRemove={(idx) => removeRow('recetaItems', idx)}
-          onToggleComponent={(idx, comp, checked) => toggleComponent('recetaItems', idx, comp, checked)}
-          onSetComponentQty={(idx, pid, qty) => setComponentQty('recetaItems', idx, pid, qty)}
-        />
-
-        <ItemsTable
-          variant="derivacion"
-          items={form.derivacionItems}
-          productOptions={derivacionProducts}
-          allProducts={products}
-          onAdd={() => addRow('derivacionItems')}
-          onUpdate={(idx, key, val) => updateRow('derivacionItems', idx, key, val)}
-          onRemove={(idx) => removeRow('derivacionItems', idx)}
-          onToggleComponent={(idx, comp, checked) => toggleComponent('derivacionItems', idx, comp, checked)}
-          onSetComponentQty={(idx, pid, qty) => setComponentQty('derivacionItems', idx, pid, qty)}
-        />
-
-        {/* J. Plan de tratamiento (narrado; la receta e insumos van arriba) */}
-        <Field label="Plan de tratamiento" className="md:col-span-3">
-          <textarea
-            rows={2}
-            value={form.planTratamiento}
-            onChange={(e) => setForm((f) => ({ ...f, planTratamiento: e.target.value }))}
-            placeholder="Diagnóstico, terapéutico y educacional"
-            className="input resize-none"
-          />
-        </Field>
-
+        {/* Orden de la consulta: cómo va el paciente → a dónde se le deriva →
+            qué se le receta → el plan narrado que cierra todo. */}
         <Field label="Evolución" className="md:col-span-3">
           <textarea
             rows={2}
             value={form.evolucion}
             onChange={(e) => setForm((f) => ({ ...f, evolucion: e.target.value }))}
             placeholder="Cómo evoluciona el paciente respecto de los controles anteriores"
+            className="input resize-none"
+          />
+        </Field>
+
+        <ItemsTable
+          variant="derivacion"
+          items={form.derivacionItems}
+          onAdd={() => addRow('derivacionItems')}
+          onUpdate={(idx, key, val) => updateRow('derivacionItems', idx, key, val)}
+          onRemove={(idx) => removeRow('derivacionItems', idx)}
+        />
+
+        <ItemsTable
+          variant="receta"
+          items={form.recetaItems}
+          onAdd={() => addRow('recetaItems')}
+          onUpdate={(idx, key, val) => updateRow('recetaItems', idx, key, val)}
+          onRemove={(idx) => removeRow('recetaItems', idx)}
+        />
+
+        {/* J. Plan de tratamiento (narrado; la receta y las derivaciones van arriba) */}
+        <Field label="Plan de tratamiento" className="md:col-span-3">
+          <textarea
+            rows={2}
+            value={form.planTratamiento}
+            onChange={(e) => setForm((f) => ({ ...f, planTratamiento: e.target.value }))}
+            placeholder="Diagnóstico, terapéutico y educacional"
             className="input resize-none"
           />
         </Field>
@@ -1786,12 +1644,14 @@ function SeguimientosTab({ patientId, appointmentId }) {
         </div>
 
         <div className="md:col-span-3 flex justify-end">
+          {/* ÚNICA forma de enviar el seguimiento (ver evitarEnvioConEnter). */}
           <button
             type="submit"
             disabled={saving}
-            className="flex items-center gap-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 cursor-pointer border-none"
+            className="flex items-center gap-1 px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 cursor-pointer border-none"
           >
-            <HiOutlinePlus className="w-4 h-4" /> {appointmentId ? 'Guardar y finalizar' : 'Agregar'}
+            <HiOutlineCheck className="w-4 h-4" />
+            {saving ? 'Guardando…' : appointmentId ? 'Guardar y finalizar' : 'Guardar'}
           </button>
         </div>
       </form>
@@ -2034,16 +1894,37 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       {(fu.attachments || []).map((att) => (
                         <div key={att._id} className="flex items-center gap-2 text-xs text-slate-600">
                           <span>{String(att.mimeType || '').startsWith('image/') ? '🖼️' : '📎'}</span>
+                          {/* Clic en el nombre = VER el archivo, no bajarlo: para
+                              mirar una ecografía o un examen no hace falta llenar
+                              la carpeta de descargas. La descarga sigue ahí, en su
+                              propio botón. */}
                           <button
                             type="button"
-                            onClick={() => downloadAttachment(fu._id, att._id, att.originalName)}
-                            className="underline text-emerald-700 hover:text-emerald-800 bg-transparent border-none cursor-pointer p-0"
+                            onClick={() => setPreviewAtt({ fuId: fu._id, att })}
+                            title="Ver el archivo"
+                            className="underline text-emerald-700 hover:text-emerald-800 bg-transparent border-none cursor-pointer p-0 text-left"
                           >
                             {att.originalName}
                           </button>
                           <span className="text-slate-400">
                             ({Math.round((att.size || 0) / 1024)} KB)
                           </span>
+                          <button
+                            type="button"
+                            onClick={() => setPreviewAtt({ fuId: fu._id, att })}
+                            className="text-slate-400 hover:text-emerald-700 bg-transparent border-none cursor-pointer p-0"
+                            title="Ver"
+                          >
+                            <HiOutlineEye className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => downloadAttachment(fu._id, att._id, att.originalName)}
+                            className="text-slate-400 hover:text-emerald-700 bg-transparent border-none cursor-pointer p-0"
+                            title="Descargar"
+                          >
+                            <HiOutlineArrowDownTray className="w-3.5 h-3.5" />
+                          </button>
                           {canDelete && (
                             <button
                               type="button"
@@ -2117,6 +1998,16 @@ function SeguimientosTab({ patientId, appointmentId }) {
         </table>
       </div>
 
+
+      {previewAtt && (
+        <AttachmentPreviewModal
+          key={previewAtt.att._id}
+          url={`/clinical-records/${patientId}/follow-ups/${previewAtt.fuId}/attachments/${previewAtt.att._id}`}
+          filename={previewAtt.att.originalName}
+          mimeType={previewAtt.att.mimeType}
+          onClose={() => setPreviewAtt(null)}
+        />
+      )}
       <FichaStyles />
     </div>
   );

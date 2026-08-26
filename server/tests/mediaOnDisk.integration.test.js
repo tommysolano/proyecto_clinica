@@ -227,3 +227,108 @@ test('una foto que manda el paciente se guarda en disco, no en el mensaje', asyn
   assert.equal(doc.kind, 'inbound');
   assert.deepEqual(await fs.readFile(path.join(tmpDir, doc.storageKey)), Buffer.from(PNG_B64, 'base64'));
 });
+
+// ─────────────────── descargar: el navegador debe GUARDAR el archivo ───────────────────
+//
+// Un PDF que mandaba un paciente se descargaba en el equipo de quien lo probó y
+// NO en el de sus compañeros, sin ningún error a la vista. La causa estaba en el
+// cliente (fetch → Blob → `<a download>` sintético, que Firefox/Safari cancelan y
+// Chrome bloquea si se pierde la activación de usuario). La solución es que el
+// propio servidor diga "esto se guarda": `?download=1` → Content-Disposition.
+
+test('?download=1 responde con Content-Disposition attachment y el nombre real', async () => {
+  const { clinicId } = await H.seedClinic();
+  const _id = new H.mongoose.Types.ObjectId();
+  const buffer = Buffer.from('%PDF-1.4 contenido');
+  const { storageKey } = await mediaStore.write({ id: _id, buffer, mimeType: 'application/pdf' });
+  await ChatGalleryImage.create({
+    _id, clinic: clinicId, name: 'MOREIRA MUÑOZ ITALO.pdf', storageKey,
+    mimeType: 'application/pdf', size: buffer.length,
+  });
+
+  const cap = captureRes();
+  await media.serve({ params: { id: String(_id) }, headers: {}, query: { download: '1' } }, cap.res);
+  await drain(cap.state);
+
+  const cd = cap.state.headers['content-disposition'];
+  assert.match(cd, /^attachment;/, 'el navegador lo guarda, no lo abre');
+  // ASCII para los navegadores viejos + UTF-8 para conservar la Ñ.
+  assert.match(cd, /filename="MOREIRA MU_OZ ITALO\.pdf"/);
+  assert.match(cd, /filename\*=UTF-8''MOREIRA%20MU%C3%91OZ%20ITALO\.pdf/);
+  assert.deepEqual(cap.body(), buffer, 'y llegan los bytes completos');
+});
+
+test('sin ?download=1 el archivo se sigue mostrando dentro del chat', async () => {
+  const { clinicId } = await H.seedClinic();
+  const _id = new H.mongoose.Types.ObjectId();
+  const buffer = Buffer.from(PNG_B64, 'base64');
+  const { storageKey } = await mediaStore.write({ id: _id, buffer, mimeType: 'image/png' });
+  await ChatGalleryImage.create({ _id, clinic: clinicId, name: 'foto.png', storageKey, mimeType: 'image/png' });
+
+  const cap = captureRes();
+  await media.serve({ params: { id: String(_id) }, headers: {} }, cap.res);
+  await drain(cap.state);
+  assert.equal(cap.state.headers['content-disposition'], undefined, 'el <img> del chat lo pinta inline');
+});
+
+test('un adjunto sin extensión en el nombre la recibe según su tipo MIME', async () => {
+  const { clinicId } = await H.seedClinic();
+  const _id = new H.mongoose.Types.ObjectId();
+  const buffer = Buffer.from('audio');
+  const { storageKey } = await mediaStore.write({ id: _id, buffer, mimeType: 'audio/ogg' });
+  await ChatGalleryImage.create({ _id, clinic: clinicId, name: 'nota de voz', storageKey, mimeType: 'audio/ogg' });
+
+  const cap = captureRes();
+  await media.serve({ params: { id: String(_id) }, headers: {}, query: { download: '1' } }, cap.res);
+  await drain(cap.state);
+  assert.match(cap.state.headers['content-disposition'], /filename="nota de voz\.ogg"/);
+});
+
+test('un nombre con comillas o saltos de línea no puede romper la cabecera', async () => {
+  const { clinicId } = await H.seedClinic();
+  const _id = new H.mongoose.Types.ObjectId();
+  const buffer = Buffer.from('%PDF');
+  const { storageKey } = await mediaStore.write({ id: _id, buffer, mimeType: 'application/pdf' });
+  await ChatGalleryImage.create({
+    _id, clinic: clinicId, name: '../../etc/pas"swd\r\nX-Malo: 1.pdf', storageKey, mimeType: 'application/pdf',
+  });
+
+  const cap = captureRes();
+  await media.serve({ params: { id: String(_id) }, headers: {}, query: { download: '1' } }, cap.res);
+  await drain(cap.state);
+  const cd = cap.state.headers['content-disposition'];
+  assert.ok(!/[\r\n]/.test(cd), 'sin saltos de línea');
+  assert.match(cd, /filename="passwdX-Malo: 1\.pdf"/, 'sin ruta, sin comillas y sin cabecera inyectada');
+});
+
+test('el adjunto heredado dentro del mensaje también se puede descargar', async () => {
+  const clinicId = new H.mongoose.Types.ObjectId();
+  const Message = require('../models/Message');
+  const msg = await Message.create({
+    clinic: clinicId, conversation: new H.mongoose.Types.ObjectId(), direction: 'in', body: '',
+    mediaType: 'document', mediaName: 'receta.pdf',
+    mediaUrl: `data:application/pdf;base64,${Buffer.from('%PDF-1.4').toString('base64')}`,
+  });
+
+  const cap = captureRes();
+  await media.serveMessageMedia({ params: { messageId: String(msg._id) }, headers: {}, query: { download: '1' } }, cap.res);
+  await drain(cap.state);
+  assert.match(cap.state.headers['content-disposition'], /filename="receta\.pdf"/);
+  assert.equal(cap.body().toString(), '%PDF-1.4');
+});
+
+test('un mensaje ya migrado redirige CONSERVANDO el ?download=1', async () => {
+  const clinicId = new H.mongoose.Types.ObjectId();
+  const Message = require('../models/Message');
+  const msg = await Message.create({
+    clinic: clinicId, conversation: new H.mongoose.Types.ObjectId(), direction: 'in', body: '', mediaType: 'document',
+    mediaUrl: '/api/public/media/6a8dd8cd2241e0d9c48d545b',
+  });
+
+  const cap = captureRes();
+  await media.serveMessageMedia({ params: { messageId: String(msg._id) }, headers: {}, query: { download: '1' } }, cap.res);
+  await drain(cap.state);
+  // Sin esto la redirección perdería la intención y el PDF se abriría en una
+  // pestaña en vez de guardarse.
+  assert.equal(cap.state.redirect, '/api/public/media/6a8dd8cd2241e0d9c48d545b?download=1');
+});

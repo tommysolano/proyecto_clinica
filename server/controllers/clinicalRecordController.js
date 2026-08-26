@@ -516,21 +516,21 @@ exports.addFollowUp = async (req, res) => {
       return res.status(400).json({ message: 'El motivo de consulta es requerido' });
     }
 
-    // Validación: se requiere al menos un ítem (Receta o Derivaciones) para guardar.
-    // Ambas listas se procesan igual; el tipo (servicio vs insumo) se deriva de la
-    // categoría del producto más abajo, así que se unifican en un solo arreglo.
+    // El motivo de consulta es el ÚNICO campo obligatorio de un seguimiento.
+    // Antes también se exigía al menos un ítem en Receta o Derivaciones, y eso
+    // impedía registrar consultas en las que no se receta ni se deriva nada
+    // (un control, una revisión de resultados): obligaba a inventarse una línea.
+    //
+    // Las dos listas se unifican porque el modelo las guarda juntas en
+    // `recetaItems`; lo que las distingue después es la marca `isService`.
+    // `fromDerivacion` la conserva: sin producto de inventario del que deducir la
+    // categoría, es lo único que dice que esa línea era una derivación — y de ella
+    // dependen el historial, el PDF de la receta y la hoja MSP, que separan
+    // «Receta» de «Derivaciones» por ese booleano.
     const itemsRaw = [
-      ...(Array.isArray(recetaItems) ? recetaItems : []),
-      ...(Array.isArray(derivacionItems) ? derivacionItems : []),
+      ...(Array.isArray(recetaItems) ? recetaItems : []).map((it) => ({ ...it, fromDerivacion: false })),
+      ...(Array.isArray(derivacionItems) ? derivacionItems : []).map((it) => ({ ...it, fromDerivacion: true })),
     ];
-    const hasReceta =
-      itemsRaw.some((it) => (it.product || (it.name && it.name.trim()))) ||
-      (typeof receta === 'string' && receta.trim().length > 0);
-    if (!hasReceta) {
-      return res
-        .status(400)
-        .json({ message: 'Debe registrar al menos un ítem en Receta o Derivaciones antes de guardar el seguimiento' });
-    }
 
     // --- Hidratar recetaItems con snapshot de nombre/categoría y marcar servicios ---
     // Se descartan filas totalmente vacías. Un ítem manual (medicamento que la
@@ -547,7 +547,9 @@ exports.addFollowUp = async (req, res) => {
     }
     const hydratedItems = items.map((it) => {
       const p = it.product ? productsById[String(it.product)] : null;
-      const isService = p && ['servicio', 'programa'].includes(p.category);
+      // Con producto manda su categoría (comportamiento de siempre); sin él,
+      // manda de qué lista vino. Ver el comentario de `fromDerivacion` arriba.
+      const isService = p ? ['servicio', 'programa'].includes(p.category) : Boolean(it.fromDerivacion);
       const isComposite = Boolean(p?.isComposite);
       // Componentes elegidos por el doctor para un item compuesto.
       let componentsUsed = [];

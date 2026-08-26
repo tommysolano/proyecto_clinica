@@ -84,10 +84,10 @@ export default function Login() {
         </div>
         <div className="relative z-10 flex flex-col justify-center px-16 text-white">
           <div className="w-24 h-24 bg-white rounded-2xl flex items-center justify-center p-3 mb-8 shadow-xl">
-            <img src={shiluvLogo} alt="Shiluv" className="w-full h-full object-contain" />
+            <img src={shiluvLogo} alt="Vikingo" className="w-full h-full object-contain" />
           </div>
           <h1 className="text-4xl font-bold mb-4 leading-tight">
-            Shiluv<br />Sistema de Gestión Médica
+            Vikingo<br />Sistema de Gestión Médica
           </h1>
           <p className="text-emerald-100 text-lg leading-relaxed max-w-md">
             Plataforma integral con facturación electrónica SRI Ecuador. Pacientes, citas,
@@ -104,9 +104,9 @@ export default function Login() {
         <div className="w-full max-w-md">
           <div className="lg:hidden text-center mb-8">
             <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-lg shadow-emerald-200 p-2">
-              <img src={shiluvLogo} alt="Shiluv" className="w-full h-full object-contain" />
+              <img src={shiluvLogo} alt="Vikingo" className="w-full h-full object-contain" />
             </div>
-            <h1 className="text-xl font-bold text-slate-800">Shiluv</h1>
+            <h1 className="text-xl font-bold text-slate-800">Vikingo</h1>
           </div>
 
           <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-8">
@@ -215,7 +215,7 @@ export default function Login() {
           </div>
 
           <p className="text-center text-xs text-slate-400 mt-6">
-            © 2026 Shiluv · Todos los derechos reservados
+            © 2026 Vikingo · Todos los derechos reservados
           </p>
         </div>
       </div>

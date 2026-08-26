@@ -22,7 +22,12 @@ router.put('/:patientId', allRoles, updateByPatient);
 router.post('/:patientId/follow-ups', allRoles, addFollowUp);
 router.get('/:patientId/follow-ups/:followUpId/print', allRoles, printFollowUp);
 router.get('/:patientId/follow-ups/:followUpId/msp', allRoles, printMspForm);
-router.delete('/:patientId/follow-ups/:followUpId', requireRole('admin', 'doctor'), deleteFollowUp);
+// Borrar un seguimiento: SOLO administradores. Antes también podían los
+// doctores —y `requireRole` expande 'doctor' a todas las especialidades, así que
+// en la práctica podía cualquier profesional— pero un seguimiento es historia
+// clínica: se corrige añadiendo otro, no borrando el anterior. El frontend ya
+// solo enseñaba el botón al admin; esto cierra la puerta de verdad.
+router.delete('/:patientId/follow-ups/:followUpId', requireRole('admin'), deleteFollowUp);
 
 // Adjuntos PDF (ecografías, bioresonancias, etc.) por seguimiento.
 // Disponible para todos los usuarios con acceso a seguimientos (admin, cajero, doctor, optica).
@@ -37,9 +42,12 @@ router.get(
   allRoles,
   downloadFollowUpAttachment
 );
+// Borrar un adjunto va con el mismo criterio que borrar el seguimiento: es parte
+// de la historia clínica (una ecografía, un examen) y solo el admin la retira.
+// El botón ya se enseñaba únicamente al admin; la ruta estaba abierta.
 router.delete(
   '/:patientId/follow-ups/:followUpId/attachments/:attachmentId',
-  allRoles,
+  requireRole('admin'),
   deleteFollowUpAttachment
 );
 

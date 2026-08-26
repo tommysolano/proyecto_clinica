@@ -2,13 +2,29 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/shiluv-logo.png" />
-    <link rel="apple-touch-icon" href="/shiluv-logo.png" />
+    <link rel="icon" type="image/png" href="/pwa-192.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Shiluv · Sistema Médico</title>
+
+    <!-- PWA: con esto el móvil ofrece instalar Vikingo como una app más.
+         El manifiesto se llama .json (y no .webmanifest) a propósito: nginx no
+         conoce esa extensión y la serviría como descarga binaria. -->
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#0f766e" />
+    <meta name="description" content="Vikingo · Sistema de Gestión Médica. Pacientes, citas, fichas clínicas, inventario y facturación electrónica SRI." />
+
+    <!-- iOS no lee el manifiesto: la instalación es "Compartir → Añadir a
+         pantalla de inicio" y todo lo de abajo es lo que la hace ver como app.
+         El icono DEBE ser opaco: iOS pinta de negro la transparencia. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Vikingo" />
+
+    <title>Vikingo · Sistema de Gestión Médica</title>
   </head>
   <body>
     <div id="root"></div>

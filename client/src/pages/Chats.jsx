@@ -64,7 +64,7 @@ import useWhatsappCall from '../hooks/useWhatsappCall';
 import CallPanel from '../components/CallPanel';
 import ChatComposerToolbar from '../components/ChatComposerToolbar';
 import { renderWhatsappText } from '../utils/whatsappText';
-import { downloadFromUrl, triggerBlobDownload } from '../utils/download';
+import { downloadFromUrl, triggerAnchorDownload, triggerBlobDownload } from '../utils/download';
 import { ENROLL_STATUS, STEP_LABELS } from '../utils/workflowLabels';
 import DateInput from '../components/DateInput';
 import DateTimeInput from '../components/DateTimeInput';
@@ -3483,10 +3483,16 @@ function AudioPlayer({ src, isOut, onDownload }) {
   );
 }
 
-// Descarga un adjunto del chat (documento, nota de voz…) a disco. La media entrante
-// se guarda como data: URL y el navegador NO deja descargar/navegar directo a un
-// data: URL; se baja a Blob (downloadFromUrl) para que funcione en todos lados.
+// Descarga un adjunto del chat (documento, nota de voz…) a disco. Mismo criterio
+// que `downloadChatMedia`: si es una URL del servidor se la damos al navegador
+// con `?download=1`; solo los `data:` URL heredados pasan por Blob, porque el
+// navegador no deja navegar a un data: URL.
 async function saveMediaFile(url, filename) {
+  if (!url) return;
+  if (!url.startsWith('data:')) {
+    triggerAnchorDownload(`${url}${url.includes('?') ? '&' : '?'}download=1`, filename);
+    return;
+  }
   try {
     await downloadFromUrl(url, filename);
   } catch {
@@ -3518,28 +3524,58 @@ function mediaBaseName(msg) {
  * Descarga a disco el adjunto de un mensaje (foto, video, sticker, nota de voz o
  * documento), tanto de los que llegan como de los que enviamos nosotros.
  *
- * Va por Blob (no por `<a download href>`): el archivo se sirve desde
- * /api/public/media/:id, que puede estar en OTRO dominio (PUBLIC_API_URL) y el
- * atributo `download` se ignora entre dominios — el navegador abriría la foto en
- * vez de guardarla. Del blob sale además el tipo MIME real, con el que se pone
- * la extensión correcta cuando el mensaje no trae nombre de archivo.
+ * SE ENTREGA LA URL AL NAVEGADOR, NO SE BAJA A MANO. Antes esto hacía
+ * `fetch()` → Blob → `<a download>` sintético, y el resultado era el clásico "a
+ * mí sí me baja y a mi compañero no", sin ningún error en pantalla:
+ *   - el object URL se revocaba en el mismo tick del clic y Firefox/Safari
+ *     cancelaban la descarga en silencio;
+ *   - tras el `await fetch` Chrome ya no considera la descarga "hecha por el
+ *     usuario" y la bloquea sola si la petición tardó unos segundos (conexión de
+ *     oficina, PDF de varios MB);
+ *   - y el archivo entero pasaba por la memoria de la pestaña.
+ * Ahora se pide `?download=1` al endpoint público, que responde con
+ * `Content-Disposition: attachment` (ver mediaController), así que basta un
+ * enlace normal: lo guarda el gestor de descargas del navegador, funciona aunque
+ * la media viva en otro dominio (PUBLIC_API_URL) y no hay tope de tamaño.
+ *
+ * Los adjuntos anteriores a la migración siguen siendo `data:` URLs, a los que el
+ * navegador NO deja navegar: esos sí van por Blob.
  */
-async function downloadChatMedia(msg) {
+function downloadChatMedia(msg) {
   const url = msg?.mediaUrl;
   if (!url) return;
+  if (url.startsWith('data:')) {
+    downloadInlineMedia(msg);
+    return;
+  }
+  const href = `${url}${url.includes('?') ? '&' : '?'}download=1`;
+  // `download` es solo el nombre sugerido (y el navegador lo ignora entre
+  // dominios): el nombre bueno lo manda el servidor en la cabecera.
+  triggerAnchorDownload(href, chatMediaFilename(msg));
+}
+
+/** Adjunto que todavía viaja como data URL: se baja a Blob y se guarda. */
+async function downloadInlineMedia(msg) {
   try {
-    const res = await fetch(url);
+    const res = await fetch(msg.mediaUrl);
     if (!res.ok) throw new Error('http');
     const blob = await res.blob();
-    let name = String(msg.mediaName || '').trim().replace(/[\\/:*?"<>|]+/g, '_');
-    if (!/\.[a-z0-9]{2,5}$/i.test(name)) {
-      const ext = MIME_EXT[(blob.type || '').split(';')[0].trim()] || MEDIA_EXT_FALLBACK[msg.mediaType] || 'bin';
-      name = `${name || mediaBaseName(msg)}.${ext}`;
-    }
-    triggerBlobDownload(blob, name);
+    triggerBlobDownload(blob, chatMediaFilename(msg, blob.type));
   } catch {
     toast.error('No se pudo descargar el archivo');
   }
+}
+
+/**
+ * Nombre con el que se guarda. WhatsApp solo informa el nombre real de los
+ * documentos, así que a las fotos y notas de voz se les pone uno con la fecha y
+ * la extensión que toca según el tipo MIME.
+ */
+function chatMediaFilename(msg, mimeType = '') {
+  const name = String(msg.mediaName || '').trim().replace(/[\\/:*?"<>|]+/g, '_');
+  if (/\.[a-z0-9]{2,5}$/i.test(name)) return name;
+  const ext = MIME_EXT[String(mimeType).split(';')[0].trim()] || MEDIA_EXT_FALLBACK[msg.mediaType] || 'bin';
+  return `${name || mediaBaseName(msg)}.${ext}`;
 }
 
 // Botón de descarga superpuesto a una foto / video / sticker del chat.
@@ -3673,9 +3709,9 @@ function MessageMedia({ msg, isOut, onRetryMedia }) {
     return <AudioPlayer src={url} isOut={isOut} onDownload={() => downloadChatMedia(msg)} />;
   }
   // Documento: tarjeta con icono, nombre y tamaño (como WhatsApp), no un genérico
-  // "Ver adjunto". El nombre real llega en `mediaName`. Al hacer clic se DESCARGA
-  // por Blob (ver saveMediaFile): un enlace directo a un data: URL lo bloquea el
-  // navegador, y por eso los PDF/Word/Excel entrantes "no se dejaban descargar".
+  // "Ver adjunto". El nombre real llega en `mediaName`. Al hacer clic se descarga
+  // por `downloadChatMedia`, que se lo pasa al gestor de descargas del navegador
+  // (ver ahí por qué NO se baja a Blob desde JavaScript).
   const name = msg.mediaName || 'Documento';
   const size = formatFileSize(msg.mediaSize);
   return (

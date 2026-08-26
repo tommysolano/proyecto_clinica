@@ -1,0 +1,39 @@
+{
+  "id": "/",
+  "name": "Vikingo · Sistema de Gestión Médica",
+  "short_name": "Vikingo",
+  "description": "Pacientes, citas, fichas clínicas, inventario y facturación electrónica SRI en un solo lugar.",
+  "lang": "es-EC",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#eef1f6",
+  "theme_color": "#0f766e",
+  "categories": ["medical", "business", "productivity"],
+  "icons": [
+    {
+      "src": "/pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    { "name": "Calendario y Citas", "url": "/appointments" },
+    { "name": "Clientes", "url": "/patients" },
+    { "name": "Chats", "url": "/chats" }
+  ]
+}
