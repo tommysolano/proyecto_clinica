@@ -3635,7 +3635,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   let isNew = false;
   let patient = phone ? await findPatientForIncoming(clinicId, normalizedPhone) : null;
   if (!conv) {
-    conv = await Conversation.create({
+    const nueva = {
       clinic: clinicId,
       phone: normalizedPhone || phone || externalUserId, // unique constraint en (clinic, phone)
       externalUserId: externalUserId || '',
@@ -3649,8 +3649,25 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
       patient: patient?._id || null,
       channel,
       ...(referral ? { attribution: referral } : {}),
-    });
-    isNew = true;
+    };
+    try {
+      conv = await Conversation.create(nueva);
+      isNew = true;
+    } catch (e) {
+      /**
+       * (clinic, phone) es ÚNICO. Dos mensajes del MISMO contacto nuevo llegando
+       * a la vez —o dos ingestas del mismo mensaje— intentan crear el chat las
+       * dos: la segunda revienta con E11000 y, sin esto, el mensaje se perdía en
+       * el `catch` de quien llamara, sin dejar más rastro que una línea de log.
+       * Gana la primera y la segunda se queda con el chat que acaba de nacer.
+       */
+      if (!e || e.code !== 11000) throw e;
+      conv = await Conversation.findOne(findKey);
+      if (!conv && normalizedPhone) {
+        conv = await Conversation.findOne({ clinic: clinicId, channel, phone: normalizedPhone });
+      }
+      if (!conv) throw e;
+    }
     // CAPI: primera conversación de WhatsApp = Lead para Meta (fire-and-forget).
     if (channel === 'whatsapp') {
       require('../utils/metaConversions')
@@ -3813,7 +3830,24 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     if (quoted) replyTo = replySnapshotFrom(quoted, conv.contactName);
   }
 
-  const msg = await Message.create({
+  /**
+   * EL INSERT ES EL CANDADO, no el `findOne` de arriba.
+   *
+   * Ese findOne es una comprobación barata que corta el caso normal (Meta
+   * reintenta el webhook), pero es leer-y-luego-escribir: con dos ingestas
+   * separadas por milisegundos —una sesión QR zombi dejaba DOS clientes vivos
+   * escuchando— las dos leen «no existe» antes de que ninguna haya insertado.
+   * Hubo mensajes guardados cinco veces.
+   *
+   * Aquí manda el índice único parcial (clinic, externalId) para entrantes: el
+   * segundo insert revienta con E11000 y se sale ANTES de tocar nada más. Eso es
+   * lo importante: debajo de este punto están el contador de no leídos, el aviso
+   * por socket y el MOTOR DE AUTOMATIZACIONES, así que un duplicado no solo se
+   * veía repetido — le respondía otra vez al paciente.
+   */
+  let msg;
+  try {
+    msg = await Message.create({
     clinic: clinicId,
     conversation: conv._id,
     direction: 'in',
@@ -3845,7 +3879,16 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     // Número por el que entró (para responder por el mismo, aun sin enlazar la conv).
     whatsappAccount: account?._id || null,
     deliveryStatus: 'delivered',
-  });
+    });
+  } catch (e) {
+    // 11000 = otra ingesta del MISMO mensaje ganó la carrera. No es un error: el
+    // mensaje ya está guardado y ya disparó lo que tenía que disparar.
+    if (e && e.code === 11000) {
+      console.warn('[chat] mensaje entrante duplicado descartado (externalId=%s)', externalId);
+      return;
+    }
+    throw e;
+  }
   conv.lastMessageAt = msg.createdAt;
   conv.lastMessagePreview = (finalBody || mediaPreviewText(mediaType, mediaName)).slice(0, 140);
   conv.lastMessageDirection = 'in';

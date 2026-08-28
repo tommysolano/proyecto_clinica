@@ -1,5 +1,5 @@
 diff --git a/node_modules/whatsapp-web.js/src/Client.js b/node_modules/whatsapp-web.js/src/Client.js
-index 800109e..0e15a3e 100644
+index 800109e..37a673b 100644
 --- a/node_modules/whatsapp-web.js/src/Client.js
 +++ b/node_modules/whatsapp-web.js/src/Client.js
 @@ -490,18 +490,43 @@ class Client extends EventEmitter {
@@ -54,3 +54,27 @@ index 800109e..0e15a3e 100644
      }
  
      /**
+@@ -1021,6 +1046,23 @@ class Client extends EventEmitter {
+         );
+ 
+         await this.pupPage.evaluate(() => {
++            // PATCH shiluv: ENGANCHAR LOS LISTENERS UNA SOLA VEZ POR CONTEXTO.
++            //
++            // Nada aquí quita los listeners anteriores, así que cada llamada a
++            // attachEventListeners() añadía OTRO `Msg.on('add')` sobre los que ya
++            // había. Y se llama muchas veces: desde inject() en cada
++            // 'framenavigated' (con el scheduleInject de más abajo y sus 6
++            // reintentos) y desde nuestro ensurePageInjection al reparar la
++            // pestaña. Cada mensaje entrante se entregaba entonces N veces, con N
++            // creciendo: se midieron mensajes guardados CINCO veces, y cada copia
++            // volvía a disparar las automatizaciones del CRM.
++            //
++            // La marca vive en el contexto de la página, que es donde viven los
++            // listeners: si WhatsApp Web navega de verdad, se pierden los dos a
++            // la vez y esto vuelve a enganchar, como debe ser.
++            if (window.__shiluvListenersAttached) return;
++            window.__shiluvListenersAttached = true;
++
+             const { Msg, Chat } = window.require('WAWebCollections');
+             const AppState = window.require('WAWebSocketModel').Socket;
+ 

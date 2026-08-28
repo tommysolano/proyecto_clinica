@@ -989,10 +989,32 @@ export default function Appointments() {
               ) : (
                 filteredAppointments.map((apt, aptIdx) => {
                   const editable = canEdit(apt);
+                  /**
+                   * QUIÉN TIENE LA PELOTA AHORA. Todo lo que ofrece esta fila se
+                   * decide con `currentTurnUser`, NO con los espejos `doctor` /
+                   * `attendedByNurse`: esos apuntan al ÚLTIMO que atendió cuando
+                   * ya no queda turno suyo pendiente —es lo correcto para
+                   * comisiones y reportes— y por eso el doctor que ya había
+                   * guardado su seguimiento seguía viendo «Atender» de un
+                   * paciente que ya estaba con enfermería.
+                   */
+                  const idDe = (v) => String(v?._id || v || '');
+                  const conTurnos = (apt.turns || []).length > 0;
+                  const esMiTurno = idDe(apt.currentTurnUser) === String(user?.id);
+                  const yaAtendi = (apt.turns || []).some(
+                    (t) => t.status === 'completado' && idDe(t.user) === String(user?.id)
+                  );
+                  // Turno de enfermería LIBRE: lo puede tomar cualquiera. En las
+                  // citas viejas (sin turnos) sigue mandando el campo de antes.
+                  const enfermeriaLibre = conTurnos
+                    ? apt.currentTurnKind === 'enfermeria' && !apt.currentTurnUser
+                    : !apt.attendedByNurse;
+                  // Ya es suyo: puede ver la receta y cerrar su parte.
+                  const enfermeriaMia = conTurnos
+                    ? apt.currentTurnKind === 'enfermeria' && esMiTurno
+                    : idDe(apt.attendedByNurse) === String(user?.id);
                   const showDoctorTimer =
-                    isDoctor &&
-                    String(apt.doctor?._id || apt.doctor) === String(user?.id) &&
-                    apt.status !== 'completada';
+                    isDoctor && esMiTurno && apt.status !== 'completada';
                   const inProgress =
                     apt.consultationStartedAt && !apt.consultationEndedAt;
                   // Separador de fecha: cabecera cuando cambia el día (vista de agenda).
@@ -1087,10 +1109,21 @@ export default function Appointments() {
                             <HiOutlineUserPlus className="w-4 h-4" />
                           </button>
                         )}
-                        {/* Doctor: Abrir ficha del paciente cuando la cita ya fue marcada 'asistida' */}
+                        {/**
+                          * Doctor: abrir la ficha SOLO si le toca AHORA.
+                          *
+                          * Antes se miraba `apt.doctor`, que es el ESPEJO para
+                          * comisiones y reportes: cuando ya no queda ningún turno
+                          * de doctor pendiente, ese espejo se queda apuntando al
+                          * ÚLTIMO que atendió. Con la cola «doctor → enfermería»,
+                          * el doctor que ya había guardado su seguimiento seguía
+                          * viendo «Atender» para un paciente que ya estaba con
+                          * enfermería. `currentTurnUser` es quien tiene la pelota
+                          * ahora, que es justo lo que hay que preguntar.
+                          */}
                         {isDoctor &&
                           apt.status === 'asistida' &&
-                          String(apt.doctor?._id || apt.doctor) === String(user?.id) && (
+                          esMiTurno && (
                             <button
                               onClick={() => abrirAtencion(apt)}
                               className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-600 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
@@ -1099,8 +1132,18 @@ export default function Appointments() {
                               Atender
                             </button>
                           )}
+                        {/* Ya atendió y la cita sigue viva con otro: se le dice,
+                            en vez de dejarle un botón que no le corresponde. */}
+                        {isDoctor && apt.status === 'asistida' && !esMiTurno && yaAtendi && (
+                            <span
+                              className="inline-block px-2 py-1 rounded-lg text-[11px] font-medium text-slate-500 bg-slate-100 mr-1 align-middle"
+                              title="Ya guardaste tu seguimiento de esta cita"
+                            >
+                              Ya atendida
+                            </span>
+                          )}
                         {/* Enfermero: reclamar una cita de enfermería libre */}
-                        {isNurse && apt.status === 'asistida' && !apt.attendedByNurse && (
+                        {isNurse && apt.status === 'asistida' && enfermeriaLibre && (
                           <button
                             onClick={() => nurseClaim(apt)}
                             className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-700 bg-transparent border border-sky-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
@@ -1110,7 +1153,7 @@ export default function Appointments() {
                           </button>
                         )}
                         {/* Enfermero: ver la receta del paciente que ya tomó */}
-                        {isNurse && apt.status === 'asistida' && String(apt.attendedByNurse?._id || apt.attendedByNurse) === String(user?.id) && (
+                        {isNurse && apt.status === 'asistida' && enfermeriaMia && (
                           <button
                             onClick={() => abrirAtencion(apt)}
                             className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-700 bg-transparent border border-sky-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
@@ -1120,7 +1163,7 @@ export default function Appointments() {
                           </button>
                         )}
                         {/* Enfermero: cerrar su turno (no escribe seguimiento) */}
-                        {isNurse && apt.status === 'asistida' && String(apt.attendedByNurse?._id || apt.attendedByNurse) === String(user?.id) && (
+                        {isNurse && apt.status === 'asistida' && enfermeriaMia && (
                           <button
                             onClick={() => nurseFinish(apt)}
                             className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-700 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"

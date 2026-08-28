@@ -288,3 +288,64 @@ test('enfermería detrás de un doctor sigue sin salir hasta que él termina', a
   assert.equal(r.statusCode, 409, JSON.stringify(r.payload));
   assert.equal(r.payload.code, 'NOT_YOUR_TURN');
 });
+
+// ───────────── el contrato del que depende la agenda ─────────────
+
+/**
+ * Estos dos fijan lo que la PANTALLA necesita para no ofrecer «Atender» a quien
+ * no le toca. El espejo `doctor` y `currentTurnUser` dicen cosas DISTINTAS a
+ * propósito, y confundirlos fue el fallo: el doctor que ya había guardado su
+ * seguimiento seguía viendo el botón de atender a un paciente que ya estaba con
+ * enfermería.
+ */
+test('cuando el doctor termina y pasa a enfermería, el espejo sigue en él pero el turno NO', async () => {
+  const { clinicId, userId, docA, cita, patient } = await seed();
+  await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
+    steps: [{ kind: 'doctor', user: String(docA._id) }, { kind: 'enfermeria' }],
+  }, params(cita._id)));
+
+  const records = require('../controllers/clinicalRecordController');
+  const r = await H.runController(
+    records.addFollowUp,
+    H.mockReq(clinicId, docA._id, { motivoConsulta: 'Control', appointmentId: String(cita._id) },
+      { role: 'doctor', params: { patientId: String(patient._id) } }),
+  );
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  const a = await Appointment.findById(cita._id).lean();
+  // El espejo se queda con el último doctor: lo leen comisiones y reportes, y la
+  // cita no puede perder a su médico.
+  assert.equal(String(a.doctor), String(docA._id), 'el espejo conserva al doctor');
+  // Pero la pelota ya NO es suya. Es lo que la agenda tiene que mirar.
+  assert.equal(a.currentTurnKind, 'enfermeria');
+  assert.equal(a.currentTurnUser, null, 'nadie la tiene: sale a la bandeja de enfermería');
+  assert.notEqual(String(a.currentTurnUser || ''), String(docA._id));
+  // Y su turno consta como completado, que es lo que permite decir «Ya atendida».
+  const suyo = a.turns.find((t) => String(t.user) === String(docA._id));
+  assert.equal(suyo.status, 'completado');
+});
+
+test('con dos doctores, al primero deja de tocarle en cuanto guarda', async () => {
+  const { clinicId, userId, docA, cita, patient } = await seed();
+  const docB = await User.create({
+    name: 'DocB', email: 'docb@t.com', password: 'secreto123',
+    clinics: [{ clinic: clinicId, role: 'doctor' }],
+  });
+  await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
+    steps: [{ kind: 'doctor', user: String(docA._id) }, { kind: 'doctor', user: String(docB._id) }],
+  }, params(cita._id)));
+
+  const antes = await Appointment.findById(cita._id).lean();
+  assert.equal(String(antes.currentTurnUser), String(docA._id), 'empieza el primero');
+
+  const records = require('../controllers/clinicalRecordController');
+  await H.runController(
+    records.addFollowUp,
+    H.mockReq(clinicId, docA._id, { motivoConsulta: 'Control', appointmentId: String(cita._id) },
+      { role: 'doctor', params: { patientId: String(patient._id) } }),
+  );
+
+  const a = await Appointment.findById(cita._id).lean();
+  assert.equal(String(a.currentTurnUser), String(docB._id), 'la pelota pasa al segundo');
+  assert.notEqual(String(a.currentTurnUser), String(docA._id), 'al primero ya no le toca');
+});

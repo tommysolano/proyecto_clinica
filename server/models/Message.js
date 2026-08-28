@@ -163,4 +163,28 @@ messageSchema.index(
   { unique: true, partialFilterExpression: { clientId: { $type: 'string', $gt: '' } } }
 );
 
+/**
+ * UN MENSAJE ENTRANTE, UNA SOLA VEZ. `externalId` es el id del proveedor (wamid
+ * de Meta, o el id serializado de la sesión QR) y es único por mensaje.
+ *
+ * La comprobación de duplicado en `ingestExternalMessage` es leer-y-luego-
+ * escribir, y con ~118 ms de ida y vuelta a Atlas eso NO protege de nada: dos
+ * ingestas del mismo mensaje separadas por milisegundos hacen las dos su
+ * `findOne` antes de que ninguna haya insertado. Pasó de verdad — mensajes
+ * guardados hasta CINCO veces— y lo grave no era verlos repetidos en el chat,
+ * sino que cada copia volvía a disparar las automatizaciones: el paciente podía
+ * recibir la misma respuesta automática cinco veces.
+ *
+ * Solo ENTRANTES a propósito: los salientes ya tienen su idempotencia por
+ * `clientId`, y hacer fallar un envío por un choque de ids sería peor que el
+ * duplicado que evita.
+ */
+messageSchema.index(
+  { clinic: 1, externalId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { direction: 'in', externalId: { $type: 'string', $gt: '' } },
+  }
+);
+
 module.exports = mongoose.model('Message', messageSchema);

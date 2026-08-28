@@ -1318,6 +1318,32 @@ function SeguimientosTab({ patientId, appointmentId }) {
   const puedeEscribir = !esEnfermero;
   const puedeAdministrarSuero = hasRole('admin', 'doctor', 'enfermero');
 
+  /**
+   * Enfermería cierra SU turno desde aquí, sin pasar por la agenda.
+   *
+   * Es el mismo endpoint que el botón «Terminar» de la agenda: cierra el turno,
+   * pasa la cita al siguiente profesional si lo hay y la completa si no queda
+   * nadie. Después se vuelve a la agenda, igual que hace el doctor al guardar:
+   * quedarse en la ficha con todo igual se lee como «no pasó nada».
+   */
+  const [cerrandoTurno, setCerrandoTurno] = useState(false);
+  const terminarTurnoEnfermeria = async () => {
+    if (cerrandoTurno) return;
+    setCerrandoTurno(true);
+    try {
+      const { data } = await api.post(`/appointments/${appointmentId}/nurse-complete`, {});
+      // Se dice la verdad sobre lo que pasó: si detrás queda otro profesional, la
+      // cita NO está completada y decirlo evitaría que alguien la dé por cerrada.
+      const quedaAlguien = data?.status !== 'completada';
+      toast.success(quedaAlguien ? 'Tu parte quedó cerrada. La cita sigue con el siguiente.' : 'Atención finalizada.');
+      navigate('/appointments');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo cerrar tu parte');
+    } finally {
+      setCerrandoTurno(false);
+    }
+  };
+
   // Una vez guardado, solo administradores pueden eliminar/editar seguimientos.
   const canDelete = isAdmin;
   const canUpload = hasRole('admin', 'cajero', 'doctor', 'optica', 'enfermero');
@@ -1855,6 +1881,29 @@ function SeguimientosTab({ patientId, appointmentId }) {
       {appointmentId && puedeEscribir && (
         <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs sm:text-sm rounded-xl px-3 py-2">
           Al guardar cierras tu parte de la consulta y vuelves a la agenda.
+        </div>
+      )}
+
+      {/**
+       * ENFERMERÍA TAMBIÉN TIENE QUE PODER TERMINAR.
+       *
+       * El doctor cierra su turno al guardar el seguimiento; enfermería no
+       * redacta ninguno, así que no tenía forma de cerrar el suyo desde aquí: se
+       * aplicaba el suero y la cita se quedaba abierta para siempre, y el botón
+       * «Terminar» solo existía en la agenda —había que salir a buscarlo—.
+       */}
+      {appointmentId && esEnfermero && (
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-sky-50 border border-sky-200 text-sky-900 text-xs sm:text-sm rounded-xl px-3 py-2">
+          <span>Cuando acabes de aplicar lo indicado, cierra tu parte de la atención.</span>
+          <button
+            type="button"
+            onClick={terminarTurnoEnfermeria}
+            disabled={cerrandoTurno}
+            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-600 text-white text-xs font-semibold border-none cursor-pointer disabled:opacity-50"
+          >
+            <HiOutlineCheck className="w-4 h-4" />
+            {cerrandoTurno ? 'Cerrando…' : 'Terminar mi parte'}
+          </button>
         </div>
       )}
 

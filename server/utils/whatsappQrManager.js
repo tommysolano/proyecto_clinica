@@ -242,6 +242,24 @@ async function notifyQrDown(key, { needsQr = false, reason = '' } = {}) {
 }
 
 /**
+ * TIRA UN CLIENTE PARA SIEMPRE. Único sitio que lo hace.
+ *
+ * `removeAllListeners` va PRIMERO, y es lo importante. `destroy()` puede tardar
+ * o reventar con un Chrome colgado —por eso su error se traga en todas partes—,
+ * y un cliente que sobrevive al destroy con sus oyentes puestos SIGUE
+ * INGIRIENDO mensajes en paralelo con el cliente nuevo. Así es como los
+ * entrantes acabaron guardándose ×2, ×3… hasta cinco veces, cada copia
+ * disparando otra vez las automatizaciones.
+ *
+ * Sin oyentes no puede ingerir nada, aunque el navegador siga respirando.
+ */
+async function descartarCliente(client) {
+  if (!client) return;
+  try { client.removeAllListeners(); } catch { /* noop */ }
+  try { await client.destroy(); } catch { /* noop */ }
+}
+
+/**
  * Cierra y limpia un cliente, persiste el estado final y lo emite a la UI.
  * `reason` queda en el log y en la cuenta (para poder ver POR QUÉ se cayó), y
  * salvo que la caída exija un QR nuevo se programa la reconexión automática.
@@ -256,7 +274,7 @@ async function teardown(key, entry, {
   const replaced = clients.has(key) && clients.get(key) !== entry;
   if (!replaced) clients.delete(key);
   entry.closing = true; // el cierre es nuestro: que el vigía del navegador no reaccione
-  try { await entry.client.destroy(); } catch { /* noop */ }
+  await descartarCliente(entry.client);
   if (replaced) return;
   console.warn('[whatsappQr] %s → %s (%s)', key, status, reason || error || 'sin motivo');
   await setAccountStatus(key, {
@@ -1695,17 +1713,30 @@ async function startClient(key, accountId, userId) {
         await emitStatus(key, { status: 'connected' }, userId);
         return { ok: true, status: 'connected' };
       }
-    } else {
-      // Cliente vivo pero NO conectado (p.ej. quedó en 'connecting' colgado, o en
-      // 'qr_pending' con un QR que ya caducó — típico tras initEnabledOnBoot).
-      // Antes se reusaba y solo se reemitía el estado, sin volver a generar el QR:
-      // el botón "Conectar" quedaba muerto hasta reiniciar el server. Ahora se
-      // destruye y se arranca de cero para garantizar un QR fresco.
-      clients.delete(key);
-      if (existing.watchdog) clearTimeout(existing.watchdog);
-      if (existing.syncWatchdog) clearTimeout(existing.syncWatchdog);
-      try { await existing.client.destroy(); } catch { /* noop */ }
     }
+    /**
+     * SE LLEGA AQUÍ CON UN CLIENTE VIEJO QUE HAY QUE TIRAR. Dos casos:
+     *  · nunca llegó a conectar (quedó colgado en 'connecting', o con un QR
+     *    caducado tras initEnabledOnBoot);
+     *  · figuraba conectado pero la sesión está MUERTA — la sesión zombi.
+     *
+     * ESTE SEGUNDO CASO SE ESCAPABA. Estaba dentro del `if` de arriba y, al no
+     * seguir conectada, caía hasta aquí sin destruir nada; abajo se creaba un
+     * cliente NUEVO y el viejo seguía vivo con sus listeners puestos. Cada
+     * autocuración de una sesión zombi dejaba un ingestor más: los mensajes
+     * entrantes se guardaban ×2, ×3… y se midieron hasta CINCO copias, con sus
+     * automatizaciones respondiéndole otras tantas veces al paciente.
+     *
+     * `removeAllListeners` va ANTES y aparte del destroy, y es lo que de verdad
+     * corta el problema: `destroy()` puede tardar o reventar con Chrome colgado
+     * —por eso su error se traga—, pero un cliente sin oyentes ya no puede
+     * ingerir nada aunque siga respirando.
+     */
+    clients.delete(key);
+    if (existing.watchdog) clearTimeout(existing.watchdog);
+    if (existing.syncWatchdog) clearTimeout(existing.syncWatchdog);
+    existing.closing = true;
+    await descartarCliente(existing.client);
   }
 
   const account = await WhatsappAccount.findById(accountId);
@@ -1787,7 +1818,7 @@ async function startClient(key, accountId, userId) {
     if (!cur || cur.client !== client || cur.gotQr || cur.status !== 'connecting') return;
     clients.delete(key);
     entry.closing = true;
-    try { await client.destroy(); } catch { /* noop */ }
+    await descartarCliente(client);
     const fresh = await WhatsappAccount.findById(accountId).catch(() => null);
     if (fresh && !fresh.connectedPhone) await wipeLocalSession(sessionId);
     await setAccountStatus(accountId, { status: 'auth_failure' });
@@ -1841,7 +1872,7 @@ async function startClient(key, accountId, userId) {
       if (!cur || cur.client !== client || cur.status !== 'syncing') return;
       clients.delete(key);
       entry.closing = true;
-      try { await client.destroy(); } catch { /* noop */ }
+      await descartarCliente(client);
       const retries = syncRetries.get(key) || 0;
       if (retries < 1) {
         syncRetries.set(key, retries + 1);
@@ -2044,7 +2075,7 @@ async function startClient(key, accountId, userId) {
       if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
       clients.delete(key);
       entry.closing = true;
-      try { await client.destroy(); } catch { /* noop */ }
+      await descartarCliente(client);
       const fresh = await WhatsappAccount.findById(accountId).catch(() => null);
       if (fresh && !fresh.connectedPhone) await wipeLocalSession(sessionId);
       await setAccountStatus(accountId, {
@@ -2076,7 +2107,7 @@ async function disconnect(accountId) {
     if (entry.syncWatchdog) { clearTimeout(entry.syncWatchdog); entry.syncWatchdog = null; }
     entry.closing = true;
     try { await entry.client.logout(); } catch { /* noop */ }
-    try { await entry.client.destroy(); } catch { /* noop */ }
+    await descartarCliente(entry.client);
   }
   clients.delete(key);
   syncRetries.delete(key);
@@ -3222,7 +3253,7 @@ async function shutdownAll() {
       if (e.watchdog) clearTimeout(e.watchdog);
       if (e.syncWatchdog) clearTimeout(e.syncWatchdog);
       e.closing = true;
-      return e.client.destroy().catch(() => {});
+      return descartarCliente(e.client);
     })
   );
 }
