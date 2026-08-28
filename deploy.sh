@@ -23,7 +23,46 @@ git fetch --all --prune
 git reset --hard "origin/$BRANCH"
 
 echo "==> 2/6 Instalando dependencias (server + client)"
-npm run install-all
+# AMPLIAR UN PARCHE YA EXISTENTE ROMPE EL DESPLIEGUE SI NO SE HACE NADA MAS.
+#
+# server/package.json tiene `postinstall: patch-package --error-on-fail`, y
+# patch-package aplica los parches SOBRE LO QUE HAYA en node_modules. npm no
+# vuelve a extraer un paquete cuya version no cambio, asi que cuando un despliegue
+# trae un parche AMPLIADO (mismo paquete, misma version, un hunk mas), patch-package
+# se encuentra el archivo a medio parchear: no puede aplicarlo hacia delante (el
+# hunk viejo ya esta) ni reconocerlo como "ya aplicado" (el hunk nuevo falta).
+# Falla, y `set -e` aborta el despliegue en unos 14 segundos, en este paso 2/6, sin
+# llegar a reiniciar nada. Paso el 28-ago-2026 al ampliar el parche de
+# whatsapp-web.js con la guardia contra mensajes duplicados.
+#
+# La cura es dejar el paquete como recien bajado de npm y reinstalar. Se hace SOLO
+# si el fallo fue del parche: si npm murio por otra cosa (red, disco), se aborta
+# como siempre en vez de borrar dependencias a ciegas. Durante el borrado el backend
+# viejo sigue vivo con el modulo ya cargado en memoria, asi que solo corre riesgo un
+# `require` perezoso en esos segundos; pasa unicamente cuando cambia un parche y el
+# reinicio de PM2 llega acto seguido.
+LOG_INSTALL="$(mktemp)"
+if ! npm run install-all 2>&1 | tee "$LOG_INSTALL"; then
+  if grep -q 'Failed to apply patch' "$LOG_INSTALL"; then
+    echo "--> El parche no aplica sobre el node_modules actual: reinstalo los paquetes parcheados"
+    # El nombre del archivo ES el del paquete: `paquete+version.patch`, y en los
+    # paquetes con ambito `@ambito+paquete+version.patch`.
+    for parche in "$APP_DIR"/server/patches/*.patch; do
+      [ -e "$parche" ] || continue
+      nombre="$(basename "$parche" .patch)"
+      paquete="${nombre%+*}"       # quita la version
+      paquete="${paquete//+//}"    # @ambito+paquete -> @ambito/paquete
+      echo "    borrando server/node_modules/$paquete"
+      rm -rf "${APP_DIR:?}/server/node_modules/$paquete"
+    done
+    npm run install-all
+  else
+    rm -f "$LOG_INSTALL"
+    echo "ERROR: la instalacion de dependencias fallo por un motivo ajeno a los parches."
+    exit 1
+  fi
+fi
+rm -f "$LOG_INSTALL"
 
 echo "==> 3/6 Compilando el frontend (regenera client/dist)"
 npm --prefix client run build
