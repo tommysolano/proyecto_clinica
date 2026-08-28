@@ -102,6 +102,15 @@ exports.update = async (req, res) => {
     if (req.body.color !== undefined) item.color = req.body.color;
     if (req.body.nursingService !== undefined) item.nursingService = !!req.body.nursingService;
     if (req.body.active !== undefined) item.active = !!req.body.active;
+    if (req.body.durationMinutes !== undefined) {
+      // Se acota aquí y no solo en el modelo para dar un mensaje entendible: un
+      // ValidationError de mongoose en la cara del administrador no dice nada.
+      const min = Math.round(Number(req.body.durationMinutes) || 0);
+      if (!Number.isFinite(min) || min < 0 || min > 480) {
+        return res.status(400).json({ message: 'La duración debe estar entre 0 y 480 minutos.' });
+      }
+      item.durationMinutes = min;
+    }
 
     await item.save();
     emitToClinic(req.clinicId, 'appointmentServiceItem:updated', item);

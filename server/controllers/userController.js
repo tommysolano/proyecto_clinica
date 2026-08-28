@@ -418,6 +418,28 @@ exports.deleteMySignatureCert = async (req, res) => {
  * que el tipo se resuelve aquí, contra req.clinicId, y no adivinándolo en el
  * cliente. La etiqueta visible la pone el frontend (utils/roles.js).
  */
+/**
+ * Enfermeros de ESTA sucursal, para nombrar el turno al asignar la atención.
+ *
+ * Filtra por sucursal por lo mismo que las notificaciones: quien no trabaja hoy
+ * en esta sede no debe salir en la lista de recepción, o acabará con un turno
+ * asignado a alguien que está a treinta kilómetros.
+ */
+exports.getNurses = async (req, res) => {
+  try {
+    const nurses = await User.find({
+      active: true,
+      clinics: { $elemMatch: { clinic: req.clinicId, role: 'enfermero' } },
+    })
+      .select('name email')
+      .sort({ name: 1 })
+      .lean();
+    res.json(nurses);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener enfermeros', error: error.message });
+  }
+};
+
 exports.getDoctors = async (req, res) => {
   try {
     const doctors = await User.find({

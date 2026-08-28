@@ -13,12 +13,17 @@ const {
   asignarTurnos,
   doctoresPendientes,
   doctorEnTurno,
+  enfermeroEnTurno,
+  turnoVigenteEsEnfermeria,
   filtroCitasDelDoctor,
-  turnoEnfermeriaPendiente,
+  filtroCitasDeEnfermeria,
+  sincronizarEspejo,
   turnoVigente,
 } = require('../utils/appointmentTurns');
 const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
+const { crearCitaAtencionInmediata } = require('../utils/walkInAppointment');
 const {
+  nowHHMM,
   isPastLocalDate,
   isFutureLocalDate,
   isPastLocalDateTime,
@@ -60,16 +65,8 @@ function appointmentEventPayload(appt) {
   };
 }
 
-// Hora actual 'HH:mm' en hora de Ecuador (para sellar la toma de signos vitales).
-const nowHHMM = () =>
-  new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'America/Guayaquil',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  })
-    .format(new Date())
-    .replace(/^24:/, '00:');
+// `nowHHMM` vive en utils/appointmentDate.js: la comparten el sello de los
+// signos vitales y la hora de una atención inmediata.
 
 /**
  * Un doctor que YA atendió al paciente no se puede reemplazar: la consulta quedó
@@ -1214,33 +1211,20 @@ exports.createWalkIn = async (req, res) => {
     const { patient, serviceItem, reason } = req.body;
     if (!patient) return res.status(400).json({ message: 'Falta el paciente' });
 
-    const ahora = new Date();
     const servicioAgenda = await resolverServicioAgenda(serviceItem);
-    const previas = await Appointment.countDocuments({ clinic: req.clinicId, patient });
 
-    const apt = await Appointment.create({
-      clinic: req.clinicId,
-      patient,
-      date: ahora,
-      startTime: nowHHMM(),
-      // Se salta 'pendiente' a propósito: el paciente ya está delante. Además
-      // evita que `autoNoShow` la marque como ausente por su hora de inicio.
-      status: 'asistida',
-      reason: reason || 'Atención inmediata',
+    const apt = await crearCitaAtencionInmediata({
+      Appointment,
+      clinicId: req.clinicId,
+      patientId: patient,
+      user: req.user,
+      role: req.role,
       serviceItem: servicioAgenda?._id || null,
       serviceName: servicioAgenda?.name || '',
-      isFirstVisit: previas === 0,
-      createdBy: req.user._id,
-      createdByName: req.user.name || '',
-      createdByRole: req.role || null,
-      consultationStartedAt: ahora,
+      reason: reason || 'Atención inmediata',
+      // ABIERTA: el profesional la pide justo antes de atender.
+      estado: 'abierta',
     });
-
-    // Un único turno, el suyo, ya en marcha: al guardar el seguimiento la cita
-    // se cierra sola como cualquier otra.
-    asignarTurnos(apt, { doctores: [req.user._id], por: req.user._id });
-    if (apt.turns[0]) apt.turns[0].startedAt = ahora;
-    await apt.save();
 
     const populated = await Appointment.findById(apt._id)
       .populate('patient', POPULATE_PATIENT)
@@ -1259,14 +1243,18 @@ exports.createWalkIn = async (req, res) => {
 /**
  * Qué ve un enfermero en su bandeja.
  *
- * Dos criterios, porque conviven dos formas de mandar una cita a enfermería:
- *  · la NUEVA — el cajero marca "enfermería" al asignar y queda un turno propio;
+ * Tres criterios, porque conviven dos formas de mandar una cita a enfermería:
+ *  · la NUEVA — recepción pone un turno de enfermería al asignar, y ese turno
+ *    puede estar ABIERTO (lo toma el primero que lo vea) o NOMBRADO a alguien;
  *  · la VIEJA — la cita lleva un servicio del inventario con `nursingService`.
  * El segundo se mantiene para que las citas ya agendadas no desaparezcan de la
  * bandeja el día del despliegue.
  *
- * Y en los dos casos, cada enfermero ve SOLO las libres y las suyas: en cuanto
- * uno reclama una, deja de estar disponible para el resto.
+ * YA NO SE FILTRA POR `attendedByNurse`. Ese campo pasó a ser un espejo del
+ * último turno de enfermería y nunca se suelta: con dos turnos seguidos —un
+ * detox que atiende una y luego otra— se quedaba clavado en la primera y la
+ * segunda no llegaba a ver la cita ni siendo suyo el turno. Ahora manda el
+ * turno vigente (`currentTurnUser`), que es quien de verdad tiene la pelota.
  */
 async function filtroEnfermeria(req) {
   const nursingProductIds = await Product.find({ nursingService: true }).distinct('_id');
@@ -1274,35 +1262,23 @@ async function filtroEnfermeria(req) {
     .find({ nursingService: true })
     .distinct('_id');
 
-  return {
-    // $and explícito: hay DOS grupos $or (de qué citas son de enfermería, y de
-    // quién puede verlas) y en un objeto plano el segundo pisaría al primero.
+  const legado = {
     $and: [
+      { turns: { $in: [null, []] } },
       {
         $or: [
-          // Con turnos, solo cuando a enfermería LE TOCA: si delante hay un
-          // doctor que aún no ha guardado su seguimiento, la cita todavía no es
-          // suya y no tiene por qué aparecerles.
-          { currentTurnKind: 'enfermeria' },
-          // Las que este enfermero YA atendió no se le caen de la lista cuando
-          // el turno pasa al siguiente profesional.
-          { attendedByNurse: req.user._id },
-          // Citas sin turnos (anteriores al cambio): manda el servicio, como siempre.
-          {
-            $and: [
-              { turns: { $in: [null, []] } },
-              {
-                $or: [
-                  { 'services.product': { $in: nursingProductIds } },
-                  { serviceItem: { $in: nursingItemIds } },
-                ],
-              },
-            ],
-          },
+          { 'services.product': { $in: nursingProductIds } },
+          { serviceItem: { $in: nursingItemIds } },
         ],
       },
+      // En las citas viejas no hay turno que mande, así que sigue valiendo el
+      // campo antiguo: libre, o mía.
       { $or: [{ attendedByNurse: null }, { attendedByNurse: req.user._id }] },
     ],
+  };
+
+  return {
+    ...filtroCitasDeEnfermeria(req.user._id, legado),
     status: { $in: ['asistida', 'completada'] },
   };
 }
@@ -1331,7 +1307,15 @@ exports.assignDoctor = async (req, res) => {
       ? req.body.steps
           .map((p) =>
             p?.kind === 'enfermeria'
-              ? { kind: 'enfermeria' }
+              ? {
+                  kind: 'enfermeria',
+                  // OPCIONAL: con enfermero, el turno es suyo; sin él, sale a la
+                  // bandeja de todos. Antes se descartaba siempre y no había
+                  // forma de dejar preparado «primero Ana, luego quien pueda».
+                  user: p.user ? String(p.user) : null,
+                  serviceName: String(p.serviceName || '').trim(),
+                  serviceItem: p.serviceItem || null,
+                }
               : p?.user
                 ? { kind: 'doctor', user: String(p.user) }
                 : null
@@ -1441,8 +1425,12 @@ exports.assignDoctor = async (req, res) => {
 
 /**
  * Avisa a quien acaba de recibir la cita: socket para las pestañas abiertas y
- * notificación push para el móvil (que es donde está el doctor cuando recepción
- * asigna). El enfermero no se elige: la cita sale a TODOS los enfermeros.
+ * notificación push para el móvil (que es donde está el profesional cuando
+ * recepción asigna).
+ *
+ * En enfermería hay DOS casos y se distinguen por el dueño del turno: si
+ * recepción nombró a alguien, el aviso va solo a esa persona; si el turno quedó
+ * abierto, va al rol entero y la toma el primero que pueda.
  */
 async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores = [] }) {
   const paciente = [apt.patient?.firstName, apt.patient?.lastName].filter(Boolean).join(' ') || 'un paciente';
@@ -1458,7 +1446,9 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
   const enTurno = doctorEnTurno(apt);
   // El turno de enfermería tampoco sale a la bandeja mientras haya un doctor
   // por delante: la cola es la misma para todos.
-  const turnoVigenteEsEnfermeria = enfermeria && !enTurno;
+  const leTocaEnfermeria = enfermeria && !enTurno && turnoVigenteEsEnfermeria(apt);
+  // Nombrado, o abierto a todos. `null` = a todos.
+  const enfermeroNombrado = leTocaEnfermeria ? enfermeroEnTurno(apt) : null;
 
   if (enTurno) emitToUser(enTurno, 'appointment:assigned', apt);
   // Quien deja de tenerla —o quien sigue en la cola— también se entera, para que
@@ -1466,8 +1456,9 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
   for (const id of [...new Set([...anteriores, ...doctores])]) {
     if (id !== enTurno) emitToUser(id, 'appointment:updated', apt);
   }
-  if (turnoVigenteEsEnfermeria) {
-    emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
+  if (leTocaEnfermeria) {
+    if (enfermeroNombrado) emitToUser(enfermeroNombrado, 'appointment:assigned', apt);
+    else emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
   }
 
   try {
@@ -1481,13 +1472,18 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
         url: `/patients/${apt.patient?._id || apt.patient}?tab=seguimientos&appointment=${apt._id}`,
       });
     }
-    if (turnoVigenteEsEnfermeria) {
-      await notificarRol(req.clinicId, 'enfermero', {
+    if (leTocaEnfermeria) {
+      const aviso = {
         type: 'appointment_nursing',
         title: 'Cita para enfermería',
         body: cuerpo,
         url: '/appointments',
-      });
+      };
+      if (enfermeroNombrado) {
+        await notificarUsuarios([enfermeroNombrado], { clinicId: req.clinicId, ...aviso });
+      } else {
+        await notificarRol(req.clinicId, 'enfermero', aviso);
+      }
     }
   } catch (err) {
     // Que falle un aviso NUNCA puede tumbar la asignación: la cita ya está
@@ -1580,66 +1576,118 @@ const advanceTreatmentsForAppointment = async (clinicId, apt) => {
  */
 exports.nurseClaim = async (req, res) => {
   try {
-    /**
-     * RECLAMO ATÓMICO. La cita sale a la bandeja de TODOS los enfermeros a la
-     * vez, así que dos pueden pulsar "atender" en el mismo segundo. Con
-     * leer-comprobar-guardar los dos leerían `attendedByNurse` vacío y el
-     * segundo pisaría al primero: dos personas atendiendo al mismo paciente y un
-     * único registro. La condición viaja DENTRO del update: la gana uno solo.
-     */
-    /**
-     * Y solo si a enfermería LE TOCA. Con la cola ordenada, un turno de
-     * enfermería puede estar detrás de un doctor; la bandeja ya no lo enseña,
-     * pero una pantalla abierta desde antes sí podría mandarlo, y reclamarlo
-     * pondría la cita en manos de enfermería con el paciente aún en consulta.
-     */
-    const enCola = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId })
-      .select('currentTurnKind turns attendedByNurse')
+    const previa = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId })
+      .select('currentTurnKind currentTurnUser turns attendedByNurse')
       .lean();
-    if (enCola && (enCola.turns || []).length && enCola.currentTurnKind === 'doctor') {
+    if (!previa) return res.status(404).json({ message: 'Cita no encontrada' });
+
+    const conTurnos = (previa.turns || []).length > 0;
+
+    /**
+     * Solo si a enfermería LE TOCA. Con la cola ordenada, un turno de enfermería
+     * puede estar detrás de un doctor; la bandeja ya no lo enseña, pero una
+     * pantalla abierta desde antes sí podría mandarlo, y reclamarlo pondría la
+     * cita en manos de enfermería con el paciente aún en consulta.
+     */
+    if (conTurnos && previa.currentTurnKind !== 'enfermeria') {
       return res.status(409).json({
         message: 'Todavía le toca al doctor. La cita pasará a enfermería cuando él termine.',
         code: 'NOT_YOUR_TURN',
       });
     }
 
-    const apt = await Appointment.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        clinic: req.clinicId,
-        $or: [{ attendedByNurse: null }, { attendedByNurse: req.user._id }],
-      },
-      {
-        $set: {
-          attendedByNurse: req.user._id,
-          nurseClaimedAt: new Date(),
-          // La cita se da por asistida al reclamarla: el paciente está delante.
-          status: 'asistida',
-        },
-      },
-      { new: true }
-    );
-
-    if (!apt) {
-      // O no existe, o ya la tiene otro. Se distingue para dar el mensaje justo.
-      const existe = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId })
-        .populate('attendedByNurse', 'name')
-        .lean();
-      if (!existe) return res.status(404).json({ message: 'Cita no encontrada' });
+    // Y solo si el turno vigente es SUYO o está abierto. Cuando recepción nombra
+    // a una enfermera concreta, el turno es de ella: que lo tome otra dejaría el
+    // registro diciendo que atendió quien no era.
+    const dueño = previa.currentTurnUser ? String(previa.currentTurnUser) : null;
+    if (conTurnos && dueño && dueño !== String(req.user._id)) {
+      const quien = await require('../models/User').findById(dueño).select('name').lean();
       return res.status(409).json({
-        message: `Esta cita ya la está atendiendo ${existe.attendedByNurse?.name || 'otro enfermero/a'}.`,
+        message: `Este turno es de ${quien?.name || 'otro enfermero/a'}.`,
         code: 'ALREADY_CLAIMED',
       });
     }
 
-    // El turno de enfermería nace SIN dueño (sale a la bandeja de todos); quien
-    // lo reclama pasa a ser su dueño, y así al guardar su seguimiento se cierra
-    // ese turno y la cita avanza al siguiente profesional (o se completa).
-    const turnoEnf = turnoEnfermeriaPendiente(apt);
-    if (turnoEnf && !turnoEnf.user) {
-      turnoEnf.user = req.user._id;
-      turnoEnf.startedAt = new Date();
+    let apt;
+    if (conTurnos) {
+      /**
+       * RECLAMO ATÓMICO, SOBRE EL TURNO. La cita sale a la bandeja de todos los
+       * enfermeros a la vez, así que dos pueden pulsar "atender" en el mismo
+       * segundo. Con leer-comprobar-guardar los dos verían el turno libre y el
+       * segundo pisaría al primero: dos personas con el mismo paciente y un solo
+       * registro. La condición viaja DENTRO del update (`'t.user': null`), así
+       * que la gana uno solo.
+       *
+       * Va sobre el TURNO y no sobre la cita porque un detox lleva dos turnos de
+       * enfermería seguidos: bloquear la cita entera dejaba fuera a la segunda.
+       */
+      const idTurno = previa.turns.find(
+        (t) => t.kind === 'enfermeria' && t.status === 'pendiente'
+      )?._id;
+      apt = await Appointment.findOneAndUpdate(
+        { _id: req.params.id, clinic: req.clinicId, currentTurnKind: 'enfermeria' },
+        {
+          $set: {
+            'turns.$[t].user': req.user._id,
+            'turns.$[t].startedAt': new Date(),
+            // La cita se da por asistida al reclamarla: el paciente está delante.
+            status: 'asistida',
+          },
+        },
+        {
+          new: true,
+          arrayFilters: [
+            {
+              't._id': idTurno,
+              't.status': 'pendiente',
+              // Libre, o ya suyo (para que reintentar no falle). Va con `$in` y
+              // NO con `$or`: Mongo rechaza un `$or` dentro de un filtro de
+              // arreglo («Expected a single top-level field name»), y la
+              // petición entera se caía con un 500.
+              't.user': { $in: [null, req.user._id] },
+            },
+          ],
+        }
+      );
+      // `modifiedCount` no sirve para saber si se ganó la carrera: con
+      // arrayFilters que no casan, Mongo informa igual de una modificación. Se
+      // comprueba contra el DOCUMENTO devuelto, que es la única verdad.
+      const gano = (apt?.turns || []).some(
+        (t) => String(t._id) === String(idTurno) && String(t.user) === String(req.user._id)
+      );
+      if (!gano) {
+        const otra = await Appointment.findById(req.params.id).populate('turns.user', 'name').lean();
+        const t = (otra?.turns || []).find((x) => String(x._id) === String(idTurno));
+        return res.status(409).json({
+          message: `Esta cita ya la está atendiendo ${t?.user?.name || 'otro enfermero/a'}.`,
+          code: 'ALREADY_CLAIMED',
+        });
+      }
+    } else {
+      // CITAS VIEJAS, sin turnos: sigue mandando el campo de antes.
+      apt = await Appointment.findOneAndUpdate(
+        {
+          _id: req.params.id,
+          clinic: req.clinicId,
+          $or: [{ attendedByNurse: null }, { attendedByNurse: req.user._id }],
+        },
+        { $set: { attendedByNurse: req.user._id, nurseClaimedAt: new Date(), status: 'asistida' } },
+        { new: true }
+      );
+      if (!apt) {
+        const existe = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId })
+          .populate('attendedByNurse', 'name')
+          .lean();
+        return res.status(409).json({
+          message: `Esta cita ya la está atendiendo ${existe?.attendedByNurse?.name || 'otro enfermero/a'}.`,
+          code: 'ALREADY_CLAIMED',
+        });
+      }
     }
+
+    // El espejo `attendedByNurse` lo pone `sincronizarEspejo` a partir del turno
+    // que se acaba de reclamar: aquí ya no se escribe a mano.
+    sincronizarEspejo(apt);
     if (!apt.consultationStartedAt) apt.consultationStartedAt = new Date();
     await apt.save();
 
@@ -1670,10 +1718,29 @@ exports.nurseComplete = async (req, res) => {
     const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
-    if (!apt.attendedByNurse) {
+    /**
+     * El permiso lo da EL TURNO PROPIO, no el espejo `attendedByNurse`.
+     *
+     * Ese espejo apunta a la última enfermera que atendió y nunca se suelta: con
+     * un detox de dos turnos, la segunda se encontraba un 403 al terminar lo que
+     * acababa de hacer ella misma.
+     */
+    const miTurno = (apt.turns || []).find(
+      (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && String(t.user) === String(req.user._id)
+    );
+    const conTurnos = (apt.turns || []).length > 0;
+    if (conTurnos && !miTurno && !isAdmin) {
+      return res.status(403).json({
+        message: apt.currentTurnKind === 'enfermeria'
+          ? 'Primero reclama el turno para poder finalizarlo.'
+          : 'Este turno no es tuyo.',
+        code: 'NOT_YOUR_TURN',
+      });
+    }
+    if (!conTurnos && !apt.attendedByNurse) {
       return res.status(400).json({ message: 'Primero reclama la cita para poder finalizarla.' });
     }
-    if (String(apt.attendedByNurse) !== String(req.user._id) && !isAdmin) {
+    if (!conTurnos && String(apt.attendedByNurse) !== String(req.user._id) && !isAdmin) {
       return res.status(403).json({ message: 'Solo el enfermero/a que reclamó la cita puede finalizarla.' });
     }
     /**
@@ -1684,6 +1751,9 @@ exports.nurseComplete = async (req, res) => {
      * la consulta sin hacer. Solo se completa si no queda nadie pendiente.
      */
     const { completarTurno } = require('../utils/appointmentTurns');
+    // El servicio de ESTE turno, leído antes de cerrarlo: es lo que hace que el
+    // seguimiento automático diga «Detox» y no el genérico de siempre.
+    const servicioDelTurno = miTurno?.serviceName || '';
     const { siguiente, terminado } = completarTurno(apt, { userId: req.user._id });
 
     apt.nurseAttendedAt = new Date();
@@ -1694,7 +1764,13 @@ exports.nurseComplete = async (req, res) => {
     }
     await apt.save();
 
-    // Al siguiente le llega la cita ahora, en su pantalla y en su móvil.
+    /**
+     * Al siguiente le llega la cita ahora, en su pantalla y en su móvil. Tres
+     * casos, y los tres se dan en un detox de dos turnos:
+     *  · el siguiente tiene dueño (un doctor, o la enfermera nombrada) → a él;
+     *  · el siguiente es un turno de enfermería ABIERTO → a todos los enfermeros;
+     *  · no hay siguiente → no se avisa a nadie, la cita terminó.
+     */
     if (siguiente?.user) {
       emitToUser(siguiente.user, 'appointment:assigned', apt);
       const { notificarUsuarios } = require('../utils/pushNotifications');
@@ -1702,11 +1778,20 @@ exports.nurseComplete = async (req, res) => {
         clinicId: req.clinicId,
         type: 'appointment_assigned',
         title: 'Te toca atender',
-        body: 'Enfermería terminó su parte.',
-        url: `/patients/${apt.patient}?tab=ficha&appointment=${apt._id}`,
+        body: `${siguiente.serviceName || 'Enfermería terminó su parte.'}`,
+        url: siguiente.kind === 'enfermeria'
+          ? '/appointments'
+          : `/patients/${apt.patient}?tab=ficha&appointment=${apt._id}`,
       }).catch(() => {});
     } else if (siguiente) {
       emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
+      const { notificarRol } = require('../utils/pushNotifications');
+      await notificarRol(req.clinicId, 'enfermero', {
+        type: 'appointment_nursing',
+        title: 'Cita para enfermería',
+        body: siguiente.serviceName || 'Continúa el servicio.',
+        url: '/appointments',
+      }).catch(() => {});
     }
 
     await advanceTreatmentsForAppointment(req.clinicId, apt);
@@ -1714,7 +1799,20 @@ exports.nurseComplete = async (req, res) => {
     // Auto-registro en el seguimiento del paciente (no lo llena el enfermero).
     try {
       const ClinicalRecord = require('../models/ClinicalRecord');
-      const serviceNames = (apt.services || []).map((s) => s.name).filter(Boolean).join(', ') || 'Servicio de enfermería';
+      /**
+       * QUÉ SE APLICÓ, en este orden: lo del TURNO primero.
+       *
+       * Antes solo se miraba `apt.services`, el arreglo LEGADO del inventario,
+       * que en las citas de hoy va casi siempre vacío: el resultado era que
+       * todos los partes decían «Servicio de enfermería». Con dos enfermeras en
+       * la misma cita eso son dos seguimientos idénticos, y ninguna forma de
+       * saber cuál fue el detox y cuál el suero.
+       */
+      const serviceNames =
+        servicioDelTurno ||
+        apt.serviceName ||
+        (apt.services || []).map((s) => s.name).filter(Boolean).join(', ') ||
+        'Servicio de enfermería';
       let record = await ClinicalRecord.findOne({ clinic: req.clinicId, patient: apt.patient });
       if (!record) {
         record = await ClinicalRecord.create({ clinic: req.clinicId, patient: apt.patient, createdBy: req.user._id });

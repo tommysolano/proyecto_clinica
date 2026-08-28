@@ -1,0 +1,82 @@
+const { nowHHMM } = require('./appointmentDate');
+const { asignarTurnos, completarTurno } = require('./appointmentTurns');
+
+/**
+ * LA CITA DE UNA ATENCIÓN SIN CITA.
+ *
+ * Hay consultas que empiezan sin haber pasado por la agenda: en óptica el
+ * cliente entra por la puerta, y en enfermería el paciente llega a que le pongan
+ * un suero. Obligar a quien atiende a salir, agendar una cita a la hora que ya
+ * es y volver, es papeleo puro — y desde que la agenda va por espacios de tiempo
+ * ni siquiera se puede: agendar a las 14:07 lo rechaza la propia validación.
+ *
+ * Pero la cita TIENE que existir. No es burocracia: de ella cuelgan la agenda,
+ * los reportes, las comisiones, «paciente nuevo» y el cobro. Un seguimiento sin
+ * cita es una atención que ocurrió y que el sistema no vio.
+ *
+ * FUENTE ÚNICA a propósito: la usan la atención inmediata de óptica
+ * (`createWalkIn`) y el guardado de un seguimiento sin cita (`addFollowUp`). Que
+ * cada una construyera su cita a mano es como acaban dos flujos gemelos
+ * separándose en silencio.
+ *
+ * @param {object} opts
+ * @param {'abierta'|'cerrada'} opts.estado  'abierta' = el profesional va a
+ *        atender ahora (queda 'asistida' y su turno en marcha). 'cerrada' = ya
+ *        atendió y el seguimiento está escrito (queda 'completada').
+ * @param {string} [opts.followUpId] seguimiento que escribió, si ya está hecho.
+ */
+async function crearCitaAtencionInmediata({
+  Appointment,
+  clinicId,
+  patientId,
+  user,
+  role,
+  serviceItem = null,
+  serviceName = '',
+  reason = 'Atención inmediata',
+  estado = 'abierta',
+  followUpId = null,
+}) {
+  const ahora = new Date();
+  const previas = await Appointment.countDocuments({ clinic: clinicId, patient: patientId });
+
+  const apt = new Appointment({
+    clinic: clinicId,
+    patient: patientId,
+    date: ahora,
+    startTime: nowHHMM(),
+    /**
+     * Se salta 'pendiente' a propósito: el paciente ya está delante. Además
+     * evita que `autoNoShow` la marque como ausente por su hora de inicio —una
+     * cita creada a la hora que es sería ausente un minuto después—.
+     */
+    status: 'asistida',
+    reason,
+    serviceItem: serviceItem || null,
+    serviceName: serviceName || '',
+    isFirstVisit: previas === 0,
+    createdBy: user._id,
+    createdByName: user.name || '',
+    createdByRole: role || null,
+    consultationStartedAt: ahora,
+  });
+
+  // Un único turno, el suyo: al guardar el seguimiento la cita se cierra sola
+  // como cualquier otra.
+  asignarTurnos(apt, { doctores: [user._id], por: user._id });
+  if (apt.turns[0]) apt.turns[0].startedAt = ahora;
+
+  if (estado === 'cerrada') {
+    // Ya atendió: el turno se cierra aquí mismo, con su seguimiento colgado, y
+    // la cita nace completada. Sin esto quedaría una cita abierta para siempre
+    // en la agenda de alguien que ya terminó.
+    completarTurno(apt, { userId: user._id, followUpId });
+    apt.status = 'completada';
+    apt.consultationEndedAt = ahora;
+  }
+
+  await apt.save();
+  return apt;
+}
+
+module.exports = { crearCitaAtencionInmediata };

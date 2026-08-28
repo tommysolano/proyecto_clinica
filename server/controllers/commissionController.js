@@ -175,6 +175,10 @@ async function computeCommissions(clinicId, startDate, endDate) {
   })
     .populate('doctor', 'name clinics')
     .populate('attendedByNurse', 'name clinics')
+    // Los turnos, para pagar a TODOS los que atendieron. `attendedByNurse` es un
+    // espejo del último turno de enfermería: con dos enfermeras en un mismo
+    // detox, pagar solo por el espejo dejaba a una sin cobrar lo que hizo.
+    .populate('turns.user', 'name clinics')
     .populate('createdBy', 'name clinics')
     .populate('patient', 'firstName lastName')
     .populate({ path: 'referral', populate: { path: 'fromDoctor', select: 'name clinics' } });
@@ -228,7 +232,23 @@ async function computeCommissions(clinicId, startDate, endDate) {
     const isCompleted = appt.status === 'completada';
     const isAttended = appt.status === 'asistida' || isCompleted;
     const services = appt.services?.length ? appt.services : [{ product: null, name: '—', price: 0 }];
-    const performers = [appt.doctor, appt.attendedByNurse].filter(Boolean);
+    /**
+     * Quién atendió, para pagarle. Se recorren los TURNOS de enfermería y no
+     * solo `attendedByNurse`: ese campo es un espejo del último turno, así que
+     * en un detox atendido por dos enfermeras la primera se quedaba sin cobrar
+     * su parte. Con `Set` por id para no pagar dos veces a quien tuvo dos turnos.
+     */
+    const enfermeros = (appt.turns || [])
+      .filter((t) => t.kind === 'enfermeria' && t.user && t.status === 'completado')
+      .map((t) => t.user);
+    const performers = [];
+    const vistos = new Set();
+    for (const p of [appt.doctor, appt.attendedByNurse, ...enfermeros]) {
+      const id = p && String(p._id || p);
+      if (!id || vistos.has(id)) continue;
+      vistos.add(id);
+      performers.push(p);
+    }
     const creator = appt.createdBy;
     const patientName = appt.patient ? `${appt.patient.firstName} ${appt.patient.lastName}` : '—';
     const apptTotal = (appt.services || []).reduce((a, s) => a + num(s.price), 0);

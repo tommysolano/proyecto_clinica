@@ -54,6 +54,7 @@ const { firmarPdfConUsuario, bloqueFirmaHtml, FIRMA_CSS } = require('../utils/pd
 const { describeCie10 } = require('../utils/cie10Catalog');
 const { emitToClinic, emitToUser, emitToRole } = require('../realtime');
 const { canReq } = require('../utils/permissions');
+const { isDoctorRole } = require('../constants/roles');
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
@@ -1081,6 +1082,10 @@ exports.addFollowUp = async (req, res) => {
      * último la da por completada.
      */
     let siguienteTurno = null;
+    // La cita que se registró sola, si la consulta llegó sin ninguna. La
+    // pantalla la usa para decirlo: si no, quien atiende no sabe que quedó
+    // registrada y acaba creándola otra vez a mano.
+    let citaAutomatica = null;
     if (req.body.appointmentId) {
       try {
         const Appointment = require('../models/Appointment');
@@ -1138,12 +1143,57 @@ exports.addFollowUp = async (req, res) => {
       } catch (e) {
         console.warn('No se pudo avanzar el turno de la cita:', e.message);
       }
+    } else if (isDoctorRole(req.role)) {
+      /**
+       * SEGUIMIENTO SIN CITA: se registra la cita SOLA, al guardar.
+       *
+       * En óptica el cliente entra por la puerta sin haber llamado a nadie. Lo
+       * mismo pasa con cualquier especialidad cuando alguien llega de imprevisto.
+       * Hasta ahora la consulta se escribía igual —el seguimiento se guardaba
+       * sin más— pero la cita nunca existía, y con ella se perdía TODO lo que
+       * cuelga de la cita: la atención no salía en la agenda del día, ni en los
+       * reportes, ni devengaba comisión, ni contaba para «paciente nuevo», ni
+       * había de dónde cobrarla. Una consulta real que el sistema no vio.
+       *
+       * Se crea CERRADA porque el trabajo ya está hecho: el seguimiento que
+       * acaba de guardarse ES la atención. Dejarla abierta pondría una cita
+       * fantasma en la agenda de quien acaba de terminar.
+       *
+       * Solo para roles que ATIENDEN. Un admin o un cajero también pueden
+       * escribir un seguimiento, pero ahí están documentando por otro: crearles
+       * una cita les metería pacientes en sus dashboards y comisiones.
+       *
+       * Y en su propio try: si esto falla, el seguimiento ya está guardado y no
+       * se puede perder por no haber podido registrar la cita.
+       */
+      try {
+        const Appointment = require('../models/Appointment');
+        const { crearCitaAtencionInmediata } = require('../utils/walkInAppointment');
+        const nuevoFu = (record.followUps || []).slice(-1)[0];
+        const apt = await crearCitaAtencionInmediata({
+          Appointment,
+          clinicId: req.clinicId,
+          patientId,
+          user: req.user,
+          role: req.role,
+          estado: 'cerrada',
+          followUpId: nuevoFu?._id,
+        });
+        citaAutomatica = { _id: apt._id, startTime: apt.startTime, isFirstVisit: apt.isFirstVisit };
+        emitToClinic(req.clinicId, 'appointment:created', apt);
+      } catch (e) {
+        console.warn('No se pudo registrar la cita de la atención sin cita:', e.message);
+      }
     }
 
     emitToClinic(req.clinicId, 'clinicalRecord:updated', { patient: patientId });
     // `nextTurn` deja que la pantalla diga "pasa al Dr. X" en vez de dar la cita
-    // por terminada cuando no lo está.
-    res.status(201).json(siguienteTurno ? { ...record.toObject(), nextTurn: siguienteTurno } : record);
+    // por terminada cuando no lo está. `autoAppointment` avisa de la cita que se
+    // registró sola cuando la consulta llegó sin ninguna.
+    const extra = {};
+    if (siguienteTurno) extra.nextTurn = siguienteTurno;
+    if (citaAutomatica) extra.autoAppointment = citaAutomatica;
+    res.status(201).json(Object.keys(extra).length ? { ...record.toObject(), ...extra } : record);
   } catch (error) {
     res.status(500).json({ message: 'Error al agregar seguimiento', error: error.message });
   }

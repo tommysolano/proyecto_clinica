@@ -128,6 +128,22 @@ select:disabled {
   .input:disabled {
     @apply bg-slate-50 text-slate-400 cursor-not-allowed;
   }
+  /* Campo compacto, para tablas y filas apretadas.
+     VA AQUÍ, y no escribiendo `text-xs py-1` encima de `.input` en el JSX. En
+     Tailwind v4 las utilidades viven en una capa POSTERIOR a components, así que
+     siempre le ganan a `.input` sin que la especificidad tenga nada que decir:
+     ese apaño dejaba el campo en 26 px de alto con letra de 12 px —fue lo que
+     hizo ilegible el buscador de ampollas del suero— y encima el tamaño
+     resultante dependía de qué utilidad se hubiera escrito. Al vivir en la misma
+     capa que `.input` manda el orden de escritura y el resultado es predecible.
+     16 px de letra en móvil no es capricho: por debajo de eso iOS hace zoom solo
+     al enfocar y descoloca cualquier desplegable ya medido. */
+  .input-sm {
+    @apply px-2.5 py-1.5 rounded-lg text-[13px];
+  }
+  @media (max-width: 640px) {
+    .input-sm { @apply text-base; }
+  }
   .lbl {
     @apply block text-xs font-semibold text-slate-500 mb-1.5;
   }

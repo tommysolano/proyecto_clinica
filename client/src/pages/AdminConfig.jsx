@@ -5,10 +5,12 @@ import toast from 'react-hot-toast';
 import PageHeader from '../components/PageHeader';
 import StaffClinicsTab from '../components/config/StaffClinicsTab';
 import AgendaTab from '../components/config/AgendaTab';
+import ServiciosTab from '../components/config/ServiciosTab';
 import {
   HiOutlineCog6Tooth,
   HiOutlineUsers,
   HiOutlineCalendarDays,
+  HiOutlineTag,
   HiOutlineArrowPath,
 } from 'react-icons/hi2';
 
@@ -20,6 +22,8 @@ import {
  *  - Personal por sucursal: en qué sede está cada médico, cajero y enfermero.
  *    De ahí salen los avisos de citas.
  *  - Agenda: en qué espacios de tiempo se puede agendar en cada sede.
+ *  - Duración de servicios: cuánto OCUPA cada servicio, para que la
+ *    disponibilidad al agendar cuente las citas que siguen en curso.
  *
  * Las dos pestañas trabajan sobre las MISMAS sucursales —las que este
  * administrador gestiona— así que se piden una sola vez aquí y se comparten.
@@ -28,6 +32,7 @@ import {
 const TABS = [
   { id: 'personal', label: 'Personal por sucursal', icon: HiOutlineUsers },
   { id: 'agenda', label: 'Agenda', icon: HiOutlineCalendarDays },
+  { id: 'servicios', label: 'Duración de servicios', icon: HiOutlineTag },
 ];
 
 export default function AdminConfig() {
@@ -94,6 +99,8 @@ export default function AdminConfig() {
         <div className="flex items-center justify-center h-64">
           <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-600"></div>
         </div>
+      ) : tab === 'servicios' ? (
+        <ServiciosTab />
       ) : tab === 'agenda' ? (
         <AgendaTab clinics={clinics} onClinicsChange={setClinics} />
       ) : (

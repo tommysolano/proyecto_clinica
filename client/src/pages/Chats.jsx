@@ -6209,6 +6209,9 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
                 date={it.date}
                 startTime={it.startTime}
                 clinicId={clinicId}
+                // Con el servicio elegido, el panel también avisa de las citas
+                // que empiezan DENTRO de lo que va a durar esta.
+                serviceItemId={it.serviceItem?._id || null}
                 compact
               />
             </div>

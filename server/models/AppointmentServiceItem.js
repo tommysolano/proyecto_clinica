@@ -31,6 +31,17 @@ const appointmentServiceItemSchema = new mongoose.Schema(
     active: { type: Boolean, default: true, index: true },
     // Marca el servicio como propio de enfermería (sueroterapia, inyectables…).
     nursingService: { type: Boolean, default: false },
+    /**
+     * Cuánto OCUPA este servicio, en minutos. `0` = lo que dure la cita normal.
+     *
+     * No todos duran lo mismo: un control son diez minutos y un tratamiento
+     * puede llevar una hora. Sin esto, la disponibilidad se miraba minuto a
+     * minuto y una cita de 40 minutos empezada a las 14:00 desaparecía del panel
+     * en cuanto se consultaba las 14:20 — el hueco parecía libre y se agendaba
+     * encima. Es lo que hace que «Disponibilidad en este horario» diga la verdad
+     * cuando la agenda va en espacios más cortos que el servicio.
+     */
+    durationMinutes: { type: Number, default: 0, min: 0, max: 480 },
     // Cuántas citas se agendaron con él: ordena el buscador por lo más usado.
     usageCount: { type: Number, default: 0 },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

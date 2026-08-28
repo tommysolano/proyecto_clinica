@@ -160,3 +160,26 @@ SUERO_COMPONENTES.forEach((x) => {
  */
 export const buscarComponenteSuero = ({ code, name } = {}) =>
   (code && PORCODIGO.get(claveSuero(code))) || (name && PORNOMBRE.get(claveSuero(name))) || null;
+
+/**
+ * El catálogo tal y como lo enseña el selector: UNA entrada por nombre (la
+ * vigente, cuando el laboratorio dio de baja un código y lo repuso con otro) y
+ * en orden alfabético.
+ *
+ * Derivado, y solo del cliente: el servidor no pinta pantallas. Los DATOS
+ * (ampollas, moléculas, volúmenes) siguen siendo copia exacta del servidor y hay
+ * una prueba que lo comprueba; esto es una vista de esos mismos datos.
+ *
+ * Conserva `code`, `grupo` y `activo` a propósito, porque la pantalla necesita
+ * los tres: sin el código no se distingue de un vistazo «AZUL DE METILENO 3ML»
+ * de «AZUL METILENO 10ML» —cuatro nombres casi iguales, tres de ellos dados de
+ * baja—, sin el grupo no se sabe si es ampolla o molécula, y sin `activo` no se
+ * puede avisar de los que ya no están. Antes se tiraban los tres y se enseñaba
+ * una lista de 103 nombres en mayúsculas, todos con la misma pinta.
+ */
+export const SUERO_OPCIONES = [...PORNOMBRE.values()].sort((a, b) => {
+  // Los vigentes primero: se siguen pudiendo recetar los de baja, pero no deben
+  // salir por delante del que de verdad hay en la bodega.
+  if (a.activo !== b.activo) return a.activo ? -1 : 1;
+  return a.name.localeCompare(b.name, 'es');
+});

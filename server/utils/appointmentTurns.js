@@ -46,10 +46,39 @@ function sincronizarEspejo(apt) {
   // "primer pendiente" de un arreglo desde una query.
   const enCurso = orden.find((t) => t.status === 'pendiente');
   apt.currentTurnKind = enCurso ? enCurso.kind : null;
-  // Y QUIÉN lo tiene. No vale el espejo `doctor` para esto: si enfermería va
-  // delante, el espejo ya apunta al doctor de detrás (es su cita, y así la leen
-  // las comisiones y los reportes), pero en su agenda todavía no debe salir.
-  apt.currentTurnUser = enCurso && enCurso.kind === 'doctor' ? enCurso.user || null : null;
+  /**
+   * Y QUIÉN lo tiene — de las DOS clases de turno, no solo de los doctores.
+   *
+   * En enfermería, `null` es «todavía sin dueño», o sea libre para cualquiera.
+   * Que valga también para enfermería es lo que permite tener en la misma cola
+   * un turno nombrado y otro abierto: sin esto, la bandeja tendría que
+   * preguntar «¿hay algún turno de enfermería sin dueño?» y la cita le saldría
+   * a todos los enfermeros mientras todavía es el turno de la que fue nombrada.
+   *
+   * No vale el espejo `doctor` para esto: si enfermería va delante, el espejo ya
+   * apunta al doctor de detrás (es su cita, y así la leen las comisiones y los
+   * reportes), pero en su agenda todavía no debe salir.
+   */
+  apt.currentTurnUser = enCurso ? enCurso.user || null : null;
+
+  /**
+   * Espejo de ENFERMERÍA, con el mismo criterio que el de `doctor`: quien la
+   * tiene ahora, o la última que atendió cuando ya no queda turno suyo.
+   *
+   * Antes `attendedByNurse` se escribía a mano al reclamar y NO se soltaba
+   * nunca: con dos turnos de enfermería seguidos, el campo se quedaba clavado
+   * en la primera y la segunda no llegaba ni a ver la cita en su bandeja. Ahora
+   * es un espejo —informa, no manda— y el dueño de verdad es `turns[].user`.
+   */
+  const enfEnCurso = enCurso && enCurso.kind === 'enfermeria' && enCurso.user ? enCurso : null;
+  const ultimaEnf = [...orden].reverse().find((t) => t.kind === 'enfermeria' && t.user);
+  const enfElegida = enfEnCurso || ultimaEnf;
+  // Sin ningún turno de enfermería con dueño no se pisa lo que hubiera: una cita
+  // vieja ya atendida no puede perder a su enfermera porque se reasigne la cola.
+  if (enfElegida) {
+    apt.attendedByNurse = enfElegida.user;
+    apt.nurseClaimedAt = enfElegida.startedAt || apt.nurseClaimedAt;
+  }
 
   const vigente = orden.find((t) => t.status === 'pendiente' && t.kind === 'doctor');
   const ultimoDoctor = [...orden].reverse().find((t) => t.kind === 'doctor' && t.user);
@@ -99,11 +128,18 @@ function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, p
 
   for (const paso of secuencia) {
     const esEnfermeria = paso?.kind === 'enfermeria';
-    const user = esEnfermeria ? null : paso?.user;
+    /**
+     * En enfermería el usuario es OPCIONAL: con id, el turno es de esa persona;
+     * sin id, sale a la bandeja de todos. Antes se forzaba a `null` siempre, y
+     * por eso no se podía dejar preparado «primero Ana y luego quien esté
+     * libre», que es como se atiende un detox.
+     */
+    const user = paso?.user || null;
     if (!esEnfermeria && !user) continue;
     // A quien ya atendió no se le vuelve a poner en cola: su turno está cerrado
     // y su seguimiento escrito. (Enfermería sí puede repetirse: tomar signos
-    // antes y aplicar algo después son dos pasos distintos.)
+    // antes y aplicar algo después son dos pasos distintos, y los puede hacer
+    // la misma persona.)
     if (!esEnfermeria && completados.some((t) => String(t.user) === String(user))) continue;
     nuevos.push({
       kind: esEnfermeria ? 'enfermeria' : 'doctor',
@@ -112,6 +148,8 @@ function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, p
       status: 'pendiente',
       assignedAt: new Date(),
       assignedBy: por,
+      serviceName: String(paso?.serviceName || '').trim(),
+      serviceItem: paso?.serviceItem || null,
     });
   }
 
@@ -156,6 +194,52 @@ function turnoEnfermeriaPendiente(apt) {
 }
 
 /**
+ * El turno de enfermería que `userId` puede tomar AHORA, o null.
+ *
+ * Es el turno VIGENTE, y solo si es suyo o no tiene dueño. La cola es estricta
+ * también dentro de enfermería: con «primero Ana, después quien esté libre», el
+ * segundo turno no existe para nadie hasta que Ana cierre el suyo. Dejarlo
+ * abierto pondría a dos personas con el mismo paciente y un solo registro, que
+ * es justo lo que el reclamo atómico existe para impedir.
+ */
+function turnoEnfermeriaParaUsuario(apt, userId) {
+  const vigente = turnoVigente(apt);
+  if (!vigente || vigente.kind !== 'enfermeria') return null;
+  if (vigente.user && String(idDe(vigente.user)) !== String(userId)) return null;
+  return vigente;
+}
+
+/**
+ * Condición de Mongo con las citas que un enfermero debe ver en su bandeja.
+ *
+ * Tres casos, y los tres hacen falta:
+ *  1. La que puede tomar AHORA: el turno vigente es de enfermería y está libre
+ *     (`currentTurnUser: null`) o es suyo.
+ *  2. Las que YA atendió, para que no se le caigan de la lista al pasar el turno
+ *     a la siguiente compañera.
+ *  3. Las citas SIN turnos (anteriores al cambio), donde manda el servicio.
+ *
+ * NO se mira `attendedByNurse`: ese campo es ahora un espejo del último turno de
+ * enfermería y nunca se suelta, así que filtrar por él escondía la cita a la
+ * segunda enfermera aunque el turno fuera suyo.
+ */
+function filtroCitasDeEnfermeria(userId, condicionLegado) {
+  return {
+    $or: [
+      {
+        currentTurnKind: 'enfermeria',
+        $or: [{ currentTurnUser: null }, { currentTurnUser: userId }],
+      },
+      // Solo las COMPLETADAS. Sin el estado, un turno suyo que todavía está
+      // detrás de un doctor le saldría ya en la bandeja, y la cola dejaría de
+      // valer para nada: el paciente sigue en consulta.
+      { turns: { $elemMatch: { kind: 'enfermeria', user: userId, status: 'completado' } } },
+      ...(condicionLegado ? [condicionLegado] : []),
+    ],
+  };
+}
+
+/**
  * Id de un campo que puede venir poblado o en crudo.
  *
  * Los turnos se leen tanto de la cita recién guardada (ObjectId pelado) como de
@@ -186,6 +270,36 @@ function doctorEnTurno(apt) {
 }
 
 /**
+ * A quién hay que avisar cuando el turno vigente es de enfermería.
+ *
+ * Devuelve el id del enfermero nombrado, o `null` si el turno está abierto —y
+ * entonces el aviso va al ROL entero, que es lo que ya hacía antes—. Es la
+ * misma distinción que hace recepción al asignar, leída del turno.
+ */
+function enfermeroEnTurno(apt) {
+  const vigente = turnoVigente(apt);
+  return vigente && vigente.kind === 'enfermeria' ? idDe(vigente.user) : null;
+}
+
+/** ¿El turno vigente es de enfermería? (con o sin dueño) */
+function turnoVigenteEsEnfermeria(apt) {
+  const vigente = turnoVigente(apt);
+  return !!vigente && vigente.kind === 'enfermeria';
+}
+
+/** Ids de los enfermeros que han atendido (o atienden) esta cita, sin repetir. */
+function enfermerosDeLaCita(apt) {
+  return [
+    ...new Set(
+      turnosOrdenados(apt)
+        .filter((t) => t.kind === 'enfermeria' && t.user)
+        .map((t) => idDe(t.user))
+        .filter(Boolean)
+    ),
+  ];
+}
+
+/**
  * Condición de Mongo con las citas que un doctor debe ver en su agenda.
  *
  * Tres casos, y los tres hacen falta:
@@ -213,7 +327,12 @@ module.exports = {
   asignarTurnos,
   completarTurno,
   turnoEnfermeriaPendiente,
+  turnoEnfermeriaParaUsuario,
+  filtroCitasDeEnfermeria,
   doctoresPendientes,
   doctorEnTurno,
+  enfermeroEnTurno,
+  turnoVigenteEsEnfermeria,
+  enfermerosDeLaCita,
   filtroCitasDelDoctor,
 };

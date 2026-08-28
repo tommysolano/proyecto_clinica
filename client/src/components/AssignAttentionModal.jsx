@@ -27,14 +27,21 @@ import {
  * podía mandar a enfermería DESPUÉS de los doctores, y el caso más común es el
  * contrario: que tome los signos antes de que pase el médico. Puede ir en
  * cualquier posición, y más de una vez (signos antes, aplicación después).
- * No se le asigna a un enfermero concreto: sale a la bandeja de todos y la
- * atiende el primero que la tome.
  *
- * Props: appointment, doctors, onClose, onDone
+ * CADA PASO DE ENFERMERÍA SE PUEDE NOMBRAR O DEJAR ABIERTO. Abierto sale a la
+ * bandeja de todos y lo atiende el primero que lo tome —como siempre—; nombrado
+ * es de esa persona y solo le aparece a ella. Los dos hacen falta a la vez: un
+ * detox se atiende «primero Ana, y cuando termine, quien esté libre».
+ *
+ * Y cada paso lleva SU servicio, porque con dos enfermeros en la misma cita el
+ * servicio de la cita ya no dice quién hizo qué: sin esto los dos seguimientos
+ * salían con el mismo texto y no había forma de distinguir el detox del suero.
+ *
+ * Props: appointment, doctors, nurses, onClose, onDone
  */
 const ENFERMERIA = 'enfermeria';
 
-export default function AssignAttentionModal({ appointment, doctors = [], onClose, onDone }) {
+export default function AssignAttentionModal({ appointment, doctors = [], nurses = [], onClose, onDone }) {
   const apt = appointment;
 
   // Los turnos ya completados no se tocan: ese profesional ya escribió su
@@ -45,14 +52,21 @@ export default function AssignAttentionModal({ appointment, doctors = [], onClos
     [apt]
   );
 
-  // Cola de pasos: { kind: 'doctor', user } | { kind: 'enfermeria' }.
+  // Cola de pasos:
+  //   { kind: 'doctor', user }
+  //   { kind: 'enfermeria', user: id|'' , serviceName }   ('' = cualquier enfermero)
   // `key` solo para React: enfermería puede repetirse y los ids no bastan.
   const [cola, setCola] = useState(() => {
     const pendientes = (apt?.turns || []).filter((t) => t.status === 'pendiente');
     if (pendientes.length) {
       return pendientes.map((t, i) =>
         t.kind === ENFERMERIA
-          ? { kind: ENFERMERIA, key: `enf-${i}` }
+          ? {
+              kind: ENFERMERIA,
+              user: t.user ? String(t.user?._id || t.user) : '',
+              serviceName: t.serviceName || '',
+              key: `enf-${i}`,
+            }
           : { kind: 'doctor', user: String(t.user?._id || t.user), key: `doc-${t.user?._id || t.user}` }
       );
     }
@@ -67,6 +81,7 @@ export default function AssignAttentionModal({ appointment, doctors = [], onClos
   const contador = useRef(0);
 
   const porId = useMemo(() => new Map(doctors.map((d) => [String(d._id), d])), [doctors]);
+  const enfermeroPorId = useMemo(() => new Map(nurses.map((n) => [String(n._id), n])), [nurses]);
   const yaEnCola = cola.filter((p) => p.kind === 'doctor').map((p) => p.user);
   const disponibles = doctors.filter((d) => !yaEnCola.includes(String(d._id)));
 
@@ -75,7 +90,14 @@ export default function AssignAttentionModal({ appointment, doctors = [], onClos
     setCola((c) => [...c, { kind: 'doctor', user: id, key: `doc-${id}` }]);
   };
   const agregarEnfermeria = () =>
-    setCola((c) => [...c, { kind: ENFERMERIA, key: `enf-${(contador.current += 1)}` }]);
+    setCola((c) => [
+      ...c,
+      // Nace ABIERTO: es como se ha trabajado siempre y como sigue siendo la
+      // mayoría de las veces. Nombrarlo es la excepción, y se hace a mano.
+      { kind: ENFERMERIA, user: '', serviceName: '', key: `enf-${(contador.current += 1)}` },
+    ]);
+  const editarPaso = (idx, patch) =>
+    setCola((c) => c.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
   const quitar = (idx) => setCola((c) => c.filter((_, i) => i !== idx));
   const mover = (idx, delta) => {
     setCola((c) => {
@@ -95,11 +117,19 @@ export default function AssignAttentionModal({ appointment, doctors = [], onClos
     setBusy(true);
     try {
       const { data } = await api.post(`/appointments/${apt._id}/assign-doctor`, {
-        steps: cola.map((p) => (p.kind === ENFERMERIA ? { kind: ENFERMERIA } : { kind: 'doctor', user: p.user })),
+        steps: cola.map((p) =>
+          p.kind === ENFERMERIA
+            ? { kind: ENFERMERIA, user: p.user || null, serviceName: (p.serviceName || '').trim() }
+            : { kind: 'doctor', user: p.user }
+        ),
         observation: observacion.trim(),
       });
       const nombres = cola.map((p) =>
-        p.kind === ENFERMERIA ? 'Enfermería' : porId.get(p.user)?.name || 'Doctor'
+        p.kind === ENFERMERIA
+          ? p.user
+            ? enfermeroPorId.get(p.user)?.name || 'Enfermería'
+            : 'Enfermería'
+          : porId.get(p.user)?.name || 'Doctor'
       );
       toast.success(
         nombres.length > 1 ? `Paciente asignado: ${nombres.join(' → ')}` : `Paciente asignado a ${nombres[0]}`
@@ -155,38 +185,72 @@ export default function AssignAttentionModal({ appointment, doctors = [], onClos
               return (
                 <li
                   key={paso.key}
-                  className={`flex items-center gap-2 rounded-lg px-3 py-2 border ${
+                  className={`rounded-lg px-3 py-2 border ${
                     esEnf ? 'bg-sky-50 border-sky-200' : 'bg-white border-slate-200'
                   }`}
                 >
-                  <span
-                    className={`w-6 h-6 shrink-0 rounded-full text-white text-xs font-bold flex items-center justify-center ${
-                      esEnf ? 'bg-sky-600' : 'bg-emerald-600'
-                    }`}
-                  >
-                    {idx + 1}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className={`flex items-center gap-1.5 text-sm truncate ${esEnf ? 'text-sky-800 font-medium' : 'text-slate-700'}`}>
-                      {esEnf && <HiOutlineHeart className="w-4 h-4 shrink-0" />}
-                      {esEnf ? 'Enfermería' : d?.name || 'Doctor'}
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`w-6 h-6 shrink-0 rounded-full text-white text-xs font-bold flex items-center justify-center ${
+                        esEnf ? 'bg-sky-600' : 'bg-emerald-600'
+                      }`}
+                    >
+                      {idx + 1}
                     </span>
-                    <span className={`block text-[11px] ${esEnf ? 'text-sky-700/80' : 'text-slate-400'}`}>
-                      {esEnf ? 'La atiende el primer enfermero que la tome' : doctorTypeLabel(d)}
+                    <span className="min-w-0 flex-1">
+                      <span className={`flex items-center gap-1.5 text-sm truncate ${esEnf ? 'text-sky-800 font-medium' : 'text-slate-700'}`}>
+                        {esEnf && <HiOutlineHeart className="w-4 h-4 shrink-0" />}
+                        {esEnf
+                          ? paso.user
+                            ? enfermeroPorId.get(paso.user)?.name || 'Enfermería'
+                            : 'Enfermería'
+                          : d?.name || 'Doctor'}
+                      </span>
+                      <span className={`block text-[11px] ${esEnf ? 'text-sky-700/80' : 'text-slate-400'}`}>
+                        {esEnf
+                          ? paso.user
+                            ? 'Solo le aparece a esta persona'
+                            : 'La atiende el primer enfermero que la tome'
+                          : doctorTypeLabel(d)}
+                      </span>
                     </span>
-                  </span>
-                  <button type="button" title="Subir" onClick={() => mover(idx, -1)} disabled={idx === 0}
-                    className="p-1 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer disabled:opacity-30">
-                    <HiOutlineArrowUp className="w-4 h-4" />
-                  </button>
-                  <button type="button" title="Bajar" onClick={() => mover(idx, 1)} disabled={idx === cola.length - 1}
-                    className="p-1 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer disabled:opacity-30">
-                    <HiOutlineArrowDown className="w-4 h-4" />
-                  </button>
-                  <button type="button" title="Quitar" onClick={() => quitar(idx)}
-                    className="p-1 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer">
-                    <HiOutlineTrash className="w-4 h-4" />
-                  </button>
+                    <button type="button" title="Subir" onClick={() => mover(idx, -1)} disabled={idx === 0}
+                      className="p-1 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer disabled:opacity-30">
+                      <HiOutlineArrowUp className="w-4 h-4" />
+                    </button>
+                    <button type="button" title="Bajar" onClick={() => mover(idx, 1)} disabled={idx === cola.length - 1}
+                      className="p-1 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer disabled:opacity-30">
+                      <HiOutlineArrowDown className="w-4 h-4" />
+                    </button>
+                    <button type="button" title="Quitar" onClick={() => quitar(idx)}
+                      className="p-1 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer">
+                      <HiOutlineTrash className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Quién y qué, solo en los pasos de enfermería: al doctor se
+                      le nombra siempre y su servicio es el de la cita. */}
+                  {esEnf && (
+                    <div className="mt-2 pl-8 flex flex-col sm:flex-row gap-2">
+                      <select
+                        value={paso.user || ''}
+                        onChange={(e) => editarPaso(idx, { user: e.target.value })}
+                        className="input input-sm flex-1 bg-white cursor-pointer"
+                      >
+                        <option value="">Cualquier enfermero</option>
+                        {nurses.map((n) => (
+                          <option key={n._id} value={n._id}>{n.name}</option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        value={paso.serviceName || ''}
+                        onChange={(e) => editarPaso(idx, { serviceName: e.target.value })}
+                        placeholder="Qué hace (Detox, Sueroterapia…)"
+                        className="input input-sm flex-1 bg-white"
+                      />
+                    </div>
+                  )}
                 </li>
               );
             })}

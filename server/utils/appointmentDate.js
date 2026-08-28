@@ -138,7 +138,28 @@ function slotMessage(slotMinutes) {
   return `Esta sucursal agenda en espacios de ${paso} minutos: la hora tiene que caer en la rejilla (por ejemplo ${ejemplos}…).`;
 }
 
+/**
+ * Hora actual 'HH:mm' en hora de Ecuador.
+ *
+ * Vive aquí y no en un controlador porque la usan varios: sellar la toma de
+ * signos vitales y poner la hora de una atención inmediata. Y es la hora REAL a
+ * la que entró el paciente, no una redonda: en una atención sin cita no hay
+ * rejilla de horarios que respetar, y forzar una hora bonita mentiría sobre
+ * cuándo se atendió.
+ */
+function nowHHMM() {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/Guayaquil',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+    .format(new Date())
+    .replace(/^24:/, '00:');
+}
+
 module.exports = {
+  nowHHMM,
   startOfToday,
   parseLocalDate,
   isPastLocalDate,

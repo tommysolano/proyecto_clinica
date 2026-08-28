@@ -37,14 +37,32 @@ const rescheduleEntrySchema = new mongoose.Schema(
  * historia clínica.
  *
  * `kind` distingue al doctor del enfermero porque no se asignan igual: al doctor
- * se le nombra, y el turno de enfermería sale a la bandeja de TODOS los
- * enfermeros hasta que uno lo reclama (y ahí se rellena `user`).
+ * SIEMPRE se le nombra; al enfermero, solo si recepción quiere.
  */
 const appointmentTurnSchema = new mongoose.Schema(
   {
     kind: { type: String, enum: ['doctor', 'enfermeria'], default: 'doctor' },
-    // En un turno de enfermería nace null: lo llena quien lo reclame.
+    /**
+     * En un turno de enfermería, `null` significa CUALQUIER ENFERMERO: sale a la
+     * bandeja de todos y se rellena con quien lo reclame. Si recepción nombra a
+     * uno concreto, nace ya con su id y solo le aparece a él.
+     *
+     * Las dos formas hacen falta y conviven en la misma cita: un detox puede ser
+     * "primero Ana, y cuando termine, el que esté libre".
+     */
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    /**
+     * QUÉ SE HACE EN ESTE TURNO. Con varios profesionales en una cita, el
+     * servicio de la cita (`serviceName`) ya no basta: si en un detox una
+     * enfermera canaliza y otra aplica el suero, los dos seguimientos salían con
+     * el mismo texto genérico y no había manera de saber quién hizo qué.
+     */
+    serviceName: { type: String, trim: true, default: '' },
+    serviceItem: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'AppointmentServiceItem',
+      default: null,
+    },
     order: { type: Number, default: 0 },
     status: {
       type: String,
@@ -113,8 +131,15 @@ const appointmentSchema = new mongoose.Schema(
     currentTurnKind: { type: String, enum: ['doctor', 'enfermeria', null], default: null },
 
     /**
-     * Y QUIÉN lo tiene, si es un doctor (null cuando le toca a enfermería, que
-     * no tiene dueño hasta que alguien la reclama).
+     * Y QUIÉN lo tiene. `null` = el turno vigente todavía no tiene dueño, que en
+     * enfermería significa «cualquiera puede tomarlo».
+     *
+     * Vale para las dos clases de turno. Es lo que permite preguntar desde una
+     * consulta «¿esta cita está libre para mí?» sin poder mirar cuál es el
+     * primer pendiente del arreglo: con dos turnos de enfermería en cola —uno
+     * para Ana y el siguiente para quien esté libre—, mirar «hay algún turno de
+     * enfermería sin dueño» se la enseñaría a todo el mundo mientras todavía es
+     * el turno de Ana.
      *
      * No sirve `doctor` para esto: ese espejo apunta al doctor de la cita aunque
      * enfermería vaya por delante — es correcto para comisiones y reportes, pero

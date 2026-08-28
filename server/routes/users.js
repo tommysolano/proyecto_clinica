@@ -6,6 +6,7 @@ const {
   updateUser,
   deleteUser,
   getDoctors,
+  getNurses,
   getMySignatureCert,
   uploadMySignatureCert,
   deleteMySignatureCert,
@@ -18,6 +19,9 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 router.use(auth, requireClinic);
 
 router.get('/doctors', getDoctors);
+// Para nombrar el turno de enfermería al asignar la atención. Lo consulta
+// recepción/caja, no solo el admin.
+router.get('/nurses', requireRole('admin', 'cajero', 'doctor', 'enfermero'), getNurses);
 /**
  * FIRMA ELECTRÓNICA del usuario actual (.p12). Es un ajuste de SU cuenta, así
  * que no lleva `requireRole`: quien firma documentos es el profesional, y quien

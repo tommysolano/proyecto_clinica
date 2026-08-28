@@ -82,7 +82,37 @@ export default function SuggestInput({
 
   const medir = () => {
     const r = refInput.current?.getBoundingClientRect();
-    if (r) setCaja({ top: r.bottom + 4, left: r.left, width: r.width, espacioAbajo: window.innerHeight - r.bottom });
+    if (!r) return;
+    const abajo = window.innerHeight - r.bottom;
+    const arriba = r.top;
+    /**
+     * SE VUELCA HACIA ARRIBA cuando abajo no cabe y arriba hay más sitio.
+     *
+     * Antes la lista se abría SIEMPRE hacia abajo, y con el campo en la mitad
+     * inferior de la pantalla eso la dejaba recortada —o directamente fuera de
+     * la ventana—. Y fuera de la ventana no es "hay que bajar un poco": la caja
+     * es `position: fixed`, así que no engorda el área desplazable, y el
+     * documento tampoco se desplaza (el Layout es `h-screen overflow-hidden`).
+     * Lo que quedaba debajo del borde no había forma humana de alcanzarlo.
+     */
+    const haciaArriba = abajo < 220 && arriba > abajo;
+    const hueco = (haciaArriba ? arriba : abajo) - 16;
+    // Un ancho mínimo propio: pegado al del campo, un buscador estrecho pintaba
+    // una lista estrecha y recortaba justo el final de los nombres, que es
+    // muchas veces lo único que los distingue.
+    const ancho = Math.max(240, r.width);
+    setCaja({
+      haciaArriba,
+      top: haciaArriba ? null : r.bottom + 4,
+      // Anclada por abajo al borde superior del campo, para que crezca hacia
+      // arriba sin tener que saber cuánto va a medir.
+      bottom: haciaArriba ? window.innerHeight - r.top + 4 : null,
+      left: Math.max(8, Math.min(r.left, window.innerWidth - ancho - 8)),
+      width: ancho,
+      // Nunca más alta que el hueco que hay. Antes había un mínimo de 140 px que
+      // se pintaba igual aunque quedaran 30: los otros 110 caían fuera.
+      maxHeight: Math.max(96, Math.min(288, hueco)),
+    });
   };
 
   // Se mide ANTES de abrir, en el propio manejador del clic: medirlo dentro de
@@ -108,6 +138,14 @@ export default function SuggestInput({
       document.removeEventListener('mousedown', fuera);
     };
   }, [abierto]);
+
+  // El resaltado de las flechas tiene que seguir viéndose: la caja recorta, y
+  // sin esto a partir de la cuarta pulsación se marca algo fuera de la parte
+  // visible y Enter elige un nombre que nunca se llegó a leer.
+  useEffect(() => {
+    if (!abierto || marcado < 0) return;
+    refLista.current?.children?.[marcado]?.scrollIntoView({ block: 'nearest' });
+  }, [marcado, abierto]);
 
   const elegir = (nombre) => {
     const t = String(nombre || '').trim();
@@ -186,10 +224,10 @@ export default function SuggestInput({
           ref={refLista}
           className="fixed z-[10000] bg-white border border-slate-200 rounded-xl shadow-xl overflow-y-auto py-1"
           style={{
-            top: caja.top,
+            ...(caja.haciaArriba ? { bottom: caja.bottom } : { top: caja.top }),
             left: caja.left,
             width: caja.width,
-            maxHeight: Math.max(140, Math.min(288, caja.espacioAbajo - 16)),
+            maxHeight: caja.maxHeight,
           }}
         >
           {filtradas.length === 0 && (

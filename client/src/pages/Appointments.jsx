@@ -166,6 +166,9 @@ export default function Appointments() {
 
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);
+  // Enfermeros de la sucursal, para poder nombrar un turno de enfermería en vez
+  // de dejarlo abierto a todos.
+  const [nurses, setNurses] = useState([]);
   const [patients, setPatients] = useState([]);
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -252,6 +255,15 @@ export default function Appointments() {
     }
   };
 
+  const fetchNurses = async () => {
+    try {
+      const res = await api.get('/users/nurses');
+      setNurses(res.data);
+    } catch {
+      // silent: sin la lista, el turno sigue pudiendo quedar abierto a todos.
+    }
+  };
+
   const fetchPatients = async () => {
     try {
       const res = await api.get('/patients', { params: { limit: 1000 } });
@@ -276,6 +288,7 @@ export default function Appointments() {
 
   useEffect(() => {
     fetchDoctors();
+    fetchNurses();
     fetchPatients();
     fetchServices();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1467,6 +1480,10 @@ export default function Appointments() {
             date={form.date}
             startTime={form.startTime}
             excludeId={editing}
+            clinicId={form.clinic || activeClinic?._id}
+            // Con el servicio elegido, el panel también avisa de las citas que
+            // empiezan DENTRO de lo que va a durar esta.
+            serviceItemId={form.serviceItem?._id || null}
           />
         </div>
       </Modal>
@@ -1748,6 +1765,7 @@ export default function Appointments() {
         <AssignAttentionModal
           appointment={assignModal.appointment}
           doctors={doctors}
+          nurses={nurses}
           onClose={() => setAssignModal(null)}
           onDone={fetchAppointments}
         />
