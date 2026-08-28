@@ -1136,21 +1136,25 @@ function SueroComposicionEditor({ base, componentes, onChangeBase, onChangeCompo
           impresa y del parte de enfermería, y antes se iba en silencio. */}
       <label className="flex flex-wrap items-center gap-2 text-xs text-slate-700">
         <span className="font-medium">{base?.name || SUERO_CLORURO_NOMBRE}</span>
-        <select
-          value={volumen ?? ''}
-          onChange={(e) =>
-            onChangeBase({
-              name: base?.name || SUERO_CLORURO_NOMBRE,
-              volumeMl: e.target.value === '' ? null : Number(e.target.value),
-            })
-          }
-          className={`input input-sm w-32 ${volumen ? '' : 'border-amber-300 bg-amber-50'}`}
-        >
-          <option value="">Volumen…</option>
-          {SUERO_CLORURO_VOLUMENES.map((v) => (
-            <option key={v} value={v}>{v} ml</option>
-          ))}
-        </select>
+        {/* El ancho lo pone el contenedor, no una utilidad encima del campo:
+            `.input` ya trae `width:100%`. */}
+        <span className="block w-32">
+          <select
+            value={volumen ?? ''}
+            onChange={(e) =>
+              onChangeBase({
+                name: base?.name || SUERO_CLORURO_NOMBRE,
+                volumeMl: e.target.value === '' ? null : Number(e.target.value),
+              })
+            }
+            className={`input input-sm cursor-pointer ${volumen ? '' : 'border-amber-300 bg-amber-50'}`}
+          >
+            <option value="">Volumen…</option>
+            {SUERO_CLORURO_VOLUMENES.map((v) => (
+              <option key={v} value={v}>{v} ml</option>
+            ))}
+          </select>
+        </span>
         <span className={volumen ? 'text-slate-400' : 'text-amber-700 font-medium'}>
           {volumen ? 'va en todos los sueros' : 'falta el volumen de la bolsa'}
         </span>
@@ -1161,55 +1165,74 @@ function SueroComposicionEditor({ base, componentes, onChangeBase, onChangeCompo
           {filas.map((f, idx) => {
             const delCatalogo = !!f.code;
             return (
+              /**
+               * DOS LÍNEAS, no una fila de columnas.
+               *
+               * El nombre va SOLO, a todo el ancho, y no compite con nada: es lo
+               * único que no puede encogerse. Con el nombre y la cantidad en la
+               * misma fila, bastaba que el ancho del campo de cantidad no ganara
+               * la cascada para que se llevara toda la línea y el nombre se
+               * pintara en vertical, una letra por renglón.
+               */
               <li
                 key={idx}
-                className="flex items-start gap-2 rounded-md bg-white/80 border border-sky-100 px-2 py-1.5"
+                className="rounded-md bg-white/80 border border-sky-100 px-2 py-1.5"
               >
-                <div className="flex-1 min-w-0">
-                  {delCatalogo ? (
-                    // Del catálogo: el nombre NO se edita. Cambiarle una letra lo
-                    // dejaría con el código de otra ampolla, y el inventario
-                    // descontaría la que no es. Para cambiarla, se quita y se
-                    // elige otra.
-                    <>
-                      <span className="block text-xs text-slate-800 leading-snug break-words">{f.name}</span>
-                      <span className="mt-0.5 inline-flex items-center gap-1 text-[10px] text-emerald-700">
+                {delCatalogo ? (
+                  // Del catálogo: el nombre NO se edita. Cambiarle una letra lo
+                  // dejaría con el código de otra ampolla, y el inventario
+                  // descontaría la que no es. Para cambiarla, se quita y se
+                  // elige otra.
+                  <p className="m-0 text-xs text-slate-800 leading-snug">{f.name}</p>
+                ) : (
+                  <input
+                    type="text"
+                    value={f.name || ''}
+                    onChange={(e) => setNombreLibre(idx, e.target.value)}
+                    placeholder="Escribe la ampolla o molécula…"
+                    className="input input-sm"
+                  />
+                )}
+
+                <div className="mt-1 flex items-center gap-2">
+                  <span className="flex-1 min-w-0 truncate">
+                    {delCatalogo ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700">
                         <HiOutlineCheckCircle className="w-3 h-3 shrink-0" />
                         {SUERO_GRUPO_LABEL[f.grupo] || 'Otro'} · {f.code}
                       </span>
-                    </>
-                  ) : (
-                    <>
-                      <input
-                        type="text"
-                        value={f.name || ''}
-                        onChange={(e) => setNombreLibre(idx, e.target.value)}
-                        placeholder="Escribe la ampolla o molécula…"
-                        className="input input-sm"
-                      />
-                      <span className="mt-0.5 block text-[10px] text-amber-700">
+                    ) : (
+                      <span className="text-[10px] text-amber-700">
                         escrito a mano · no se descuenta del inventario
                       </span>
-                    </>
-                  )}
+                    )}
+                  </span>
+                  <label className="flex items-center gap-1 shrink-0">
+                    <span className="text-[10px] text-slate-500">Cant.</span>
+                    {/* El ancho lo pone ESTE contenedor, no una utilidad encima
+                        del campo: `.input` ya trae `width:100%` y pelearse con
+                        él en la cascada es lo que rompió esta fila. */}
+                    <span className="block w-16">
+                      <NumericInput
+                        min={1}
+                        value={f.quantity ?? 1}
+                        onChange={(e) =>
+                          setFila(idx, { quantity: e.target.value === '' ? '' : Number(e.target.value) })
+                        }
+                        title="Cantidad"
+                        className="input input-sm text-center"
+                      />
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => onChangeComponentes(filas.filter((_, i) => i !== idx))}
+                    title="Quitar"
+                    className="p-1 text-red-500 bg-transparent border-none cursor-pointer shrink-0"
+                  >
+                    <HiOutlineTrash className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-                <NumericInput
-                  min={1}
-                  value={f.quantity ?? 1}
-                  onChange={(e) =>
-                    setFila(idx, { quantity: e.target.value === '' ? '' : Number(e.target.value) })
-                  }
-                  title="Cantidad"
-                  className="input input-sm w-16 shrink-0"
-                />
-                <button
-                  type="button"
-                  onClick={() => onChangeComponentes(filas.filter((_, i) => i !== idx))}
-                  title="Quitar"
-                  className="p-1.5 text-red-500 bg-transparent border-none cursor-pointer shrink-0"
-                >
-                  <HiOutlineTrash className="w-3.5 h-3.5" />
-                </button>
               </li>
             );
           })}
@@ -2864,16 +2887,20 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
               decir 500, no repetir lo que estaba escrito. */}
           <label className="flex flex-wrap items-center gap-2 text-xs text-slate-700">
             <span className="font-medium">{item.serumBase?.name || SUERO_CLORURO_NOMBRE}</span>
+            {/* El ancho lo pone el contenedor: `.input` ya trae `width:100%` y
+                ponerle una utilidad encima deja el campo a merced de la cascada. */}
+            <span className="block w-32">
             <select
               value={volumen}
               onChange={(e) => setVolumen(e.target.value)}
-              className="input text-xs py-1 w-32"
+              className="input input-sm cursor-pointer"
             >
               <option value="">Sin consignar</option>
               {SUERO_CLORURO_VOLUMENES.map((v) => (
                 <option key={v} value={v}>{v} ml</option>
               ))}
             </select>
+            </span>
             {item.serumBase?.volumeMl && Number(volumen) !== item.serumBase.volumeMl && (
               <span className="text-amber-700">Se recetó {item.serumBase.volumeMl} ml</span>
             )}

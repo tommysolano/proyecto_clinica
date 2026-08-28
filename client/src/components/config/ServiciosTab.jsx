@@ -146,16 +146,21 @@ export default function ServiciosTab() {
               <HiOutlineClock
                 className={`w-4 h-4 ${item.durationMinutes > 0 ? 'text-emerald-600' : 'text-slate-300'}`}
               />
-              <select
-                value={item.durationMinutes || 0}
-                disabled={guardando === item._id}
-                onChange={(e) => guardar(item, Number(e.target.value))}
-                className="input input-sm w-52 cursor-pointer disabled:opacity-60"
-              >
-                {DURACIONES.map((d) => (
-                  <option key={d.value} value={d.value}>{d.label}</option>
-                ))}
-              </select>
+              {/* El ancho lo pone el contenedor: `.input` ya trae `width:100%`
+                  y ponerle una utilidad encima deja el campo a merced de la
+                  cascada. */}
+              <span className="block w-52">
+                <select
+                  value={item.durationMinutes || 0}
+                  disabled={guardando === item._id}
+                  onChange={(e) => guardar(item, Number(e.target.value))}
+                  className="input input-sm cursor-pointer disabled:opacity-60"
+                >
+                  {DURACIONES.map((d) => (
+                    <option key={d.value} value={d.value}>{d.label}</option>
+                  ))}
+                </select>
+              </span>
             </span>
           </li>
         ))}
