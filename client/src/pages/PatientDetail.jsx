@@ -1,4 +1,4 @@
-import { useEffect, useState, Fragment, useRef, lazy, Suspense } from 'react';
+import { useEffect, useState, useMemo, Fragment, useRef, lazy, Suspense } from 'react';
 import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import { downloadFile } from '../utils/download';
@@ -11,11 +11,20 @@ import Cie10Select from '../components/Cie10Select';
 import Odontograma from '../components/Odontograma';
 import {
   ANTECEDENTES_CATEGORIAS,
+  HABITOS_CATEGORIAS,
   REVISION_SISTEMAS,
   EXAMEN_REGIONAL,
   EXAMEN_SISTEMICO,
   calcIMC,
 } from '../constants/mspCatalogs';
+import {
+  SUERO_AMPOLLAS,
+  SUERO_MOLECULAS,
+  SUERO_CLORURO_NOMBRE,
+  SUERO_CLORURO_VOLUMENES,
+  buscarComponenteSuero,
+} from '../constants/sueroterapia';
+import SuggestInput from '../components/SuggestInput';
 import {
   CARDIOLOGIA_ANTECEDENTES,
   CARDIOLOGIA_ESTUDIOS,
@@ -107,7 +116,18 @@ const TABS = [
 // La cantidad nace en 1, así que una fila recién creada NO cuenta como escrita.
 const filaConDatos = (it) =>
   ['dose', 'frequency', 'duration', 'instructions'].some((k) => String(it?.[k] || '').trim()) ||
-  (String(it?.quantity ?? '').trim() !== '' && Number(it.quantity) !== 1);
+  (String(it?.quantity ?? '').trim() !== '' && Number(it.quantity) !== 1) ||
+  // Un suero al que ya se le puso el cloruro o una ampolla NO es una línea en
+  // blanco: descartarlo en silencio borraría una preparación de la historia.
+  //
+  // Solo cuenta si la casilla SIGUE marcada. Si el doctor marcó «Suero», eligió
+  // el volumen y se lo pensó mejor, la fila vuelve a estar visualmente vacía: sin
+  // esta condición quedaba una línea sin nombre que bloqueaba el guardado del
+  // seguimiento entero con un «Falta el nombre en la línea 1» imposible de
+  // entender, porque la composición ya no se ve por ningún lado.
+  (!!it?.isSerum &&
+    (!!it?.serumBase?.volumeMl ||
+      (Array.isArray(it?.serumComponents) && it.serumComponents.some((c) => String(c?.name || '').trim()))));
 
 // Adjuntos permitidos en seguimientos: PDFs e imágenes.
 const isAllowedAttachment = (file) =>
@@ -446,6 +466,11 @@ function FichaTab({ patientId }) {
         patologicosFamiliares: record.patologicosFamiliares || [],
         datosRelevantes: record.datosRelevantes || '',
         datosRelevantesFamiliares: record.datosRelevantesFamiliares || '',
+        antecedentesQuirurgicos: record.antecedentesQuirurgicos || '',
+        antecedentesMedicamentos: record.antecedentesMedicamentos || '',
+        alergias: record.alergias || '',
+        habitos: record.habitos || [],
+        habitosDetalle: record.habitosDetalle || '',
       };
       const res = await api.put(`/clinical-records/${patientId}`, payload);
       setRecord(res.data);
@@ -563,6 +588,70 @@ function FichaTab({ patientId }) {
             rows={2}
             value={record.datosRelevantesFamiliares || ''}
             onChange={(e) => update('datosRelevantesFamiliares', e.target.value)}
+            className="input resize-none"
+          />
+        </Field>
+      </div>
+
+      {/* Antecedentes quirúrgicos, medicación habitual y alergias.
+          Son tres preguntas que se hacen por separado y hasta ahora acababan las
+          tres en el mismo renglón de "datos relevantes" —cuando alguien se
+          acordaba—. La alergia sobre todo: es lo primero que hay que mirar antes
+          de recetar y estaba a la altura de una nota suelta. */}
+      <div className="space-y-3 pt-2 border-t border-slate-100">
+        <div>
+          <h3 className="font-semibold text-slate-800">Antecedentes quirúrgicos, medicación y alergias</h3>
+          <p className="text-xs text-slate-400">Lo que hay que saber antes de recetar o intervenir.</p>
+        </div>
+        <div className="grid grid-cols-1 gap-4">
+          <Field label="Antecedentes quirúrgicos">
+            <textarea
+              rows={2}
+              value={record.antecedentesQuirurgicos || ''}
+              onChange={(e) => update('antecedentesQuirurgicos', e.target.value)}
+              placeholder="Cirugías previas, con el año si se sabe"
+              className="input resize-none"
+            />
+          </Field>
+          <Field label="Antecedentes de medicamentos (medicación habitual)">
+            <textarea
+              rows={2}
+              value={record.antecedentesMedicamentos || ''}
+              onChange={(e) => update('antecedentesMedicamentos', e.target.value)}
+              placeholder="Lo que el paciente ya toma: fármaco, dosis y desde cuándo"
+              className="input resize-none"
+            />
+          </Field>
+          <Field label="Alergias">
+            <textarea
+              rows={2}
+              value={record.alergias || ''}
+              onChange={(e) => update('alergias', e.target.value)}
+              placeholder="Medicamentosas, alimentarias, ambientales… y qué reacción produjeron"
+              className="input resize-none"
+            />
+          </Field>
+        </div>
+      </div>
+
+      {/* Hábitos. Con detalle por casilla: "fuma" sin el "10 al día desde los
+          20" no dice nada clínicamente. */}
+      <div className="space-y-3 pt-2 border-t border-slate-100">
+        <div>
+          <h3 className="font-semibold text-slate-800">Hábitos</h3>
+          <p className="text-xs text-slate-400">Marque los que tenga y anote la cantidad y desde cuándo en el recuadro de cada uno.</p>
+        </div>
+        <MspChecklist
+          catalog={HABITOS_CATEGORIAS}
+          value={record.habitos}
+          onChange={(v) => update('habitos', v)}
+          cols="md:grid-cols-3"
+        />
+        <Field label="Otros hábitos / observaciones">
+          <textarea
+            rows={2}
+            value={record.habitosDetalle || ''}
+            onChange={(e) => update('habitosDetalle', e.target.value)}
             className="input resize-none"
           />
         </Field>
@@ -803,6 +892,13 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
 
   // Columnas por variante. En Derivaciones manda el orden de trabajo: cuántas
   // sesiones, de qué, y con qué indicaciones.
+  //
+  // LAS INDICACIONES YA NO SON UNA COLUMNA. Compartiendo el ancho con otras
+  // cinco quedaba una ranura de dos centímetros para el campo donde más se
+  // escribe: "tomar después de comer, si aparece dolor de estómago suspender y
+  // avisar" se leía de tres en tres letras. Ahora va en una fila propia, a todo
+  // el ancho de la tabla y como área de texto. Para TODAS las líneas, no solo
+  // las de suero.
   const columnas = isReceta
     ? [
         { key: 'name', label: 'Medicamento / Insumo', placeholder: 'Paracetamol 500 mg', ancho: 'min-w-[200px]' },
@@ -810,16 +906,45 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
         { key: 'dose', label: 'Dosis', placeholder: '1 tableta' },
         { key: 'frequency', label: 'Frecuencia', placeholder: 'c/8 h' },
         { key: 'duration', label: 'Duración', placeholder: '7 días' },
-        { key: 'instructions', label: 'Indicaciones', placeholder: 'Después de comer' },
         // Marcarlo como suero es lo que hace que enfermería pueda ir anotando
-        // cada aplicación y que la receta lleve la cuenta ("3 de 7, faltan 4").
+        // cada aplicación y que la receta lleve la cuenta ("3 de 7, faltan 4"),
+        // y lo que abre el recuadro de la preparación (cloruro + ampollas).
         { key: 'isSerum', label: 'Suero', check: true, ancho: 'w-16', ayuda: 'Se administra por dosis' },
       ]
     : [
         { key: 'quantity', label: 'Cant.', numero: true, ancho: 'w-16' },
         { key: 'name', label: 'Servicio / Programa', placeholder: 'Fisioterapia, ecografía, laboratorio…', ancho: 'min-w-[240px]' },
-        { key: 'instructions', label: 'Indicaciones', placeholder: 'Motivo de la derivación o instrucciones', ancho: 'min-w-[200px]' },
       ];
+
+  const placeholderIndicaciones = isReceta
+    ? 'Después de comer, con abundante agua… todo lo que el paciente tiene que saber para tomarlo bien'
+    : 'Motivo de la derivación o instrucciones para quien lo atienda';
+
+  // Bloque que va DEBAJO de cada línea: las indicaciones a todo el ancho y, si
+  // es un suero, su preparación. Lo comparten la tabla del escritorio y las
+  // tarjetas del móvil.
+  const pie = (row, idx) => (
+    <>
+      <label className="block">
+        <span className="block text-[11px] font-medium text-slate-500 mb-0.5">Indicaciones</span>
+        <textarea
+          rows={2}
+          value={row.instructions || ''}
+          onChange={(e) => onUpdate(idx, 'instructions', e.target.value)}
+          placeholder={placeholderIndicaciones}
+          className="input text-xs py-1.5 resize-y w-full"
+        />
+      </label>
+      {isReceta && row.isSerum && (
+        <SueroComposicionEditor
+          base={row.serumBase}
+          componentes={row.serumComponents}
+          onChangeBase={(v) => onUpdate(idx, 'serumBase', v)}
+          onChangeComponentes={(v) => onUpdate(idx, 'serumComponents', v)}
+        />
+      )}
+    </>
+  );
 
   // Un solo sitio donde se decide qué campo pintar: la tabla del escritorio y
   // las tarjetas del móvil comparten los mismos controles.
@@ -882,23 +1007,31 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
           </thead>
           <tbody>
             {items.map((row, idx) => (
-              <tr key={idx} className="border-t border-slate-100">
-                {columnas.map((c) => (
-                  <td key={c.key} className={`px-2 py-1 ${c.ancho || ''}`}>
-                    {campo(c, row, idx)}
+              <Fragment key={idx}>
+                <tr className="border-t border-slate-200">
+                  {columnas.map((c) => (
+                    <td key={c.key} className={`px-2 py-1 ${c.ancho || ''}`}>
+                      {campo(c, row, idx)}
+                    </td>
+                  ))}
+                  <td className="px-2 py-1 text-right">
+                    <button
+                      type="button"
+                      onClick={() => onRemove(idx)}
+                      title="Quitar línea"
+                      className="p-1 text-red-500 bg-transparent border-none cursor-pointer"
+                    >
+                      <HiOutlineTrash className="w-3 h-3" />
+                    </button>
                   </td>
-                ))}
-                <td className="px-2 py-1 text-right">
-                  <button
-                    type="button"
-                    onClick={() => onRemove(idx)}
-                    title="Quitar línea"
-                    className="p-1 text-red-500 bg-transparent border-none cursor-pointer"
-                  >
-                    <HiOutlineTrash className="w-3 h-3" />
-                  </button>
-                </td>
-              </tr>
+                </tr>
+                {/* Indicaciones (y la preparación del suero) a todo el ancho. */}
+                <tr>
+                  <td colSpan={columnas.length + 1} className="px-2 pb-2 pt-0 align-top">
+                    {pie(row, idx)}
+                  </td>
+                </tr>
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -925,9 +1058,161 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
                 {campo(c, row, idx)}
               </label>
             ))}
+            {pie(row, idx)}
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * COMPOSICIÓN DE UN SUERO: el cloruro que hace de base y lo que va dentro.
+ *
+ * Un suero no es una línea de receta, es una preparación. Hasta ahora la línea
+ * decía "suero x7" y lo que llevaba dentro se quedaba en la cabeza del médico o
+ * en un papel; enfermería, que es quien lo prepara, tenía que preguntar. Aquí se
+ * escribe una vez y se lee tal cual al aplicarlo.
+ *
+ * El buscador ofrece el catálogo del laboratorio pero NO es una lista cerrada:
+ * si hace falta algo que no está, se escribe y se receta igual. Lo que sí hace
+ * es evitar que la misma ampolla acabe escrita de cuatro maneras distintas.
+ */
+function SueroComposicionEditor({ base, componentes, onChangeBase, onChangeComponentes }) {
+  const volumen = base?.volumeMl ?? null;
+  const filas = Array.isArray(componentes) ? componentes : [];
+
+  // Nombres repetidos en el catálogo: el laboratorio dio de baja un código y lo
+  // repuso con otro. Para elegir son la misma cosa, así que en el buscador se
+  // enseña una sola vez (la vigente); el código antiguo sigue leyéndose bien en
+  // las recetas ya guardadas.
+  const opciones = useMemo(() => {
+    const porNombre = new Map();
+    [...SUERO_AMPOLLAS, ...SUERO_MOLECULAS].forEach((c) => {
+      const previo = porNombre.get(c.name);
+      if (!previo || (!previo.activo && c.activo)) porNombre.set(c.name, c);
+    });
+    return [...porNombre.values()]
+      .map((c) => ({ name: c.name }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'es'));
+  }, []);
+
+  const setFila = (idx, patch) =>
+    onChangeComponentes(filas.map((f, i) => (i === idx ? { ...f, ...patch } : f)));
+
+  // Al elegir del catálogo se guarda también el CÓDIGO: es con lo que después se
+  // encuentra la ampolla en el inventario para descontarla.
+  const setNombre = (idx, nombre) => {
+    const cat = buscarComponenteSuero({ name: nombre });
+    setFila(idx, {
+      name: cat?.name || nombre,
+      code: cat?.code || '',
+      grupo: cat?.grupo || 'otro',
+    });
+  };
+
+  return (
+    <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50/60 p-2.5 space-y-2">
+      <p className="m-0 text-[11px] font-semibold uppercase tracking-wide text-sky-700">
+        Preparación del suero
+      </p>
+
+      {/* El cloruro va en todos: lo único que se elige es el tamaño de la bolsa. */}
+      <label className="flex flex-wrap items-center gap-2 text-xs text-slate-700">
+        <span className="font-medium">{base?.name || SUERO_CLORURO_NOMBRE}</span>
+        <select
+          value={volumen ?? ''}
+          onChange={(e) =>
+            onChangeBase({
+              name: base?.name || SUERO_CLORURO_NOMBRE,
+              volumeMl: e.target.value === '' ? null : Number(e.target.value),
+            })
+          }
+          className="input text-xs py-1 w-32"
+        >
+          <option value="">Volumen…</option>
+          {SUERO_CLORURO_VOLUMENES.map((v) => (
+            <option key={v} value={v}>{v} ml</option>
+          ))}
+        </select>
+        <span className="text-slate-400">va en todos los sueros</span>
+      </label>
+
+      {filas.length > 0 && (
+        <div className="space-y-1.5">
+          {filas.map((f, idx) => (
+            <div key={idx} className="flex items-start gap-1.5">
+              <div className="flex-1 min-w-0">
+                <SuggestInput
+                  value={f.name || ''}
+                  onChange={(t) => setFila(idx, { name: t, code: '' })}
+                  onSelect={(t) => setNombre(idx, t)}
+                  onBlur={() => f.name && setNombre(idx, f.name)}
+                  options={opciones}
+                  placeholder="Ampolla o molécula…"
+                  emptyHint="Escribe el nombre de la ampolla o molécula."
+                  className="input text-xs py-1 pr-8"
+                />
+              </div>
+              <NumericInput
+                min={1}
+                value={f.quantity ?? 1}
+                onChange={(e) =>
+                  setFila(idx, { quantity: e.target.value === '' ? '' : Number(e.target.value) })
+                }
+                title="Cantidad"
+                className="input text-xs py-1 w-16 shrink-0"
+              />
+              <button
+                type="button"
+                onClick={() => onChangeComponentes(filas.filter((_, i) => i !== idx))}
+                title="Quitar"
+                className="p-1.5 text-red-500 bg-transparent border-none cursor-pointer shrink-0"
+              >
+                <HiOutlineTrash className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={() => onChangeComponentes([...filas, { name: '', code: '', grupo: 'otro', quantity: 1 }])}
+        className="inline-flex items-center gap-1 text-xs font-medium text-sky-700 hover:text-sky-800 bg-transparent border-none cursor-pointer p-0"
+      >
+        <HiOutlinePlus className="w-3.5 h-3.5" /> Agregar ampolla o molécula
+      </button>
+    </div>
+  );
+}
+
+/**
+ * La preparación de un suero, en solo lectura. Es lo que enfermería mira justo
+ * antes de pinchar, así que las cantidades van SIEMPRE, también cuando son una:
+ * "APIMEL ×1" no se puede confundir; "APIMEL" a secas sí.
+ */
+function SueroResumen({ item, className = '' }) {
+  const vol = item?.serumBase?.volumeMl;
+  const comps = Array.isArray(item?.serumComponents) ? item.serumComponents : [];
+  if (!vol && !comps.length) return null;
+  return (
+    <div className={`text-[11px] text-slate-700 ${className}`}>
+      {vol && (
+        <div>
+          <span className="text-slate-500">Base:</span>{' '}
+          <b>{item.serumBase?.name || SUERO_CLORURO_NOMBRE} {vol} ml</b>
+        </div>
+      )}
+      {comps.length > 0 && (
+        <ul className="mt-0.5 mb-0 pl-4 list-disc space-y-0.5">
+          {comps.map((c, i) => (
+            <li key={i}>
+              {c.name} <b>×{c.quantity || 1}</b>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -946,15 +1231,18 @@ function SeguimientosTab({ patientId, appointmentId }) {
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
 
   /**
-   * ENFERMERÍA: solo lectura, y solo la receta.
+   * ENFERMERÍA: SOLO LECTURA, pero de la consulta ENTERA.
    *
-   * Entra aquí para ver qué le mandaron poner al paciente y para ir anotando
-   * cada suero. No redacta la consulta —eso es de quien la atiende— ni tiene por
-   * qué leer el motivo, los diagnósticos o los antecedentes: es historia clínica
-   * y su trabajo no la necesita.
+   * Antes solo veía la receta. Quien canaliza una vía y mete tres ampollas es
+   * justo quien necesita el resto: a qué es alérgico el paciente, qué toma ya,
+   * qué diagnóstico hay detrás y cómo salieron los signos vitales. Esconderlo no
+   * protegía nada y sí quitaba de en medio lo único que evita una reacción.
+   *
+   * Lo que sigue sin hacer es REDACTAR la consulta: eso es de quien atiende, y
+   * quien lo impide de verdad es la ruta del servidor, no esta pantalla.
    */
-  const soloReceta = hasRole('enfermero') && !isAdmin;
-  const puedeEscribir = !soloReceta;
+  const esEnfermero = hasRole('enfermero') && !isAdmin;
+  const puedeEscribir = !esEnfermero;
   const puedeAdministrarSuero = hasRole('admin', 'doctor', 'enfermero');
 
   // Una vez guardado, solo administradores pueden eliminar/editar seguimientos.
@@ -975,6 +1263,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
     duration: '',
     instructions: '',
     isSerum: false,
+    // Composición del suero. Solo se usa si se marca la casilla; el servidor la
+    // descarta en cualquier otra línea.
+    serumBase: { name: SUERO_CLORURO_NOMBRE, volumeMl: null },
+    serumComponents: [],
   });
   const emptyOpticaRx = () => ({
     od: { sph: '', cyl: '', ax: '', add: '', dnp: '', alt: '' },
@@ -1052,6 +1344,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
     descripcion: '',
     enfermedadActual: '',    // E
     planTratamiento: '',     // J
+    recomendacionesNoFarmacologicas: '', // va justo debajo del plan
     evolucion: '',           // evolución respecto de controles anteriores
     // Con una línea en blanco: los campos se ven desde el inicio, sin tener
     // que pulsar nada antes de poder escribir. Las vacías se descartan al guardar.
@@ -1427,17 +1720,50 @@ function SeguimientosTab({ patientId, appointmentId }) {
     }
   };
 
+  /**
+   * Historia clínica COMPLETA en la hoja oficial MSP HCU-form.005 (Evolución y
+   * prescripciones): todas las consultas en orden, con lo que se recetó y lo que
+   * enfermería aplicó de verdad.
+   */
+  const openHcu005 = async () => {
+    try {
+      const res = await api.get(`/clinical-records/${patientId}/hcu005`, { responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      window.open(url, '_blank');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al generar la historia clínica');
+    }
+  };
+
   if (loading) return <div className="text-slate-500 text-sm">Cargando...</div>;
   if (!record) return null;
 
+  // Todas las consultas, para todos. A enfermería se le escondían las que no
+  // recetaban nada; ahora que lee la historia entera, una consulta sin receta
+  // sigue diciéndole algo (el diagnóstico, la evolución, los signos vitales).
   const followUps = [...(record.followUps || [])]
-    .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))
-    // A enfermería solo le interesan las consultas QUE RECETARON algo: de las
-    // demás vería una tarjeta con la fecha y nada dentro.
-    .filter((fu) => !soloReceta || (fu.recetaItems || []).some((it) => !it.isService) || fu.receta);
+    .sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
 
   return (
     <div className="space-y-4 sm:space-y-6">
+      {/* HISTORIA CLÍNICA COMPLETA en el formulario oficial del MSP. La hoja 002
+          es UNA consulta; la 005 es el registro secuencial de todas, que es lo
+          que se pide cuando alguien dice «imprímeme la historia del paciente».
+          Lleva la cédula en la cabecera, así que no es para enfermería. */}
+      {!esEnfermero && followUps.length > 0 && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={openHcu005}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm text-slate-700 hover:text-emerald-700 hover:border-emerald-300 cursor-pointer"
+            title="Historia clínica completa · MSP HCU-form.005 (Evolución y prescripciones)"
+          >
+            <HiOutlineDocumentText className="w-4 h-4" />
+            Historia clínica (HCU-005)
+          </button>
+        </div>
+      )}
+
       {/* Ya no promete que la cita se completa: con varios profesionales, guardar
           cierra TU turno y puede pasarla al siguiente. Decir "completada" hacía
           que el segundo doctor creyera que el primero ya había cerrado todo. */}
@@ -1751,8 +2077,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
         {isCosme && <CosmetologiaSection value={form.cosmetologia} onChange={(c) => setForm((f) => ({ ...f, cosmetologia: c }))} />}
         {isCardio && <CardiologiaSection value={form.cardiologia} onChange={(c) => setForm((f) => ({ ...f, cardiologia: c }))} />}
 
-        {/* Orden de la consulta: cómo va el paciente → a dónde se le deriva →
-            qué se le receta → el plan narrado que cierra todo. */}
+        {/* Orden de la consulta: cómo va el paciente → qué se le receta → el
+            plan narrado → lo que hace por su cuenta → y, al final, a dónde se le
+            deriva. La derivación se decide DESPUÉS de tener el plan, y es lo
+            último que se le explica al paciente antes de que salga. */}
         <Field label="Evolución" className="md:col-span-3">
           <textarea
             rows={2}
@@ -1764,14 +2092,6 @@ function SeguimientosTab({ patientId, appointmentId }) {
         </Field>
 
         <ItemsTable
-          variant="derivacion"
-          items={form.derivacionItems}
-          onAdd={() => addRow('derivacionItems')}
-          onUpdate={(idx, key, val) => updateRow('derivacionItems', idx, key, val)}
-          onRemove={(idx) => removeRow('derivacionItems', idx)}
-        />
-
-        <ItemsTable
           variant="receta"
           items={form.recetaItems}
           onAdd={() => addRow('recetaItems')}
@@ -1779,7 +2099,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
           onRemove={(idx) => removeRow('recetaItems', idx)}
         />
 
-        {/* J. Plan de tratamiento (narrado; la receta y las derivaciones van arriba) */}
+        {/* J. Plan de tratamiento (narrado; la receta va arriba y las
+            derivaciones justo debajo) */}
         <Field label="Plan de tratamiento" className="md:col-span-3">
           <textarea
             rows={2}
@@ -1789,6 +2110,30 @@ function SeguimientosTab({ patientId, appointmentId }) {
             className="input resize-none"
           />
         </Field>
+
+        {/* Lo que el paciente tiene que hacer por su cuenta, sin receta de por
+            medio. Campo aparte del plan a propósito: se le explica y se le
+            entrega distinto, y mezclado con los fármacos se perdía. */}
+        <Field label="Recomendaciones no farmacológicas" className="md:col-span-3">
+          <textarea
+            rows={2}
+            value={form.recomendacionesNoFarmacologicas}
+            onChange={(e) => setForm((f) => ({ ...f, recomendacionesNoFarmacologicas: e.target.value }))}
+            placeholder="Dieta, ejercicio, reposo, higiene del sueño, hidratación…"
+            className="input resize-none"
+          />
+        </Field>
+
+        {/* Derivaciones: a dónde se manda al paciente. Va DESPUÉS del plan
+            porque es donde encaja en la consulta — primero se decide el
+            tratamiento y de ahí sale a quién hay que derivarlo. */}
+        <ItemsTable
+          variant="derivacion"
+          items={form.derivacionItems}
+          onAdd={() => addRow('derivacionItems')}
+          onUpdate={(idx, key, val) => updateRow('derivacionItems', idx, key, val)}
+          onRemove={(idx) => removeRow('derivacionItems', idx)}
+        />
 
 
         {/* Archivos (PDF o imágenes) antes de guardar el seguimiento */}
@@ -1972,48 +2317,41 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     {fu.tipoConsulta && (
                       <span className="inline-block mb-1 ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 capitalize">{fu.tipoConsulta}</span>
                     )}
-                    {!soloReceta && <div className="font-medium">{fu.descripcion || fu.motivoConsulta}</div>}
-                    {!soloReceta && hasOpticaData && <OpticaRxSummary rx={fu.opticaRx} />}
-                    {!soloReceta && hasGinecoData && <GinecologiaSummary g={fu.ginecologia} fecha={fu.fecha} />}
-                    {!soloReceta && hasPodoData && <PodologiaSummary p={fu.podologia} />}
-                    {!soloReceta && hasOdontoData && <OdontologiaSummary o={fu.odontologia} />}
-                    {!soloReceta && hasCosmeData && <CosmetologiaSummary c={fu.cosmetologia} />}
-                    {!soloReceta && hasCardioData && <CardiologiaSummary value={fu.cardiologia} />}
-                    {!soloReceta && fu.enfermedadActual && (
+                    <div className="font-medium">{fu.descripcion || fu.motivoConsulta}</div>
+                    {hasOpticaData && <OpticaRxSummary rx={fu.opticaRx} />}
+                    {hasGinecoData && <GinecologiaSummary g={fu.ginecologia} fecha={fu.fecha} />}
+                    {hasPodoData && <PodologiaSummary p={fu.podologia} />}
+                    {hasOdontoData && <OdontologiaSummary o={fu.odontologia} />}
+                    {hasCosmeData && <CosmetologiaSummary c={fu.cosmetologia} />}
+                    {hasCardioData && <CardiologiaSummary value={fu.cardiologia} />}
+                    {fu.enfermedadActual && (
                       <div className="mt-1 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Enfermedad actual:</b> {fu.enfermedadActual}
                       </div>
                     )}
                     {/* Legacy: seguimientos antiguos que aún tienen el campo. */}
-                    {!soloReceta && fu.estudioSintomas && (
+                    {fu.estudioSintomas && (
                       <div className="mt-1 text-xs text-slate-600">
                         <b>Estudio/síntomas:</b> {fu.estudioSintomas}
                       </div>
                     )}
-                    {!soloReceta && (
+                    <ChecksSummary
+                      title="Revisión de órganos y sistemas"
+                      groups={[{ label: '', items: revItems }]}
+                      hallazgos={fu.revisionSistemasHallazgos}
+                      tone="amber"
+                    />
+                    <ChecksSummary
+                      title="Examen físico"
+                      groups={[
+                        { label: 'Regional', items: regItems },
+                        { label: 'Sistémico', items: sisItems },
+                      ]}
+                      hallazgos={fu.examenFisico?.hallazgos}
+                      tone="violet"
+                    />
 
-                      <ChecksSummary
-                        title="Revisión de órganos y sistemas"
-                        groups={[{ label: '', items: revItems }]}
-                        hallazgos={fu.revisionSistemasHallazgos}
-                        tone="amber"
-                      />
-
-                    )}
-                    {!soloReceta && (
-
-                      <ChecksSummary
-                        title="Examen físico"
-                        groups={[
-                          { label: 'Regional', items: regItems },
-                          { label: 'Sistémico', items: sisItems },
-                        ]}
-                        hallazgos={fu.examenFisico?.hallazgos}
-                        tone="violet"
-                      />
-
-                    )}
-                    {!soloReceta && Array.isArray(fu.diagnosticos) && fu.diagnosticos.length > 0 && (
+                    {Array.isArray(fu.diagnosticos) && fu.diagnosticos.length > 0 && (
                       <div className="mt-2 bg-rose-50 border border-rose-200 rounded p-2">
                         <p className="text-[11px] font-semibold text-rose-600 uppercase mb-1">Diagnósticos</p>
                         <ul className="text-xs text-slate-700 space-y-0.5">
@@ -2049,14 +2387,23 @@ function SeguimientosTab({ patientId, appointmentId }) {
                             </li>
                           );
                         }
+                        // Las indicaciones van en su PROPIA línea, no pegadas al
+                        // final con un guion: es lo que hay que leer entero y
+                        // arrastradas detrás de la dosis se saltaban.
                         return (
                           <li key={it._id || i}>
-                            <b>{it.name}</b>
-                            {it.dose ? ` · ${it.dose}` : ''}
-                            {it.frequency ? ` · ${it.frequency}` : ''}
-                            {it.duration ? ` · ${it.duration}` : ''}
-                            {it.instructions ? ` — ${it.instructions}` : ''}
-                            {it.quantity ? ` (x${it.quantity})` : ''}
+                            <div>
+                              <b>{it.name}</b>
+                              {it.quantity ? ` ×${it.quantity}` : ''}
+                              {it.dose ? ` · ${it.dose}` : ''}
+                              {it.frequency ? ` · ${it.frequency}` : ''}
+                              {it.duration ? ` · ${it.duration}` : ''}
+                            </div>
+                            {it.instructions && (
+                              <div className="mt-0.5 whitespace-pre-wrap">
+                                <span className="text-slate-400">Indicaciones:</span> {it.instructions}
+                              </div>
+                            )}
                           </li>
                         );
                       };
@@ -2065,15 +2412,15 @@ function SeguimientosTab({ patientId, appointmentId }) {
                           {recetaOnly.length > 0 && (
                             <div className="mt-2 bg-slate-50 border border-slate-200 rounded p-2">
                               <p className="text-[11px] font-semibold text-slate-600 uppercase mb-1">Receta</p>
-                              <ul className="text-xs text-slate-700 space-y-0.5">
+                              <ul className="text-xs text-slate-700 space-y-1.5">
                                 {recetaOnly.map(renderItem)}
                               </ul>
                             </div>
                           )}
-                          {!soloReceta && derivOnly.length > 0 && (
+                          {derivOnly.length > 0 && (
                             <div className="mt-2 bg-indigo-50 border border-indigo-200 rounded p-2">
                               <p className="text-[11px] font-semibold text-indigo-600 uppercase mb-1">Derivaciones</p>
-                              <ul className="text-xs text-slate-700 space-y-0.5">
+                              <ul className="text-xs text-slate-700 space-y-1.5">
                                 {derivOnly.map(renderItem)}
                               </ul>
                             </div>
@@ -2081,7 +2428,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         </>
                       );
                     })()}
-                    {!soloReceta && hasVitals && (
+                    {hasVitals && (
                       <div className="mt-2 text-[11px] text-slate-600 bg-emerald-50 border border-emerald-100 rounded p-2 flex flex-wrap gap-x-3 gap-y-0.5">
                         {vs.hora && <span>Hora: {vs.hora}</span>}
                         {vs.bloodPressure && <span>TA: {vs.bloodPressure}</span>}
@@ -2103,24 +2450,27 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         <b>Receta:</b> {fu.receta}
                       </div>
                     )}
-                    {!soloReceta && fu.planTratamiento && (
+                    {fu.planTratamiento && (
                       <div className="mt-2 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Plan de tratamiento:</b> {fu.planTratamiento}
                       </div>
                     )}
-                    {!soloReceta && fu.evolucion && (
+                    {fu.recomendacionesNoFarmacologicas && (
+                      <div className="mt-2 text-xs text-slate-600 whitespace-pre-wrap">
+                        <b>Recomendaciones no farmacológicas:</b> {fu.recomendacionesNoFarmacologicas}
+                      </div>
+                    )}
+                    {fu.evolucion && (
                       <div className="mt-2 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Evolución:</b> {fu.evolucion}
                       </div>
                     )}
                     {/* Legacy: seguimientos antiguos que aún tienen el campo. */}
-                    {!soloReceta && fu.observaciones && (
+                    {fu.observaciones && (
                       <div className="mt-2 text-xs text-slate-600 italic">
                         <b>Observaciones:</b> {fu.observaciones}
                       </div>
                     )}
-                    {!soloReceta && (
-                    <>
                     {/* Adjuntos (PDF o imágenes) */}
                     <div className="mt-2 space-y-1">
                       {(fu.attachments || []).map((att) => (
@@ -2188,12 +2538,9 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         </label>
                       )}
                     </div>
-                    </>
-                    )}
                   </div>
                   <div className="md:w-32 md:shrink-0 md:px-4 md:py-2.5 border-t border-slate-100 pt-2 md:border-t-0 md:pt-0">
                     <div className="flex items-center gap-1 md:justify-end">
-                      {!soloReceta && (
                       <button
                         onClick={() => downloadFollowUpPdf(fu._id)}
                         title="Descargar PDF"
@@ -2201,7 +2548,6 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       >
                         <HiOutlineArrowDownTray className="w-4 h-4" />
                       </button>
-                      )}
                       <button
                         onClick={() => printFollowUp(fu._id)}
                         title="Imprimir receta"
@@ -2209,7 +2555,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       >
                         <HiOutlinePrinter className="w-4 h-4" />
                       </button>
-                      {!soloReceta && (
+                      {/* La hoja oficial lleva la cédula del paciente en la
+                          cabecera, que es dato de administración. Enfermería lee
+                          la historia dentro de la app, pero no se lleva el PDF
+                          con la identificación (ver routes/clinicalRecords.js). */}
+                      {!esEnfermero && (
                       <button
                         onClick={() => openMspForm(fu._id)}
                         title="Hoja MSP HCU-form.002"
@@ -2272,12 +2622,55 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
   const faltan = Math.max(0, recetados - puestos);
   const completo = recetados > 0 && faltan === 0;
 
+  const receta = Array.isArray(item.serumComponents) ? item.serumComponents : [];
+
+  /**
+   * QUÉ SE VA A PONER EN ESTA DOSIS.
+   *
+   * Arranca con TODO lo que recetó el médico marcado: lo normal es ponerlo
+   * entero, y obligar a marcar seis casillas cada vez acabaría con alguien
+   * dándole a "todas" sin mirar. Lo que hay que poder hacer es lo contrario —
+   * quitar la ampolla que el paciente no quiere— y eso es un clic.
+   */
+  const dosisInicial = () =>
+    receta.map((c) => ({
+      code: c.code || '',
+      name: c.name || '',
+      quantityPrescribed: Number(c.quantity) || 0,
+      quantityApplied: Number(c.quantity) || 0,
+      omitReason: '',
+    }));
+  const [dosis, setDosis] = useState(dosisInicial);
+  // Cloruro que se pone HOY. Arranca en lo recetado, pero se puede cambiar: en la
+  // sala puede no haber la bolsa que pidió el médico, y el parte tiene que decir
+  // lo que entró de verdad, no lo que estaba escrito.
+  const [volumen, setVolumen] = useState(item.serumBase?.volumeMl ?? '');
+
+  const abrirConfirmacion = () => {
+    // Se rearma cada vez: la dosis de ayer no puede venir marcada a medias.
+    setDosis(dosisInicial());
+    setVolumen(item.serumBase?.volumeMl ?? '');
+    setNota('');
+    setConfirmar(true);
+  };
+
+  const setComp = (idx, patch) =>
+    setDosis((d) => d.map((c, i) => (i === idx ? { ...c, ...patch } : c)));
+
+  const omitidas = dosis.filter((c) => c.quantityApplied < c.quantityPrescribed);
+
   const registrar = async () => {
     setBusy(true);
     try {
       const { data } = await api.post(
         `/clinical-records/${patientId}/follow-ups/${followUpId}/receta/${item._id}/administer`,
-        { note: nota.trim() }
+        {
+          note: nota.trim(),
+          ...(volumen ? { baseVolumeMl: Number(volumen) } : {}),
+          // Solo se manda si el suero TIENE composición: sin ella el servidor
+          // debe seguir comportándose como siempre (dosis completa).
+          ...(receta.length ? { components: dosis } : {}),
+        }
       );
       onCambio(data);
       toast.success(
@@ -2317,8 +2710,20 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
         </span>
         <b className="text-slate-800">{item.name}</b>
         {item.dose && <span className="text-slate-600">· {item.dose}</span>}
-        {item.instructions && <span className="text-slate-600">— {item.instructions}</span>}
+        {item.frequency && <span className="text-slate-600">· {item.frequency}</span>}
+        {item.duration && <span className="text-slate-600">· {item.duration}</span>}
       </div>
+
+      {/* Enfermería tiene que leer esto ENTERO antes de preparar nada, así que va
+          en su propia línea y no de coletilla detrás de la dosis. */}
+      {item.instructions && (
+        <p className="mt-1 mb-0 text-[11px] text-slate-700 whitespace-pre-wrap">
+          <span className="text-slate-400">Indicaciones:</span> {item.instructions}
+        </p>
+      )}
+
+      {/* Qué lleva la bolsa. Es lo que hay que preparar. */}
+      <SueroResumen item={item} className="mt-1.5 rounded border border-sky-200 bg-white/70 px-2 py-1.5" />
 
       <div className="mt-1.5 flex flex-wrap items-center gap-2">
         <span className={`text-xs font-semibold ${completo ? 'text-emerald-700' : 'text-sky-800'}`}>
@@ -2339,7 +2744,7 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
         {puedeAdministrar && !completo && (
           <button
             type="button"
-            onClick={() => setConfirmar(true)}
+            onClick={abrirConfirmacion}
             className="text-xs font-medium px-2.5 py-1 rounded-lg bg-sky-600 text-white border-none cursor-pointer hover:bg-sky-700"
           >
             Administrar
@@ -2357,18 +2762,32 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
       </div>
 
       {ultima && (
-        <p className="mt-1 text-[11px] text-slate-500 m-0">
-          Última: {fmtDateTime(ultima.at)}
-          {ultima.byName ? ` · ${ultima.byName}` : ''}
-          {ultima.note ? ` · ${ultima.note}` : ''}
-        </p>
+        <div className="mt-1 text-[11px] text-slate-500">
+          <p className="m-0">
+            Última: {fmtDateTime(ultima.at)}
+            {ultima.byName ? ` · ${ultima.byName}` : ''}
+            {ultima.note ? ` · ${ultima.note}` : ''}
+          </p>
+          {/* Lo que se dejó de poner en la última dosis. Se enseña SIEMPRE que
+              hay algo omitido: es la diferencia entre lo recetado y lo que el
+              paciente recibió de verdad, y quien mire mañana tiene que verla. */}
+          {(ultima.components || []).some((c) => c.quantityApplied < c.quantityPrescribed) && (
+            <p className="m-0 mt-0.5 text-amber-700">
+              No se aplicó:{' '}
+              {(ultima.components || [])
+                .filter((c) => c.quantityApplied < c.quantityPrescribed)
+                .map((c) => `${c.name}${c.omitReason ? ` (${c.omitReason})` : ''}`)
+                .join(' · ')}
+            </p>
+          )}
+        </div>
       )}
 
       <Modal
         isOpen={confirmar}
         onClose={() => setConfirmar(false)}
         title="Administrar suero"
-        size="sm"
+        size={receta.length ? 'md' : 'sm'}
       >
         <div className="space-y-3">
           <p className="text-sm text-slate-700 m-0">
@@ -2377,6 +2796,106 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
           <p className="text-xs text-slate-500 m-0">
             Van {puestos} de {recetados}. Con este quedarían {Math.max(0, faltan - 1)} por poner.
           </p>
+
+          {/* El cloruro que se pone hoy. Se puede corregir: si el médico recetó
+              1000 ml y en la sala solo hay bolsas de 500, el parte tiene que
+              decir 500, no repetir lo que estaba escrito. */}
+          <label className="flex flex-wrap items-center gap-2 text-xs text-slate-700">
+            <span className="font-medium">{item.serumBase?.name || SUERO_CLORURO_NOMBRE}</span>
+            <select
+              value={volumen}
+              onChange={(e) => setVolumen(e.target.value)}
+              className="input text-xs py-1 w-32"
+            >
+              <option value="">Sin consignar</option>
+              {SUERO_CLORURO_VOLUMENES.map((v) => (
+                <option key={v} value={v}>{v} ml</option>
+              ))}
+            </select>
+            {item.serumBase?.volumeMl && Number(volumen) !== item.serumBase.volumeMl && (
+              <span className="text-amber-700">Se recetó {item.serumBase.volumeMl} ml</span>
+            )}
+          </label>
+
+          {/* Lo que recetó el médico, con la casilla puesta. Se desmarca lo que
+              el paciente NO quiera: se aplica el resto, queda escrito por qué y
+              del inventario sale solo lo que entró en la vena. */}
+          {receta.length > 0 && (
+            <div className="rounded-xl border border-slate-200 overflow-hidden">
+              <p className="m-0 px-3 py-1.5 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Qué se le pone
+              </p>
+              <ul className="m-0 p-0 list-none divide-y divide-slate-100">
+                {dosis.map((c, idx) => {
+                  const puesta = c.quantityApplied > 0;
+                  return (
+                    <li key={idx} className="px-3 py-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <input
+                          type="checkbox"
+                          id={`comp-${item._id}-${idx}`}
+                          checked={puesta}
+                          onChange={(e) =>
+                            setComp(idx, {
+                              quantityApplied: e.target.checked ? c.quantityPrescribed : 0,
+                              omitReason: e.target.checked ? '' : c.omitReason,
+                            })
+                          }
+                          className="w-4 h-4 accent-sky-600 cursor-pointer"
+                        />
+                        <label
+                          htmlFor={`comp-${item._id}-${idx}`}
+                          className={`text-sm cursor-pointer flex-1 min-w-0 ${puesta ? 'text-slate-800' : 'text-slate-400 line-through'}`}
+                        >
+                          {c.name} <span className="text-slate-400">×{c.quantityPrescribed}</span>
+                        </label>
+                        {/* Media dosis también existe: recetadas 2, el paciente
+                            acepta 1. El campo se queda SIEMPRE que se recetó más
+                            de una, marcada o no: si desapareciera al llegar a 0
+                            no se podría corregir un 3 borrando para escribir 2
+                            —el campo se esfumaba a mitad de la corrección—. */}
+                        {c.quantityPrescribed > 1 && (
+                          <NumericInput
+                            min={0}
+                            max={c.quantityPrescribed}
+                            value={c.quantityApplied}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setComp(idx, {
+                                // Vacío mientras se escribe: se guarda 0 pero no
+                                // se toca nada más, para que el campo siga ahí.
+                                quantityApplied:
+                                  v === '' ? 0 : Math.min(c.quantityPrescribed, Math.max(0, Number(v) || 0)),
+                              });
+                            }}
+                            title="Cuántas se pusieron"
+                            className={`input text-xs py-1 w-16 ${puesta ? '' : 'text-slate-400'}`}
+                          />
+                        )}
+                      </div>
+                      {c.quantityApplied < c.quantityPrescribed && (
+                        <input
+                          type="text"
+                          value={c.omitReason}
+                          onChange={(e) => setComp(idx, { omitReason: e.target.value })}
+                          placeholder="¿Por qué no se puso? (el paciente no la quiso, no había…)"
+                          className="input text-xs py-1 mt-1.5 w-full"
+                        />
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
+          {omitidas.length > 0 && (
+            <p className="m-0 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              Queda registrado que {omitidas.length === 1 ? 'no se aplicó' : 'no se aplicaron'}{' '}
+              {omitidas.map((c) => c.name).join(', ')}. Del inventario solo sale lo aplicado.
+            </p>
+          )}
+
           <label className="block text-sm">
             Nota <span className="text-slate-400 font-normal">(opcional)</span>
             <input

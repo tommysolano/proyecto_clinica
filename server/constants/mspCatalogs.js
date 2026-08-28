@@ -68,17 +68,38 @@ const EXAMEN_SISTEMICO = [
   { key: 'neurologico', label: 'Neurológico' },
 ];
 
+/**
+ * HÁBITOS del paciente. No es una sección de la hoja MSP: es de la anamnesis de
+ * siempre, y hasta ahora acababa escrita a mano en "datos relevantes" cuando
+ * alguien se acordaba. Cada casilla lleva su propio detalle porque "fuma" sin el
+ * "10 al día desde los 20" no dice nada clínicamente.
+ */
+const HABITOS_CATEGORIAS = [
+  { key: 'tabaco', label: 'Tabaco' },
+  { key: 'alcohol', label: 'Alcohol' },
+  { key: 'drogas', label: 'Drogas' },
+  { key: 'cafe', label: 'Café' },
+  { key: 'alimentacion', label: 'Alimentación' },
+  { key: 'actividadFisica', label: 'Actividad física' },
+  { key: 'sueno', label: 'Sueño' },
+  { key: 'automedicacion', label: 'Automedicación' },
+  { key: 'otro', label: 'Otro' },
+];
+
 const ANTECEDENTES_KEYS = ANTECEDENTES_CATEGORIAS.map((c) => c.key);
+const HABITOS_KEYS = HABITOS_CATEGORIAS.map((c) => c.key);
 const REVISION_SISTEMAS_KEYS = REVISION_SISTEMAS.map((c) => c.key);
 const EXAMEN_REGIONAL_KEYS = EXAMEN_REGIONAL.map((c) => c.key);
 const EXAMEN_SISTEMICO_KEYS = EXAMEN_SISTEMICO.map((c) => c.key);
 
 module.exports = {
   ANTECEDENTES_CATEGORIAS,
+  HABITOS_CATEGORIAS,
   REVISION_SISTEMAS,
   EXAMEN_REGIONAL,
   EXAMEN_SISTEMICO,
   ANTECEDENTES_KEYS,
+  HABITOS_KEYS,
   REVISION_SISTEMAS_KEYS,
   EXAMEN_REGIONAL_KEYS,
   EXAMEN_SISTEMICO_KEYS,

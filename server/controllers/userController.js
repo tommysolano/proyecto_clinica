@@ -1,12 +1,144 @@
 const bcrypt = require('bcryptjs');
+const multer = require('multer');
 const User = require('../models/User');
 const { VALID_ROLES, DOCTOR_LIKE_ROLES } = require('../constants/roles');
+const { encrypt: encryptSecret } = require('../modules/invoicing/ec/crypto');
+const {
+  loadP12,
+  guardarCertificado,
+  borrarCertificado,
+  estadoFirma,
+} = require('../utils/pdfSignature');
 
 const sanitizeClinics = (clinics, fallbackClinicId) => {
   if (!Array.isArray(clinics)) return [];
   return clinics
     .filter((c) => c && c.clinic && VALID_ROLES.includes(c.role))
     .map((c) => ({ clinic: c.clinic, role: c.role }));
+};
+
+/**
+ * SUCURSALES QUE ESTE ADMINISTRADOR PUEDE GESTIONAR.
+ *
+ * El super-admin (el dueño) las gestiona todas. Un admin de sucursal, solo
+ * aquellas donde ÉL es admin — que pueden ser varias. Es la misma regla que ya
+ * aplicaba `updateUser`, generalizada: antes solo se podía tocar la sucursal
+ * activa, y eso obligaba a cambiar de sede en el menú para mover a una persona.
+ */
+const clinicasQueGestiona = async (req) => {
+  const Clinic = require('../models/Clinic');
+  const filtro = req.user.isSuperAdmin
+    ? { active: { $ne: false } }
+    : {
+        _id: {
+          $in: (req.user.clinics || []).filter((c) => c.role === 'admin').map((c) => c.clinic),
+        },
+        active: { $ne: false },
+      };
+  // `appointmentSlotMinutes` viaja aquí para que la pantalla de Configuración
+  // pinte sus dos pestañas (personal y agenda) con una sola petición.
+  return Clinic.find(filtro)
+    .select('name nombreComercial appointmentSlotMinutes')
+    .sort({ name: 1 })
+    .lean();
+};
+
+/**
+ * EN QUÉ SUCURSAL ESTÁ CADA PERSONA.
+ *
+ * Devuelve la rejilla completa: las sucursales que este admin gestiona y el
+ * personal que trabaja en alguna de ellas, con su rol en cada una.
+ *
+ * De esto dependen los avisos: cuando una cita necesita enfermería, el aviso
+ * sale a los enfermeros DE ESA SUCURSAL (`notificarRol(clinicId, 'enfermero')`,
+ * que filtra por `clinics: {$elemMatch: {clinic, role}}`). Si alguien está
+ * asignado a tres sedes, le suenan las tres. Esta pantalla es donde se arregla.
+ */
+exports.getStaffAssignments = async (req, res) => {
+  try {
+    const clinics = await clinicasQueGestiona(req);
+    const ids = clinics.map((c) => c._id);
+    // Se listan también los desactivados: aparecen en gris y se pueden reactivar
+    // sin tener que adivinar que existen.
+    const users = await User.find({ 'clinics.clinic': { $in: ids } })
+      .select('name email specialty active isSuperAdmin clinics')
+      .sort({ name: 1 })
+      .lean();
+    res.json({ clinics, users });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener las asignaciones', error: error.message });
+  }
+};
+
+/**
+ * Cambia en qué sucursales trabaja una persona y con qué rol en cada una.
+ *
+ * `assignments` es la lista COMPLETA para las sucursales que este admin
+ * gestiona; lo que no venga se interpreta como "ya no trabaja ahí". Las
+ * asignaciones en sedes que NO gestiona se conservan intactas: un admin de
+ * Norte no puede sacar a nadie de Sur ni sin querer.
+ */
+exports.updateStaffAssignments = async (req, res) => {
+  try {
+    const { assignments } = req.body;
+    if (!Array.isArray(assignments)) {
+      return res.status(400).json({ message: 'Faltan las asignaciones' });
+    }
+
+    const clinics = await clinicasQueGestiona(req);
+    const gestionables = new Set(clinics.map((c) => String(c._id)));
+
+    const target = await User.findById(req.params.id);
+    if (!target) return res.status(404).json({ message: 'Usuario no encontrado' });
+    // Al dueño solo lo toca el dueño.
+    if (target.isSuperAdmin && !req.user.isSuperAdmin) {
+      return res.status(403).json({ message: 'No puedes cambiar las sucursales del super-admin' });
+    }
+
+    const intactas = target.clinics.filter((c) => !gestionables.has(String(c.clinic)));
+    // Una sola fila por sucursal: dos roles en la misma sede no existen, y con
+    // duplicados `getRoleForClinic` devolvería el primero que encuentre.
+    const porClinica = new Map();
+    for (const a of assignments) {
+      if (!a || !a.clinic || !VALID_ROLES.includes(a.role)) continue;
+      if (!gestionables.has(String(a.clinic))) continue;
+      porClinica.set(String(a.clinic), { clinic: a.clinic, role: a.role });
+    }
+
+    /**
+     * NADIE SE QUITA A SÍ MISMO EL ADMIN.
+     *
+     * Sin esto, un administrador que se cambia de sucursal en su propia fila se
+     * queda sin la pantalla desde la que acaba de hacerlo —y sin nadie a quien
+     * pedírselo si es el único—. El super-admin sí puede: él nunca se queda
+     * fuera, su acceso no depende de esta lista.
+     */
+    if (!req.user.isSuperAdmin && String(target._id) === String(req.user._id)) {
+      for (const c of target.clinics) {
+        if (c.role !== 'admin' || !gestionables.has(String(c.clinic))) continue;
+        if (porClinica.get(String(c.clinic))?.role !== 'admin') {
+          return res.status(400).json({
+            message: 'No puedes quitarte a ti mismo el rol de administrador. Pídeselo a otro administrador.',
+            code: 'SELF_DEMOTION',
+          });
+        }
+      }
+    }
+
+    target.clinics = [...intactas, ...porClinica.values()];
+    await target.save();
+
+    // El middleware `auth` cachea el usuario: sin esto el cambio tardaría hasta
+    // el TTL en notar que esa persona ya no está en esta sucursal.
+    require('../utils/userCache').invalidate(String(target._id));
+
+    const populated = await User.findById(target._id)
+      .select('name email specialty active isSuperAdmin clinics')
+      .lean();
+    res.json(populated);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al guardar las asignaciones', error: error.message });
+  }
 };
 
 /**
@@ -154,43 +286,123 @@ exports.deleteUser = async (req, res) => {
 };
 
 /**
- * Permite al usuario actual actualizar su propia firma digital.
- * Recibe `signatureImage` como dataURL (image/png o image/jpeg) en base64.
+ * FIRMA ELECTRÓNICA DEL PROFESIONAL (.p12 / .pfx).
+ *
+ * Sustituye a la firma escaneada: una imagen de la firma no firma nada, solo se
+ * parece a una firma. Con el certificado la receta sale firmada dentro del PDF y
+ * se puede comprobar quién la emitió y que nadie la tocó después.
+ *
+ * Mismo tratamiento que el certificado del SRI: se valida ANTES de guardar, el
+ * archivo va a disco y la contraseña se guarda cifrada — nunca en claro y nunca
+ * de vuelta al cliente.
  */
-exports.updateMySignature = async (req, res) => {
+const certUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/x-pkcs12' || /\.p12$|\.pfx$/i.test(file.originalname)) {
+      return cb(null, true);
+    }
+    cb(new Error('El archivo debe ser un certificado .p12 o .pfx'));
+  },
+}).single('certificate');
+
+// Los errores de multer (tipo, tamaño) son culpa del cliente: 400 con el motivo,
+// no un 500 genérico de Express.
+exports.signatureCertUploadMiddleware = (req, res, next) => {
+  certUpload(req, res, (err) => {
+    if (err) return res.status(400).json({ message: err.message });
+    next();
+  });
+};
+
+/** Lo que se le puede enseñar al cliente: todo menos la contraseña. */
+const certPublico = (user) => {
+  const cert = user?.signatureCert;
+  if (!cert?.filename) return { tiene: false };
+  const { ok, motivo } = estadoFirma(user);
+  return {
+    tiene: true,
+    puedeFirmar: ok,
+    motivo,
+    info: cert.info || {},
+    uploadedAt: cert.uploadedAt,
+  };
+};
+
+exports.getMySignatureCert = async (req, res) => {
   try {
-    const { signatureImage } = req.body;
-    if (typeof signatureImage !== 'string') {
-      return res.status(400).json({ message: 'Firma inválida' });
-    }
-    if (signatureImage && !/^data:image\/(png|jpe?g|webp);base64,/.test(signatureImage)) {
-      return res.status(400).json({ message: 'Formato de imagen no soportado' });
-    }
-    // Limitar tamaño: ~300KB en base64
-    if (signatureImage && signatureImage.length > 400_000) {
-      return res.status(400).json({ message: 'La firma es demasiado grande (máx ~300KB)' });
-    }
-    const user = await User.findByIdAndUpdate(
-      req.user._id,
-      { signatureImage },
-      { new: true }
-    ).select('-password');
-    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
-    res.json({ message: 'Firma actualizada', signatureImage: user.signatureImage });
+    const user = await User.findById(req.user._id).select('name email signatureCert');
+    res.json(certPublico(user));
   } catch (error) {
-    res.status(500).json({ message: 'Error al actualizar firma', error: error.message });
+    res.status(500).json({ message: 'Error al obtener la firma', error: error.message });
   }
 };
 
-/**
- * Devuelve la firma del usuario actual.
- */
-exports.getMySignature = async (req, res) => {
+exports.uploadMySignatureCert = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('signatureImage');
-    res.json({ signatureImage: user?.signatureImage || '' });
+    if (!req.file) return res.status(400).json({ message: 'Falta el archivo del certificado' });
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ message: 'La contraseña del certificado es requerida' });
+
+    // Se abre ANTES de guardar nada: un .p12 que no abre, o una contraseña
+    // equivocada, se rechaza aquí y no el día que haya que firmar una receta.
+    let info;
+    try {
+      info = loadP12(req.file.buffer, password);
+    } catch (e) {
+      return res.status(400).json({
+        message: 'No se pudo abrir el certificado. Revisa que el archivo sea correcto y que la contraseña coincida.',
+        detalle: e.message,
+      });
+    }
+    if (info.validTo && info.validTo < new Date()) {
+      return res.status(400).json({ message: 'Ese certificado está vencido: no sirve para firmar.' });
+    }
+
+    const filename = guardarCertificado(req.user._id, req.file.buffer);
+    const commonName =
+      info.certificate?.subject?.getField?.('CN')?.value || req.user.name || '';
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        $set: {
+          signatureCert: {
+            filename,
+            password: encryptSecret(password),
+            info: {
+              commonName,
+              subject: info.subject,
+              issuer: info.issuerName,
+              serialNumber: info.serialNumberDecimal,
+              validFrom: info.validFrom,
+              validTo: info.validTo,
+            },
+            uploadedAt: new Date(),
+          },
+        },
+      },
+      { new: true },
+    ).select('name email signatureCert');
+
+    require('../utils/userCache').invalidate(String(req.user._id));
+    res.json({ message: 'Firma electrónica configurada', ...certPublico(user) });
   } catch (error) {
-    res.status(500).json({ message: 'Error al obtener firma' });
+    res.status(500).json({ message: 'Error al guardar la firma', error: error.message });
+  }
+};
+
+exports.deleteMySignatureCert = async (req, res) => {
+  try {
+    borrarCertificado(req.user._id);
+    await User.findByIdAndUpdate(req.user._id, {
+      $unset: { signatureCert: '' },
+    });
+    require('../utils/userCache').invalidate(String(req.user._id));
+    res.json({ message: 'Firma electrónica eliminada', tiene: false });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al eliminar la firma', error: error.message });
   }
 };
 

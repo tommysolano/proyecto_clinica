@@ -13,12 +13,12 @@ const User = require('../models/User');
  * que dispara 3 llamadas en paralelo pagaba 3 veces la MISMA búsqueda del mismo
  * usuario.
  *
- * Además la consulta traía `signatureImage`: la firma digital del doctor guardada
- * como dataURL base64, que el propio validador admite hasta ~400 000 caracteres
- * (~300 KB). Nadie la lee nunca desde `req.user` — todos los consumidores reales
- * (la impresión de la ficha clínica y `getMySignature`) la piden explícitamente
- * con su propio `populate`/`select`. Es decir: se arrastraban cientos de KB desde
- * la base en cada petición de cada usuario con firma, para tirarlos a la basura.
+ * Además se excluye la FIRMA del profesional. Antes era `signatureImage` (una
+ * imagen escaneada en base64, hasta ~300 KB arrastrados en cada petición para
+ * tirarlos a la basura). Hoy es `signatureCert`, mucho más pequeña, pero su
+ * campo `password` es la contraseña cifrada del certificado: no la lee nadie
+ * desde `req.user` —quien firma relee al autor con su propio `populate`— y una
+ * credencial que no hace falta no viaja.
  *
  * QUÉ HACE
  * --------
@@ -39,9 +39,9 @@ const TTL_MS = 15 * 1000;
 // mapa sin límite es una fuga de memoria esperando su turno.
 const MAX_ENTRIES = 500;
 
-// `-password` era lo que había antes. `-signatureImage` es la mejora: hasta
-// ~300 KB de base64 que ninguna ruta lee desde `req.user`.
-const AUTH_FIELDS = '-password -signatureImage';
+// `-password` era lo que había antes; se le suma la contraseña del certificado
+// de firma, que ninguna ruta lee desde `req.user`.
+const AUTH_FIELDS = '-password -signatureCert.password';
 
 const cache = new Map(); // id (string) -> { user, ts }
 

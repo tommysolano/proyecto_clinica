@@ -18,6 +18,24 @@ export const ANTECEDENTES_CATEGORIAS = [
   { key: 'otro', label: 'Otro' },
 ];
 
+/**
+ * HÁBITOS del paciente. No es una sección de la hoja MSP: es de la anamnesis de
+ * siempre, y hasta ahora acababa escrita a mano en "datos relevantes" cuando
+ * alguien se acordaba. Cada casilla lleva su propio detalle porque "fuma" sin el
+ * "10 al día desde los 20" no dice nada clínicamente.
+ */
+export const HABITOS_CATEGORIAS = [
+  { key: 'tabaco', label: 'Tabaco' },
+  { key: 'alcohol', label: 'Alcohol' },
+  { key: 'drogas', label: 'Drogas' },
+  { key: 'cafe', label: 'Café' },
+  { key: 'alimentacion', label: 'Alimentación' },
+  { key: 'actividadFisica', label: 'Actividad física' },
+  { key: 'sueno', label: 'Sueño' },
+  { key: 'automedicacion', label: 'Automedicación' },
+  { key: 'otro', label: 'Otro' },
+];
+
 // G. Revisión actual de órganos y sistemas (10).
 export const REVISION_SISTEMAS = [
   { key: 'pielAnexos', label: 'Piel - anexos' },

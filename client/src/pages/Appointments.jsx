@@ -25,6 +25,7 @@ import {
   HiOutlineUserPlus,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
+import TimeSlotInput from '../components/TimeSlotInput';
 import { doctorOptionLabel, roleSatisfies, ROLE_LABELS } from '../utils/roles';
 
 // 6 estados soportados por el backend.
@@ -149,6 +150,8 @@ const hhmmToMin = (s) => {
 export default function Appointments() {
   const navigate = useNavigate();
   const { user, role, hasRole, activeClinic, clinics } = useAuth();
+  // Espacios de la agenda de esta sucursal: 0 = cualquier hora (Configuración → Agenda).
+  const slotMinutes = Number(activeClinic?.appointmentSlotMinutes) || 0;
   const canWrite = hasRole('admin', 'cajero', 'call_center');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
   // 'optica' no se expande desde 'doctor' en el cliente, por eso va aparte.
@@ -1327,10 +1330,10 @@ export default function Appointments() {
               <label className="block text-sm font-medium text-slate-700 mb-1.5">
                 Hora *
               </label>
-              <input
+              <TimeSlotInput
                 name="startTime"
-                type="time"
                 value={form.startTime}
+                slotMinutes={slotMinutes}
                 min={form.date === todayEc() ? nowEcHHMM() : undefined}
                 onChange={handleChange}
                 required
@@ -1395,9 +1398,9 @@ export default function Appointments() {
                       }))}
                       className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white"
                     />
-                    <input
-                      type="time"
+                    <TimeSlotInput
                       value={it.startTime}
+                      slotMinutes={slotMinutes}
                       min={it.date === todayEc() ? nowEcHHMM() : undefined}
                       onChange={(e) => setForm((f) => ({
                         ...f,

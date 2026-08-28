@@ -6,17 +6,32 @@ const {
   updateUser,
   deleteUser,
   getDoctors,
-  updateMySignature,
-  getMySignature,
+  getMySignatureCert,
+  uploadMySignatureCert,
+  deleteMySignatureCert,
+  signatureCertUploadMiddleware,
+  getStaffAssignments,
+  updateStaffAssignments,
 } = require('../controllers/userController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
 
 router.get('/doctors', getDoctors);
-// Firma digital del usuario actual (cualquier rol; típicamente doctor/optica).
-router.get('/me/signature', getMySignature);
-router.put('/me/signature', updateMySignature);
+/**
+ * FIRMA ELECTRÓNICA del usuario actual (.p12). Es un ajuste de SU cuenta, así
+ * que no lleva `requireRole`: quien firma documentos es el profesional, y quien
+ * decide subir su certificado es él. Lo que sí se controla es dónde se USA —
+ * solo se firma con el certificado de quien redactó el documento.
+ */
+router.get('/me/signature-cert', getMySignatureCert);
+router.post('/me/signature-cert', signatureCertUploadMiddleware, uploadMySignatureCert);
+router.delete('/me/signature-cert', deleteMySignatureCert);
+// Personal por sucursal: en qué sede trabaja cada médico, cajero y enfermero.
+// Va ANTES de '/:id' — si no, Express leería "assignments" como un id.
+router.get('/assignments', requireRole('admin'), getStaffAssignments);
+router.put('/:id/assignments', requireRole('admin'), updateStaffAssignments);
+
 router.get('/', requireRole('admin'), getUsers);
 router.get('/:id', requireRole('admin'), getUser);
 router.post('/', requireRole('admin'), createUser);

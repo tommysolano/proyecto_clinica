@@ -61,8 +61,37 @@ const userSchema = new mongoose.Schema(
     specialty: { type: String, trim: true },
     phone: { type: String, trim: true },
     cedula: { type: String, trim: true },
-    // Firma digital del doctor (data URL base64 — imagen). Aparece en las recetas.
-    signatureImage: { type: String, default: '' },
+    /**
+     * FIRMA ELECTRÓNICA del profesional (certificado .p12 / .pfx).
+     *
+     * Sustituye a la antigua `signatureImage`, que era una foto de la firma
+     * escaneada: eso no firma nada, solo se parece a una firma. Con el
+     * certificado la receta sale firmada criptográficamente dentro del PDF
+     * (PAdES), y cualquiera puede comprobar quién la emitió y que no se ha
+     * tocado desde entonces.
+     *
+     * El ARCHIVO vive en disco (`storage/certs/users/<userId>.p12`), igual que
+     * el certificado del SRI; aquí solo queda el nombre. La CONTRASEÑA se guarda
+     * cifrada (AES, `modules/invoicing/ec/crypto`) porque quien imprime la
+     * receta no siempre es quien la firmó: la firma es del médico que atendió,
+     * y el sistema tiene que poder ponerla aunque el PDF lo pida otro.
+     *
+     * `info` es la copia legible del certificado, para enseñarla en pantalla y
+     * avisar del vencimiento sin tener que abrir el .p12 en cada pantalla.
+     */
+    signatureCert: {
+      filename: { type: String, default: '' },
+      password: { type: String, default: '' }, // cifrada, NUNCA en claro
+      info: {
+        commonName: { type: String, default: '' },
+        subject: { type: String, default: '' },
+        issuer: { type: String, default: '' },
+        serialNumber: { type: String, default: '' },
+        validFrom: { type: Date, default: null },
+        validTo: { type: Date, default: null },
+      },
+      uploadedAt: { type: Date, default: null },
+    },
     // Turnos del asesor. Si está activo, Supervisión descuenta del tiempo de
     // primera respuesta las horas en las que esa persona no debía estar trabajando.
     callCenterSchedule: { type: callCenterScheduleSchema, default: () => ({}) },

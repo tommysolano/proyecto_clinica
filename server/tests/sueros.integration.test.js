@@ -154,12 +154,16 @@ test('deshacer quita la última, y solo puede quien la puso (o un admin)', async
 
 // ───────────────────── qué ve enfermería ─────────────────────
 
-test('al enfermero el servidor le manda SOLO la receta', async () => {
+test('al enfermero le llega la consulta ENTERA, no solo la receta', async () => {
+  // Cambio de criterio (ago-2026). Antes el servidor le recortaba la ficha a la
+  // receta. Quien canaliza una vía y mete tres ampollas es justo quien necesita
+  // el diagnóstico, la enfermedad actual y el plan: el recorte no protegía nada
+  // —misma clínica, mismo paciente— y escondía lo que evita una reacción.
   const { clinicId, patient, doctor, enfermero } = await seed();
   await H.runController(
     ctrl.addFollowUp,
     H.mockReq(clinicId, doctor._id, {
-      descripcion: 'Motivo reservado',
+      descripcion: 'Dolor abdominal',
       enfermedadActual: 'Cuadro clínico detallado',
       planTratamiento: 'Plan del médico',
       diagnosticos: [{ descripcion: 'Gastroenteritis', cie: 'A09' }],
@@ -174,13 +178,32 @@ test('al enfermero el servidor le manda SOLO la receta', async () => {
   assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
 
   const fu = r.payload.followUps[0];
-  assert.equal(fu.recetaItems.length, 1, 'la receta sí');
+  assert.equal(fu.recetaItems.length, 1, 'la receta');
   assert.equal(fu.recetaItems[0].name, 'Suero fisiológico');
-  // Y nada de la consulta: esconderlo solo en la pantalla no es esconderlo.
-  assert.equal(fu.descripcion, undefined);
-  assert.equal(fu.enfermedadActual, undefined);
-  assert.equal(fu.planTratamiento, undefined);
-  assert.equal(fu.diagnosticos, undefined);
+  assert.equal(fu.descripcion, 'Dolor abdominal', 'y el motivo');
+  assert.equal(fu.enfermedadActual, 'Cuadro clínico detallado', 'y la enfermedad actual');
+  assert.equal(fu.planTratamiento, 'Plan del médico', 'y el plan');
+  assert.equal(fu.diagnosticos?.[0]?.cie, 'A09', 'y el diagnóstico');
+});
+
+test('los datos de CONTACTO siguen siendo solo del administrador', async () => {
+  // Lo clínico se abre; la cédula, la dirección y el celular NO. Son cosas
+  // distintas y las separa `hideContactData`, no el rol de enfermería.
+  const { clinicId, patient, doctor, enfermero } = await seed();
+  await H.runController(
+    ctrl.updateByPatient,
+    H.mockReq(clinicId, doctor._id, {
+      cedula: '0102030405', direccion: 'Av. Siempre Viva 742', celular: '0999999999',
+    }, { role: 'admin', params: { patientId: String(patient._id) } }),
+  );
+
+  const r = await H.runController(
+    ctrl.getOrCreateByPatient,
+    H.mockReq(clinicId, enfermero._id, {}, { role: 'enfermero', params: { patientId: String(patient._id) } }),
+  );
+  assert.equal(r.payload.cedula, undefined, 'la cédula no');
+  assert.equal(r.payload.direccion, undefined, 'la dirección no');
+  assert.equal(r.payload.celular, undefined, 'el celular no');
 });
 
 test('el doctor sigue recibiendo la consulta entera', async () => {
@@ -203,7 +226,9 @@ test('el doctor sigue recibiendo la consulta entera', async () => {
   assert.equal(fu.planTratamiento, 'Plan del médico');
 });
 
-test('las derivaciones no le llegan a enfermería', async () => {
+test('las derivaciones también le llegan a enfermería', async () => {
+  // También cambió: la derivación no es algo que enfermería aplique, pero saber
+  // que al paciente lo mandan a fisioterapia es parte de su cuadro.
   const { clinicId, patient, doctor, enfermero } = await seed();
   await H.runController(
     ctrl.addFollowUp,
@@ -219,8 +244,51 @@ test('las derivaciones no le llegan a enfermería', async () => {
     H.mockReq(clinicId, enfermero._id, {}, { role: 'enfermero', params: { patientId: String(patient._id) } }),
   );
   const items = r.payload.followUps[0].recetaItems;
-  assert.equal(items.length, 1);
-  assert.equal(items[0].name, 'Suero', 'la derivación se queda fuera: no es algo que se aplique');
+  assert.equal(items.length, 2, 'la receta y la derivación');
+  assert.deepEqual(items.map((it) => [it.name, it.isService]), [['Suero', false], ['Fisioterapia', true]]);
+});
+
+test('una consulta SIN receta también le llega a enfermería', async () => {
+  // Antes se le escondían las consultas que no recetaban nada. Ahora que lee la
+  // historia, un control sin receta le sigue diciendo algo.
+  const { clinicId, patient, doctor, enfermero } = await seed();
+  await H.runController(
+    ctrl.addFollowUp,
+    H.mockReq(clinicId, doctor._id, {
+      descripcion: 'Control sin receta',
+      diagnosticos: [{ descripcion: 'Evolución favorable', cie: 'Z09' }],
+    }, { role: 'doctor', params: { patientId: String(patient._id) } }),
+  );
+
+  const r = await H.runController(
+    ctrl.getOrCreateByPatient,
+    H.mockReq(clinicId, enfermero._id, {}, { role: 'enfermero', params: { patientId: String(patient._id) } }),
+  );
+  assert.equal(r.payload.followUps.length, 1);
+  assert.equal(r.payload.followUps[0].descripcion, 'Control sin receta');
+});
+
+test('enfermería sigue SIN poder escribir un seguimiento', async () => {
+  // Abrir la LECTURA no abre la escritura. Lo que la frena es la guardia de rol
+  // de la ruta de crear seguimiento (admin, cajero, doctor), no el recorte de la
+  // respuesta que se acaba de quitar.
+  const { requireRole } = require('../middleware/auth');
+  const guardia = requireRole('admin', 'cajero', 'doctor');
+
+  const prueba = (role) => {
+    let status = 200;
+    let siguiente = false;
+    guardia(
+      { role, user: {} },
+      { status: (c) => { status = c; return { json: () => {} }; } },
+      () => { siguiente = true; },
+    );
+    return { status, siguiente };
+  };
+
+  assert.deepEqual(prueba('enfermero'), { status: 403, siguiente: false }, 'el enfermero no redacta');
+  assert.deepEqual(prueba('doctor'), { status: 200, siguiente: true }, 'el doctor sí');
+  assert.deepEqual(prueba('ginecologia'), { status: 200, siguiente: true }, 'y las especialidades también');
 });
 
 test('marcar suero en una DERIVACIÓN no cuela', async () => {

@@ -1,5 +1,50 @@
 const mongoose = require('mongoose');
 
+/**
+ * Una ampolla o molécula que va DENTRO de un suero.
+ *
+ * `code` es el código del catálogo de sueroterapia, que es el mismo con el que
+ * la ampolla está dada de alta en el inventario (índice único clinic+code): por
+ * ahí se la descuenta cuando se aplica. Puede venir vacío —el médico escribió
+ * algo que no está en la lista— y eso NO invalida la receta: se receta igual y
+ * simplemente no hay stock que mover.
+ *
+ * Se guarda el NOMBRE además del código porque es un registro clínico: si mañana
+ * cambian el catálogo, la receta tiene que seguir diciendo qué se recetó.
+ */
+const suerocomponenteSchema = new mongoose.Schema(
+  {
+    code: { type: String, trim: true, default: '' },
+    name: { type: String, trim: true, required: true },
+    grupo: { type: String, enum: ['ampolla', 'molecula', 'otro'], default: 'otro' },
+    quantity: { type: Number, default: 1, min: 0 },
+  },
+  { _id: false }
+);
+
+/**
+ * Lo que REALMENTE se puso en una dosis concreta de suero.
+ *
+ * El paciente puede negarse a una ampolla en el momento: el doctor recetó tres y
+ * él solo quiere dos. Enfermería aplica las dos, deja constancia de la que no se
+ * puso y del motivo, y del inventario sale únicamente lo aplicado. Sin esto la
+ * única opción era mentir en el registro o descontar algo que sigue en la percha.
+ */
+const suerocomponenteAplicadoSchema = new mongoose.Schema(
+  {
+    code: { type: String, trim: true, default: '' },
+    name: { type: String, trim: true, default: '' },
+    grupo: { type: String, trim: true, default: '' },
+    // Lo que decía la receta y lo que se puso. Se guardan los DOS: "se puso 1 de
+    // 2" es un dato clínico distinto de "se recetó 1".
+    quantityPrescribed: { type: Number, default: 0, min: 0 },
+    quantityApplied: { type: Number, default: 0, min: 0 },
+    // Por qué no se puso (o se puso menos). Vacío cuando se puso todo.
+    omitReason: { type: String, trim: true, default: '' },
+  },
+  { _id: false }
+);
+
 const recetaItemSchema = new mongoose.Schema(
   {
     // Referencia al producto/medicamento del inventario (categoría 'medicamento' o 'servicio'/'programa').
@@ -27,6 +72,21 @@ const recetaItemSchema = new mongoose.Schema(
      * papel — que es como se llevaba, y por eso se perdía.
      */
     isSerum: { type: Boolean, default: false },
+
+    /**
+     * COMPOSICIÓN DEL SUERO. El cloruro es la base y va en todos (lo único que
+     * se elige es el volumen de la bolsa); dentro van las ampollas y moléculas
+     * que el médico decide. Enfermería tiene que leerlo EXACTAMENTE como se
+     * escribió: es lo que entra por la vena.
+     *
+     * Solo tiene sentido con `isSerum`; en cualquier otro ítem va vacío.
+     */
+    serumBase: {
+      name: { type: String, trim: true, default: '' },   // 'Cloruro'
+      volumeMl: { type: Number, default: null },         // 100 | 250 | 500 | 1000
+    },
+    serumComponents: { type: [suerocomponenteSchema], default: [] },
+
     administrations: [
       {
         at: { type: Date, default: Date.now },
@@ -35,6 +95,24 @@ const recetaItemSchema = new mongoose.Schema(
         // seguir diciendo quién la puso. Es un registro clínico.
         byName: { type: String, trim: true, default: '' },
         note: { type: String, trim: true, default: '' },
+        // Volumen de cloruro que se puso en ESTA dosis (puede diferir del
+        // recetado: la bolsa que había, lo que toleró el paciente…).
+        baseVolumeMl: { type: Number, default: null },
+        // Qué ampollas/moléculas se pusieron de verdad y cuáles no.
+        components: { type: [suerocomponenteAplicadoSchema], default: [] },
+        /**
+         * Inventario movido por ESTA dosis. Se guarda para poder deshacerla
+         * exactamente: sin esto, "deshacer" tendría que volver a adivinar qué se
+         * descontó, y si entretanto cambió la receta devolvería al stock algo
+         * que nunca salió.
+         */
+        stockMoves: [
+          {
+            product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+            quantity: { type: Number, default: 0, min: 0 },
+            _id: false,
+          },
+        ],
       },
     ],
 
@@ -187,6 +265,12 @@ const followUpSchema = new mongoose.Schema(
     // J. Plan de tratamiento (diagnóstico, terapéutico y educacional). La receta
     // e insumos siguen en recetaItems; esto es el plan narrado del MSP.
     planTratamiento: { type: String, trim: true, default: '' },
+    // Recomendaciones NO farmacológicas: dieta, ejercicio, higiene del sueño,
+    // reposo… Va justo debajo del plan y es deliberadamente un campo aparte: lo
+    // que el paciente tiene que hacer por su cuenta se le entrega y se le
+    // explica distinto de lo que tiene que tomar, y mezclado en el plan se
+    // perdía entre los fármacos.
+    recomendacionesNoFarmacologicas: { type: String, trim: true, default: '' },
     // Evolución del paciente respecto de las consultas anteriores. Va debajo
     // del plan y aplica a TODAS las especialidades, no solo a la consulta MSP.
     evolucion: { type: String, trim: true, default: '' },
@@ -511,6 +595,29 @@ const clinicalRecordSchema = new mongoose.Schema(
     datosRelevantes: { type: String, trim: true, default: '' },
     // Pie de D: lo mismo, descrito para los antecedentes familiares.
     datosRelevantesFamiliares: { type: String, trim: true, default: '' },
+
+    /**
+     * ANTECEDENTES QUE NO CABEN EN LAS 10 CASILLAS DEL MSP.
+     *
+     * La hoja oficial mete cirugías, medicación y alergias en un único renglón
+     * de "datos relevantes" al pie de C. En la práctica son tres preguntas
+     * distintas que se hacen en tres momentos distintos, y escritas en el mismo
+     * párrafo se pierden: la alergia a un fármaco es lo primero que hay que
+     * mirar antes de recetar, y estaba a la altura de una nota suelta.
+     *
+     * `datosRelevantes` se conserva tal cual: sigue siendo el pie de C de la hoja
+     * MSP y las fichas ya escritas lo tienen relleno.
+     */
+    // Cirugías previas (con año si se sabe).
+    antecedentesQuirurgicos: { type: String, trim: true, default: '' },
+    // Medicación habitual: lo que el paciente YA toma antes de esta consulta.
+    antecedentesMedicamentos: { type: String, trim: true, default: '' },
+    // Alergias: medicamentosas, alimentarias, ambientales.
+    alergias: { type: String, trim: true, default: '' },
+    // Hábitos (tabaco, alcohol, drogas…). Casillas con detalle propio: "fuma"
+    // sin el "10 al día" no sirve para nada clínico.
+    habitos: { type: [mspCheckSchema], default: [] },
+    habitosDetalle: { type: String, trim: true, default: '' },
     // Antecedentes libres (LEGACY — origen de migración a las listas estructuradas).
     antecedentesFamiliares: { type: String, trim: true, default: '' },
     antecedentesPatologicos: { type: String, trim: true, default: '' },

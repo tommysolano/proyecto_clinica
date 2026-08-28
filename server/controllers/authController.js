@@ -120,7 +120,7 @@ exports.login = async (req, res) => {
 
     const clinicIds = user.clinics.map((c) => c.clinic);
     const clinics = await Clinic.find({ _id: { $in: clinicIds }, active: true }).select(
-      'name razonSocial nombreComercial'
+      'name razonSocial nombreComercial appointmentSlotMinutes'
     );
 
     // Mapear clínicas con su rol
@@ -135,7 +135,7 @@ exports.login = async (req, res) => {
     let availableClinics = clinicsWithRole;
     if (user.isSuperAdmin) {
       const allClinics = await Clinic.find({ active: true }).select(
-        'name razonSocial nombreComercial'
+        'name razonSocial nombreComercial appointmentSlotMinutes'
       );
       availableClinics = allClinics.map((clinic) => {
         const existing = clinicsWithRole.find((c) => String(c.clinic._id) === String(clinic._id));
@@ -152,6 +152,9 @@ exports.login = async (req, res) => {
       name: clinic.name,
       razonSocial: clinic.razonSocial,
       nombreComercial: clinic.nombreComercial,
+              // La rejilla de la agenda viaja con cada sucursal: el call center
+              // agenda en sedes distintas desde el mismo formulario.
+              appointmentSlotMinutes: clinic.appointmentSlotMinutes || 0,
       role,
     }));
 
@@ -199,14 +202,14 @@ exports.getMe = async (req, res) => {
     let activeClinic = null;
     if (req.clinicId) {
       activeClinic = await Clinic.findById(req.clinicId).select(
-        'name razonSocial nombreComercial logoUrl'
+        'name razonSocial nombreComercial logoUrl appointmentSlotMinutes'
       );
     }
 
     // Lista plana de clínicas accesibles (igual que en login)
     const clinicIds = req.user.clinics.map((c) => c.clinic);
     let clinicsDocs = await Clinic.find({ _id: { $in: clinicIds }, active: true }).select(
-      'name razonSocial nombreComercial'
+      'name razonSocial nombreComercial appointmentSlotMinutes'
     );
     let flatClinics = req.user.clinics
       .map((c) => {
@@ -217,6 +220,9 @@ exports.getMe = async (req, res) => {
               name: clinic.name,
               razonSocial: clinic.razonSocial,
               nombreComercial: clinic.nombreComercial,
+              // La rejilla de la agenda viaja con cada sucursal: el call center
+              // agenda en sedes distintas desde el mismo formulario.
+              appointmentSlotMinutes: clinic.appointmentSlotMinutes || 0,
               role: c.role,
             }
           : null;
@@ -224,7 +230,7 @@ exports.getMe = async (req, res) => {
       .filter(Boolean);
     if (req.user.isSuperAdmin) {
       const all = await Clinic.find({ active: true }).select(
-        'name razonSocial nombreComercial'
+        'name razonSocial nombreComercial appointmentSlotMinutes'
       );
       flatClinics = all.map((clinic) => {
         const ex = flatClinics.find((c) => String(c._id) === String(clinic._id));
@@ -234,6 +240,9 @@ exports.getMe = async (req, res) => {
             name: clinic.name,
             razonSocial: clinic.razonSocial,
             nombreComercial: clinic.nombreComercial,
+              // La rejilla de la agenda viaja con cada sucursal: el call center
+              // agenda en sedes distintas desde el mismo formulario.
+              appointmentSlotMinutes: clinic.appointmentSlotMinutes || 0,
             role: 'admin',
           }
         );

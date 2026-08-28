@@ -62,6 +62,7 @@ const Sales = pagina(() => import('./pages/Sales'));
 const Invoices = pagina(() => import('./pages/Invoices'));
 const InvoicingConfig = pagina(() => import('./pages/InvoicingConfig'));
 const Users = pagina(() => import('./pages/Users'));
+const AdminConfig = pagina(() => import('./pages/AdminConfig'));
 const Clinics = pagina(() => import('./pages/Clinics'));
 const Treatments = pagina(() => import('./pages/Treatments'));
 const Referrals = pagina(() => import('./pages/Referrals'));
@@ -297,6 +298,16 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin']}>
                       <Users />
+                    </RoleRoute>
+                  }
+                />
+
+                {/* Personal por sucursal + espacios de la agenda */}
+                <Route
+                  path="/admin-config"
+                  element={
+                    <RoleRoute roles={['admin']}>
+                      <AdminConfig />
                     </RoleRoute>
                   }
                 />

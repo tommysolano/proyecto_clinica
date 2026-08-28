@@ -101,6 +101,43 @@ function appointmentDateTime(date, startTime) {
   return new Date(`${day}T${m[1].padStart(2, '0')}:${m[2]}:00-05:00`);
 }
 
+/**
+ * ESPACIOS DE LA AGENDA.
+ *
+ * Con `slotMinutes = 20` una cita solo puede empezar a las 14:00, 14:20, 14:40…
+ * Se mide desde la medianoche, que es lo que hace que la rejilla sea la misma
+ * todos los días y que 60 caiga siempre en hora en punto.
+ *
+ * `0` (o nada) = sin rejilla, cualquier hora: es el comportamiento de siempre y
+ * el valor por defecto de las sucursales que no lo han configurado.
+ */
+function isValidSlotTime(startTime, slotMinutes) {
+  const paso = Number(slotMinutes) || 0;
+  if (paso <= 0) return true;
+  const m = String(startTime || '').match(/^(\d{1,2}):(\d{2})$/);
+  // Formato inválido: lo valida el caller, aquí no se inventa un rechazo.
+  if (!m) return true;
+  return (Number(m[1]) * 60 + Number(m[2])) % paso === 0;
+}
+
+/** Las horas válidas de un día con esa rejilla: ['00:00','00:20',…]. */
+function slotTimesOfDay(slotMinutes) {
+  const paso = Number(slotMinutes) || 0;
+  if (paso <= 0) return [];
+  const out = [];
+  for (let t = 0; t < 24 * 60; t += paso) {
+    out.push(`${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`);
+  }
+  return out;
+}
+
+/** El mensaje dice a qué horas SÍ se puede, que es lo que hace falta saber. */
+function slotMessage(slotMinutes) {
+  const paso = Number(slotMinutes) || 0;
+  const ejemplos = slotTimesOfDay(paso).filter((t) => t >= '14:00').slice(0, 3).join(', ');
+  return `Esta sucursal agenda en espacios de ${paso} minutos: la hora tiene que caer en la rejilla (por ejemplo ${ejemplos}…).`;
+}
+
 module.exports = {
   startOfToday,
   parseLocalDate,
@@ -109,6 +146,9 @@ module.exports = {
   isPastLocalDateTime,
   isSameLocalDay,
   appointmentDateTime,
+  isValidSlotTime,
+  slotTimesOfDay,
+  slotMessage,
   PAST_DATE_MESSAGE,
   PAST_TIME_MESSAGE,
 };

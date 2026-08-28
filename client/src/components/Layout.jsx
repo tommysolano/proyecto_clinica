@@ -189,6 +189,9 @@ const MENU_GROUPS = [
   {
     key: 'configuracion', label: 'Configuración', icon: HiOutlineCog6Tooth, items: [
       { path: '/invoicing-config', label: 'Config. SRI', roles: ['admin', 'contabilidad'] },
+      // Personal por sucursal + espacios de la agenda. Va antes que «Usuarios»
+      // porque es donde se resuelve el «¿por qué me llegan avisos de otra sede?».
+      { path: '/admin-config', label: 'Personal y Agenda', roles: ['admin'] },
       { path: '/users', label: 'Usuarios', roles: ['admin'] },
       { path: '/rooms', label: 'Consultorios', roles: ['admin'] },
       { path: '/blocks', label: 'Bloqueos', roles: ['admin'] },

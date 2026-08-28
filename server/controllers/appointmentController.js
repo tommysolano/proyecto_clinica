@@ -22,12 +22,27 @@ const {
   isPastLocalDate,
   isFutureLocalDate,
   isPastLocalDateTime,
+  isValidSlotTime,
+  slotMessage,
   isSameLocalDay,
   appointmentDateTime,
   PAST_DATE_MESSAGE,
   PAST_TIME_MESSAGE,
 } = require('../utils/appointmentDate');
 const { isDoctorRole } = require('../constants/roles');
+
+/**
+ * Espacios de la agenda de una sucursal, en minutos (0 = cualquier hora).
+ *
+ * Se lee en cada agendamiento y no se cachea: es un ajuste que se toca una vez
+ * al año, y cachearlo haría que el cambio del administrador tardara en notarse
+ * justo cuando lo acaba de hacer para probarlo.
+ */
+async function slotMinutesDeClinica(clinicId) {
+  const Clinic = require('../models/Clinic');
+  const c = await Clinic.findById(clinicId).select('appointmentSlotMinutes').lean();
+  return Number(c?.appointmentSlotMinutes) || 0;
+}
 
 // Construye el payload de evento de dominio para una cita (para workflows).
 // appointmentDate lleva la hora REAL de la cita (date = día calendario +
@@ -323,6 +338,15 @@ exports.createAppointment = async (req, res) => {
         .status(400)
         .json({ message: 'Horario inválido. Usa el formato HH:MM (24h).' });
     }
+    // Espacios de la agenda de la sucursal (Configuración → Agenda). Se valida
+    // AQUÍ y no solo en la pantalla porque agendan tres sitios distintos: la
+    // página de Citas, el chat del call center y la reserva pública.
+    {
+      const paso = await slotMinutesDeClinica(req.clinicId);
+      if (!isValidSlotTime(startTime, paso)) {
+        return res.status(400).json({ message: slotMessage(paso), code: 'SLOT_INVALID' });
+      }
+    }
     if (endMin !== null && endMin <= startMin) {
       return res
         .status(400)
@@ -597,6 +621,15 @@ exports.updateAppointment = async (req, res) => {
       const finalStart2 = update.startTime !== undefined ? update.startTime : existing.startTime;
       if (scheduleChanged && isPastLocalDateTime(finalDate2, finalStart2)) {
         return res.status(400).json({ message: PAST_TIME_MESSAGE });
+      }
+      // Solo si se MUEVE la cita: las agendadas antes de encender los espacios
+      // conservan su hora suelta y se pueden seguir editando (asistencia,
+      // servicios, notas) sin que el sistema las dé por inválidas.
+      if (scheduleChanged) {
+        const paso = await slotMinutesDeClinica(req.clinicId);
+        if (!isValidSlotTime(finalStart2, paso)) {
+          return res.status(400).json({ message: slotMessage(paso), code: 'SLOT_INVALID' });
+        }
       }
     }
 

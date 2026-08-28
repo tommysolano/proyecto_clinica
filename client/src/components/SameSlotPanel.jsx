@@ -3,7 +3,11 @@ import api from '../api/axios';
 
 /**
  * Panel reutilizable que muestra las citas existentes en una fecha + hora dadas,
- * para que el agendador vea qué tan saturado está ese momento.
+ * para que quien agenda vea qué tan saturado está ese momento.
+ *
+ * Lo usa la página de Citas (modo panel lateral) y el call center desde el chat
+ * (modo `compact`). Los dos enseñan LO MISMO: quien agenda desde el chat toma la
+ * misma decisión que quien agenda desde recepción y necesita los mismos datos.
  *
  * Props:
  *  - date: 'YYYY-MM-DD'
@@ -12,6 +16,83 @@ import api from '../api/axios';
  *  - clinicId?: limita la consulta a esa clínica (útil cuando el usuario tiene varias)
  *  - compact?: estilo compacto (sin border-l ni sticky), pensado para modales angostos
  */
+
+/** Nombre del servicio de una cita. */
+const nombreServicio = (a) =>
+  // `serviceName` es el SNAPSHOT y es lo que hay que leer: el servicio sale del
+  // catálogo de agenda (AppointmentServiceItem), no del inventario. `services[]`
+  // es el array legado —lo llenaba el selector de servicios que se retiró—, así
+  // que las citas nuevas lo tienen vacío: mirar solo ahí era la razón de que el
+  // panel no enseñara ningún servicio.
+  a?.serviceName ||
+  a?.serviceItem?.name ||
+  (Array.isArray(a?.services) ? a.services.map((s) => s.name || s.product?.name).filter(Boolean).join(', ') : '') ||
+  '';
+
+/** Sucursal de la cita. */
+const nombreSucursal = (a) => a?.clinic?.nombreComercial || a?.clinic?.name || '';
+
+/** Quién la atiende: el doctor en turno, o enfermería si es un turno suyo. */
+const nombreProfesional = (a) => a?.doctor?.name || a?.attendedByNurse?.name || '';
+
+/**
+ * Una cita del listado. Los dos modos pintan lo mismo, solo cambian los
+ * tamaños: tenerlo duplicado ya provocó que el servicio se arreglara en un
+ * modo y no en el otro.
+ *
+ * El SERVICIO y la SUCURSAL van arriba y siempre: son lo que decide si ese
+ * hueco sirve. Dos citas a las 08:00 no son un problema si son en sedes
+ * distintas, y sí lo son si las dos necesitan al mismo enfermero.
+ */
+function Fila({ a, small }) {
+  const servicio = nombreServicio(a);
+  const sucursal = nombreSucursal(a);
+  const profesional = nombreProfesional(a);
+  const t = small
+    ? { wrap: 'px-2 py-1.5 text-[11px]', sub: 'text-[10px]', chip: 'text-[9px] px-1 py-px' }
+    : { wrap: 'px-3.5 py-2.5 text-xs', sub: 'text-[11px]', chip: 'text-[10px] px-1.5 py-0.5' };
+  return (
+    <li className={`bg-white border border-slate-200 rounded-lg ${t.wrap}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium text-slate-800 truncate">
+          {a.patient?.firstName} {a.patient?.lastName}
+        </span>
+        <span className={`${t.sub} text-slate-500 flex-shrink-0`}>{a.startTime}</span>
+      </div>
+
+      <div className="mt-1 flex flex-wrap items-center gap-1">
+        {servicio ? (
+          <span className={`${t.chip} rounded bg-emerald-100 text-emerald-800 font-medium max-w-full truncate`}>
+            {servicio}
+          </span>
+        ) : (
+          <span className={`${t.chip} rounded bg-slate-100 text-slate-400 italic`}>Sin servicio</span>
+        )}
+        {sucursal && (
+          <span className={`${t.chip} rounded bg-sky-100 text-sky-800 font-medium max-w-full truncate`}>
+            {sucursal}
+          </span>
+        )}
+      </div>
+
+      {profesional && (
+        <div className={`${t.sub} text-emerald-700 mt-0.5 truncate`}>{profesional}</div>
+      )}
+      {a.room?.name && <div className={`${t.sub} text-slate-400 truncate`}>{a.room.name}</div>}
+    </li>
+  );
+}
+
+function Vacio({ small }) {
+  return (
+  <div className={`text-center ${small ? 'py-3' : 'py-6'}`}>
+    <p className={`${small ? 'text-[11px]' : 'text-xs'} text-emerald-700 font-semibold`}>✓ Horario libre</p>
+    <p className={`${small ? 'text-[10px]' : 'text-[11px]'} text-slate-400`}>No hay otras citas a esta hora.</p>
+  </div>
+  );
+}
+
+
 export default function SameSlotPanel({ date, startTime, excludeId, clinicId, compact = false }) {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -62,7 +143,7 @@ export default function SameSlotPanel({ date, startTime, excludeId, clinicId, co
             {date && startTime ? `${fmtDateTitle(date)} · ${startTime}` : '—'}
           </span>
         </div>
-        <div className="rounded-md border border-slate-200 bg-white p-2 min-h-[80px] max-h-[180px] overflow-y-auto">
+        <div className="rounded-md border border-slate-200 bg-white p-2 min-h-[80px] max-h-[220px] overflow-y-auto">
           {!date || !startTime ? (
             <p className="text-[11px] text-slate-400 text-center py-3">
               Selecciona fecha y hora para ver la disponibilidad
@@ -70,10 +151,7 @@ export default function SameSlotPanel({ date, startTime, excludeId, clinicId, co
           ) : loading ? (
             <p className="text-[11px] text-slate-400 text-center py-3">Cargando...</p>
           ) : list.length === 0 ? (
-            <div className="text-center py-3">
-              <p className="text-[11px] text-emerald-700 font-semibold">✓ Horario libre</p>
-              <p className="text-[10px] text-slate-400">No hay otras citas a esta hora.</p>
-            </div>
+            <Vacio small />
           ) : (
             <>
               <p className="text-[10px] text-amber-700 font-semibold uppercase mb-1">
@@ -82,25 +160,7 @@ export default function SameSlotPanel({ date, startTime, excludeId, clinicId, co
               </p>
               <ul className="space-y-1">
                 {list.map((a) => (
-                  <li
-                    key={a._id}
-                    className="bg-slate-50 border border-slate-200 rounded px-2 py-1 text-[11px]"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium text-slate-800 truncate">
-                        {a.patient?.firstName} {a.patient?.lastName}
-                      </span>
-                      <span className="text-[10px] text-slate-500 flex-shrink-0">{a.startTime}</span>
-                    </div>
-                    {a.doctor?.name && (
-                      <div className="text-[10px] text-emerald-700">Dr. {a.doctor.name}</div>
-                    )}
-                    {Array.isArray(a.services) && a.services.length > 0 && (
-                      <div className="text-[10px] text-slate-500 truncate">
-                        {a.services.map((s) => s.name).filter(Boolean).join(', ')}
-                      </div>
-                    )}
-                  </li>
+                  <Fila key={a._id} a={a} small />
                 ))}
               </ul>
             </>
@@ -132,10 +192,7 @@ export default function SameSlotPanel({ date, startTime, excludeId, clinicId, co
           ) : loading ? (
             <p className="text-xs text-slate-400 text-center py-6">Cargando...</p>
           ) : list.length === 0 ? (
-            <div className="text-center py-6">
-              <p className="text-xs text-emerald-700 font-medium">✓ Horario libre</p>
-              <p className="text-[11px] text-slate-400 mt-1">No hay otras citas a esta hora.</p>
-            </div>
+            <Vacio />
           ) : (
             <>
               <p className="text-[11px] text-amber-700 font-semibold uppercase mb-2">
@@ -144,28 +201,7 @@ export default function SameSlotPanel({ date, startTime, excludeId, clinicId, co
               </p>
               <ul className="space-y-2">
                 {list.map((a) => (
-                  <li
-                    key={a._id}
-                    className="bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium text-slate-800 truncate">
-                        {a.patient?.firstName} {a.patient?.lastName}
-                      </span>
-                      <span className="text-[10px] text-slate-500 flex-shrink-0">{a.startTime}</span>
-                    </div>
-                    {a.doctor?.name && (
-                      <div className="text-[11px] text-emerald-700 mt-0.5">Dr. {a.doctor.name}</div>
-                    )}
-                    {Array.isArray(a.services) && a.services.length > 0 && (
-                      <div className="text-[11px] text-slate-500 mt-0.5 truncate">
-                        {a.services.map((s) => s.name).filter(Boolean).join(', ')}
-                      </div>
-                    )}
-                    {a.room?.name && (
-                      <div className="text-[11px] text-slate-400 mt-0.5">{a.room.name}</div>
-                    )}
-                  </li>
+                  <Fila key={a._id} a={a} />
                 ))}
               </ul>
             </>

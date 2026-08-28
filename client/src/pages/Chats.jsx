@@ -54,6 +54,7 @@ import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent, useSocket } from '../context/SocketContext';
 import SameSlotPanel from '../components/SameSlotPanel';
+import TimeSlotInput from '../components/TimeSlotInput';
 import ServiceItemPicker from '../components/ServiceItemPicker';
 import TagEditor from '../components/TagEditor';
 import SuggestInput from '../components/SuggestInput';
@@ -6105,6 +6106,13 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
   const [items, setItems] = useState([emptyAppt()]);
   const [clinicId, setClinicId] = useState(activeClinic?._id || conv.clinic || '');
   const [saving, setSaving] = useState(false);
+  // Espacios de la agenda de la sucursal ELEGIDA en este formulario: el asesor
+  // agenda en la sede que le pida el paciente, no siempre en la suya.
+  const slotMinutesDeSede =
+    Number(
+      (clinics || []).find((c) => String(c._id) === String(clinicId))?.appointmentSlotMinutes
+        ?? (String(activeClinic?._id) === String(clinicId) ? activeClinic?.appointmentSlotMinutes : 0),
+    ) || 0;
 
   const updateItem = (idx, patch) => {
     setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
@@ -6180,7 +6188,9 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
                 </div>
                 <div>
                   <label className="text-xs font-medium text-slate-600">Hora</label>
-                  <input type="time" value={it.startTime} min={it.date === today ? nowEcHHMM() : undefined} onChange={(e) => updateItem(idx, { startTime: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
+                  {/* Los espacios son los de la SUCURSAL elegida arriba, no los
+                      de la sede del asesor: desde el chat se agenda en cualquiera. */}
+                  <TimeSlotInput value={it.startTime} slotMinutes={slotMinutesDeSede} min={it.date === today ? nowEcHHMM() : undefined} onChange={(e) => updateItem(idx, { startTime: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
                 </div>
               </div>
               <div>

@@ -22,6 +22,23 @@ const clinicSchema = new mongoose.Schema(
     obligadoContabilidad: { type: Boolean, default: true },
     contribuyenteEspecial: { type: String, trim: true, default: '' }, // nº resolución, vacío si no aplica
     agenteRetencion: { type: String, trim: true, default: '' },
+
+    /**
+     * ESPACIOS DE LA AGENDA, en minutos.
+     *
+     * Con 20, una cita solo puede empezar a las 14:00, 14:20, 14:40… El campo de
+     * hora deja de ser libre y pasa a ser una lista. Antes se podía agendar a las
+     * 18:37, y una agenda a horas sueltas no se puede leer de un vistazo ni
+     * repartir entre profesionales: cada cita empieza donde acabó la anterior.
+     *
+     * `0` = sin espacios, cualquier hora. Es el valor por defecto A PROPÓSITO:
+     * activar la rejilla cambia cómo agenda todo el mundo, así que lo enciende el
+     * administrador cuando quiere (Configuración → Agenda), no una migración.
+     *
+     * Es POR SUCURSAL: cada sede tiene su ritmo y su aforo.
+     */
+    appointmentSlotMinutes: { type: Number, default: 0, min: 0, max: 240 },
+
     active: { type: Boolean, default: true },
   },
   { timestamps: true }
