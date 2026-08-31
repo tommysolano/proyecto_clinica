@@ -548,6 +548,7 @@ exports.addFollowUp = async (req, res) => {
       planTratamiento,   // J: texto del plan
       recomendacionesNoFarmacologicas, // dieta, ejercicio, reposo… (va bajo el plan)
       evolucion,         // evolución respecto de consultas anteriores
+      indicaciones,      // lo que observa y recomienda quien hizo el estudio
     } = req.body;
 
     // --- Saneadores de las secciones MSP (solo se guardan claves con contenido) ---
@@ -1051,6 +1052,7 @@ exports.addFollowUp = async (req, res) => {
             planTratamiento: String(planTratamiento || '').trim(),
             recomendacionesNoFarmacologicas: String(recomendacionesNoFarmacologicas || '').trim(),
             evolucion: String(evolucion || '').trim(),
+            indicaciones: String(indicaciones || '').trim(),
             treatment: autoTreatmentId,
             autoTreatmentCreated: autoTreatmentId && !treatment ? autoTreatmentId : undefined,
             opticaRx: opticaRx && typeof opticaRx === 'object' ? opticaRx : undefined,
@@ -1953,6 +1955,7 @@ exports.printMspForm = async (req, res) => {
   <div class="box">${val(fu.planTratamiento)}</div>
   ${fu.recomendacionesNoFarmacologicas ? `<div class="bar">RECOMENDACIONES NO FARMACOLÓGICAS <span class="note">Dieta · ejercicio · reposo · hábitos</span></div><div class="box">${esc(fu.recomendacionesNoFarmacologicas)}</div>` : ''}
   ${fu.evolucion ? `<div class="bar">EVOLUCIÓN <span class="note">Cómo evoluciona respecto de controles anteriores</span></div><div class="box">${esc(fu.evolucion)}</div>` : ''}
+  ${fu.indicaciones ? `<div class="bar">INDICACIONES <span class="note">Observaciones y recomendaciones del estudio</span></div><div class="box">${esc(fu.indicaciones)}</div>` : ''}
   ${recetaHtml}
   ${derivHtml}
 
@@ -2105,6 +2108,9 @@ exports.printHcu005 = async (req, res) => {
         );
       }
       if (fu.evolucion) notas.push(`<b>Evolución:</b> ${esc(fu.evolucion)}`);
+      // Lo que dijo quien hizo el estudio: en la HCU-005 va con el resto del
+      // progreso, no escondido dentro del PDF de la ecografía.
+      if (fu.indicaciones) notas.push(`<b>Indicaciones:</b> ${esc(fu.indicaciones)}`);
       // La ficha de la especialidad (gineco, podología, odontología…) es parte
       // del progreso clínico y aquí sí va: esta hoja ES la historia.
       const especialidad = specialtyFollowUpHtml(fu);

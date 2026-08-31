@@ -38,6 +38,7 @@ const ROLES_OPERATIVOS = [
   'odontologia',
   'cosmetologia',
   'cardiologia',
+  'ecografista',
   'enfermero',
   'cajero',
   'admin',

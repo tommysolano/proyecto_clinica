@@ -8,7 +8,7 @@
 // 'optica' NO está en esta lista a propósito: en el cliente siempre se enumeró
 // a mano (Layout.jsx, App.jsx) porque tiene vistas propias, y meterla aquí le
 // cambiaría lo que ve hoy.
-export const DOCTOR_SPECIALTY_ROLES = ['ginecologia', 'podologia', 'odontologia', 'cosmetologia', 'cardiologia'];
+export const DOCTOR_SPECIALTY_ROLES = ['ginecologia', 'podologia', 'odontologia', 'cosmetologia', 'cardiologia', 'ecografista'];
 
 export function roleSatisfies(userRole, allowedRoles) {
   if (!userRole || !Array.isArray(allowedRoles)) return false;
@@ -30,6 +30,7 @@ export const ROLE_LABELS = {
   odontologia: 'Odontología',
   cosmetologia: 'Cosmetología',
   cardiologia: 'Cardiología',
+  ecografista: 'Ecografista',
   call_center: 'Call Center',
   marketing: 'Marketing',
   enfermero: 'Enfermero/a',
@@ -49,6 +50,7 @@ export const DOCTOR_TYPE_LABELS = {
   odontologia: 'Odontología',
   cosmetologia: 'Cosmetología',
   cardiologia: 'Cardiología',
+  ecografista: 'Ecografista',
 };
 
 // Rol nuevo que todavía no esté en el mapa de arriba: 'medicina_interna' se ve

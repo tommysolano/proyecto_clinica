@@ -951,6 +951,9 @@ function DocumentList({ currentUserId }) {
   const [renaming, setRenaming] = useState(null);
   const [preview, setPreview] = useState(null);
   const [working, setWorking] = useState(false);
+  // Descarga repartida en varios ZIP: { hecho, total }. Con veinte archivos en
+  // cola hay que poder ver por dónde va, o parece que se quedó colgado.
+  const [progreso, setProgreso] = useState(null);
 
   const fetchDocs = useCallback(async () => {
     try {
@@ -983,45 +986,98 @@ function DocumentList({ currentUserId }) {
     }
   };
 
-  const downloadSelected = async () => {
-    if (!selected.length) return;
+  /**
+   * DESCARGA EN VARIOS ZIP. Con miles de escaneos no cabe todo en un archivo: el
+   * servidor arma el ZIP en memoria y tiene un tope (300 MB), así que primero se
+   * le pregunta en cuántas partes hay que repartirlo y luego se bajan una a una.
+   *
+   * El plan trae los IDS de cada parte, no un "dame la página 3": así se bajan
+   * exactamente los documentos que se contaron, y que alguien escanee algo
+   * mientras corren las veinte descargas no descoloca el reparto.
+   *
+   * `filtro` es el mismo cuerpo que entiende /scans/download-zip:
+   *   { ids: [...] }  ó  { all: true, search }
+   */
+  const descargarEnPartes = async (filtro) => {
     setWorking(true);
+    setProgreso(null);
     try {
-      await downloadFile('/scans/download-zip', {
-        method: 'post',
-        data: { ids: selected },
-        filename: `escaneos_${new Date().toISOString().slice(0, 10)}.zip`,
-      });
-      toast.success(`${selected.length} documentos descargados`);
+      const { data: plan } = await api.post('/scans/zip-plan', filtro);
+      const partes = plan.parts || [];
+      if (!partes.length) throw new Error('No hay documentos para descargar');
+
+      const fecha = new Date().toISOString().slice(0, 10);
+      const mb = (b) => (b / 1048576).toFixed(0);
+
+      // Con una sola parte no hay nada que explicar: se baja y ya.
+      if (partes.length > 1) {
+        const ok = window.confirm(
+          `Son ${plan.total} documentos (${mb(plan.totalBytes)} MB).\n\n`
+          + `No caben en un solo ZIP —el máximo es ${mb(plan.maxBytes)} MB—, así que se `
+          + `descargarán en ${partes.length} archivos, uno detrás de otro.\n\n`
+          + 'El navegador puede pedirte permiso para "descargar varios archivos": acéptalo '
+          + 'o solo se guardará el primero.\n\n¿Empezamos?'
+        );
+        if (!ok) return;
+      }
+
+      for (const parte of partes) {
+        setProgreso({ hecho: parte.index - 1, total: partes.length });
+        const nombre = partes.length === 1
+          ? `escaneos_${fecha}.zip`
+          // Con ceros delante para que el explorador los ordene bien: sin ellos,
+          // "parte_10" se cuela entre "parte_1" y "parte_2".
+          : `escaneos_${fecha}_parte_${String(parte.index).padStart(2, '0')}_de_${partes.length}.zip`;
+        try {
+          await downloadFile('/scans/download-zip', {
+            method: 'post',
+            data: { ids: parte.ids },
+            filename: nombre,
+          });
+        } catch (e) {
+          // Un reintento por parte: una descarga de veinte archivos no puede
+          // abortarse entera por un tropiezo de red en la número quince.
+          await downloadFile('/scans/download-zip', {
+            method: 'post',
+            data: { ids: parte.ids },
+            filename: nombre,
+          }).catch(() => {
+            throw new Error(
+              `Falló la parte ${parte.index} de ${partes.length} (${e.message || 'error de red'}). `
+              + 'Las anteriores sí se descargaron.'
+            );
+          });
+        }
+      }
+
+      setProgreso({ hecho: partes.length, total: partes.length });
+      toast.success(
+        partes.length > 1
+          ? `${plan.total} documentos descargados en ${partes.length} archivos ZIP`
+          : `${plan.total} documentos descargados`
+      );
     } catch (e) {
-      toast.error(e.message || 'No se pudo preparar el ZIP');
+      toast.error(e.response?.data?.message || e.message || 'No se pudo preparar el ZIP');
     } finally {
       setWorking(false);
+      setProgreso(null);
     }
+  };
+
+  const downloadSelected = () => {
+    if (!selected.length) return;
+    return descargarEnPartes({ ids: selected });
   };
 
   /**
    * Descarga TODOS los documentos, no solo los de la página.
    *
-   * El servidor resuelve la lista: mandar los ids desde aquí obligaría a recorrer
-   * antes todas las páginas, y bastaría con que alguien escaneara algo entremedias
-   * para bajar una tanda incompleta sin que se note.
+   * La lista la resuelve el servidor: recorrer aquí todas las páginas para juntar
+   * los ids dejaría fuera lo que alguien escanee entremedias, sin que se note.
    */
-  const downloadAll = async () => {
+  const downloadAll = () => {
     if (!total) return;
-    setWorking(true);
-    try {
-      await downloadFile('/scans/download-zip', {
-        method: 'post',
-        data: { all: true, search: debounced },
-        filename: `escaneos_${new Date().toISOString().slice(0, 10)}.zip`,
-      });
-      toast.success(`${total} documentos descargados`);
-    } catch (e) {
-      toast.error(e.message || 'No se pudo preparar el ZIP');
-    } finally {
-      setWorking(false);
-    }
+    return descargarEnPartes({ all: true, search: debounced });
   };
 
   const openPreview = async (doc) => {
@@ -1141,10 +1197,16 @@ function DocumentList({ currentUserId }) {
             className="btn-secondary justify-center disabled:opacity-40 whitespace-nowrap"
             title={debounced
               ? 'Descarga todos los documentos que coinciden con la búsqueda'
-              : 'Descarga todos los documentos escaneados de la sucursal'}
+              : 'Descarga todos los documentos escaneados. Si no caben en un ZIP, se reparten en varios.'}
           >
-            <HiOutlineArrowDownTray className="w-4 h-4" />
-            {debounced ? `Descargar los ${total} encontrados` : `Descargar todos (${total})`}
+            {working ? <Spinner /> : <HiOutlineArrowDownTray className="w-4 h-4" />}
+            {/* Con miles de documentos esto tarda varios minutos: el botón dice
+                por qué parte va en vez de quedarse en "cargando". */}
+            {progreso && progreso.total > 1
+              ? `Descargando ${Math.min(progreso.hecho + 1, progreso.total)} de ${progreso.total}…`
+              : debounced
+                ? `Descargar los ${total} encontrados`
+                : `Descargar todos (${total})`}
           </button>
           <button
             onClick={removeSelected}

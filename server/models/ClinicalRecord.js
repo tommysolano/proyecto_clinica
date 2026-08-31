@@ -274,6 +274,19 @@ const followUpSchema = new mongoose.Schema(
     // Evolución del paciente respecto de las consultas anteriores. Va debajo
     // del plan y aplica a TODAS las especialidades, no solo a la consulta MSP.
     evolucion: { type: String, trim: true, default: '' },
+    /**
+     * INDICACIONES de quien hizo el estudio. Campo aparte de `evolucion` porque
+     * no dicen lo mismo: la evolución es cómo va el paciente respecto de sus
+     * controles; esto es lo que el ecografista observa y recomienda a partir de
+     * la imagen que acaba de tomar.
+     *
+     * Nace con el rol 'ecografista' —cuya consulta es solo fecha, motivo,
+     * indicaciones y el archivo—, pero el campo NO es suyo: se guarda y se
+     * muestra en el historial como uno más, y cualquiera que atienda puede
+     * escribirlo. Quien lea la ficha después tiene que ver lo que dijo el
+     * ecografista sin tener que abrir el PDF.
+     */
+    indicaciones: { type: String, trim: true, default: '' },
     // Archivos PDF subidos por el doctor (ecografías, bioresonancias, etc.)
     attachments: [
       {

@@ -23,6 +23,11 @@ const DOCTOR_LIKE_ROLES = [
   'odontologia',
   'cosmetologia',
   'cardiologia',
+  // El ecografista es doctor a efectos de permisos (entra a la ficha, escribe
+  // un seguimiento, se le asigna una cita), pero su consulta es la más corta de
+  // todas: la fecha, el motivo, lo que ve y el archivo del estudio. Esa poda del
+  // formulario se decide en el cliente (ver PatientDetail), no aquí.
+  'ecografista',
 ];
 
 /** Las especialidades, sin el rol base. Es lo que expande `requireRole('doctor')`. */

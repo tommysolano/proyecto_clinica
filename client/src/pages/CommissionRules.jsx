@@ -17,6 +17,7 @@ const ROLES = [
   { value: 'odontologia', label: 'Odontología' },
   { value: 'cosmetologia', label: 'Cosmetología' },
   { value: 'cardiologia', label: 'Cardiología' },
+  { value: 'ecografista', label: 'Ecografista' },
   { value: 'optica', label: 'Óptica' },
   { value: 'enfermero', label: 'Enfermero/a' },
   { value: 'cajero', label: 'Cajero' },

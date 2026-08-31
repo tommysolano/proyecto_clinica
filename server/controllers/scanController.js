@@ -41,7 +41,7 @@ const PDFDocument = require('pdfkit');
 const ScannedDocument = require('../models/ScannedDocument');
 // Se requiere para que `populate('createdBy')` encuentre el modelo registrado.
 require('../models/User');
-const { createZip } = require('../utils/zip');
+const { writeZipStream } = require('../utils/zip');
 const { nameKeyOf, sanitizeName, defaultName } = require('../utils/scanNames');
 
 const SCANS_DIR = path.join(__dirname, '..', 'storage', 'scans');
@@ -449,9 +449,13 @@ exports.downloadScan = async (req, res) => {
 };
 
 /**
- * Tope del ZIP. Se arma ENTERO en memoria (utils/zip.js), así que sin un límite
- * una descarga masiva puede tumbar el backend por falta de RAM antes de empezar a
- * responder. Además el formato ZIP clásico no pasa de 4 GB por campo.
+ * Tamaño máximo de UN ZIP. Es por lo que se corta la descarga masiva en tandas
+ * (ver `zipPlan`): un archivo de varios GB no lo quiere nadie, se tarda una
+ * eternidad en bajarlo y si se corta a la mitad hay que empezar de cero.
+ *
+ * Ya no es un límite de memoria —el ZIP se manda por flujo, un archivo a la vez
+ * (`writeZipStream`)—, pero sigue siendo un tope sensato: el formato ZIP clásico
+ * tampoco pasa de 4 GB por campo.
  */
 const MAX_ZIP_BYTES = 300 * 1024 * 1024;
 
@@ -462,61 +466,167 @@ const MAX_ZIP_BYTES = 300 * 1024 * 1024;
  *   { all: true, search }     TODOS los de la sucursal (respetando el buscador),
  *                             no solo los de la página que se está viendo
  */
-exports.downloadZip = async (req, res) => {
-  try {
-    const todos = req.body.all === true || req.body.all === 'true';
-    const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+/**
+ * Traduce el cuerpo de la petición al filtro de Mongo. Lo comparten la descarga
+ * y el planificador de partes: si cada uno armara el suyo, el plan podría contar
+ * documentos que la descarga luego no incluye.
+ *
+ * Devuelve `null` si la selección está vacía (el que llama responde el 400).
+ */
+function filtroDeDescarga(req) {
+  const todos = req.body.all === true || req.body.all === 'true';
+  if (todos) {
+    const filtro = { clinic: req.clinicId };
+    // Mismo filtro que el listado: lo que el usuario ve buscado es lo que baja.
+    const search = String(req.body.search || '').trim();
+    if (search) filtro.nameKey = { $regex: nameKeyOf(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') };
+    if (req.body.mine === true || req.body.mine === 'true') filtro.createdBy = req.user._id;
+    return filtro;
+  }
+  const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+  if (!ids.length) return null;
+  return { _id: { $in: ids }, clinic: req.clinicId };
+}
 
-    let filtro;
-    if (todos) {
-      filtro = { clinic: req.clinicId };
-      // Mismo filtro que el listado: lo que el usuario ve buscado es lo que baja.
-      const search = String(req.body.search || '').trim();
-      if (search) filtro.nameKey = { $regex: nameKeyOf(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') };
-      if (req.body.mine === true || req.body.mine === 'true') filtro.createdBy = req.user._id;
-    } else {
-      if (!ids.length) return res.status(400).json({ message: 'Selecciona al menos un documento' });
-      filtro = { _id: { $in: ids }, clinic: req.clinicId };
+/**
+ * ORDEN ESTABLE. `createdAt` a secas no basta: con miles de escaneos hay empates
+ * —una tanda subida en el mismo segundo— y Mongo puede devolverlos en distinto
+ * orden en dos consultas. Al partir la descarga en tandas, ese baile significaría
+ * un documento repetido en una parte y ausente en otra. `_id` desempata.
+ */
+const ORDEN_DESCARGA = { createdAt: -1, _id: -1 };
+
+/**
+ * REPARTE los documentos en tandas que quepan en un ZIP.
+ *
+ * El corte es por PESO, no por cantidad: el ZIP se arma entero en memoria, así
+ * que lo que de verdad manda es cuántos MB caben (`MAX_ZIP_BYTES`). Un documento
+ * que por sí solo pase del tope va igualmente en su propia tanda: es eso o no
+ * poder bajarlo nunca.
+ */
+function repartirEnTandas(docs, topeBytes) {
+  const tandas = [];
+  let actual = null;
+  for (const d of docs) {
+    const peso = d.size || 0;
+    if (!actual || (actual.ids.length > 0 && actual.bytes + peso > topeBytes)) {
+      actual = { ids: [], bytes: 0 };
+      tandas.push(actual);
+    }
+    actual.ids.push(String(d._id));
+    actual.bytes += peso;
+  }
+  return tandas;
+}
+
+/**
+ * PLAN DE DESCARGA: en cuántos ZIP hay que partirlo y qué va en cada uno.
+ *
+ * Devuelve los IDS de cada tanda, no un "trae la página 3": así el navegador
+ * pide exactamente los mismos documentos que se contaron aquí, y que alguien
+ * escanee algo mientras se bajan las 25 partes no descoloca el reparto.
+ *
+ * Mismo cuerpo que `downloadZip` ({ ids } | { all, search, mine }).
+ */
+exports.zipPlan = async (req, res) => {
+  try {
+    const filtro = filtroDeDescarga(req);
+    if (!filtro) return res.status(400).json({ message: 'Selecciona al menos un documento' });
+
+    const docs = await ScannedDocument.find(filtro)
+      .sort(ORDEN_DESCARGA)
+      .select('_id size');
+    if (!docs.length) {
+      return res.status(404).json({ message: 'No hay documentos escaneados para descargar' });
     }
 
-    const docs = await ScannedDocument.find(filtro).sort({ createdAt: -1 });
+    const tandas = repartirEnTandas(docs, MAX_ZIP_BYTES);
+    res.json({
+      total: docs.length,
+      totalBytes: docs.reduce((s, d) => s + (d.size || 0), 0),
+      maxBytes: MAX_ZIP_BYTES,
+      parts: tandas.map((t, i) => ({
+        index: i + 1,
+        count: t.ids.length,
+        bytes: t.bytes,
+        ids: t.ids,
+      })),
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al planificar la descarga', error: error.message });
+  }
+};
+
+exports.downloadZip = async (req, res) => {
+  try {
+    const filtro = filtroDeDescarga(req);
+    if (!filtro) return res.status(400).json({ message: 'Selecciona al menos un documento' });
+
+    const docs = await ScannedDocument.find(filtro).sort(ORDEN_DESCARGA);
     if (!docs.length) {
       return res.status(404).json({
-        message: todos ? 'No hay documentos escaneados para descargar' : 'No se encontraron los documentos seleccionados',
+        message: filtro._id
+          ? 'No se encontraron los documentos seleccionados'
+          : 'No hay documentos escaneados para descargar',
       });
     }
 
     // Se comprueba con el tamaño registrado ANTES de leer nada del disco: si no
     // cabe, hay que decirlo sin haber cargado cientos de MB en memoria.
+    //
+    // Un solo documento por encima del tope pasa igual: partirlo es imposible y
+    // rechazarlo dejaría un archivo imposible de bajar desde aquí.
     const pesoTotal = docs.reduce((s, d) => s + (d.size || 0), 0);
-    if (pesoTotal > MAX_ZIP_BYTES) {
+    if (docs.length > 1 && pesoTotal > MAX_ZIP_BYTES) {
       return res.status(413).json({
         message: `Son ${(pesoTotal / 1048576).toFixed(0)} MB y el máximo por ZIP es ${MAX_ZIP_BYTES / 1048576} MB. `
-          + 'Filtra con el buscador o selecciona menos documentos.',
+          + 'Usa «Descargar todo por partes», que lo reparte solo en varios ZIP.',
       });
     }
 
-    const files = [];
+    // Solo los NOMBRES se preparan por adelantado; los PDF se leen de uno en uno
+    // mientras se escribe el ZIP (ver writeZipStream).
     const used = new Set();
-    for (const doc of docs) {
+    const entries = docs.map((doc) => {
       let entry = `${sanitizeName(doc.name)}.pdf`;
       // Dentro del ZIP tampoco puede haber dos entradas con el mismo nombre.
       let i = 2;
       while (used.has(entry.toLowerCase())) entry = `${sanitizeName(doc.name)} (${i++}).pdf`;
       used.add(entry.toLowerCase());
-      try {
-        files.push({ name: entry, data: await readPdf(doc) });
-      } catch {
-        // Un archivo perdido no debe tumbar la descarga del resto.
-      }
-    }
-    if (!files.length) return res.status(404).json({ message: 'Ninguno de los archivos solicitados está disponible' });
+      return { name: entry, read: () => readPdf(doc) };
+    });
 
-    const zip = createZip(files);
+    /**
+     * El ZIP se manda POR FLUJO, no de una pieza.
+     *
+     * Armarlo entero en memoria eran ~600 MB de pico para una tanda de 300 MB
+     * —los PDF, más la copia del `Buffer.concat`—, de sobra para dejar sin RAM al
+     * servidor y tirar el backend para todos. Y como no salía un byte hasta
+     * tenerlo todo, nginx cortaba por tiempo antes de empezar a descargar.
+     *
+     * A cambio: una vez enviada la primera cabecera ya no se puede responder un
+     * error con código, de ahí el `headersSent` del catch.
+     */
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="escaneos_${Date.now()}.zip"`);
-    res.send(zip);
+    const escritos = await writeZipStream(entries, res);
+    if (!escritos) {
+      // Ni un solo archivo estaba en disco. Ya se mandaron las cabeceras, así que
+      // lo que baja es un ZIP vacío VÁLIDO; el cliente avisa de que está vacío.
+      console.warn('[escaner] ZIP vacío: ninguno de los %d documentos tenía archivo', docs.length);
+    }
+    // Se espera al vaciado de verdad: `end()` solo encola, y volver antes deja la
+    // petición dada por terminada con trozos todavía en el búfer.
+    await new Promise((resolve) => {
+      res.end(resolve);
+      // Si el navegador cancela la descarga, 'finish' no llega nunca.
+      res.once('close', resolve);
+      res.once('error', resolve);
+    });
   } catch (error) {
+    // Si la descarga ya empezó no hay respuesta que dar: cortar el socket es lo
+    // único que le dice al navegador que el archivo quedó incompleto.
+    if (res.headersSent) return res.destroy();
     res.status(500).json({ message: 'Error al preparar el ZIP', error: error.message });
   }
 };

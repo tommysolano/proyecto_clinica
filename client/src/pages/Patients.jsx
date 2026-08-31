@@ -154,7 +154,16 @@ export default function Patients() {
   const openNew = () => {
     setEditing(null);
     setForm(emptyForm);
-    setAptForm(emptyApt);
+    /**
+     * QUIEN ATIENDE ENTRA A LA CONSULTA, no agenda.
+     *
+     * En óptica el paciente está delante del optómetra cuando se le registra:
+     * el camino normal —guardar, marcar "agendar cita", marcar "atender ahora",
+     * elegir día y hora— es papeleo para algo que está pasando ya. Para esos
+     * roles el registro nace con la atención inmediata puesta, y quien quiera
+     * agendar para otro día la desmarca.
+     */
+    setAptForm({ ...emptyApt, enabled: puedeAtenderYa, ahora: puedeAtenderYa });
     setDayApts([]);
     setModalOpen(true);
   };
@@ -625,7 +634,39 @@ export default function Patients() {
           </div>
           {!editing && (
             <div className="border-t border-emerald-100 pt-4">
-              <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-700">
+              {/* Quien atiende ve PRIMERO "atender ahora", y viene marcado: es lo
+                  que va a hacer el 90% de las veces, con el paciente delante.
+                  Agendar para otro día queda como la alternativa, debajo. */}
+              {puedeAtenderYa && (
+                <label className="flex items-start gap-2 cursor-pointer bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2.5 mb-3">
+                  <input
+                    type="checkbox"
+                    checked={aptForm.ahora}
+                    onChange={(e) =>
+                      setAptForm({
+                        ...aptForm,
+                        ahora: e.target.checked,
+                        // Al marcarla se activa la cita; al desmarcarla se vuelve
+                        // al camino normal, con la casilla de agendar a la vista.
+                        enabled: e.target.checked ? true : aptForm.enabled,
+                      })
+                    }
+                    className="w-4 h-4 accent-emerald-600 mt-0.5"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-slate-800">Atender ahora</span>
+                    <span className="block text-[11px] text-slate-500">
+                      Se guarda el paciente, el sistema registra la cita solo —a esta hora y a tu
+                      nombre— y se abre la consulta para llenarla.
+                    </span>
+                  </span>
+                </label>
+              )}
+              <label
+                className={`flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-700 ${
+                  aptForm.ahora ? 'hidden' : ''
+                }`}
+              >
                 <input
                   type="checkbox"
                   checked={aptForm.enabled}
@@ -636,23 +677,9 @@ export default function Patients() {
               </label>
               {aptForm.enabled && (
                 <div className="mt-3 space-y-3 bg-emerald-50/40 rounded-xl p-3">
-                  {puedeAtenderYa && (
-                    <label className="flex items-start gap-2 cursor-pointer bg-white border border-emerald-200 rounded-lg px-3 py-2">
-                      <input
-                        type="checkbox"
-                        checked={aptForm.ahora}
-                        onChange={(e) => setAptForm({ ...aptForm, ahora: e.target.checked })}
-                        className="w-4 h-4 accent-emerald-600 mt-0.5"
-                      />
-                      <span>
-                        <span className="block text-sm font-medium text-slate-700">Atender ahora</span>
-                        <span className="block text-[11px] text-slate-500">
-                          Se crea la cita a esta hora, a tu nombre, y se abre la consulta.
-                        </span>
-                      </span>
-                    </label>
-                  )}
-                  {showClinicSelector && (
+                  {/* La atención inmediata siempre es en la sucursal activa (la
+                      decide el servidor), así que el selector no pinta nada. */}
+                  {showClinicSelector && !aptForm.ahora && (
                     <Field label="Sucursal destino *">
                       <select
                         value={aptForm.clinic || activeClinic?._id || ''}
@@ -698,7 +725,7 @@ export default function Patients() {
                       className="input resize-none"
                     />
                   </Field>
-                  {aptForm.date && (
+                  {aptForm.date && !aptForm.ahora && (
                     <div className="bg-white rounded-lg border border-emerald-100 p-2">
                       <p className="text-xs font-medium text-slate-600 mb-1">
                         Citas agendadas para este día
@@ -742,7 +769,13 @@ export default function Patients() {
               disabled={saving}
               className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-sm font-medium disabled:opacity-50 cursor-pointer border-none shadow-lg shadow-emerald-200/50"
             >
-              {saving ? 'Guardando...' : editing ? 'Actualizar' : 'Crear Paciente'}
+              {saving
+                ? 'Guardando...'
+                : editing
+                  ? 'Actualizar'
+                  : aptForm.ahora
+                    ? 'Registrar y atender'
+                    : 'Crear Paciente'}
             </button>
           </div>
         </form>

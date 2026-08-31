@@ -160,10 +160,13 @@ export default function PatientDetail() {
   const appointmentId = searchParams.get('appointment') || null;
   const tabParam = searchParams.get('tab') || null;
   const { hasRole } = useAuth();
+  // El ecografista va DIRECTO a seguimientos: los antecedentes no le sirven —no
+  // explora ni diagnostica— y su trabajo entero (motivo, indicaciones, archivo)
+  // vive en el formulario de seguimiento.
   const initialTab = tabParam
     ? tabParam
     : appointmentId
-      ? (hasRole('doctor', 'optica') ? 'ficha' : 'seguimientos')
+      ? (hasRole('doctor', 'optica') && !hasRole('ecografista') ? 'ficha' : 'seguimientos')
       : 'datos';
   const [tab, setTab] = useState(initialTab);
   const [patient, setPatient] = useState(null);
@@ -1301,6 +1304,15 @@ function SeguimientosTab({ patientId, appointmentId }) {
   const isOdonto = hasRole('odontologia');
   const isCosme = hasRole('cosmetologia');
   const isCardio = hasRole('cardiologia');
+  /**
+   * ECOGRAFISTA: su consulta es la más corta de todas.
+   *
+   * No explora, no diagnostica y no receta — toma la imagen, la sube y escribe
+   * lo que ve. Enseñarle la hoja MSP entera (signos vitales, revisión de
+   * sistemas, examen físico, CIE-10, receta, derivaciones) sería pedirle que
+   * ignore veinte campos para llegar a los cuatro suyos.
+   */
+  const isEcografista = hasRole('ecografista');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
 
   /**
@@ -1445,6 +1457,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
     planTratamiento: '',     // J
     recomendacionesNoFarmacologicas: '', // va justo debajo del plan
     evolucion: '',           // evolución respecto de controles anteriores
+    indicaciones: '',        // lo que observa y recomienda quien hizo el estudio
     // Con una línea en blanco: los campos se ven desde el inicio, sin tener
     // que pulsar nada antes de poder escribir. Las vacías se descartan al guardar.
     recetaItems: [emptyRow()],     // medicamentos/insumos (texto libre)
@@ -1701,6 +1714,14 @@ function SeguimientosTab({ patientId, appointmentId }) {
       if (!isOdonto) delete payload.odontologia;
       if (!isCosme) delete payload.cosmetologia;
       if (!isCardio) delete payload.cardiologia;
+      /**
+       * El ecografista no toma constantes vitales: su formulario ni las pide.
+       * Pero `vitalSigns.hora` la sella el sistema siempre, y con ese único dato
+       * el historial pintaba una caja de "signos vitales" con una hora suelta —
+       * un dato que nadie midió. Sin el bloque, el seguimiento queda como lo que
+       * es: motivo, indicaciones y el estudio.
+       */
+      if (isEcografista) delete payload.vitalSigns;
       if (appointmentId) payload.appointmentId = appointmentId;
       const res = await api.post(`/clinical-records/${patientId}/follow-ups`, payload);
 
@@ -1930,6 +1951,27 @@ function SeguimientosTab({ patientId, appointmentId }) {
             required
           />
         </Field>
+        {/* INDICACIONES del estudio. Es el campo del ecografista: lo que ve en
+            la imagen y lo que recomienda a partir de ello. Va aquí arriba, junto
+            al motivo, porque para él es el cuerpo de la consulta — no una nota
+            al pie como la evolución lo es para los demás. */}
+        {isEcografista && (
+          <Field label="Indicaciones" className="md:col-span-3">
+            <textarea
+              rows={4}
+              value={form.indicaciones}
+              onChange={(e) => setForm((f) => ({ ...f, indicaciones: e.target.value }))}
+              placeholder="Lo que se observa en el estudio y lo que se recomienda a partir de ello"
+              className="input resize-none"
+            />
+          </Field>
+        )}
+
+        {/* Todo lo que va de aquí a las derivaciones es la consulta médica
+            completa (hoja MSP + ficha de especialidad + receta). El ecografista
+            no la ve: ver `isEcografista` arriba. */}
+        {!isEcografista && (
+        <>
         {/* B. Primera vez / subsecuente */}
         <div className="md:col-span-3">
           <label className="text-sm font-medium text-slate-700 block mb-1.5">Tipo de consulta</label>
@@ -2268,9 +2310,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
           onUpdate={(idx, key, val) => updateRow('derivacionItems', idx, key, val)}
           onRemove={(idx) => removeRow('derivacionItems', idx)}
         />
+        </>
+        )}
 
-
-        {/* Archivos (PDF o imágenes) antes de guardar el seguimiento */}
+        {/* Archivos (PDF o imágenes) antes de guardar el seguimiento.
+            Para el ecografista esto NO es un anexo: es el estudio. */}
         <div className="md:col-span-3">
           <label className="text-sm font-medium text-slate-700 block mb-2">
             Archivos a adjuntar (PDF o imágenes)
@@ -2597,6 +2641,14 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     {fu.evolucion && (
                       <div className="mt-2 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Evolución:</b> {fu.evolucion}
+                      </div>
+                    )}
+                    {/* Lo que escribió quien hizo el estudio. Se destaca porque
+                        muchas veces es TODO el contenido del seguimiento —el
+                        resto es el archivo— y tiene que leerse sin abrir el PDF. */}
+                    {fu.indicaciones && (
+                      <div className="mt-2 text-xs text-slate-700 whitespace-pre-wrap bg-sky-50 border border-sky-100 rounded p-2">
+                        <b className="text-sky-700">Indicaciones:</b> {fu.indicaciones}
                       </div>
                     )}
                     {/* Legacy: seguimientos antiguos que aún tienen el campo. */}
