@@ -202,6 +202,62 @@ select:disabled {
   .tbl .num { @apply text-right tabular-nums font-mono; }
   /* Scroll horizontal cuando la tabla es muy ancha */
   .tbl-scroll { @apply w-full overflow-x-auto; }
+
+  /* ───── Tabla → TARJETAS en el móvil ─────
+     Uso: <table class="tbl tbl-cards"> y un data-cell en cada <td>:
+       fecha · hora · principal · detalle · estado · acciones
+
+     En un móvil una tabla de seis columnas solo se puede leer arrastrándola de
+     lado, y lo que queda escondido a la derecha es justo por lo que se entra a
+     la página: el estado y los botones. Debajo de `md` cada fila se recompone
+     como una tarjeta —cabecera con fecha/hora y el estado a la derecha, el
+     nombre debajo, el detalle, y los botones abajo— sin scroll horizontal.
+
+     Es CSS y no dos árboles de JSX a propósito: las filas de estas tablas
+     deciden a mano qué botones enseñar según el turno y el rol, y mantener esa
+     lógica duplicada en una versión "de móvil" acabaría en dos comportamientos
+     distintos. */
+  @media (max-width: 767px) {
+    .tbl-cards thead { display: none; }
+    .tbl-cards,
+    .tbl-cards tbody { display: block; }
+    .tbl-cards tbody tr {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-areas:
+        "hora   estado"
+        "princ  princ"
+        "det    det"
+        "acc    acc";
+      @apply mb-2 gap-x-2 rounded-xl border border-slate-200 bg-white p-3;
+    }
+    .tbl-cards tbody tr:last-child { @apply mb-0; }
+    .tbl-cards tbody tr:hover { @apply bg-white; }
+    .tbl-cards tbody td { @apply block border-0 p-0; }
+
+    /* La fecha se calla: estas tablas agrupan por día con una cabecera que ya la
+       dice, y repetirla en cada tarjeta gastaba la línea de arriba en un dato
+       que el usuario acaba de leer. En la tabla de escritorio sigue estando. */
+    .tbl-cards tbody td[data-cell='fecha']  { display: none; }
+    .tbl-cards tbody td[data-cell='hora']   { grid-area: hora; @apply text-sm font-semibold text-slate-800 self-center; }
+    .tbl-cards tbody td[data-cell='estado'] { grid-area: estado; @apply text-right self-center; }
+    /* `min-w-0` + `break-words`: un nombre largo sin espacios ensancharía la
+       columna del grid y devolvería el scroll horizontal que veníamos a quitar. */
+    .tbl-cards tbody td[data-cell='principal'] { grid-area: princ; @apply mt-1 min-w-0 break-words; }
+    .tbl-cards tbody td[data-cell='detalle']   { grid-area: det; @apply mt-1 min-w-0 break-words text-xs; }
+    .tbl-cards tbody td[data-cell='acciones'] {
+      grid-area: acc;
+      @apply mt-2 pt-2 border-t border-slate-100 flex flex-wrap items-center justify-end gap-1;
+    }
+
+    /* Filas de ancho completo —cabecera de día, "Cargando…", "Sin resultados"—:
+       no son una tarjeta, son un rótulo entre tarjetas. Conservan el fondo que
+       traigan puesto (la cabecera de día viene en verde y ahí hace de separador). */
+    .tbl-cards tbody tr:has(> td[colspan]) {
+      @apply block mb-2 rounded-lg border-0 p-0;
+    }
+    .tbl-cards tbody td[colspan] { @apply block; }
+  }
   /* Estado vacío estándar dentro de una tabla/sección */
   .empty-state { @apply flex flex-col items-center justify-center gap-2 py-12 text-center text-slate-400; }
 }

@@ -24,6 +24,8 @@ import {
   HiOutlineStop,
   HiOutlineMagnifyingGlass,
   HiOutlineUserPlus,
+  HiOutlineAdjustmentsHorizontal,
+  HiOutlineChevronDown,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import TimeSlotInput from '../components/TimeSlotInput';
@@ -183,6 +185,13 @@ export default function Appointments() {
   // Corregir el servicio y el valor de una cita, incluso ya completada. Es lo
   // único que mostrador puede tocar después de que el paciente fue atendido.
   const [serviceValueModal, setServiceValueModal] = useState(null); // cita
+  /**
+   * Filtros secundarios plegados EN EL MÓVIL (en pantalla grande siempre se ven).
+   * Desplegados ocupaban media pantalla y empujaban las citas —que es a lo que
+   * se entra— fuera de la vista. Lo que queda siempre a mano es lo que se usa
+   * en cada visita: el buscador y el día.
+   */
+  const [filtrosAbiertos, setFiltrosAbiertos] = useState(false);
   // Modal de finalización de enfermería (cita reclamada por el enfermero)
   const [filter, setFilter] = useState({
     startDate: '',
@@ -643,6 +652,18 @@ export default function Appointments() {
       });
   }, [appointments, filter.service, filter.clinic, filter.timeFrom, filter.timeTo]);
 
+  /**
+   * Cuántos filtros SECUNDARIOS están puestos. Es lo que lleva el globito del
+   * botón "Filtros" del móvil: plegados, un filtro olvidado explicaría una lista
+   * vacía sin que se vea por qué.
+   *
+   * El buscador de paciente no cuenta: su campo está siempre a la vista.
+   */
+  const filtrosActivos = [
+    filter.status, filter.isFirstVisit, filter.clinic,
+    filter.service, filter.timeFrom, filter.timeTo,
+  ].filter(Boolean).length;
+
   // Agrupa las citas (ya filtradas) por día YYYY-MM-DD para pintar la cuadrícula.
   const calApptsByDay = useMemo(() => {
     const map = new Map();
@@ -750,7 +771,7 @@ export default function Appointments() {
       </div>
 
       {(view === 'list' || view === 'calendar') && (
-        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 mb-6 p-4 space-y-3">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 mb-4 md:mb-6 p-3 md:p-4 space-y-2 md:space-y-3">
           <div className="relative">
             <HiOutlineMagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
             <input
@@ -761,29 +782,37 @@ export default function Appointments() {
               className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
             />
           </div>
-          {/* Navegación de día (solo lista): la lista muestra un único día. */}
+          {/* Navegación de día (solo lista): la lista muestra un único día.
+              En el móvil las flechas son solo el símbolo y la fecha se estira:
+              con el texto completo esto se partía en tres líneas. */}
           {view === 'list' && (
-            <div className="flex flex-wrap items-center justify-center gap-2">
+            <div className="flex items-center gap-1.5 md:gap-2 md:justify-center">
               <button
                 onClick={() => moveDay(-1)}
-                className="px-3 py-2 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 cursor-pointer text-sm"
+                title="Día anterior"
+                aria-label="Día anterior"
+                className="px-3 py-2 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 cursor-pointer text-sm shrink-0"
               >
-                ‹ Día anterior
+                <span className="md:hidden">‹</span>
+                <span className="hidden md:inline">‹ Día anterior</span>
               </button>
               <DateInput
                 value={listDay}
                 onChange={(e) => setListDay(e.target.value)}
-                className="px-4 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+                className="flex-1 md:flex-none min-w-0 px-3 md:px-4 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
               />
               <button
                 onClick={() => moveDay(1)}
-                className="px-3 py-2 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 cursor-pointer text-sm"
+                title="Día siguiente"
+                aria-label="Día siguiente"
+                className="px-3 py-2 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 cursor-pointer text-sm shrink-0"
               >
-                Día siguiente ›
+                <span className="md:hidden">›</span>
+                <span className="hidden md:inline">Día siguiente ›</span>
               </button>
               <button
                 onClick={() => setListDay(toYmd(new Date()))}
-                className={`px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
+                className={`px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors shrink-0 ${
                   listDay === toYmd(new Date())
                     ? 'bg-emerald-600 text-white border-none'
                     : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
@@ -793,7 +822,32 @@ export default function Appointments() {
               </button>
             </div>
           )}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+
+          {/* Los filtros de abajo se usan de vez en cuando; las citas, siempre.
+              En el móvil van plegados, con el número de los que estén puestos
+              para que no se queden activos sin que se vea. */}
+          <button
+            type="button"
+            onClick={() => setFiltrosAbiertos((v) => !v)}
+            className="md:hidden w-full flex items-center justify-between px-3 py-2 rounded-lg border border-slate-200 bg-slate-50/50 text-sm text-slate-600 cursor-pointer"
+          >
+            <span className="flex items-center gap-2">
+              <HiOutlineAdjustmentsHorizontal className="w-4 h-4" />
+              Filtros
+              {filtrosActivos > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">
+                  {filtrosActivos}
+                </span>
+              )}
+            </span>
+            <HiOutlineChevronDown
+              className={`w-4 h-4 transition-transform ${filtrosAbiertos ? 'rotate-180' : ''}`}
+            />
+          </button>
+
+          <div
+            className={`${filtrosAbiertos ? 'grid' : 'hidden'} md:grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 md:gap-3`}
+          >
             <select
               value={filter.status}
               onChange={(e) => setFilter({ ...filter, status: e.target.value })}
@@ -813,8 +867,6 @@ export default function Appointments() {
               <option value="true">Solo pacientes nuevos</option>
               <option value="false">Solo pacientes recurrentes</option>
             </select>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             {!isDoctor && (
               <ProductAutocomplete
                 products={services}
@@ -835,23 +887,30 @@ export default function Appointments() {
                 ))}
               </select>
             )}
-            {/* Filtros por hora: solo tienen sentido en la lista (un día). */}
+            {/* Filtros por hora: solo tienen sentido en la lista (un día).
+                Llevan rótulo porque `placeholder` no hace nada en un input de
+                hora: se veían dos campos "--:--" idénticos, sin saber cuál era
+                el desde y cuál el hasta. */}
             {view === 'list' && (
               <>
-                <input
-                  type="time"
-                  value={filter.timeFrom}
-                  onChange={(e) => setFilter({ ...filter, timeFrom: e.target.value })}
-                  className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
-                  placeholder="Desde hora"
-                />
-                <input
-                  type="time"
-                  value={filter.timeTo}
-                  onChange={(e) => setFilter({ ...filter, timeTo: e.target.value })}
-                  className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
-                  placeholder="Hasta hora"
-                />
+                <label className="flex items-center gap-2 px-3 py-1.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50">
+                  <span className="text-xs text-slate-500 shrink-0">Desde</span>
+                  <input
+                    type="time"
+                    value={filter.timeFrom}
+                    onChange={(e) => setFilter({ ...filter, timeFrom: e.target.value })}
+                    className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm"
+                  />
+                </label>
+                <label className="flex items-center gap-2 px-3 py-1.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50">
+                  <span className="text-xs text-slate-500 shrink-0">Hasta</span>
+                  <input
+                    type="time"
+                    value={filter.timeTo}
+                    onChange={(e) => setFilter({ ...filter, timeTo: e.target.value })}
+                    className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm"
+                  />
+                </label>
               </>
             )}
           </div>
@@ -952,9 +1011,13 @@ export default function Appointments() {
       )}
 
       {view !== 'calendar' && (
-      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="tbl">
+      // En móvil la tabla se recompone como tarjetas (.tbl-cards, ver index.css):
+      // seis columnas no caben, y arrastrar de lado escondía justo el estado y
+      // los botones. El contenedor pierde el marco ahí porque cada tarjeta trae
+      // el suyo.
+      <div className="md:bg-white md:rounded-2xl md:shadow-md md:shadow-slate-200/60 md:border md:border-emerald-100 overflow-hidden">
+        <div className="md:overflow-x-auto">
+          <table className="tbl tbl-cards">
             <thead>
               <tr className="bg-emerald-50/50 border-b border-emerald-100">
                 <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">
@@ -966,7 +1029,9 @@ export default function Appointments() {
                 <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">
                   Paciente
                 </th>
-                <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden md:table-cell">
+                {/* Ya no se oculta en móvil: ahí no es una columna que estorbe,
+                    es una línea más de la tarjeta. */}
+                <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">
                   Servicio / Programa
                 </th>
                 <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">
@@ -1029,22 +1094,22 @@ export default function Appointments() {
                     <Fragment key={apt._id}>
                     {showDayHeader && (
                       <tr className="bg-emerald-50/70">
-                        <td colSpan="6" className="px-6 py-2 text-xs font-bold text-emerald-800 uppercase tracking-wide">
+                        <td colSpan="6" className="px-3 md:px-6 py-2 text-xs font-bold text-emerald-800 uppercase tracking-wide">
                           📅 {dayKey}
                         </td>
                       </tr>
                     )}
                     <tr
-                      className="border-b border-emerald-50 hover:bg-emerald-50/30 transition-colors"
+                      className="md:border-b md:border-emerald-50 hover:bg-emerald-50/30 transition-colors"
                     >
-                      <td className="px-6 py-3.5 text-sm text-slate-600">
+                      <td data-cell="fecha" className="md:px-6 md:py-3.5 text-sm text-slate-600">
                         {formatLocalDate(apt.date)}
                       </td>
-                      <td className="px-6 py-3.5 text-sm text-slate-800 font-medium">
+                      <td data-cell="hora" className="md:px-6 md:py-3.5 text-sm text-slate-800 font-medium">
                         {apt.startTime}{apt.endTime ? ` - ${apt.endTime}` : ''}
                       </td>
-                      <td className="px-6 py-3.5 text-sm text-slate-800">
-                        <div className="flex items-center gap-2">
+                      <td data-cell="principal" className="md:px-6 md:py-3.5 text-sm text-slate-800">
+                        <div className="flex items-center flex-wrap gap-2">
                           <span>
                             {apt.patient?.firstName} {apt.patient?.lastName}
                           </span>
@@ -1073,7 +1138,7 @@ export default function Appointments() {
                           </div>
                         )}
                       </td>
-                      <td className="px-6 py-3.5 text-sm text-slate-600 hidden md:table-cell">
+                      <td data-cell="detalle" className="md:px-6 md:py-3.5 text-sm text-slate-600">
                         {nombreServicio(apt) || <span className="text-slate-400 italic">Sin servicio</span>}
                         {apt.reason && (
                           <div className="text-[11px] text-slate-500 mt-0.5 italic" title={apt.reason}>
@@ -1091,16 +1156,16 @@ export default function Appointments() {
                           </div>
                         )}
                       </td>
-                      <td className="px-6 py-3.5">
+                      <td data-cell="estado" className="md:px-6 md:py-3.5">
                         <span
-                          className={`px-2.5 py-1 rounded-full text-xs font-medium ${
+                          className={`inline-block px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
                             statusColors[apt.status] || statusColors.pendiente
                           }`}
                         >
                           {statusLabels[apt.status] || 'Pendiente'}
                         </span>
                       </td>
-                      <td className="px-6 py-3.5 text-right">
+                      <td data-cell="acciones" className="md:px-6 md:py-3.5 text-right">
                         {/* Recepción: a quién pasa el paciente. También en las ya
                             asistidas, para poder añadir un doctor o mandarla a
                             enfermería cuando la consulta ya empezó. */}
