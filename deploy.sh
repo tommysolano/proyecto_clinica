@@ -18,6 +18,36 @@ BRANCH="main"
 
 cd "$APP_DIR"
 
+# EL DESPLIEGUE NO PUEDE SER QUIEN MATE WHATSAPP.
+#
+# El backend mantiene un Chromium headless por cada numero de WhatsApp conectado
+# por QR (300-500 MB cada uno). El despliegue, mientras tanto, es lo mas pesado
+# que corre en esta maquina: el `npm install` de server+client y sobre todo el
+# `vite build`. Cuando los dos coinciden y la RAM se acaba, el kernel elige a quien
+# matar por consumo, y el mas gordo es SIEMPRE un Chromium de WhatsApp: la sesion
+# se cae sola en mitad del dia (queda escrito como "el navegador de la sesion se
+# cerro solo") y, peor, el perfil de Chrome se queda a medio escribir, que es como
+# se acaba teniendo que escanear el QR otra vez.
+# Paso el 28-ago-2026: push a las 13:30, navegador muerto a las 13:31:29.
+#
+# `oom_score_adj` es la preferencia del kernel al elegir victima. Un proceso sin
+# privilegios solo puede SUBIRSE la suya (bajarla exige CAP_SYS_RESOURCE), y los
+# hijos la heredan, asi que basta con marcar el propio despliegue con el maximo
+# (1000) para ponerse el primero de la cola: si falta memoria, el kernel mata la
+# compilacion —que se reintenta, y ademas se ve en el log— en vez del WhatsApp de
+# la clinica. `nice` completa la idea con la CPU.
+sin_matar_whatsapp() {
+  nice -n 10 bash -c 'echo 1000 2>/dev/null > /proc/self/oom_score_adj; exec "$@"' _ "$@"
+}
+
+# Sin swap, un pico de memoria no tiene amortiguador: el kernel mata en el acto.
+if [ "$(free -m 2>/dev/null | awk '/^Swap:/ {print $2}')" = "0" ]; then
+  echo "ADVERTENCIA: este VPS no tiene SWAP. Un pico de memoria mata procesos al instante."
+  echo "   Para darle 2 GB de colchon (una sola vez, como root):"
+  echo "     fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile"
+  echo "     echo '/swapfile none swap sw 0 0' >> /etc/fstab"
+fi
+
 echo "==> 1/6 Trayendo el ultimo codigo de origin/$BRANCH"
 git fetch --all --prune
 git reset --hard "origin/$BRANCH"
@@ -42,7 +72,7 @@ echo "==> 2/6 Instalando dependencias (server + client)"
 # `require` perezoso en esos segundos; pasa unicamente cuando cambia un parche y el
 # reinicio de PM2 llega acto seguido.
 LOG_INSTALL="$(mktemp)"
-if ! npm run install-all 2>&1 | tee "$LOG_INSTALL"; then
+if ! sin_matar_whatsapp npm run install-all 2>&1 | tee "$LOG_INSTALL"; then
   if grep -q 'Failed to apply patch' "$LOG_INSTALL"; then
     echo "--> El parche no aplica sobre el node_modules actual: reinstalo los paquetes parcheados"
     # El nombre del archivo ES el del paquete: `paquete+version.patch`, y en los
@@ -55,7 +85,7 @@ if ! npm run install-all 2>&1 | tee "$LOG_INSTALL"; then
       echo "    borrando server/node_modules/$paquete"
       rm -rf "${APP_DIR:?}/server/node_modules/$paquete"
     done
-    npm run install-all
+    sin_matar_whatsapp npm run install-all
   else
     rm -f "$LOG_INSTALL"
     echo "ERROR: la instalacion de dependencias fallo por un motivo ajeno a los parches."
@@ -65,7 +95,32 @@ fi
 rm -f "$LOG_INSTALL"
 
 echo "==> 3/6 Compilando el frontend (regenera client/dist)"
-npm --prefix client run build
+# Compilar es el pico de memoria del despliegue, y la mayoria de los push no tocan
+# una sola linea de client/. Se guarda dentro del propio dist el commit con el que
+# se genero: si desde entonces no ha cambiado nada bajo client/, el dist que ya
+# esta en disco es EXACTAMENTE el que saldria de volver a compilar, asi que no se
+# compila. Menos memoria en juego = menos posibilidades de que el kernel se lleve
+# por delante una sesion de WhatsApp.
+#
+# Es seguro por construccion: si falta la marca, si falta el dist, o si git no
+# puede comparar contra ese commit (historia reescrita), se compila igual. Y como
+# la marca se escribe DESPUES de compilar, una compilacion a medias nunca se da
+# por buena: el despliegue aborta antes por `set -e`.
+MARCA_DIST="$APP_DIR/client/dist/.commit-compilado"
+HEAD_NUEVO="$(git rev-parse HEAD)"
+COMPILAR=1
+if [ -f "$MARCA_DIST" ] && [ -f "$APP_DIR/client/dist/index.html" ]; then
+  COMMIT_DIST="$(cat "$MARCA_DIST")"
+  if git diff --quiet "$COMMIT_DIST" "$HEAD_NUEVO" -- client/ 2>/dev/null; then
+    COMPILAR=0
+  fi
+fi
+if [ "$COMPILAR" = "1" ]; then
+  sin_matar_whatsapp npm --prefix client run build
+  echo "$HEAD_NUEVO" > "$MARCA_DIST"
+else
+  echo "--> client/ no ha cambiado desde ${COMMIT_DIST:0:7}: se conserva el dist ya compilado"
+fi
 
 echo "==> 4/6 Tareas de UNA SOLA VEZ"
 # Cada tarea lleva su marca en la base (coleccion `onetimetasks`), asi que se ejecuta

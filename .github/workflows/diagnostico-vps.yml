@@ -34,6 +34,16 @@ jobs:
             systemctl show "pm2-$(whoami).service" -p PrivateTmp 2>/dev/null || true
             echo '===== memoria ====='
             free -m || true
+            echo '===== swap (sin swap, un pico de RAM mata en el acto) ====='
+            swapon --show || echo 'SIN SWAP'
+            echo '===== a quien ha matado el kernel por falta de memoria ====='
+            # Si aqui sale un Chromium, esa es la causa de "el navegador de la sesion
+            # se cerro solo" y de los QR que hay que volver a escanear.
+            ( dmesg -T 2>/dev/null || journalctl -k --no-pager -n 3000 2>/dev/null ) | grep -iE 'out of memory|killed process|oom-kill|oom_reaper' | tail -n 25 || echo 'sin rastro de OOM en lo que queda del log del kernel'
+            echo '===== los 12 procesos que mas memoria ocupan ====='
+            ps -eo pid,rss,etime,args --sort=-rss | head -13 || true
+            echo '===== perfiles de sesion QR en disco ====='
+            du -sh /var/www/clinica/server/.wwebjs_auth/* 2>/dev/null || echo 'sin carpetas de sesion'
             echo '===== disco ====='
             df -h /var/www || true
             echo '===== prueba QR contra el server vivo ====='

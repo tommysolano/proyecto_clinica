@@ -1761,6 +1761,36 @@ async function startClient(key, accountId, userId) {
     await account.save();
   }
 
+  /**
+   * PERFIL MUERTO: se empieza de cero antes de abrir Chrome.
+   *
+   * Cuando WhatsApp cierra la sesión (evento 'disconnected: LOGOUT', desvinculado
+   * desde el teléfono o auth_failure) las credenciales de `.wwebjs_auth/session-<id>`
+   * ya no valen para NADA. La librería original las borraba en ese mismo momento
+   * (`authStrategy.logout()`), pero nuestro parche tuvo que quitar esa llamada
+   * porque borraba el perfil MIENTRAS Chrome lo estaba usando y corrompía su base
+   * local. Consecuencia que no se vio entonces: el perfil muerto se quedaba en el
+   * disco para siempre y cada reconexión levantaba Chrome encima de él.
+   *
+   * Eso es lo que convierte "hay que escanear el QR otra vez" en "escaneo el QR y
+   * tampoco entra": el perfil no solo lleva credenciales que WhatsApp ya rechazó,
+   * además suele estar a medio escribir (si el Chromium murió a lo bruto por falta
+   * de memoria, ver deploy.sh) y WhatsApp Web arranca sobre una IndexedDB rota.
+   *
+   * Este es el ÚNICO sitio seguro para borrarlo: no hay ningún Chrome abierto
+   * sobre esa carpeta (el cliente anterior, si lo había, se destruyó unas líneas
+   * más arriba) y el nuevo todavía no existe. Solo se borra con el veredicto
+   * explícito de "hace falta un QR nuevo": una caída normal conserva su sesión
+   * guardada y reconecta sola sin molestar a nadie.
+   */
+  if (account.lastDisconnectNeedsQr) {
+    console.warn(
+      '[whatsappQr] %s: la sesión guardada estaba muerta (%s). Se borra el perfil y se empieza de cero.',
+      key, account.lastDisconnectReason || 'sin motivo'
+    );
+    await wipeLocalSession(sessionId);
+  }
+
   let client;
   try {
     client = new Client({
