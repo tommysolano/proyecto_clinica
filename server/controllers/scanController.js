@@ -578,9 +578,17 @@ exports.downloadZip = async (req, res) => {
     // rechazarlo dejaría un archivo imposible de bajar desde aquí.
     const pesoTotal = docs.reduce((s, d) => s + (d.size || 0), 0);
     if (docs.length > 1 && pesoTotal > MAX_ZIP_BYTES) {
+      // Llegar aquí DESDE LA APLICACIÓN solo puede significar una cosa: la
+      // pestaña es anterior al despliegue. La versión actual pregunta primero por
+      // `zipPlan` y nunca pide en una sola descarga más de lo que cabe.
+      //
+      // Por eso el mensaje manda RECARGAR y no a un botón: no existe ninguno
+      // «por partes» —repartir es lo que ya hace «Descargar todos»— y mencionarlo
+      // dejaba al usuario buscando por la pantalla algo que no está.
       return res.status(413).json({
-        message: `Son ${(pesoTotal / 1048576).toFixed(0)} MB y el máximo por ZIP es ${MAX_ZIP_BYTES / 1048576} MB. `
-          + 'Usa «Descargar todo por partes», que lo reparte solo en varios ZIP.',
+        message: `Son ${(pesoTotal / 1048576).toFixed(0)} MB y en un solo ZIP caben ${MAX_ZIP_BYTES / 1048576} MB. `
+          + 'Recarga la página con Ctrl+F5 y vuelve a intentarlo: la versión nueva parte '
+          + 'la descarga en varios ZIP ella sola.',
       });
     }
 
