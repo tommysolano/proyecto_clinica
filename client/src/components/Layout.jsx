@@ -48,7 +48,10 @@ const MENU_GROUPS = [
   },
   {
     key: 'personas', label: 'Personas', icon: HiOutlineUsers, items: [
-      { path: '/patients', label: 'Clientes', roles: ['admin', 'cajero', 'call_center', 'marketing'] },
+      // 'optica' va aparte porque en el cliente no se expande desde 'doctor'
+      // (ver utils/roles.js): el optómetra registra al paciente que entra sin
+      // cita y lo atiende en el momento, y sin esta entrada no tenía por dónde.
+      { path: '/patients', label: 'Clientes', roles: ['admin', 'cajero', 'call_center', 'marketing', 'optica'] },
       { path: '/accounting/suppliers', label: 'Proveedores', roles: ['admin', 'contabilidad'] },
     ],
   },

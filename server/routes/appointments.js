@@ -12,6 +12,7 @@ const {
   endConsultation,
   getStats,
   markAttended,
+  updateServiceAndValue,
   markNoShow,
   markConfirmed,
   assignDoctor,
@@ -41,6 +42,10 @@ router.post('/:id/start', requireRole('admin', 'doctor'), startConsultation);
 router.post('/:id/end', requireRole('admin', 'doctor'), endConsultation);
 router.post('/:id/confirm', requireRole('admin', 'cajero', 'call_center', 'enfermero'), markConfirmed);
 router.post('/:id/attended', requireRole('admin', 'cajero', 'enfermero'), markAttended);
+// Servicio y valor de la cita: SOLO mostrador (admin/cajero), y a diferencia del
+// PUT general vale también con la cita ya completada. Es lo único que se puede
+// corregir después de atender; quién atendió, nunca.
+router.patch('/:id/service-value', requireRole('admin', 'cajero'), updateServiceAndValue);
 router.post('/:id/assign-doctor', requireRole('admin', 'cajero', 'enfermero'), assignDoctor);
 router.post('/:id/no-show', requireRole('admin', 'cajero', 'enfermero'), markNoShow);
 router.post('/:id/nurse-claim', requireRole('admin', 'enfermero'), nurseClaim);

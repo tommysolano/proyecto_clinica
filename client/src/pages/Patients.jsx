@@ -65,9 +65,14 @@ export default function Patients() {
   const showClinicSelector = (clinics?.length || 0) > 1;
   // 'doctor' entra aquí porque expande a las especialidades: en óptica el
   // paciente llega sin cita y quien lo registra es el propio optómetra.
-  const canWrite = hasRole('admin', 'cajero', 'call_center', 'doctor');
+  //
+  // 'optica' hay que NOMBRARLA APARTE: en el cliente es el único rol de doctor
+  // que no expande desde 'doctor' (ver utils/roles.js, donde se dejó fuera a
+  // propósito), así que el `hasRole('doctor')` de arriba la dejaba sin ninguna
+  // de las dos cosas — justo al rol para el que se escribió el comentario.
+  const canWrite = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica');
   // Quien atiende puede además abrir la consulta en el momento de registrarlo.
-  const puedeAtenderYa = hasRole('doctor');
+  const puedeAtenderYa = hasRole('doctor', 'optica');
   // Cédula, correo, teléfono, WhatsApp y dirección son solo del administrador: al
   // resto el servidor ni se los envía (ver CONTACT_FIELDS en patientController).
   const showContact = hasRole('admin');
@@ -306,9 +311,13 @@ export default function Patients() {
         <div className="flex gap-3 items-center flex-wrap">
           <div className="relative flex-1 min-w-[240px]">
             <HiOutlineMagnifyingGlass className="absolute left-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+            {/* Buscar por cédula o teléfono NO es lo mismo que verlos: para
+                buscar hay que traerlos ya sabidos. Por eso el buscador es igual
+                para todos los roles, aunque la columna de cédula de la tabla
+                siga siendo solo del admin. */}
             <input
               type="text"
-              placeholder={showContact ? 'Buscar por nombre, cédula o teléfono...' : 'Buscar por nombre...'}
+              placeholder="Buscar por nombre, cédula o teléfono..."
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
@@ -369,7 +378,12 @@ export default function Patients() {
                   <tr key={p._id} className="border-b border-emerald-50 hover:bg-emerald-50/30">
                     {showContact && <td className="px-6 py-3.5 text-sm text-slate-600">{p.cedula || '—'}</td>}
                     <td className="px-6 py-3.5 text-sm font-medium text-slate-800">
-                      {p.firstName} {p.lastName}
+                      {/* El nombre ya no es obligatorio: sin este respaldo, un
+                          paciente registrado solo con la cédula o el teléfono
+                          salía como una fila en blanco, imposible de abrir. */}
+                      {`${p.firstName || ''} ${p.lastName || ''}`.trim() || (
+                        <span className="text-slate-400 italic">Sin nombre</span>
+                      )}
                       {(p.marketing?.optOutAt || p.marketing?.whatsappOptIn === false) && (
                         <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">
                           Opt-out
@@ -449,7 +463,21 @@ export default function Patients() {
         title={editing ? 'Editar Paciente' : 'Nuevo Paciente'}
         size="lg"
       >
-        <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Enter NO envía el formulario. Aquí se rellenan quince campos, y una
+            pulsación por inercia —muy fácil viniendo de la cédula, que autocompleta—
+            guardaba el paciente a medias sin que nadie lo pidiera. Se guarda solo
+            desde el botón; el <textarea> conserva su salto de línea, y sobre un
+            botón se deja pasar porque ahí Enter ES el clic. */}
+        <form
+          onSubmit={handleSubmit}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter') return;
+            const tag = e.target.tagName;
+            if (tag === 'TEXTAREA' || tag === 'BUTTON') return;
+            e.preventDefault();
+          }}
+          className="space-y-4"
+        >
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Al REGISTRAR se piden siempre (la persona los está dando en el
                 mostrador); al EDITAR ya son datos guardados: solo el admin. */}
@@ -473,12 +501,15 @@ export default function Patients() {
               <SriStatus status={cedulaLookup} />
             </Field>
             )}
-            <Field label="Género" required>
+            {/* Ni género, ni nombres, ni apellidos son obligatorios: el paciente
+                se registra muchas veces con lo que se tiene a mano (a veces solo
+                el teléfono, o solo la cédula) y se completa después. Exigirlos
+                obligaba a inventarse datos para poder guardar. */}
+            <Field label="Género">
               <select
                 name="gender"
                 value={form.gender}
                 onChange={handleChange}
-                required
                 className="input"
               >
                 <option value="">Seleccionar</option>
@@ -487,21 +518,19 @@ export default function Patients() {
                 <option value="otro">Otro</option>
               </select>
             </Field>
-            <Field label="Nombres" required>
+            <Field label="Nombres">
               <input
                 name="firstName"
                 value={form.firstName}
                 onChange={handleChange}
-                required
                 className="input"
               />
             </Field>
-            <Field label="Apellidos" required>
+            <Field label="Apellidos">
               <input
                 name="lastName"
                 value={form.lastName}
                 onChange={handleChange}
-                required
                 className="input"
               />
             </Field>

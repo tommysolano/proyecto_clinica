@@ -8,6 +8,7 @@ import ServiceItemPicker from '../components/ServiceItemPicker';
 import { inicioDeMiTurno } from '../utils/appointmentTurns';
 import SameSlotPanel from '../components/SameSlotPanel';
 import AssignAttentionModal from '../components/AssignAttentionModal';
+import AppointmentServiceValueModal from '../components/AppointmentServiceValueModal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
@@ -179,6 +180,9 @@ export default function Appointments() {
   const [saving, setSaving] = useState(false);
   // Modal para asignar doctor al marcar 'asistida'
   const [assignModal, setAssignModal] = useState(null); // { appointment }
+  // Corregir el servicio y el valor de una cita, incluso ya completada. Es lo
+  // único que mostrador puede tocar después de que el paciente fue atendido.
+  const [serviceValueModal, setServiceValueModal] = useState(null); // cita
   // Modal de finalización de enfermería (cita reclamada por el enfermero)
   const [filter, setFilter] = useState({
     startDate: '',
@@ -1641,12 +1645,29 @@ export default function Appointments() {
                 </ul>
               </div>
             )}
-            {(quienAgendo(detailModal) || detailModal.serviceName || detailModal.serviceItem) && (
+            {(canCharge || quienAgendo(detailModal) || detailModal.serviceName || detailModal.serviceItem) && (
               <div className="bg-emerald-50/50 rounded-xl p-3 space-y-1">
                 {nombreServicio(detailModal) && (
                   <>
                     <p className="text-xs text-emerald-600 font-medium">Servicio</p>
                     <p className="text-sm text-slate-800">{nombreServicio(detailModal)}</p>
+                  </>
+                )}
+                {/* Valor acordado de la cita. Es un dato operativo —lo que se le
+                    va a cobrar al paciente—, no el cobro en sí. Solo mostrador lo
+                    ve y lo cambia. */}
+                {canCharge && (detailModal.isCanje || detailModal.agreedValue != null) && (
+                  <>
+                    <p className="text-xs text-emerald-600 font-medium pt-1">Valor</p>
+                    <p className="text-sm text-slate-800">
+                      {detailModal.isCanje ? (
+                        <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-xs font-semibold">
+                          Canje
+                        </span>
+                      ) : (
+                        `$${Number(detailModal.agreedValue).toFixed(2)}`
+                      )}
+                    </p>
                   </>
                 )}
                 {quienAgendo(detailModal) && (
@@ -1657,6 +1678,21 @@ export default function Appointments() {
                       {detailModal.conversation ? ' · desde el chat' : ''}
                     </p>
                   </>
+                )}
+                {/* Sin condición de estado a propósito: el servicio real y el
+                    precio muchas veces se saben al terminar, y antes una cita
+                    completada obligaba a llamar a un administrador. */}
+                {canCharge && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setServiceValueModal(detailModal);
+                      setDetailModal(null);
+                    }}
+                    className="mt-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 cursor-pointer"
+                  >
+                    Cambiar servicio y valor
+                  </button>
                 )}
               </div>
             )}
@@ -1810,6 +1846,14 @@ export default function Appointments() {
           doctors={doctors}
           nurses={nurses}
           onClose={() => setAssignModal(null)}
+          onDone={fetchAppointments}
+        />
+      )}
+
+      {serviceValueModal && (
+        <AppointmentServiceValueModal
+          appointment={serviceValueModal}
+          onClose={() => setServiceValueModal(null)}
           onDone={fetchAppointments}
         />
       )}

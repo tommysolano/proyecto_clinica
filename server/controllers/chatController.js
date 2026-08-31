@@ -4753,12 +4753,11 @@ exports.registerPatientFromChat = async (req, res) => {
     }
 
     const { firstName, lastName, cedula, gender } = req.body;
-    if (!firstName || !lastName) {
-      return res.status(400).json({ message: 'Nombres y apellidos son requeridos' });
-    }
-    if (!gender) {
-      return res.status(400).json({ message: 'El género es obligatorio' });
-    }
+    // Nombre, apellido y género DEJARON DE SER OBLIGATORIOS (misma regla que en
+    // el alta desde Clientes): al contacto de un chat muchas veces se le conoce
+    // solo por el nombre que trae de WhatsApp, y exigir los tres empujaba a
+    // rellenarlos a ojo. El género va a `undefined` y no a '' porque el enum del
+    // modelo no admite la cadena vacía.
 
     // `conv.phone` SOLO es un teléfono real en WhatsApp: en Messenger/Instagram es
     // el identificador interno del contacto (PSID/IGSID) — Meta no comparte el
@@ -4782,17 +4781,21 @@ exports.registerPatientFromChat = async (req, res) => {
     if (!patient) {
       patient = await Patient.create({
         clinic: req.clinicId,
-        firstName,
-        lastName,
+        firstName: firstName || '',
+        lastName: lastName || '',
         cedula: cedula || '',
-        gender,
+        gender: gender || undefined,
         phone,
         whatsapp: phone,
         source: 'anuncio',
       });
     }
     conv.patient = patient._id;
-    if (!conv.contactName) conv.contactName = `${patient.firstName} ${patient.lastName}`;
+    // `|| undefined` para no dejar el nombre del chat en un espacio en blanco
+    // cuando el paciente se registró sin nombre.
+    if (!conv.contactName) {
+      conv.contactName = `${patient.firstName || ''} ${patient.lastName || ''}`.trim() || undefined;
+    }
     // Atribución: traspasa el origen del anuncio (click-to-WhatsApp) al paciente.
     if (conv.attribution?.adId && !patient.attribution?.adId) {
       patient.attribution = {

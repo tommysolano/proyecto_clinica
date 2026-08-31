@@ -9,7 +9,7 @@ import Layout from './components/Layout';
 import Spinner from './components/Spinner';
 import ErrorBoundary from './components/ErrorBoundary';
 import { cargarPagina } from './utils/lazyPage';
-import { DOCTOR_SPECIALTY_ROLES } from './utils/roles';
+import { DOCTOR_SPECIALTY_ROLES, roleSatisfies } from './utils/roles';
 // Login va EAGER a propósito: es la primera pantalla y hacerla perezosa añadiría
 // una petición extra en cadena justo antes de poder escribir el usuario.
 import Login from './pages/Login';
@@ -159,6 +159,20 @@ function SuperAdminRoute({ children }) {
 function RoleDashboard() {
   const { role, user, loading } = useAuth();
   if (loading) return null;
+  /**
+   * QUIEN ATIENDE ARRANCA EN LA AGENDA, no en un dashboard.
+   *
+   * Doctores (con sus especialidades), óptica y enfermería trabajan el día
+   * entero contra la agenda —a quién le toca ahora, quién está esperando— y su
+   * dashboard es una pantalla de bienvenida sin nada que hacer: entrar por ahí
+   * era un clic de más cada mañana. Al super-admin no se le toca: él sí necesita
+   * la vista global aunque en esta sucursal figure como doctor.
+   *
+   * Vale para cualquier llegada a "/" (login, logo, rebote de RoleRoute), y no
+   * puede dar bucle: los tres roles están admitidos en la ruta /appointments.
+   */
+  const arrancaEnLaAgenda = roleSatisfies(role, ['doctor', 'enfermero']) || role === 'optica';
+  if (!user?.isSuperAdmin && arrancaEnLaAgenda) return <Navigate to="/appointments" replace />;
   if (!user?.isSuperAdmin && role === 'contabilidad') return <AccountingDashboard />;
   // Las especialidades usan el dashboard del doctor (WelcomeDashboard toma la
   // etiqueta del rol, así que cada una se saluda por su nombre). Sale de la lista
@@ -225,7 +239,11 @@ function AppRoutes() {
                 <Route
                   path="/patients"
                   element={
-                    <RoleRoute roles={['admin', 'cajero', 'call_center', 'marketing', 'enfermero']}>
+                    // 'optica' va enumerada aparte porque en el cliente NO se
+                    // expande desde 'doctor' (ver utils/roles.js). Entra aquí
+                    // porque en óptica el paciente llega sin cita: lo registra el
+                    // propio optómetra y lo atiende en el momento.
+                    <RoleRoute roles={['admin', 'cajero', 'call_center', 'marketing', 'enfermero', 'optica']}>
                       <Patients />
                     </RoleRoute>
                   }

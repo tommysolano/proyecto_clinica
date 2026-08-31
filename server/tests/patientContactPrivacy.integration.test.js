@@ -98,7 +98,18 @@ test('P3) el listado censura igual, y solo el selector de facturación pide el c
   }
 });
 
-test('P4) buscar por cédula o teléfono también es leerlos: solo lo hace quien puede verlos', async () => {
+/**
+ * BUSCAR por cédula o teléfono lo puede hacer cualquiera que ya entre al
+ * listado; VERLOS sigue siendo solo del admin.
+ *
+ * Antes tampoco se podía buscar, con el argumento de que probar números hasta
+ * acertar es otra forma de leerlos. En la práctica el coste lo pagaba el trabajo
+ * diario —recepción tiene la cédula del paciente delante y solo podía buscar por
+ * un nombre que se escribe de tres maneras— sin cerrar nada: para buscar hay que
+ * traer el número ya sabido. La censura de la respuesta, que es lo que de verdad
+ * protege el dato, no se ha tocado y se comprueba aquí abajo.
+ */
+test('P4) buscar por cédula o teléfono lo hace cualquiera; VERLOS sigue siendo del admin', async () => {
   const { clinicId, userId } = await H.seedClinic();
   await seedPaciente(clinicId);
 
@@ -106,11 +117,22 @@ test('P4) buscar por cédula o teléfono también es leerlos: solo lo hace quien
   assert.equal(admin.total, 1);
 
   const cajero = ok(await list(clinicId, userId, 'cajero', { search: '0102030405' }));
-  assert.equal(cajero.total, 0, 'probar cédulas hasta acertar sería leerlas');
+  assert.equal(cajero.total, 1, 'recepción tiene la cédula delante: tiene que poder buscarla');
+  assert.equal(cajero.patients[0].cedula, undefined, 'encontrarlo NO le enseña la cédula');
+  assert.equal(cajero.patients[0].phone, undefined, 'ni el teléfono');
+
+  // El teléfono casa escrito en cualquier formato (phoneSearchRegex).
+  const porTelefono = ok(await list(clinicId, userId, 'cajero', { search: '099 111 22 33' }));
+  assert.equal(porTelefono.total, 1, 'el teléfono se busca con espacios o sin ellos');
 
   // El nombre sigue buscándose para todos: es como se encuentra al paciente.
   const porNombre = ok(await list(clinicId, userId, 'cajero', { search: 'ANA' }));
   assert.equal(porNombre.total, 1);
+
+  // Un texto con metacaracteres no puede reventar la consulta (antes iba crudo
+  // al $regex y un '(' de un teléfono copiado devolvía un 500).
+  const raro = ok(await list(clinicId, userId, 'cajero', { search: '(0991' }));
+  assert.equal(typeof raro.total, 'number', 'el buscador escapa lo que se teclee');
 });
 
 test('P5) guardar desde un rol sin acceso NO borra la cédula ni el teléfono', async () => {

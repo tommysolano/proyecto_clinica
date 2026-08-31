@@ -270,6 +270,58 @@ const buildServicesSnapshot = async (clinicId, items) => {
 };
 
 /**
+ * ¿Este rol puede poner o cambiar el VALOR de una cita?
+ *
+ * Solo mostrador: administración y caja. El valor es lo que se le va a cobrar
+ * al paciente, y quien atiende no lo negocia — que un doctor pudiera cambiarlo
+ * desde su seguimiento sería exactamente el problema que se quiere evitar.
+ */
+const puedeFijarValor = (req) =>
+  !!req.user?.isSuperAdmin || ['admin', 'cajero'].includes(req.role);
+
+/**
+ * Aplica sobre la cita el valor acordado y/o el canje que venga en el cuerpo de
+ * la petición. Devuelve `true` si tocó algo.
+ *
+ * Vive aparte porque entra por TRES puertas —al asignar la atención, al marcar
+ * asistencia y al corregirlo después— y las tres tienen que tratarlo igual: un
+ * canje deja el importe en 0, y cualquier cambio deja registrado quién fue.
+ *
+ * Los campos son OPCIONALES: si no vienen, la cita se queda como estaba. Eso es
+ * lo que permite que recepción reciba al paciente sin saber todavía el importe
+ * y lo anote más tarde, sin que el flujo se lo exija.
+ */
+function aplicarValorDeCita(apt, body, req) {
+  if (!puedeFijarValor(req)) return false;
+
+  const traeCanje = body.isCanje !== undefined;
+  const traeValor = body.agreedValue !== undefined;
+  if (!traeCanje && !traeValor) return false;
+
+  if (traeCanje) apt.isCanje = !!body.isCanje;
+
+  if (apt.isCanje) {
+    // Canje = no entró dinero. Ver el comentario del modelo.
+    apt.agreedValue = 0;
+  } else if (traeValor) {
+    const crudo = body.agreedValue;
+    // '' y null significan "bórralo", no "cero": son lo que manda el formulario
+    // cuando el campo se deja vacío.
+    if (crudo === null || crudo === '') {
+      apt.agreedValue = null;
+    } else {
+      const num = Number(crudo);
+      if (!Number.isFinite(num) || num < 0) return false;
+      apt.agreedValue = num;
+    }
+  }
+
+  apt.valueSetAt = new Date();
+  apt.valueSetBy = req.user._id;
+  return true;
+}
+
+/**
  * Resuelve el servicio de agenda y le suma un uso (ordena el buscador por lo
  * más pedido). Devuelve null si no llega ninguno: el servicio dejó de ser
  * obligatorio para poder agendar.
@@ -1169,6 +1221,8 @@ exports.markAttended = async (req, res) => {
       apt.doctorAssignedAt = new Date();
       apt.doctorAssignedBy = req.user._id;
     }
+    // Valor acordado / canje, si recepción los anotó al recibir al paciente.
+    aplicarValorDeCita(apt, req.body, req);
     apt.status = 'asistida';
     await apt.save();
     if (apt.referral) {
@@ -1192,6 +1246,73 @@ exports.markAttended = async (req, res) => {
     res.json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al marcar asistencia' });
+  }
+};
+
+/**
+ * CORREGIR EL SERVICIO Y EL VALOR de una cita — también después de atenderla.
+ *
+ * Es una puerta propia, y no un `PUT /:id`, por lo que NO deja hacer: ahí viven
+ * las reglas de reagendamiento, el bloqueo de las citas completadas y la
+ * reasignación de doctor, y relajarlas para que caja pudiera corregir un importe
+ * habría abierto de paso todo lo demás. Aquí solo se tocan tres cosas.
+ *
+ * Se puede usar en CUALQUIER estado, incluida una cita ya completada: el
+ * servicio real y el precio se saben muchas veces al final —el paciente entró
+ * por una consulta y salió con un procedimiento—, y hasta ahora eso obligaba a
+ * pedírselo a un administrador.
+ *
+ * Lo que NO se toca nunca, y por eso ni se lee del cuerpo: QUIÉN atendió. Los
+ * turnos, el doctor y el enfermero quedan como están; una cita no cambia de
+ * manos después de que alguien ya escribió su seguimiento.
+ *
+ * `turns[].serviceName` tampoco se reescribe: eso es lo que hizo CADA
+ * profesional en su turno, no lo que se le factura al paciente.
+ */
+exports.updateServiceAndValue = async (req, res) => {
+  try {
+    const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+
+    let cambio = false;
+
+    if (req.body.serviceItem !== undefined) {
+      const id = req.body.serviceItem || null;
+      if (id) {
+        const servicio = await resolverServicioAgenda(id);
+        if (!servicio) {
+          return res.status(400).json({ message: 'El servicio elegido ya no existe' });
+        }
+        apt.serviceItem = servicio._id;
+        // `serviceName` es el snapshot que leen la lista, los reportes y el
+        // recordatorio de WhatsApp sin populate: si se cambia uno hay que
+        // cambiar el otro, o la cita diría dos servicios distintos a la vez.
+        apt.serviceName = servicio.name || '';
+      } else {
+        apt.serviceItem = null;
+        apt.serviceName = '';
+      }
+      cambio = true;
+    }
+
+    if (aplicarValorDeCita(apt, req.body, req)) cambio = true;
+
+    if (!cambio) return res.status(400).json({ message: 'No hay nada que cambiar' });
+
+    await apt.save();
+
+    const populated = await Appointment.findById(apt._id)
+      .populate('patient', POPULATE_PATIENT)
+      .populate('doctor', POPULATE_DOCTOR)
+      .populate('turns.user', POPULATE_DOCTOR)
+      .populate('serviceItem', 'name color nursingService')
+      .populate('services.product', 'name code salePrice category');
+
+    emitToClinic(req.clinicId, 'appointment:updated', populated);
+    if (populated.doctor?._id) emitToUser(populated.doctor._id, 'appointment:updated', populated);
+    res.json(populated);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al actualizar el servicio y el valor de la cita' });
   }
 };
 
@@ -1358,6 +1479,12 @@ exports.assignDoctor = async (req, res) => {
     const wasAttended = apt.status === 'asistida' || apt.status === 'completada';
 
     asignarTurnos(apt, { pasos, por: req.user._id });
+
+    // El valor de la cita se anota AQUÍ, en el mismo gesto de recibir al
+    // paciente: este modal es lo que sustituyó al antiguo "marcar asistió", y es
+    // el momento en que recepción tiene delante a quien va a pagar. Solo lo
+    // guarda si el rol puede (admin/cajero) — ver `aplicarValorDeCita`.
+    aplicarValorDeCita(apt, req.body, req);
 
     /**
      * Asignar da la cita por ASISTIDA, pero SOLO si es de hoy.

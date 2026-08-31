@@ -13,17 +13,26 @@ const patientSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    /**
+     * NOMBRE Y APELLIDO NO SON OBLIGATORIOS. Al paciente se le registra con lo
+     * que se tiene en el momento —a veces solo el teléfono de quien llamó, o la
+     * cédula que trae en la mano— y se completa después. Exigirlos obligaba a
+     * inventarse un nombre para poder guardar, que es peor dato que ninguno.
+     *
+     * Van con `default: ''` (y no sin valor) para que `fullName` y las búsquedas
+     * por nombre no se topen con `undefined`.
+     */
     firstName: {
       type: String,
-      required: [true, 'El nombre es requerido'],
       trim: true,
       uppercase: true,
+      default: '',
     },
     lastName: {
       type: String,
-      required: [true, 'El apellido es requerido'],
       trim: true,
       uppercase: true,
+      default: '',
     },
     email: { type: String, lowercase: true, trim: true },
     phone: { type: String, trim: true },
@@ -96,8 +105,11 @@ patientSchema.index(
   { unique: true, partialFilterExpression: { cedula: { $type: 'string', $ne: '' } } }
 );
 
+// Nombre y apellido pueden faltar (ver arriba): sin el trim, un paciente sin
+// apellido se leía como "MARÍA " y uno sin ninguno de los dos como " ", que en
+// pantalla es una fila en blanco. Quien lo pinta decide qué poner si sale vacío.
 patientSchema.virtual('fullName').get(function () {
-  return `${this.firstName} ${this.lastName}`;
+  return `${this.firstName || ''} ${this.lastName || ''}`.trim();
 });
 
 // Edad calculada (prioriza birthDate). Si no hay birthDate, usa el campo age guardado.

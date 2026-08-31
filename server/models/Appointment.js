@@ -166,6 +166,30 @@ const appointmentSchema = new mongoose.Schema(
     // Marca si abonó por adelantado (check al agendar)
     paidInAdvance: { type: Boolean, default: false },
     advanceAmount: { type: Number, default: 0, min: 0 },
+    /**
+     * VALOR DE LA CITA: lo que se acordó que va a pagar el paciente.
+     *
+     * Es un dato OPERATIVO, no contable, y esa distinción es el motivo de que
+     * exista: la parte contable (venta, factura, cobro, comisiones) va por su
+     * lado, y recepción necesita anotar en la agenda cuánto se cobra por esta
+     * visita sin abrir nada de eso. NO genera venta, ni asiento, ni pago.
+     *
+     * `null` = todavía no se puso; 0 es un valor legítimo (una revisión de
+     * cortesía), y por eso el defecto no puede ser 0: hay que poder distinguir
+     * "no lo anotaron" de "no se cobra".
+     */
+    agreedValue: { type: Number, default: null, min: 0 },
+    /**
+     * CANJE: el paciente no pagó con dinero (se cambió por publicidad, por un
+     * intercambio de servicios…). Es EXCLUYENTE con el valor: marcar canje deja
+     * `agreedValue` en 0, porque lo que se quiere saber después es justamente
+     * cuánto dinero entró, y un canje con importe se contaría dos veces.
+     */
+    isCanje: { type: Boolean, default: false },
+    // Quién y cuándo fijó el valor por última vez. Se puede cambiar incluso con
+    // la cita ya atendida, así que sin esto no hay forma de saber quién lo tocó.
+    valueSetAt: { type: Date, default: null },
+    valueSetBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     reason: { type: String, trim: true },
     notes: { type: String, trim: true },
     diagnosis: { type: String, trim: true },

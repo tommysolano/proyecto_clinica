@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
+import PasswordInput from '../components/PasswordInput';
 import { HiOutlineCog6Tooth, HiOutlineKey, HiOutlineSwatch, HiOutlinePencilSquare, HiOutlineEnvelope } from 'react-icons/hi2';
 
 const THEMES = [
@@ -272,12 +273,12 @@ export default function Settings() {
               <div className="space-y-2">
                 <label className="block text-sm">
                   Contraseña del certificado
-                  <input
-                    type="password"
+                  <PasswordInput
                     value={certPwd}
                     onChange={(e) => setCertPwd(e.target.value)}
                     autoComplete="off"
-                    className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2 text-sm"
+                    wrapperClassName="mt-1"
+                    className="block w-full border border-slate-200 rounded-xl px-3 py-2 text-sm"
                   />
                 </label>
                 <p className="text-[11px] text-slate-500 m-0">
@@ -339,8 +340,9 @@ export default function Settings() {
           {/* Se pide la contraseña porque el correo ES el usuario: sin esto,
               cualquiera que pase por un ordenador desatendido se queda la cuenta. */}
           <label className="block text-sm">Tu contraseña
-            <input type="password" value={mail.currentPassword} onChange={(e) => setMail({ ...mail, currentPassword: e.target.value })}
-              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
+            <PasswordInput value={mail.currentPassword} onChange={(e) => setMail({ ...mail, currentPassword: e.target.value })}
+              autoComplete="current-password" wrapperClassName="mt-1"
+              className="block w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
           </label>
           <button type="submit" disabled={savingMail}
             className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium border-none cursor-pointer disabled:opacity-50">
@@ -357,16 +359,19 @@ export default function Settings() {
         <p className="text-sm text-slate-500 mb-4">Usuario: {user?.email}</p>
         <form onSubmit={submitPassword} className="space-y-3 max-w-sm">
           <label className="block text-sm">Contraseña actual
-            <input type="password" value={pwd.currentPassword} onChange={(e) => setPwd({ ...pwd, currentPassword: e.target.value })}
-              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
+            <PasswordInput value={pwd.currentPassword} onChange={(e) => setPwd({ ...pwd, currentPassword: e.target.value })}
+              autoComplete="current-password" wrapperClassName="mt-1"
+              className="block w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
           </label>
           <label className="block text-sm">Nueva contraseña
-            <input type="password" value={pwd.newPassword} onChange={(e) => setPwd({ ...pwd, newPassword: e.target.value })}
-              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
+            <PasswordInput value={pwd.newPassword} onChange={(e) => setPwd({ ...pwd, newPassword: e.target.value })}
+              autoComplete="new-password" wrapperClassName="mt-1"
+              className="block w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
           </label>
           <label className="block text-sm">Confirmar nueva contraseña
-            <input type="password" value={pwd.confirm} onChange={(e) => setPwd({ ...pwd, confirm: e.target.value })}
-              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
+            <PasswordInput value={pwd.confirm} onChange={(e) => setPwd({ ...pwd, confirm: e.target.value })}
+              autoComplete="new-password" wrapperClassName="mt-1"
+              className="block w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
           </label>
           <button type="submit" disabled={saving}
             className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium border-none cursor-pointer disabled:opacity-50">

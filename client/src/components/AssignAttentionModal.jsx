@@ -2,6 +2,8 @@ import { useMemo, useRef, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from './Modal';
+import AppointmentValueFields from './AppointmentValueFields';
+import { useAuth } from '../context/AuthContext';
 import { doctorOptionLabel, doctorTypeLabel } from '../utils/roles';
 import {
   HiOutlineHeart,
@@ -80,6 +82,21 @@ export default function AssignAttentionModal({ appointment, doctors = [], nurses
   const [observacion, setObservacion] = useState('');
   const contador = useRef(0);
 
+  /**
+   * El VALOR de la cita lo pone mostrador, en el momento en que recibe al
+   * paciente. Al resto (doctores, enfermería) ni se le enseña el campo, y el
+   * servidor tampoco se lo aceptaría: es lo que se le va a cobrar, no una
+   * decisión de quien atiende.
+   */
+  const { hasRole } = useAuth();
+  const puedeFijarValor = hasRole('admin', 'cajero');
+  // Se precargan con lo que ya tenga la cita: reabrir el modal para añadir un
+  // doctor no puede borrar el importe que ya se había anotado.
+  const [valor, setValor] = useState(
+    apt?.agreedValue === null || apt?.agreedValue === undefined ? '' : String(apt.agreedValue)
+  );
+  const [canje, setCanje] = useState(!!apt?.isCanje);
+
   const porId = useMemo(() => new Map(doctors.map((d) => [String(d._id), d])), [doctors]);
   const enfermeroPorId = useMemo(() => new Map(nurses.map((n) => [String(n._id), n])), [nurses]);
   const yaEnCola = cola.filter((p) => p.kind === 'doctor').map((p) => p.user);
@@ -123,6 +140,10 @@ export default function AssignAttentionModal({ appointment, doctors = [], nurses
             : { kind: 'doctor', user: p.user }
         ),
         observation: observacion.trim(),
+        // Solo se mandan si este rol puede fijarlos: así una asignación hecha por
+        // enfermería no viaja con los campos vacíos y borra el valor que caja ya
+        // había anotado.
+        ...(puedeFijarValor ? { agreedValue: canje ? 0 : valor === '' ? null : Number(valor), isCanje: canje } : {}),
       });
       const nombres = cola.map((p) =>
         p.kind === ENFERMERIA
@@ -283,6 +304,16 @@ export default function AssignAttentionModal({ appointment, doctors = [], nurses
             </p>
           )}
         </div>
+
+        {/* Valor de la cita — solo mostrador */}
+        {puedeFijarValor && (
+          <AppointmentValueFields
+            value={valor}
+            onValueChange={setValor}
+            isCanje={canje}
+            onCanjeChange={setCanje}
+          />
+        )}
 
         {/* Observación del paciente */}
         <div>

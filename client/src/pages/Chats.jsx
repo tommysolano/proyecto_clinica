@@ -5044,8 +5044,10 @@ function RegisterPatientModal({ conv, onClose, onRegistered }) {
   });
 
   const submit = async () => {
-    if (!form.firstName || !form.lastName) return toast.error('Nombres y apellidos requeridos');
-    if (!form.gender) return toast.error('El género es obligatorio');
+    // Nombres, apellidos y género ya NO se exigen (misma regla que el alta desde
+    // Clientes): se registra con lo que se sepa y se completa después. El
+    // teléfono real sigue siendo obligatorio fuera de WhatsApp, que es otra cosa:
+    // sin él este chat no se puede vincular con nada.
     if (!isWhatsapp && !form.phone.trim()) {
       return toast.error(`Este chat es de ${CHANNEL_TAB_LABELS[conv.channel] || conv.channel}: escribe el teléfono real del contacto.`);
     }
@@ -5078,7 +5080,7 @@ function RegisterPatientModal({ conv, onClose, onRegistered }) {
             <SriStatus status={cedulaLookup} />
           </div>
           <div>
-            <label className="text-xs font-semibold text-slate-600 block mb-1">Género *</label>
+            <label className="text-xs font-semibold text-slate-600 block mb-1">Género</label>
             <select value={form.gender} onChange={(e) => setForm({ ...form, gender: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
               <option value="">Seleccionar</option>
               <option value="masculino">Masculino</option>

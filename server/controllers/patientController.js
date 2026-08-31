@@ -2,6 +2,7 @@ const Patient = require('../models/Patient');
 const Appointment = require('../models/Appointment');
 const { emitToClinic } = require('../realtime');
 const { canReq } = require('../utils/permissions');
+const { phoneSearchRegex } = require('../utils/phoneNormalize');
 
 // NOTA: los DATOS de los pacientes se comparten entre todas las clínicas
 // (cédula única global). El campo `clinic` queda como referencia de la clínica
@@ -113,18 +114,31 @@ exports.getPatients = async (req, res) => {
     const showContact = canSeeContactData(req) || wantsBillingContact(req);
 
     if (search) {
-      query.$or = [
-        { firstName: { $regex: search, $options: 'i' } },
-        { lastName: { $regex: search, $options: 'i' } },
-      ];
-      // Buscar por cédula/teléfono es otra forma de LEERLOS (se prueba un número y
-      // el acierto lo confirma), así que solo lo hace quien puede verlos.
-      if (showContact) {
-        query.$or.push(
-          { cedula: { $regex: search, $options: 'i' } },
-          { phone: { $regex: search, $options: 'i' } }
-        );
-      }
+      /**
+       * El texto del buscador va ESCAPADO. Tal cual, un '(' o un '+' —normales
+       * en un teléfono copiado y pegado— rompen la expresión regular y la
+       * consulta revienta con un 500. Mismo criterio que en
+       * `searchReferralCandidates`, que ya lo escapaba.
+       */
+      const texto = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      query.$or = [{ firstName: texto }, { lastName: texto }];
+      /**
+       * BUSCAR por cédula o teléfono lo puede hacer cualquiera que ya entre al
+       * listado; VERLOS en la tabla sigue siendo solo del admin (más abajo, en
+       * `stripContactData`).
+       *
+       * No es lo mismo: para buscar hay que traer el número ya sabido —de la
+       * cédula en la mano del paciente, del chat, de la llamada—, y sin esto
+       * recepción y óptica solo podían buscar por nombre, que es justo lo que
+       * peor se escribe y peor se repite.
+       *
+       * El teléfono usa `phoneSearchRegex` para casar en cualquier formato:
+       * guardado como '+593 98 853 5561' y tecleado como '0988535561'.
+       */
+      query.$or.push({ cedula: texto });
+      const telefono = phoneSearchRegex(search);
+      if (telefono) query.$or.push({ phone: telefono }, { whatsapp: telefono });
+      else query.$or.push({ phone: texto });
     }
 
     if (isNew === 'true' || isNew === '1') {
