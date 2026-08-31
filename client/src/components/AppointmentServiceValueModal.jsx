@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from './Modal';
 import ServiceItemPicker from './ServiceItemPicker';
 import AppointmentValueFields from './AppointmentValueFields';
-import { HiOutlineCheck, HiOutlineLockClosed } from 'react-icons/hi2';
+import { HiOutlineCheck, HiOutlineLockClosed, HiOutlineXMark, HiOutlinePlus } from 'react-icons/hi2';
 
 /**
  * CORREGIR EL SERVICIO Y EL VALOR de una cita, también después de atenderla.
@@ -37,6 +37,40 @@ export default function AppointmentServiceValueModal({ appointment, onClose, onD
   const [canje, setCanje] = useState(!!apt?.isCanje);
   const [busy, setBusy] = useState(false);
 
+  // Los OTROS servicios de la visita, como {_id, name}. El nombre guardado es el
+  // que manda: si alguien renombró el ítem del catálogo, aquí sigue diciendo lo
+  // que se hizo ese día.
+  const [extras, setExtras] = useState(() =>
+    (apt?.additionalServices || [])
+      .map((s) => ({
+        _id: String(s.serviceItem?._id || s.serviceItem || ''),
+        name: s.name || s.serviceItem?.name || '',
+      }))
+      .filter((s) => s._id && s.name)
+  );
+  /**
+   * El selector de abajo es de «añadir», no de «elegir»: se queda siempre vacío.
+   * Como su texto interno solo se resincroniza cuando cambia el `value` —y aquí
+   * es null siempre—, se le cambia la llave para que vuelva a nacer limpio; si
+   * no, el nombre recién añadido se quedaba escrito en el campo.
+   */
+  const [llaveSelector, setLlaveSelector] = useState(0);
+
+  const agregarExtra = (item) => {
+    if (!item?._id) return;
+    const id = String(item._id);
+    // Ni repetido ni igual al principal: la cita no puede decir que la misma
+    // ecografía se hizo dos veces.
+    if (id === String(servicio?._id || '')) {
+      toast('Ese ya es el servicio principal de la cita', { icon: 'ℹ️' });
+      return;
+    }
+    setExtras((prev) => (prev.some((s) => s._id === id) ? prev : [...prev, { _id: id, name: item.name }]));
+    setLlaveSelector((k) => k + 1);
+  };
+
+  const quitarExtra = (id) => setExtras((prev) => prev.filter((s) => s._id !== id));
+
   const paciente = apt?.patient
     ? `${apt.patient.firstName || ''} ${apt.patient.lastName || ''}`.trim() || 'Paciente'
     : 'Paciente';
@@ -46,6 +80,8 @@ export default function AppointmentServiceValueModal({ appointment, onClose, onD
     try {
       const { data } = await api.patch(`/appointments/${apt._id}/service-value`, {
         serviceItem: servicio?._id || null,
+        // La lista COMPLETA, no un "añade este": quitar uno es mandarla sin él.
+        additionalServices: extras.map((s) => s._id),
         agreedValue: canje ? 0 : valor === '' ? null : Number(valor),
         isCanje: canje,
       });
@@ -75,6 +111,48 @@ export default function AppointmentServiceValueModal({ appointment, onClose, onD
             Servicio por el que asistió
           </label>
           <ServiceItemPicker value={servicio} onChange={setServicio} />
+        </div>
+
+        {/* OTROS SERVICIOS de la misma visita. El paciente entra por una consulta
+            y de paso le hacen una ecografía: antes había que elegir cuál de los
+            dos se anotaba y el otro se perdía. */}
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">
+            Otros servicios de esta visita
+          </label>
+
+          {extras.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {extras.map((s) => (
+                <span
+                  key={s._id}
+                  className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full bg-violet-100 text-violet-800 text-xs font-medium"
+                >
+                  {s.name}
+                  <button
+                    type="button"
+                    onClick={() => quitarExtra(s._id)}
+                    title={`Quitar ${s.name}`}
+                    className="p-0.5 rounded-full hover:bg-violet-200 text-violet-600 bg-transparent border-none cursor-pointer"
+                  >
+                    <HiOutlineXMark className="w-3.5 h-3.5" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          <ServiceItemPicker
+            key={llaveSelector}
+            value={null}
+            onChange={agregarExtra}
+            placeholder="Añade otro servicio…"
+          />
+          <p className="flex items-center gap-1 text-[11px] text-slate-400 mt-1">
+            <HiOutlinePlus className="w-3 h-3 shrink-0" />
+            Se añaden uno a uno. El valor de abajo es el total de la visita, con
+            estos incluidos.
+          </p>
         </div>
 
         <AppointmentValueFields

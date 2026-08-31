@@ -99,3 +99,25 @@ export function fmtDateTime(value) {
   const hh = p.hour === '24' ? '00' : p.hour;
   return `${p.day}/${p.month}/${p.year} ${hh}:${p.minute}`;
 }
+
+/**
+ * hh:mm (24h) en hora de Ecuador. Para timestamps que se leen JUNTO a una hora
+ * agendada —«12:40 · atendida 13:05»—, y esa agendada es texto plano guardado
+ * tal cual. Formatear el timestamp con la zona del navegador pondría las dos
+ * horas en escalas distintas: quien abra la agenda desde fuera del país vería un
+ * retraso de horas que no existe.
+ */
+export function fmtTimeEc(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = new Intl.DateTimeFormat('es-EC', {
+    timeZone: EC_TZ,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+    .formatToParts(d)
+    .reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
+  return `${p.hour === '24' ? '00' : p.hour}:${p.minute}`;
+}

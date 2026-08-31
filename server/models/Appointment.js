@@ -9,6 +9,31 @@ const appointmentServiceSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/**
+ * OTRO SERVICIO hecho en la misma visita.
+ *
+ * `name` es un snapshot, por lo mismo que `serviceName`: renombrar el ítem del
+ * catálogo no puede reescribir lo que se hizo hace tres meses.
+ *
+ * Se guarda quién lo añadió y cuándo porque estas líneas se agregan casi siempre
+ * DESPUÉS de atender —el paciente entró por una consulta y de paso le hicieron
+ * una ecografía—, con la cita ya completada. Sin eso no hay forma de saber quién
+ * tocó una cita cerrada, igual que pasaba con el valor (`valueSetBy`).
+ */
+const appointmentExtraServiceSchema = new mongoose.Schema(
+  {
+    serviceItem: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'AppointmentServiceItem',
+      default: null,
+    },
+    name: { type: String, trim: true, default: '' },
+    addedAt: { type: Date, default: Date.now },
+    addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  },
+  { _id: false }
+);
+
 // Registro de cada reagendamiento (quien, cuando, fecha/horario anterior y razón).
 const rescheduleEntrySchema = new mongoose.Schema(
   {
@@ -211,6 +236,18 @@ const appointmentSchema = new mongoose.Schema(
       index: true,
     },
     serviceName: { type: String, trim: true, default: '' },
+    /**
+     * LO QUE ADEMÁS se hizo en la visita. `serviceItem`/`serviceName` siguen
+     * siendo EL servicio de la cita —lo que leen la agenda, los reportes y el
+     * recordatorio de WhatsApp, todos como escalar—; esto es la lista de los
+     * otros. Se separan en vez de convertir el principal en arreglo justamente
+     * para no tocar esos treinta sitios.
+     *
+     * El importe NO va por línea: lo que se cobra por la visita es uno solo
+     * (`agreedValue`). Repartirlo por servicio invitaba a que el total y la suma
+     * de las partes dijeran cosas distintas, y en dinero eso no se puede.
+     */
+    additionalServices: { type: [appointmentExtraServiceSchema], default: [] },
     // Marca si es la primera cita del paciente (registrado por primera vez).
     // Se calcula al crear: true si el paciente no tenía citas previas.
     isFirstVisit: { type: Boolean, default: false },

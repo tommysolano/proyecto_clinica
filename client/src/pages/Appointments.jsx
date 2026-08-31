@@ -12,7 +12,7 @@ import AppointmentServiceValueModal from '../components/AppointmentServiceValueM
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
-import { fmtDateTime, todayEc, nowEcHHMM } from '../utils/date';
+import { fmtDateTime, fmtTimeEc, todayEc, nowEcHHMM } from '../utils/date';
 import NumericInput from '../components/NumericInput';
 import {
   HiOutlinePlus,
@@ -112,6 +112,59 @@ function nombreServicio(apt) {
     apt.serviceItem?.name ||
     (apt.services || []).map((s) => s.name || s.product?.name).filter(Boolean).join(', ')
   );
+}
+
+/** Los OTROS servicios de la visita, sin el principal. Nombres, ya en snapshot. */
+function serviciosExtra(apt) {
+  return (apt?.additionalServices || [])
+    .map((s) => s.name || s.serviceItem?.name)
+    .filter(Boolean);
+}
+
+/**
+ * A QUÉ HORA se atendió de verdad, frente a la hora agendada.
+ *
+ * No hay un único campo que lo diga porque la atención no siempre se cronometra:
+ *  · el reloj de la cita (`consultationStartedAt`) lo pone el doctor al pulsar
+ *    «iniciar consulta» o el enfermero al reclamar el turno, y muchos no pulsan
+ *    nada: entran, atienden y guardan el seguimiento;
+ *  · los turnos guardan su propio `startedAt`, que existe aunque el reloj de la
+ *    cita no se haya arrancado;
+ *  · el cierre (`consultationEndedAt`) sí se escribe SIEMPRE al completar.
+ *
+ * Por eso se devuelven las dos puntas y quien pinta decide: con inicio se dice
+ * «atendida a las…», y cuando solo hay cierre se dice «terminó a las…» en vez de
+ * hacer pasar el final por el principio, que es la lectura que importa —cuánto
+ * esperó el paciente— y sería justo la equivocada.
+ */
+function horaAtencion(apt) {
+  if (!apt) return null;
+  const fechas = (lista) => lista.map((v) => (v ? new Date(v) : null)).filter((d) => d && !Number.isNaN(d.getTime()));
+  const turnos = apt.turns || [];
+
+  const inicios = fechas([apt.consultationStartedAt, apt.nurseClaimedAt, ...turnos.map((t) => t.startedAt)]);
+  const finales = fechas([apt.consultationEndedAt, apt.nurseAttendedAt, ...turnos.map((t) => t.completedAt)]);
+
+  const inicio = inicios.length ? new Date(Math.min(...inicios)) : null;
+  const fin = finales.length ? new Date(Math.max(...finales)) : null;
+  if (!inicio && !fin) return null;
+  return { inicio, fin };
+}
+
+/** Texto corto de la atención para la columna de la hora, o null si no la hubo. */
+function textoAtencion(apt) {
+  const a = horaAtencion(apt);
+  if (!a) return null;
+  if (a.inicio) {
+    const desde = fmtTimeEc(a.inicio);
+    const hasta = a.fin && a.fin.getTime() !== a.inicio.getTime() ? fmtTimeEc(a.fin) : '';
+    return {
+      texto: `Atendida ${desde}`,
+      detalle: hasta ? `Atendida de ${desde} a ${hasta}` : `Atendida a las ${desde}`,
+    };
+  }
+  const hasta = fmtTimeEc(a.fin);
+  return { texto: `Terminó ${hasta}`, detalle: `Se terminó de atender a las ${hasta}` };
 }
 
 // Formatea una fecha ISO usando los componentes de fecha (sin convertir a UTC).
@@ -1090,6 +1143,8 @@ export default function Appointments() {
                   const prev = filteredAppointments[aptIdx - 1];
                   const dayKey = formatLocalDate(apt.date);
                   const showDayHeader = !prev || formatLocalDate(prev.date) !== dayKey;
+                  const atencion = textoAtencion(apt);
+                  const extras = serviciosExtra(apt);
                   return (
                     <Fragment key={apt._id}>
                     {showDayHeader && (
@@ -1107,6 +1162,14 @@ export default function Appointments() {
                       </td>
                       <td data-cell="hora" className="md:px-6 md:py-3.5 text-sm text-slate-800 font-medium">
                         {apt.startTime}{apt.endTime ? ` - ${apt.endTime}` : ''}
+                        {atencion && (
+                          <div
+                            className="text-[11px] font-normal text-emerald-700 mt-0.5 whitespace-nowrap"
+                            title={atencion.detalle}
+                          >
+                            {atencion.texto}
+                          </div>
+                        )}
                       </td>
                       <td data-cell="principal" className="md:px-6 md:py-3.5 text-sm text-slate-800">
                         <div className="flex items-center flex-wrap gap-2">
@@ -1140,6 +1203,14 @@ export default function Appointments() {
                       </td>
                       <td data-cell="detalle" className="md:px-6 md:py-3.5 text-sm text-slate-600">
                         {nombreServicio(apt) || <span className="text-slate-400 italic">Sin servicio</span>}
+                        {/* Lo que además se hizo en la visita. Va debajo y no
+                            pegado con comas para que se siga leyendo de un
+                            vistazo cuál fue el servicio por el que vino. */}
+                        {extras.map((nombre) => (
+                          <div key={nombre} className="text-[11px] text-violet-700 mt-0.5">
+                            + {nombre}
+                          </div>
+                        ))}
                         {apt.reason && (
                           <div className="text-[11px] text-slate-500 mt-0.5 italic" title={apt.reason}>
                             Motivo: {apt.reason.length > 60 ? apt.reason.slice(0, 60) + '…' : apt.reason}
@@ -1650,6 +1721,13 @@ export default function Appointments() {
                 <p className="text-sm text-slate-800 mt-0.5">
                   {detailModal.startTime} - {detailModal.endTime}
                 </p>
+                {/* La agendada de arriba y la real, juntas: es la comparación
+                    que interesa (cuánto esperó el paciente). */}
+                {textoAtencion(detailModal) && (
+                  <p className="text-xs text-emerald-700 mt-1">
+                    {textoAtencion(detailModal).detalle}
+                  </p>
+                )}
               </div>
               <div className="bg-emerald-50/50 rounded-xl p-3">
                 <p className="text-xs text-emerald-600 font-medium">Estado</p>
@@ -1716,6 +1794,21 @@ export default function Appointments() {
                   <>
                     <p className="text-xs text-emerald-600 font-medium">Servicio</p>
                     <p className="text-sm text-slate-800">{nombreServicio(detailModal)}</p>
+                  </>
+                )}
+                {serviciosExtra(detailModal).length > 0 && (
+                  <>
+                    <p className="text-xs text-emerald-600 font-medium pt-1">Otros servicios</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {serviciosExtra(detailModal).map((nombre) => (
+                        <span
+                          key={nombre}
+                          className="px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 text-xs font-medium"
+                        >
+                          {nombre}
+                        </span>
+                      ))}
+                    </div>
                   </>
                 )}
                 {/* Valor acordado de la cita. Es un dato operativo —lo que se le

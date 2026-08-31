@@ -1255,7 +1255,9 @@ exports.markAttended = async (req, res) => {
  * Es una puerta propia, y no un `PUT /:id`, por lo que NO deja hacer: ahí viven
  * las reglas de reagendamiento, el bloqueo de las citas completadas y la
  * reasignación de doctor, y relajarlas para que caja pudiera corregir un importe
- * habría abierto de paso todo lo demás. Aquí solo se tocan tres cosas.
+ * habría abierto de paso todo lo demás. Aquí solo se tocan cuatro cosas: el
+ * servicio de la cita, los OTROS servicios que se hicieron en la visita
+ * (`additionalServices`), el valor acordado y el canje.
  *
  * Se puede usar en CUALQUIER estado, incluida una cita ya completada: el
  * servicio real y el precio se saben muchas veces al final —el paciente entró
@@ -1292,6 +1294,72 @@ exports.updateServiceAndValue = async (req, res) => {
         apt.serviceItem = null;
         apt.serviceName = '';
       }
+      cambio = true;
+    }
+
+    /**
+     * OTROS SERVICIOS de la visita. Llega la lista COMPLETA (ids del catálogo de
+     * agenda), no un "añade este": así quitar uno es mandar la lista sin él y no
+     * hace falta un segundo endpoint para borrar.
+     *
+     * Va DESPUÉS del principal a propósito: si en la misma llamada se cambia el
+     * servicio de la cita, los adicionales tienen que compararse con el nuevo.
+     */
+    if (req.body.additionalServices !== undefined) {
+      const lista = Array.isArray(req.body.additionalServices) ? req.body.additionalServices : [];
+      // Lo que ya estaba, para no falsear la fecha en que se añadió.
+      const previos = new Map(
+        (apt.additionalServices || []).map((s) => [String(s.serviceItem), s])
+      );
+      const vistos = new Set();
+      const extras = [];
+      /**
+       * El que ya es el principal NO se repite abajo, y se descarta en silencio
+       * en vez de dar error: pasa al ascender un adicional a servicio de la cita
+       * («entró por consulta, en realidad fue la ecografía»), y ahí quedarse con
+       * una sola línea es exactamente lo que se quiso hacer.
+       */
+      const esElPrincipal = (clave) => apt.serviceItem && clave === String(apt.serviceItem);
+
+      for (const bruto of lista) {
+        const id = bruto?.serviceItem || bruto?._id || bruto;
+        if (!id) continue;
+
+        const yaEstaba = previos.get(String(id));
+        if (yaEstaba) {
+          /**
+           * Se conserva TAL CUAL y no se vuelve a buscar en el catálogo, por dos
+           * razones: `resolverServicioAgenda` sube el contador de uso —y volver a
+           * abrir y guardar el modal no puede hacer que un servicio parezca más
+           * usado de lo que es, porque ese contador ordena las sugerencias—, y el
+           * nombre guardado es el del día en que se hizo, que es el que vale.
+           */
+          if (esElPrincipal(String(id)) || vistos.has(String(id))) continue;
+          vistos.add(String(id));
+          extras.push({
+            serviceItem: yaEstaba.serviceItem,
+            name: yaEstaba.name,
+            addedAt: yaEstaba.addedAt,
+            addedBy: yaEstaba.addedBy,
+          });
+          continue;
+        }
+
+        const servicio = await resolverServicioAgenda(id);
+        if (!servicio) {
+          return res.status(400).json({ message: 'Uno de los servicios adicionales ya no existe' });
+        }
+        const clave = String(servicio._id);
+        if (esElPrincipal(clave) || vistos.has(clave)) continue;
+        vistos.add(clave);
+        extras.push({
+          serviceItem: servicio._id,
+          name: servicio.name || '',
+          addedAt: new Date(),
+          addedBy: req.user._id,
+        });
+      }
+      apt.additionalServices = extras;
       cambio = true;
     }
 

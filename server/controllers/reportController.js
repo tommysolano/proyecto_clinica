@@ -159,6 +159,52 @@ exports.exportSales = async (req, res) => {
 };
 
 /* ============================== CITAS ============================== */
+
+/**
+ * A qué hora se atendió de verdad, como 'HH:MM'. Vacío si no llegó a atenderse.
+ *
+ * No hay un campo único: el reloj de la cita solo se escribe si alguien pulsa
+ * «iniciar consulta» o si enfermería reclama el turno, mientras que los turnos
+ * llevan el suyo propio. Se coge la primera marca que haya de cualquiera de los
+ * dos, y si no hubo ninguna se cae al cierre —que sí se escribe siempre—, que es
+ * peor dato pero mejor que una celda vacía.
+ *
+ * El proceso corre con TZ=America/Guayaquil, así que sale en hora de Ecuador,
+ * la misma escala que `startTime` (texto plano 'HH:MM').
+ */
+function horaAtendido(a) {
+  const marcas = [a.consultationStartedAt, a.nurseClaimedAt, ...(a.turns || []).map((t) => t.startedAt)]
+    .map((v) => (v ? new Date(v) : null))
+    .filter((d) => d && !Number.isNaN(d.getTime()));
+  const d = marcas.length
+    ? new Date(Math.min(...marcas))
+    : a.consultationEndedAt && new Date(a.consultationEndedAt);
+  if (!d || Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('es-EC', {
+    timeZone: 'America/Guayaquil',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+/**
+ * Todos los servicios de la visita: el de la cita y los que se añadieron además.
+ *
+ * Antes esta columna leía solo `services[]`, el arreglo del INVENTARIO, que dejó
+ * de llenarse al separar la parte operativa de la contable: el Excel salía con
+ * la columna en blanco para todas las citas nuevas. Ese arreglo se sigue mirando
+ * al final, porque las citas antiguas es lo único que tienen.
+ */
+function serviciosDeLaCita(a) {
+  const nombres = [
+    a.serviceName || a.serviceItem?.name,
+    ...(a.additionalServices || []).map((s) => s.name),
+  ].filter(Boolean);
+  if (nombres.length) return nombres.join(', ');
+  return (a.services || []).map((s) => s.name).filter(Boolean).join(', ');
+}
+
 exports.exportAppointments = async (req, res) => {
   try {
     const query = { clinic: req.clinicId };
@@ -181,6 +227,9 @@ exports.exportAppointments = async (req, res) => {
       { header: 'Fecha', key: 'date', width: 12 },
       { header: 'Hora inicio', key: 'start', width: 11 },
       { header: 'Hora fin', key: 'end', width: 11 },
+      // La agendada y la real, una al lado de la otra: es lo que deja medir
+      // cuánto se espera de verdad en sala.
+      { header: 'Hora atendido', key: 'attended', width: 13 },
       { header: 'Paciente', key: 'patient', width: 28 },
       { header: 'Paciente nuevo', key: 'isFirst', width: 14 },
       { header: 'Doctor', key: 'doctor', width: 24 },
@@ -200,13 +249,14 @@ exports.exportAppointments = async (req, res) => {
         date: new Date(a.date).toLocaleDateString('es-EC'),
         start: a.startTime,
         end: a.endTime,
+        attended: horaAtendido(a),
         patient: `${a.patient?.firstName || ''} ${a.patient?.lastName || ''}`.trim(),
         isFirst: a.isFirstVisit ? 'SÍ' : '',
         doctor: a.doctor?.name || '',
         specialty: a.doctor?.specialty || '',
         status: a.status,
         reason: a.reason || '',
-        services: (a.services || []).map((s) => s.name).join(', '),
+        services: serviciosDeLaCita(a),
         totalServ,
         paid: a.paidInAdvance ? 'SÍ' : '',
         createdBy: a.createdBy?.name || '',
