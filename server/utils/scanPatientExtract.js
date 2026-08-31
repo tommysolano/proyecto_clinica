@@ -100,6 +100,39 @@ function normalizarCelular(valor) {
 
 const CORREO_RE = /^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/;
 
+/** Tildes y demás marcas de acento (misma forma que utils/scanNames.js). */
+const DIACRITICOS = new RegExp('[\\u0300-\\u036f]', 'g');
+
+/**
+ * Clave para reconocer al MISMO paciente cuando la ficha NO trae cédula.
+ *
+ * El formulario nuevo de la clínica no tiene casilla de cédula, y un paciente que
+ * llena una hoja en cada visita acaba con varias fichas. Sin una clave así, cada
+ * hoja daría de alta a la misma persona otra vez.
+ *
+ * Las palabras se ORDENAN a propósito: en el papel unos escriben "Ismenia
+ * Santillán Cedeño" y otros "Santillán Cedeño Ismenia", y quien transcribe reparte
+ * como puede entre nombres y apellidos. Mismo conjunto de palabras = misma persona.
+ * Se quitan tildes y todo lo que no sea letra, porque la letra manuscrita no es
+ * fiable para eso.
+ *
+ * NO basta por sí sola para fusionar: quien la use debe exigir además el mismo
+ * celular (ver scripts/importPatientsFromScans.js). Dos homónimos existen.
+ */
+function claveNombre(...partes) {
+  const limpio = partes
+    .map((p) => txt(p))
+    .join(' ')
+    .normalize('NFD')
+    .replace(DIACRITICOS, '')
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .sort();
+  return limpio.join(' ');
+}
+
 /**
  * Deja los datos listos para crear el paciente y devuelve TODO lo que no cuadró.
  *
@@ -167,6 +200,7 @@ function normalizarExtraccion(raw) {
 
 module.exports = {
   CAMPOS,
+  claveNombre,
   NOTA_SEGUIMIENTO,
   cedulaValida,
   parseFechaEc,

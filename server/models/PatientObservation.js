@@ -48,6 +48,18 @@ const patientObservationSchema = new mongoose.Schema(
     },
     text: { type: String, trim: true, default: '' },
     attachments: { type: [observationAttachmentSchema], default: [] },
+    /**
+     * Escaneo del que salió esta observación (importación de fichas físicas).
+     *
+     * Es la MARCA DE IDEMPOTENCIA de scripts/importPatientsFromScans.js: la
+     * importación de 6.000 fichas se hace por tandas y se reintenta, y sin una
+     * clave única en la base cada reintento le colgaría al paciente otra copia
+     * de la misma hoja de seguimiento. Vacío en todo lo que escribe una persona.
+     */
+    scanImport: {
+      scan: { type: mongoose.Schema.Types.ObjectId, ref: 'ScannedDocument', default: null },
+      importadoAt: { type: Date, default: null },
+    },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     // Última persona que la modificó. Vacío = nadie la ha tocado desde que se creó.
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
@@ -58,5 +70,13 @@ const patientObservationSchema = new mongoose.Schema(
 
 // La pestaña siempre pide "las de este paciente, la más nueva primero".
 patientObservationSchema.index({ patient: 1, createdAt: -1 });
+
+// Un escaneo deja UNA observación y solo una, pase lo que pase con los reintentos.
+// Parcial porque lo que escribe una persona no lleva `scanImport.scan` y, sin el
+// filtro, todas esas observaciones chocarían entre sí por tener el campo a null.
+patientObservationSchema.index(
+  { 'scanImport.scan': 1 },
+  { unique: true, partialFilterExpression: { 'scanImport.scan': { $type: 'objectId' } } }
+);
 
 module.exports = mongoose.model('PatientObservation', patientObservationSchema);

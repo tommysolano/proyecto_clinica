@@ -25,6 +25,8 @@ const { importarFichas, NOTA_SEGUIMIENTO } = require('../scripts/importPatientsF
 const Patient = require('../models/Patient');
 const ClinicalRecord = require('../models/ClinicalRecord');
 const ScannedDocument = require('../models/ScannedDocument');
+const PatientObservation = require('../models/PatientObservation');
+const { pdfDePaginas } = require('../utils/scanMedia');
 const Workflow = require('../models/Workflow');
 const WorkflowEnrollment = require('../models/WorkflowEnrollment');
 
@@ -37,7 +39,11 @@ let raiz;
 test.beforeEach(async () => {
   await H.resetDb();
   raiz = await fsp.mkdtemp(path.join(os.tmpdir(), 'shiluv-scans-test-'));
-  dirs = { scans: path.join(raiz, 'scans'), followups: path.join(raiz, 'followups') };
+  dirs = {
+    scans: path.join(raiz, 'scans'),
+    followups: path.join(raiz, 'followups'),
+    observations: path.join(raiz, 'observations'),
+  };
 });
 
 test.afterEach(async () => {
@@ -47,20 +53,44 @@ test.afterEach(async () => {
 /** Contenido reconocible: sirve para probar que la copia es fiel al original. */
 const CONTENIDO_PDF = Buffer.from('%PDF-1.4 ficha fisica de prueba');
 
-/** Crea el ScannedDocument y deja su PDF en disco, como lo dejaría el escáner. */
-async function seedEscaneo(clinicId, userId, { name = 'Ficha Jose Cuzco', createdAt = new Date('2026-06-10T15:00:00') } = {}) {
+/**
+ * Un JPEG de 1×1 de verdad. Hace falta uno auténtico porque el PDF de las fichas
+ * se arma con pdfkit, que lee las marcas del JPEG para incrustarlo.
+ */
+const JPEG_1x1 = Buffer.from(
+  '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a' +
+    'HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAA' +
+    'AAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==',
+  'base64'
+);
+
+/**
+ * Crea el ScannedDocument y deja su PDF en disco, como lo dejaría el escáner.
+ *
+ * Con `paginas` se arma un PDF DE VERDAD (una foto por página, igual que
+ * scanController): es lo único que permite probar que la ÚLTIMA página acaba en
+ * las observaciones del paciente.
+ */
+async function seedEscaneo(
+  clinicId,
+  userId,
+  { name = 'Ficha Jose Cuzco', createdAt = new Date('2026-06-10T15:00:00'), paginas = 0 } = {}
+) {
+  const contenido = paginas
+    ? await pdfDePaginas(Array.from({ length: paginas }, () => JPEG_1x1), name)
+    : CONTENIDO_PDF;
   const filename = `${name.replace(/\s+/g, '_')}.pdf`;
   const dir = path.join(dirs.scans, String(clinicId));
   await fsp.mkdir(dir, { recursive: true });
-  await fsp.writeFile(path.join(dir, filename), CONTENIDO_PDF);
+  await fsp.writeFile(path.join(dir, filename), contenido);
 
   const doc = await ScannedDocument.create({
     clinic: clinicId,
     name,
     nameKey: name.toLowerCase(),
     filename,
-    size: CONTENIDO_PDF.length,
-    pages: 1,
+    size: contenido.length,
+    pages: paginas || 1,
     createdBy: userId,
   });
   // `createdAt` lo pone mongoose con timestamps; para probar el respaldo de fecha
@@ -84,7 +114,17 @@ const fichaBuena = (documento = 'Ficha Jose Cuzco', extra = {}) => ({
   ...extra,
 });
 
-const importar = (fichas, opts = {}) => importarFichas({ fichas, commit: true, dirs, ...opts });
+/**
+ * Reductor de mentira: devuelve la foto tal cual.
+ *
+ * El de verdad abre un Chromium para reescalar (utils/scanMedia.js) y aquí no
+ * pinta nada: lo que se prueba es el FLUJO —a quién se le cuelga cada cosa y qué
+ * no se duplica—, no la calidad de un JPEG.
+ */
+const reductorFalso = { reducir: async (b) => b };
+
+const importar = (fichas, opts = {}) =>
+  importarFichas({ fichas, commit: true, dirs, reductor: reductorFalso, ...opts });
 
 // ───────────────────────── Creación ─────────────────────────
 
@@ -193,44 +233,59 @@ test('I5) importar un lote NO inscribe a nadie en las automatizaciones', async (
 
 // ───────────────── Repetible y sin duplicados ─────────────────
 
-test('I6) correr el importador dos veces no duplica al paciente', async () => {
+test('I6) correr el importador dos veces no duplica al paciente ni su seguimiento', async () => {
   const { clinicId, userId } = await H.seedClinic();
   await seedEscaneo(clinicId, userId);
 
   await importar([fichaBuena()]);
   const segunda = await importar([fichaBuena()]);
 
-  assert.equal(segunda.creados.length, 0);
-  assert.equal(segunda.omitidos.length, 1);
-  assert.match(segunda.omitidos[0].motivo, /ya se importó/);
+  assert.equal(segunda.creados.length, 0, 'no da de alta a nadie más');
+  assert.equal(segunda.fusionados.length, 1, 'reconoce que esa ficha ya era suya');
+  assert.equal(segunda.fusionados[0].seguimiento, false, 'no vuelve a colgarle el documento');
   assert.equal(await Patient.countDocuments({}), 1);
   assert.equal(await ClinicalRecord.countDocuments({}), 1);
+
+  const rec = await ClinicalRecord.findOne({});
+  assert.equal(rec.followUps.length, 1, 'un solo seguimiento, no dos con el mismo PDF');
 });
 
-test('I7) una cédula que ya existe se omite en vez de reventar por clave duplicada', async () => {
+test('I7) si la cédula ya existe, la ficha se le cuelga a ESE paciente en vez de crear otro', async () => {
   const { clinicId, userId } = await H.seedClinic();
   await seedEscaneo(clinicId, userId);
-  await Patient.create({ clinic: clinicId, cedula: '0905103495', firstName: 'Jose', lastName: 'Cuzco' });
+  const previo = await Patient.create({ clinic: clinicId, cedula: '0905103495', firstName: 'Jose', lastName: 'Cuzco' });
 
   const r = await importar([fichaBuena()]);
 
   assert.equal(r.errores.length, 0, 'un duplicado esperado no es un error técnico');
-  assert.equal(r.omitidos.length, 1);
-  assert.match(r.omitidos[0].motivo, /ya hay un paciente con la cédula/);
+  assert.equal(r.creados.length, 0);
+  assert.equal(r.fusionados.length, 1);
   assert.equal(await Patient.countDocuments({}), 1, 'no se creó un segundo registro');
+
+  // Lo que aporta la ficha no se pierde por ser de alguien que ya estaba.
+  const rec = await ClinicalRecord.findOne({ patient: previo._id });
+  assert.ok(rec, 'al paciente que ya existía se le abre su historia');
+  assert.equal(rec.followUps.length, 1);
+  assert.equal(rec.followUps[0].attachments[0].originalName, 'Ficha Jose Cuzco.pdf');
 });
 
-test('I8) la misma cédula repetida dentro del lote solo entra una vez', async () => {
+test('I8) dos fichas de la misma persona dan UN paciente con los dos documentos', async () => {
   const { clinicId, userId } = await H.seedClinic();
   await seedEscaneo(clinicId, userId, { name: 'Ficha A' });
   await seedEscaneo(clinicId, userId, { name: 'Ficha B' });
 
   const r = await importar([fichaBuena('Ficha A'), fichaBuena('Ficha B')]);
 
-  assert.equal(r.creados.length, 1);
-  assert.equal(r.omitidos.length, 1);
-  assert.match(r.omitidos[0].motivo, /repetida dentro del mismo lote/);
+  assert.equal(r.creados.length, 1, 'la segunda hoja es del mismo señor');
+  assert.equal(r.fusionados.length, 1);
   assert.equal(await Patient.countDocuments({}), 1);
+
+  const rec = await ClinicalRecord.findOne({});
+  assert.equal(rec.followUps.length, 2, 'pero sus dos hojas quedan en la historia');
+  assert.deepEqual(
+    rec.followUps.map((f) => f.attachments[0].originalName).sort(),
+    ['Ficha A.pdf', 'Ficha B.pdf']
+  );
 });
 
 test('I9) si el PDF no está en disco no se crea un paciente sin su respaldo', async () => {
@@ -347,4 +402,100 @@ test('I15) con la marca puesta, un segundo despliegue NO resucita a un paciente 
   const marca = await OneTimeTask.findById('test-fichas').lean();
   assert.equal(marca.status, 'DONE');
   assert.equal(marca.host, os.hostname(), 'consta dónde corrió');
+});
+
+// ───────────────── Fichas sin cédula (el formulario nuevo) ─────────────────
+
+test('I16) sin cédula, la misma persona con el mismo celular no se da de alta dos veces', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  await seedEscaneo(clinicId, userId, { name: 'Hoja 1' });
+  await seedEscaneo(clinicId, userId, { name: 'Hoja 2' });
+
+  // El formulario nuevo no tiene casilla de cédula, y quien vuelve llena otra hoja.
+  // Además el orden de nombre y apellidos cambia según quién transcriba.
+  const r = await importar([
+    fichaBuena('Hoja 1', { cedula: '', nombres: 'Ismenia', apellidos: 'Santillán Cedeño', celular: '0986437282' }),
+    fichaBuena('Hoja 2', { cedula: '', nombres: 'Santillan Cedeno', apellidos: 'ISMENIA', celular: '0986437282' }),
+  ]);
+
+  assert.equal(r.errores.length, 0, JSON.stringify(r.errores));
+  assert.equal(r.creados.length, 1);
+  assert.equal(r.fusionados.length, 1);
+  assert.equal(await Patient.countDocuments({}), 1);
+});
+
+test('I17) mismo nombre pero otro celular son DOS personas distintas', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  await seedEscaneo(clinicId, userId, { name: 'Hoja 1' });
+  await seedEscaneo(clinicId, userId, { name: 'Hoja 2' });
+
+  const r = await importar([
+    fichaBuena('Hoja 1', { cedula: '', nombres: 'María', apellidos: 'Pérez', celular: '0991111111' }),
+    fichaBuena('Hoja 2', { cedula: '', nombres: 'María', apellidos: 'Pérez', celular: '0992222222' }),
+  ]);
+
+  assert.equal(r.creados.length, 2, 'juntar homónimos mezclaría dos historias clínicas');
+  assert.equal(await Patient.countDocuments({}), 2);
+});
+
+// ───────────────── La hoja de seguimiento (observaciones) ─────────────────
+
+test('I18) la ÚLTIMA página del escaneo queda como observación del paciente', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const doc = await seedEscaneo(clinicId, userId, { paginas: 2 });
+
+  const r = await importar([fichaBuena()]);
+  assert.equal(r.errores.length, 0, JSON.stringify(r.errores));
+  assert.equal(r.creados[0].observacion, true);
+
+  const p = await Patient.findOne({ cedula: '0905103495' });
+  const obs = await PatientObservation.findOne({ patient: p._id });
+  assert.ok(obs, 'la observación se creó');
+  assert.equal(String(obs.scanImport.scan), String(doc._id), 'queda enlazada a su escaneo');
+  assert.equal(String(obs.createdBy), String(userId), 'la firma quien escaneó');
+  assert.match(obs.text, /Hoja de seguimiento/);
+  assert.match(obs.text, /Ficha Jose Cuzco/, 'dice dónde está el original por si hace falta el detalle');
+
+  assert.equal(obs.attachments.length, 1);
+  assert.equal(obs.attachments[0].mimeType, 'image/jpeg', 'es la foto de la hoja, no el PDF entero');
+
+  // El archivo está donde lo busca patientObservationController: por PACIENTE.
+  const enDisco = await fsp.readFile(
+    path.join(dirs.observations, String(p._id), obs.attachments[0].filename)
+  );
+  assert.equal(enDisco.length, obs.attachments[0].size);
+});
+
+test('I19) reimportar no le cuelga al paciente la misma hoja dos veces', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  await seedEscaneo(clinicId, userId, { paginas: 2 });
+
+  await importar([fichaBuena()]);
+  const segunda = await importar([fichaBuena()]);
+
+  assert.equal(segunda.fusionados[0].observacion, false);
+  assert.equal(await PatientObservation.countDocuments({}), 1);
+});
+
+test('I20) un escaneo de una sola página no inventa una hoja de seguimiento', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  await seedEscaneo(clinicId, userId, { paginas: 1 });
+
+  const r = await importar([fichaBuena()]);
+
+  assert.equal(r.creados[0].observacion, false);
+  assert.match(r.creados[0].sinHoja, /una sola página/);
+  assert.equal(await PatientObservation.countDocuments({}), 0, 'la ficha no es su propia hoja de seguimiento');
+});
+
+test('I21) la observación es del paciente que ya existía, no de uno nuevo', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  await seedEscaneo(clinicId, userId, { paginas: 2 });
+  const previo = await Patient.create({ clinic: clinicId, cedula: '0905103495', firstName: 'Jose', lastName: 'Cuzco' });
+
+  const r = await importar([fichaBuena()]);
+
+  assert.equal(r.fusionados.length, 1);
+  const obs = await PatientObservation.findOne({});
+  assert.equal(String(obs.patient), String(previo._id));
 });

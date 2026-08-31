@@ -232,9 +232,13 @@ fi
 # Para ver qué haría sin crear nada:
 #   sudo -iu clinica bash -lc 'cd /var/www/clinica/server && node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas.json'
 #
-if ! ( cd "$APP_DIR/server" && node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas.json --once --commit ); then
+# La clave va EXPLICITA. El script trae por defecto la de la tanda EN CURSO (la de
+# 6.000 fichas de agosto-31) y, sin fijarla aqui, este bloque —que ya esta hecho—
+# marcaria esa clave como DONE y la tanda nueva no llegaria a entrar nunca.
+CLAVE_FICHAS_AGO16='importar-fichas-escaneadas-2026-08-16'
+if ! ( cd "$APP_DIR/server" && node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas.json --key="$CLAVE_FICHAS_AGO16" --once --commit ); then
   echo "ADVERTENCIA: la importacion de fichas escaneadas fallo. Revisa el log y reintenta a mano:"
-  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas.json --once --commit'"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas.json --key=$CLAVE_FICHAS_AGO16 --once --commit'"
 fi
 # ─────────────────────────────────────────────────────────────────────────────────────
 
