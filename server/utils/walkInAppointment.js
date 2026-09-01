@@ -24,6 +24,11 @@ const { asignarTurnos, completarTurno } = require('./appointmentTurns');
  *        atender ahora (queda 'asistida' y su turno en marcha). 'cerrada' = ya
  *        atendió y el seguimiento está escrito (queda 'completada').
  * @param {string} [opts.followUpId] seguimiento que escribió, si ya está hecho.
+ * @param {'doctor'|'enfermeria'} [opts.kind] qué clase de turno se abre. El
+ *        enfermero que aplica un suero sin cita NO puede quedar como el doctor
+ *        de la cita: `apt.doctor` es el espejo del turno médico, y de ahí salen
+ *        las comisiones de médico y los reportes por doctor. Le pagaríamos como
+ *        a un doctor y las estadísticas dirían que atendió una consulta.
  */
 async function crearCitaAtencionInmediata({
   Appointment,
@@ -36,6 +41,7 @@ async function crearCitaAtencionInmediata({
   reason = 'Atención inmediata',
   estado = 'abierta',
   followUpId = null,
+  kind = 'doctor',
 }) {
   const ahora = new Date();
   const previas = await Appointment.countDocuments({ clinic: clinicId, patient: patientId });
@@ -61,9 +67,13 @@ async function crearCitaAtencionInmediata({
     consultationStartedAt: ahora,
   });
 
-  // Un único turno, el suyo: al guardar el seguimiento la cita se cierra sola
-  // como cualquier otra.
-  asignarTurnos(apt, { doctores: [user._id], por: user._id });
+  // Un único turno, el suyo —de doctor o de enfermería, según quién atendió— y
+  // con su nombre puesto: al guardar el seguimiento la cita se cierra sola como
+  // cualquier otra.
+  asignarTurnos(apt, {
+    pasos: [{ kind: kind === 'enfermeria' ? 'enfermeria' : 'doctor', user: user._id, serviceName, serviceItem }],
+    por: user._id,
+  });
   if (apt.turns[0]) apt.turns[0].startedAt = ahora;
 
   if (estado === 'cerrada') {

@@ -27,6 +27,15 @@ import api from '../api/axios';
  *  - compact?: estilo compacto (sin border-l ni sticky), pensado para modales angostos
  */
 
+/**
+ * Cuánto se mira ANTES y DESPUÉS de la hora consultada, en minutos.
+ *
+ * Hora y media a cada lado: cubre la franja en la que otra cita todavía afecta a
+ * la decisión (el doctor viene de una y va a otra) sin acabar enseñando el día
+ * entero, que es lo mismo que no enseñar nada.
+ */
+const VENTANA_CERCA = 90;
+
 const aMinutos = (hhmm) => {
   const [h, m] = String(hhmm || '').split(':').map(Number);
   if (!Number.isFinite(h)) return null;
@@ -82,19 +91,24 @@ const seSolapan = (iniA, durA, iniB, durB) => {
   return iniA < finB && finA > iniB;
 };
 
-function Fila({ a, small, minutoConsultado, duracion }) {
+function Fila({ a, small, minutoConsultado, duracion, cerca = false }) {
   const servicio = nombreServicio(a);
   const sucursal = nombreSucursal(a);
   const profesional = nombreProfesional(a);
   const ini = aMinutos(a.startTime);
   // Empezó antes de la hora que se está mirando y todavía no ha terminado: es la
   // que el panel escondía y por la que se agendaba encima.
-  const vieneDeAntes = ini !== null && minutoConsultado !== null && ini < minutoConsultado;
+  const vieneDeAntes = !cerca && ini !== null && minutoConsultado !== null && ini < minutoConsultado;
+  // Las de alrededor van apagadas: son contexto, no un impedimento. Si se
+  // pintaran igual que las que chocan, «hay 4 citas a esta hora» sería mentira.
   const t = small
     ? { wrap: 'px-2 py-1.5 text-[11px]', sub: 'text-[10px]', chip: 'text-[9px] px-1 py-px' }
     : { wrap: 'px-3.5 py-2.5 text-xs', sub: 'text-[11px]', chip: 'text-[10px] px-1.5 py-0.5' };
   return (
-    <li className={`bg-white border rounded-lg ${vieneDeAntes ? 'border-amber-300' : 'border-slate-200'} ${t.wrap}`}>
+    <li className={`border rounded-lg ${
+      cerca ? 'bg-slate-50 border-slate-200 opacity-90'
+        : vieneDeAntes ? 'bg-white border-amber-300' : 'bg-white border-slate-200'
+    } ${t.wrap}`}>
       <div className="flex items-center justify-between gap-2">
         <span className="font-medium text-slate-800 truncate">
           {a.patient?.firstName} {a.patient?.lastName}
@@ -229,6 +243,43 @@ export default function SameSlotPanel({ date, startTime, excludeId, clinicId, se
       .sort((x, y) => x.ini - y.ini);
   }, [delDia, excludeId, minutoConsultado, duracionNueva, duracionPorServicio]);
 
+  /**
+   * LAS DE ALREDEDOR: lo que hay ANTES y DESPUÉS de este momento.
+   *
+   * El panel solo enseñaba lo que choca con la hora consultada, y con eso «las
+   * 15:00 están libres» parecía una respuesta completa. No lo es: si a las 14:40
+   * ya hay una y a las 15:10 otra, meter una tercera en medio deja al doctor sin
+   * respiro y al paciente esperando. Quien agenda necesita ver el hueco, no solo
+   * el minuto.
+   *
+   * Ventana de VENTANA_CERCA minutos a cada lado de lo que ocupa la cita nueva.
+   * No se mezclan con las que chocan: aquellas son un impedimento y estas son
+   * contexto, y pintarlas juntas haría leer «5 citas a esta hora» donde hay una.
+   */
+  const cercanas = useMemo(() => {
+    if (minutoConsultado === null) return [];
+    const ocupanIds = new Set(ocupan.map(({ a }) => String(a._id)));
+    const finNuevo = minutoConsultado + Math.max(duracionNueva, 1);
+    return delDia
+      .filter((a) => String(a._id) !== String(excludeId || ''))
+      .filter((a) => !ocupanIds.has(String(a._id)))
+      .filter((a) => !['cancelada', 'no_asistio'].includes(a.status))
+      .map((a) => ({ a, ini: aMinutos(a.startTime), dur: duracionDe(a, duracionPorServicio) }))
+      .filter(({ ini, dur }) => {
+        if (ini === null) return false;
+        const fin = ini + Math.max(dur, 1);
+        // Termina justo antes de empezar nosotros, o empieza justo después de
+        // acabar: la distancia se mide entre los BORDES, no entre los inicios.
+        const distanciaAntes = minutoConsultado - fin;
+        const distanciaDespues = ini - finNuevo;
+        return (
+          (distanciaAntes >= 0 && distanciaAntes <= VENTANA_CERCA)
+          || (distanciaDespues >= 0 && distanciaDespues <= VENTANA_CERCA)
+        );
+      })
+      .sort((x, y) => x.ini - y.ini);
+  }, [delDia, excludeId, minutoConsultado, duracionNueva, duracionPorServicio, ocupan]);
+
   // Las opciones del filtro salen del DÍA, no de lo que ya está filtrado: si
   // salieran de la lista visible, elegir uno vaciaría el desplegable.
   const servicios = useMemo(
@@ -237,6 +288,7 @@ export default function SameSlotPanel({ date, startTime, excludeId, clinicId, se
   );
 
   const lista = filtro ? ocupan.filter(({ a }) => nombreServicio(a) === filtro) : ocupan;
+  const listaCerca = filtro ? cercanas.filter(({ a }) => nombreServicio(a) === filtro) : cercanas;
 
   const fmtDateTitle = (d) => {
     if (!d) return '';
@@ -262,7 +314,36 @@ export default function SameSlotPanel({ date, startTime, excludeId, clinicId, se
         </p>
       );
     }
-    if (lista.length === 0) return <Vacio small={small} filtrado={!!filtro && ocupan.length > 0} />;
+    // Las de alrededor se enseñan SIEMPRE, incluso con el horario libre: que no
+    // choque ninguna no significa que el hueco sea cómodo.
+    const alrededor = listaCerca.length > 0 && (
+      <div className={lista.length > 0 ? (small ? 'mt-2 pt-2 border-t border-slate-200' : 'mt-3 pt-3 border-t border-slate-200') : ''}>
+        <p className={`${small ? 'text-[10px]' : 'text-[11px]'} text-slate-500 font-semibold uppercase mb-1`}>
+          Cerca de esta hora
+        </p>
+        <ul className={`m-0 p-0 list-none ${small ? 'space-y-1' : 'space-y-2'}`}>
+          {listaCerca.map(({ a, dur }) => (
+            <Fila
+              key={a._id}
+              a={a}
+              small={small}
+              minutoConsultado={minutoConsultado}
+              duracion={dur}
+              cerca
+            />
+          ))}
+        </ul>
+      </div>
+    );
+
+    if (lista.length === 0) {
+      return (
+        <>
+          <Vacio small={small} filtrado={!!filtro && ocupan.length > 0} />
+          {alrededor}
+        </>
+      );
+    }
     return (
       <>
         <p className={`${small ? 'text-[10px]' : 'text-[11px]'} text-amber-700 font-semibold uppercase mb-1`}>
@@ -273,6 +354,7 @@ export default function SameSlotPanel({ date, startTime, excludeId, clinicId, se
             <Fila key={a._id} a={a} small={small} minutoConsultado={minutoConsultado} duracion={dur} />
           ))}
         </ul>
+        {alrededor}
       </>
     );
   };

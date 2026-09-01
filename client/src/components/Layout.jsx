@@ -48,10 +48,20 @@ const MENU_GROUPS = [
   },
   {
     key: 'personas', label: 'Personas', icon: HiOutlineUsers, items: [
-      // 'optica' va aparte porque en el cliente no se expande desde 'doctor'
-      // (ver utils/roles.js): el optómetra registra al paciente que entra sin
-      // cita y lo atiende en el momento, y sin esta entrada no tenía por dónde.
-      { path: '/patients', label: 'Clientes', roles: ['admin', 'cajero', 'call_center', 'marketing', 'optica'] },
+      /**
+       * Los roles que atienden se enumeran A MANO, uno a uno, y NO con 'doctor':
+       * poner 'doctor' aquí abriría Clientes a TODAS las especialidades de golpe,
+       * incluidas las que hoy solo trabajan desde la agenda.
+       *
+       *  · 'optica' — en el cliente no expande desde 'doctor' (ver utils/roles.js):
+       *    el optómetra registra al paciente que entra sin cita y lo atiende.
+       *  · 'odontologia' — necesita consultar la información del paciente fuera de
+       *    la cita. Dentro solo ve los seguimientos de odontología (PatientDetail).
+       *  · 'enfermero' — el paciente que ya dejó pagada su serie de sueros pasa
+       *    directo con el enfermero, sin cita: sin esta entrada no tenía por dónde
+       *    llegar a él (la ruta ya estaba permitida en App.jsx, faltaba el menú).
+       */
+      { path: '/patients', label: 'Clientes', roles: ['admin', 'cajero', 'call_center', 'marketing', 'optica', 'odontologia', 'enfermero'] },
       { path: '/accounting/suppliers', label: 'Proveedores', roles: ['admin', 'contabilidad'] },
     ],
   },

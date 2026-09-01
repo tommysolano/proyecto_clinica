@@ -19,7 +19,7 @@
  * Vive fuera de PatientDetail.jsx porque es un bloque grande y autocontenido; se
  * consume igual que el resto de secciones de especialidad, con `{ value, onChange }`.
  */
-import { useState } from 'react';
+import { useState, useId } from 'react';
 import {
   ODONTOGRAMA_FILAS,
   ODONTOGRAMA_CARAS,
@@ -109,11 +109,30 @@ function centroCara(cara, hemi) {
  * Símbolo de una CARA. Sin esto, el color por sí solo no basta: la hoja usa el
  * mismo rojo para caries y para «sellante necesario», y el mismo azul para
  * obturado y «sellante realizado». Lo que los distingue es la figura — círculo
- * para caries/obturado, cuadro para los sellantes—, así que el relleno va tenue y
- * la figura encima a color pleno.
+ * para caries/obturado, ASTERISCO para los sellantes—, así que el relleno va
+ * tenue y la figura encima a color pleno.
+ *
+ * El asterisco se dibuja con tres trazos por el centro y no con el carácter «*»:
+ * un glifo de texto se sale de su sector en las caras estrechas y depende de la
+ * fuente del navegador. Los trazos escalan con el radio, así que la misma figura
+ * vale en la cara (r≈3), en la oclusal (r=4) y en la leyenda (r≈10).
  */
 function SimboloCara({ simbolo, color, cx, cy, r = 3.2 }) {
   const props = { stroke: color, strokeWidth: 1.6, fill: 'none' };
+  if (simbolo === 'asterisco') {
+    // Tres diámetros a 0°, 60° y 120°: la estrella de seis puntas de la hoja.
+    const trazos = [0, 60, 120].map((grados) => {
+      const rad = (grados * Math.PI) / 180;
+      const dx = Math.cos(rad) * r;
+      const dy = Math.sin(rad) * r;
+      return { x1: cx - dx, y1: cy - dy, x2: cx + dx, y2: cy + dy };
+    });
+    return (
+      <g {...props} strokeLinecap="round">
+        {trazos.map((t, i) => <line key={i} {...t} />)}
+      </g>
+    );
+  }
   if (simbolo === 'cuadro') {
     return <rect x={cx - r} y={cy - r} width={r * 2} height={r * 2} {...props} />;
   }
@@ -158,35 +177,44 @@ function SimboloPieza({ simbolo, color }) {
  * como componente haría que React remontara las 52 piezas en cada tecleo del resto
  * del formulario (misma razón que en la versión anterior).
  */
-function Diente({ num, hemi, dato, herramienta, onPintar, onSeleccionar, seleccionado }) {
+function Diente({ num, hemi, dato, herramienta, onPintar, onSeleccionar, seleccionado, readOnly, idBase }) {
   const caras = dato?.caras || {};
   const info = estadoOdonto(dato?.estado);
   const redondo = esTemporal(num);
+  const nota = String(dato?.nota || '').trim();
+  // El id del recorte tiene que ser UNICO en toda la pagina: el historial monta
+  // un odontograma por seguimiento y con `odc-11` repetido el navegador resuelve
+  // `url(#odc-11)` contra el PRIMERO que encuentre, no contra el de su propio SVG.
+  const clipId = `odc-${idBase}-${num}`;
 
   return (
     <div className="flex flex-col items-center gap-0.5 shrink-0">
       <svg
         viewBox={`-1 -1 ${L + 2} ${L + 2}`}
-        className={`w-8 h-8 cursor-pointer ${seleccionado ? 'ring-2 ring-emerald-500 rounded' : ''}`}
-        onContextMenu={(e) => { e.preventDefault(); onSeleccionar(num); }}
+        className={`w-8 h-8 ${readOnly ? '' : 'cursor-pointer'} ${seleccionado ? 'ring-2 ring-emerald-500 rounded' : ''}`}
+        onContextMenu={(e) => {
+          if (readOnly) return;
+          e.preventDefault();
+          onSeleccionar(num);
+        }}
       >
         {redondo && (
           // Los temporales van dentro de un círculo, como en la hoja. El recorte
           // hace que los cinco sectores queden redondeados sin recalcular caminos.
           <defs>
-            <clipPath id={`odc-${num}`}>
+            <clipPath id={clipId}>
               <circle cx={L / 2} cy={L / 2} r={L / 2} />
             </clipPath>
           </defs>
         )}
-        <g clipPath={redondo ? `url(#odc-${num})` : undefined}>
+        <g clipPath={redondo ? `url(#${clipId})` : undefined}>
           {sectores(hemi).map((s) => {
             const estadoCara = caras[s.key] || '';
             const ficha = estadoCara ? estadoOdonto(estadoCara) : null;
             const [cx, cy] = centroCara(s.key, hemi);
             const label = ODONTOGRAMA_CARAS.find((c) => c.key === s.key).label;
             return (
-              <g key={s.key} onClick={() => onPintar(num, s.key)}>
+              <g key={s.key} onClick={readOnly ? undefined : () => onPintar(num, s.key)}>
                 <path
                   d={s.d}
                   // Relleno tenue: el color dice si es patología (rojo) o
@@ -196,7 +224,11 @@ function Diente({ num, hemi, dato, herramienta, onPintar, onSeleccionar, selecci
                   stroke={BORDE}
                   strokeWidth="0.8"
                 >
-                  <title>{`${num} · ${label}${ficha ? ` · ${labelOdonto(estadoCara)}` : ''}`}</title>
+                  {/* La anotación entra en el tooltip: si no, la única forma de
+                      leerla era volver a seleccionar la pieza. */}
+                  <title>
+                    {`${num} · ${label}${ficha ? ` · ${labelOdonto(estadoCara)}` : ''}${nota ? `\n📝 ${nota}` : ''}`}
+                  </title>
                 </path>
                 {ficha && (
                   <SimboloCara
@@ -218,13 +250,18 @@ function Diente({ num, hemi, dato, herramienta, onPintar, onSeleccionar, selecci
           <SimboloPieza simbolo={info.simbolo} color={colorEstado(dato?.estado)} />
         )}
       </svg>
-      <span className="text-[9px] leading-none text-slate-500 tabular-nums">{num}</span>
+      <span className="text-[9px] leading-none text-slate-500 tabular-nums flex items-center gap-px">
+        {num}
+        {/* Una pieza anotada tiene que VERSE anotada. Sin la marca, la nota
+            quedaba escondida y solo la encontraba quien volviera a pinchar. */}
+        {nota && <span className="text-emerald-600" title={nota}>•</span>}
+      </span>
     </div>
   );
 }
 
 /** Casilla de grado (recesión / movilidad): vacío → 1 → 2 → 3 → vacío. */
-function CasillaGrado({ valor, onChange, title }) {
+function CasillaGrado({ valor, onChange, title, readOnly }) {
   const siguiente = () => {
     const i = ODONTOGRAMA_GRADOS.indexOf(valor);
     onChange(i === -1 ? ODONTOGRAMA_GRADOS[0] : ODONTOGRAMA_GRADOS[i + 1] || '');
@@ -232,12 +269,13 @@ function CasillaGrado({ valor, onChange, title }) {
   return (
     <button
       type="button"
-      onClick={siguiente}
+      onClick={readOnly ? undefined : siguiente}
+      disabled={readOnly}
       title={title}
       // Estilos en línea a propósito: la ficha inyecta un <style> sin capa que
       // pisa las utilidades de Tailwind para el tamaño (ver FichaStyles).
       style={{ width: 22, height: 16 }}
-      className={`text-[9px] leading-none border rounded-sm cursor-pointer p-0 ${
+      className={`text-[9px] leading-none border rounded-sm p-0 ${readOnly ? 'cursor-default' : 'cursor-pointer'} ${
         valor ? 'bg-rose-100 border-rose-400 text-rose-700 font-bold' : 'bg-white border-slate-300 text-slate-300'
       }`}
     >
@@ -246,8 +284,28 @@ function CasillaGrado({ valor, onChange, title }) {
   );
 }
 
-export default function Odontograma({ value, onChange }) {
+/**
+ * Herramienta de ANOTAR. No es un estado del odontograma: es el modo en el que
+ * pinchar una pieza abre su nota en vez de pintarla.
+ *
+ * Existe porque la única forma de anotar era el CLIC DERECHO, que en una tablet
+ * —donde se llena la ficha— no existe. El odontólogo veía el recuadro de la nota
+ * de pura casualidad, o nunca.
+ */
+const HERRAMIENTA_NOTA = '__nota__';
+
+/**
+ * @param {boolean} [readOnly] modo LECTURA: se dibuja exactamente igual (mismo
+ *   esquema, mismos indicadores, misma simbología) pero no se puede tocar. Es lo
+ *   que se enseña en el historial de seguimientos: antes ahí salía un resumen en
+ *   texto («11 Caries (Vestibular: Caries)») que no se parecía en nada a la hoja
+ *   que el odontólogo acababa de llenar.
+ */
+export default function Odontograma({ value, onChange, readOnly = false }) {
   const o = value || {};
+  // Prefijo único de ESTE odontograma, para los ids de recorte del SVG (ver
+  // `Diente`). El historial monta uno por seguimiento en la misma página.
+  const idBase = useId().replace(/:/g, '');
   const dientes = Array.isArray(o.odontograma) ? o.odontograma : [];
   const byDiente = Object.fromEntries(dientes.map((d) => [d.diente, d]));
   const [herramienta, setHerramienta] = useState('caries');
@@ -266,7 +324,7 @@ export default function Odontograma({ value, onChange }) {
   };
   const [sel, setSel] = useState('');
 
-  const set = (patch) => onChange({ ...o, ...patch });
+  const set = (patch) => { if (!readOnly) onChange({ ...o, ...patch }); };
 
   /** Escribe una pieza; si queda sin nada, desaparece de la lista. */
   const setDiente = (num, patch) => {
@@ -286,6 +344,9 @@ export default function Odontograma({ value, onChange }) {
    * borrar y volver a marcar sería un paso de más.
    */
   const pintar = (num, cara) => {
+    // Con la herramienta de anotar, pinchar la pieza abre su nota. Es el
+    // sustituto táctil del clic derecho.
+    if (herramienta === HERRAMIENTA_NOTA) { setSel(num); return; }
     const info = estadoOdonto(herramienta);
     if (!info) return;
     const marca = marcaValor(herramienta, color);
@@ -302,11 +363,12 @@ export default function Odontograma({ value, onChange }) {
 
   return (
     <div className="space-y-4">
-      {/* ── Paleta ── */}
+      {/* ── Paleta ── (en lectura no hay nada que elegir) */}
+      {!readOnly && (
       <div className="border border-slate-200 rounded-lg p-2">
         <div className="text-[11px] text-slate-500 mb-1.5">
-          Elige el color y el símbolo, y pincha sobre el diente. Clic derecho en la pieza para
-          anotarla.
+          Elige el color y el símbolo, y pincha sobre el diente. Para escribir una nota en una
+          pieza, usa <b>Anotar</b> (o clic derecho sobre ella).
         </div>
 
         {/* Color de la marca: cualquier símbolo se puede pintar en las dos tintas. */}
@@ -352,8 +414,22 @@ export default function Odontograma({ value, onChange }) {
               {e.label}
             </button>
           ))}
+          {/* Anotar es una herramienta más de la paleta, no un gesto escondido. */}
+          <button
+            type="button"
+            onClick={() => setHerramienta(HERRAMIENTA_NOTA)}
+            title="Escribir una nota en una pieza"
+            className={`text-[11px] px-2 py-1 rounded border cursor-pointer flex items-center gap-1.5 ${
+              herramienta === HERRAMIENTA_NOTA
+                ? 'border-slate-800 bg-slate-100 font-semibold'
+                : 'border-slate-300 bg-white'
+            }`}
+          >
+            📝 Anotar
+          </button>
         </div>
       </div>
+      )}
 
       {/* ── Sección 6 · el esquema ── */}
       <div className="overflow-x-auto">
@@ -374,11 +450,13 @@ export default function Odontograma({ value, onChange }) {
                           valor={byDiente[num]?.recesion || ''}
                           onChange={(v) => setDiente(num, { recesion: v })}
                           title={`Recesión ${num}`}
+                          readOnly={readOnly}
                         />
                         <CasillaGrado
                           valor={byDiente[num]?.movilidad || ''}
                           onChange={(v) => setDiente(num, { movilidad: v })}
                           title={`Movilidad ${num}`}
+                          readOnly={readOnly}
                         />
                       </div>
                     ))}
@@ -406,6 +484,8 @@ export default function Odontograma({ value, onChange }) {
                           onPintar={pintar}
                           onSeleccionar={setSel}
                           seleccionado={sel === num}
+                          readOnly={readOnly}
+                          idBase={idBase}
                         />
                       ))}
                     </div>
@@ -418,27 +498,59 @@ export default function Odontograma({ value, onChange }) {
         </div>
       </div>
 
-      {sel && (
-        <div className="border border-slate-200 rounded-lg p-2 flex items-center gap-2">
-          <span className="text-xs font-semibold text-slate-700 shrink-0">Pieza {sel}</span>
-          <input
+      {/**
+        * NOTA DE LA PIEZA.
+        *
+        * El texto se guarda mientras se escribe —va al mismo estado que el resto
+        * del odontograma y viaja con el seguimiento—, pero eso no se veía: el
+        * único botón decía «Cerrar», que se lee como «descartar». El odontólogo
+        * escribía la nota, no encontraba dónde guardarla y daba por hecho que se
+        * perdía.
+        *
+        * Ahora lo dice: un botón «Guardar nota» y una línea que explica que se
+        * guarda con el seguimiento. Es un textarea y no un input para que quepan
+        * dos líneas y porque los textarea están exentos del «Enter no envía el
+        * formulario» de la ficha.
+        */}
+      {sel && !readOnly && (
+        <div className="border border-emerald-200 bg-emerald-50/40 rounded-lg p-2 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-slate-700">Nota de la pieza {sel}</span>
+            <span className="text-[10px] text-slate-500">
+              Se guarda junto con el seguimiento
+            </span>
+          </div>
+          <textarea
+            rows={2}
+            autoFocus
             value={byDiente[sel]?.nota || ''}
             onChange={(e) => setDiente(sel, { nota: e.target.value })}
-            placeholder="Anotación de la pieza…"
-            className="flex-1 text-xs border border-slate-300 rounded px-2 py-1 outline-none focus:border-emerald-500"
+            placeholder="Ej.: fractura del ángulo mesial, sensibilidad al frío…"
+            className="w-full text-xs border border-slate-300 rounded px-2 py-1 outline-none focus:border-emerald-500 resize-none"
           />
-          <button
-            type="button"
-            onClick={() => setSel('')}
-            className="text-xs text-slate-500 bg-transparent border-none cursor-pointer"
-          >
-            Cerrar
-          </button>
+          <div className="flex items-center justify-end gap-2">
+            {String(byDiente[sel]?.nota || '').trim() && (
+              <button
+                type="button"
+                onClick={() => setDiente(sel, { nota: '' })}
+                className="text-xs text-slate-500 bg-transparent border-none cursor-pointer"
+              >
+                Borrar nota
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setSel('')}
+              className="text-xs font-semibold px-3 py-1 rounded-lg bg-emerald-600 text-white border-none cursor-pointer"
+            >
+              Guardar nota
+            </button>
+          </div>
         </div>
       )}
 
-      <SeccionIndicadores value={o} set={set} />
-      <SeccionIndices value={o} set={set} />
+      <SeccionIndicadores value={o} set={set} readOnly={readOnly} />
+      <SeccionIndices value={o} set={set} readOnly={readOnly} />
       <Simbologia />
     </div>
   );
@@ -446,7 +558,7 @@ export default function Odontograma({ value, onChange }) {
 
 // ─────────────── Sección 7 · Indicadores de salud bucal ───────────────
 
-function SeccionIndicadores({ value, set }) {
+function SeccionIndicadores({ value, set, readOnly }) {
   const filas = Array.isArray(value.higieneOral) ? value.higieneOral : [];
   const byFila = Object.fromEntries(filas.map((f) => [f.fila, f]));
 
@@ -487,7 +599,8 @@ function SeccionIndicadores({ value, set }) {
                         <button
                           key={p}
                           type="button"
-                          onClick={() => setFila(f.key, { pieza: v.pieza === p ? '' : p })}
+                          onClick={readOnly ? undefined : () => setFila(f.key, { pieza: v.pieza === p ? '' : p })}
+                          disabled={readOnly}
                           className={`text-[11px] px-1.5 py-0.5 rounded border cursor-pointer tabular-nums ${
                             v.pieza === p
                               ? 'bg-emerald-100 border-emerald-400 text-emerald-800 font-semibold'
@@ -506,7 +619,8 @@ function SeccionIndicadores({ value, set }) {
                           <button
                             key={n}
                             type="button"
-                            onClick={() => setFila(f.key, { [i.key]: v[i.key] === n ? '' : n })}
+                            onClick={readOnly ? undefined : () => setFila(f.key, { [i.key]: v[i.key] === n ? '' : n })}
+                            disabled={readOnly}
                             className={`text-[11px] w-5 rounded border cursor-pointer p-0 ${
                               v[i.key] === n
                                 ? 'bg-slate-800 border-slate-800 text-white font-semibold'
@@ -535,16 +649,16 @@ function SeccionIndicadores({ value, set }) {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-        <Opciones label="Enfermedad periodontal" catalog={ENFERMEDAD_PERIODONTAL} value={value.enfermedadPeriodontal} onPick={(v) => set({ enfermedadPeriodontal: v })} />
-        <Opciones label="Maloclusión" catalog={MALOCLUSION} value={value.maloclusion} onPick={(v) => set({ maloclusion: v })} />
-        <Opciones label="Fluorosis" catalog={FLUOROSIS} value={value.fluorosis} onPick={(v) => set({ fluorosis: v })} />
+        <Opciones label="Enfermedad periodontal" catalog={ENFERMEDAD_PERIODONTAL} value={value.enfermedadPeriodontal} onPick={(v) => set({ enfermedadPeriodontal: v })} readOnly={readOnly} />
+        <Opciones label="Maloclusión" catalog={MALOCLUSION} value={value.maloclusion} onPick={(v) => set({ maloclusion: v })} readOnly={readOnly} />
+        <Opciones label="Fluorosis" catalog={FLUOROSIS} value={value.fluorosis} onPick={(v) => set({ fluorosis: v })} readOnly={readOnly} />
       </div>
     </div>
   );
 }
 
 /** Selección única: volver a pulsar la opción marcada la desmarca. */
-function Opciones({ label, catalog, value, onPick }) {
+function Opciones({ label, catalog, value, onPick, readOnly }) {
   return (
     <div>
       <div className="text-[11px] font-semibold text-slate-600 mb-1">{label}</div>
@@ -553,7 +667,8 @@ function Opciones({ label, catalog, value, onPick }) {
           <button
             key={c.key}
             type="button"
-            onClick={() => onPick(value === c.key ? '' : c.key)}
+            onClick={readOnly ? undefined : () => onPick(value === c.key ? '' : c.key)}
+            disabled={readOnly}
             className={`text-[11px] px-2 py-1 rounded border cursor-pointer ${
               value === c.key
                 ? 'bg-emerald-100 border-emerald-400 text-emerald-800 font-semibold'
@@ -570,7 +685,7 @@ function Opciones({ label, catalog, value, onPick }) {
 
 // ─────────────────── Sección 8 · Índices CPO-ceo ───────────────────
 
-function SeccionIndices({ value, set }) {
+function SeccionIndices({ value, set, readOnly }) {
   const filas = [
     { key: 'cpo', titulo: 'D', ayuda: 'Permanentes', cols: INDICE_CPO },
     { key: 'ceo', titulo: 'd', ayuda: 'Temporales', cols: INDICE_CEO },
@@ -598,6 +713,7 @@ function SeccionIndices({ value, set }) {
                           inputMode="numeric"
                           value={v[c.key] || ''}
                           onChange={(e) => set({ [f.key]: { ...v, [c.key]: e.target.value.replace(/\D/g, '') } })}
+                          readOnly={readOnly}
                           style={{ width: 40 }}
                           className="text-xs text-center border border-slate-300 rounded px-1 py-0.5 outline-none focus:border-emerald-500"
                         />

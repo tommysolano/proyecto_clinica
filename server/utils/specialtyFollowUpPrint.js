@@ -23,6 +23,8 @@ const {
   FLUOROSIS,
   INDICE_CPO,
   INDICE_CEO,
+  TERAPIA_ELEMENTOS,
+  TERAPIA_FODA,
   COSMETOLOGIA_BIOTIPOS,
   COSMETOLOGIA_ARRUGAS,
   COSMETOLOGIA_ACNE,
@@ -313,6 +315,43 @@ function cosmetologiaHtml(c) {
   return cuerpo ? `<div class="label" style="margin-top:8px">Ficha cosmetológica</div>${cuerpo}` : '';
 }
 
+/**
+ * FICHA DEL TERAPEUTA para el PDF.
+ *
+ * Sale en TEXTO, no como el gráfico de la pantalla: el pentágono con sus flechas
+ * es una herramienta para pensar, y en un papel lo que hace falta es leer qué se
+ * anotó en cada elemento. Cada uno con su nombre completo — en el papel no hay
+ * colores que distingan las dos M.
+ *
+ * Ojo: este bloque solo llega al PDF de quien PUEDE ver la consulta del
+ * terapeuta. El filtro está en el controlador (`esDelTerapeuta` /
+ * `canReadTherapy`), no aquí: una función de pintar no es sitio para un permiso.
+ */
+function terapiaHtml(t) {
+  if (!t) return '';
+  const elementos = TERAPIA_ELEMENTOS
+    .map((e) => {
+      const dato = (t.elementos || []).find((x) => x.key === e.key);
+      const texto = String(dato?.texto || '').trim();
+      return texto ? [e.label, texto] : null;
+    })
+    .filter(Boolean);
+  const cuadrantes = TERAPIA_FODA
+    .map((c) => {
+      const texto = String(t.foda?.[c.key] || '').trim();
+      return texto ? [c.label, texto] : null;
+    })
+    .filter(Boolean);
+
+  const cuerpo = [
+    elementos.length ? box('Análisis de 5 elementos', inline(elementos)) : '',
+    cuadrantes.length ? box('Plan de tratamiento terapéutico', inline(cuadrantes)) : '',
+    box('Plan', esc(String(t.plan || '').trim())),
+  ].join('');
+
+  return cuerpo ? `<div class="label" style="margin-top:8px">Ficha de terapia</div>${cuerpo}` : '';
+}
+
 /** Todo lo que aporte la especialidad de este seguimiento ('' si no aporta nada). */
 function specialtyFollowUpHtml(fu) {
   if (!fu) return '';
@@ -321,7 +360,8 @@ function specialtyFollowUpHtml(fu) {
     podologiaHtml(fu.podologia),
     odontologiaHtml(fu.odontologia),
     cosmetologiaHtml(fu.cosmetologia),
+    terapiaHtml(fu.terapia),
   ].join('');
 }
 
-module.exports = { specialtyFollowUpHtml, cardiologiaHtml, podologiaHtml, odontologiaHtml, cosmetologiaHtml };
+module.exports = { specialtyFollowUpHtml, cardiologiaHtml, podologiaHtml, odontologiaHtml, cosmetologiaHtml, terapiaHtml };

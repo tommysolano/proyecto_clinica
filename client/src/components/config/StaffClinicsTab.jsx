@@ -38,7 +38,7 @@ const ROLES_OPERATIVOS = [
   'odontologia',
   'cosmetologia',
   'cardiologia',
-  'ecografista',
+  'terapeuta',
   'enfermero',
   'cajero',
   'admin',
@@ -248,6 +248,19 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
                           {ROLES_OPERATIVOS.map((r) => (
                             <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>
                           ))}
+                          {/**
+                            * UN ROL RETIRADO SIGUE SIENDO UN ROL HASTA QUE SE MIGRE.
+                            *
+                            * Sin esta opción, el <select> de alguien que todavía
+                            * tiene guardado un rol que se quitó de la lista (pasó
+                            * con 'ecografista') sale EN BLANCO. Y como guardar
+                            * manda la fila entera y descarta las sedes sin rol,
+                            * abrir esta pantalla y darle a guardar le borraba la
+                            * sucursal a esa persona sin decir nada.
+                            */}
+                          {valor && !ROLES_OPERATIVOS.includes(valor) && (
+                            <option value={valor}>{ROLE_LABELS[valor] || valor} (rol retirado)</option>
+                          )}
                         </select>
                       </td>
                     );

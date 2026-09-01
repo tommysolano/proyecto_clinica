@@ -12,7 +12,9 @@
  *     responsable.
  *  3. Que ENFERMERÍA solo reciba la receta. Esconder el resto en la pantalla no
  *     es esconderlo: la respuesta del servidor se lee entera desde el navegador.
- *  4. Que un enfermero NO pueda escribir un seguimiento.
+ *  4. Que un enfermero SÍ pueda escribir un seguimiento (sep-2026), y que al
+ *     hacerlo sin cita quede como turno de ENFERMERÍA y no de doctor: si no,
+ *     cobraría comisión de médico y los reportes por doctor mentirían.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -268,14 +270,26 @@ test('una consulta SIN receta también le llega a enfermería', async () => {
   assert.equal(r.payload.followUps[0].descripcion, 'Control sin receta');
 });
 
-test('enfermería sigue SIN poder escribir un seguimiento', async () => {
-  // Abrir la LECTURA no abre la escritura. Lo que la frena es la guardia de rol
-  // de la ruta de crear seguimiento (admin, cajero, doctor), no el recorte de la
-  // respuesta que se acaba de quitar.
+test('enfermería SÍ puede escribir un seguimiento (sep-2026)', async () => {
+  /**
+   * Se abrió a propósito: el caso más común de la clínica es el paciente que ya
+   * dejó pagada su serie de sueros, entra y pasa directo con el enfermero, sin
+   * que nadie le agende nada. Antes había que inventarle una cita para poder
+   * anotar la aplicación.
+   *
+   * Se comprueba contra la guardia REAL de la ruta, no contra una copia de la
+   * lista: la versión anterior de este test se construía su propio
+   * `requireRole('admin','cajero','doctor')` y por eso seguía en verde después
+   * de que la ruta cambiara.
+   */
   const { requireRole } = require('../middleware/auth');
-  const guardia = requireRole('admin', 'cajero', 'doctor');
+  const rutas = require('../routes/clinicalRecords');
+  const capa = rutas.stack.find(
+    (l) => l.route?.path === '/:patientId/follow-ups' && l.route.methods.post
+  );
+  assert.ok(capa, 'la ruta de crear seguimiento tiene que existir');
 
-  const prueba = (role) => {
+  const prueba = (guardia, role) => {
     let status = 200;
     let siguiente = false;
     guardia(
@@ -286,9 +300,42 @@ test('enfermería sigue SIN poder escribir un seguimiento', async () => {
     return { status, siguiente };
   };
 
-  assert.deepEqual(prueba('enfermero'), { status: 403, siguiente: false }, 'el enfermero no redacta');
-  assert.deepEqual(prueba('doctor'), { status: 200, siguiente: true }, 'el doctor sí');
-  assert.deepEqual(prueba('ginecologia'), { status: 200, siguiente: true }, 'y las especialidades también');
+  // La guardia de rol es la penúltima capa (la última es el controlador).
+  const guardia = capa.route.stack[capa.route.stack.length - 2].handle;
+  assert.deepEqual(prueba(guardia, 'enfermero'), { status: 200, siguiente: true }, 'el enfermero redacta lo que aplicó');
+  assert.deepEqual(prueba(guardia, 'doctor'), { status: 200, siguiente: true }, 'el doctor sí');
+  assert.deepEqual(prueba(guardia, 'ginecologia'), { status: 200, siguiente: true }, 'y las especialidades también');
+  assert.deepEqual(
+    prueba(requireRole('admin'), 'enfermero'),
+    { status: 403, siguiente: false },
+    'pero borrar un seguimiento sigue siendo solo del admin',
+  );
+});
+
+test('el enfermero atiende sin cita: se registra sola, y como turno de ENFERMERÍA', async () => {
+  const { clinicId, patient, enfermero } = await seed();
+
+  const r = await H.runController(
+    ctrl.addFollowUp,
+    H.mockReq(clinicId, enfermero._id, {
+      descripcion: 'Aplicación de sueroterapia',
+    }, { role: 'enfermero', params: { patientId: String(patient._id) } }),
+  );
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const Appointment = require('../models/Appointment');
+  const citas = await Appointment.find({ clinic: clinicId, patient: patient._id });
+  assert.equal(citas.length, 1, 'la atención tiene que quedar registrada en la agenda');
+  const cita = citas[0];
+  assert.equal(cita.status, 'completada');
+  assert.equal(cita.turns.length, 1);
+  assert.equal(
+    cita.turns[0].kind,
+    'enfermeria',
+    'si quedara como turno de doctor, el enfermero cobraría comisión de médico',
+  );
+  assert.equal(String(cita.turns[0].user), String(enfermero._id));
+  assert.equal(cita.doctor, null, 'el espejo de doctor no puede apuntar al enfermero');
 });
 
 test('marcar suero en una DERIVACIÓN no cuela', async () => {

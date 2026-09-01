@@ -1,6 +1,6 @@
 const Notification = require('../models/Notification');
 const { resolveCallCenterClinicId } = require('../utils/callCenterClinic');
-const { VALID_ROLES } = require('../constants/roles');
+const { VALID_ROLES, DOCTOR_LIKE_ROLES } = require('../constants/roles');
 
 /**
  * Bandeja de notificaciones del header (la campana). Es la vista GENÉRICA de
@@ -31,7 +31,9 @@ const TYPE_ROLES = {
   whatsapp_qr_disconnected: MARKETING_ROLES,
   // Atención de citas. Van dirigidas a UNA persona (ver el campo `user`), así
   // que aquí solo se declara qué roles pueden verlas en su campana.
-  appointment_assigned: ['admin', 'doctor', 'optica', 'ginecologia', 'podologia', 'odontologia', 'cosmetologia', 'cardiologia', 'ecografista'],
+  // Sale de DOCTOR_LIKE_ROLES: una especialidad nueva la hereda sin tocar esta
+  // lista, que es justo lo que no pasó con las anteriores.
+  appointment_assigned: ['admin', ...DOCTOR_LIKE_ROLES],
   appointment_nursing: ['admin', 'enfermero'],
   // El aviso de prueba lo pide uno mismo desde la campana: lo ve cualquiera.
   push_test: VALID_ROLES,

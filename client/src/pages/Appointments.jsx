@@ -277,7 +277,44 @@ export default function Appointments() {
   const [timeUpModal, setTimeUpModal] = useState(null);
   const notifiedRef = useRef(new Set());
 
+  /**
+   * SECUENCIA DE PETICIONES.
+   *
+   * Sin esto, la lista enseñaba citas de OTRO día. Dos formas, las dos reales:
+   *
+   *  1. Respuestas fuera de orden. Se pulsa «día siguiente» dos veces seguidas y
+   *     salen dos peticiones; si la primera tarda más que la segunda, llega
+   *     DESPUÉS y pisa la lista buena. La pantalla se queda con las citas de un
+   *     día que ya nadie está mirando.
+   *  2. El día se quedaba en blanco mientras cargaba: como `loading` solo se
+   *     apagaba y nunca se volvía a encender, entre pulsar y recibir se seguían
+   *     viendo las citas del día anterior como si fueran las nuevas.
+   *
+   * Cada petición se numera y solo la ÚLTIMA puede escribir en el estado.
+   */
+  const peticionRef = useRef(0);
+  /**
+   * A QUÉ CORRESPONDE lo que hay pintado ahora mismo.
+   *
+   * El «Cargando…» solo se enseña cuando cambia el PERIODO que se mira (otro
+   * día, otro mes, otra vista): ahí lo que está en pantalla es de otro momento y
+   * dejarlo puesto es justo el error que se venía a arreglar.
+   *
+   * En un refresco del MISMO periodo —una tecla en el buscador, un evento de
+   * socket— la lista se queda a la vista. Vaciarla en cada pulsación hacía
+   * parpadear la tabla mientras se escribe el nombre de un paciente.
+   */
+  const periodoRef = useRef(null);
+
   const fetchAppointments = async () => {
+    const miTurno = ++peticionRef.current;
+    const periodo = view === 'calendar'
+      ? `mes:${calMonth.getFullYear()}-${calMonth.getMonth()}`
+      : `dia:${listDay}`;
+    if (periodoRef.current !== periodo) {
+      periodoRef.current = periodo;
+      setLoading(true);
+    }
     try {
       const params = {};
       if (view === 'calendar') {
@@ -300,15 +337,19 @@ export default function Appointments() {
       // "sucursal destino"). Cada tarjeta muestra a qué sucursal pertenece.
       params.clinic = 'all';
       const res = await api.get('/appointments', { params });
+      // Llegó tarde: ya hay otra petición más nueva en marcha (o resuelta). Su
+      // respuesta es de un día que el usuario ya dejó atrás.
+      if (miTurno !== peticionRef.current) return;
       const list = (res.data || []).map((a) => ({
         ...a,
         status: normalizeStatus(a.status),
       }));
       setAppointments(list);
     } catch {
+      if (miTurno !== peticionRef.current) return;
       toast.error('Error al cargar citas');
     } finally {
-      setLoading(false);
+      if (miTurno === peticionRef.current) setLoading(false);
     }
   };
 
@@ -320,6 +361,48 @@ export default function Appointments() {
       // silent
     }
   };
+
+  /**
+   * SUCURSALES PARA EL FILTRO.
+   *
+   * `clinics` (del contexto) son solo las ASIGNADAS al usuario, y el cajero
+   * suele tener una sola: por eso el filtro por sucursal no le aparecía nunca.
+   * Mostrador y administración piden aquí la lista completa de la organización
+   * —solo nombres, ver `scope=names` en clinicController—; el resto de roles se
+   * queda con las suyas, como hasta ahora.
+   */
+  const [clinicasFiltro, setClinicasFiltro] = useState([]);
+  const fetchClinicasFiltro = async () => {
+    if (!canCharge) { setClinicasFiltro(clinics || []); return; }
+    try {
+      const res = await api.get('/clinics', { params: { scope: 'names' } });
+      setClinicasFiltro(res.data || []);
+    } catch {
+      // Sin la lista completa se sigue pudiendo filtrar por las propias.
+      setClinicasFiltro(clinics || []);
+    }
+  };
+
+  /**
+   * LA VISTA POR DEFECTO NO CAMBIA: SU SUCURSAL.
+   *
+   * El servidor ahora le devuelve a mostrador la agenda de TODA la organización,
+   * y sin esto la cajera de Norte abriría la lista del día y se encontraría
+   * mezcladas las citas de Sur y Centro — «Total filtrado: 37» donde antes veía
+   * 9. Ver las demás sucursales es algo que se PIDE con el desplegable, no algo
+   * que aparezca solo.
+   *
+   * Se preselecciona a quien AHORA VE MÁS de lo que veía antes, tenga una
+   * sucursal asignada o cinco: la comparación es contra las suyas, no contra el
+   * número uno. Quien ya veía todas las de la organización no nota nada.
+   */
+  useEffect(() => {
+    if (!canCharge) return;
+    const propia = activeClinic?._id;
+    if (!propia) return;
+    if (clinicasFiltro.length <= (clinics?.length || 0)) return;
+    setFilter((f) => (f.clinic ? f : { ...f, clinic: propia }));
+  }, [canCharge, clinics?.length, activeClinic?._id, clinicasFiltro.length]);
 
   const fetchNurses = async () => {
     try {
@@ -357,6 +440,7 @@ export default function Appointments() {
     fetchNurses();
     fetchPatients();
     fetchServices();
+    fetchClinicasFiltro();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
@@ -364,10 +448,24 @@ export default function Appointments() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, filter, calMonth, listDay]);
 
-  // Tiempo real: cuando llega un cambio de cita, refrescar la lista.
-  useSocketEvent('appointment:created', () => fetchAppointments());
-  useSocketEvent('appointment:updated', () => fetchAppointments());
-  useSocketEvent('appointment:deleted', () => fetchAppointments());
+  /**
+   * Tiempo real: cuando llega un cambio de cita, refrescar la lista.
+   *
+   * VA POR REF, y no directo. `useSocketEvent` se suscribe UNA vez (sus `deps`
+   * están vacías) y se quedaba con el `fetchAppointments` del PRIMER render —el
+   * que tiene dentro `listDay = hoy` y la vista inicial—. Resultado: el usuario
+   * abría el día 12, alguien tocaba cualquier cita en la clínica, y la lista se
+   * repintaba sola con las citas de HOY sin que él hubiera hecho nada. Ese era el
+   * «me muestra citas que no son de ese día».
+   *
+   * La ref siempre apunta a la función del render actual, así que el refresco
+   * recarga el día que se está mirando.
+   */
+  const fetchRef = useRef(fetchAppointments);
+  fetchRef.current = fetchAppointments;
+  useSocketEvent('appointment:created', () => fetchRef.current());
+  useSocketEvent('appointment:updated', () => fetchRef.current());
+  useSocketEvent('appointment:deleted', () => fetchRef.current());
 
   // Tick global del cronómetro (1s)
   useEffect(() => {
@@ -645,15 +743,26 @@ export default function Appointments() {
    * ruta además es suya (`requireRole('admin', 'doctor')`), así que llamarla
    * como enfermero solo dejaría un 403 en el camino.
    */
-  const abrirAtencion = (apt) => {
+  const abrirAtencion = (apt, opciones = {}) => {
+    /**
+     * El cronómetro NO se arranca al volver a entrar en una cita ya completada.
+     *
+     * `POST /appointments/:id/start` limpia `consultationEndedAt`: si se llamara
+     * al reentrar a corregir un seguimiento, la consulta volvería a figurar como
+     * abierta —con su reloj corriendo— para algo que terminó hace dos días.
+     * Corregir no es reabrir la atención.
+     */
+    const soloVolver = opciones.soloVolver || apt.status === 'completada';
     // Se arranca si MI turno no ha empezado, no si la cita no ha empezado: con
     // varios profesionales, el segundo tiene su propio reloj desde cero.
-    if (!isNurse && !inicioDeMiTurno(apt)) {
+    if (!soloVolver && !isNurse && !inicioDeMiTurno(apt)) {
       api.post(`/appointments/${apt._id}/start`).catch(() => {});
     }
     // Enfermería entra a Seguimientos a leer la receta y anotar los sueros; el
     // doctor abre por la ficha, donde repasa antecedentes antes de la consulta.
-    const destino = isNurse ? 'seguimientos' : 'ficha';
+    // Al VOLVER, en cambio, se entra directo a seguimientos: a lo que se vuelve
+    // es a lo que se escribió, no a los antecedentes.
+    const destino = opciones.tab || (isNurse || soloVolver ? 'seguimientos' : 'ficha');
     navigate(`/patients/${apt.patient?._id}?appointment=${apt._id}&tab=${destino}`);
   };
 
@@ -777,13 +886,14 @@ export default function Appointments() {
 
   return (
     <div>
-      {/* En el móvil el título ya lo lleva la barra superior de la app: repetirlo
-          a tamaño grande con su subtítulo gastaba dos filas antes de la agenda. */}
-      <div className="flex flex-row items-center justify-between gap-2 sm:gap-4 mb-3 sm:mb-6">
-        <div className="min-w-0">
-          <h1 className="text-lg sm:text-2xl font-bold text-slate-800 tracking-tight truncate">Citas y Calendario</h1>
-          <p className="hidden sm:block text-sm text-slate-500 mt-1">Agenda y seguimiento de consultas</p>
-        </div>
+      {/**
+        * SIN TÍTULO. La barra superior de la app ya dice «Calendario y Citas»
+        * (sale del propio menú, ver `pageTitle` en Layout.jsx): repetirlo aquí a
+        * tamaño grande, con un subtítulo que no aporta nada, gastaba dos filas
+        * justo encima de lo único que se viene a mirar — la tabla del día. En un
+        * portátil eso era la diferencia entre ver cuatro citas y ver ocho.
+        */}
+      <div className="flex flex-row items-center justify-end gap-2 mb-2 sm:mb-3">
         <div className="flex gap-2">
           {/* Enfermería, como los doctores, solo ve el día que tiene delante:
               el calendario del mes le llena la pantalla de días que no trabaja. */}
@@ -823,23 +933,37 @@ export default function Appointments() {
         </div>
       </div>
 
+      {/**
+        * LOS FILTROS OCUPAN LO MÍNIMO.
+        *
+        * Antes esta tarjeta se llevaba media pantalla —buscador, fila del día y
+        * seis desplegables, cada uno en su renglón— y la tabla de citas, que es a
+        * lo que se entra, empezaba por debajo del pliegue. Y los filtros no se
+        * usan en cada visita: el día y el buscador sí, el resto casi nunca.
+        *
+        * Lo que se hizo: el buscador y la navegación del día comparten fila en
+        * pantalla ancha, los desplegables van a cuatro columnas en vez de tres,
+        * y todo con menos aire (`py-2` en vez de `py-2.5`, `gap-2`). En el móvil
+        * sigue plegado como estaba.
+        */}
       {(view === 'list' || view === 'calendar') && (
-        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 mb-4 md:mb-6 p-3 md:p-4 space-y-2 md:space-y-3">
-          <div className="relative">
-            <HiOutlineMagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 mb-3 md:mb-4 p-2.5 md:p-3 space-y-2">
+          <div className="flex flex-col lg:flex-row lg:items-center gap-2">
+          <div className="relative flex-1 min-w-0">
+            <HiOutlineMagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
               type="text"
               value={filter.patientQuery}
               onChange={(e) => setFilter({ ...filter, patientQuery: e.target.value })}
               placeholder="Buscar paciente por nombre, cédula o teléfono..."
-              className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+              className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
             />
           </div>
           {/* Navegación de día (solo lista): la lista muestra un único día.
               En el móvil las flechas son solo el símbolo y la fecha se estira:
               con el texto completo esto se partía en tres líneas. */}
           {view === 'list' && (
-            <div className="flex items-center gap-1.5 md:gap-2 md:justify-center">
+            <div className="flex items-center gap-1.5 lg:shrink-0">
               <button
                 onClick={() => moveDay(-1)}
                 title="Día anterior"
@@ -875,6 +999,7 @@ export default function Appointments() {
               </button>
             </div>
           )}
+          </div>
 
           {/* Los filtros de abajo se usan de vez en cuando; las citas, siempre.
               En el móvil van plegados, con el número de los que estén puestos
@@ -899,12 +1024,12 @@ export default function Appointments() {
           </button>
 
           <div
-            className={`${filtrosAbiertos ? 'grid' : 'hidden'} md:grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 md:gap-3`}
+            className={`${filtrosAbiertos ? 'grid' : 'hidden'} md:grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2`}
           >
             <select
               value={filter.status}
               onChange={(e) => setFilter({ ...filter, status: e.target.value })}
-              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+              className="px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
             >
               <option value="">Todos los estados</option>
               {Object.entries(statusLabels).map(([k, v]) => (
@@ -914,7 +1039,7 @@ export default function Appointments() {
             <select
               value={filter.isFirstVisit}
               onChange={(e) => setFilter({ ...filter, isFirstVisit: e.target.value })}
-              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+              className="px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
             >
               <option value="">Todos los pacientes</option>
               <option value="true">Solo pacientes nuevos</option>
@@ -928,14 +1053,14 @@ export default function Appointments() {
                 placeholder="Filtrar por servicio..."
               />
             )}
-            {!isDoctor && (clinics?.length || 0) > 1 && (
+            {!isDoctor && clinicasFiltro.length > 1 && (
               <select
                 value={filter.clinic}
                 onChange={(e) => setFilter({ ...filter, clinic: e.target.value })}
-                className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+                className="px-3 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
               >
                 <option value="">Todas las sucursales</option>
-                {clinics.map((c) => (
+                {clinicasFiltro.map((c) => (
                   <option key={c._id} value={c._id}>{c.nombreComercial || c.name}</option>
                 ))}
               </select>
@@ -967,7 +1092,7 @@ export default function Appointments() {
               </>
             )}
           </div>
-          <div className="flex items-center justify-between text-xs text-slate-500">
+          <div className="flex items-center justify-between text-[11px] text-slate-500">
             <span>Total filtrado: <strong className="text-slate-800">{filteredAppointments.length}</strong> citas</span>
             {(filter.service || filter.clinic || filter.timeFrom || filter.timeTo || filter.status || filter.isFirstVisit || filter.patientQuery) && (
               <button
@@ -1330,19 +1455,55 @@ export default function Appointments() {
                             <HiOutlineStop className="w-4 h-4" />
                           </button>
                         )}
-                        <button
-                          onClick={() => openDetail(apt._id)}
-                          className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
-                        >
-                          <HiOutlineEye className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => downloadPdf(apt._id)}
-                          className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
-                          title="Descargar PDF"
-                        >
-                          <HiOutlineDocumentArrowDown className="w-4 h-4" />
-                        </button>
+                        {/**
+                          * VOLVER A LA CONSULTA que ya se cerró.
+                          *
+                          * Al guardar el seguimiento la cita pasa a «completada»
+                          * y quien la atendió se quedaba fuera: si había mandado
+                          * algo por error o se acordaba de un dato después, no
+                          * tenía por dónde volver. Lo único que le quedaba era
+                          * «ver» e «imprimir», que no sirven para corregir.
+                          *
+                          * No reabre la cita ni reinicia el cronómetro (ver
+                          * `abrirAtencion`): entra a la ficha, y desde ahí se
+                          * corrige el seguimiento con su propio botón.
+                          */}
+                        {(isDoctor || isNurse) && apt.status === 'completada' && (
+                          yaAtendi
+                          // Citas anteriores a los turnos: ahí manda el espejo,
+                          // que es lo único que dice quién atendió.
+                          || (!conTurnos && (idDe(apt.doctor) === String(user?.id)
+                              || idDe(apt.attendedByNurse) === String(user?.id)))
+                        ) && (
+                          <button
+                            onClick={() => abrirAtencion(apt, { soloVolver: true })}
+                            className="p-1.5 rounded-lg hover:bg-indigo-50 text-indigo-600 bg-transparent border border-indigo-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
+                            title="Volver a la consulta para corregirla o ampliarla"
+                          >
+                            Ver / corregir
+                          </button>
+                        )}
+                        {/* «Ver» e «imprimir» son de mostrador: quien atiende no
+                            los usa —lo suyo es entrar a la consulta— y le
+                            llenaban la fila de botones que no le sirven. */}
+                        {!isDoctor && !isNurse && (
+                          <>
+                            <button
+                              onClick={() => openDetail(apt._id)}
+                              title="Ver la cita"
+                              className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
+                            >
+                              <HiOutlineEye className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => downloadPdf(apt._id)}
+                              className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
+                              title="Descargar PDF"
+                            >
+                              <HiOutlineDocumentArrowDown className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
                         {editable && (
                           <button
                             onClick={() => openEdit(apt)}

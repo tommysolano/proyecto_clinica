@@ -3,6 +3,7 @@ const {
   getOrCreateByPatient,
   updateByPatient,
   addFollowUp,
+  updateFollowUp,
   deleteFollowUp,
   printFollowUp,
   printMspForm,
@@ -23,6 +24,9 @@ router.use(auth, requireClinic);
 // lo que hizo. Antes el sistema le generaba un seguimiento automático y él no
 // podía ni abrir la ficha.
 const allRoles = requireRole('admin', 'cajero', 'doctor', 'enfermero');
+// Quien ATIENDE al paciente: doctores, especialidades y enfermería. Es quien
+// redacta lo que hizo. Mostrador (cajero) no: documenta por otro.
+const rolesQueAtienden = requireRole('admin', 'doctor', 'enfermero');
 
 /**
  * HISTORIA CLÍNICA COMPLETA en el formulario oficial MSP HCU-form.005
@@ -38,9 +42,30 @@ router.get('/:patientId/hcu005', requireRole('admin', 'cajero', 'doctor'), print
 
 router.get('/:patientId', allRoles, getOrCreateByPatient);
 router.put('/:patientId', allRoles, updateByPatient);
-// Escribir un seguimiento: enfermería NO. Entra a la ficha y ve el historial
-// (en su caso, solo la receta), pero la consulta la redacta quien la atiende.
-router.post('/:patientId/follow-ups', requireRole('admin', 'cajero', 'doctor'), addFollowUp);
+/**
+ * Escribir un seguimiento. Enfermería SÍ, desde sep-2026.
+ *
+ * Antes no podía: el sistema le generaba una nota automática al cerrar el turno
+ * y ahí acababa su registro. Eso dejaba fuera el caso más común de la clínica —
+ * el paciente que llega prepagado, pasa directo a que le pongan el suero y nunca
+ * tuvo cita— y obligaba a inventarle una cita para poder anotar la aplicación.
+ * Ahora el enfermero busca al paciente y escribe lo que aplicó; si no había
+ * cita, el sistema la registra solo (ver `crearCitaAtencionInmediata`).
+ *
+ * Mostrador (cajero) sigue pudiendo escribir: documenta por otro cuando hace
+ * falta, y por eso no se le crea cita automática.
+ */
+router.post('/:patientId/follow-ups', requireRole('admin', 'cajero', 'doctor', 'enfermero'), addFollowUp);
+
+/**
+ * EDITAR un seguimiento ya guardado: el autor o el administrador. La comprobación
+ * fina («¿lo escribiste tú?») está en el controlador, porque el rol no basta:
+ * un doctor no puede corregir la consulta de otro doctor.
+ *
+ * Mostrador queda fuera a propósito: puede registrar por otro, pero no reescribir
+ * una consulta médica.
+ */
+router.put('/:patientId/follow-ups/:followUpId', rolesQueAtienden, updateFollowUp);
 
 // Administrar un suero: es el trabajo de enfermería, y el doctor también puede.
 router.post(

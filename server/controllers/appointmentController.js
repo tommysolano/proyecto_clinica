@@ -133,12 +133,27 @@ exports.getAppointments = async (req, res) => {
     //    agendando para otra sede).
     //  - por defecto → la sucursal activa del usuario.
     const accessibleClinicIds = (req.user.clinics || []).map((c) => c.clinic);
-    let clinicScope; // valor para query.clinic; null = sin filtro (todas, solo superadmin)
+    /**
+     * MOSTRADOR Y ADMINISTRACIÓN VEN LA AGENDA DE TODAS LAS SUCURSALES.
+     *
+     * El cajero está asignado a UNA sede, y con eso el filtro «Todas las
+     * sucursales» no le salía nunca (se pinta solo con más de una asignada) y la
+     * vista unificada le devolvía únicamente la suya. Pero quien atiende el
+     * mostrador y el teléfono necesita ver dónde está agendado un paciente sin
+     * tener que preguntar por otra sede.
+     *
+     * Es una ampliación deliberada de lo que ve mostrador: la agenda completa de
+     * la organización. NO afecta al resto de roles — un doctor o un enfermero
+     * siguen viendo solo las sucursales que tienen asignadas — ni a ningún otro
+     * endpoint.
+     */
+    const veTodaLaOrganizacion = req.user.isSuperAdmin || ['admin', 'cajero'].includes(req.role);
+    let clinicScope; // valor para query.clinic; null = sin filtro (todas)
     if (clinicParam === 'all') {
-      clinicScope = req.user.isSuperAdmin ? null : { $in: accessibleClinicIds };
+      clinicScope = veTodaLaOrganizacion ? null : { $in: accessibleClinicIds };
     } else if (clinicParam && String(clinicParam) !== String(req.clinicId)) {
       const allowed =
-        req.user.isSuperAdmin ||
+        veTodaLaOrganizacion ||
         accessibleClinicIds.some((c) => String(c) === String(clinicParam));
       clinicScope = allowed ? clinicParam : req.clinicId;
     } else {
@@ -1949,6 +1964,13 @@ exports.nurseComplete = async (req, res) => {
     // El servicio de ESTE turno, leído antes de cerrarlo: es lo que hace que el
     // seguimiento automático diga «Detox» y no el genérico de siempre.
     const servicioDelTurno = miTurno?.serviceName || '';
+    /**
+     * Desde cuándo cuenta lo que aplicó. Se lee ANTES de cerrar el turno porque
+     * `completarTurno` lo marca como completado. Con dos turnos de la misma
+     * enfermera en la misma cita (un detox por la mañana y un suero por la
+     * tarde), sin esta ventana el segundo parte repetiría el primero.
+     */
+    const inicioDelTurno = miTurno?.startedAt || apt.nurseClaimedAt || apt.consultationStartedAt || null;
     const { siguiente, terminado } = completarTurno(apt, { userId: req.user._id });
 
     apt.nurseAttendedAt = new Date();
@@ -2012,12 +2034,29 @@ exports.nurseComplete = async (req, res) => {
       if (!record) {
         record = await ClinicalRecord.create({ clinic: req.clinicId, patient: apt.patient, createdBy: req.user._id });
       }
+      /**
+       * LO QUE DE VERDAD SE APLICÓ.
+       *
+       * La aplicación vive dentro de la receta del doctor que la mandó, que es
+       * otra tarjeta y casi siempre otro día: aquí solo quedaba «Servicio
+       * aplicado por enfermería», que no dice ni el suero ni las ampollas. Se
+       * copia lo que puso ESTA persona desde que empezó SU turno.
+       */
+      const { aplicacionesDelTurno, resumenAplicacion } = require('../utils/nurseApplications');
+      const aplicaciones = aplicacionesDelTurno(record, req.user._id, inicioDelTurno);
+      // El detalle va DENTRO de las observaciones además de en `aplicaciones`:
+      // los PDF y la hoja MSP leen texto, no el arreglo nuevo.
+      const detalle = aplicaciones.map(resumenAplicacion).filter(Boolean);
       const vs = req.body.vitalSigns || {};
       record.followUps.push({
         fecha: new Date(),
         kind: 'enfermeria',
+        createdByRole: req.role || '',
         motivoConsulta: `Aplicación de enfermería: ${serviceNames}`,
-        observaciones: req.body.note || `Servicio aplicado por enfermería.`,
+        aplicaciones,
+        observaciones:
+          req.body.note
+          || (detalle.length ? `Se aplicó: ${detalle.join(' · ')}.` : 'Servicio aplicado por enfermería.'),
         vitalSigns: {
           // La hora de la toma la sella el sistema, no se digita.
           hora: nowHHMM(),

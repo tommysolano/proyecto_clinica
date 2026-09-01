@@ -58,9 +58,24 @@ exports.removeLogo = async (req, res) => {
 
 /**
  * Lista clínicas. Super-admin ve todas; resto solo las suyas.
+ *
+ * `?scope=names` devuelve TODAS las sucursales de la organización, pero SOLO el
+ * nombre y el id. Es para el filtro por sucursal de la agenda: mostrador está
+ * asignado a una sola sede y aun así tiene que poder mirar la agenda de las
+ * demás (la cita de un paciente puede estar en otra sucursal). Va con proyección
+ * y no devolviendo el documento entero a propósito: en el documento de una
+ * clínica viven su configuración tributaria y su certificado digital, y para
+ * pintar un desplegable no hace falta nada de eso.
  */
 exports.getClinics = async (req, res) => {
   try {
+    if (req.query.scope === 'names') {
+      if (!req.user.isSuperAdmin && !['admin', 'cajero'].includes(req.role)) {
+        return res.status(403).json({ message: 'No tienes permisos para esta acción' });
+      }
+      const todas = await Clinic.find({}, '_id name nombreComercial active').sort({ name: 1 });
+      return res.json(todas);
+    }
     let clinics;
     if (req.user.isSuperAdmin) {
       clinics = await Clinic.find().sort({ createdAt: -1 });

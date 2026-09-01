@@ -1,14 +1,15 @@
 /**
- * ECOGRAFISTA (rol nuevo) e INDICACIONES del estudio.
+ * INDICACIONES del estudio (ecografías, laboratorio…).
  *
- * Lo que vigilan:
- *  1. 'ecografista' es una especialidad de doctor a todos los efectos. Si no
- *     entra en la expansión, da 403 en todas las rutas que declaran 'doctor' —y
- *     esas son justo las que necesita: la ficha, el seguimiento y los adjuntos.
- *  2. `indicaciones` se guarda y se devuelve. Es lo único que escribe: si se
- *     perdiera, su consulta quedaría en un PDF sin una línea que lo explique.
- *  3. `indicaciones` NO es suyo: se lee y se muestra como cualquier otro campo
- *     del seguimiento, para que quien atienda después lo vea sin abrir el archivo.
+ * Hubo un rol 'ecografista' para esto y se retiró: quien hace ecografías es un
+ * doctor más, y lo que le faltaba no era un rol sino un sitio donde subir el
+ * archivo (la pestaña «Archivos»). Estos tests vigilan lo que sí importaba:
+ *  1. el rol ya NO existe y no se le puede asignar a nadie;
+ *  2. `indicaciones` se guarda y se devuelve. Si se perdiera, el estudio
+ *     quedaría en un PDF sin una línea que lo explique;
+ *  3. `indicaciones` no es de nadie en particular: se lee y se muestra como
+ *     cualquier otro campo, para que quien atienda después lo vea sin abrir el
+ *     archivo.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -46,19 +47,19 @@ const ultimo = async (patientId) => {
 
 // ───────────────────────── el rol ─────────────────────────
 
-test('ecografista es un doctor para todo el backend', () => {
-  assert.ok(DOCTOR_LIKE_ROLES.includes('ecografista'));
+test('el rol ecografista ya no existe en ninguna lista', () => {
+  assert.ok(!DOCTOR_LIKE_ROLES.includes('ecografista'));
+  assert.ok(!DOCTOR_SPECIALTY_ROLES.includes('ecografista'));
+  assert.ok(!isDoctorRole('ecografista'));
   assert.ok(
-    DOCTOR_SPECIALTY_ROLES.includes('ecografista'),
-    'requireRole("doctor") tiene que expandir a ella o no entra ni a la ficha',
+    !VALID_ROLES.includes('ecografista'),
+    'y no se le puede asignar a nadie: el enum de User lo rechaza',
   );
-  assert.ok(isDoctorRole('ecografista'));
-  assert.ok(VALID_ROLES.includes('ecografista'), 'y se le puede asignar a un usuario');
 });
 
 // ─────────────────────── indicaciones ───────────────────────
 
-test('el ecografista guarda su seguimiento: fecha, motivo e indicaciones', async () => {
+test('un estudio se guarda con fecha, motivo e indicaciones', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const p = await seedPaciente(clinicId, userId);
 
@@ -66,7 +67,7 @@ test('el ecografista guarda su seguimiento: fecha, motivo e indicaciones', async
     fecha: H.docDate(),
     descripcion: 'Ecografía abdominal',
     indicaciones: 'Hígado de tamaño normal. Se recomienda control en 6 meses.',
-  }, 'ecografista');
+  }, 'doctor');
   assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
 
   const fu = await ultimo(p._id);
@@ -89,14 +90,14 @@ test('indicaciones y evolucion son campos DISTINTOS: no se pisan', async () => {
   assert.equal(fu.indicaciones, 'Repetir la ecografía en 3 meses');
 });
 
-test('lo que escribe el ecografista lo lee cualquiera que abra la ficha', async () => {
+test('lo que escribe quien hace el estudio lo lee cualquiera que abra la ficha', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const p = await seedPaciente(clinicId, userId);
 
   await post(clinicId, userId, p._id, {
     descripcion: 'Ecografía obstétrica',
     indicaciones: 'Feto único, vivo. Control en 4 semanas.',
-  }, 'ecografista');
+  }, 'doctor');
 
   // La ficha se lee con el mismo endpoint para todos: si el campo llega aquí,
   // llega a la pantalla de cualquiera que pueda abrirla.

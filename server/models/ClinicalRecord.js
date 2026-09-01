@@ -45,6 +45,33 @@ const suerocomponenteAplicadoSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/**
+ * UNA aplicación de enfermería, copiada al seguimiento del enfermero.
+ *
+ * Es el mismo contenido que una entrada de `recetaItems[].administrations`, pero
+ * guardado donde se lee: en la tarjeta del turno de enfermería. Se copia en vez
+ * de referenciarse porque una historia clínica tiene que decir lo que se hizo
+ * ese día aunque después se corrija la receta.
+ */
+const aplicacionEnfermeriaSchema = new mongoose.Schema(
+  {
+    // Nombre del suero/servicio aplicado (snapshot).
+    itemName: { type: String, trim: true, default: '' },
+    // Volumen de cloruro de ESTA dosis. null cuando no es un suero.
+    baseVolumeMl: { type: Number, default: null },
+    baseName: { type: String, trim: true, default: '' },
+    // Las ampollas y moléculas, con lo recetado y lo puesto.
+    components: { type: [suerocomponenteAplicadoSchema], default: [] },
+    note: { type: String, trim: true, default: '' },
+    at: { type: Date, default: null },
+    // Quién la puso. `byName` es snapshot: si esa persona se va, la aplicación
+    // tiene que seguir diciendo quién fue.
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    byName: { type: String, trim: true, default: '' },
+  },
+  { _id: false }
+);
+
 const recetaItemSchema = new mongoose.Schema(
   {
     // Referencia al producto/medicamento del inventario (categoría 'medicamento' o 'servicio'/'programa').
@@ -219,8 +246,15 @@ const followUpSchema = new mongoose.Schema(
     tipoConsulta: { type: String, enum: ['primera', 'subsecuente', ''], default: '' },
     // E. Enfermedad o problema actual (cronología, localización, características…).
     enfermedadActual: { type: String, trim: true, default: '' },
-    // Tipo de entrada de seguimiento: '' (consulta normal del doctor) o
-    // 'enfermeria' (aplicación de servicio registrada automáticamente por enfermería).
+    /**
+     * Tipo de entrada de seguimiento:
+     *   ''            consulta normal (doctor o especialidad);
+     *   'enfermeria'  aplicación registrada por enfermería;
+     *   'estudio'     ecografía, laboratorio o cualquier estudio que se resuelve
+     *                 subiendo el archivo y escribiendo la impresión
+     *                 diagnóstica. NO lleva motivo de consulta: quien hace el
+     *                 estudio no está haciendo una consulta.
+     */
     kind: { type: String, default: '' },
     // "motivo de consulta" reemplaza al antiguo "descripcion".
     // Mantenemos `descripcion` como alias por retrocompatibilidad de datos.
@@ -277,14 +311,13 @@ const followUpSchema = new mongoose.Schema(
     /**
      * INDICACIONES de quien hizo el estudio. Campo aparte de `evolucion` porque
      * no dicen lo mismo: la evolución es cómo va el paciente respecto de sus
-     * controles; esto es lo que el ecografista observa y recomienda a partir de
-     * la imagen que acaba de tomar.
+     * controles; esto es lo que se observa y se recomienda a partir de la imagen
+     * que se acaba de tomar.
      *
-     * Nace con el rol 'ecografista' —cuya consulta es solo fecha, motivo,
-     * indicaciones y el archivo—, pero el campo NO es suyo: se guarda y se
-     * muestra en el historial como uno más, y cualquiera que atienda puede
-     * escribirlo. Quien lea la ficha después tiene que ver lo que dijo el
-     * ecografista sin tener que abrir el PDF.
+     * En la pestaña de Archivos se rotula «Impresión diagnóstica», que es como
+     * lo llama quien hace ecografías. Es el mismo campo a propósito: quien lea
+     * la ficha después tiene que ver lo que dijo el estudio sin abrir el PDF, y
+     * eso vale igual venga de un seguimiento o de un archivo suelto.
      */
     indicaciones: { type: String, trim: true, default: '' },
     // Archivos PDF subidos por el doctor (ecografías, bioresonancias, etc.)
@@ -421,6 +454,39 @@ const followUpSchema = new mongoose.Schema(
         estudiosSolicitados: { type: String, trim: true, default: '' },
         proximoControl: { type: String, trim: true, default: '' },
       },
+    },
+    /**
+     * CONSULTA DEL TERAPEUTA (rol 'terapeuta'). PRIVADA.
+     *
+     * Su hoja no es la MSP: no explora por sistemas, no diagnostica con CIE-10 y
+     * no narra una evolución. Son tres cosas y ya —cómo está el paciente en los
+     * cinco elementos, cómo se reparte su cuadro en cuatro cuadrantes, y el plan
+     * que sale de ahí—, y no las ve nadie más que él y la administración
+     * (ver `hideTherapyNotes` en el controlador).
+     */
+    terapia: {
+      // Un texto por elemento (ver TERAPIA_ELEMENTOS). Solo se guardan los que
+      // tienen algo escrito.
+      elementos: {
+        type: [new mongoose.Schema(
+          {
+            key: { type: String, required: true },
+            texto: { type: String, trim: true, default: '' },
+          },
+          { _id: false }
+        )],
+        default: [],
+      },
+      // Los cuatro cuadrantes del plan (ver TERAPIA_FODA).
+      foda: {
+        desague: { type: String, trim: true, default: '' },
+        apreciacion: { type: String, trim: true, default: '' },
+        toxinas: { type: String, trim: true, default: '' },
+        bioRegeneracion: { type: String, trim: true, default: '' },
+      },
+      // El plan escrito que sale del reparto de arriba. Sustituye al «plan de
+      // tratamiento» de la hoja MSP, que al terapeuta no se le pide.
+      plan: { type: String, trim: true, default: '' },
     },
     // Datos podológicos (rol 'podologia'). Hoja «Historia clínica podológica».
     podologia: {
@@ -576,6 +642,39 @@ const followUpSchema = new mongoose.Schema(
       default: '',
     },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    /**
+     * ROL con el que se escribió el seguimiento ('odontologia', 'doctor',
+     * 'enfermero'…). No se deduce del usuario al leer: la misma persona puede
+     * tener un rol distinto en cada sucursal, y mañana otro. Lo que hace falta
+     * saber es con qué sombrero se escribió ESTA consulta.
+     *
+     * Nace para que el odontólogo vea su historia sin las consultas de las demás
+     * especialidades. Los seguimientos anteriores a este campo lo tienen vacío;
+     * quien filtre tiene que aceptar eso y caer al contenido (ver
+     * `odontologiaHasData` en el cliente), no esconderlos.
+     */
+    createdByRole: { type: String, trim: true, default: '' },
+    /**
+     * EDICIÓN POSTERIOR. Un seguimiento se puede corregir o ampliar después de
+     * guardarlo —el doctor mandó algo por error, o se acordó de un dato—, pero
+     * es historia clínica: `createdBy` NO se toca nunca (de él sale la firma
+     * electrónica de la receta) y queda constancia de quién lo cambió y cuándo.
+     * Mismo patrón que las observaciones del paciente.
+     */
+    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    editedAt: { type: Date, default: null },
+    /**
+     * QUÉ APLICÓ ENFERMERÍA, en sus propias palabras y con sus cantidades.
+     *
+     * Lo escribe SOLO el servidor al cerrar el turno de enfermería. Sin esto la
+     * tarjeta del seguimiento decía «Servicio aplicado por enfermería» y nada
+     * más: la aplicación real vive en `recetaItems[].administrations` del
+     * seguimiento del DOCTOR que lo recetó, que es otra tarjeta y otro día.
+     *
+     * Es una FOTO, no una referencia: si mañana se corrige la receta, lo que se
+     * puso sigue diciendo lo que se puso.
+     */
+    aplicaciones: { type: [aplicacionEnfermeriaSchema], default: [] },
   },
   { timestamps: true }
 );
@@ -634,6 +733,51 @@ const clinicalRecordSchema = new mongoose.Schema(
     // Antecedentes libres (LEGACY — origen de migración a las listas estructuradas).
     antecedentesFamiliares: { type: String, trim: true, default: '' },
     antecedentesPatologicos: { type: String, trim: true, default: '' },
+
+    /**
+     * LA FICHA DEL TERAPEUTA. Vive APARTE de la hoja MSP a propósito.
+     *
+     * No es «la ficha con un par de campos más»: el terapeuta no llena la hoja
+     * oficial y sus antecedentes son suyos. Y sobre todo, esto es PRIVADO —solo
+     * lo ven él y la administración (ver `hideTherapyNotes`)—, así que tiene que
+     * poder recortarse de un tajo. Mezclado dentro de los campos de la hoja MSP
+     * habría que ir campo por campo decidiendo cuál es de quién, y el día que se
+     * añadiera uno nuevo se escaparía.
+     *
+     * Los antecedentes repiten la forma de la hoja MSP a propósito: el terapeuta
+     * pregunta lo mismo, y así el catálogo de categorías es el mismo.
+     */
+    fichaTerapia: {
+      patologicosPersonales: { type: [mspCheckSchema], default: [] },
+      patologicosFamiliares: { type: [mspCheckSchema], default: [] },
+      datosRelevantes: { type: String, trim: true, default: '' },
+      datosRelevantesFamiliares: { type: String, trim: true, default: '' },
+      antecedentesQuirurgicos: { type: String, trim: true, default: '' },
+      antecedentesMedicamentos: { type: String, trim: true, default: '' },
+      alergias: { type: String, trim: true, default: '' },
+      /**
+       * HÁBITOS, en tabla. Sustituye a la rejilla de casillas de la hoja MSP:
+       * una fila por hábito (digestión, sueño, toxinas, alimentación, estrés),
+       * un NIVEL excluyente del 1 al 3, y lo que el paciente hace a diario.
+       */
+      habitos: {
+        type: [new mongoose.Schema(
+          {
+            fila: { type: String, required: true },
+            // '1' | '2' | '3' | '' — uno solo: es una escala, no tres casillas.
+            nivel: { type: String, trim: true, default: '' },
+            diario: { type: String, trim: true, default: '' },
+          },
+          { _id: false }
+        )],
+        default: [],
+      },
+      habitosDetalle: { type: String, trim: true, default: '' },
+      // Quién y cuándo tocó esta ficha por última vez. Va aparte de `updatedBy`
+      // del documento: esta ficha la escribe otra persona y en otro momento.
+      updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      updatedAt: { type: Date, default: null },
+    },
     // Seguimiento
     followUps: { type: [followUpSchema], default: [] },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

@@ -139,8 +139,8 @@ export const ODONTOGRAMA_ESTADOS = [
   { key: 'sano', label: 'Sano', tone: 'emerald', color: 'neutro', ambito: 'pieza', simbolo: 'ninguno' },
   { key: 'caries', label: 'Caries', tone: 'red', color: 'rojo', ambito: 'cara', simbolo: 'circulo' },
   { key: 'obturado', label: 'Obturado / restaurado', tone: 'blue', color: 'azul', ambito: 'cara', simbolo: 'circulo' },
-  { key: 'sellanteNecesario', label: 'Sellante necesario', tone: 'red', color: 'rojo', ambito: 'cara', simbolo: 'cuadro' },
-  { key: 'sellanteRealizado', label: 'Sellante realizado', tone: 'blue', color: 'azul', ambito: 'cara', simbolo: 'cuadro' },
+  { key: 'sellanteNecesario', label: 'Sellante necesario', tone: 'red', color: 'rojo', ambito: 'cara', simbolo: 'asterisco' },
+  { key: 'sellanteRealizado', label: 'Sellante realizado', tone: 'blue', color: 'azul', ambito: 'cara', simbolo: 'asterisco' },
   { key: 'extraccionIndicada', label: 'Extracción indicada', tone: 'rose', color: 'rojo', ambito: 'pieza', simbolo: 'equis' },
   // Antes eran dos opciones, «Pérdida por caries» y «Pérdida (otra causa)». El
   // odontólogo pidió una sola: al marcar la pieza lo que importa es que NO está,
@@ -154,7 +154,7 @@ export const ODONTOGRAMA_ESTADOS = [
   { key: 'protesisRemovible', label: 'Prótesis removible', tone: 'amber', color: 'rojo', ambito: 'pieza', simbolo: 'guiones' },
   { key: 'protesisTotal', label: 'Prótesis total', tone: 'amber', color: 'rojo', ambito: 'pieza', simbolo: 'doblebarra' },
   { key: 'protesis', label: 'Prótesis', tone: 'amber', color: 'rojo', ambito: 'pieza', simbolo: 'guiones', legacy: true },
-  { key: 'sellante', label: 'Sellante', tone: 'teal', color: 'azul', ambito: 'cara', simbolo: 'cuadro', legacy: true },
+  { key: 'sellante', label: 'Sellante', tone: 'teal', color: 'azul', ambito: 'cara', simbolo: 'asterisco', legacy: true },
   { key: 'implante', label: 'Implante', tone: 'cyan', color: 'azul', ambito: 'pieza', simbolo: 'punto', legacy: true },
   { key: 'fracturado', label: 'Fracturado', tone: 'orange', color: 'rojo', ambito: 'pieza', simbolo: 'barra', legacy: true },
   // Las dos pérdidas que sustituyó «Ausencia»: fuera del selector, pero se
@@ -465,3 +465,84 @@ export const COSMETOLOGIA_OPTION_LABELS = {
 
 /** Etiqueta legible de una opción cerrada; si no está en el mapa, la deja tal cual. */
 export const optionLabel = (v) => COSMETOLOGIA_OPTION_LABELS[v] || v || '';
+
+// ───────────────────────── Terapia (rol 'terapeuta') ─────────────────────────
+//
+// La consulta del terapeuta no es la hoja MSP: no explora por sistemas, no
+// diagnostica con CIE-10 y no describe una evolución. Lo suyo son tres cosas —
+// cómo está el paciente en los CINCO ELEMENTOS, cómo se reparte su cuadro en
+// cuatro cuadrantes, y el plan que sale de ahí—, así que su formulario se poda
+// hasta dejar eso (ver `isTerapeuta` en PatientDetail).
+
+/**
+ * Los CINCO ELEMENTOS (Wu Xing), con su sitio en la rueda y su color.
+ *
+ * `letra` es lo que se pinta DENTRO del círculo. Madera y Metal comparten la M a
+ * propósito: quien llena esta hoja las distingue por el COLOR —verde y blanco—,
+ * que es como está impreso el esquema de toda la vida. Por eso el color no es
+ * decoración: es la única forma de leer el gráfico.
+ *
+ * `x`/`y` son porcentajes del lienzo, en la posición del pentágono clásico:
+ * Fuego arriba, Madera y Tierra a media altura, Agua y Metal abajo.
+ */
+export const TERAPIA_ELEMENTOS = [
+  { key: 'fuego',  label: 'Fuego',  letra: 'F', color: '#dc2626', texto: '#ffffff', x: 50, y: 12 },
+  { key: 'tierra', label: 'Tierra', letra: 'T', color: '#eab308', texto: '#1f2937', x: 86, y: 42 },
+  { key: 'metal',  label: 'Metal',  letra: 'M', color: '#ffffff', texto: '#1f2937', x: 72, y: 85 },
+  { key: 'agua',   label: 'Agua',   letra: 'A', color: '#111827', texto: '#ffffff', x: 28, y: 85 },
+  { key: 'madera', label: 'Madera', letra: 'M', color: '#16a34a', texto: '#ffffff', x: 14, y: 42 },
+];
+
+export const TERAPIA_ELEMENTOS_KEYS = TERAPIA_ELEMENTOS.map((e) => e.key);
+
+/**
+ * Los dos ciclos del esquema, en pares [origen, destino].
+ *
+ *  · APOYO (generación): la rueda de fuera, en gris. La Madera alimenta al
+ *    Fuego, el Fuego a la Tierra, y así hasta cerrar.
+ *  · CONTROL (dominación): la estrella de dentro, en negro. Es la que cruza.
+ *
+ * Van aquí y no dibujadas a mano en el componente porque son el esquema, no un
+ * adorno: si alguien corrige una flecha, la corrige en un solo sitio.
+ */
+export const TERAPIA_CICLO_APOYO = [
+  ['madera', 'fuego'], ['fuego', 'tierra'], ['tierra', 'metal'],
+  ['metal', 'agua'], ['agua', 'madera'],
+];
+export const TERAPIA_CICLO_CONTROL = [
+  ['madera', 'tierra'], ['tierra', 'agua'], ['agua', 'fuego'],
+  ['fuego', 'metal'], ['metal', 'madera'],
+];
+
+/**
+ * Los cuatro cuadrantes del plan terapéutico. Se lee como un FODA: el cuadro del
+ * paciente repartido en cuatro, y debajo el plan escrito que sale de ese reparto.
+ */
+export const TERAPIA_FODA = [
+  { key: 'desague', label: 'Desagüe' },
+  { key: 'apreciacion', label: 'Apreciación' },
+  { key: 'toxinas', label: 'Toxinas' },
+  { key: 'bioRegeneracion', label: 'Bio-Regeneración' },
+];
+
+export const TERAPIA_FODA_KEYS = TERAPIA_FODA.map((c) => c.key);
+
+/**
+ * HÁBITOS de la ficha del terapeuta. Sustituye a la rejilla de casillas de la
+ * hoja MSP: aquí cada hábito se puntúa en un NIVEL (1, 2 o 3 — uno solo) y
+ * además lleva una nota de lo que el paciente hace a diario.
+ */
+export const TERAPIA_HABITOS_FILAS = [
+  { key: 'digestion', label: 'Digestión' },
+  { key: 'sueno', label: 'Sueño' },
+  { key: 'toxinas', label: 'Toxinas' },
+  { key: 'alimentacion', label: 'Alimentación' },
+  { key: 'estres', label: 'Estrés' },
+];
+
+export const TERAPIA_HABITOS_FILAS_KEYS = TERAPIA_HABITOS_FILAS.map((f) => f.key);
+
+// Los niveles son EXCLUYENTES: marcar el 2 desmarca el 1. Es una escala, no tres
+// casillas sueltas.
+export const TERAPIA_HABITOS_NIVELES = ['1', '2', '3'];
+

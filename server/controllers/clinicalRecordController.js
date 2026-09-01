@@ -33,6 +33,10 @@ const {
   COSMETOLOGIA_CUERO_CABELLUDO,
   COSMETOLOGIA_FIBRA_CAPILAR_KEYS,
   COSMETOLOGIA_AFECCIONES_CUERO_KEYS,
+  TERAPIA_ELEMENTOS_KEYS,
+  TERAPIA_FODA_KEYS,
+  TERAPIA_HABITOS_FILAS_KEYS,
+  TERAPIA_HABITOS_NIVELES,
   ODONTOGRAMA_ESTADOS_CARA_KEYS,
   ODONTOGRAMA_GRADOS,
   marcaValida,
@@ -54,7 +58,7 @@ const { firmarPdfConUsuario, bloqueFirmaHtml, FIRMA_CSS } = require('../utils/pd
 const { describeCie10 } = require('../utils/cie10Catalog');
 const { emitToClinic, emitToUser, emitToRole } = require('../realtime');
 const { canReq } = require('../utils/permissions');
-const { isDoctorRole } = require('../constants/roles');
+const { atiendePacientes, NURSE_ROLE } = require('../constants/roles');
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
@@ -135,7 +139,73 @@ const hideContactData = (record, req) => {
  * Los datos de CONTACTO (cédula, dirección, celular) son otra cosa y siguen
  * siendo solo del administrador: los quita `hideContactData`, que no tiene nada
  * que ver con lo clínico.
+ *
+ * LA EXCEPCIÓN: EL TERAPEUTA (sep-2026). Lo de arriba sigue valiendo para todo
+ * el mundo menos para una consulta, la del terapeuta, que la clínica decidió que
+ * es privada. No es una vuelta atrás del criterio: aquello se quitó porque el
+ * recorte no protegía a nadie y sí escondía lo que evita una reacción; esto se
+ * pone porque la información en sí es reservada. Ver `hideTherapyNotes`.
  */
+
+/** El rol cuya consulta es privada. */
+const THERAPIST_ROLE = 'terapeuta';
+
+/**
+ * ¿Puede esta petición leer las notas del terapeuta?
+ *
+ * MIRA `req.role` A PELO, y no `canReq`, a propósito: `can()` aplana TODA
+ * especialidad médica a la clave 'doctor' (ver utils/permissions.js), así que
+ * por esa vía odontología y terapeuta darían exactamente lo mismo y el recorte
+ * no recortaría nada.
+ */
+const canReadTherapy = (req) =>
+  !!req?.user?.isSuperAdmin || req?.role === 'admin' || req?.role === THERAPIST_ROLE;
+
+/**
+ * QUITA de la ficha lo que escribió el terapeuta.
+ *
+ * A quien no le corresponde no se le manda un seguimiento a medias: se le manda
+ * un TOCÓN —fecha, autor y la frase «Atendido por terapeuta»— para que la
+ * historia siga contando que ese día hubo una atención, que es un dato clínico
+ * legítimo, sin decir nada de lo que se habló.
+ *
+ * Y se le quita también `fichaTerapia` entera, que es la otra mitad del secreto.
+ *
+ * Se aplica en la SALIDA, no en la consulta a Mongo: hay siete `res.json` que
+ * devuelven la ficha y tres PDF que la leen por su cuenta. Un solo punto de paso
+ * es lo único que se puede auditar de un vistazo.
+ */
+const TEXTO_TOCON = 'Atendido por terapeuta';
+
+const hideTherapyNotes = (record, req) => {
+  if (!record || canReadTherapy(req)) return record;
+  const obj = record.toObject ? record.toObject() : { ...record };
+  obj.fichaTerapia = undefined;
+  obj.followUps = (obj.followUps || []).map((fu) => {
+    if (fu?.createdByRole !== THERAPIST_ROLE) return fu;
+    return {
+      _id: fu._id,
+      fecha: fu.fecha,
+      kind: fu.kind,
+      createdBy: fu.createdBy,
+      createdByRole: fu.createdByRole,
+      createdAt: fu.createdAt,
+      // Bandera para que la pantalla lo pinte como lo que es —una atención
+      // reservada— y no como una consulta a la que le faltan los campos.
+      redacted: true,
+      descripcion: TEXTO_TOCON,
+      motivoConsulta: TEXTO_TOCON,
+      recetaItems: [],
+      attachments: [],
+      diagnosticos: [],
+      aplicaciones: [],
+    };
+  });
+  return obj;
+};
+
+/** ¿Este seguimiento es del terapeuta? Para las rutas de PDF, que van por id. */
+const esDelTerapeuta = (fu) => fu?.createdByRole === THERAPIST_ROLE;
 
 /**
  * FECHA DE UN SEGUIMIENTO PARA IMPRIMIRLA (dd/mm/aaaa).
@@ -426,6 +496,9 @@ exports.getOrCreateByPatient = async (req, res) => {
       patient: patientId,
     })
       .populate('followUps.createdBy', 'name')
+      // Quién corrigió el seguimiento después de guardarlo, para poder decirlo
+      // en la tarjeta («modificado por X»). Sin esto la edición sería invisible.
+      .populate('followUps.updatedBy', 'name')
       .populate('createdBy', 'name')
       .populate('updatedBy', 'name');
 
@@ -450,7 +523,7 @@ exports.getOrCreateByPatient = async (req, res) => {
       });
     }
 
-    res.json(hideContactData(record, req));
+    res.json(hideContactData(hideTherapyNotes(record, req), req));
   } catch (error) {
     res
       .status(500)
@@ -502,18 +575,429 @@ exports.updateByPatient = async (req, res) => {
       RECORD_CONTACT_FIELDS.forEach((f) => delete update[f]);
     }
 
+    /**
+     * LA FICHA DEL TERAPEUTA, que va aparte.
+     *
+     * Solo la escribe él. La regla es la misma que con los datos de contacto:
+     * quien no la VE tampoco la GUARDA, porque su formulario la recibe recortada
+     * (`hideTherapyNotes`) y un guardado cualquiera la dejaría en blanco.
+     */
+    if (req.body.fichaTerapia !== undefined && canReadTherapy(req)) {
+      const ficha = sanitizeFichaTerapia(req.body.fichaTerapia);
+      if (ficha !== undefined) {
+        update.fichaTerapia = { ...ficha, updatedBy: req.user._id, updatedAt: new Date() };
+      }
+    }
+
     const record = await ClinicalRecord.findOneAndUpdate(
       { clinic: req.clinicId, patient: patientId },
       { $set: update, $setOnInsert: { createdBy: req.user._id } },
       { new: true, upsert: true, runValidators: true }
     );
 
-    res.json(hideContactData(record, req));
+    res.json(hideContactData(hideTherapyNotes(record, req), req));
   } catch (error) {
     res
       .status(500)
       .json({ message: 'Error al actualizar ficha clínica', error: error.message });
   }
+};
+
+/**
+ * SANEADORES de las secciones del seguimiento.
+ *
+ * Viven fuera de `addFollowUp` porque GUARDAR y EDITAR un seguimiento tienen que
+ * limpiar los datos exactamente igual. Cuando estaban dentro del controlador, la
+ * unica forma de reutilizarlos era copiarlos — y una copia de 340 lineas se queda
+ * desactualizada el dia que alguien anade un campo a una especialidad.
+ *
+ * Son funciones PURAS: no leen `req` ni la base. Lo que no este en el catalogo no
+ * se guarda.
+ */
+// --- Saneadores de las secciones MSP (solo se guardan claves con contenido) ---
+const sanitizeChecks = (arr) =>
+  (Array.isArray(arr) ? arr : [])
+    .filter((c) => c && c.key)
+    .map((c) => ({ key: String(c.key), marked: !!c.marked, detail: String(c.detail || '').trim() }));
+const sanitizeExamen = (ex) => {
+  if (!ex || typeof ex !== 'object') return undefined;
+  return {
+    regional: sanitizeChecks(ex.regional),
+    sistemico: sanitizeChecks(ex.sistemico),
+    hallazgos: String(ex.hallazgos || '').trim(),
+  };
+};
+const sanitizeDiagnosticos = (arr) =>
+  (Array.isArray(arr) ? arr : [])
+    .filter((d) => d && (String(d.descripcion || '').trim() || String(d.cie || '').trim()))
+    .slice(0, 6)
+    .map((d) => {
+      const cie = String(d.cie || '').trim().toUpperCase();
+      return {
+        descripcion: String(d.descripcion || '').trim(),
+        cie,
+        // Si el cliente no mandó el nombre del código, se toma del catálogo.
+        cieDescripcion: String(d.cieDescripcion || '').trim() || describeCie10(cie),
+        presuntivo: !!d.presuntivo,
+        definitivo: !!d.definitivo,
+      };
+    });
+
+// Saneador de los datos ginecológicos: solo persiste lo que llega con contenido.
+const sanitizeGineco = (g) => {
+  if (!g || typeof g !== 'object') return undefined;
+  const numOrNull = (v) => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
+  const met = g.metodosAnticonceptivos || {};
+  const pap = g.pap || {};
+  const toma = pap.toma || {};
+  const cp = g.controlPrenatal || {};
+  const gpac = g.gpac || {};
+  // El esquema exige min:0; un negativo por API tumbaría TODO el seguimiento
+  // con un error de validación, así que aquí se descarta y punto.
+  const pesoPre = numOrNull(g.pesoPreconcepcional);
+  return {
+    fum: g.fum ? new Date(g.fum) : null,
+    gpac: {
+      gestas: numOrNull(gpac.gestas),
+      partos: numOrNull(gpac.partos),
+      abortos: numOrNull(gpac.abortos),
+      cesareas: numOrNull(gpac.cesareas),
+    },
+    embarazoActual: typeof g.embarazoActual === 'boolean' ? g.embarazoActual : null,
+    pesoPreconcepcional: pesoPre != null && pesoPre >= 0 ? pesoPre : null,
+    metodosAnticonceptivos: {
+      hormonal: !!met.hormonal,
+      barrera: !!met.barrera,
+      diu: !!met.diu,
+      otro: !!met.otro,
+      otroDetalle: String(met.otroDetalle || '').trim(),
+    },
+    pap: {
+      tipo: ['previo', 'primera_vez'].includes(pap.tipo) ? pap.tipo : '',
+      toma: {
+        exocervical: !!toma.exocervical,
+        endocervical: !!toma.endocervical,
+        otros: !!toma.otros,
+        otrosDetalle: String(toma.otrosDetalle || '').trim(),
+      },
+    },
+    controlPrenatal: {
+      signosVitalesScore: String(cp.signosVitalesScore || '').trim(),
+      scoreMama: sanitizeScoreMama(cp.scoreMama),
+      bebePosicion: String(cp.bebePosicion || '').trim(),
+      actividadCardiaca: String(cp.actividadCardiaca || '').trim(),
+    },
+  };
+};
+
+/**
+ * SCORE MAMÁ. Los puntajes y el total se RECALCULAN aquí a partir de los
+ * valores medidos: lo que mande el navegador se ignora. Es un puntaje que
+ * decide si se activa la clave obstétrica — no puede depender de que el
+ * cliente esté actualizado ni de que nadie toque la petición.
+ */
+const sanitizeScoreMama = (sm) => {
+  if (!sm || typeof sm !== 'object') return undefined;
+  const numOrNull = (v) => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
+  const medidos = {};
+  for (const key of SCORE_MAMA_NUMERICOS_KEYS) medidos[key] = numOrNull(sm[key]);
+  medidos.conciencia = SCORE_MAMA_CONCIENCIA.some((o) => o.key === sm.conciencia) ? sm.conciencia : '';
+  medidos.proteinuria = SCORE_MAMA_PROTEINURIA.some((o) => o.key === sm.proteinuria) ? sm.proteinuria : '';
+  const { puntajes, total } = calcularScoreMama(medidos);
+  return { ...medidos, puntajes, total };
+};
+
+// --- Saneadores de las fichas por especialidad ---
+// Regla común: el catálogo manda. Solo se guardan claves que existan en
+// server/constants/specialtyCatalogs.js y opciones dentro de su lista; lo que
+// no cuadra se descarta en silencio en vez de romper la validación de mongoose.
+const txt = (v) => String(v ?? '').trim();
+const pick = (v, options) => (options.includes(v) ? v : '');
+const checksIn = (arr, allowedKeys) =>
+  sanitizeChecks(arr).filter((c) => allowedKeys.includes(c.key));
+
+const sanitizePodologia = (p) => {
+  if (!p || typeof p !== 'object') return undefined;
+  const hg = p.hallazgosGenerales || {};
+  const vn = p.vascularNeurologica || {};
+  const ev = p.evaluacion || {};
+  return {
+    hallazgosGenerales: {
+      piel: txt(hg.piel),
+      unas: txt(hg.unas),
+      hidratacion: txt(hg.hidratacion),
+      temperatura: txt(hg.temperatura),
+      coloracion: txt(hg.coloracion),
+      edema: typeof hg.edema === 'boolean' ? hg.edema : null,
+      otros: txt(hg.otros),
+    },
+    vascularNeurologica: {
+      pulsoPedio: pick(vn.pulsoPedio, PODOLOGIA_PULSO_OPCIONES),
+      pulsoTibialPosterior: pick(vn.pulsoTibialPosterior, PODOLOGIA_PULSO_OPCIONES),
+      llenadoCapilar: txt(vn.llenadoCapilar),
+      sensibilidadMonofilamento: pick(vn.sensibilidadMonofilamento, PODOLOGIA_SENSIBILIDAD_OPCIONES),
+      reflejos: pick(vn.reflejos, PODOLOGIA_REFLEJOS_OPCIONES),
+    },
+    evaluacion: {
+      piel: txt(ev.piel),
+      unas: txt(ev.unas),
+      pulsos: txt(ev.pulsos),
+      sensibilidad: txt(ev.sensibilidad),
+      calzado: txt(ev.calzado),
+      marcha: txt(ev.marcha),
+    },
+    hallazgos: checksIn(p.hallazgos, PODOLOGIA_HALLAZGOS_KEYS),
+    hallazgosDetalle: txt(p.hallazgosDetalle),
+  };
+};
+
+/**
+ * Ficha cardiológica. Los antecedentes son de TRES estados (sí / no / sin
+ * consignar): solo se guarda el que trae un booleano de verdad, para no
+ * convertir "no preguntado" en "el paciente dice que no".
+ */
+const sanitizeCardiologia = (c) => {
+  if (!c || typeof c !== 'object') return undefined;
+  const numOrNull = (v) => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
+  const ecg = c.electrocardiograma || {};
+  const est = c.estudios || {};
+  const plan = c.plan || {};
+  const estudios = {};
+  for (const key of CARDIOLOGIA_ESTUDIOS_KEYS) estudios[key] = txt(est[key]);
+  return {
+    antecedentes: (Array.isArray(c.antecedentes) ? c.antecedentes : [])
+      .filter((a) => a && CARDIOLOGIA_ANTECEDENTES_KEYS.includes(a.key) && typeof a.value === 'boolean')
+      .map((a) => ({ key: a.key, value: a.value })),
+    antecedentesOtros: txt(c.antecedentesOtros),
+    alergias: txt(c.alergias),
+    medicacionActual: txt(c.medicacionActual),
+    electrocardiograma: {
+      ritmo: txt(ecg.ritmo),
+      fc: numOrNull(ecg.fc),
+      hallazgos: txt(ecg.hallazgos),
+    },
+    estudios,
+    plan: {
+      estudiosSolicitados: txt(plan.estudiosSolicitados),
+      proximoControl: txt(plan.proximoControl),
+    },
+  };
+};
+
+/**
+ * La consulta del TERAPEUTA: los cinco elementos, los cuatro cuadrantes y el
+ * plan. Como el resto, devuelve `undefined` si no viene — así editar un
+ * seguimiento sin mandar la sección no la borra.
+ */
+const sanitizeTerapia = (t) => {
+  if (!t || typeof t !== 'object') return undefined;
+  const foda = t.foda || {};
+  const cuadrantes = {};
+  for (const key of TERAPIA_FODA_KEYS) cuadrantes[key] = txt(foda[key]);
+  return {
+    // Solo los elementos del catálogo, y solo los que tienen algo escrito: un
+    // elemento en blanco no es un hallazgo, es un hueco.
+    elementos: (Array.isArray(t.elementos) ? t.elementos : [])
+      .filter((e) => e && TERAPIA_ELEMENTOS_KEYS.includes(e.key) && txt(e.texto))
+      .map((e) => ({ key: e.key, texto: txt(e.texto) })),
+    foda: cuadrantes,
+    plan: txt(t.plan),
+  };
+};
+
+/**
+ * La FICHA del terapeuta (no el seguimiento). Misma forma que los antecedentes
+ * de la hoja MSP, más la tabla de hábitos por nivel.
+ */
+const sanitizeFichaTerapia = (f) => {
+  if (!f || typeof f !== 'object') return undefined;
+  return {
+    patologicosPersonales: sanitizeChecks(f.patologicosPersonales),
+    patologicosFamiliares: sanitizeChecks(f.patologicosFamiliares),
+    datosRelevantes: txt(f.datosRelevantes),
+    datosRelevantesFamiliares: txt(f.datosRelevantesFamiliares),
+    antecedentesQuirurgicos: txt(f.antecedentesQuirurgicos),
+    antecedentesMedicamentos: txt(f.antecedentesMedicamentos),
+    alergias: txt(f.alergias),
+    habitos: (Array.isArray(f.habitos) ? f.habitos : [])
+      .filter((h) => h && TERAPIA_HABITOS_FILAS_KEYS.includes(String(h.fila)))
+      .map((h) => ({
+        fila: String(h.fila),
+        // El nivel es UNO de los tres, o ninguno. Cualquier otra cosa se cae.
+        nivel: pick(String(h.nivel ?? ''), TERAPIA_HABITOS_NIVELES),
+        diario: txt(h.diario),
+      }))
+      // Una fila sin nivel y sin nota no aporta nada: no se guarda.
+      .filter((h) => h.nivel || h.diario),
+    habitosDetalle: txt(f.habitosDetalle),
+  };
+};
+
+/**
+ * Estado de UNA cara. Solo valen los estados de ámbito 'cara' (pintar
+ * "extracción indicada" en la cara mesial no significaría nada).
+ *
+ * Acepta además el formato ANTIGUO, en el que las caras eran booleanas y el
+ * estado vivía solo en la pieza: un `true` heredaba el estado del diente. Así
+ * un odontograma guardado antes del rediseño se sigue leyendo igual.
+ */
+const caraEstado = (v, estadoPieza) => {
+  if (v === true || v === 'true') {
+    // Una cara marcada en el formato viejo solo puede heredar el estado de su
+    // pieza si ese estado es de cara. Si no lo es (extracción indicada,
+    // ausente, corona…), NO se inventa nada: esto es una historia clínica y
+    // rellenarla con "caries" sería escribir un diagnóstico que nadie puso.
+    // La cara queda sin estado; el símbolo de la pieza se conserva aparte.
+    return ODONTOGRAMA_ESTADOS_CARA_KEYS.includes(estadoPieza) ? estadoPieza : '';
+  }
+  if (v === false || v === 'false') return '';
+  // `marcaValida` y no un `includes` a secas: la marca puede traer pegado el
+  // color que eligió el odontólogo ('caries:azul'), y ese texto no figura en
+  // la lista blanca de claves. Sin esto el servidor tiraba la marca EN
+  // SILENCIO y el odontólogo creía que la había guardado.
+  return marcaValida(v, ODONTOGRAMA_ESTADOS_CARA_KEYS);
+};
+
+const sanitizeOdontologia = (o) => {
+  if (!o || typeof o !== 'object') return undefined;
+  const dientes = (Array.isArray(o.odontograma) ? o.odontograma : [])
+    .filter((d) => d && ODONTOGRAMA_PIEZAS.includes(String(d.diente)))
+    .map((d) => {
+      const caras = d.caras || {};
+      const estado = marcaValida(d.estado, ODONTOGRAMA_ESTADOS_KEYS);
+      return {
+        diente: String(d.diente),
+        estado,
+        caras: {
+          vestibular: caraEstado(caras.vestibular, estado),
+          lingual: caraEstado(caras.lingual, estado),
+          mesial: caraEstado(caras.mesial, estado),
+          distal: caraEstado(caras.distal, estado),
+          oclusal: caraEstado(caras.oclusal, estado),
+        },
+        recesion: pick(d.recesion, ODONTOGRAMA_GRADOS),
+        movilidad: pick(d.movilidad, ODONTOGRAMA_GRADOS),
+        nota: txt(d.nota),
+      };
+    })
+    // Una pieza sin nada marcado no aporta nada: no se guarda.
+    .filter((d) => d.estado || d.nota || d.recesion || d.movilidad || Object.values(d.caras).some(Boolean));
+  // Una misma pieza no puede ir dos veces: gana la última marca recibida.
+  const porDiente = new Map(dientes.map((d) => [d.diente, d]));
+
+  // Sección 7: una fila por sextante, y la pieza tiene que ser una de las tres
+  // que la hoja ofrece para ese sextante.
+  const higiene = (Array.isArray(o.higieneOral) ? o.higieneOral : [])
+    .map((f) => {
+      const def = HIGIENE_ORAL_FILAS.find((x) => x.key === String(f?.fila));
+      if (!def) return null;
+      return {
+        fila: def.key,
+        pieza: pick(f.pieza, def.piezas),
+        placa: pick(f.placa, HIGIENE_ORAL_INDICES[0].valores),
+        calculo: pick(f.calculo, HIGIENE_ORAL_INDICES[1].valores),
+        gingivitis: pick(f.gingivitis, HIGIENE_ORAL_INDICES[2].valores),
+      };
+    })
+    .filter((f) => f && (f.pieza || f.placa || f.calculo || f.gingivitis));
+  const porFila = new Map(higiene.map((f) => [f.fila, f]));
+
+  // Los índices CPO/ceo son conteos de piezas: enteros de 0 a 52. Se valida
+  // con expresión regular y no con parseInt, que aceptaba '3.9' como 3 y
+  // '5abc' como 5: un conteo mal tecleado se guardaba distinto y en silencio.
+  const conteo = (v) => {
+    const s = String(v ?? '').trim();
+    if (!/^\d{1,2}$/.test(s)) return '';
+    const n = Number(s);
+    return n <= ODONTOGRAMA_PIEZAS.length ? String(n) : '';
+  };
+  const cpo = o.cpo || {};
+  const ceo = o.ceo || {};
+
+  return {
+    odontograma: ODONTOGRAMA_PIEZAS.filter((p) => porDiente.has(p)).map((p) => porDiente.get(p)),
+    higieneOral: HIGIENE_ORAL_FILAS_KEYS.filter((k) => porFila.has(k)).map((k) => porFila.get(k)),
+    enfermedadPeriodontal: pick(o.enfermedadPeriodontal, ENFERMEDAD_PERIODONTAL_KEYS),
+    maloclusion: pick(o.maloclusion, MALOCLUSION_KEYS),
+    fluorosis: pick(o.fluorosis, FLUOROSIS_KEYS),
+    cpo: { c: conteo(cpo.c), p: conteo(cpo.p), o: conteo(cpo.o) },
+    ceo: { c: conteo(ceo.c), e: conteo(ceo.e), o: conteo(ceo.o) },
+    observaciones: txt(o.observaciones),
+  };
+};
+
+const sanitizeCosmetologia = (c) => {
+  if (!c || typeof c !== 'object') return undefined;
+  const de = c.datosEsteticos || {};
+  const ev = c.evaluacion || {};
+  const hi = c.higiene || {};
+  const ca = c.cabello || {};
+  const tr = ca.tratamientos || {};
+  const cc = c.cueroCabelludo || {};
+  const pr = c.procedimiento || {};
+  const hiperKeys = COSMETOLOGIA_HIPERPIGMENTACION.map((z) => z.key);
+  const optionsOf = (catalog, key) => catalog.find((f) => f.key === key)?.options || [];
+  return {
+    datosEsteticos: {
+      tratamientosEsteticos: txt(de.tratamientosEsteticos),
+      autotratamientos: txt(de.autotratamientos),
+      cosmeticosUsoActual: txt(de.cosmeticosUsoActual),
+    },
+    evaluacion: {
+      fototipo: pick(ev.fototipo, COSMETOLOGIA_FOTOTIPOS),
+      glogau: pick(ev.glogau, COSMETOLOGIA_GLOGAU),
+      rosacea: pick(ev.rosacea, COSMETOLOGIA_ROSACEA),
+      biotipo: checksIn(ev.biotipo, COSMETOLOGIA_BIOTIPOS_KEYS),
+      arrugas: checksIn(ev.arrugas, COSMETOLOGIA_ARRUGAS_KEYS),
+      acne: checksIn(ev.acne, COSMETOLOGIA_ACNE_KEYS),
+      lesionesElementales: checksIn(ev.lesionesElementales, COSMETOLOGIA_LESIONES_KEYS),
+      hiperpigmentaciones: (Array.isArray(ev.hiperpigmentaciones) ? ev.hiperpigmentaciones : [])
+        .filter((z) => z && hiperKeys.includes(z.key))
+        .map((z) => ({
+          key: String(z.key),
+          marked: !!z.marked,
+          derecho: !!z.derecho,
+          izquierdo: !!z.izquierdo,
+        }))
+        .filter((z) => z.marked || z.derecho || z.izquierdo),
+      deshidratacionFacial: pick(ev.deshidratacionFacial, COSMETOLOGIA_DESHIDRATACION),
+      bioestimulacion: txt(ev.bioestimulacion),
+      nutricionDermica: txt(ev.nutricionDermica),
+      observaciones: txt(ev.observaciones),
+    },
+    higiene: {
+      frecuenciaLavado: txt(hi.frecuenciaLavado),
+      shampoo: txt(hi.shampoo),
+      acondicionador: txt(hi.acondicionador),
+      otros: txt(hi.otros),
+    },
+    cabello: {
+      longitud: pick(ca.longitud, optionsOf(COSMETOLOGIA_CABELLO, 'longitud')),
+      forma: pick(ca.forma, optionsOf(COSMETOLOGIA_CABELLO, 'forma')),
+      calibre: pick(ca.calibre, optionsOf(COSMETOLOGIA_CABELLO, 'calibre')),
+      densidad: pick(ca.densidad, optionsOf(COSMETOLOGIA_CABELLO, 'densidad')),
+      elasticidad: pick(ca.elasticidad, optionsOf(COSMETOLOGIA_CABELLO, 'elasticidad')),
+      color: pick(ca.color, optionsOf(COSMETOLOGIA_CABELLO, 'color')),
+      tratamientos: {
+        alisados: !!tr.alisados,
+        planchas: !!tr.planchas,
+        secadores: !!tr.secadores,
+      },
+    },
+    cueroCabelludo: {
+      tipo: pick(cc.tipo, optionsOf(COSMETOLOGIA_CUERO_CABELLUDO, 'tipo')),
+      glandulaSebacea: pick(cc.glandulaSebacea, optionsOf(COSMETOLOGIA_CUERO_CABELLUDO, 'glandulaSebacea')),
+      sensibilidad: pick(cc.sensibilidad, optionsOf(COSMETOLOGIA_CUERO_CABELLUDO, 'sensibilidad')),
+      movilidad: pick(cc.movilidad, optionsOf(COSMETOLOGIA_CUERO_CABELLUDO, 'movilidad')),
+    },
+    fibraCapilar: checksIn(c.fibraCapilar, COSMETOLOGIA_FIBRA_CAPILAR_KEYS),
+    afeccionesCuero: checksIn(c.afeccionesCuero, COSMETOLOGIA_AFECCIONES_CUERO_KEYS),
+    procedimiento: {
+      procedimiento: txt(pr.procedimiento),
+      productos: txt(pr.productos),
+      apoyoDomiciliario: txt(pr.apoyoDomiciliario),
+    },
+  };
 };
 
 exports.addFollowUp = async (req, res) => {
@@ -538,6 +1022,7 @@ exports.addFollowUp = async (req, res) => {
       odontologia,       // odontograma FDI (rol odontologia)
       cosmetologia,      // fichas estética facial/capilar (rol cosmetologia)
       cardiologia,       // ficha cardiológica (rol cardiologia)
+      terapia,           // consulta del terapeuta (rol terapeuta) — PRIVADA
       // --- Campos del formulario MSP HCU-form.002 ---
       tipoConsulta,      // B: 'primera' | 'subsecuente'
       enfermedadActual,  // E: enfermedad o problema actual
@@ -549,346 +1034,24 @@ exports.addFollowUp = async (req, res) => {
       recomendacionesNoFarmacologicas, // dieta, ejercicio, reposo… (va bajo el plan)
       evolucion,         // evolución respecto de consultas anteriores
       indicaciones,      // lo que observa y recomienda quien hizo el estudio
+      kind,              // '' consulta | 'estudio' (pestaña Archivos)
     } = req.body;
 
-    // --- Saneadores de las secciones MSP (solo se guardan claves con contenido) ---
-    const sanitizeChecks = (arr) =>
-      (Array.isArray(arr) ? arr : [])
-        .filter((c) => c && c.key)
-        .map((c) => ({ key: String(c.key), marked: !!c.marked, detail: String(c.detail || '').trim() }));
-    const sanitizeExamen = (ex) => {
-      if (!ex || typeof ex !== 'object') return undefined;
-      return {
-        regional: sanitizeChecks(ex.regional),
-        sistemico: sanitizeChecks(ex.sistemico),
-        hallazgos: String(ex.hallazgos || '').trim(),
-      };
-    };
-    const sanitizeDiagnosticos = (arr) =>
-      (Array.isArray(arr) ? arr : [])
-        .filter((d) => d && (String(d.descripcion || '').trim() || String(d.cie || '').trim()))
-        .slice(0, 6)
-        .map((d) => {
-          const cie = String(d.cie || '').trim().toUpperCase();
-          return {
-            descripcion: String(d.descripcion || '').trim(),
-            cie,
-            // Si el cliente no mandó el nombre del código, se toma del catálogo.
-            cieDescripcion: String(d.cieDescripcion || '').trim() || describeCie10(cie),
-            presuntivo: !!d.presuntivo,
-            definitivo: !!d.definitivo,
-          };
-        });
+    /**
+     * Tipo de entrada. 'enfermeria' NO se acepta por aquí: ese lo escribe el
+     * servidor al cerrar el turno, y dejar que el cliente lo pida permitiría
+     * falsificar quién puso un suero.
+     */
+    const kindFollowUp = kind === 'estudio' ? 'estudio' : '';
 
-    // Saneador de los datos ginecológicos: solo persiste lo que llega con contenido.
-    const sanitizeGineco = (g) => {
-      if (!g || typeof g !== 'object') return undefined;
-      const numOrNull = (v) => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
-      const met = g.metodosAnticonceptivos || {};
-      const pap = g.pap || {};
-      const toma = pap.toma || {};
-      const cp = g.controlPrenatal || {};
-      const gpac = g.gpac || {};
-      // El esquema exige min:0; un negativo por API tumbaría TODO el seguimiento
-      // con un error de validación, así que aquí se descarta y punto.
-      const pesoPre = numOrNull(g.pesoPreconcepcional);
-      return {
-        fum: g.fum ? new Date(g.fum) : null,
-        gpac: {
-          gestas: numOrNull(gpac.gestas),
-          partos: numOrNull(gpac.partos),
-          abortos: numOrNull(gpac.abortos),
-          cesareas: numOrNull(gpac.cesareas),
-        },
-        embarazoActual: typeof g.embarazoActual === 'boolean' ? g.embarazoActual : null,
-        pesoPreconcepcional: pesoPre != null && pesoPre >= 0 ? pesoPre : null,
-        metodosAnticonceptivos: {
-          hormonal: !!met.hormonal,
-          barrera: !!met.barrera,
-          diu: !!met.diu,
-          otro: !!met.otro,
-          otroDetalle: String(met.otroDetalle || '').trim(),
-        },
-        pap: {
-          tipo: ['previo', 'primera_vez'].includes(pap.tipo) ? pap.tipo : '',
-          toma: {
-            exocervical: !!toma.exocervical,
-            endocervical: !!toma.endocervical,
-            otros: !!toma.otros,
-            otrosDetalle: String(toma.otrosDetalle || '').trim(),
-          },
-        },
-        controlPrenatal: {
-          signosVitalesScore: String(cp.signosVitalesScore || '').trim(),
-          scoreMama: sanitizeScoreMama(cp.scoreMama),
-          bebePosicion: String(cp.bebePosicion || '').trim(),
-          actividadCardiaca: String(cp.actividadCardiaca || '').trim(),
-        },
-      };
-    };
 
     /**
-     * SCORE MAMÁ. Los puntajes y el total se RECALCULAN aquí a partir de los
-     * valores medidos: lo que mande el navegador se ignora. Es un puntaje que
-     * decide si se activa la clave obstétrica — no puede depender de que el
-     * cliente esté actualizado ni de que nadie toque la petición.
+     * El motivo es obligatorio en una CONSULTA. Un estudio no es una consulta:
+     * quien hace una ecografía sube la imagen y escribe la impresión
+     * diagnóstica; no hay motivo que preguntar, y exigírselo obligaba a
+     * escribir «ecografía» en un campo que ya dice ecografía.
      */
-    const sanitizeScoreMama = (sm) => {
-      if (!sm || typeof sm !== 'object') return undefined;
-      const numOrNull = (v) => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
-      const medidos = {};
-      for (const key of SCORE_MAMA_NUMERICOS_KEYS) medidos[key] = numOrNull(sm[key]);
-      medidos.conciencia = SCORE_MAMA_CONCIENCIA.some((o) => o.key === sm.conciencia) ? sm.conciencia : '';
-      medidos.proteinuria = SCORE_MAMA_PROTEINURIA.some((o) => o.key === sm.proteinuria) ? sm.proteinuria : '';
-      const { puntajes, total } = calcularScoreMama(medidos);
-      return { ...medidos, puntajes, total };
-    };
-
-    // --- Saneadores de las fichas por especialidad ---
-    // Regla común: el catálogo manda. Solo se guardan claves que existan en
-    // server/constants/specialtyCatalogs.js y opciones dentro de su lista; lo que
-    // no cuadra se descarta en silencio en vez de romper la validación de mongoose.
-    const txt = (v) => String(v ?? '').trim();
-    const pick = (v, options) => (options.includes(v) ? v : '');
-    const checksIn = (arr, allowedKeys) =>
-      sanitizeChecks(arr).filter((c) => allowedKeys.includes(c.key));
-
-    const sanitizePodologia = (p) => {
-      if (!p || typeof p !== 'object') return undefined;
-      const hg = p.hallazgosGenerales || {};
-      const vn = p.vascularNeurologica || {};
-      const ev = p.evaluacion || {};
-      return {
-        hallazgosGenerales: {
-          piel: txt(hg.piel),
-          unas: txt(hg.unas),
-          hidratacion: txt(hg.hidratacion),
-          temperatura: txt(hg.temperatura),
-          coloracion: txt(hg.coloracion),
-          edema: typeof hg.edema === 'boolean' ? hg.edema : null,
-          otros: txt(hg.otros),
-        },
-        vascularNeurologica: {
-          pulsoPedio: pick(vn.pulsoPedio, PODOLOGIA_PULSO_OPCIONES),
-          pulsoTibialPosterior: pick(vn.pulsoTibialPosterior, PODOLOGIA_PULSO_OPCIONES),
-          llenadoCapilar: txt(vn.llenadoCapilar),
-          sensibilidadMonofilamento: pick(vn.sensibilidadMonofilamento, PODOLOGIA_SENSIBILIDAD_OPCIONES),
-          reflejos: pick(vn.reflejos, PODOLOGIA_REFLEJOS_OPCIONES),
-        },
-        evaluacion: {
-          piel: txt(ev.piel),
-          unas: txt(ev.unas),
-          pulsos: txt(ev.pulsos),
-          sensibilidad: txt(ev.sensibilidad),
-          calzado: txt(ev.calzado),
-          marcha: txt(ev.marcha),
-        },
-        hallazgos: checksIn(p.hallazgos, PODOLOGIA_HALLAZGOS_KEYS),
-        hallazgosDetalle: txt(p.hallazgosDetalle),
-      };
-    };
-
-    /**
-     * Ficha cardiológica. Los antecedentes son de TRES estados (sí / no / sin
-     * consignar): solo se guarda el que trae un booleano de verdad, para no
-     * convertir "no preguntado" en "el paciente dice que no".
-     */
-    const sanitizeCardiologia = (c) => {
-      if (!c || typeof c !== 'object') return undefined;
-      const numOrNull = (v) => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
-      const ecg = c.electrocardiograma || {};
-      const est = c.estudios || {};
-      const plan = c.plan || {};
-      const estudios = {};
-      for (const key of CARDIOLOGIA_ESTUDIOS_KEYS) estudios[key] = txt(est[key]);
-      return {
-        antecedentes: (Array.isArray(c.antecedentes) ? c.antecedentes : [])
-          .filter((a) => a && CARDIOLOGIA_ANTECEDENTES_KEYS.includes(a.key) && typeof a.value === 'boolean')
-          .map((a) => ({ key: a.key, value: a.value })),
-        antecedentesOtros: txt(c.antecedentesOtros),
-        alergias: txt(c.alergias),
-        medicacionActual: txt(c.medicacionActual),
-        electrocardiograma: {
-          ritmo: txt(ecg.ritmo),
-          fc: numOrNull(ecg.fc),
-          hallazgos: txt(ecg.hallazgos),
-        },
-        estudios,
-        plan: {
-          estudiosSolicitados: txt(plan.estudiosSolicitados),
-          proximoControl: txt(plan.proximoControl),
-        },
-      };
-    };
-
-    /**
-     * Estado de UNA cara. Solo valen los estados de ámbito 'cara' (pintar
-     * "extracción indicada" en la cara mesial no significaría nada).
-     *
-     * Acepta además el formato ANTIGUO, en el que las caras eran booleanas y el
-     * estado vivía solo en la pieza: un `true` heredaba el estado del diente. Así
-     * un odontograma guardado antes del rediseño se sigue leyendo igual.
-     */
-    const caraEstado = (v, estadoPieza) => {
-      if (v === true || v === 'true') {
-        // Una cara marcada en el formato viejo solo puede heredar el estado de su
-        // pieza si ese estado es de cara. Si no lo es (extracción indicada,
-        // ausente, corona…), NO se inventa nada: esto es una historia clínica y
-        // rellenarla con "caries" sería escribir un diagnóstico que nadie puso.
-        // La cara queda sin estado; el símbolo de la pieza se conserva aparte.
-        return ODONTOGRAMA_ESTADOS_CARA_KEYS.includes(estadoPieza) ? estadoPieza : '';
-      }
-      if (v === false || v === 'false') return '';
-      // `marcaValida` y no un `includes` a secas: la marca puede traer pegado el
-      // color que eligió el odontólogo ('caries:azul'), y ese texto no figura en
-      // la lista blanca de claves. Sin esto el servidor tiraba la marca EN
-      // SILENCIO y el odontólogo creía que la había guardado.
-      return marcaValida(v, ODONTOGRAMA_ESTADOS_CARA_KEYS);
-    };
-
-    const sanitizeOdontologia = (o) => {
-      if (!o || typeof o !== 'object') return undefined;
-      const dientes = (Array.isArray(o.odontograma) ? o.odontograma : [])
-        .filter((d) => d && ODONTOGRAMA_PIEZAS.includes(String(d.diente)))
-        .map((d) => {
-          const caras = d.caras || {};
-          const estado = marcaValida(d.estado, ODONTOGRAMA_ESTADOS_KEYS);
-          return {
-            diente: String(d.diente),
-            estado,
-            caras: {
-              vestibular: caraEstado(caras.vestibular, estado),
-              lingual: caraEstado(caras.lingual, estado),
-              mesial: caraEstado(caras.mesial, estado),
-              distal: caraEstado(caras.distal, estado),
-              oclusal: caraEstado(caras.oclusal, estado),
-            },
-            recesion: pick(d.recesion, ODONTOGRAMA_GRADOS),
-            movilidad: pick(d.movilidad, ODONTOGRAMA_GRADOS),
-            nota: txt(d.nota),
-          };
-        })
-        // Una pieza sin nada marcado no aporta nada: no se guarda.
-        .filter((d) => d.estado || d.nota || d.recesion || d.movilidad || Object.values(d.caras).some(Boolean));
-      // Una misma pieza no puede ir dos veces: gana la última marca recibida.
-      const porDiente = new Map(dientes.map((d) => [d.diente, d]));
-
-      // Sección 7: una fila por sextante, y la pieza tiene que ser una de las tres
-      // que la hoja ofrece para ese sextante.
-      const higiene = (Array.isArray(o.higieneOral) ? o.higieneOral : [])
-        .map((f) => {
-          const def = HIGIENE_ORAL_FILAS.find((x) => x.key === String(f?.fila));
-          if (!def) return null;
-          return {
-            fila: def.key,
-            pieza: pick(f.pieza, def.piezas),
-            placa: pick(f.placa, HIGIENE_ORAL_INDICES[0].valores),
-            calculo: pick(f.calculo, HIGIENE_ORAL_INDICES[1].valores),
-            gingivitis: pick(f.gingivitis, HIGIENE_ORAL_INDICES[2].valores),
-          };
-        })
-        .filter((f) => f && (f.pieza || f.placa || f.calculo || f.gingivitis));
-      const porFila = new Map(higiene.map((f) => [f.fila, f]));
-
-      // Los índices CPO/ceo son conteos de piezas: enteros de 0 a 52. Se valida
-      // con expresión regular y no con parseInt, que aceptaba '3.9' como 3 y
-      // '5abc' como 5: un conteo mal tecleado se guardaba distinto y en silencio.
-      const conteo = (v) => {
-        const s = String(v ?? '').trim();
-        if (!/^\d{1,2}$/.test(s)) return '';
-        const n = Number(s);
-        return n <= ODONTOGRAMA_PIEZAS.length ? String(n) : '';
-      };
-      const cpo = o.cpo || {};
-      const ceo = o.ceo || {};
-
-      return {
-        odontograma: ODONTOGRAMA_PIEZAS.filter((p) => porDiente.has(p)).map((p) => porDiente.get(p)),
-        higieneOral: HIGIENE_ORAL_FILAS_KEYS.filter((k) => porFila.has(k)).map((k) => porFila.get(k)),
-        enfermedadPeriodontal: pick(o.enfermedadPeriodontal, ENFERMEDAD_PERIODONTAL_KEYS),
-        maloclusion: pick(o.maloclusion, MALOCLUSION_KEYS),
-        fluorosis: pick(o.fluorosis, FLUOROSIS_KEYS),
-        cpo: { c: conteo(cpo.c), p: conteo(cpo.p), o: conteo(cpo.o) },
-        ceo: { c: conteo(ceo.c), e: conteo(ceo.e), o: conteo(ceo.o) },
-        observaciones: txt(o.observaciones),
-      };
-    };
-
-    const sanitizeCosmetologia = (c) => {
-      if (!c || typeof c !== 'object') return undefined;
-      const de = c.datosEsteticos || {};
-      const ev = c.evaluacion || {};
-      const hi = c.higiene || {};
-      const ca = c.cabello || {};
-      const tr = ca.tratamientos || {};
-      const cc = c.cueroCabelludo || {};
-      const pr = c.procedimiento || {};
-      const hiperKeys = COSMETOLOGIA_HIPERPIGMENTACION.map((z) => z.key);
-      const optionsOf = (catalog, key) => catalog.find((f) => f.key === key)?.options || [];
-      return {
-        datosEsteticos: {
-          tratamientosEsteticos: txt(de.tratamientosEsteticos),
-          autotratamientos: txt(de.autotratamientos),
-          cosmeticosUsoActual: txt(de.cosmeticosUsoActual),
-        },
-        evaluacion: {
-          fototipo: pick(ev.fototipo, COSMETOLOGIA_FOTOTIPOS),
-          glogau: pick(ev.glogau, COSMETOLOGIA_GLOGAU),
-          rosacea: pick(ev.rosacea, COSMETOLOGIA_ROSACEA),
-          biotipo: checksIn(ev.biotipo, COSMETOLOGIA_BIOTIPOS_KEYS),
-          arrugas: checksIn(ev.arrugas, COSMETOLOGIA_ARRUGAS_KEYS),
-          acne: checksIn(ev.acne, COSMETOLOGIA_ACNE_KEYS),
-          lesionesElementales: checksIn(ev.lesionesElementales, COSMETOLOGIA_LESIONES_KEYS),
-          hiperpigmentaciones: (Array.isArray(ev.hiperpigmentaciones) ? ev.hiperpigmentaciones : [])
-            .filter((z) => z && hiperKeys.includes(z.key))
-            .map((z) => ({
-              key: String(z.key),
-              marked: !!z.marked,
-              derecho: !!z.derecho,
-              izquierdo: !!z.izquierdo,
-            }))
-            .filter((z) => z.marked || z.derecho || z.izquierdo),
-          deshidratacionFacial: pick(ev.deshidratacionFacial, COSMETOLOGIA_DESHIDRATACION),
-          bioestimulacion: txt(ev.bioestimulacion),
-          nutricionDermica: txt(ev.nutricionDermica),
-          observaciones: txt(ev.observaciones),
-        },
-        higiene: {
-          frecuenciaLavado: txt(hi.frecuenciaLavado),
-          shampoo: txt(hi.shampoo),
-          acondicionador: txt(hi.acondicionador),
-          otros: txt(hi.otros),
-        },
-        cabello: {
-          longitud: pick(ca.longitud, optionsOf(COSMETOLOGIA_CABELLO, 'longitud')),
-          forma: pick(ca.forma, optionsOf(COSMETOLOGIA_CABELLO, 'forma')),
-          calibre: pick(ca.calibre, optionsOf(COSMETOLOGIA_CABELLO, 'calibre')),
-          densidad: pick(ca.densidad, optionsOf(COSMETOLOGIA_CABELLO, 'densidad')),
-          elasticidad: pick(ca.elasticidad, optionsOf(COSMETOLOGIA_CABELLO, 'elasticidad')),
-          color: pick(ca.color, optionsOf(COSMETOLOGIA_CABELLO, 'color')),
-          tratamientos: {
-            alisados: !!tr.alisados,
-            planchas: !!tr.planchas,
-            secadores: !!tr.secadores,
-          },
-        },
-        cueroCabelludo: {
-          tipo: pick(cc.tipo, optionsOf(COSMETOLOGIA_CUERO_CABELLUDO, 'tipo')),
-          glandulaSebacea: pick(cc.glandulaSebacea, optionsOf(COSMETOLOGIA_CUERO_CABELLUDO, 'glandulaSebacea')),
-          sensibilidad: pick(cc.sensibilidad, optionsOf(COSMETOLOGIA_CUERO_CABELLUDO, 'sensibilidad')),
-          movilidad: pick(cc.movilidad, optionsOf(COSMETOLOGIA_CUERO_CABELLUDO, 'movilidad')),
-        },
-        fibraCapilar: checksIn(c.fibraCapilar, COSMETOLOGIA_FIBRA_CAPILAR_KEYS),
-        afeccionesCuero: checksIn(c.afeccionesCuero, COSMETOLOGIA_AFECCIONES_CUERO_KEYS),
-        procedimiento: {
-          procedimiento: txt(pr.procedimiento),
-          productos: txt(pr.productos),
-          apoyoDomiciliario: txt(pr.apoyoDomiciliario),
-        },
-      };
-    };
-
-    if (!descripcion && !req.body.motivoConsulta) {
+    if (!descripcion && !req.body.motivoConsulta && kindFollowUp !== 'estudio') {
       return res.status(400).json({ message: 'El motivo de consulta es requerido' });
     }
 
@@ -1016,11 +1179,50 @@ exports.addFollowUp = async (req, res) => {
       }
     }
 
+    /**
+     * ENFERMERÍA: lo que aplicó se copia a SU seguimiento.
+     *
+     * Las dosis se anotan dentro de la receta del doctor que las mandó, así que
+     * el parte del enfermero salía sin una sola línea de lo que hizo. Se toma lo
+     * que puso desde su último parte para este paciente: quien viene a diario a
+     * su serie de sueros no debe ver hoy también los de ayer.
+     */
+    let aplicacionesEnfermeria = [];
+    if (req.role === NURSE_ROLE) {
+      const { aplicacionesDelTurno, desdeElUltimoParteDe } = require('../utils/nurseApplications');
+      const previo = await ClinicalRecord.findOne({ clinic: req.clinicId, patient: patientId }).lean();
+      let desde = desdeElUltimoParteDe(previo, req.user._id);
+      /**
+       * Con cita, manda el INICIO DEL TURNO si es más tarde. Es un corte más
+       * fino: un enfermero que atendió a este paciente la semana pasada y no ha
+       * vuelto a escribir un parte tendría, si no, una ventana de días abierta,
+       * y arrastraría al parte de hoy dosis que ya contó entonces.
+       */
+      if (req.body.appointmentId) {
+        try {
+          const Appointment = require('../models/Appointment');
+          const apt = await Appointment.findOne({
+            _id: req.body.appointmentId, clinic: req.clinicId,
+          }).select('turns nurseClaimedAt consultationStartedAt').lean();
+          const miTurno = (apt?.turns || []).find(
+            (t) => t.kind === 'enfermeria' && t.status === 'pendiente'
+              && String(t.user || '') === String(req.user._id)
+          );
+          const inicio = miTurno?.startedAt || apt?.nurseClaimedAt || apt?.consultationStartedAt || null;
+          if (inicio && (!desde || new Date(inicio) > new Date(desde))) desde = inicio;
+        } catch (e) {
+          console.warn('No se pudo acotar la ventana de aplicaciones por el turno:', e.message);
+        }
+      }
+      aplicacionesEnfermeria = aplicacionesDelTurno(previo, req.user._id, desde);
+    }
+
     const record = await ClinicalRecord.findOneAndUpdate(
       { clinic: req.clinicId, patient: patientId },
       {
         $push: {
           followUps: {
+            aplicaciones: aplicacionesEnfermeria,
             fecha: fecha ? new Date(fecha) : new Date(),
             descripcion: descripcion || req.body.motivoConsulta || '',
             motivoConsulta: req.body.motivoConsulta || descripcion || '',
@@ -1061,9 +1263,15 @@ exports.addFollowUp = async (req, res) => {
             odontologia: sanitizeOdontologia(odontologia),
             cosmetologia: sanitizeCosmetologia(cosmetologia),
             cardiologia: sanitizeCardiologia(cardiologia),
+            terapia: sanitizeTerapia(terapia),
             valor: valor || 0,
             metodoPago: metodoPago || 'efectivo',
+            kind: kindFollowUp,
             createdBy: req.user._id,
+            // Con qué sombrero se escribió. Se sella aquí porque el rol de una
+            // persona cambia (y es distinto en cada sucursal): deducirlo al leer
+            // reetiquetaría consultas viejas.
+            createdByRole: req.role || '',
           },
         },
         $setOnInsert: { createdBy: req.user._id },
@@ -1145,12 +1353,14 @@ exports.addFollowUp = async (req, res) => {
       } catch (e) {
         console.warn('No se pudo avanzar el turno de la cita:', e.message);
       }
-    } else if (isDoctorRole(req.role)) {
+    } else if (atiendePacientes(req.role)) {
       /**
        * SEGUIMIENTO SIN CITA: se registra la cita SOLA, al guardar.
        *
-       * En óptica el cliente entra por la puerta sin haber llamado a nadie. Lo
-       * mismo pasa con cualquier especialidad cuando alguien llega de imprevisto.
+       * En óptica el cliente entra por la puerta sin haber llamado a nadie. En
+       * enfermería es todavía más común: el paciente ya dejó pagada su serie de
+       * sueros y pasa directo con el enfermero, sin que nadie le agende nada.
+       * Lo mismo pasa con cualquier especialidad cuando alguien llega de imprevisto.
        * Hasta ahora la consulta se escribía igual —el seguimiento se guardaba
        * sin más— pero la cita nunca existía, y con ella se perdía TODO lo que
        * cuelga de la cita: la atención no salía en la agenda del día, ni en los
@@ -1180,6 +1390,20 @@ exports.addFollowUp = async (req, res) => {
           role: req.role,
           estado: 'cerrada',
           followUpId: nuevoFu?._id,
+          // El enfermero abre un turno de ENFERMERÍA, no de doctor: si no,
+          // quedaría como el médico de la cita y cobraría comisión de médico.
+          kind: req.role === NURSE_ROLE ? 'enfermeria' : 'doctor',
+          /**
+           * EL MOTIVO NO SALE A LA AGENDA SI ES DEL TERAPEUTA.
+           *
+           * La cita que se registra sola lleva el motivo como nombre del
+           * servicio, y la agenda la ve toda la clínica. Con el terapeuta eso
+           * era una fuga por la puerta de al lado: el seguimiento quedaba
+           * recortado, pero su motivo se publicaba en la lista de citas del día.
+           */
+          serviceName: req.role === THERAPIST_ROLE
+            ? 'Terapia'
+            : String(descripcion || req.body.motivoConsulta || '').trim(),
         });
         citaAutomatica = { _id: apt._id, startTime: apt.startTime, isFirstVisit: apt.isFirstVisit };
         emitToClinic(req.clinicId, 'appointment:created', apt);
@@ -1195,9 +1419,289 @@ exports.addFollowUp = async (req, res) => {
     const extra = {};
     if (siguienteTurno) extra.nextTurn = siguienteTurno;
     if (citaAutomatica) extra.autoAppointment = citaAutomatica;
-    res.status(201).json(Object.keys(extra).length ? { ...record.toObject(), ...extra } : record);
+    // Mismo recorte que en el resto de las respuestas de la ficha: los datos de
+    // contacto del paciente son solo del administrador (ver `hideContactData`).
+    const visible = hideContactData(hideTherapyNotes(record, req), req);
+    res.status(201).json(
+      Object.keys(extra).length
+        ? { ...(visible.toObject ? visible.toObject() : visible), ...extra }
+        : visible
+    );
   } catch (error) {
     res.status(500).json({ message: 'Error al agregar seguimiento', error: error.message });
+  }
+};
+
+/**
+ * EDITAR UN SEGUIMIENTO YA GUARDADO.
+ *
+ * ─── POR QUÉ EXISTE ────────────────────────────────────────────────────────────
+ * Al guardar, la cita pasa a «completada» y el doctor se quedaba fuera: si había
+ * escrito algo por error, o se acordaba de un dato después, no había forma de
+ * corregirlo. La única salida era pedirle al administrador que borrara el
+ * seguimiento entero y volver a escribirlo.
+ *
+ * ─── QUÉ NO HACE (y es lo importante) ──────────────────────────────────────────
+ * Editar NO es volver a guardar. Este endpoint se salta a propósito los tres
+ * efectos secundarios de `addFollowUp`, porque repetirlos sería duplicar hechos
+ * del mundo real:
+ *   · NO avanza el turno ni vuelve a cerrar la cita — ya está cerrada;
+ *   · NO crea otro Tratamiento a partir de las derivaciones;
+ *   · NO vuelve a descontar el inventario de golpe: solo mueve la DIFERENCIA
+ *     entre lo que decía la receta y lo que dice ahora.
+ * Y conserva dos cosas pase lo que pase:
+ *   · `createdBy` — de él sale la firma electrónica de la receta. Quien corrige
+ *     no se convierte en quien atendió;
+ *   · `recetaItems[].administrations` — los sueros que enfermería YA puso. Un
+ *     update ingenuo los borraría, y con ellos la prueba de lo que entró por la
+ *     vena de un paciente.
+ *
+ * Quién puede: el AUTOR (corrige lo suyo) y el administrador. Queda constancia
+ * en `updatedBy` / `editedAt`, igual que en las observaciones del paciente.
+ */
+exports.updateFollowUp = async (req, res) => {
+  try {
+    const { patientId, followUpId } = req.params;
+
+    const record = await ClinicalRecord.findOne({ clinic: req.clinicId, patient: patientId });
+    if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
+
+    const fu = record.followUps.id(followUpId);
+    if (!fu) return res.status(404).json({ message: 'Seguimiento no encontrado' });
+
+    // Autor o administrador. El super-admin entra por `isSuperAdmin`, como en el
+    // resto del sistema.
+    const esAutor = String(fu.createdBy || '') === String(req.user._id);
+    const esAdmin = req.role === 'admin' || req.user?.isSuperAdmin;
+    if (!esAutor && !esAdmin) {
+      return res.status(403).json({
+        message: 'Solo quien escribió el seguimiento (o un administrador) puede editarlo',
+      });
+    }
+
+    const {
+      fecha,
+      descripcion,
+      recomendaciones,
+      estudioSintomas,
+      receta,
+      recetaItems,
+      derivacionItems,
+      observaciones,
+      vitalSigns,
+      opticaRx,
+      ginecologia,
+      podologia,
+      odontologia,
+      cosmetologia,
+      cardiologia,
+      terapia,
+      tipoConsulta,
+      enfermedadActual,
+      revisionSistemas,
+      revisionSistemasHallazgos,
+      examenFisico,
+      diagnosticos,
+      planTratamiento,
+      recomendacionesNoFarmacologicas,
+      evolucion,
+      indicaciones,
+    } = req.body;
+
+    // Mismo trato que al crear: un estudio no lleva motivo de consulta.
+    if (!descripcion && !req.body.motivoConsulta && fu.kind !== 'estudio') {
+      return res.status(400).json({ message: 'El motivo de consulta es requerido' });
+    }
+
+    // ── Receta y derivaciones ──
+    // Se rehidratan igual que al crear, pero cada línea que YA existía recupera
+    // sus administraciones por `_id`. Ese es el punto en el que un update mal
+    // hecho borra los sueros aplicados.
+    const previosPorId = new Map(
+      (fu.recetaItems || []).map((it) => [String(it._id), it])
+    );
+    const itemsRaw = [
+      ...(Array.isArray(recetaItems) ? recetaItems : []).map((it) => ({ ...it, fromDerivacion: false })),
+      ...(Array.isArray(derivacionItems) ? derivacionItems : []).map((it) => ({ ...it, fromDerivacion: true })),
+    ];
+    const items = itemsRaw.filter((it) => it.product || (it.name && it.name.trim()));
+    const productIds = items.map((it) => it.product).filter(Boolean);
+    let productsById = {};
+    if (productIds.length) {
+      const prods = await Product.find({ _id: { $in: productIds }, clinic: req.clinicId });
+      productsById = prods.reduce((acc, p) => { acc[String(p._id)] = p; return acc; }, {});
+    }
+    const hydratedItems = items.map((it) => {
+      const previo = it._id ? previosPorId.get(String(it._id)) : null;
+      const p = it.product ? productsById[String(it.product)] : null;
+      const isService = p ? ['servicio', 'programa'].includes(p.category) : Boolean(it.fromDerivacion);
+      const isSerum = !isService && Boolean(it.isSerum);
+      const { serumBase, serumComponents } = isSerum
+        ? saneaComposicionSuero(it)
+        : { serumBase: { name: '', volumeMl: null }, serumComponents: [] };
+      const isComposite = Boolean(p?.isComposite);
+      let componentsUsed = [];
+      if (isComposite && Array.isArray(it.componentsUsed)) {
+        const allowed = new Set((p.components || []).map((c) => String(c.product)));
+        componentsUsed = it.componentsUsed
+          .filter((c) => c.product && allowed.has(String(c.product)) && Number(c.quantity) > 0)
+          .map((c) => ({ product: c.product, name: c.name || '', quantity: Number(c.quantity) }));
+      }
+      return {
+        // El `_id` se conserva para que las administraciones sigan colgando de
+        // su línea y para que el enlace del suero no se rompa al editar.
+        ...(previo ? { _id: previo._id } : {}),
+        product: it.product || undefined,
+        name: it.name || p?.name || '',
+        quantity: Number(it.quantity || 1),
+        dose: it.dose || '',
+        frequency: it.frequency || '',
+        duration: it.duration || '',
+        instructions: it.instructions || '',
+        isService: Boolean(isService),
+        isSerum,
+        serumBase,
+        serumComponents,
+        // LO YA PUESTO NO SE TOCA. Se copia del original tal cual.
+        administrations: previo ? (previo.administrations || []) : [],
+        isComposite,
+        componentsUsed,
+      };
+    });
+
+    /**
+     * Inventario de los ítems COMPUESTOS: solo la diferencia.
+     *
+     * Al crear se descuenta todo lo recetado. Al editar, volver a descontarlo
+     * dejaría la percha mintiendo el doble. Se compara producto por producto lo
+     * que decía la receta con lo que dice ahora y se mueve únicamente el delta:
+     * si se quitó una línea, el stock VUELVE.
+     */
+    const totalesComponentes = (lista) => {
+      const m = new Map();
+      for (const it of lista || []) {
+        if (!it.isComposite || !(it.componentsUsed || []).length) continue;
+        for (const c of it.componentsUsed) {
+          const k = String(c.product);
+          m.set(k, (m.get(k) || 0) + Number(c.quantity || 0) * Number(it.quantity || 1));
+        }
+      }
+      return m;
+    };
+    try {
+      const InventoryMovement = require('../models/InventoryMovement');
+      const antes = totalesComponentes(fu.recetaItems);
+      const ahora = totalesComponentes(hydratedItems);
+      const productos = new Set([...antes.keys(), ...ahora.keys()]);
+      for (const pid of productos) {
+        const delta = (ahora.get(pid) || 0) - (antes.get(pid) || 0);
+        if (!delta) continue;
+        // eslint-disable-next-line no-await-in-loop
+        const prod = await Product.findOne({ _id: pid, clinic: req.clinicId });
+        if (!prod || prod.unlimited) continue;
+        prod.stock = Math.max(0, (prod.stock || 0) - delta);
+        // eslint-disable-next-line no-await-in-loop
+        await prod.save();
+        // eslint-disable-next-line no-await-in-loop
+        await InventoryMovement.create({
+          clinic: req.clinicId,
+          product: pid,
+          type: delta > 0 ? 'salida' : 'entrada',
+          quantity: Math.abs(delta),
+          balanceAfter: prod.stock,
+          reason: `Corrección de receta (seguimiento editado)`,
+          createdBy: req.user._id,
+        });
+      }
+    } catch (e) {
+      console.warn('No se pudo ajustar el inventario al editar el seguimiento:', e.message);
+    }
+
+    // ── Los campos ──
+    // `undefined` significa "no lo mandes"; el cliente envía el formulario
+    // entero, así que lo que no venga se limpia igual que al crear.
+    if (fecha) fu.fecha = new Date(fecha);
+    fu.descripcion = descripcion || req.body.motivoConsulta || '';
+    fu.motivoConsulta = req.body.motivoConsulta || descripcion || '';
+    fu.recetaItems = hydratedItems;
+    fu.observaciones = observaciones || '';
+    /**
+     * CAMPOS LEGADO: solo se tocan si VIENEN.
+     *
+     * `receta` (texto libre), `recomendaciones` y `estudioSintomas` son de
+     * versiones anteriores del formulario y el de hoy ni siquiera los pinta.
+     * Escribirlos siempre —aunque el cliente no los mande— vaciaba en cada
+     * corrección lo que un doctor escribió hace dos años, sin que nadie lo viera.
+     */
+    if ('recomendaciones' in req.body || 'estudioSintomas' in req.body) {
+      fu.recomendaciones = recomendaciones || estudioSintomas || '';
+      fu.estudioSintomas = estudioSintomas || recomendaciones || '';
+    }
+    if ('receta' in req.body) fu.receta = receta || '';
+    if (vitalSigns && typeof vitalSigns === 'object') {
+      fu.vitalSigns = {
+        // La hora de la toma es la de CUANDO SE TOMÓ. Corregir el texto de una
+        // consulta de la semana pasada no puede reetiquetar sus signos vitales
+        // con la hora de hoy: el cliente vuelve a sellarla en cada guardado y
+        // aquí se conserva la que ya había.
+        hora: fu.vitalSigns?.hora || vitalSigns.hora || '',
+        temperature: vitalSigns.temperature ?? null,
+        bloodPressure: vitalSigns.bloodPressure || '',
+        heartRate: vitalSigns.heartRate ?? null,
+        respiratoryRate: vitalSigns.respiratoryRate ?? null,
+        oxygenSaturation: vitalSigns.oxygenSaturation ?? null,
+        weight: vitalSigns.weight ?? null,
+        height: vitalSigns.height ?? null,
+        abdominalPerimeter: vitalSigns.abdominalPerimeter ?? null,
+        capillaryHemoglobin: vitalSigns.capillaryHemoglobin ?? null,
+        glucose: vitalSigns.glucose ?? null,
+      };
+    }
+    fu.tipoConsulta = ['primera', 'subsecuente'].includes(tipoConsulta) ? tipoConsulta : '';
+    fu.enfermedadActual = String(enfermedadActual || '').trim();
+    fu.revisionSistemas = sanitizeChecks(revisionSistemas);
+    fu.revisionSistemasHallazgos = String(revisionSistemasHallazgos || '').trim();
+    fu.examenFisico = sanitizeExamen(examenFisico);
+    fu.diagnosticos = sanitizeDiagnosticos(diagnosticos);
+    fu.planTratamiento = String(planTratamiento || '').trim();
+    fu.recomendacionesNoFarmacologicas = String(recomendacionesNoFarmacologicas || '').trim();
+    fu.evolucion = String(evolucion || '').trim();
+    fu.indicaciones = String(indicaciones || '').trim();
+    if (opticaRx && typeof opticaRx === 'object') fu.opticaRx = opticaRx;
+
+    // Las fichas de especialidad solo se pisan si vienen. Un administrador
+    // corrigiendo el motivo de una consulta de odontología no manda el
+    // odontograma, y borrárselo por omisión sería perder la consulta entera.
+    const gineco = sanitizeGineco(ginecologia);
+    if (gineco !== undefined) fu.ginecologia = gineco;
+    const podo = sanitizePodologia(podologia);
+    if (podo !== undefined) fu.podologia = podo;
+    const odonto = sanitizeOdontologia(odontologia);
+    if (odonto !== undefined) fu.odontologia = odonto;
+    const cosme = sanitizeCosmetologia(cosmetologia);
+    if (cosme !== undefined) fu.cosmetologia = cosme;
+    const cardio = sanitizeCardiologia(cardiologia);
+    if (cardio !== undefined) fu.cardiologia = cardio;
+    const tera = sanitizeTerapia(terapia);
+    if (tera !== undefined) fu.terapia = tera;
+
+    // La firma de quien atendió no cambia; sí queda quién corrigió y cuándo.
+    fu.updatedBy = req.user._id;
+    fu.editedAt = new Date();
+
+    record.updatedBy = req.user._id;
+    await record.save();
+
+    emitToClinic(req.clinicId, 'clinicalRecord:updated', { patient: patientId });
+    const poblado = await ClinicalRecord.findById(record._id)
+      .populate('followUps.createdBy', 'name')
+      .populate('followUps.updatedBy', 'name');
+    // Por `hideContactData` como todo lo que devuelve una ficha: la cédula, la
+    // dirección y el celular del paciente son solo del administrador, y no vale
+    // esconderlos en la pantalla si el servidor los manda igual.
+    res.json(hideContactData(hideTherapyNotes(poblado || record, req), req));
+  } catch (error) {
+    res.status(500).json({ message: 'Error al editar el seguimiento', error: error.message });
   }
 };
 
@@ -1338,7 +1842,7 @@ exports.administerSerum = async (req, res) => {
 
     const fresco = await ClinicalRecord.findById(record._id);
     emitToClinic(req.clinicId, 'clinicalRecord:updated', { patient: patientId });
-    res.json(hideContactData(fresco, req));
+    res.json(hideContactData(hideTherapyNotes(fresco, req), req));
   } catch (error) {
     res.status(500).json({ message: 'Error al registrar la administración', error: error.message });
   }
@@ -1412,7 +1916,7 @@ exports.undoSerumAdministration = async (req, res) => {
     const fresco = await ClinicalRecord.findById(record._id);
 
     emitToClinic(req.clinicId, 'clinicalRecord:updated', { patient: patientId });
-    res.json(hideContactData(fresco, req));
+    res.json(hideContactData(hideTherapyNotes(fresco, req), req));
   } catch (error) {
     res.status(500).json({ message: 'Error al deshacer la administración', error: error.message });
   }
@@ -1430,7 +1934,10 @@ exports.deleteFollowUp = async (req, res) => {
 
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
     emitToClinic(req.clinicId, 'clinicalRecord:updated', { patient: patientId });
-    res.json(record);
+    // Por los mismos filtros que el resto, aunque esta ruta sea solo del admin:
+    // era el único `res.json` de ficha sin envoltorio, y lo que se copia de un
+    // sitio suelto acaba copiándose a otro donde sí importa.
+    res.json(hideContactData(hideTherapyNotes(record, req), req));
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar seguimiento' });
   }
@@ -1457,6 +1964,13 @@ exports.uploadFollowUpAttachment = async (req, res) => {
     if (!fu) {
       try { fs.unlinkSync(req.file.path); } catch (_) {}
       return res.status(404).json({ message: 'Seguimiento no encontrado' });
+    }
+    // Los adjuntos son la otra puerta al contenido de un seguimiento: la ruta
+    // los abre a admin/cajero/doctor, y `doctor` expande a TODAS las
+    // especialidades. Cerrar el PDF y dejar abierto el archivo no cierra nada.
+    if (esDelTerapeuta(fu) && !canReadTherapy(req)) {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      return res.status(403).json({ message: 'Esta consulta es privada del terapeuta' });
     }
 
     const attachment = {
@@ -1493,6 +2007,10 @@ exports.downloadFollowUpAttachment = async (req, res) => {
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
     const fu = record.followUps.id(followUpId);
     if (!fu) return res.status(404).json({ message: 'Seguimiento no encontrado' });
+    // Mismo motivo que en la subida: el archivo es el contenido.
+    if (esDelTerapeuta(fu) && !canReadTherapy(req)) {
+      return res.status(403).json({ message: 'Esta consulta es privada del terapeuta' });
+    }
     const att = fu.attachments.id(attachmentId);
     if (!att) return res.status(404).json({ message: 'Archivo no encontrado' });
 
@@ -1524,6 +2042,10 @@ exports.deleteFollowUpAttachment = async (req, res) => {
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
     const fu = record.followUps.id(followUpId);
     if (!fu) return res.status(404).json({ message: 'Seguimiento no encontrado' });
+    // Mismo motivo que en la subida: el archivo es el contenido.
+    if (esDelTerapeuta(fu) && !canReadTherapy(req)) {
+      return res.status(403).json({ message: 'Esta consulta es privada del terapeuta' });
+    }
     const att = fu.attachments.id(attachmentId);
     if (!att) return res.status(404).json({ message: 'Archivo no encontrado' });
 
@@ -1552,6 +2074,18 @@ exports.printFollowUp = async (req, res) => {
 
     const fu = record.followUps.id(followUpId);
     if (!fu) return res.status(404).json({ message: 'Seguimiento no encontrado' });
+
+    /**
+     * LA CONSULTA DEL TERAPEUTA NO SALE EN PDF PARA NADIE MAS.
+     *
+     * Esta era la fuga de verdad: el recorte de la API no sirve de nada si
+     * cualquiera con el id del seguimiento se lo baja en PDF. Y la guardia de la
+     * ruta no basta, porque requireRole('doctor') expande a TODAS las
+     * especialidades: odontologia, optica, cajero y enfermero entran aqui.
+     */
+    if (esDelTerapeuta(fu) && !canReadTherapy(req)) {
+      return res.status(403).json({ message: 'Esta consulta es privada del terapeuta' });
+    }
 
     const patient = await Patient.findById(patientId);
     const Clinic = require('../models/Clinic');
@@ -1755,6 +2289,18 @@ exports.printMspForm = async (req, res) => {
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
     const fu = record.followUps.id(followUpId);
     if (!fu) return res.status(404).json({ message: 'Seguimiento no encontrado' });
+
+    /**
+     * LA CONSULTA DEL TERAPEUTA NO SALE EN PDF PARA NADIE MAS.
+     *
+     * Esta era la fuga de verdad: el recorte de la API no sirve de nada si
+     * cualquiera con el id del seguimiento se lo baja en PDF. Y la guardia de la
+     * ruta no basta, porque requireRole('doctor') expande a TODAS las
+     * especialidades: odontologia, optica, cajero y enfermero entran aqui.
+     */
+    if (esDelTerapeuta(fu) && !canReadTherapy(req)) {
+      return res.status(403).json({ message: 'Esta consulta es privada del terapeuta' });
+    }
 
     const patient = await Patient.findById(patientId);
     const Clinic = require('../models/Clinic');
@@ -2062,9 +2608,19 @@ exports.printHcu005 = async (req, res) => {
 
     // Orden CRONOLÓGICO ASCENDENTE: la hoja es un registro secuencial y se lee
     // de la primera consulta a la última, al revés que el historial en pantalla.
-    const seguimientos = [...(record.followUps || [])].sort(
-      (a, b) => new Date(a.fecha) - new Date(b.fecha),
-    );
+    /**
+     * La hoja 005 es la historia ENTERA, asi que aqui no se rechaza: se QUITAN
+     * las consultas del terapeuta a quien no le corresponde verlas. La hoja
+     * sigue saliendo completa para el terapeuta y la administracion.
+     *
+     * Se quitan del todo en vez de dejar el tocon porque esto es un documento
+     * legal que se imprime y se archiva: una fila que solo diga "atendido por
+     * terapeuta" no aporta nada al relato y si invita a preguntar por ella.
+     */
+    const puedeVerTerapia = canReadTherapy(req);
+    const seguimientos = [...(record.followUps || [])]
+      .filter((fu) => puedeVerTerapia || !esDelTerapeuta(fu))
+      .sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
 
     const filas = seguimientos.map((fu) => {
       // ── 1. NOTAS DE EVOLUCIÓN ──
@@ -2074,6 +2630,23 @@ exports.printHcu005 = async (req, res) => {
         notas.push(`<b>Motivo:</b> ${esc(fu.descripcion || fu.motivoConsulta)}`);
       }
       if (fu.enfermedadActual) notas.push(`<b>Enfermedad actual:</b> ${esc(fu.enfermedadActual)}`);
+      /**
+       * QUÉ APLICÓ ENFERMERÍA. En la hoja oficial esto es media nota de
+       * evolución: sin ello el parte decía «aplicación de enfermería» y nada
+       * más, y la historia clínica no puede omitir lo que entró por la vena.
+       */
+      if ((fu.aplicaciones || []).length) {
+        const { resumenAplicacion } = require('../utils/nurseApplications');
+        notas.push(
+          `<b>Se aplicó:</b> ${esc(fu.aplicaciones.map(resumenAplicacion).filter(Boolean).join(' · '))}`
+        );
+        const noPuesto = fu.aplicaciones.flatMap((a) =>
+          (a.components || [])
+            .filter((c) => Number(c.quantityApplied) < Number(c.quantityPrescribed))
+            .map((c) => `${c.name}${c.omitReason ? ` (${c.omitReason})` : ''}`)
+        );
+        if (noPuesto.length) notas.push(`<b>No se aplicó:</b> ${esc(noPuesto.join(' · '))}`);
+      }
 
       const vs = fu.vitalSigns || {};
       const signos = [

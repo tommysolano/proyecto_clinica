@@ -1,4 +1,4 @@
-import { useEffect, useState, Fragment, useRef, lazy, Suspense } from 'react';
+import { useEffect, useState, useMemo, memo, Fragment, useRef, lazy, Suspense } from 'react';
 import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import { downloadFile } from '../utils/download';
@@ -9,6 +9,7 @@ import TagEditor from '../components/TagEditor';
 import NumericInput from '../components/NumericInput';
 import Cie10Select from '../components/Cie10Select';
 import Odontograma from '../components/Odontograma';
+import CincoElementos from '../components/CincoElementos';
 import {
   ANTECEDENTES_CATEGORIAS,
   HABITOS_CATEGORIAS,
@@ -29,6 +30,10 @@ import {
   CARDIOLOGIA_ANTECEDENTES,
   CARDIOLOGIA_ESTUDIOS,
   CARDIOLOGIA_RITMOS,
+  TERAPIA_FODA,
+  TERAPIA_FODA_KEYS,
+  TERAPIA_HABITOS_FILAS,
+  TERAPIA_HABITOS_NIVELES,
   PODOLOGIA_HALLAZGOS,
   PODOLOGIA_EVALUACION,
   PODOLOGIA_HALLAZGOS_GENERALES,
@@ -106,6 +111,16 @@ const TABS = [
   { id: 'datos', label: 'Datos', icon: HiOutlineUser },
   { id: 'ficha', label: 'Ficha clínica', icon: HiOutlineClipboardDocumentList },
   { id: 'seguimientos', label: 'Seguimientos', icon: HiOutlineHeart },
+  /**
+   * ARCHIVOS: estudios que se resuelven subiendo el archivo.
+   *
+   * Hay médicos que no hacen seguimiento ni recetan: hacen la ecografía, suben
+   * la imagen y escriben su impresión diagnóstica. Con el formulario de
+   * seguimiento entero delante tenían que ignorar veinte campos —y el sistema
+   * les exigía un «motivo de consulta» que no existe— para dejar dos cosas.
+   * Aquí solo se pide lo que hay: la fecha, el archivo y la impresión.
+   */
+  { id: 'archivos', label: 'Archivos', icon: HiOutlinePaperClip },
   { id: 'citas', label: 'Citas', icon: HiOutlineCalendar },
   { id: 'facturas', label: 'Facturas', icon: HiOutlineDocumentText },
   // Observaciones cierra la fila: es la bitácora libre del paciente, lo último
@@ -160,13 +175,12 @@ export default function PatientDetail() {
   const appointmentId = searchParams.get('appointment') || null;
   const tabParam = searchParams.get('tab') || null;
   const { hasRole } = useAuth();
-  // El ecografista va DIRECTO a seguimientos: los antecedentes no le sirven —no
-  // explora ni diagnostica— y su trabajo entero (motivo, indicaciones, archivo)
-  // vive en el formulario de seguimiento.
+  // Quien entra desde una cita entra a atender: el doctor arranca en la ficha
+  // (los antecedentes antes de explorar) y el resto directo a seguimientos.
   const initialTab = tabParam
     ? tabParam
     : appointmentId
-      ? (hasRole('doctor', 'optica') && !hasRole('ecografista') ? 'ficha' : 'seguimientos')
+      ? (hasRole('doctor', 'optica') ? 'ficha' : 'seguimientos')
       : 'datos';
   const [tab, setTab] = useState(initialTab);
   const [patient, setPatient] = useState(null);
@@ -295,6 +309,15 @@ export default function PatientDetail() {
             <div className="mt-1.5 sm:mt-2">
               <TagEditor
                 value={patient.tags || []}
+                /**
+                 * Las etiquetas se GUARDAN con `PUT /patients/:id`, que solo
+                 * acepta admin, cajero, call_center y doctor (con 'optica'
+                 * enumerada a mano: en el cliente no expande desde 'doctor').
+                 * Desde que enfermería y odontología entran a esta pantalla,
+                 * sin esto verían la X y el buscador y se comerían un 403 al
+                 * tocarlos — y la etiqueta desaparecería sola al revertir.
+                 */
+                readOnly={!hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica')}
                 onChange={async (next) => {
                   const prev = patient.tags || [];
                   setPatient({ ...patient, tags: next });
@@ -350,8 +373,25 @@ export default function PatientDetail() {
 
         <div className="p-3 sm:p-6">
           {tabActiva === 'datos' && <DatosTab patient={patient} />}
-          {tabActiva === 'ficha' && <FichaTab patientId={id} />}
+          {/**
+            * El terapeuta no llena la hoja MSP: la suya es otra (y privada). El
+            * ADMINISTRADOR ve las dos — el servidor se la manda y le deja
+            * guardarla, así que esconderla aquí era tirar el dato en el cliente.
+            */}
+          {tabActiva === 'ficha' && (hasRole('terapeuta')
+            ? <FichaTerapiaTab patientId={id} />
+            : (
+              <>
+                <FichaTab patientId={id} />
+                {hasRole('admin') && (
+                  <div className="mt-6 pt-6 border-t-2 border-violet-200">
+                    <FichaTerapiaTab patientId={id} />
+                  </div>
+                )}
+              </>
+            ))}
           {tabActiva === 'seguimientos' && <SeguimientosTab patientId={id} appointmentId={appointmentId} />}
+          {tabActiva === 'archivos' && <ArchivosTab patientId={id} appointmentId={appointmentId} />}
           {tabActiva === 'citas' && <CitasTab patientId={id} />}
           {tabActiva === 'observaciones' && <ObservacionesTab patientId={id} />}
           {tabActiva === 'facturas' && <FacturasTab patientId={id} />}
@@ -419,6 +459,240 @@ function Item({ label, value, full }) {
 }
 
 // ───────────────────── Ficha clínica ─────────────────────
+
+/**
+ * LA FICHA DEL TERAPEUTA.
+ *
+ * Es OTRA ficha, no la hoja MSP con un par de campos cambiados: el terapeuta no
+ * llena la oficial. Comparte con ella los antecedentes —porque pregunta lo
+ * mismo— y sustituye la rejilla de hábitos por una tabla: una fila por hábito,
+ * un nivel del 1 al 3 (uno solo, es una escala) y lo que el paciente hace a
+ * diario.
+ *
+ * Y es PRIVADA: el servidor no se la manda a nadie más y tampoco deja que nadie
+ * más la guarde (ver `hideTherapyNotes` y `canReadTherapy`).
+ */
+function FichaTerapiaTab({ patientId }) {
+  const { hasRole } = useAuth();
+  const esAdmin = hasRole('admin');
+  const [record, setRecord] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await api.get(`/clinical-records/${patientId}`);
+      setRecord(res.data);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al cargar la ficha');
+    } finally {
+      setLoading(false);
+    }
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [patientId]);
+
+  const ficha = record?.fichaTerapia || {};
+  const setFicha = (patch) =>
+    setRecord((r) => ({ ...r, fichaTerapia: { ...(r.fichaTerapia || {}), ...patch } }));
+
+  // Los hábitos se guardan como lista; para pintarlos va mejor un mapa por fila.
+  const habitosPorFila = Object.fromEntries((ficha.habitos || []).map((h) => [h.fila, h]));
+  const setHabito = (fila, patch) => {
+    const actual = habitosPorFila[fila] || { fila, nivel: '', diario: '' };
+    const next = { ...actual, ...patch };
+    const resto = (ficha.habitos || []).filter((h) => h.fila !== fila);
+    // Una fila sin nivel y sin nota no dice nada: no se guarda.
+    const lista = next.nivel || String(next.diario || '').trim() ? [...resto, next] : resto;
+    // En el orden del catálogo, para que el dato no dependa de por dónde empezó
+    // a escribir el terapeuta.
+    setFicha({
+      habitos: TERAPIA_HABITOS_FILAS.filter((f) => lista.some((h) => h.fila === f.key)).map(
+        (f) => lista.find((h) => h.fila === f.key)
+      ),
+    });
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await api.put(`/clinical-records/${patientId}`, {
+        fichaTerapia: {
+          patologicosPersonales: ficha.patologicosPersonales || [],
+          patologicosFamiliares: ficha.patologicosFamiliares || [],
+          datosRelevantes: ficha.datosRelevantes || '',
+          datosRelevantesFamiliares: ficha.datosRelevantesFamiliares || '',
+          antecedentesQuirurgicos: ficha.antecedentesQuirurgicos || '',
+          antecedentesMedicamentos: ficha.antecedentesMedicamentos || '',
+          alergias: ficha.alergias || '',
+          habitos: ficha.habitos || [],
+          habitosDetalle: ficha.habitosDetalle || '',
+        },
+      });
+      setRecord(res.data);
+      toast.success('Ficha guardada');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al guardar');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div className="text-slate-500 text-sm">Cargando...</div>;
+  if (!record) return null;
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-violet-50 border border-violet-200 text-violet-900 text-xs sm:text-sm rounded-xl px-3 py-2">
+        {esAdmin ? (
+          <><b>Ficha de terapia.</b> Reservada: solo la ven el terapeuta y la administración.</>
+        ) : (
+          <>Esta ficha es <b>solo tuya</b>: no la ve ningún otro profesional de la clínica.</>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <h3 className="font-semibold text-slate-800">Antecedentes personales</h3>
+          <p className="text-xs text-slate-400">Marque los que tenga y anote el detalle.</p>
+        </div>
+        <MspChecklist
+          catalog={ANTECEDENTES_CATEGORIAS}
+          value={ficha.patologicosPersonales}
+          onChange={(v) => setFicha({ patologicosPersonales: v })}
+          cols="md:grid-cols-3"
+        />
+        <Field label="Datos relevantes">
+          <textarea
+            rows={2}
+            value={ficha.datosRelevantes || ''}
+            onChange={(e) => setFicha({ datosRelevantes: e.target.value })}
+            className="input resize-none"
+          />
+        </Field>
+      </div>
+
+      <div className="space-y-3 pt-2 border-t border-slate-100">
+        <h3 className="font-semibold text-slate-800">Antecedentes familiares</h3>
+        <MspChecklist
+          catalog={ANTECEDENTES_CATEGORIAS}
+          value={ficha.patologicosFamiliares}
+          onChange={(v) => setFicha({ patologicosFamiliares: v })}
+          cols="md:grid-cols-3"
+        />
+        <Field label="Datos relevantes familiares">
+          <textarea
+            rows={2}
+            value={ficha.datosRelevantesFamiliares || ''}
+            onChange={(e) => setFicha({ datosRelevantesFamiliares: e.target.value })}
+            className="input resize-none"
+          />
+        </Field>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-slate-100">
+        <Field label="Antecedentes quirúrgicos">
+          <textarea
+            rows={2}
+            value={ficha.antecedentesQuirurgicos || ''}
+            onChange={(e) => setFicha({ antecedentesQuirurgicos: e.target.value })}
+            className="input resize-none"
+          />
+        </Field>
+        <Field label="Medicación habitual">
+          <textarea
+            rows={2}
+            value={ficha.antecedentesMedicamentos || ''}
+            onChange={(e) => setFicha({ antecedentesMedicamentos: e.target.value })}
+            className="input resize-none"
+          />
+        </Field>
+        <Field label="Alergias">
+          <textarea
+            rows={2}
+            value={ficha.alergias || ''}
+            onChange={(e) => setFicha({ alergias: e.target.value })}
+            className="input resize-none"
+          />
+        </Field>
+      </div>
+
+      {/* ── Hábitos, en tabla ── */}
+      <div className="space-y-3 pt-2 border-t border-slate-100">
+        <div>
+          <h3 className="font-semibold text-slate-800">Hábitos</h3>
+          <p className="text-xs text-slate-400">
+            Marque el nivel de cada uno (1, 2 o 3 — solo uno) y anote lo del día a día.
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm border-collapse min-w-[520px]">
+            <thead>
+              <tr className="bg-slate-50">
+                <th className="border border-slate-200 px-3 py-2 text-left font-semibold w-40">Hábito</th>
+                {TERAPIA_HABITOS_NIVELES.map((n) => (
+                  <th key={n} className="border border-slate-200 px-3 py-2 font-semibold w-16">{n}</th>
+                ))}
+                <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Diario</th>
+              </tr>
+            </thead>
+            <tbody>
+              {TERAPIA_HABITOS_FILAS.map((f) => {
+                const h = habitosPorFila[f.key] || {};
+                return (
+                  <tr key={f.key}>
+                    <td className="border border-slate-200 px-3 py-2 font-medium text-slate-700">{f.label}</td>
+                    {TERAPIA_HABITOS_NIVELES.map((n) => (
+                      <td key={n} className="border border-slate-200 px-3 py-2 text-center">
+                        <input
+                          type="checkbox"
+                          checked={h.nivel === n}
+                          /* Volver a pulsar el nivel marcado lo desmarca: si no,
+                             una marca puesta por error no habría forma de quitarla. */
+                          onChange={() => setHabito(f.key, { nivel: h.nivel === n ? '' : n })}
+                          className="w-4 h-4 cursor-pointer accent-emerald-600"
+                        />
+                      </td>
+                    ))}
+                    <td className="border border-slate-200 px-2 py-1">
+                      <input
+                        type="text"
+                        value={h.diario || ''}
+                        onChange={(e) => setHabito(f.key, { diario: e.target.value })}
+                        className="w-full text-xs border border-slate-200 rounded px-2 py-1 outline-none focus:border-emerald-500"
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <Field label="Otras observaciones">
+          <textarea
+            rows={2}
+            value={ficha.habitosDetalle || ''}
+            onChange={(e) => setFicha({ habitosDetalle: e.target.value })}
+            className="input resize-none"
+          />
+        </Field>
+      </div>
+
+      <div className="flex justify-end">
+        <button
+          onClick={save}
+          disabled={saving}
+          className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 cursor-pointer border-none"
+        >
+          {saving ? 'Guardando…' : 'Guardar ficha'}
+        </button>
+      </div>
+      <FichaStyles />
+    </div>
+  );
+}
+
 function FichaTab({ patientId }) {
   const { hasRole } = useAuth();
   const [record, setRecord] = useState(null);
@@ -887,9 +1161,11 @@ function DiagnosticosEditor({ value = [], onChange }) {
  * sin filas: borrar la última la deja en blanco en vez de hacer desaparecer la
  * tabla.
  */
-function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
+function ItemsTable({ variant, items, onAdd, onUpdate, onRemove, titulo, ayuda }) {
   const isReceta = variant === 'receta';
-  const label = isReceta ? 'Receta' : 'Derivaciones';
+  // El rótulo se puede sobreescribir: la misma tabla es la «Receta» del doctor y
+  // el «Qué se aplicó» del enfermero, que no receta nada — anota lo que puso.
+  const label = titulo || (isReceta ? 'Receta' : 'Derivaciones');
   /**
    * Qué línea tiene abierto el catálogo de ampollas (null = ninguna).
    *
@@ -901,9 +1177,9 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove }) {
    * y el de la copia invisible se vería igual. Con el estado aquí solo hay uno.
    */
   const [selectorFila, setSelectorFila] = useState(null);
-  const hint = isReceta
+  const hint = ayuda || (isReceta
     ? 'medicamentos e insumos indicados'
-    : 'servicios o programas a los que se deriva';
+    : 'servicios o programas a los que se deriva');
 
   // Columnas por variante. En Derivaciones manda el orden de trabajo: cuántas
   // sesiones, de qué, y con qué indicaciones.
@@ -1305,29 +1581,49 @@ function SeguimientosTab({ patientId, appointmentId }) {
   const isCosme = hasRole('cosmetologia');
   const isCardio = hasRole('cardiologia');
   /**
-   * ECOGRAFISTA: su consulta es la más corta de todas.
+   * TERAPEUTA: su hoja no es la MSP.
    *
-   * No explora, no diagnostica y no receta — toma la imagen, la sube y escribe
-   * lo que ve. Enseñarle la hoja MSP entera (signos vitales, revisión de
-   * sistemas, examen físico, CIE-10, receta, derivaciones) sería pedirle que
-   * ignore veinte campos para llegar a los cuatro suyos.
+   * No explora por sistemas, no diagnostica con CIE-10 y no narra una evolución;
+   * su consulta son los cinco elementos, el reparto en cuadrantes y el plan. Se
+   * le podan las secciones que no le tocan en vez de enseñarle veinte campos
+   * para llegar a los tres suyos — la misma decisión que se tomó con enfermería.
    */
-  const isEcografista = hasRole('ecografista');
+  const isTerapeuta = hasRole('terapeuta');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
 
   /**
-   * ENFERMERÍA: SOLO LECTURA, pero de la consulta ENTERA.
+   * ENFERMERÍA lee la consulta ENTERA y ESCRIBE lo que aplicó.
    *
-   * Antes solo veía la receta. Quien canaliza una vía y mete tres ampollas es
-   * justo quien necesita el resto: a qué es alérgico el paciente, qué toma ya,
-   * qué diagnóstico hay detrás y cómo salieron los signos vitales. Esconderlo no
-   * protegía nada y sí quitaba de en medio lo único que evita una reacción.
+   * Lo primero es de ago-2026: quien canaliza una vía y mete tres ampollas es
+   * justo quien necesita saber a qué es alérgico el paciente y qué diagnóstico
+   * hay detrás. Esconderlo no protegía nada.
    *
-   * Lo que sigue sin hacer es REDACTAR la consulta: eso es de quien atiende, y
-   * quien lo impide de verdad es la ruta del servidor, no esta pantalla.
+   * Lo segundo es de sep-2026. Antes no redactaba nada: el sistema le generaba
+   * una nota automática al cerrar el turno y ahí acababa su registro. Eso dejaba
+   * fuera el caso más común de la clínica — el paciente que ya dejó pagada su
+   * serie de sueros, entra y pasa directo con el enfermero, sin cita ninguna —
+   * y obligaba a inventarle una cita para poder anotar la aplicación.
+   *
+   * Lo que NO hace es la consulta médica: su formulario va podado (ver
+   * `esConsultaMedica`). No diagnostica con CIE-10, no receta y no llena la hoja
+   * MSP; escribe qué aplicó, a quién y cómo quedó.
    */
   const esEnfermero = hasRole('enfermero') && !isAdmin;
-  const puedeEscribir = !esEnfermero;
+  const puedeEscribir = true;
+  /**
+   * ¿El formulario es una CONSULTA médica completa? Enfermería no: se le
+   * esconden las secciones que no le tocan en vez de enseñarle veinte campos
+   * para llegar a los tres suyos. La poda va en el cliente, como se hizo siempre
+   * con las especialidades: lo que no se manda, no se guarda.
+   */
+  const esConsultaMedica = !esEnfermero;
+  /**
+   * ¿Se llena la HOJA MSP? Enfermería no (no hace consulta) y el TERAPEUTA
+   * tampoco: se le quitan la revisión por sistemas, el examen físico, los
+   * diagnósticos CIE-10 y la evolución, que no son de su oficio. Lo suyo va en
+   * `TerapiaSection`, y su plan es el «plan de tratamiento terapéutico» de ahí.
+   */
+  const esHojaMsp = esConsultaMedica && !isTerapeuta;
   const puedeAdministrarSuero = hasRole('admin', 'doctor', 'enfermero');
 
   /**
@@ -1356,8 +1652,25 @@ function SeguimientosTab({ patientId, appointmentId }) {
     }
   };
 
-  // Una vez guardado, solo administradores pueden eliminar/editar seguimientos.
+  // Borrar un seguimiento sigue siendo solo del administrador: es historia
+  // clínica y se corrige, no se hace desaparecer.
   const canDelete = isAdmin;
+  /**
+   * ¿Puedo corregir ESTE seguimiento? El autor (lo suyo) y el administrador
+   * (cualquiera). Un doctor no reescribe la consulta de otro. La regla de verdad
+   * la aplica el servidor; esto solo evita enseñar un botón que dará 403.
+   */
+  const miId = String(user?.id || user?._id || '');
+  /**
+   * Los mismos roles que acepta la ruta PUT (ver routes/clinicalRecords.js).
+   * Mostrador puede REGISTRAR por otro, pero no reescribir una consulta médica:
+   * enseñarle el lápiz solo le daría un 403 al pulsarlo. ('optica' se nombra a
+   * mano: en el cliente no expande desde 'doctor'.)
+   */
+  const puedeEditarSeguimientos = hasRole('admin', 'doctor', 'enfermero', 'optica');
+  const canEditFollowUp = (fu) =>
+    puedeEditarSeguimientos
+    && (isAdmin || (miId && String(fu?.createdBy?._id || fu?.createdBy || '') === miId));
   const canUpload = hasRole('admin', 'cajero', 'doctor', 'optica', 'enfermero');
   // «Compras y aplicaciones» dice qué compró el paciente y cuánto pagó: es
   // información económica, solo para administración y contabilidad. El servidor
@@ -1419,6 +1732,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
     ceo: { c: '', e: '', o: '' },
     observaciones: '',
   });
+  const emptyTerapia = () => ({
+    elementos: [],
+    foda: Object.fromEntries(TERAPIA_FODA_KEYS.map((k) => [k, ''])),
+    plan: '',
+  });
   const emptyCardiologia = () => ({
     antecedentes: [],
     antecedentesOtros: '',
@@ -1472,6 +1790,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
     odontologia: emptyOdontologia(),
     cosmetologia: emptyCosmetologia(),
     cardiologia: emptyCardiologia(),
+    terapia: emptyTerapia(),
     vitalSigns: {
       // La hora de la toma la pone el sistema (hora de Ecuador); no se digita.
       hora: nowEcHHMM(),
@@ -1489,6 +1808,108 @@ function SeguimientosTab({ patientId, appointmentId }) {
   });
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
+  /**
+   * SEGUIMIENTO QUE SE ESTÁ CORRIGIENDO.
+   *
+   * Al guardar, la cita pasa a «completada» y el doctor se quedaba fuera: si
+   * había mandado algo por error o se acordaba de un dato después, no podía
+   * entrar. Con esto el mismo formulario sirve para escribir y para corregir; lo
+   * que cambia es a dónde va (POST nuevo o PUT sobre el existente).
+   */
+  const [editandoId, setEditandoId] = useState(null);
+  const formRef = useRef(null);
+  // Odontología ve solo sus seguimientos; esto abre la historia completa cuando
+  // hace falta (alergias, anticoagulantes, embarazo). Ver `filtraOdonto` abajo.
+  const [verTodo, setVerTodo] = useState(false);
+
+  /**
+   * Carga un seguimiento guardado en el formulario.
+   *
+   * Cada sección arranca de su `empty…()` y encima se pone lo guardado: un
+   * seguimiento viejo puede no tener una sección que hoy existe, y sin la base
+   * el formulario reventaría al leer `form.ginecologia.gpac.gestas`.
+   *
+   * Receta y derivaciones se vuelven a separar por `isService`, que es como el
+   * modelo las distingue (se guardan juntas en `recetaItems`). Los `_id` de cada
+   * línea VIAJAN: es lo que permite al servidor conservar los sueros que
+   * enfermería ya aplicó en ella.
+   */
+  const cargarParaEditar = (fu) => {
+    /**
+     * NO SE PISA UNA CONSULTA A MEDIO ESCRIBIR.
+     *
+     * El lápiz está pegado a los botones de PDF e imprimir en la lista de abajo.
+     * Un doctor con la consulta entera escrita que lo pulse por error perdería
+     * todo sin un solo aviso — y no hay «deshacer».
+     */
+    const hayAlgoEscrito =
+      String(form.descripcion || '').trim()
+      || String(form.enfermedadActual || '').trim()
+      || String(form.evolucion || '').trim()
+      || String(form.planTratamiento || '').trim()
+      || String(form.indicaciones || '').trim()
+      || (form.diagnosticos || []).length > 0
+      || pendingFiles.length > 0
+      || [...(form.recetaItems || []), ...(form.derivacionItems || [])].some(
+        (it) => String(it.name || '').trim() || filaConDatos(it)
+      );
+    if (hayAlgoEscrito && editandoId !== fu._id) {
+      const aviso = editandoId
+        ? '¿Descartar los cambios de la corrección en curso y pasar a este seguimiento?'
+        : 'Tienes una consulta a medio escribir. ¿Descartarla y corregir este seguimiento?';
+      if (!confirm(aviso)) return;
+    }
+
+    const conBase = (base, guardado) =>
+      guardado && typeof guardado === 'object' ? { ...base, ...guardado } : base;
+    const lineas = (fu.recetaItems || []).map((it) => ({
+      ...emptyRow(),
+      ...it,
+      quantity: it.quantity ?? 1,
+      serumBase: it.serumBase || { name: SUERO_CLORURO_NOMBRE, volumeMl: null },
+      serumComponents: it.serumComponents || [],
+    }));
+    const receta = lineas.filter((it) => !it.isService);
+    const derivaciones = lineas.filter((it) => it.isService);
+    setForm({
+      ...emptyForm(),
+      fecha: fu.fecha ? String(fu.fecha).slice(0, 10) : todayEc(),
+      tipoConsulta: fu.tipoConsulta || '',
+      descripcion: fu.descripcion || fu.motivoConsulta || '',
+      enfermedadActual: fu.enfermedadActual || '',
+      planTratamiento: fu.planTratamiento || '',
+      recomendacionesNoFarmacologicas: fu.recomendacionesNoFarmacologicas || '',
+      evolucion: fu.evolucion || '',
+      indicaciones: fu.indicaciones || '',
+      observaciones: fu.observaciones || '',
+      // Siempre queda una fila en blanco al final para poder añadir sin pulsar nada.
+      recetaItems: [...receta, emptyRow()],
+      derivacionItems: [...derivaciones, emptyRow()],
+      revisionSistemas: fu.revisionSistemas || [],
+      revisionSistemasHallazgos: fu.revisionSistemasHallazgos || '',
+      examenFisico: conBase({ regional: [], sistemico: [], hallazgos: '' }, fu.examenFisico),
+      diagnosticos: fu.diagnosticos || [],
+      opticaRx: conBase(emptyOpticaRx(), fu.opticaRx),
+      ginecologia: conBase(emptyGineco(), fu.ginecologia),
+      podologia: conBase(emptyPodologia(), fu.podologia),
+      odontologia: conBase(emptyOdontologia(), fu.odontologia),
+      cosmetologia: conBase(emptyCosmetologia(), fu.cosmetologia),
+      cardiologia: conBase(emptyCardiologia(), fu.cardiologia),
+      terapia: conBase(emptyTerapia(), fu.terapia),
+      vitalSigns: conBase(emptyForm().vitalSigns, fu.vitalSigns),
+    });
+    setEditandoId(fu._id);
+    setPendingFiles([]);
+    // El formulario está arriba del todo y el botón de editar abajo: sin esto
+    // parece que no pasó nada.
+    formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const cancelarEdicion = () => {
+    setEditandoId(null);
+    setForm(emptyForm());
+    setPendingFiles([]);
+  };
   // La hora de la toma de signos vitales la lleva el sistema: se mantiene al
   // minuto mientras el seguimiento está abierto y se vuelve a sellar al guardar,
   // así lo que ve el doctor es exactamente lo que queda registrado.
@@ -1671,19 +2092,32 @@ function SeguimientosTab({ patientId, appointmentId }) {
     setSaving(true);
     try {
       const vs = form.vitalSigns || {};
+      /**
+       * UN SIGNO SIN MEDIR VIAJA COMO null, NUNCA COMO 0.
+       *
+       * El formulario nace con cadena vacía, pero lo que devuelve el servidor es
+       * `null` (así los declara el esquema). Comparar solo contra `''` dejaba
+       * pasar el null a `Number(null)`, que es 0: al CORREGIR un seguimiento en
+       * el que no se tomaron constantes, se grababa T 0 °C, FC 0, peso 0…
+       *
+       * Y en ginecología era peor: con fc 0, fr 0, temperatura 0 y saturación 0
+       * el Score MAMÁ puntuaba 11 y salía en ROJO —«active la clave
+       * obstétrica»— en una consulta donde nadie midió nada.
+       */
+      const num = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
       const vitalSigns = {
         // Sello del sistema: la hora real en que se guarda la toma (hora de Ecuador).
         hora: nowEcHHMM(),
-        temperature: vs.temperature === '' ? null : Number(vs.temperature),
+        temperature: num(vs.temperature),
         bloodPressure: vs.bloodPressure || '',
-        heartRate: vs.heartRate === '' ? null : Number(vs.heartRate),
-        respiratoryRate: vs.respiratoryRate === '' ? null : Number(vs.respiratoryRate),
-        oxygenSaturation: vs.oxygenSaturation === '' ? null : Number(vs.oxygenSaturation),
-        weight: vs.weight === '' ? null : Number(vs.weight),
-        height: vs.height === '' ? null : Number(vs.height),
-        abdominalPerimeter: vs.abdominalPerimeter === '' ? null : Number(vs.abdominalPerimeter),
-        capillaryHemoglobin: vs.capillaryHemoglobin === '' ? null : Number(vs.capillaryHemoglobin),
-        glucose: vs.glucose === '' ? null : Number(vs.glucose),
+        heartRate: num(vs.heartRate),
+        respiratoryRate: num(vs.respiratoryRate),
+        oxygenSaturation: num(vs.oxygenSaturation),
+        weight: num(vs.weight),
+        height: num(vs.height),
+        abdominalPerimeter: num(vs.abdominalPerimeter),
+        capillaryHemoglobin: num(vs.capillaryHemoglobin),
+        glucose: num(vs.glucose),
       };
       // Las líneas en blanco de Receta/Derivaciones no viajan: la tabla siempre
       // muestra una fila vacía lista para escribir, y guardar sin usarla no debe
@@ -1714,14 +2148,50 @@ function SeguimientosTab({ patientId, appointmentId }) {
       if (!isOdonto) delete payload.odontologia;
       if (!isCosme) delete payload.cosmetologia;
       if (!isCardio) delete payload.cardiologia;
+      if (!isTerapeuta) delete payload.terapia;
+
       /**
-       * El ecografista no toma constantes vitales: su formulario ni las pide.
-       * Pero `vitalSigns.hora` la sella el sistema siempre, y con ese único dato
-       * el historial pintaba una caja de "signos vitales" con una hora suelta —
-       * un dato que nadie midió. Sin el bloque, el seguimiento queda como lo que
-       * es: motivo, indicaciones y el estudio.
+       * CORREGIR un seguimiento ya guardado.
+       *
+       * Va por su propio endpoint y no por el de crear: editar no puede volver a
+       * cerrar la cita, ni abrir otro tratamiento, ni descontar el inventario
+       * otra vez. Tampoco se manda `appointmentId` — la cita ya está cerrada.
        */
-      if (isEcografista) delete payload.vitalSigns;
+      if (editandoId) {
+        const r = await api.put(`/clinical-records/${patientId}/follow-ups/${editandoId}`, payload);
+        let actualizado = r.data;
+        // Los adjuntos que se hayan añadido durante la corrección van después,
+        // ya con el seguimiento a salvo (misma razón que al crear).
+        if (pendingFiles.length > 0) {
+          try {
+            for (const f of pendingFiles) {
+              const fd = new FormData();
+              fd.append('file', f);
+              // eslint-disable-next-line no-await-in-loop
+              await api.post(
+                `/clinical-records/${patientId}/follow-ups/${editandoId}/attachments`,
+                fd,
+                { headers: { 'Content-Type': 'multipart/form-data' } }
+              );
+            }
+            // El endpoint de adjuntos NO devuelve la ficha, así que se relee.
+            const rec = await api.get(`/clinical-records/${patientId}`);
+            actualizado = rec.data;
+          } catch (err) {
+            toast.error(
+              err.response?.data?.message || 'El seguimiento se guardó, pero no se pudieron subir los archivos',
+              { duration: 8000 }
+            );
+          }
+        }
+        setRecord(actualizado);
+        setForm(emptyForm());
+        setPendingFiles([]);
+        setEditandoId(null);
+        toast.success('Seguimiento actualizado');
+        return; // el `finally` de abajo suelta `saving`
+      }
+
       if (appointmentId) payload.appointmentId = appointmentId;
       const res = await api.post(`/clinical-records/${patientId}/follow-ups`, payload);
 
@@ -1733,6 +2203,49 @@ function SeguimientosTab({ patientId, appointmentId }) {
       let updated = res.data;
       const newFu = (updated.followUps || []).slice(-1)[0];
       let fallaronAdjuntos = null;
+
+      /**
+       * ENFERMERÍA: lo que acaba de registrar YA SE PUSO.
+       *
+       * Cuando el doctor escribe un suero deja una cuenta abierta («7 dosis») y
+       * enfermería las va administrando. Cuando lo escribe el enfermero está
+       * contando lo que acaba de hacer, así que se administra en el acto: si no,
+       * la ficha diría «0 de 1 administrado» de algo que ya está en la vena del
+       * paciente, y el inventario seguiría diciendo que la ampolla está en la
+       * percha.
+       *
+       * Se hace llamando al MISMO endpoint que usa el botón de administrar: toda
+       * la lógica de stock, topes y concurrencia vive ahí y no se duplica.
+       */
+      if (esEnfermero && newFu) {
+        const sueros = (newFu.recetaItems || []).filter((it) => it.isSerum);
+        for (const it of sueros) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            const r = await api.post(
+              `/clinical-records/${patientId}/follow-ups/${newFu._id}/receta/${it._id}/administer`,
+              {
+                baseVolumeMl: it.serumBase?.volumeMl ?? null,
+                components: (it.serumComponents || []).map((c) => ({
+                  code: c.code || '',
+                  name: c.name || '',
+                  quantityPrescribed: Number(c.quantity) || 0,
+                  quantityApplied: Number(c.quantity) || 0,
+                  omitReason: '',
+                })),
+              }
+            );
+            updated = r.data?.record || r.data || updated;
+          } catch (err) {
+            // No se pierde el registro por esto: el seguimiento ya está guardado
+            // y la dosis se puede anotar desde la propia línea.
+            toast.error(
+              `${it.name}: ${err.response?.data?.message || 'no se pudo descontar del inventario'}. Anótalo desde la línea del suero.`,
+              { duration: 8000 }
+            );
+          }
+        }
+      }
       if (newFu && pendingFiles.length > 0) {
         try {
           for (const f of pendingFiles) {
@@ -1873,8 +2386,34 @@ function SeguimientosTab({ patientId, appointmentId }) {
   // Todas las consultas, para todos. A enfermería se le escondían las que no
   // recetaban nada; ahora que lee la historia entera, una consulta sin receta
   // sigue diciéndole algo (el diagnóstico, la evolución, los signos vitales).
-  const followUps = [...(record.followUps || [])]
+  const todosLosSeguimientos = [...(record.followUps || [])]
     .sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+
+  /**
+   * ODONTOLOGÍA VE LO SUYO.
+   *
+   * El odontólogo entra al paciente para consultar SU historia, y las consultas
+   * de las demás especialidades solo le hacen scrollear. La lista se filtra por
+   * el rol con el que se escribió cada seguimiento (`createdByRole`), con dos
+   * respaldos para lo que ya estaba guardado antes de que ese campo existiera:
+   * que la consulta traiga ficha de odontología, o que la haya escrito él mismo.
+   *
+   * El enlace de «ver la historia completa» NO es un descuido: antes de una
+   * extracción hay que poder mirar alergias, anticoagulantes o un embarazo, y
+   * esos datos están en las consultas de los demás. Está deliberadamente
+   * discreto — hay que pedirlo — pero está.
+   */
+  const filtraOdonto = isOdonto && !isAdmin;
+  const esDeOdontologia = (fu) =>
+    fu.createdByRole === 'odontologia'
+    || odontologiaHasData(fu.odontologia)
+    || (miId && String(fu.createdBy?._id || fu.createdBy || '') === miId);
+  const followUps = filtraOdonto && !verTodo
+    ? todosLosSeguimientos.filter(esDeOdontologia)
+    : todosLosSeguimientos;
+  const ocultos = filtraOdonto && !verTodo
+    ? todosLosSeguimientos.length - followUps.length
+    : 0;
 
   return (
     <div className="space-y-4 sm:space-y-6">
@@ -1899,9 +2438,27 @@ function SeguimientosTab({ patientId, appointmentId }) {
       {/* Ya no promete que la cita se completa: con varios profesionales, guardar
           cierra TU turno y puede pasarla al siguiente. Decir "completada" hacía
           que el segundo doctor creyera que el primero ya había cerrado todo. */}
-      {appointmentId && puedeEscribir && (
+      {appointmentId && puedeEscribir && !editandoId && (
         <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs sm:text-sm rounded-xl px-3 py-2">
           Al guardar cierras tu parte de la consulta y vuelves a la agenda.
+        </div>
+      )}
+
+      {/* Corrigiendo: el aviso de arriba mentiría (editar no cierra nada) y
+          además hay que poder salirse sin guardar. */}
+      {editandoId && (
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs sm:text-sm rounded-xl px-3 py-2">
+          <span>
+            Estás <b>corrigiendo un seguimiento ya guardado</b>. Al guardar se actualiza
+            y queda registrado que lo modificaste.
+          </span>
+          <button
+            type="button"
+            onClick={cancelarEdicion}
+            className="shrink-0 px-3 py-1.5 rounded-lg bg-white text-indigo-700 border border-indigo-300 text-xs font-semibold cursor-pointer"
+          >
+            Cancelar corrección
+          </button>
         </div>
       )}
 
@@ -1913,9 +2470,12 @@ function SeguimientosTab({ patientId, appointmentId }) {
        * aplicaba el suero y la cita se quedaba abierta para siempre, y el botón
        * «Terminar» solo existía en la agenda —había que salir a buscarlo—.
        */}
-      {appointmentId && esEnfermero && (
+      {appointmentId && esEnfermero && !editandoId && (
         <div className="flex flex-wrap items-center justify-between gap-2 bg-sky-50 border border-sky-200 text-sky-900 text-xs sm:text-sm rounded-xl px-3 py-2">
-          <span>Cuando acabes de aplicar lo indicado, cierra tu parte de la atención.</span>
+          <span>
+            Cuando acabes de aplicar lo indicado, cierra tu parte de la atención — o
+            guarda abajo lo que aplicaste, que también la cierra.
+          </span>
           <button
             type="button"
             onClick={terminarTurnoEnfermeria}
@@ -1928,12 +2488,17 @@ function SeguimientosTab({ patientId, appointmentId }) {
         </div>
       )}
 
-      {/* Enfermería no redacta la consulta: solo consulta la receta y anota los sueros. */}
+      {/* El formulario es el mismo para todos; lo que cambia es cuánto se ve
+          (ver `esConsultaMedica`). `puedeEscribir` se conserva por si mañana
+          vuelve a haber un rol de solo lectura. */}
       {puedeEscribir && (
       <form
+        ref={formRef}
         onSubmit={submit}
         onKeyDown={evitarEnvioConEnter}
-        className="bg-slate-50 rounded-xl p-4 grid grid-cols-1 gap-3 md:grid-cols-3"
+        className={`rounded-xl p-4 grid grid-cols-1 gap-3 md:grid-cols-3 ${
+          editandoId ? 'bg-indigo-50/60 ring-2 ring-indigo-200' : 'bg-slate-50'
+        }`}
       >
         <Field label="Fecha">
           <DateInput
@@ -1942,36 +2507,46 @@ function SeguimientosTab({ patientId, appointmentId }) {
             className="input"
           />
         </Field>
-        <Field label="Motivo de consulta" className="md:col-span-2">
+        {/* Enfermería no hace una consulta: hace algo concreto. Preguntarle el
+            «motivo de consulta» la obligaba a escribir ahí el nombre del
+            servicio, que no es lo mismo y descuadraba el historial. */}
+        <Field
+          label={esConsultaMedica ? 'Motivo de consulta' : 'Servicio aplicado'}
+          className="md:col-span-2"
+        >
           <input
             type="text"
             value={form.descripcion}
             onChange={(e) => setForm((f) => ({ ...f, descripcion: e.target.value }))}
+            placeholder={esConsultaMedica ? '' : 'Ej.: sueroterapia, curación, inyección…'}
             className="input"
             required
           />
         </Field>
-        {/* INDICACIONES del estudio. Es el campo del ecografista: lo que ve en
-            la imagen y lo que recomienda a partir de ello. Va aquí arriba, junto
-            al motivo, porque para él es el cuerpo de la consulta — no una nota
-            al pie como la evolución lo es para los demás. */}
-        {isEcografista && (
-          <Field label="Indicaciones" className="md:col-span-3">
-            <textarea
-              rows={4}
-              value={form.indicaciones}
-              onChange={(e) => setForm((f) => ({ ...f, indicaciones: e.target.value }))}
-              placeholder="Lo que se observa en el estudio y lo que se recomienda a partir de ello"
-              className="input resize-none"
-            />
-          </Field>
-        )}
 
-        {/* Todo lo que va de aquí a las derivaciones es la consulta médica
-            completa (hoja MSP + ficha de especialidad + receta). El ecografista
-            no la ve: ver `isEcografista` arriba. */}
-        {!isEcografista && (
-        <>
+        {/**
+          * De aquí abajo empieza la CONSULTA MÉDICA (hoja MSP, diagnósticos,
+          * receta, plan, derivaciones). Enfermería no la ve: no diagnostica ni
+          * receta, y enseñarle veinte campos para llegar a los tres suyos es
+          * exactamente lo que hacía que se registrara todo «a mano» en las
+          * observaciones. Lo suyo —fecha, servicio, signos vitales, qué aplicó y
+          * archivos— sí lo tiene, intercalado en su sitio.
+          */}
+        {esConsultaMedica && (<>
+        {/* INDICACIONES del estudio: lo que se ve en la imagen y lo que se
+            recomienda a partir de ello. Va aquí arriba, junto al motivo, porque
+            cuando la consulta ES el estudio esto es su cuerpo — no una nota al
+            pie como la evolución lo es para los demás. */}
+        <Field label="Indicaciones" className="md:col-span-3">
+          <textarea
+            rows={4}
+            value={form.indicaciones}
+            onChange={(e) => setForm((f) => ({ ...f, indicaciones: e.target.value }))}
+            placeholder="Lo que se observa en el estudio y lo que se recomienda a partir de ello"
+            className="input resize-none"
+          />
+        </Field>
+
         {/* B. Primera vez / subsecuente */}
         <div className="md:col-span-3">
           <label className="text-sm font-medium text-slate-700 block mb-1.5">Tipo de consulta</label>
@@ -2006,8 +2581,9 @@ function SeguimientosTab({ patientId, appointmentId }) {
             className="input resize-none"
           />
         </Field>
+        </>)}
 
-        {/* F. Signos vitales (colapsable) */}
+        {/* F. Signos vitales. Enfermería SÍ los toma: es media consulta suya. */}
         <div className="md:col-span-3">
           <Collapsible title="Signos vitales" hint="constantes vitales y antropometría">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -2170,6 +2746,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
           </Collapsible>
         </div>
 
+        {esHojaMsp && (<>
         {/* G. Revisión actual de órganos y sistemas (colapsable) */}
         <div className="md:col-span-3">
           <Collapsible title="Revisión de órganos y sistemas" hint="marque los que presenten patología">
@@ -2237,7 +2814,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
           </Collapsible>
         </div>
 
-        {/* Ficha de la especialidad: va pegada al diagnóstico, antes de recetar. */}
+        </>)}
+
+        {/* Ficha de la especialidad: va pegada al diagnóstico, antes de recetar.
+            Fuera del bloque MSP a propósito: el terapeuta no llena aquella hoja
+            pero SÍ tiene la suya. */}
         {isOptica && <OpticaRxTable value={form.opticaRx} onChange={(rx) => setForm((f) => ({ ...f, opticaRx: rx }))} />}
         {isGineco && (
           <GinecologiaSection
@@ -2252,11 +2833,13 @@ function SeguimientosTab({ patientId, appointmentId }) {
         {isOdonto && <OdontologiaSection value={form.odontologia} onChange={(o) => setForm((f) => ({ ...f, odontologia: o }))} />}
         {isCosme && <CosmetologiaSection value={form.cosmetologia} onChange={(c) => setForm((f) => ({ ...f, cosmetologia: c }))} />}
         {isCardio && <CardiologiaSection value={form.cardiologia} onChange={(c) => setForm((f) => ({ ...f, cardiologia: c }))} />}
+        {isTerapeuta && <TerapiaSection value={form.terapia} onChange={(t) => setForm((f) => ({ ...f, terapia: t }))} />}
 
         {/* Orden de la consulta: cómo va el paciente → qué se le receta → el
             plan narrado → lo que hace por su cuenta → y, al final, a dónde se le
             deriva. La derivación se decide DESPUÉS de tener el plan, y es lo
             último que se le explica al paciente antes de que salga. */}
+        {esHojaMsp && (
         <Field label="Evolución" className="md:col-span-3">
           <textarea
             rows={2}
@@ -2266,17 +2849,33 @@ function SeguimientosTab({ patientId, appointmentId }) {
             className="input resize-none"
           />
         </Field>
+        )}
 
+        {/**
+          * QUÉ SE APLICÓ / QUÉ SE RECETA.
+          *
+          * Es la misma tabla para los dos, y a propósito: el suero se describe
+          * igual lo mande el médico o lo ponga el enfermero por su cuenta
+          * (cloruro, volumen, ampollas y moléculas). Lo que cambia es el
+          * significado — el doctor deja una cuenta abierta de N dosis; el
+          * enfermero anota lo que acaba de poner —, y de eso se encarga el
+          * guardado: lo que registra enfermería se administra en el acto (ver
+          * `submit`), así que sale del inventario en ese momento.
+          */}
         <ItemsTable
           variant="receta"
+          titulo={esConsultaMedica ? undefined : 'Qué se aplicó'}
+          ayuda={esConsultaMedica ? undefined : 'marca «suero» para anotar el cloruro y las ampollas que entraron'}
           items={form.recetaItems}
           onAdd={() => addRow('recetaItems')}
           onUpdate={(idx, key, val) => updateRow('recetaItems', idx, key, val)}
           onRemove={(idx) => removeRow('recetaItems', idx)}
         />
 
+        {esConsultaMedica && (<>
         {/* J. Plan de tratamiento (narrado; la receta va arriba y las
             derivaciones justo debajo) */}
+        {esHojaMsp && (
         <Field label="Plan de tratamiento" className="md:col-span-3">
           <textarea
             rows={2}
@@ -2286,6 +2885,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
             className="input resize-none"
           />
         </Field>
+        )}
 
         {/* Lo que el paciente tiene que hacer por su cuenta, sin receta de por
             medio. Campo aparte del plan a propósito: se le explica y se le
@@ -2310,11 +2910,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
           onUpdate={(idx, key, val) => updateRow('derivacionItems', idx, key, val)}
           onRemove={(idx) => removeRow('derivacionItems', idx)}
         />
-        </>
-        )}
+        </>)}
 
-        {/* Archivos (PDF o imágenes) antes de guardar el seguimiento.
-            Para el ecografista esto NO es un anexo: es el estudio. */}
+        {/* Archivos (PDF o imágenes) antes de guardar el seguimiento. Cuando la
+            consulta es un estudio, esto NO es un anexo: es el estudio. */}
         <div className="md:col-span-3">
           <label className="text-sm font-medium text-slate-700 block mb-2">
             Archivos a adjuntar (PDF o imágenes)
@@ -2364,14 +2963,29 @@ function SeguimientosTab({ patientId, appointmentId }) {
         </div>
 
         <div className="md:col-span-3 flex justify-end">
+          {editandoId && (
+            <button
+              type="button"
+              onClick={cancelarEdicion}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-600 border border-slate-300 cursor-pointer"
+            >
+              Cancelar
+            </button>
+          )}
           {/* ÚNICA forma de enviar el seguimiento (ver evitarEnvioConEnter). */}
           <button
             type="submit"
             disabled={saving}
-            className="flex items-center gap-1 px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 cursor-pointer border-none"
+            className={`flex items-center gap-1 px-5 py-2 text-white rounded-lg text-sm font-medium disabled:opacity-50 cursor-pointer border-none ${
+              editandoId ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-emerald-600 hover:bg-emerald-700'
+            }`}
           >
             <HiOutlineCheck className="w-4 h-4" />
-            {saving ? 'Guardando…' : appointmentId ? 'Guardar y finalizar' : 'Guardar'}
+            {saving
+              ? 'Guardando…'
+              : editandoId
+                ? 'Guardar cambios'
+                : appointmentId ? 'Guardar y finalizar' : 'Guardar'}
           </button>
         </div>
       </form>
@@ -2449,8 +3063,29 @@ function SeguimientosTab({ patientId, appointmentId }) {
         <div className="divide-y divide-slate-100">
           {followUps.length === 0 && (
             <p className="text-center py-6 text-slate-400 text-sm m-0">
-              No hay seguimientos.
+              {filtraOdonto && !verTodo && todosLosSeguimientos.length > 0
+                ? 'Este paciente no tiene consultas de odontología.'
+                : 'No hay seguimientos.'}
             </p>
+          )}
+          {/* Aviso del recorte. Antes de una extracción hay que poder mirar
+              alergias o anticoagulantes, y eso está en las consultas de otras
+              especialidades: se puede pedir, pero no se enseña por defecto. */}
+          {filtraOdonto && (ocultos > 0 || verTodo) && (
+            <div className="px-4 py-2 bg-slate-50 text-xs text-slate-500 flex flex-wrap items-center justify-between gap-2">
+              <span>
+                {verTodo
+                  ? 'Viendo la historia clínica completa del paciente.'
+                  : `${ocultos} consulta${ocultos === 1 ? '' : 's'} de otras especialidades no se ${ocultos === 1 ? 'muestra' : 'muestran'}.`}
+              </span>
+              <button
+                type="button"
+                onClick={() => setVerTodo((v) => !v)}
+                className="text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0 font-medium"
+              >
+                {verTodo ? 'Ver solo odontología' : 'Ver historia completa'}
+              </button>
+            </div>
           )}
           {followUps.map((fu) => {
               const hasOpticaData =
@@ -2462,6 +3097,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
               const hasOdontoData = odontologiaHasData(fu.odontologia);
               const hasCosmeData = cosmetologiaHasData(fu.cosmetologia);
               const hasCardioData = cardiologiaHasData(fu.cardiologia);
+              const hasTerapiaData = terapiaHasData(fu.terapia);
               const vs = fu.vitalSigns || {};
               const hasVitals = ['hora', 'temperature', 'bloodPressure', 'heartRate', 'respiratoryRate', 'oxygenSaturation', 'weight', 'height', 'abdominalPerimeter', 'capillaryHemoglobin', 'glucose']
                 .some((k) => vs[k] != null && vs[k] !== '');
@@ -2481,10 +3117,32 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         Dr. {fu.createdBy.name}
                       </span>
                     )}
+                    {/* Un seguimiento corregido tiene que decirlo: es historia
+                        clínica y quien la lea después debe saber que se tocó. */}
+                    {fu.editedAt && (
+                      <span
+                        className="text-[10px] text-indigo-600 italic ml-2 md:ml-0 md:mt-0.5 md:block"
+                        title={new Date(fu.editedAt).toLocaleString('es-EC')}
+                      >
+                        Modificado{fu.updatedBy?.name ? ` por ${fu.updatedBy.name}` : ''} · {fmtDate(fu.editedAt)}
+                      </span>
+                    )}
                   </div>
                   <div className="flex-1 min-w-0 break-words md:px-4 md:py-2.5 text-slate-800">
                     {fu.kind === 'enfermeria' && (
                       <span className="inline-block mb-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-700">Enfermería</span>
+                    )}
+                    {/* Consulta del terapeuta vista por quien no le corresponde.
+                        El servidor ya la vació (`hideTherapyNotes`); aquí solo
+                        se dice qué es, para que no parezca una consulta a la que
+                        le faltan los campos. */}
+                    {fu.redacted && (
+                      <span className="inline-block mb-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700">
+                        Terapia · reservado
+                      </span>
+                    )}
+                    {fu.createdByRole === 'terapeuta' && !fu.redacted && (
+                      <span className="inline-block mb-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700">Terapia</span>
                     )}
                     {hasOpticaData && (
                       <span className="inline-block mb-1 ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700">Óptica</span>
@@ -2502,6 +3160,13 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     {hasOdontoData && <OdontologiaSummary o={fu.odontologia} />}
                     {hasCosmeData && <CosmetologiaSummary c={fu.cosmetologia} />}
                     {hasCardioData && <CardiologiaSummary value={fu.cardiologia} />}
+                    {hasTerapiaData && <TerapiaSummary value={fu.terapia} />}
+                    {/* LO QUE ENFERMERÍA APLICÓ DE VERDAD. Antes aquí solo ponía
+                        «Servicio aplicado por enfermería»: la aplicación vive
+                        dentro de la receta del doctor que la mandó, que es otra
+                        tarjeta y otro día, así que quien leía el parte no sabía
+                        ni qué suero ni qué ampollas se pusieron. */}
+                    <AplicacionesEnfermeria lista={fu.aplicaciones} />
                     {fu.enfermedadActual && (
                       <div className="mt-1 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Enfermedad actual:</b> {fu.enfermedadActual}
@@ -2727,6 +3392,24 @@ function SeguimientosTab({ patientId, appointmentId }) {
                   </div>
                   <div className="md:w-32 md:shrink-0 md:px-4 md:py-2.5 border-t border-slate-100 pt-2 md:border-t-0 md:pt-0">
                     <div className="flex items-center gap-1 md:justify-end">
+                      {/* De una consulta reservada no hay nada que imprimir ni
+                          que corregir: el servidor da 403 en los tres PDF. Los
+                          botones se esconden para no ofrecer lo que no se puede. */}
+                      {fu.redacted ? null : (<>
+                      {/* CORREGIR. Antes, guardado el seguimiento, no había
+                          vuelta atrás: un dato mal escrito o un olvido obligaban
+                          a pedirle al admin que borrara la consulta entera. */}
+                      {puedeEscribir && canEditFollowUp(fu) && (
+                        <button
+                          onClick={() => cargarParaEditar(fu)}
+                          title="Corregir o ampliar este seguimiento"
+                          className={`p-1 cursor-pointer bg-transparent border-none ${
+                            editandoId === fu._id ? 'text-indigo-600' : 'text-slate-500 hover:text-indigo-600'
+                          }`}
+                        >
+                          <HiOutlinePencilSquare className="w-4 h-4" />
+                        </button>
+                      )}
                       <button
                         onClick={() => downloadFollowUpPdf(fu._id)}
                         title="Descargar PDF"
@@ -2763,6 +3446,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                           <HiOutlineTrash className="w-4 h-4" />
                         </button>
                       )}
+                      </>)}
                     </div>
                   </div>
                 </article>
@@ -2782,6 +3466,532 @@ function SeguimientosTab({ patientId, appointmentId }) {
         />
       )}
       <FichaStyles />
+    </div>
+  );
+}
+
+// ──────────────── Archivos: estudios del paciente ────────────────
+
+/**
+ * PESTAÑA «ARCHIVOS».
+ *
+ * ─── POR QUÉ EXISTE ────────────────────────────────────────────────────────────
+ * Hay médicos que no hacen seguimiento y no recetan: hacen la ecografía, suben la
+ * imagen y escriben su impresión diagnóstica. Para dejar esas dos cosas tenían
+ * que abrir el formulario de la consulta entera —hoja MSP, revisión de sistemas,
+ * examen físico, CIE-10, receta, derivaciones— e ignorarlo todo; y encima el
+ * sistema les exigía un «motivo de consulta» que en un estudio no existe.
+ *
+ * Guarda un seguimiento normal con `kind: 'estudio'`, y por eso cierra la cita
+ * igual que guardar una consulta: es el mismo mecanismo, no uno paralelo.
+ * También se puede volver a entrar y corregir, como en Seguimientos.
+ *
+ * NO es la bitácora de Observaciones: aquello es recepción anotando cosas del
+ * paciente, esto es un acto médico que cuelga de una cita.
+ */
+function ArchivosTab({ patientId, appointmentId }) {
+  const navigate = useNavigate();
+  const { hasRole, user } = useAuth();
+  const isAdmin = hasRole('admin') || user?.isSuperAdmin;
+  const miId = String(user?.id || user?._id || '');
+  // Mismos roles que acepta el PUT (ver routes/clinicalRecords.js): mostrador no
+  // reescribe un acto médico, aunque pueda registrarlo.
+  const puedeCorregir = hasRole('admin', 'doctor', 'enfermero', 'optica');
+
+  const [record, setRecord] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [editandoId, setEditandoId] = useState(null);
+  const [fecha, setFecha] = useState(todayEc());
+  const [titulo, setTitulo] = useState('');
+  const [impresion, setImpresion] = useState('');
+  const [pendientes, setPendientes] = useState([]);
+  const [subiendoEn, setSubiendoEn] = useState(null);
+  const [previewAtt, setPreviewAtt] = useState(null);
+  const formRef = useRef(null);
+
+  const load = async () => {
+    try {
+      const res = await api.get(`/clinical-records/${patientId}`);
+      setRecord(res.data);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al cargar los archivos');
+    } finally {
+      setLoading(false);
+    }
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [patientId]);
+
+  // Solo los estudios. El resto de la historia vive en Seguimientos y mezclarlos
+  // aquí convertiría esta pestaña en una segunda copia de aquella.
+  const estudios = useMemo(
+    () => (record?.followUps || [])
+      .filter((fu) => fu.kind === 'estudio')
+      .slice()
+      .sort((a, b) => new Date(b.fecha || 0) - new Date(a.fecha || 0)),
+    [record]
+  );
+
+  const puedeEditar = (fu) =>
+    puedeCorregir
+    && (isAdmin || (miId && String(fu?.createdBy?._id || fu?.createdBy || '') === miId));
+
+  const limpiar = () => {
+    setEditandoId(null);
+    setFecha(todayEc());
+    setTitulo('');
+    setImpresion('');
+    setPendientes([]);
+  };
+
+  const cargarParaEditar = (fu) => {
+    setEditandoId(fu._id);
+    setFecha(fu.fecha ? String(fu.fecha).slice(0, 10) : todayEc());
+    setTitulo(fu.descripcion || fu.motivoConsulta || '');
+    setImpresion(fu.indicaciones || '');
+    setPendientes([]);
+    formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const subirA = async (fuId, files) => {
+    for (const f of files) {
+      const fd = new FormData();
+      fd.append('file', f);
+      // eslint-disable-next-line no-await-in-loop
+      await api.post(
+        `/clinical-records/${patientId}/follow-ups/${fuId}/attachments`,
+        fd,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      );
+    }
+  };
+
+  const submit = async (e) => {
+    e.preventDefault();
+    /**
+     * No se exige motivo de consulta —ese es justo el campo que sobraba— pero sí
+     * que el registro DIGA algo: guardar una fecha sola y nada más deja una
+     * entrada en blanco en la historia clínica que nadie sabe interpretar.
+     */
+    if (!pendientes.length && !impresion.trim() && !editandoId) {
+      toast.error('Sube al menos un archivo o escribe la impresión diagnóstica');
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload = {
+        kind: 'estudio',
+        fecha,
+        // El título es opcional. Si no lo escriben, la entrada se llama por lo
+        // que es, para que el historial no muestre una fila sin nombre.
+        descripcion: titulo.trim() || 'Estudio',
+        indicaciones: impresion,
+      };
+
+      if (editandoId) {
+        await api.put(`/clinical-records/${patientId}/follow-ups/${editandoId}`, payload);
+        // Los archivos van en su propio try, igual que al crear: si falla la
+        // subida y el error subiera al catch de fuera, se leería «error al
+        // guardar» con el estudio YA guardado, y el reintento duplicaría los
+        // archivos que sí habían subido.
+        let falloArchivos = null;
+        if (pendientes.length) {
+          try {
+            await subirA(editandoId, pendientes);
+          } catch (err) {
+            falloArchivos = err.response?.data?.message || 'No se pudieron subir todos los archivos';
+          }
+        }
+        await load();
+        limpiar();
+        if (falloArchivos) {
+          toast.error(`${falloArchivos}. Adjúntalos desde el estudio ya guardado.`, { duration: 8000 });
+        } else {
+          toast.success('Estudio actualizado');
+        }
+        return;
+      }
+
+      if (appointmentId) payload.appointmentId = appointmentId;
+      const res = await api.post(`/clinical-records/${patientId}/follow-ups`, payload);
+      const nuevo = (res.data.followUps || []).slice(-1)[0];
+
+      // Los archivos van DESPUÉS y en su propio try: si falla la subida y el
+      // error subiera al catch de fuera, el usuario leería «error al guardar»
+      // con el formulario intacto, volvería a darle y crearía un estudio
+      // duplicado en la historia clínica.
+      let falloArchivos = null;
+      if (nuevo && pendientes.length) {
+        try {
+          await subirA(nuevo._id, pendientes);
+        } catch (err) {
+          falloArchivos = err.response?.data?.message || 'No se pudieron subir todos los archivos';
+        }
+      }
+      await load();
+      limpiar();
+
+      if (falloArchivos) {
+        toast.error(`${falloArchivos}. Adjúntalos desde el estudio ya guardado.`, { duration: 8000 });
+        return;
+      }
+      // Guardar desde una cita la cierra y devuelve a la agenda, igual que un
+      // seguimiento: quedarse aquí con el formulario en blanco se lee como
+      // «no pasó nada».
+      if (appointmentId) {
+        const siguiente = res.data.nextTurn;
+        toast.success(
+          siguiente
+            ? 'Estudio guardado. Pasa al siguiente profesional.'
+            : 'Estudio guardado. Cita finalizada.'
+        );
+        navigate('/appointments');
+      } else {
+        const auto = res.data.autoAppointment;
+        toast.success(
+          auto
+            ? `Estudio guardado. Se registró la atención de las ${auto.startTime}.`
+            : 'Estudio guardado'
+        );
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al guardar el estudio');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const borrarAdjunto = async (fuId, attId) => {
+    if (!confirm('¿Eliminar este archivo?')) return;
+    try {
+      await api.delete(`/clinical-records/${patientId}/follow-ups/${fuId}/attachments/${attId}`);
+      await load();
+      toast.success('Archivo eliminado');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error');
+    }
+  };
+
+  const adjuntarA = async (fuId, files) => {
+    setSubiendoEn(fuId);
+    try {
+      await subirA(fuId, files);
+      await load();
+      toast.success(files.length > 1 ? 'Archivos adjuntados' : 'Archivo adjuntado');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al subir archivo');
+    } finally {
+      setSubiendoEn(null);
+    }
+  };
+
+  if (loading) return <p className="text-sm text-slate-400 py-6 text-center">Cargando…</p>;
+
+  return (
+    <div className="space-y-4">
+      {appointmentId && !editandoId && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs sm:text-sm rounded-xl px-3 py-2">
+          Al guardar cierras tu parte de la consulta y vuelves a la agenda.
+        </div>
+      )}
+      {editandoId && (
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs sm:text-sm rounded-xl px-3 py-2">
+          <span>Estás <b>corrigiendo un estudio ya guardado</b>.</span>
+          <button
+            type="button"
+            onClick={limpiar}
+            className="shrink-0 px-3 py-1.5 rounded-lg bg-white text-indigo-700 border border-indigo-300 text-xs font-semibold cursor-pointer"
+          >
+            Cancelar corrección
+          </button>
+        </div>
+      )}
+
+      <form
+        ref={formRef}
+        onSubmit={submit}
+        /* Igual que en Seguimientos: Enter dentro de un campo no puede enviar
+           el formulario y dar la cita por terminada sin querer. */
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter') return;
+          if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'BUTTON') return;
+          e.preventDefault();
+        }}
+        className={`rounded-xl p-4 grid grid-cols-1 gap-3 md:grid-cols-3 ${
+          editandoId ? 'bg-indigo-50/60 ring-2 ring-indigo-200' : 'bg-slate-50'
+        }`}
+      >
+        <Field label="Fecha">
+          <DateInput value={fecha} onChange={(e) => setFecha(e.target.value)} className="input" />
+        </Field>
+        <Field label="Estudio (opcional)" className="md:col-span-2">
+          <input
+            type="text"
+            value={titulo}
+            onChange={(e) => setTitulo(e.target.value)}
+            placeholder="Ej.: ecografía abdominal, rayos X de tórax…"
+            className="input"
+          />
+        </Field>
+        <Field label="Impresión diagnóstica" className="md:col-span-3">
+          <textarea
+            rows={5}
+            value={impresion}
+            onChange={(e) => setImpresion(e.target.value)}
+            placeholder="Lo que se observa en el estudio y lo que se recomienda a partir de ello"
+            className="input resize-none"
+          />
+        </Field>
+
+        <div className="md:col-span-3">
+          <label className="text-sm font-medium text-slate-700 block mb-2">
+            Archivos (PDF o imágenes)
+          </label>
+          <div className="bg-white rounded-lg border border-slate-200 p-3 space-y-2">
+            <input
+              type="file"
+              accept="application/pdf,image/*"
+              multiple
+              onChange={(e) => {
+                const files = Array.from(e.target.files || []).filter(isAllowedAttachment);
+                if (files.length !== (e.target.files?.length || 0)) {
+                  toast.error('Solo se permiten archivos PDF o imágenes');
+                }
+                setPendientes((prev) => [...prev, ...files]);
+                e.target.value = '';
+              }}
+              className="text-sm"
+            />
+            {pendientes.length > 0 && (
+              <ul className="m-0 p-0 list-none space-y-1">
+                {pendientes.map((f, i) => (
+                  <li key={i} className="flex items-center gap-2 text-xs text-slate-600">
+                    <span>{f.type.startsWith('image/') ? '🖼️' : '📎'}</span>
+                    <span className="truncate">{f.name}</span>
+                    <span className="text-slate-400">({Math.round(f.size / 1024)} KB)</span>
+                    <button
+                      type="button"
+                      onClick={() => setPendientes((prev) => prev.filter((_, j) => j !== i))}
+                      className="text-red-500 bg-transparent border-none cursor-pointer p-0"
+                      title="Quitar"
+                    >
+                      <HiOutlineTrash className="w-3.5 h-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+
+        <div className="md:col-span-3 flex justify-end gap-2">
+          {editandoId && (
+            <button
+              type="button"
+              onClick={limpiar}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-600 border border-slate-300 cursor-pointer"
+            >
+              Cancelar
+            </button>
+          )}
+          <button
+            type="submit"
+            disabled={saving}
+            className={`flex items-center gap-1 px-5 py-2 text-white rounded-lg text-sm font-medium disabled:opacity-50 cursor-pointer border-none ${
+              editandoId ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-emerald-600 hover:bg-emerald-700'
+            }`}
+          >
+            <HiOutlineCheck className="w-4 h-4" />
+            {saving
+              ? 'Guardando…'
+              : editandoId
+                ? 'Guardar cambios'
+                : appointmentId ? 'Guardar y finalizar' : 'Guardar'}
+          </button>
+        </div>
+      </form>
+
+      {/* El historial de estudios, por fecha (el más reciente arriba). */}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        {estudios.length === 0 && (
+          <p className="text-center py-6 text-slate-400 text-sm m-0">
+            Todavía no hay estudios ni archivos.
+          </p>
+        )}
+        <div className="divide-y divide-slate-100">
+          {estudios.map((fu) => (
+            <article key={fu._id} className="flex flex-col md:flex-row md:items-start gap-2 md:gap-0 p-4 md:p-0 text-sm">
+              <div className="md:w-40 md:shrink-0 md:px-4 md:py-3 text-slate-600 whitespace-nowrap font-medium md:font-normal">
+                {fmtDate(fu.fecha)}
+                {fu.createdBy?.name && (
+                  <span className="text-[11px] text-emerald-700 font-medium ml-2 md:ml-0 md:mt-0.5 md:block">
+                    Dr. {fu.createdBy.name}
+                  </span>
+                )}
+                {fu.editedAt && (
+                  <span
+                    className="text-[10px] text-indigo-600 italic ml-2 md:ml-0 md:mt-0.5 md:block"
+                    title={new Date(fu.editedAt).toLocaleString('es-EC')}
+                  >
+                    Modificado{fu.updatedBy?.name ? ` por ${fu.updatedBy.name}` : ''}
+                  </span>
+                )}
+              </div>
+              <div className="flex-1 min-w-0 break-words md:px-4 md:py-3 text-slate-800">
+                <div className="font-medium">{fu.descripcion || fu.motivoConsulta || 'Estudio'}</div>
+                {fu.indicaciones && (
+                  <div className="mt-1.5 text-xs text-slate-700 whitespace-pre-wrap bg-sky-50 border border-sky-100 rounded p-2">
+                    <b className="text-sky-700">Impresión diagnóstica:</b> {fu.indicaciones}
+                  </div>
+                )}
+                <div className="mt-2 space-y-1">
+                  {(fu.attachments || []).map((att) => (
+                    <div key={att._id} className="flex items-center gap-2 text-xs text-slate-600">
+                      <span>{String(att.mimeType || '').startsWith('image/') ? '🖼️' : '📎'}</span>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewAtt({ fuId: fu._id, att })}
+                        title="Ver el archivo"
+                        className="underline text-emerald-700 hover:text-emerald-800 bg-transparent border-none cursor-pointer p-0 text-left"
+                      >
+                        {att.originalName}
+                      </button>
+                      <span className="text-slate-400">({Math.round((att.size || 0) / 1024)} KB)</span>
+                      <button
+                        type="button"
+                        onClick={() => downloadFile(
+                          `/clinical-records/${patientId}/follow-ups/${fu._id}/attachments/${att._id}`,
+                          { filename: att.originalName || 'archivo' }
+                        ).catch((err) => toast.error(err.message || 'Error al descargar'))}
+                        className="text-slate-400 hover:text-emerald-700 bg-transparent border-none cursor-pointer p-0"
+                        title="Descargar"
+                      >
+                        <HiOutlineArrowDownTray className="w-3.5 h-3.5" />
+                      </button>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => borrarAdjunto(fu._id, att._id)}
+                          className="text-red-500 bg-transparent border-none cursor-pointer p-0"
+                          title="Eliminar"
+                        >
+                          <HiOutlineTrash className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <label className="inline-flex items-center gap-1 text-xs text-emerald-700 cursor-pointer mt-1">
+                    <HiOutlinePlus className="w-3 h-3" />
+                    {subiendoEn === fu._id ? 'Subiendo…' : 'Adjuntar archivos'}
+                    <input
+                      type="file"
+                      accept="application/pdf,image/*"
+                      multiple
+                      className="hidden"
+                      disabled={subiendoEn === fu._id}
+                      onChange={(e) => {
+                        const files = Array.from(e.target.files || []).filter(isAllowedAttachment);
+                        e.target.value = '';
+                        if (files.length) adjuntarA(fu._id, files);
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+              <div className="md:w-24 md:shrink-0 md:px-4 md:py-3 border-t border-slate-100 pt-2 md:border-t-0 md:pt-0">
+                <div className="flex items-center gap-1 md:justify-end">
+                  {puedeEditar(fu) && (
+                    <button
+                      onClick={() => cargarParaEditar(fu)}
+                      title="Corregir o ampliar este estudio"
+                      className={`p-1 cursor-pointer bg-transparent border-none ${
+                        editandoId === fu._id ? 'text-indigo-600' : 'text-slate-500 hover:text-indigo-600'
+                      }`}
+                    >
+                      <HiOutlinePencilSquare className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+
+      {previewAtt && (
+        <AttachmentPreviewModal
+          key={previewAtt.att._id}
+          url={`/clinical-records/${patientId}/follow-ups/${previewAtt.fuId}/attachments/${previewAtt.att._id}`}
+          filename={previewAtt.att.originalName}
+          mimeType={previewAtt.att.mimeType}
+          onClose={() => setPreviewAtt(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ──────────────── Enfermería: qué se aplicó ────────────────
+
+/**
+ * LO QUE ENFERMERÍA PUSO, en su propio parte.
+ *
+ * La aplicación se guarda dentro de la línea de la receta del DOCTOR que la
+ * mandó, así que la tarjeta del turno de enfermería salía diciendo «Servicio
+ * aplicado por enfermería» y punto: ni el suero, ni el volumen, ni las ampollas,
+ * ni lo que el paciente rechazó. El servidor copia aquí esa información al
+ * cerrar el turno (`followUps[].aplicaciones`).
+ *
+ * Los partes ANTERIORES a este cambio no tienen el arreglo: se degrada en
+ * silencio y la tarjeta se queda como estaba, sin un bloque vacío.
+ */
+function AplicacionesEnfermeria({ lista }) {
+  if (!Array.isArray(lista) || lista.length === 0) return null;
+  const hhmm = (at) =>
+    at ? new Date(at).toLocaleTimeString('es-EC', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Guayaquil' }) : '';
+
+  return (
+    <div className="mt-2 bg-sky-50 border border-sky-200 rounded p-2">
+      <p className="text-[11px] font-semibold text-sky-700 uppercase mb-1">Lo que se aplicó</p>
+      <ul className="text-xs text-slate-700 space-y-1.5 m-0 p-0 list-none">
+        {lista.map((a, i) => {
+          const puestos = (a.components || []).filter((c) => Number(c.quantityApplied) > 0);
+          // Lo que NO se puso es tan clínico como lo que sí: el paciente pudo
+          // rechazar una ampolla y eso tiene que quedar escrito con su motivo.
+          const omitidos = (a.components || []).filter(
+            (c) => Number(c.quantityApplied) < Number(c.quantityPrescribed)
+          );
+          return (
+            <li key={i} className="border-l-2 border-sky-300 pl-2">
+              <div className="font-medium text-slate-800">
+                {a.itemName || 'Aplicación'}
+                {a.at && <span className="font-normal text-slate-500"> · {hhmm(a.at)}</span>}
+              </div>
+              {a.baseVolumeMl != null && (
+                <div className="text-[11px] text-slate-600">
+                  {a.baseName || 'Cloruro'} {a.baseVolumeMl} ml
+                </div>
+              )}
+              {puestos.length > 0 && (
+                <div className="text-[11px] text-slate-600">
+                  {puestos.map((c) => `${c.name}${Number(c.quantityApplied) > 1 ? ` ×${c.quantityApplied}` : ''}`).join(' · ')}
+                </div>
+              )}
+              {omitidos.length > 0 && (
+                <div className="text-[11px] text-amber-700">
+                  No se aplicó:{' '}
+                  {omitidos
+                    .map((c) => `${c.name}${c.omitReason ? ` (${c.omitReason})` : ''}`)
+                    .join(' · ')}
+                </div>
+              )}
+              {a.note && <div className="text-[11px] text-slate-500 italic">{a.note}</div>}
+              {a.byName && <div className="text-[11px] text-sky-700">{a.byName}</div>}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
@@ -3900,6 +5110,100 @@ function CardiologiaSummary({ value }) {
   );
 }
 
+// ──────────────── Terapia (rol terapeuta) ────────────────
+
+function terapiaHasData(t) {
+  if (!t) return false;
+  return (
+    (t.elementos || []).some((e) => String(e?.texto || '').trim())
+    || TERAPIA_FODA_KEYS.some((k) => String(t.foda?.[k] || '').trim())
+    || String(t.plan || '').trim()
+  );
+}
+
+/**
+ * LA CONSULTA DEL TERAPEUTA.
+ *
+ * Tres bloques y ninguno más: los cinco elementos, el reparto en cuatro
+ * cuadrantes y el plan escrito. La hoja MSP (examen físico, CIE-10, evolución,
+ * revisión por sistemas) no se le enseña — ver `isTerapeuta` en SeguimientosTab.
+ */
+function TerapiaSection({ value, onChange }) {
+  const t = value || {};
+  const setFoda = (k, v) => onChange({ ...t, foda: { ...(t.foda || {}), [k]: v } });
+
+  return (
+    <div className="md:col-span-3 space-y-4">
+      <div className="space-y-2">
+        <div className="text-sm font-semibold text-slate-700">Análisis de 5 elementos</div>
+        <div className="bg-white rounded-lg border border-slate-200 p-3">
+          <CincoElementos value={t} onChange={onChange} />
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <div className="text-sm font-semibold text-slate-700">Plan de tratamiento terapéutico</div>
+        {/**
+          * Los cuatro cuadrantes. Se lee como un FODA: el cuadro del paciente
+          * repartido en cuatro, y DEBAJO el plan escrito que sale de ese reparto.
+          * Por eso el plano va antes que el campo de texto y no al revés.
+          */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-slate-300 border border-slate-300 rounded-lg overflow-hidden">
+          {TERAPIA_FODA.map((c) => (
+            <div key={c.key} className="bg-white p-2">
+              <div className="text-[11px] font-semibold text-slate-600 mb-1">{c.label}</div>
+              <textarea
+                rows={3}
+                value={t.foda?.[c.key] || ''}
+                onChange={(e) => setFoda(c.key, e.target.value)}
+                className="w-full text-xs border border-slate-200 rounded px-2 py-1 outline-none focus:border-emerald-500 resize-none"
+              />
+            </div>
+          ))}
+        </div>
+        <textarea
+          rows={4}
+          value={t.plan || ''}
+          onChange={(e) => onChange({ ...t, plan: e.target.value })}
+          placeholder="El plan que sale del análisis de arriba"
+          className="input resize-none"
+        />
+      </div>
+    </div>
+  );
+}
+
+function TerapiaSummary({ value }) {
+  const t = value || {};
+  if (!terapiaHasData(t)) return null;
+  const conTexto = (t.elementos || []).filter((e) => String(e.texto || '').trim());
+  const cuadrantes = TERAPIA_FODA.filter((c) => String(t.foda?.[c.key] || '').trim());
+
+  return (
+    <SpecialtySummary title="Terapia" tone="violet">
+      {conTexto.length > 0 && (
+        <span className="w-full">
+          {/* En lectura se pinta el MISMO gráfico: quien escribió la hoja tiene
+              que reconocerla, no leer un resumen que no se le parece. */}
+          <div className="bg-white rounded-lg border border-violet-200 p-2 mt-1">
+            <CincoElementos value={t} onChange={() => {}} readOnly />
+          </div>
+        </span>
+      )}
+      {cuadrantes.map((c) => (
+        <span key={c.key} className="w-full whitespace-pre-wrap">
+          <b>{c.label}:</b> {t.foda[c.key]}
+        </span>
+      ))}
+      {t.plan && (
+        <span className="w-full whitespace-pre-wrap">
+          <b>Plan de tratamiento terapéutico:</b> {t.plan}
+        </span>
+      )}
+    </SpecialtySummary>
+  );
+}
+
 // ──────────────── Podología (rol podologia) ────────────────
 
 function podologiaHasData(p) {
@@ -4095,6 +5399,46 @@ function OdontologiaSection({ value, onChange }) {
   );
 }
 
+/**
+ * El odontograma del historial, MEMOIZADO y plegable.
+ *
+ * Cada hoja son ~1.300 elementos (52 dientes × 5 caras, las casillas de grado,
+ * la tabla de higiene, los índices y la simbología), y el historial monta una
+ * por cada consulta de odontología. Sin `memo`, además, se volvían a dibujar
+ * TODAS en cada tecla del formulario de arriba: un paciente con diez visitas
+ * dejaba la ficha pegajosa al escribir.
+ *
+ * `fu.odontologia` es una referencia estable mientras no se recargue la ficha,
+ * así que `memo` corta el 100% de esos redibujados. Y el botón de plegar deja
+ * salida a quien tiene un historial largo: se abre por defecto porque el dibujo
+ * es justo lo que se venía a ver.
+ */
+const OdontogramaLectura = memo(function OdontogramaLectura({ value }) {
+  const [abierto, setAbierto] = useState(true);
+  return (
+    <div className="w-full bg-white rounded-lg border border-cyan-200 p-2 mb-1">
+      <button
+        type="button"
+        onClick={() => setAbierto((v) => !v)}
+        className="text-[11px] text-cyan-700 font-semibold bg-transparent border-none cursor-pointer p-0 mb-1"
+      >
+        {abierto ? '▾ Ocultar el odontograma' : '▸ Ver el odontograma'}
+      </button>
+      {abierto && <Odontograma value={value} onChange={() => {}} readOnly />}
+    </div>
+  );
+});
+
+/**
+ * El odontograma en el HISTORIAL, dibujado igual que al llenarlo.
+ *
+ * Antes aquí salía solo un resumen en texto («11 Caries (Vestibular: Caries)»)
+ * y el odontólogo no reconocía su propia hoja: lo que había dibujado y lo que
+ * leía después no se parecían en nada. Ahora se monta el MISMO componente en
+ * modo lectura — mismo esquema, mismos indicadores, misma simbología — y el
+ * resumen de texto se queda DEBAJO, que es lo que hace el dato buscable y
+ * copiable (y lo único que se ve si el seguimiento es antiguo).
+ */
 function OdontologiaSummary({ o }) {
   if (!o) return null;
   const dientes = (o.odontograma || []).filter(dienteMarcado);
@@ -4111,6 +5455,9 @@ function OdontologiaSummary({ o }) {
 
   return (
     <SpecialtySummary title="Odontología" tone="cyan">
+      {/* La hoja, tal cual se llenó. `w-full` porque el resumen es un flex de
+          chips y el dibujo tiene que ocupar su propia fila entera. */}
+      <OdontogramaLectura value={o} />
       {dientes.map((d) => {
         // Cada cara lleva SU estado: se dice cuál, no solo que estaba marcada.
         const caras = ODONTOGRAMA_CARAS.filter((c) => d.caras?.[c.key]).map(

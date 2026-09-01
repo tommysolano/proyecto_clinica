@@ -249,6 +249,19 @@ if ! ( cd "$APP_DIR/server" && node scripts/rescheduleQuietWindowsOnce.js --comm
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/rescheduleQuietWindowsOnce.js --commit'"
 fi
 
+# VA ANTES DEL REINICIO a proposito: el codigo VIEJO entiende 'doctor' perfectamente,
+# asi que adelantarla no tiene inconveniente. Al reves si lo tiene: entre el reinicio y
+# la migracion habria una ventana con el backend NUEVO vivo y el rol viejo todavia en la
+# base, y en esa ventana esas personas reciben 403 en todo.
+# El rol 'ecografista' se retiro (sep-2026): quien lo tenga guardado queda con el
+# documento INVALIDO por el enum de User y con 403 en toda ruta de doctor, o sea
+# logueado y sin poder hacer nada. Esta migracion lo pasa a 'doctor' y arrastra las
+# reglas de comision, que si no dejan de pagar en silencio. Es OBLIGATORIA en este push.
+if ! ( cd "$APP_DIR/server" && node scripts/migrateEcografistaToDoctorOnce.js --commit ); then
+  echo "ADVERTENCIA: la migracion de ecografista a doctor fallo. Esos usuarios NO PUEDEN TRABAJAR hasta reintentarla:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/migrateEcografistaToDoctorOnce.js --commit'"
+fi
+
 echo "==> 5/6 Reiniciando el backend con PM2 (bajo el usuario 'clinica')"
 # IMPORTANTE: el backend corre bajo el pm2 del usuario `clinica` (God Daemon en
 # /home/clinica/.pm2), NO bajo el de root. GitHub Actions ejecuta este deploy

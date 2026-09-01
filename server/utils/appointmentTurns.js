@@ -166,12 +166,25 @@ function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, p
  */
 function completarTurno(apt, { userId, followUpId = null } = {}) {
   const orden = turnosOrdenados(apt);
-  const cerrado =
-    orden.find((t) => t.status === 'pendiente' && String(t.user) === String(userId)) ||
-    // Un doctor que guarda un seguimiento sin turno propio (cita vieja, o
-    // reasignada) cierra el turno vigente: es quien está atendiendo de hecho.
-    orden.find((t) => t.status === 'pendiente') ||
-    null;
+  const propio = orden.find((t) => t.status === 'pendiente' && String(t.user) === String(userId));
+  /**
+   * ¿Ya cerró SU turno en esta cita?
+   *
+   * El respaldo de abajo —cerrar el turno vigente sin tener uno propio— existe
+   * para el doctor de una cita vieja o reasignada: es quien está atendiendo de
+   * hecho. Pero NO vale para quien ya terminó lo suyo aquí, porque entonces
+   * cerraría el del profesional que viene detrás: la cita pasaría a
+   * «completada» con el paciente sin atender y desaparecería de su agenda.
+   *
+   * Pasa de verdad desde que enfermería escribe seguimientos: la enfermera
+   * cierra su parte, vuelve atrás a anotar lo que aplicó, guarda, y sin esto se
+   * lleva por delante el turno del doctor que la seguía. Igual si su primer
+   * guardado falló al subir un adjunto y vuelve a darle.
+   */
+  const yaCerroElSuyo = orden.some(
+    (t) => t.status === 'completado' && String(t.user) === String(userId)
+  );
+  const cerrado = propio || (yaCerroElSuyo ? null : orden.find((t) => t.status === 'pendiente')) || null;
 
   if (cerrado) {
     cerrado.status = 'completado';
