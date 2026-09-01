@@ -10,6 +10,8 @@
     "test": "node --test tests/*.test.js",
     "test:unit": "node --test tests/accountMap.test.js tests/journalEntry.test.js tests/subledger.test.js tests/kardex.test.js tests/tax.test.js",
     "test:flows": "node --test tests/flows.integration.test.js",
+    "migrate:contifico": "node scripts/migrateContifico.js",
+    "migrate:contifico:project": "node scripts/migrateContificoProject.js",
     "seed": "node seed.js"
   },
   "dependencies": {

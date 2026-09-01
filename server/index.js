@@ -188,6 +188,7 @@ app.use('/api/deferred-income', require('./routes/deferredIncome'));
 app.use('/api/budgets', require('./routes/budgets'));
 app.use('/api/audit-logs', require('./routes/auditLogs'));
 app.use('/api/data-import', require('./routes/dataImport'));
+app.use('/api/contifico-archive', require('./routes/contificoArchive'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/scans', require('./routes/scans'));
 app.use('/api/whatsapp-spend', require('./routes/whatsappSpend'));

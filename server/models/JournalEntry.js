@@ -29,7 +29,7 @@ const journalEntrySchema = new mongoose.Schema(
       enum: [
         'VENTA', 'COMPRA', 'COBRO', 'PAGO', 'NOMINA',
         'DEPRECIACION', 'AJUSTE', 'APERTURA', 'CIERRE',
-        'MANUAL', 'BANCO', 'CAJA', 'NC', 'ND', 'CHEQUE', 'TARJETA', 'TRASLADO',
+        'MANUAL', 'BANCO', 'CAJA', 'NC', 'ND', 'CHEQUE', 'TARJETA', 'TRASLADO', 'MIGRACION',
       ],
       default: 'MANUAL',
     },
