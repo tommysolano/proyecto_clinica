@@ -2,9 +2,11 @@ const CallCenterConfig = require('../models/CallCenterConfig');
 const WhatsappAccount = require('../models/WhatsappAccount');
 const CallCenterWhatsappConfig = require('../models/CallCenterWhatsappConfig');
 const User = require('../models/User');
+const AuditLog = require('../models/AuditLog');
+const bcrypt = require('bcryptjs');
 const qrManager = require('../utils/whatsappQrManager');
 const whatsappIdentity = require('../utils/whatsappIdentity');
-const { encryptSecret, decryptSecret } = require('../utils/secretCrypto');
+const { encryptSecret, decryptSecret, isEncrypted } = require('../utils/secretCrypto');
 const { TIME_RE, normalizeSchedule, isWorkingAt } = require('../utils/agentSchedule');
 
 /**
@@ -449,6 +451,88 @@ exports.updateWhatsappAccount = async (req, res) => {
     res.json(maskWaAccount(doc));
   } catch (err) {
     res.status(500).json({ message: 'Error al actualizar número', error: err.message });
+  }
+};
+
+/**
+ * POST /whatsapp/accounts/:id/reveal-token
+ *
+ * El listado nunca devuelve credenciales completas. Esta operación excepcional
+ * exige rol de administrador y vuelve a validar la contraseña del usuario antes
+ * de descifrar el token. La respuesta no se guarda en caché y el evento queda
+ * auditado sin copiar el secreto ni la contraseña al registro.
+ */
+exports.revealWhatsappAccountToken = async (req, res) => {
+  const accountId = req.params.id;
+  let account = null;
+  let user = null;
+
+  const auditReveal = async (success, errorMessage = '') => {
+    try {
+      await AuditLog.create({
+        clinic: req.clinicId,
+        user: req.user?._id,
+        userName: user?.name || req.user?.name || req.user?.email || '',
+        role: req.user?.isSuperAdmin ? 'super_admin' : req.role,
+        action: 'REVEAL_SECRET',
+        entity: 'WhatsappAccount',
+        entityId: String(account?._id || accountId || ''),
+        description: `Consulta protegida del token de WhatsApp${account?.label ? `: ${account.label}` : ''}`,
+        method: 'POST',
+        path: req.originalUrl || `/api/call-center-config/whatsapp/accounts/${accountId}/reveal-token`,
+        ip: req.ip,
+        success,
+        errorMessage: errorMessage || undefined,
+      });
+    } catch {
+      // Una incidencia del log no debe impedir recuperar una credencial válida.
+    }
+  };
+
+  try {
+    // Defensa adicional a requireRole('admin') de la ruta.
+    if (!req.user?.isSuperAdmin && req.role !== 'admin') {
+      return res.status(403).json({ message: 'Solo un administrador puede mostrar el token' });
+    }
+
+    const currentPassword = String(req.body?.currentPassword || '');
+    if (!currentPassword) {
+      return res.status(400).json({ message: 'Ingresa tu contraseña actual para mostrar el token' });
+    }
+
+    [account, user] = await Promise.all([
+      WhatsappAccount.findOne({ _id: accountId, archivedAt: null }),
+      User.findById(req.user._id).select('name email password isSuperAdmin'),
+    ]);
+
+    if (!account || account.connectionType !== 'cloud_api') {
+      await auditReveal(false, 'Número Cloud API no encontrado');
+      return res.status(404).json({ message: 'Número Cloud API no encontrado' });
+    }
+    if (!user || !(await bcrypt.compare(currentPassword, user.password))) {
+      await auditReveal(false, 'Contraseña actual incorrecta');
+      return res.status(403).json({ message: 'La contraseña actual es incorrecta' });
+    }
+    if (!account.accessToken) {
+      await auditReveal(false, 'El número no tiene un token guardado');
+      return res.status(404).json({ message: 'Este número no tiene un token guardado' });
+    }
+
+    const accessToken = decryptSecret(account.accessToken);
+    if (!accessToken || isEncrypted(accessToken)) {
+      await auditReveal(false, 'No fue posible descifrar el token guardado');
+      return res.status(409).json({
+        message: 'No se pudo descifrar el token guardado. Vuelve a guardarlo para reemplazarlo.',
+      });
+    }
+
+    await auditReveal(true);
+    res.setHeader('Cache-Control', 'no-store, private');
+    res.setHeader('Pragma', 'no-cache');
+    return res.json({ accessToken });
+  } catch (err) {
+    await auditReveal(false, err.message);
+    return res.status(500).json({ message: 'Error al mostrar el token', error: err.message });
   }
 };
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
+import { useAuth } from '../context/AuthContext';
 import { useSocket, useSocketEvent } from '../context/SocketContext';
 import Modal from '../components/Modal';
 import {
@@ -20,6 +21,9 @@ import {
   HiOutlineDevicePhoneMobile,
   HiOutlineUsers,
   HiOutlineClock,
+  HiOutlineEye,
+  HiOutlineEyeSlash,
+  HiOutlineClipboardDocument,
 } from 'react-icons/hi2';
 
 const TABS = [
@@ -732,6 +736,8 @@ function HealthPanel({ health, loading, healing, onRefresh, onHeal, accounts = [
 }
 
 function WhatsappNumbersManager() {
+  const { hasRole, user } = useAuth();
+  const canRevealTokens = Boolean(user?.isSuperAdmin || hasRole('admin'));
   const [appCfg, setAppCfg] = useState(null);
   const [appDraft, setAppDraft] = useState({ appSecret: '', verifyToken: '' });
   const [capiDraft, setCapiDraft] = useState({ enabled: false, datasetId: '', accessToken: '', testEventCode: '', wabaId: '' });
@@ -1473,6 +1479,7 @@ function WhatsappNumbersManager() {
             value={editModal}
             onChange={setEditModal}
             allowMethod={false}
+            canRevealToken={canRevealTokens}
             onCancel={() => setEditModal(null)}
             onSubmit={saveEdit}
             submitLabel="Guardar"
@@ -2141,9 +2148,56 @@ function AccountCard({ acc, onSetDefault, onToggleEnabled, onEdit, onDelete, onC
   );
 }
 
-function AccountForm({ value, onChange, allowMethod, onCancel, onSubmit, submitLabel }) {
+function AccountForm({ value, onChange, allowMethod, canRevealToken = false, onCancel, onSubmit, submitLabel }) {
   const set = (patch) => onChange({ ...value, ...patch });
   const isCloud = value.connectionType === 'cloud_api';
+  const [revealOpen, setRevealOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [revealedToken, setRevealedToken] = useState('');
+  const [showRevealedToken, setShowRevealedToken] = useState(false);
+  const [revealingToken, setRevealingToken] = useState(false);
+
+  useEffect(() => {
+    if (!revealedToken) return undefined;
+    const timeoutId = window.setTimeout(() => {
+      setRevealedToken('');
+      setShowRevealedToken(false);
+      setRevealOpen(false);
+    }, 60000);
+    return () => window.clearTimeout(timeoutId);
+  }, [revealedToken]);
+
+  const closeTokenReveal = () => {
+    setRevealOpen(false);
+    setCurrentPassword('');
+    setRevealedToken('');
+    setShowRevealedToken(false);
+  };
+
+  const revealToken = async () => {
+    if (!currentPassword) {
+      toast.error('Ingresa tu contraseña actual');
+      return;
+    }
+    setRevealingToken(true);
+    try {
+      const response = await api.post(
+        `/call-center-config/whatsapp/accounts/${value._id}/reveal-token`,
+        { currentPassword }
+      );
+      const accessToken = response.data?.accessToken || '';
+      if (!accessToken) throw new Error('La respuesta no contiene un token');
+      setRevealedToken(accessToken);
+      setShowRevealedToken(true);
+      setCurrentPassword('');
+      toast.success('Token mostrado durante 60 segundos');
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || 'No se pudo mostrar el token');
+    } finally {
+      setRevealingToken(false);
+    }
+  };
+
   return (
     <div className="grid gap-3">
       {allowMethod && (
@@ -2215,9 +2269,12 @@ function AccountForm({ value, onChange, allowMethod, onCancel, onSubmit, submitL
               className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono"
             />
           </label>
-          <label className="text-sm">
-            <span className="text-slate-600">Access Token</span>
+          <div className="text-sm">
+            <label htmlFor={`whatsapp-access-token-${value._id || 'new'}`} className="text-slate-600">
+              Access Token
+            </label>
             <input
+              id={`whatsapp-access-token-${value._id || 'new'}`}
               type="password"
               autoComplete="off"
               value={value.accessToken}
@@ -2225,7 +2282,97 @@ function AccountForm({ value, onChange, allowMethod, onCancel, onSubmit, submitL
               placeholder={value._id ? '•••••• (escribe para reemplazar)' : ''}
               className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono"
             />
-          </label>
+
+            {value._id && canRevealToken && !revealOpen && (
+              <button
+                type="button"
+                onClick={() => setRevealOpen(true)}
+                className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-sky-700 bg-transparent border-none p-0 cursor-pointer hover:text-sky-900"
+              >
+                <HiOutlineEye className="w-4 h-4" /> Mostrar token guardado
+              </button>
+            )}
+
+            {value._id && canRevealToken && revealOpen && (
+              <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                {!revealedToken ? (
+                  <>
+                    <p className="text-xs text-amber-900 mb-2">
+                      Por seguridad, confirma tu contraseña actual. Esta consulta quedará registrada.
+                    </p>
+                    <input
+                      type="password"
+                      autoComplete="current-password"
+                      value={currentPassword}
+                      onChange={(event) => setCurrentPassword(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' && !revealingToken) revealToken();
+                      }}
+                      placeholder="Contraseña actual"
+                      className="w-full border border-amber-300 bg-white rounded-lg px-3 py-2 text-sm"
+                    />
+                    <div className="flex justify-end gap-2 mt-2">
+                      <button
+                        type="button"
+                        onClick={closeTokenReveal}
+                        className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={revealToken}
+                        disabled={revealingToken}
+                        className="px-3 py-1.5 border-none rounded-lg text-xs text-white bg-sky-600 cursor-pointer disabled:opacity-60"
+                      >
+                        {revealingToken ? 'Verificando...' : 'Confirmar y mostrar'}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-xs text-amber-900 mb-2">
+                      El token se ocultará automáticamente en 60 segundos.
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        readOnly
+                        type={showRevealedToken ? 'text' : 'password'}
+                        value={revealedToken}
+                        aria-label="Token guardado"
+                        className="min-w-0 flex-1 border border-amber-300 bg-white rounded-lg px-3 py-2 text-sm font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowRevealedToken((visible) => !visible)}
+                        title={showRevealedToken ? 'Ocultar token' : 'Mostrar token'}
+                        className="p-2 border border-amber-300 rounded-lg bg-white text-slate-600 cursor-pointer"
+                      >
+                        {showRevealedToken
+                          ? <HiOutlineEyeSlash className="w-5 h-5" />
+                          : <HiOutlineEye className="w-5 h-5" />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => copyToClipboard(revealedToken)}
+                        title="Copiar token"
+                        className="inline-flex items-center gap-1.5 px-3 py-2 border border-sky-200 rounded-lg bg-sky-50 text-sky-700 text-xs font-medium cursor-pointer"
+                      >
+                        <HiOutlineClipboardDocument className="w-4 h-4" /> Copiar
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={closeTokenReveal}
+                      className="mt-2 text-xs text-slate-600 bg-transparent border-none p-0 cursor-pointer hover:text-slate-900"
+                    >
+                      Ocultar ahora
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         </>
       )}
 

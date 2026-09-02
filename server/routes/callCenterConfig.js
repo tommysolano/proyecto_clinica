@@ -21,6 +21,7 @@ router.put('/whatsapp/app-config', ctrl.updateWhatsappAppConfig);
 router.get('/whatsapp/accounts', ctrl.listWhatsappAccounts);
 router.post('/whatsapp/accounts', ctrl.createWhatsappAccount);
 router.put('/whatsapp/accounts/:id', ctrl.updateWhatsappAccount);
+router.post('/whatsapp/accounts/:id/reveal-token', requireRole('admin'), ctrl.revealWhatsappAccountToken);
 router.delete('/whatsapp/accounts/:id', ctrl.deleteWhatsappAccount);
 router.post('/whatsapp/accounts/:id/default', ctrl.setDefaultWhatsappAccount);
 router.get('/whatsapp/accounts/:id/qr', ctrl.getWhatsappAccountQr);
