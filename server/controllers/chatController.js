@@ -156,7 +156,7 @@ const DEFAULT_CHAT_PAGE = 25;
 
 exports.listConversations = async (req, res) => {
   try {
-    const { status, featured, opportunity, assigned, q, stage, agent, unread, excludeFeatured } = req.query;
+    const { status, featured, opportunity, assigned, q, stage, agent, unread, excludeFeatured, account } = req.query;
     const filter = buildVisibilityFilter(req);
     // PAGINACIÓN. Con 8.000 chats, la bandeja no pintaba NADA hasta que llegaban
     // los 300 de golpe (y con ellos su medio megabyte). Ahora entran de 25 en 25 y
@@ -181,6 +181,15 @@ exports.listConversations = async (req, res) => {
     if (assigned === 'unassigned') filter.assignedTo = null;
     if (agent && mongoose.isValidObjectId(agent)) filter.assignedTo = agent;
     if (unread === 'true') filter.unreadCount = { $gt: 0 };
+    // «¿QUÉ CHATS ENTRARON POR ESTE NÚMERO?». Con un número bloqueado por WhatsApp
+    // (02-sep-2026) esta es la pregunta del día: cuáles son los contactos que hay
+    // que rescatar. Se buscan por el número por el que ENTRÓ el último mensaje y
+    // también por el enlazado, e incluyendo los ids ANTERIORES de ese mismo
+    // teléfono (borrado y vuelto a conectar), que si no quedarían fuera.
+    if (account && mongoose.isValidObjectId(account)) {
+      const ids = await accountIdFamily(account);
+      and.push({ $or: [{ lastInboundAccount: { $in: ids } }, { whatsappAccount: { $in: ids } }] });
+    }
 
     if (q) {
       const regex = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
@@ -231,14 +240,21 @@ exports.listConversations = async (req, res) => {
     // El detalle es GET /chats/:id (~350 ms), y solo se pide al abrir un chat.
     const conversations = await Conversation.find(filter)
       .select(
-        '_id clinic channel phone contactName patient assignedTo assignedToName workflowRestrictedTo workflowRestrictionActive ' +
+        // `externalUserId`: identifica los chats de «número oculto» (@lid), que NO
+        // se desvían a otro número (ver gateway.destinationIsLid). Sin él, la
+        // bandeja anunciaba un desvío que el envío no iba a hacer.
+        '_id clinic channel phone externalUserId contactName patient assignedTo assignedToName workflowRestrictedTo workflowRestrictionActive ' +
           'status isFeatured featuredNote blocked window24hExpiresAt lastInboundAt ' +
           'lastInboundAccount lastMessageAt lastMessagePreview lastMessageDirection unreadCount tags ' +
           // Quién atendió por última vez: es lo que la fila y la cabecera muestran
           // ahora en vez del asignado. Solo el nombre (String corto), no el ref:
           // 300 chats por petición y un populate más costaría otra consulta.
           'lastAgentReplyName lastAgentReplyAt ' +
-          'whatsappAccount createdAt opportunity.isOpportunity opportunity.stage'
+          // `whatsappAccountPinned`: el agente eligió a mano el número de salida.
+          // Es un booleano, así que no engorda la lista, y sin él la fila no
+          // puede distinguir "responde por aquí porque escribió aquí" de
+          // "responde por aquí porque alguien lo cambió".
+          'whatsappAccount whatsappAccountPinned createdAt opportunity.isOpportunity opportunity.stage'
       )
       .populate('assignedTo', 'name email')
       .populate('whatsappAccount', 'label connectionType displayPhone connectedPhone')
@@ -271,14 +287,50 @@ exports.listConversations = async (req, res) => {
  * Los números conectados, en memoria, para resolver el de salida de MUCHAS
  * conversaciones sin una consulta por chat (la bandeja pinta 300 de golpe).
  * Mismo orden de preferencia que `getDefaultAccount`: el principal primero.
+ * (La definición está justo debajo de `accountIdFamily`.)
  */
+
+/**
+ * Todos los ids que SON este número: el suyo y los de los documentos anteriores
+ * del mismo teléfono que absorbió al reconectarse (ver utils/whatsappIdentity).
+ */
+async function accountIdFamily(accountId) {
+  const ids = [new mongoose.Types.ObjectId(String(accountId))];
+  try {
+    const WhatsappAccount = require('../models/WhatsappAccount');
+    const acc = await WhatsappAccount.findById(accountId).select('previousIds').lean();
+    for (const prev of acc?.previousIds || []) ids.push(prev);
+  } catch {
+    /* sin el documento, se filtra solo por el id pedido */
+  }
+  return ids;
+}
+
 async function loadSendingAccounts() {
   try {
     const WhatsappAccount = require('../models/WhatsappAccount');
-    const accounts = await WhatsappAccount.find({ enabled: true, archivedAt: null })
-      .select('_id label connectionType displayPhone connectedPhone isDefault previousIds')
+    const gateway = require('../utils/whatsappGateway');
+    const campos =
+      // `accessToken`/`status` no salen de aquí: solo se usan para decidir si el
+      // número PUEDE ENVIAR. Lo que se guarda en el mapa es la versión saneada.
+      '_id label connectionType displayPhone connectedPhone isDefault previousIds status accessToken phoneNumberId enabled archivedAt lastDisconnectNeedsQr';
+    const raw = await WhatsappAccount.find({ enabled: true, archivedAt: null })
+      .select(campos)
       .sort({ isDefault: -1, createdAt: 1 })
       .lean();
+    const accounts = raw.map((a) => ({
+      _id: a._id,
+      label: a.label,
+      connectionType: a.connectionType,
+      displayPhone: a.displayPhone || a.connectedPhone || '',
+      isDefault: !!a.isDefault,
+      previousIds: a.previousIds || [],
+      status: a.status || '',
+      // Un número BLOQUEADO por WhatsApp sigue `enabled` pero no puede enviar
+      // nada: sin esta marca la bandeja seguiría prometiendo que sale por ahí.
+      sendable: gateway.isSendableAccount(a),
+      unsendableReason: gateway.unsendableReason(a),
+    }));
     // El mapa indexa también los ids ANTERIORES de cada número (se borró y se
     // volvió a conectar el mismo teléfono): un chat que recuerde uno de esos
     // sigue resolviendo a SU número, no al número por defecto.
@@ -289,26 +341,90 @@ async function loadSendingAccounts() {
         if (!byId.has(String(prev))) byId.set(String(prev), a);
       }
     }
-    return { byId, fallback: accounts[0] || null };
+    // NÚMEROS BORRADOS (lápidas). Se añaden al mapa SOLO para poder seguir
+    // diciendo "este contacto escribió a Recepcion 2": sin ellos, borrar un
+    // número dejaba a sus chats sin ninguna pista de por dónde habían entrado, y
+    // esa es justo la información que hace falta para rescatarlos. Van los
+    // últimos y solo si el id no lo reclama ya un número vivo: un id heredado
+    // (`previousIds`) tiene que seguir resolviendo a quien lo heredó.
+    const archivadas = await WhatsappAccount.find({
+      $or: [{ archivedAt: { $ne: null } }, { enabled: false }],
+    })
+      .select(campos)
+      .lean();
+    for (const a of archivadas) {
+      if (byId.has(String(a._id))) continue;
+      byId.set(String(a._id), {
+        _id: a._id,
+        label: a.label,
+        connectionType: a.connectionType,
+        displayPhone: a.displayPhone || a.connectedPhone || '',
+        isDefault: false,
+        previousIds: a.previousIds || [],
+        status: a.status || '',
+        sendable: false,
+        unsendableReason: a.archivedAt ? 'archived' : 'disabled',
+      });
+    }
+    // El respaldo tiene que PODER ENVIAR: es exactamente lo que hace
+    // `gateway.getSendableDefaultAccount`, y las dos vistas deben coincidir.
+    return { byId, list: accounts, fallback: accounts.find((a) => a.sendable) || accounts[0] || null };
   } catch {
-    return { byId: new Map(), fallback: null };
+    return { byId: new Map(), list: [], fallback: null };
   }
 }
 
 /**
- * Número por el que SALDRÍA la respuesta de esta conversación. Es el espejo en
- * memoria de `whatsappGateway.resolveAccountForConversation`: enlazado → número
- * del último entrante → número por defecto. Tiene que dar lo mismo que el envío,
- * porque de él dependen la ventana de 24h y el aviso que ve el agente.
+ * Número por el que el chat QUIERE responder, sin mirar todavía si puede enviar:
+ * el enlazado (o el elegido a mano) y, si no hay, el del último entrante. Espejo
+ * de `gateway.preferredAccountForConversation` salvo por el rodeo final por
+ * `Message`, que aquí no se hace: la bandeja pinta 300 chats y no puede
+ * permitirse una consulta por fila.
  */
-function resolveSendingAccount(conv, accounts) {
+function preferredAccountOf(conv, accounts) {
   const linkedId = conv?.whatsappAccount?._id || conv?.whatsappAccount;
   const linked = linkedId && accounts.byId.get(String(linkedId));
   if (linked) return linked;
+  return inboundAccountOf(conv, accounts);
+}
+
+/**
+ * Número al que el contacto NOS ESCRIBIÓ. Es un HECHO, no una decisión, y por eso
+ * NO puede salir del número elegido a mano: en cuanto un agente fija «responder
+ * desde Recepcion», el enlace del chat pasa a ser su elección, y leer de ahí
+ * haría que la bandeja dijera «escribió a Recepcion» de alguien que en realidad
+ * escribió a Recepcion 2. Justo lo que el agente necesita saber para entender por
+ * qué el texto libre no sale.
+ *
+ * `whatsappAccount` solo sirve de respaldo mientras NO esté fijado a mano: en los
+ * chats anteriores a `lastInboundAccount` es lo único que queda del número de
+ * entrada.
+ */
+function inboundAccountOf(conv, accounts) {
   const inboundId = conv?.lastInboundAccount?._id || conv?.lastInboundAccount;
   const inbound = inboundId && accounts.byId.get(String(inboundId));
   if (inbound) return inbound;
-  return accounts.fallback;
+  if (conv?.whatsappAccountPinned) return null;
+  const linkedId = conv?.whatsappAccount?._id || conv?.whatsappAccount;
+  return (linkedId && accounts.byId.get(String(linkedId))) || null;
+}
+
+/**
+ * Número por el que SALDRÍA la respuesta de esta conversación. Es el espejo en
+ * memoria de `whatsappGateway.resolveAccountForConversation`: el número del chat
+ * si puede enviar y, si no, el número por defecto. Tiene que dar lo mismo que el
+ * envío, porque de él dependen la ventana de 24h y el aviso que ve el agente.
+ */
+function resolveSendingAccount(conv, accounts) {
+  const preferred = preferredAccountOf(conv, accounts);
+  if (preferred && preferred.sendable) return preferred;
+  // Chats de «número oculto» (@lid): su número si se sabe cuál es, y si no el
+  // primer QR conectado — nunca uno de Cloud API, porque un LID solo existe
+  // dentro de la sesión QR que lo recibió (ver gateway.destinationIsLid).
+  if (require('../utils/whatsappGateway').destinationIsLid(conv)) {
+    return preferred || accounts.list.find((a) => a.connectionType === 'qr' && a.sendable) || null;
+  }
+  return accounts.fallback || preferred || null;
 }
 
 /**
@@ -324,20 +440,41 @@ function resolveSendingAccount(conv, accounts) {
  *   - `sendingAccount`: qué número es ese, para poder decirlo en el chat.
  */
 function decorateConversation(o, accounts) {
+  const entrada = inboundAccountOf(o, accounts);
+  const preferred = preferredAccountOf(o, accounts);
   const account = resolveSendingAccount(o, accounts);
-  o.effectiveConnectionType = account?.connectionType || 'cloud_api';
+  // Sin número de salida (un @lid cuyo número ya no existe), el tipo se toma del
+  // número por el que entró: si no, un chat que llegó por QR pasaría a mostrarse
+  // con la ventana de 24h de la API, que ahí no pinta nada.
+  o.effectiveConnectionType = account?.connectionType || preferred?.connectionType || 'cloud_api';
   // La cuenta ENTERA (no su id): lleva `previousIds` y con ellos la ventana
   // reconoce como suyos los chats del mismo número antes de reconectarlo.
   o.window = messaging.describeWhatsappWindow(o, o.effectiveConnectionType, new Date(), account || null);
-  o.sendingAccount = account
-    ? {
-        _id: account._id,
-        label: account.label,
-        connectionType: account.connectionType,
-        displayPhone: account.displayPhone || account.connectedPhone || '',
-      }
-    : null;
+  o.sendingAccount = publicAccount(account);
+  // A QUÉ NÚMERO NUESTRO ESCRIBIÓ EL CONTACTO. Es distinto del de salida en dos
+  // casos que el agente TIENE que ver: cuando eligió otro número a mano, y cuando
+  // el número al que le escribieron está bloqueado y la respuesta se desvía.
+  o.inboundAccount = publicAccount(entrada);
+  o.accountPinned = !!o.whatsappAccountPinned;
+  // El número del chat no puede enviar (bloqueado por WhatsApp, sin credenciales,
+  // esperando un QR nuevo) y se está respondiendo por otro. Se mide contra el
+  // PREFERIDO —que es el que se intentó usar—, no contra el de entrada: en un
+  // chat con número fijado a mano no hay desvío, hay una decisión.
+  o.sendingAccountIsFallback = !!(preferred && !preferred.sendable && account && String(account._id) !== String(preferred._id));
   return o;
+}
+
+/** Lo que de un número puede ver el call center (nunca tokens ni sesiones). */
+function publicAccount(account) {
+  if (!account) return null;
+  return {
+    _id: account._id,
+    label: account.label,
+    connectionType: account.connectionType,
+    displayPhone: account.displayPhone || account.connectedPhone || '',
+    sendable: account.sendable !== false,
+    unsendableReason: account.unsendableReason || '',
+  };
 }
 
 // Repuebla un documento de conversación con los campos que la UI necesita
@@ -2963,12 +3100,39 @@ exports.sendMessage = async (req, res) => {
  */
 exports.listChatAccounts = async (req, res) => {
   try {
-    const WhatsappAccount = require('../models/WhatsappAccount');
-    const accounts = await WhatsappAccount.find({ enabled: true })
-      .select('label connectionType displayPhone connectedPhone status isDefault')
-      .sort({ isDefault: -1, createdAt: 1 })
-      .lean();
-    res.json(accounts);
+    // `loadSendingAccounts` ya deja cada número saneado y con `sendable`
+    // calculado con la MISMA regla que usa el envío: el desplegable del chat no
+    // puede ofrecer como opción un número que WhatsApp tiene bloqueado.
+    const { list, byId } = await loadSendingAccounts();
+    const salida = list.map((a) => ({
+      _id: a._id,
+      label: a.label,
+      connectionType: a.connectionType,
+      displayPhone: a.displayPhone,
+      isDefault: a.isDefault,
+      status: a.status,
+      sendable: a.sendable,
+      unsendableReason: a.unsendableReason,
+    }));
+    // Los números BORRADOS o desactivados también salen, al final: no se puede
+    // responder por ellos, pero sus chats siguen ahí y el filtro de la bandeja
+    // tiene que poder encontrarlos («¿qué contactos entraron por Recepcion 2?»).
+    const vivos = new Set(salida.map((a) => String(a._id)));
+    for (const a of byId.values()) {
+      if (vivos.has(String(a._id)) || a.sendable) continue;
+      vivos.add(String(a._id));
+      salida.push({
+        _id: a._id,
+        label: a.label,
+        connectionType: a.connectionType,
+        displayPhone: a.displayPhone,
+        isDefault: false,
+        status: a.status,
+        sendable: false,
+        unsendableReason: a.unsendableReason,
+      });
+    }
+    res.json(salida);
   } catch (e) {
     res.status(500).json({ message: 'Error al listar números', error: e.message });
   }
@@ -2979,6 +3143,12 @@ exports.listChatAccounts = async (req, res) => {
  * conversación. Normalmente el número se enlaza SOLO al recibir (por eso se puede
  * responder desde el mismo número al que el contacto escribió); esto permite
  * corregirlo o elegirlo a mano.
+ *
+ * Body `{ whatsappAccountId }`:
+ *   · un id  → se FIJA ese número (queda marcado como elegido a mano, así la
+ *              ingesta del siguiente entrante no lo deshace en silencio);
+ *   · null / '' / 'auto' → vuelve a AUTOMÁTICO: se responde por el número al que
+ *              el contacto escribió, y por el de respaldo si ese está caído.
  */
 exports.setConversationAccount = async (req, res) => {
   try {
@@ -2987,20 +3157,84 @@ exports.setConversationAccount = async (req, res) => {
     if (!canReplyConversation(req, conv)) {
       return res.status(403).json({ message: 'No puedes cambiar el número de esta conversación' });
     }
-    const WhatsappAccount = require('../models/WhatsappAccount');
-    if (!mongoose.isValidObjectId(req.body.whatsappAccountId)) {
-      return res.status(400).json({ message: 'Número no válido' });
+    const pedido = String(req.body.whatsappAccountId ?? '').trim();
+
+    if (!pedido || pedido === 'auto') {
+      // AUTOMÁTICO. Se suelta la elección manual y se vuelve a enlazar el chat al
+      // número por el que ENTRÓ el contacto, que es el comportamiento de siempre.
+      // Dejar `whatsappAccount` con el número elegido a mano y quitar solo la
+      // marca sería peor que no hacer nada: el chat seguiría respondiendo por ahí
+      // sin que nada lo explicara.
+      //
+      // Si `lastInboundAccount` no existe (chats anteriores a ese campo) se hace
+      // el rodeo por los mensajes entrantes antes de rendirse: poner el enlace a
+      // null a secas tiraría a la basura el ÚNICO rastro que quedaba del número de
+      // entrada, y el chat pasaría a responderse por el principal para siempre.
+      // Es una acción manual y puntual: la consulta extra sobra de sobra.
+      conv.whatsappAccountPinned = false;
+      conv.whatsappAccountPinnedBy = null;
+      conv.whatsappAccountPinnedAt = null;
+      if (conv.lastInboundAccount) {
+        conv.whatsappAccount = conv.lastInboundAccount;
+      } else {
+        const entrada = await Message.findOne({
+          conversation: conv._id,
+          direction: 'in',
+          whatsappAccount: { $ne: null },
+        })
+          .sort({ createdAt: -1 })
+          .select('whatsappAccount')
+          .lean();
+        // Sin rastro ninguno el chat se queda sin enlace, que es lo que tenía
+        // antes de que nadie eligiera nada: la resolución cae al principal.
+        conv.whatsappAccount = entrada?.whatsappAccount || null;
+      }
+    } else {
+      const WhatsappAccount = require('../models/WhatsappAccount');
+      if (!mongoose.isValidObjectId(pedido)) {
+        return res.status(400).json({ message: 'Número no válido' });
+      }
+      const acc = await WhatsappAccount.findOne({ _id: pedido, enabled: true, archivedAt: null });
+      if (!acc) return res.status(400).json({ message: 'Número no válido o deshabilitado' });
+      const gateway = require('../utils/whatsappGateway');
+      if (!gateway.isSendableAccount(acc)) {
+        // Elegir un número que no puede enviar deja el chat peor que antes: los
+        // mensajes se quedarían en rojo sin que nadie sepa por qué.
+        return res.status(409).json({
+          message:
+            `El número «${acc.label}» no puede enviar ahora mismo` +
+            (gateway.unsendableReason(acc) === 'needs_qr'
+              ? ' (está esperando que se escanee su QR).'
+              : ' (le faltan credenciales).') +
+            ' Elige otro número.',
+          code: gateway.unsendableReason(acc),
+        });
+      }
+      conv.whatsappAccount = acc._id;
+      conv.whatsappAccountPinned = true;
+      conv.whatsappAccountPinnedBy = req.user._id;
+      conv.whatsappAccountPinnedAt = new Date();
     }
-    const acc = await WhatsappAccount.findOne({ _id: req.body.whatsappAccountId, enabled: true });
-    if (!acc) return res.status(400).json({ message: 'Número no válido o deshabilitado' });
-    conv.whatsappAccount = acc._id;
     await conv.save();
+
+    // Se devuelve la conversación DECORADA (misma forma que la bandeja y el
+    // detalle): el chat repinta con ella la ventana de 24h y el aviso del número,
+    // y cambiar de número las cambia las dos. Devolver un objeto a medias —sin
+    // `window`— dejaba el compositor con el estado del número anterior.
     const populated = await Conversation.findById(conv._id)
       .populate('whatsappAccount', 'label connectionType displayPhone connectedPhone')
       .lean();
-    populated.effectiveConnectionType = populated.whatsappAccount?.connectionType || 'cloud_api';
-    emitToCallCenter('chat:conversation:updated', { conversationId: conv._id, whatsappAccount: populated.whatsappAccount });
-    res.json(populated);
+    const out = decorateConversation(populated, await loadSendingAccounts());
+    emitToCallCenter('chat:conversation:updated', {
+      conversationId: conv._id,
+      whatsappAccount: out.whatsappAccount,
+      sendingAccount: out.sendingAccount,
+      inboundAccount: out.inboundAccount,
+      accountPinned: out.accountPinned,
+      window: out.window,
+      effectiveConnectionType: out.effectiveConnectionType,
+    });
+    res.json(out);
   } catch (e) {
     res.status(500).json({ message: 'Error al cambiar el número', error: e.message });
   }
@@ -3739,7 +3973,12 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   // `create_opportunity` y el alta manual la copian a la oportunidad que crean, así
   // que "cuántas oportunidades vinieron de anuncios" se sigue pudiendo responder.
   // Recuerda por qué número (global) entró el mensaje, para responder por el mismo.
-  if (account && String(conv.whatsappAccount || '') !== String(account._id)) {
+  // EXCEPCIÓN: si un agente eligió el número a mano (`whatsappAccountPinned`), se
+  // respeta su elección. Si no, el primer entrante después de elegirlo la
+  // deshacía sin decir nada y el chat volvía a apuntar a un número que quizá no
+  // puede enviar. Por dónde entró de verdad este mensaje sigue quedando anotado
+  // en `lastInboundAccount` (más abajo), que es lo que la bandeja muestra.
+  if (account && !conv.whatsappAccountPinned && String(conv.whatsappAccount || '') !== String(account._id)) {
     conv.whatsappAccount = account._id;
   }
   if (conv.blocked) return;

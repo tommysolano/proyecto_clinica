@@ -96,17 +96,35 @@ function accountOwnsId(account, candidate) {
 }
 
 /**
- * Traspasa TODO lo que cuelga de un número a otro: los chats, su ventana de 24h
+ * Traspasa lo que cuelga de un número a otro: los chats, su ventana de 24h
  * (`lastInboundAccount`) y el historial de mensajes, más las llamadas, campañas
  * de goteo e importaciones que lo tuvieran fijado como número de salida.
+ *
+ * `moveHistory` distingue los DOS usos que esto tiene, que no son el mismo:
+ *
+ *  · `true` (por defecto) — ADOPCIÓN: es el MISMO teléfono, reconectado en otro
+ *    documento. Todo se mueve, porque todo sigue siendo verdad: el contacto le
+ *    escribió a ese teléfono y la ventana de 24h de Meta sigue viva ahí.
+ *
+ *  · `false` — REEMPLAZO por OTRO teléfono (borrar un número indicando destino).
+ *    Aquí solo se mueve el ENLACE de salida (`whatsappAccount`): por dónde se le
+ *    responde al contacto a partir de ahora. Mover también `lastInboundAccount`
+ *    sería escribir una MENTIRA —diría que el contacto escribió a un número al
+ *    que nunca escribió— y la ventana de 24h se daría por abierta en un teléfono
+ *    donde Meta la rechaza con 131047. El historial de mensajes tampoco se toca:
+ *    cada mensaje debe seguir diciendo por dónde salió o entró de verdad.
  */
-async function reassignAccountLinks(fromId, toId) {
+async function reassignAccountLinks(fromId, toId, { moveHistory = true } = {}) {
   const Conversation = require('../models/Conversation');
   const Message = require('../models/Message');
   const [convs, inbound, msgs] = await Promise.all([
     Conversation.updateMany({ whatsappAccount: fromId }, { $set: { whatsappAccount: toId } }),
-    Conversation.updateMany({ lastInboundAccount: fromId }, { $set: { lastInboundAccount: toId } }),
-    Message.updateMany({ whatsappAccount: fromId }, { $set: { whatsappAccount: toId } }),
+    moveHistory
+      ? Conversation.updateMany({ lastInboundAccount: fromId }, { $set: { lastInboundAccount: toId } })
+      : Promise.resolve({ modifiedCount: 0 }),
+    moveHistory
+      ? Message.updateMany({ whatsappAccount: fromId }, { $set: { whatsappAccount: toId } })
+      : Promise.resolve({ modifiedCount: 0 }),
   ]);
   // Referencias secundarias: si el modelo no existe en esta instalación, se ignora.
   for (const name of ['Call', 'DripCampaign', 'ContactImport']) {

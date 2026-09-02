@@ -270,9 +270,12 @@ export default function Appointments() {
   });
   const [patientSearch, setPatientSearch] = useState('');
   const [showPatientList, setShowPatientList] = useState(false);
+  const [patientSearchLoading, setPatientSearchLoading] = useState(false);
+  const [patientSearchError, setPatientSearchError] = useState(false);
+  // Impide que una respuesta lenta de una búsqueda anterior reemplace a la
+  // respuesta del texto que el usuario tiene escrito en este momento.
+  const patientRequestRef = useRef(0);
 
-  // Cronómetro
-  const [timerAppt, setTimerAppt] = useState(null);
   const [now, setNow] = useState(Date.now());
   const [timeUpModal, setTimeUpModal] = useState(null);
   const notifiedRef = useRef(new Set());
@@ -413,15 +416,6 @@ export default function Appointments() {
     }
   };
 
-  const fetchPatients = async () => {
-    try {
-      const res = await api.get('/patients', { params: { limit: 1000 } });
-      setPatients(res.data.patients);
-    } catch {
-      // silent
-    }
-  };
-
   const fetchServices = async () => {
     try {
       const res = await api.get('/products', { params: { limit: 500 } });
@@ -438,11 +432,58 @@ export default function Appointments() {
   useEffect(() => {
     fetchDoctors();
     fetchNurses();
-    fetchPatients();
     fetchServices();
     fetchClinicasFiltro();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * BUSCADOR DE PACIENTES DE LA CITA.
+   *
+   * Antes la agenda descargaba solo los 1.000 pacientes más recientes y
+   * filtraba ese recorte en el navegador. Un paciente más antiguo seguía
+   * apareciendo en Clientes —que sí busca en el servidor—, pero aquí era
+   * imposible encontrarlo incluso escribiendo su cédula exacta.
+   *
+   * Ahora cada texto se busca en la colección completa mediante el mismo
+   * endpoint de Clientes. El pequeño debounce evita una petición por tecla y el
+   * número de turno evita que respuestas fuera de orden pinten resultados viejos.
+   */
+  useEffect(() => {
+    const miTurno = ++patientRequestRef.current;
+    if (!modalOpen || form.patient) {
+      setPatientSearchLoading(false);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const search = patientSearch.trim();
+    setPatientSearchLoading(true);
+    setPatientSearchError(false);
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.get('/patients', {
+          params: { limit: 30, ...(search ? { search } : {}) },
+          signal: controller.signal,
+        });
+        if (miTurno !== patientRequestRef.current) return;
+        setPatients(res.data?.patients || []);
+      } catch {
+        if (miTurno !== patientRequestRef.current || controller.signal.aborted) return;
+        setPatients([]);
+        setPatientSearchError(true);
+      } finally {
+        if (miTurno === patientRequestRef.current) setPatientSearchLoading(false);
+      }
+    }, 250);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [modalOpen, patientSearch, form.patient]);
+
   useEffect(() => {
     fetchAppointments();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -533,7 +574,9 @@ export default function Appointments() {
       ...emptyForm,
       clinic: activeClinic?._id || '',
     });
+    setPatients([]);
     setPatientSearch('');
+    setPatientSearchError(false);
     setModalOpen(true);
   };
 
@@ -606,7 +649,6 @@ export default function Appointments() {
             // eligió, hereda el de la principal.
             serviceItem: it.serviceItem?._id || basePayload.serviceItem || null,
           };
-          // eslint-disable-next-line no-await-in-loop
           await api.post('/appointments', extraPayload);
         }
         const totalCreated = 1 + extras.length;
@@ -771,20 +813,6 @@ export default function Appointments() {
     setPatientSearch([`${p.firstName} ${p.lastName}`, p.cedula].filter(Boolean).join(' - '));
     setShowPatientList(false);
   };
-
-  const filteredPatients = useMemo(() => {
-    const q = patientSearch.toLowerCase().trim();
-    if (!q) return patients.slice(0, 30);
-    return patients
-      .filter(
-        (p) =>
-          p.firstName?.toLowerCase().includes(q) ||
-          p.lastName?.toLowerCase().includes(q) ||
-          p.cedula?.includes(q) ||
-          p.phone?.includes(q)
-      )
-      .slice(0, 30);
-  }, [patientSearch, patients]);
 
   // Aplica filtros en el cliente para servicio/sucursal/rango horario.
   // Ordena cronológicamente (por fecha y hora) para verlas en forma de HORARIO,
@@ -1576,6 +1604,7 @@ export default function Appointments() {
                 value={patientSearch}
                 onChange={(e) => {
                   setPatientSearch(e.target.value);
+                  setPatients([]);
                   setShowPatientList(true);
                   if (form.patient) setForm((f) => ({ ...f, patient: '' }));
                 }}
@@ -1588,7 +1617,9 @@ export default function Appointments() {
                   type="button"
                   onClick={() => {
                     setForm((f) => ({ ...f, patient: '' }));
+                    setPatients([]);
                     setPatientSearch('');
+                    setShowPatientList(true);
                   }}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-emerald-600 bg-transparent border-none cursor-pointer"
                 >
@@ -1598,10 +1629,14 @@ export default function Appointments() {
             </div>
             {showPatientList && !form.patient && (
               <div className="absolute z-20 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white border border-emerald-100 rounded-xl shadow-lg">
-                {filteredPatients.length === 0 ? (
+                {patientSearchLoading ? (
+                  <p className="px-4 py-2 text-xs text-slate-400">Buscando pacientes...</p>
+                ) : patientSearchError ? (
+                  <p className="px-4 py-2 text-xs text-rose-500">No se pudo buscar. Intenta nuevamente.</p>
+                ) : patients.length === 0 ? (
                   <p className="px-4 py-2 text-xs text-slate-400">Sin coincidencias</p>
                 ) : (
-                  filteredPatients.map((p) => (
+                  patients.map((p) => (
                     <button
                       type="button"
                       key={p._id}

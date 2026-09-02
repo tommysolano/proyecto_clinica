@@ -31,6 +31,7 @@ import {
   HiOutlineArrowUturnLeft,
   HiOutlineMicrophone,
   HiOutlinePhone,
+  HiOutlineDevicePhoneMobile,
   HiOutlineArrowLeft,
   HiOutlineInformationCircle,
   HiOutlineBarsArrowDown,
@@ -325,6 +326,13 @@ export default function Chats() {
   const [urlParams, setUrlParams] = useSearchParams();
   const [scope, setScope] = useState(() => localStorage.getItem('chats.scope') || 'all');
   const [filter, setFilter] = useState('all');
+  // Números de WhatsApp conectados (globales). Se piden UNA vez para toda la
+  // página: los usan la insignia de cada fila («escribió a Recepcion 2»), el
+  // filtro por número y el selector «responder desde» del chat abierto.
+  const [waAccounts, setWaAccounts] = useState([]);
+  // Filtro de la bandeja por NÚMERO de entrada ('' = todos). Con un número
+  // bloqueado por WhatsApp, esto es lo que permite ir a rescatar justo esos chats.
+  const [accountFilter, setAccountFilter] = useState('');
   const [newChatOpen, setNewChatOpen] = useState(false);
   const selectScope = (s) => {
     setView('inbox');
@@ -483,7 +491,7 @@ export default function Chats() {
   const convRefreshTimer = useRef(null);
   const refreshConversations = () => {
     clearTimeout(convRefreshTimer.current);
-    convRefreshTimer.current = setTimeout(() => loadConversations(paramsForView()), 400);
+    convRefreshTimer.current = setTimeout(() => loadConversations(paramsRef.current), 400);
   };
   useEffect(() => () => clearTimeout(convRefreshTimer.current), []);
 
@@ -507,9 +515,22 @@ export default function Chats() {
     if (filter === 'unread') params.unread = 'true';
     else if (filter === 'featured') params.featured = 'true';
     else if (filter === 'all' && !q) params.excludeFeatured = 'true';
+    // Solo los chats que entraron por ESE número nuestro.
+    if (accountFilter) params.account = accountFilter;
     if (q) params.q = q;
     return params;
   };
+
+  // Los parámetros ACTIVOS de la lista, en un ref.
+  //
+  // POR QUÉ: los refrescos de FONDO (mensaje entrante por socket, sondeo de
+  // respaldo, volver a la pestaña) viven dentro de efectos con su propia lista de
+  // dependencias, y cada filtro nuevo había que acordarse de sumarlo a las cinco.
+  // El filtro por número se quedaría fuera: bastaría un mensaje entrante para que
+  // la bandeja se recargara SIN él y el filtro se deshiciera solo delante del
+  // agente. Leyendo de aquí, ningún filtro futuro vuelve a caer en el mismo hoyo.
+  const paramsRef = useRef({});
+  paramsRef.current = paramsForView();
 
   const loadStats = async (range = statsRange) => {
     try {
@@ -659,6 +680,7 @@ export default function Chats() {
     loadGallery();
     api.get('/chats/workflows-list').then((r) => setChatWorkflows(r.data || [])).catch(() => {});
     api.get('/call-center/agents').then((r) => setAgents(r.data || [])).catch(() => {});
+    api.get('/chats/accounts').then((r) => setWaAccounts(r.data || [])).catch(() => {});
     // Plantillas WhatsApp aprobadas por Meta (para enviar desde el chat),
     // más usadas primero (el menú muestra el top 4 por defecto).
     api
@@ -691,7 +713,7 @@ export default function Chats() {
     convLoadedRef.current = CHATS_PAGE;
     loadConversations(paramsForView());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, scope, filter, sortOrder, debouncedSearch]);
+  }, [view, scope, filter, sortOrder, debouncedSearch, accountFilter]);
 
   useEffect(() => {
     // El hilo se vacía SIEMPRE al cambiar de chat. Antes se quedaban a la vista
@@ -891,7 +913,7 @@ export default function Chats() {
   useEffect(() => {
     const refresh = () => {
       if (document.visibilityState === 'hidden') return;
-      if (view !== 'board') loadConversations(paramsForView());
+      if (view !== 'board') loadConversations(paramsRef.current);
       // `silent`: es una puesta al día de fondo, no debe parpadear el hilo que el
       // agente ya está leyendo.
       if (activeId) loadMessages(activeId, { silent: true });
@@ -913,7 +935,7 @@ export default function Chats() {
     if (realtimeConnected || view === 'board') return undefined;
     const t = setInterval(() => {
       if (document.visibilityState === 'hidden') return;
-      loadConversations(paramsForView());
+      loadConversations(paramsRef.current);
       if (activeId) loadMessages(activeId, { silent: true });
     }, 8000);
     return () => clearInterval(t);
@@ -1682,6 +1704,30 @@ export default function Chats() {
                 </button>
               ))}
             </div>
+            {/* ¿POR QUÉ NÚMERO NUESTRO ENTRARON? Con varios números conectados —y
+                sobre todo con uno bloqueado por WhatsApp— hace falta poder ver de
+                un vistazo los chats de cada uno para ir a rescatarlos. */}
+            {waAccounts.length > 1 && (
+              <div className="flex items-center gap-1.5 pb-1 shrink-0">
+                <HiOutlineDevicePhoneMobile className="w-4 h-4 text-slate-400 shrink-0" />
+                <select
+                  value={accountFilter}
+                  onChange={(e) => setAccountFilter(e.target.value)}
+                  title="Ver solo los chats que entraron por uno de tus números"
+                  className={`text-xs border rounded-lg px-2 py-1 bg-white cursor-pointer max-w-[190px] ${
+                    accountFilter ? 'border-emerald-300 text-emerald-700 font-medium' : 'border-slate-200 text-slate-600'
+                  }`}
+                >
+                  <option value="">Todos los números</option>
+                  {waAccounts.map((a) => (
+                    <option key={a._id} value={a._id}>
+                      {a.label}
+                      {a.sendable === false ? sufijoNumeroCaido(a.unsendableReason) : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
         )}
 
@@ -1749,6 +1795,7 @@ export default function Chats() {
                       onSelect={selectConversation}
                       onToggleFeatured={toggleFeatured}
                       onToggleRead={toggleRead}
+                      variosNumeros={waAccounts.length > 1}
                     />
                   ))}
                   {/* Pie de la lista: cuántos se están viendo de cuántos hay, y el
@@ -1909,6 +1956,13 @@ export default function Chats() {
                 </div>
                 {typingAgents.length > 0 && <TypingIndicator agents={typingAgents} />}
                 <div className="border-t border-slate-100 p-2">
+                  {/* Por qué número entró y por cuál sale. Lo primero del
+                      compositor: de ello depende que el mensaje llegue. */}
+                  <BarraNumeroChat
+                    conv={activeConv}
+                    accounts={waAccounts}
+                    onUpdated={(c) => applyConversationUpdate(c)}
+                  />
                   {activeConv?.blocked && (
                     <div className="mb-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1">
                       Contacto bloqueado. Desbloquéalo desde el panel lateral para enviar mensajes.
@@ -2500,6 +2554,7 @@ export default function Chats() {
                 onEditOpportunity={() => setOpportunityModal(true)}
                 onScheduleAppointment={() => setAppointmentModal(true)}
                 onCreateQuotation={() => setQuotationModal(true)}
+                waAccounts={waAccounts}
                 automationsVersion={automationsVersion}
               />
             ) : (
@@ -2534,6 +2589,7 @@ export default function Chats() {
                   onEditOpportunity={() => setOpportunityModal(true)}
                   onScheduleAppointment={() => setAppointmentModal(true)}
                   onCreateQuotation={() => setQuotationModal(true)}
+                  waAccounts={waAccounts}
                   automationsVersion={automationsVersion}
                 />
               </div>
@@ -2903,6 +2959,34 @@ function NewChatModal({ onClose, onCreate }) {
 }
 
 /**
+ * Insignia «a qué número nuestro escribió este contacto».
+ *
+ * Solo aparece con VARIOS números conectados: con uno solo no dice nada. Se pinta
+ * en ámbar cuando ese número no puede enviar (WhatsApp bloqueó «Recepcion 2» el
+ * 02-sep-2026) — es la señal de que ahí hay que elegir otro número para responder.
+ */
+function NumeroEntradaBadge({ conv, varios }) {
+  const entrada = conv.inboundAccount;
+  if (!varios || !entrada?.label) return null;
+  const caido = entrada.sendable === false;
+  return (
+    <span
+      title={
+        caido
+          ? `El contacto escribió a ${entrada.label}${entrada.displayPhone ? ` (${entrada.displayPhone})` : ''}, que ahora mismo no puede enviar. Se responde desde ${conv.sendingAccount?.label || 'el número principal'}.`
+          : `El contacto escribió a ${entrada.label}${entrada.displayPhone ? ` (${entrada.displayPhone})` : ''}`
+      }
+      className={`text-[10px] px-1.5 py-0.5 rounded inline-flex items-center gap-0.5 max-w-[130px] ${
+        caido ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'
+      }`}
+    >
+      <HiOutlineDevicePhoneMobile className="w-3 h-3 shrink-0" />
+      <span className="truncate">{entrada.label}</span>
+    </span>
+  );
+}
+
+/**
  * Fila de la bandeja. MEMOIZADA a propósito.
  *
  * POR QUÉ: el estado del compositor (`draft`) vive en el componente Chats, que es
@@ -2916,7 +3000,7 @@ function NewChatModal({ onClose, onCreate }) {
  * ser flechas nuevas en cada render (`onClick={() => toggleFeatured(c)}`), que
  * habrían invalidado la memoización en cada render igualmente.
  */
-const ConversationRow = memo(function ConversationRow({ conv, active, onSelect, onToggleFeatured, onToggleRead }) {
+const ConversationRow = memo(function ConversationRow({ conv, active, onSelect, onToggleFeatured, onToggleRead, variosNumeros }) {
   const meta = conv.opportunity?.isOpportunity ? stageMeta(conv.opportunity.stage) : null;
   const select = () => onSelect?.(conv._id);
   return (
@@ -2979,7 +3063,8 @@ const ConversationRow = memo(function ConversationRow({ conv, active, onSelect, 
               )}
             </button>
           </div>
-          <div className="flex items-center gap-1 mt-1">
+          <div className="flex items-center gap-1 mt-1 flex-wrap">
+            <NumeroEntradaBadge conv={conv} varios={variosNumeros} />
             {meta && (
               <span className={`text-[10px] px-1.5 py-0.5 rounded ${meta.color}`}>
                 {meta.label}
@@ -4352,7 +4437,7 @@ function ChatAutomationsSection({ conv, version = 0 }) {
   );
 }
 
-function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onScheduleAppointment, onCreateQuotation, automationsVersion = 0 }) {
+function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onScheduleAppointment, onCreateQuotation, automationsVersion = 0, waAccounts = [] }) {
   const op = conv.opportunity || {};
   const meta = op.isOpportunity ? stageMeta(op.stage) : null;
   const [registerModal, setRegisterModal] = useState(false);
@@ -4602,7 +4687,18 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
         <div className="text-xs font-semibold text-slate-500 mb-1">Detalles</div>
         <div className="text-xs text-slate-600 space-y-0.5">
           <div>Canal: <span className="text-slate-800">{conv.channel}</span></div>
-          {conv.channel === 'whatsapp' && <ReplyNumberSelector conv={conv} onUpdated={onUpdated} />}
+          {conv.channel === 'whatsapp' && conv.inboundAccount?.label && (
+            <div>
+              Escribió a:{' '}
+              <span className={conv.inboundAccount.sendable === false ? 'text-amber-700 font-medium' : 'text-slate-800'}>
+                {conv.inboundAccount.label}
+              </span>
+              {conv.inboundAccount.sendable === false && <span className="text-amber-600"> · bloqueado</span>}
+            </div>
+          )}
+          {conv.channel === 'whatsapp' && (
+            <ReplyNumberSelector conv={conv} accounts={waAccounts} onUpdated={onUpdated} />
+          )}
           <div>Estado: <span className="text-slate-800">{conv.status}</span></div>
           <div>Creado: {(() => {
             const d = new Date(conv.createdAt);
@@ -4639,30 +4735,43 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
   );
 }
 
-// Selector "Responder desde": muestra por qué número (global) se responde ESTA
-// conversación y permite cambiarlo. Normalmente el sistema lo enlaza SOLO al recibir
-// (se responde desde el mismo número al que el contacto escribió); esto da control y
-// visibilidad, y arregla conversaciones viejas que caían en el número por defecto.
-function ReplyNumberSelector({ conv, onUpdated }) {
-  const [accounts, setAccounts] = useState([]);
+/**
+ * Selector «Responder desde»: por qué número (global) sale la respuesta de ESTE
+ * chat, y cómo cambiarlo.
+ *
+ * CÓMO FUNCIONA EL SISTEMA (para entender qué se está eligiendo aquí):
+ * normalmente el número se enlaza SOLO al recibir, y se responde desde el mismo
+ * número al que el contacto escribió. Este selector es la excepción, y nació el
+ * 02-sep-2026, cuando WhatsApp bloqueó «Recepcion 2» —el número por el que había
+ * entrado la mayor parte de la bandeja—: esos chats no tenían por dónde salir.
+ *
+ *   · «Automático» (lo normal) → se responde por el número al que el contacto
+ *     escribió; y si ese número está caído, por el principal.
+ *   · Un número concreto → queda FIJADO para este chat y ni siquiera el próximo
+ *     mensaje del contacto lo cambia (hasta que se vuelva a «Automático»).
+ *
+ * `accounts` viene de la página (una sola petición para toda la bandeja).
+ */
+function ReplyNumberSelector({ conv, accounts = [], onUpdated, compacto = false }) {
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    let alive = true;
-    api.get('/chats/accounts').then((r) => { if (alive) setAccounts(r.data || []); }).catch(() => {});
-    return () => { alive = false; };
-  }, []);
-
-  const current = String(conv.whatsappAccount?._id || conv.whatsappAccount || '');
+  // Fijado a mano = el id que el chat guarda. En automático el valor es '' y el
+  // desplegable enseña «Automático (…)» con el número que se va a usar de verdad.
+  const pinned = conv.accountPinned ? String(conv.whatsappAccount?._id || conv.whatsappAccount || '') : '';
+  const saliente = conv.sendingAccount;
   const labelOf = (a) => `${a.label}${a.connectionType === 'qr' ? ' · QR' : ' · Cloud API'}`;
 
   const change = async (id) => {
-    if (!id || id === current) return;
+    if (id === pinned) return;
     setSaving(true);
     try {
-      const r = await api.patch(`/chats/${conv._id}/account`, { whatsappAccountId: id });
+      const r = await api.patch(`/chats/${conv._id}/account`, { whatsappAccountId: id || 'auto' });
       onUpdated?.(r.data);
-      toast.success('Esta conversación responderá desde ese número');
+      toast.success(
+        id
+          ? `Este chat responderá siempre desde ${r.data?.sendingAccount?.label || 'ese número'}`
+          : 'Vuelve al número automático (el mismo al que escribió el contacto)'
+      );
     } catch (e) {
       toast.error(e.response?.data?.message || 'No se pudo cambiar el número');
     } finally {
@@ -4670,9 +4779,9 @@ function ReplyNumberSelector({ conv, onUpdated }) {
     }
   };
 
-  // Con un solo número no hay nada que elegir: se muestra cuál es.
+  // Con un solo número no hay nada que elegir: se dice cuál es y ya.
   if (accounts.length <= 1) {
-    const only = conv.whatsappAccount || accounts[0];
+    const only = saliente || accounts[0];
     if (!only?.label) return null;
     return (
       <div>
@@ -4686,17 +4795,103 @@ function ReplyNumberSelector({ conv, onUpdated }) {
 
   return (
     <div className="flex items-center gap-1 flex-wrap">
-      <span>Responder desde:</span>
+      <span className={compacto ? 'text-xs text-slate-500' : ''}>Responder desde:</span>
       <select
-        value={current}
+        value={pinned}
         disabled={saving}
         onChange={(e) => change(e.target.value)}
-        title="El número por el que sale tu respuesta. Se enlaza solo al número por el que el contacto te escribió; puedes cambiarlo aquí."
-        className="border border-slate-200 rounded-md px-1.5 py-0.5 text-xs bg-white cursor-pointer disabled:opacity-50"
+        title="El número por el que sale tu respuesta. En «Automático» sale por el mismo número al que el contacto te escribió (y por el principal si ese está caído). Elegir uno lo deja fijo para este chat."
+        className={`border rounded-md px-1.5 py-0.5 text-xs bg-white cursor-pointer disabled:opacity-50 ${
+          pinned ? 'border-emerald-300 text-emerald-800 font-medium' : 'border-slate-200'
+        }`}
       >
-        {!current && <option value="">(elige un número)</option>}
-        {accounts.map((a) => <option key={a._id} value={a._id}>{labelOf(a)}</option>)}
+        <option value="">
+          Automático{saliente?.label ? ` (${saliente.label})` : ''}
+        </option>
+        {accounts.map((a) => (
+          <option key={a._id} value={a._id} disabled={a.sendable === false}>
+            {labelOf(a)}
+            {a.sendable === false ? sufijoNumeroCaido(a.unsendableReason) : ''}
+          </option>
+        ))}
       </select>
+    </div>
+  );
+}
+
+/** Por qué un número no puede enviar, dicho para el call center. */
+function motivoNumeroCaido(reason) {
+  if (reason === 'needs_qr') return 'no puede enviar: WhatsApp pide volver a escanear su QR';
+  if (reason === 'archived') return 'ya no existe (se eliminó de la configuración)';
+  if (reason === 'disabled') return 'está desactivado en la configuración';
+  if (reason === 'no_credentials') return 'no puede enviar: le faltan credenciales de Meta';
+  return 'no puede enviar ahora mismo';
+}
+
+/** Sufijo corto para el desplegable: «— bloqueado», «— eliminado»… */
+function sufijoNumeroCaido(reason) {
+  if (reason === 'archived') return ' — eliminado';
+  if (reason === 'disabled') return ' — desactivado';
+  if (reason === 'no_credentials') return ' — sin credenciales';
+  return ' — bloqueado';
+}
+
+/**
+ * Barra del compositor: a qué número escribió el contacto y por cuál va a salir
+ * la respuesta. Va PEGADA al cuadro de escribir, no en el panel lateral: es el
+ * dato que decide si el mensaje llega o no, y el agente tiene que verlo sin abrir
+ * nada. Solo aparece con más de un número conectado.
+ */
+function BarraNumeroChat({ conv, accounts, onUpdated }) {
+  if (!accounts || accounts.length <= 1) return null;
+  if ((conv.channel || 'whatsapp') !== 'whatsapp') return null;
+  const entrada = conv.inboundAccount;
+  const saliente = conv.sendingAccount;
+  const desvio = conv.sendingAccountIsFallback;
+  return (
+    <div className="mb-2 text-xs">
+      <div className="flex items-center gap-x-3 gap-y-1 flex-wrap text-slate-500">
+        {entrada?.label && (
+          <span className="inline-flex items-center gap-1">
+            <HiOutlineDevicePhoneMobile className="w-3.5 h-3.5 text-slate-400" />
+            Escribió a{' '}
+            <b className={entrada.sendable === false ? 'text-amber-700' : 'text-slate-700'}>{entrada.label}</b>
+            {entrada.displayPhone && <span className="text-slate-400">{entrada.displayPhone}</span>}
+          </span>
+        )}
+        <ReplyNumberSelector conv={conv} accounts={accounts} onUpdated={onUpdated} compacto />
+      </div>
+      {desvio && (
+        <div className="mt-1 text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+          <b>{entrada?.label}</b> {motivoNumeroCaido(entrada?.unsendableReason)}: esta respuesta saldrá desde{' '}
+          <b>{saliente?.label || 'el número principal'}</b>.
+          {/* Solo un número de la API oficial tiene ventana de 24h. Por un número
+              QR se puede escribir libremente, así que exigir plantilla ahí sería
+              mandar al agente a dar un rodeo que no hace falta. */}
+          {saliente?.connectionType !== 'qr' && (
+            <>
+              {' '}Como el contacto nunca escribió a ese número, envíale primero una <b>plantilla aprobada</b> — al
+              contestarte queda abierta la conversación por ahí.
+            </>
+          )}
+        </div>
+      )}
+      {/* El número de salida está caído y este chat NO se puede desviar. Pasa con
+          los contactos de «número oculto»: su identificador solo existe dentro de
+          la sesión de ese número, así que ningún otro puede escribirles. Sin este
+          aviso el agente escribe y solo ve una burbuja en rojo. */}
+      {!desvio && saliente && saliente.sendable === false && (
+        <div className="mt-1 text-rose-800 bg-rose-50 border border-rose-200 rounded px-2 py-1">
+          <b>{saliente.label}</b> {motivoNumeroCaido(saliente.unsendableReason)}, y este contacto escribe con el
+          número oculto, así que <b>ningún otro número puede escribirle</b>. No se le podrá responder hasta que ese
+          número vuelva a estar conectado.
+        </div>
+      )}
+      {!desvio && !saliente && (
+        <div className="mt-1 text-rose-800 bg-rose-50 border border-rose-200 rounded px-2 py-1">
+          Este chat no tiene ningún número por el que responder. Revisa los números conectados en Configuración.
+        </div>
+      )}
     </div>
   );
 }

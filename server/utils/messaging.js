@@ -61,8 +61,32 @@ function sameId(a, b) {
  * comparan también sus `previousIds` (el mismo teléfono antes de reconectarlo).
  */
 function inboundCameFromAnotherNumber(conv, sendingAccount) {
-  if (!sendingAccount || !conv?.lastInboundAccount) return false;
-  return !sameId(conv.lastInboundAccount, sendingAccount);
+  const entrada = inboundAccountRef(conv);
+  if (!sendingAccount || !entrada) return false;
+  return !sameId(entrada, sendingAccount);
+}
+
+/**
+ * POR QUÉ NÚMERO ENTRÓ este chat, con el mejor dato disponible.
+ *
+ * `lastInboundAccount` es la fuente buena, pero NO existe en los chats anteriores
+ * a ese campo ni en los entrantes que se ingirieron sin cuenta resuelta. Mientras
+ * el número de salida era siempre el enlazado, ese hueco daba igual. Desde que un
+ * número BLOQUEADO desvía el envío al principal (02-sep-2026) ya no da igual: sin
+ * este respaldo, un chat viejo de «Recepcion 2» se responde por «Recepcion» y la
+ * ventana se calcula solo por fecha → el CRM promete "te quedan 8 h" y Meta lo
+ * rechaza con 131047. Es exactamente el incidente del 08-ago-2026, pero provocado
+ * por el desvío y sobre media bandeja.
+ *
+ * El enlace NO cuenta cuando el agente lo fijó a mano (`whatsappAccountPinned`):
+ * eso es una decisión de salida, no un dato de entrada, y tomarlo por el número
+ * de entrada cerraría ventanas que sí están abiertas.
+ */
+function inboundAccountRef(conv) {
+  if (!conv) return null;
+  if (conv.lastInboundAccount) return conv.lastInboundAccount;
+  if (conv.whatsappAccountPinned) return null;
+  return conv.whatsappAccount || null;
 }
 
 /**
@@ -1021,7 +1045,11 @@ async function send({
   if (normalizedChannel === 'whatsapp') {
     if (whatsappAccount) {
       account = await gateway.getAccountById(whatsappAccount);
-      if (account && !account.enabled) account = null;
+      // `isSendableAccount` y no solo `enabled`: un número BLOQUEADO por WhatsApp
+      // sigue habilitado y pasaba este filtro, así que una campaña o una
+      // importación fijadas a él morían una por una en el proveedor en vez de
+      // salir por el número de respaldo.
+      if (account && !gateway.isSendableAccount(account)) account = null;
     }
     if (!account) account = await gateway.resolveAccountForConversation(conv);
     if (!account) return { ok: false, skipped: true, reason: 'provider_unavailable' };
@@ -1205,7 +1233,14 @@ async function send({
     conv.lastMessagePreview = preview.slice(0, 140);
     conv.lastMessageDirection = 'out';
     // Recuerda por qué número salió, para que las próximas respuestas usen el mismo.
-    if (account && !conv.whatsappAccount) conv.whatsappAccount = account._id;
+    // PERO NO cuando ese número fue un DESVÍO (el del chat estaba bloqueado y se
+    // usó el principal): grabarlo convertiría un apaño temporal en el número del
+    // chat para siempre, y la bandeja pasaría a decir que el contacto escribió a
+    // un número al que nunca escribió. Un chat sin rastro de entrada (lo abrimos
+    // nosotros) sí se enlaza: ahí el número por el que sale es SU número.
+    if (account && !conv.whatsappAccount && !inboundCameFromAnotherNumber(conv, account)) {
+      conv.whatsappAccount = account._id;
+    }
     if (sentBy) {
       conv.lastAgentReplyAt = new Date();
       // Quién atendió por última vez (lo que muestra la bandeja). El nombre se

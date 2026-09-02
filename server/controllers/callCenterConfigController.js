@@ -497,14 +497,22 @@ exports.deleteWhatsappAccount = async (req, res) => {
 
     if (doc.connectionType === 'qr') await qrManager.disconnect(doc._id).catch(() => {});
     const Conversation = require('../models/Conversation');
+    // ¿Es EL MISMO TELÉFONO reconectado, o un número DISTINTO que va a hacerse
+    // cargo de estos chats? La diferencia no es cosmética: solo en el primer caso
+    // se puede mover la ventana de 24h y el historial, porque solo ahí sigue
+    // siendo verdad que el contacto le escribió a ese teléfono. Traspasar los
+    // chats de un número bloqueado a otro número y mover con ellos la ventana
+    // haría que el CRM la diera por abierta donde Meta la rechaza (131047).
+    const mismoTelefono = replacement ? whatsappIdentity.sameNumber(doc, replacement) : false;
     const moved = replacement
-      ? await reassignConversations(doc._id, replacement._id)
+      ? await reassignConversations(doc._id, replacement._id, { moveHistory: mismoTelefono })
       : { conversations: 0, windows: 0, messages: 0 };
     const orphaned = replacement ? 0 : await Conversation.countDocuments({ whatsappAccount: doc._id });
     const wasDefault = doc.isDefault;
-    // Traspasado a otro número no queda nada que custodiar: ese destino ya es su
-    // sucesor y hereda también su identidad (para los chats que no se movieran).
-    if (replacement) {
+    // Solo el MISMO teléfono hereda la identidad del que se va: si no, un chat que
+    // recordara el id viejo se resolvería al número nuevo y volvería a prometer
+    // una ventana que no existe.
+    if (replacement && mismoTelefono) {
       replacement.previousIds = [
         ...new Set([...(replacement.previousIds || []).map(String), String(doc._id)]),
       ];

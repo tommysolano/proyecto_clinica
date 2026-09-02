@@ -262,6 +262,17 @@ if ! ( cd "$APP_DIR/server" && node scripts/migrateEcografistaToDoctorOnce.js --
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/migrateEcografistaToDoctorOnce.js --commit'"
 fi
 
+# VA ANTES DEL REINICIO a proposito. Desde sep-2026 un numero que no puede enviar
+# (WhatsApp bloqueo "Recepcion 2") DESVIA la respuesta al numero principal, y la
+# ventana de 24h se mide contra el numero al que el contacto escribio. Los chats
+# antiguos no tienen ese dato anotado (`lastInboundAccount` nacio despues): con el
+# backend nuevo vivo y el campo aun vacio, esos chats prometerian "ventana abierta"
+# mientras Meta rechaza el texto con 131047. Rellenarlo antes cierra esa ventana.
+if ! ( cd "$APP_DIR/server" && node scripts/backfillLastInboundAccountOnce.js --commit ); then
+  echo "ADVERTENCIA: el relleno del numero de entrada de los chats fallo. Reintentalo a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/backfillLastInboundAccountOnce.js --commit'"
+fi
+
 echo "==> 5/6 Reiniciando el backend con PM2 (bajo el usuario 'clinica')"
 # IMPORTANTE: el backend corre bajo el pm2 del usuario `clinica` (God Daemon en
 # /home/clinica/.pm2), NO bajo el de root. GitHub Actions ejecuta este deploy

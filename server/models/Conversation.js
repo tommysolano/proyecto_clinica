@@ -111,6 +111,19 @@ const conversationSchema = new mongoose.Schema(
     // Número de WhatsApp (global) por el que entró/responde esta conversación.
     // Si está vacío, al responder se usa el número marcado como `isDefault`.
     whatsappAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsappAccount', default: null },
+    // El agente FIJÓ A MANO por qué número sale la respuesta de ESTE chat.
+    //
+    // POR QUÉ EXISTE: normalmente el número se enlaza solo al recibir, y eso es lo
+    // correcto (se responde por el número al que el contacto escribió). Pero cuando
+    // WhatsApp BLOQUEA uno de nuestros números (02-sep-2026: «Recepcion 2», por el
+    // que había entrado la mayor parte de la bandeja) ese número no vuelve a enviar
+    // nunca, y sus chats se quedaban sin salida. El agente elige entonces otro
+    // número desde el propio chat; sin esta marca, el siguiente entrante volvía a
+    // reenlazar `whatsappAccount` y deshacía su elección en silencio. Se limpia
+    // eligiendo «Automático».
+    whatsappAccountPinned: { type: Boolean, default: false },
+    whatsappAccountPinnedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    whatsappAccountPinnedAt: { type: Date, default: null },
     // Asignación
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     assignedToName: { type: String, trim: true },
@@ -210,5 +223,11 @@ conversationSchema.index({ clinic: 1, lastMessageAt: -1 });
 // "libres + asignados a mí" y mantener el orden por actividad.
 conversationSchema.index({ clinic: 1, assignedTo: 1, lastMessageAt: -1 });
 conversationSchema.index({ clinic: 1, workflowRestrictionActive: 1, workflowRestrictedTo: 1, lastMessageAt: -1 });
+// Filtro «¿qué chats entraron por este número?» de la bandeja: sin índice, elegir
+// un número en el desplegable escanearía la colección entera de conversaciones.
+// Hacen falta LOS DOS: el filtro busca por el número del último entrante y también
+// por el enlazado (los chats anteriores a `lastInboundAccount` solo tienen ese).
+conversationSchema.index({ clinic: 1, lastInboundAccount: 1, lastMessageAt: -1 });
+conversationSchema.index({ clinic: 1, whatsappAccount: 1, lastMessageAt: -1 });
 
 module.exports = mongoose.model('Conversation', conversationSchema);
