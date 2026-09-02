@@ -471,12 +471,15 @@ const FLUOROSIS_KEYS = FLUOROSIS.map((c) => c.key);
  * `x`/`y` son porcentajes del lienzo, en la posición del pentágono clásico:
  * Fuego arriba, Madera y Tierra a media altura, Agua y Metal abajo.
  */
+// Espejo del catálogo del cliente. El lienzo es 141×100 desde sep-2026 (ver
+// CincoElementos.jsx): aquí `x`/`y` no se usan —el PDF sale en texto— pero las
+// dos copias se mantienen idénticas a propósito.
 const TERAPIA_ELEMENTOS = [
-  { key: 'fuego',  label: 'Fuego',  letra: 'F', color: '#dc2626', texto: '#ffffff', x: 50, y: 12 },
-  { key: 'tierra', label: 'Tierra', letra: 'T', color: '#eab308', texto: '#1f2937', x: 86, y: 42 },
-  { key: 'metal',  label: 'Metal',  letra: 'M', color: '#ffffff', texto: '#1f2937', x: 72, y: 85 },
-  { key: 'agua',   label: 'Agua',   letra: 'A', color: '#111827', texto: '#ffffff', x: 28, y: 85 },
-  { key: 'madera', label: 'Madera', letra: 'M', color: '#16a34a', texto: '#ffffff', x: 14, y: 42 },
+  { key: 'fuego',  label: 'Fuego',  letra: 'F', color: '#dc2626', texto: '#ffffff', x: 50,   y: 12 },
+  { key: 'tierra', label: 'Tierra', letra: 'T', color: '#eab308', texto: '#1f2937', x: 75.5, y: 42 },
+  { key: 'metal',  label: 'Metal',  letra: 'M', color: '#ffffff', texto: '#1f2937', x: 65.5, y: 81 },
+  { key: 'agua',   label: 'Agua',   letra: 'A', color: '#111827', texto: '#ffffff', x: 34.5, y: 81 },
+  { key: 'madera', label: 'Madera', letra: 'M', color: '#16a34a', texto: '#ffffff', x: 24.5, y: 42 },
 ];
 
 const TERAPIA_ELEMENTOS_KEYS = TERAPIA_ELEMENTOS.map((e) => e.key);
@@ -504,9 +507,13 @@ const TERAPIA_CICLO_CONTROL = [
  * Los cuatro cuadrantes del plan terapéutico. Se lee como un FODA: el cuadro del
  * paciente repartido en cuatro, y debajo el plan escrito que sale de ese reparto.
  */
+// Los rótulos se renombraron (sep-2026): «Desagüe» pasó a «Desequilibrio» y
+// «Apreciación» a «Deficiencias». Las CLAVES se quedan como estaban a propósito:
+// son las que hay guardadas en las consultas de todos estos meses y renombrarlas
+// dejaría en blanco lo ya escrito.
 const TERAPIA_FODA = [
-  { key: 'desague', label: 'Desagüe' },
-  { key: 'apreciacion', label: 'Apreciación' },
+  { key: 'desague', label: 'Desequilibrio' },
+  { key: 'apreciacion', label: 'Deficiencias' },
   { key: 'toxinas', label: 'Toxinas' },
   { key: 'bioRegeneracion', label: 'Bio-Regeneración' },
 ];
@@ -531,6 +538,33 @@ const TERAPIA_HABITOS_FILAS_KEYS = TERAPIA_HABITOS_FILAS.map((f) => f.key);
 // Los niveles son EXCLUYENTES: marcar el 2 desmarca el 1. Es una escala, no tres
 // casillas sueltas.
 const TERAPIA_HABITOS_NIVELES = ['1', '2', '3'];
+
+/**
+ * RÓTULOS DE LA RECETA, que no son los mismos para todos.
+ *
+ * El terapeuta no receta fármacos: manda suplementos, productos naturales y
+ * homeopáticos, y en vez de «recomendaciones no farmacológicas» lo que entrega
+ * es un acompañamiento para cambiar hábitos. El dato guardado es el mismo; lo
+ * que cambia es cómo se llama en su pantalla y en sus impresos.
+ *
+ * Espejo de `client/src/constants/specialtyCatalogs.js`: la pantalla y el PDF
+ * tienen que decir exactamente lo mismo.
+ */
+const RECETA_ETIQUETAS = {
+  general: {
+    item: 'Medicamento / Insumo',
+    ayuda: 'medicamentos e insumos indicados',
+    consejos: 'Recomendaciones no farmacológicas',
+  },
+  terapeuta: {
+    item: 'Suplemento / Natural / Homeopático',
+    ayuda: 'suplementos, naturales u homeopáticos indicados',
+    consejos: 'Coaching de cambio de hábitos',
+  },
+};
+
+const recetaEtiquetas = (esTerapeuta) =>
+  esTerapeuta ? RECETA_ETIQUETAS.terapeuta : RECETA_ETIQUETAS.general;
 
 module.exports = {
   CARDIOLOGIA_ANTECEDENTES,
@@ -598,4 +632,6 @@ module.exports = {
   TERAPIA_HABITOS_FILAS,
   TERAPIA_HABITOS_FILAS_KEYS,
   TERAPIA_HABITOS_NIVELES,
+  RECETA_ETIQUETAS,
+  recetaEtiquetas,
 };

@@ -28,6 +28,8 @@ import {
 import BulkUploadModal from '../components/BulkUploadModal';
 import DateInput from '../components/DateInput';
 import ServiceItemPicker from '../components/ServiceItemPicker';
+import TimeSlotInput from '../components/TimeSlotInput';
+import AppointmentValueFields from '../components/AppointmentValueFields';
 
 const emptyForm = {
   cedula: '',
@@ -54,6 +56,13 @@ const emptyApt = {
   reason: '',
   // Servicio del catálogo propio de la agenda: { _id, name } o null.
   serviceItem: null,
+  /**
+   * Valor acordado y canje, igual que en la agenda: esta cita se agenda desde
+   * mostrador y ahí es donde se sabe lo que va a pagar el paciente. Solo lo ve
+   * —y solo lo acepta el servidor a— admin y caja.
+   */
+  agreedValue: '',
+  isCanje: false,
   // Atención inmediata: en vez de agendar para más tarde, se abre la consulta
   // ya, asignada a quien está registrando al paciente.
   ahora: false,
@@ -73,6 +82,12 @@ export default function Patients() {
   const canWrite = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica');
   // Quien atiende puede además abrir la consulta en el momento de registrarlo.
   const puedeAtenderYa = hasRole('doctor', 'optica');
+  /**
+   * El VALOR de la cita es de mostrador (misma regla que en la agenda: ver
+   * `puedeFijarValor` en appointmentController). A quien atiende ni se le
+   * enseña el campo, y el servidor tampoco se lo aceptaría.
+   */
+  const puedeFijarValor = hasRole('admin', 'cajero');
   // Cédula, correo, teléfono, WhatsApp y dirección son solo del administrador: al
   // resto el servidor ni se los envía (ver CONTACT_FIELDS en patientController).
   const showContact = hasRole('admin');
@@ -114,6 +129,19 @@ export default function Patients() {
   const [aptForm, setAptForm] = useState(emptyApt);
   const [dayApts, setDayApts] = useState([]);
   const [loadingApts, setLoadingApts] = useState(false);
+  /**
+   * ESPACIOS de la agenda de la sucursal DESTINO (Configuración → Agenda).
+   *
+   * Aquí se agenda igual que en la página de Citas, y allí la hora va por
+   * tramos. Con un `<input type="time">` suelto se podía teclear las 18:37, y
+   * el servidor —que valida lo mismo— devolvía SLOT_INVALID después de haber
+   * creado ya el paciente: se quedaba registrado y sin cita.
+   */
+  const slotMinutes =
+    Number(
+      (clinics || []).find((c) => String(c._id) === String(aptForm.clinic || activeClinic?._id))
+        ?.appointmentSlotMinutes ?? activeClinic?.appointmentSlotMinutes
+    ) || 0;
 
   useEffect(() => {
     if (!aptForm.enabled || !aptForm.date) { setDayApts([]); return; }
@@ -242,6 +270,12 @@ export default function Patients() {
             reason: aptForm.reason,
             status: 'pendiente',
             serviceItem: aptForm.serviceItem?._id || null,
+            // Valor acordado. Solo se manda si este rol puede fijarlo; el
+            // servidor lo comprueba otra vez (`puedeFijarValor`). Vacío = «no
+            // lo anotaron», que no es lo mismo que cero.
+            ...(puedeFijarValor
+              ? { agreedValue: aptForm.isCanje ? 0 : aptForm.agreedValue, isCanje: aptForm.isCanje }
+              : {}),
           });
           toast.success('Cita agendada');
         } catch (err) {
@@ -702,9 +736,11 @@ export default function Patients() {
                       />
                     </Field>
                     <Field label="Hora" required>
-                      <input
-                        type="time"
+                      {/* Por tramos, como en la agenda: los espacios los fija
+                          la sucursal y el servidor los valida igual. */}
+                      <TimeSlotInput
                         value={aptForm.startTime}
+                        slotMinutes={slotMinutes}
                         min={aptForm.date === todayEc() ? nowEcHHMM() : undefined}
                         onChange={(e) => setAptForm({ ...aptForm, startTime: e.target.value })}
                         className="input"
@@ -725,6 +761,17 @@ export default function Patients() {
                       className="input resize-none"
                     />
                   </Field>
+                  {/* Valor y canje: el mismo bloque que usa la agenda al recibir
+                      al paciente. En «atender ahora» no se pide —esa cita la abre
+                      quien atiende, que no fija importes—. */}
+                  {puedeFijarValor && !aptForm.ahora && (
+                    <AppointmentValueFields
+                      value={aptForm.agreedValue}
+                      onValueChange={(v) => setAptForm((f) => ({ ...f, agreedValue: v }))}
+                      isCanje={aptForm.isCanje}
+                      onCanjeChange={(v) => setAptForm((f) => ({ ...f, isCanje: v }))}
+                    />
+                  )}
                   {aptForm.date && !aptForm.ahora && (
                     <div className="bg-white rounded-lg border border-emerald-100 p-2">
                       <p className="text-xs font-medium text-slate-600 mb-1">

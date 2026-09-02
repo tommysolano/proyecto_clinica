@@ -34,6 +34,7 @@ import {
   TERAPIA_FODA_KEYS,
   TERAPIA_HABITOS_FILAS,
   TERAPIA_HABITOS_NIVELES,
+  recetaEtiquetas,
   PODOLOGIA_HALLAZGOS,
   PODOLOGIA_EVALUACION,
   PODOLOGIA_HALLAZGOS_GENERALES,
@@ -85,6 +86,7 @@ import {
   HiOutlineChatBubbleLeftRight,
   HiOutlinePaperClip,
   HiOutlineXMark,
+  HiOutlineSparkles,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import AttachmentPreviewModal from '../components/AttachmentPreviewModal';
@@ -111,6 +113,13 @@ const TABS = [
   { id: 'datos', label: 'Datos', icon: HiOutlineUser },
   { id: 'ficha', label: 'Ficha clínica', icon: HiOutlineClipboardDocumentList },
   { id: 'seguimientos', label: 'Seguimientos', icon: HiOutlineHeart },
+  /**
+   * TERAPIAS COMPLEMENTARIAS: solo para el terapeuta (y la administración, que
+   * ve todo lo suyo). Va pegada a Seguimientos porque es la otra mitad de su
+   * consulta. Está VACÍA a propósito: la pestaña se abrió primero y el
+   * contenido lo define la clínica — ver `TerapiasComplementariasTab`.
+   */
+  { id: 'terapias', label: 'Terapias complementarias', icon: HiOutlineSparkles },
   /**
    * ARCHIVOS: estudios que se resuelven subiendo el archivo.
    *
@@ -265,6 +274,9 @@ export default function PatientDetail() {
   const soloAtiende = hasRole('doctor', 'enfermero') && !hasRole('admin');
   const visibleTabs = TABS.filter((t) => {
     if (t.id === 'facturas') return hasRole('admin', 'cajero', 'contabilidad');
+    // Las terapias complementarias son del terapeuta. El administrador también
+    // las ve, como ve su ficha y sus consultas.
+    if (t.id === 'terapias') return hasRole('terapeuta', 'admin');
     if (t.id === 'citas' || t.id === 'observaciones') return !soloAtiende;
     return true;
   });
@@ -391,6 +403,7 @@ export default function PatientDetail() {
               </>
             ))}
           {tabActiva === 'seguimientos' && <SeguimientosTab patientId={id} appointmentId={appointmentId} />}
+          {tabActiva === 'terapias' && <TerapiasComplementariasTab />}
           {tabActiva === 'archivos' && <ArchivosTab patientId={id} appointmentId={appointmentId} />}
           {tabActiva === 'citas' && <CitasTab patientId={id} />}
           {tabActiva === 'observaciones' && <ObservacionesTab patientId={id} />}
@@ -623,7 +636,7 @@ function FichaTerapiaTab({ patientId }) {
         <div>
           <h3 className="font-semibold text-slate-800">Hábitos</h3>
           <p className="text-xs text-slate-400">
-            Marque el nivel de cada uno (1, 2 o 3 — solo uno) y anote lo del día a día.
+            Marque el nivel de cada uno (1, 2 o 3 — solo uno) y anote con qué frecuencia.
           </p>
         </div>
         <div className="overflow-x-auto">
@@ -634,7 +647,10 @@ function FichaTerapiaTab({ patientId }) {
                 {TERAPIA_HABITOS_NIVELES.map((n) => (
                   <th key={n} className="border border-slate-200 px-3 py-2 font-semibold w-16">{n}</th>
                 ))}
-                <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Diario</th>
+                {/* La columna se llama FRECUENCIA (antes «Diario»). El campo
+                    guardado sigue siendo `diario`: renombrarlo habría dejado en
+                    blanco lo escrito en las fichas ya llenas. */}
+                <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Frecuencia</th>
               </tr>
             </thead>
             <tbody>
@@ -689,6 +705,27 @@ function FichaTerapiaTab({ patientId }) {
         </button>
       </div>
       <FichaStyles />
+    </div>
+  );
+}
+
+/**
+ * TERAPIAS COMPLEMENTARIAS (rol terapeuta).
+ *
+ * La pestaña existe, el contenido todavía no: se abrió a petición de la clínica
+ * para tenerla en su sitio —junto a Seguimientos, que es donde el terapeuta
+ * trabaja— y lo que va dentro se define aparte. Se deja dicho en pantalla para
+ * que nadie la lea como una pestaña rota.
+ */
+function TerapiasComplementariasTab() {
+  return (
+    <div className="max-w-xl mx-auto text-center py-10 space-y-2">
+      <HiOutlineSparkles className="w-10 h-10 mx-auto text-violet-300" />
+      <h3 className="font-semibold text-slate-800">Terapias complementarias</h3>
+      <p className="text-sm text-slate-500">
+        Este apartado está reservado para las terapias complementarias del paciente.
+        Todavía no tiene contenido: se definirá lo que va aquí.
+      </p>
     </div>
   );
 }
@@ -1161,8 +1198,12 @@ function DiagnosticosEditor({ value = [], onChange }) {
  * sin filas: borrar la última la deja en blanco en vez de hacer desaparecer la
  * tabla.
  */
-function ItemsTable({ variant, items, onAdd, onUpdate, onRemove, titulo, ayuda }) {
+function ItemsTable({ variant, items, onAdd, onUpdate, onRemove, titulo, ayuda, etiquetas }) {
   const isReceta = variant === 'receta';
+  // Cómo se llama la primera columna de la receta. El terapeuta no receta
+  // fármacos —manda suplementos, naturales y homeopáticos— y en su pantalla
+  // tiene que poner eso. El dato guardado es el mismo (ver RECETA_ETIQUETAS).
+  const rotulos = etiquetas || recetaEtiquetas(false);
   // El rótulo se puede sobreescribir: la misma tabla es la «Receta» del doctor y
   // el «Qué se aplicó» del enfermero, que no receta nada — anota lo que puso.
   const label = titulo || (isReceta ? 'Receta' : 'Derivaciones');
@@ -1178,7 +1219,7 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove, titulo, ayuda }
    */
   const [selectorFila, setSelectorFila] = useState(null);
   const hint = ayuda || (isReceta
-    ? 'medicamentos e insumos indicados'
+    ? rotulos.ayuda
     : 'servicios o programas a los que se deriva');
 
   // Columnas por variante. En Derivaciones manda el orden de trabajo: cuántas
@@ -1192,7 +1233,7 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove, titulo, ayuda }
   // las de suero.
   const columnas = isReceta
     ? [
-        { key: 'name', label: 'Medicamento / Insumo', placeholder: 'Paracetamol 500 mg', ancho: 'min-w-[200px]' },
+        { key: 'name', label: rotulos.item, placeholder: 'Paracetamol 500 mg', ancho: 'min-w-[200px]' },
         { key: 'quantity', label: 'Cant.', numero: true, ancho: 'w-16' },
         { key: 'dose', label: 'Dosis', placeholder: '1 tableta' },
         { key: 'frequency', label: 'Frecuencia', placeholder: 'c/8 h' },
@@ -1589,6 +1630,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
    * para llegar a los tres suyos — la misma decisión que se tomó con enfermería.
    */
   const isTerapeuta = hasRole('terapeuta');
+  // Cómo se llaman la receta y las recomendaciones en ESTA consulta.
+  const etiquetasReceta = recetaEtiquetas(isTerapeuta);
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
 
   /**
@@ -1734,6 +1777,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
   });
   const emptyTerapia = () => ({
     elementos: [],
+    // Las flechas del esquema las dibuja el terapeuta: el lienzo nace limpio.
+    flechas: [],
     foda: Object.fromEntries(TERAPIA_FODA_KEYS.map((k) => [k, ''])),
     plan: '',
   });
@@ -2866,6 +2911,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
           variant="receta"
           titulo={esConsultaMedica ? undefined : 'Qué se aplicó'}
           ayuda={esConsultaMedica ? undefined : 'marca «suero» para anotar el cloruro y las ampollas que entraron'}
+          etiquetas={etiquetasReceta}
           items={form.recetaItems}
           onAdd={() => addRow('recetaItems')}
           onUpdate={(idx, key, val) => updateRow('recetaItems', idx, key, val)}
@@ -2889,8 +2935,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
 
         {/* Lo que el paciente tiene que hacer por su cuenta, sin receta de por
             medio. Campo aparte del plan a propósito: se le explica y se le
-            entrega distinto, y mezclado con los fármacos se perdía. */}
-        <Field label="Recomendaciones no farmacológicas" className="md:col-span-3">
+            entrega distinto, y mezclado con los fármacos se perdía.
+            En la consulta del terapeuta esto es el «coaching de cambio de
+            hábitos» — mismo campo, otro nombre (ver RECETA_ETIQUETAS). */}
+        <Field label={etiquetasReceta.consejos} className="md:col-span-3">
           <textarea
             rows={2}
             value={form.recomendacionesNoFarmacologicas}
@@ -3300,7 +3348,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     )}
                     {fu.recomendacionesNoFarmacologicas && (
                       <div className="mt-2 text-xs text-slate-600 whitespace-pre-wrap">
-                        <b>Recomendaciones no farmacológicas:</b> {fu.recomendacionesNoFarmacologicas}
+                        {/* El rótulo lo manda el rol con el que se ESCRIBIÓ la
+                            consulta, no quien la está leyendo: lo del terapeuta
+                            se llama igual lo abra él o lo abra el administrador. */}
+                        <b>{recetaEtiquetas(fu.createdByRole === 'terapeuta').consejos}:</b> {fu.recomendacionesNoFarmacologicas}
                       </div>
                     )}
                     {fu.evolucion && (
@@ -5116,6 +5167,9 @@ function terapiaHasData(t) {
   if (!t) return false;
   return (
     (t.elementos || []).some((e) => String(e?.texto || '').trim())
+    // Un esquema con flechas y sin una sola nota SÍ es una consulta: las
+    // relaciones que dibujó son el hallazgo.
+    || (t.flechas || []).length > 0
     || TERAPIA_FODA_KEYS.some((k) => String(t.foda?.[k] || '').trim())
     || String(t.plan || '').trim()
   );
@@ -5178,10 +5232,13 @@ function TerapiaSummary({ value }) {
   if (!terapiaHasData(t)) return null;
   const conTexto = (t.elementos || []).filter((e) => String(e.texto || '').trim());
   const cuadrantes = TERAPIA_FODA.filter((c) => String(t.foda?.[c.key] || '').trim());
+  // El gráfico se pinta si hay algo QUE PINTAR: notas en los elementos o
+  // flechas dibujadas. Con solo flechas también, que es media consulta.
+  const hayGrafico = conTexto.length > 0 || (t.flechas || []).length > 0;
 
   return (
     <SpecialtySummary title="Terapia" tone="violet">
-      {conTexto.length > 0 && (
+      {hayGrafico && (
         <span className="w-full">
           {/* En lectura se pinta el MISMO gráfico: quien escribió la hoja tiene
               que reconocerla, no leer un resumen que no se le parece. */}

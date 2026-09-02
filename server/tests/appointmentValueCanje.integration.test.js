@@ -225,3 +225,67 @@ test('un valor negativo no se guarda', async () => {
   const enBase = await Appointment.findById(apt._id);
   assert.equal(enBase.agreedValue, null);
 });
+
+/**
+ * AGENDAR CON VALOR DESDE EL ALTA DEL PACIENTE.
+ *
+ * Pacientes → «Agendar cita para este paciente» ahora pide el importe y el
+ * canje, como la agenda. Eso hace que el valor llegue en el POST de creación,
+ * y ahí el cuerpo se volcaba entero en la cita: cualquiera podía mandarlo.
+ */
+test('al crear la cita, caja puede dejar anotado el valor', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await Patient.create({ clinic: clinicId, firstName: 'Ana', lastName: 'P' });
+
+  const r = await H.runController(
+    appt.createAppointment,
+    H.mockReq(
+      clinicId, userId,
+      { patient: patient._id, date: ymd(new Date(Date.now() + 86400000)), startTime: '09:00', agreedValue: 30 },
+      { role: 'cajero' }
+    )
+  );
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  const enBase = await Appointment.findById(r.payload._id);
+  assert.equal(enBase.agreedValue, 30);
+  assert.ok(enBase.valueSetBy, 'queda registrado quién lo puso');
+});
+
+test('al crear la cita, el canje deja el importe en 0 aunque venga uno', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await Patient.create({ clinic: clinicId, firstName: 'Ana', lastName: 'P' });
+
+  const r = await H.runController(
+    appt.createAppointment,
+    H.mockReq(
+      clinicId, userId,
+      { patient: patient._id, date: ymd(new Date(Date.now() + 86400000)), startTime: '09:00', agreedValue: 30, isCanje: true },
+      { role: 'admin' }
+    )
+  );
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  const enBase = await Appointment.findById(r.payload._id);
+  assert.equal(enBase.isCanje, true);
+  assert.equal(enBase.agreedValue, 0);
+});
+
+test('quien atiende NO puede colar el valor al crear la cita', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await Patient.create({ clinic: clinicId, firstName: 'Ana', lastName: 'P' });
+
+  const r = await H.runController(
+    appt.createAppointment,
+    H.mockReq(
+      clinicId, userId,
+      { patient: patient._id, date: ymd(new Date(Date.now() + 86400000)), startTime: '09:00', agreedValue: 99, isCanje: true },
+      { role: 'doctor' }
+    )
+  );
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  const enBase = await Appointment.findById(r.payload._id);
+  assert.equal(enBase.agreedValue, null, 'el importe se ignora: no es decisión suya');
+  assert.equal(enBase.isCanje, false);
+});

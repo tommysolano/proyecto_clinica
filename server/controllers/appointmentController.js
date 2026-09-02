@@ -522,6 +522,21 @@ exports.createAppointment = async (req, res) => {
 
     // Normalizar ObjectId opcionales: convertir "" a undefined para evitar CastError
     const cleanBody = { ...req.body };
+    /**
+     * EL VALOR NO ENTRA POR EL CUERPO A PELO.
+     *
+     * `cleanBody` se vuelca entero en el `create`, así que un `agreedValue` en
+     * el JSON se guardaba sin pasar por la guardia de mostrador y sin dejar
+     * quién lo puso. Se quita de ahí y se aplica por la misma puerta que usan
+     * asignar atención, marcar asistencia y corregirlo después: un canje deja
+     * el importe en 0 y cualquier rol que no sea admin/caja se queda fuera.
+     *
+     * Se agenda con valor desde el alta del paciente (Pacientes → «Agendar cita
+     * para este paciente»), que es mostrador registrando a quien tiene delante.
+     */
+    for (const k of ['agreedValue', 'isCanje', 'valueSetAt', 'valueSetBy']) delete cleanBody[k];
+    const valorCita = {};
+    aplicarValorDeCita(valorCita, req.body, req);
     if (cleanBody.doctor === '') delete cleanBody.doctor;
     if (cleanBody.room === '') delete cleanBody.room;
     if (cleanBody.referral === '') delete cleanBody.referral;
@@ -531,6 +546,7 @@ exports.createAppointment = async (req, res) => {
 
     const appointment = await Appointment.create({
       ...cleanBody,
+      ...valorCita,
       date: localDate,
       services: servicesSnapshot,
       serviceItem: servicioAgenda?._id || null,

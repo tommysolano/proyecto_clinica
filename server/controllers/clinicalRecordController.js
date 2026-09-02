@@ -46,6 +46,7 @@ const {
   ENFERMEDAD_PERIODONTAL_KEYS,
   MALOCLUSION_KEYS,
   FLUOROSIS_KEYS,
+  recetaEtiquetas,
 } = require('../constants/specialtyCatalogs');
 const {
   SCORE_MAMA_NUMERICOS_KEYS,
@@ -713,6 +714,12 @@ const sanitizeScoreMama = (sm) => {
 // no cuadra se descarta en silencio en vez de romper la validación de mongoose.
 const txt = (v) => String(v ?? '').trim();
 const pick = (v, options) => (options.includes(v) ? v : '');
+// null si no es un número de verdad ('' , 'abc', NaN, Infinity). El que llama
+// decide si eso descarta el dato entero o solo ese campo.
+const num = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
 const checksIn = (arr, allowedKeys) =>
   sanitizeChecks(arr).filter((c) => allowedKeys.includes(c.key));
 
@@ -800,6 +807,16 @@ const sanitizeTerapia = (t) => {
     elementos: (Array.isArray(t.elementos) ? t.elementos : [])
       .filter((e) => e && TERAPIA_ELEMENTOS_KEYS.includes(e.key) && txt(e.texto))
       .map((e) => ({ key: e.key, texto: txt(e.texto) })),
+    // Las flechas que dibujó él sobre el esquema. Coordenadas del lienzo
+    // (141 × 100): se aceptan con holgura porque un trazo puede salirse un
+    // poco del borde, pero no cualquier número — esto se vuelve a pintar.
+    flechas: (Array.isArray(t.flechas) ? t.flechas : [])
+      .map((f) => ({
+        x1: num(f?.x1), y1: num(f?.y1), x2: num(f?.x2), y2: num(f?.y2),
+        tipo: f?.tipo === 'apoyo' ? 'apoyo' : 'control',
+      }))
+      .filter((f) => [f.x1, f.y1, f.x2, f.y2].every((n) => n !== null && n >= -50 && n <= 200))
+      .slice(0, 60),
     foda: cuadrantes,
     plan: txt(t.plan),
   };
@@ -2093,6 +2110,10 @@ exports.printFollowUp = async (req, res) => {
     // Quien firma es EL AUTOR de la consulta, no quien pulsa imprimir: la receta
     // es del médico que atendió, aunque el PDF lo saque recepción.
     const autor = fu.createdBy || null;
+    // Y por lo mismo, los rótulos salen del rol CON EL QUE SE ESCRIBIÓ: la hoja
+    // del terapeuta dice «Suplemento / Natural / Homeopático» y «Coaching de
+    // cambio de hábitos» la imprima quien la imprima.
+    const rotulos = recetaEtiquetas(esDelTerapeuta(fu));
 
     // Fecha en dd/mm/aaaa. Ver `fechaDocumento`: el día se lee en UTC porque
     // guardado como medianoche UTC, en Ecuador sería el día anterior.
@@ -2208,7 +2229,7 @@ exports.printFollowUp = async (req, res) => {
 
   ${recetaRows ? `<div class="label" style="margin-top:8px">Receta</div>
     <table><thead><tr>
-      <th>Medicamento / Insumo</th>
+      <th>${escHtml(rotulos.item)}</th>
       <th style="text-align:center">Cant.</th>
       <th>Dosis</th>
       <th>Frecuencia</th>
@@ -2225,7 +2246,7 @@ exports.printFollowUp = async (req, res) => {
 
   ${fu.receta ? `<div class="box" style="margin-top:10px"><div class="label">Receta (notas adicionales)</div><div style="white-space:pre-wrap">${fu.receta}</div></div>` : ''}
 
-  ${fu.recomendacionesNoFarmacologicas ? `<div class="box"><div class="label">Recomendaciones no farmacológicas</div><div style="white-space:pre-wrap">${escHtml(fu.recomendacionesNoFarmacologicas)}</div></div>` : ''}
+  ${fu.recomendacionesNoFarmacologicas ? `<div class="box"><div class="label">${escHtml(rotulos.consejos)}</div><div style="white-space:pre-wrap">${escHtml(fu.recomendacionesNoFarmacologicas)}</div></div>` : ''}
 
   <!-- La RX óptica sí: para el óptico, la graduación ES la receta. -->
   ${opticaHtml}
@@ -2350,8 +2371,11 @@ exports.printMspForm = async (req, res) => {
     // Receta / derivaciones (parte del plan de tratamiento).
     const recetaItems = (fu.recetaItems || []).filter((it) => !it.isService);
     const derivItems = (fu.recetaItems || []).filter((it) => it.isService);
+    // El terapeuta no llena esta hoja (la suya no es la MSP), pero si alguien la
+    // imprime desde su consulta, la columna tiene que decir lo que él receta.
+    const rotulos = recetaEtiquetas(esDelTerapeuta(fu));
     const recetaHtml = recetaItems.length
-      ? `<div class="sub">Receta</div><table class="grid"><tr><th>Medicamento / Insumo</th><th>Cant.</th><th>Dosis</th><th>Frecuencia</th><th>Duración</th><th>Indicaciones</th></tr>${recetaItems
+      ? `<div class="sub">Receta</div><table class="grid"><tr><th>${esc(rotulos.item)}</th><th>Cant.</th><th>Dosis</th><th>Frecuencia</th><th>Duración</th><th>Indicaciones</th></tr>${recetaItems
           .map((it) => {
             const fila = `<tr><td>${val(it.name)}</td><td class="c">${it.quantity || 1}</td><td>${val(it.dose)}</td><td>${val(it.frequency)}</td><td>${val(it.duration)}</td><td>${val(it.instructions)}</td></tr>`;
             // La preparación del suero va en su propia fila a todo el ancho: es

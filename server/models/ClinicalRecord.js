@@ -477,6 +477,28 @@ const followUpSchema = new mongoose.Schema(
         )],
         default: [],
       },
+      /**
+       * Las FLECHAS que dibujó el terapeuta sobre el esquema, en unidades del
+       * lienzo (141 × 100, ver `CincoElementos.jsx`).
+       *
+       * Antes las dos ruedas clásicas se pintaban solas e iguales en todas las
+       * consultas; ahora el lienzo nace limpio y cada uno traza las relaciones
+       * de SU paciente, así que hay que guardarlas. `tipo` es cuál de los dos
+       * ciclos: 'apoyo' (gris) o 'control' (negra).
+       */
+      flechas: {
+        type: [new mongoose.Schema(
+          {
+            x1: { type: Number, required: true },
+            y1: { type: Number, required: true },
+            x2: { type: Number, required: true },
+            y2: { type: Number, required: true },
+            tipo: { type: String, enum: ['apoyo', 'control'], default: 'control' },
+          },
+          { _id: false }
+        )],
+        default: [],
+      },
       // Los cuatro cuadrantes del plan (ver TERAPIA_FODA).
       foda: {
         desague: { type: String, trim: true, default: '' },
