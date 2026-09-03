@@ -73,7 +73,10 @@ exports.getClinics = async (req, res) => {
       if (!req.user.isSuperAdmin && !['admin', 'cajero'].includes(req.role)) {
         return res.status(403).json({ message: 'No tienes permisos para esta acción' });
       }
-      const todas = await Clinic.find({}, '_id name nombreComercial active').sort({ name: 1 });
+      const todas = await Clinic.find(
+        {},
+        '_id name nombreComercial active appointmentSlotMinutes'
+      ).sort({ name: 1 });
       return res.json(todas);
     }
     let clinics;

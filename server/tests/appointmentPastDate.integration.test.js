@@ -18,6 +18,7 @@ const Product = require('../models/Product');
 const Patient = require('../models/Patient');
 const Conversation = require('../models/Conversation');
 const Appointment = require('../models/Appointment');
+const Clinic = require('../models/Clinic');
 const { PAST_DATE_MESSAGE, PAST_TIME_MESSAGE } = require('../utils/appointmentDate');
 
 function ymd(d) {
@@ -73,6 +74,57 @@ test('createAppointment rechaza fecha de ayer y hora pasada de HOY; acepta hora 
 
   const okTomorrow = await H.runController(appt.createAppointment, H.mockReq(clinicId, userId, body(TOMORROW, '09:00')));
   assert.equal(okTomorrow.statusCode, 201, JSON.stringify(okTomorrow.payload));
+});
+
+test('caja agenda en otra sucursal y se respetan los espacios de la sucursal destino', async () => {
+  const activeClinic = await Clinic.create({ name: 'Sucursal activa' });
+  const targetClinic = await Clinic.create({
+    name: 'Sucursal destino',
+    appointmentSlotMinutes: 30,
+  });
+  const userId = new H.mongoose.Types.ObjectId();
+  const patient = await Patient.create({
+    clinic: activeClinic._id,
+    firstName: 'Ana',
+    lastName: 'P',
+  });
+  const body = (startTime) => ({
+    patient: patient._id,
+    clinic: targetClinic._id,
+    date: TOMORROW,
+    startTime,
+    agreedValue: 42,
+    isCanje: false,
+  });
+  const cashierRequest = (startTime) => {
+    const req = H.mockReq(activeClinic._id, userId, body(startTime), { role: 'cajero' });
+    // El cajero trabaja en una sola sede, pero agenda para toda la organización.
+    req.user.clinics = [{ clinic: activeClinic._id, role: 'cajero' }];
+    return req;
+  };
+
+  const invalidSlot = await H.runController(
+    appt.createAppointment,
+    cashierRequest('09:15')
+  );
+  assert.equal(invalidSlot.statusCode, 400, JSON.stringify(invalidSlot.payload));
+  assert.equal(invalidSlot.payload.code, 'SLOT_INVALID');
+
+  const created = await H.runController(
+    appt.createAppointment,
+    cashierRequest('09:30')
+  );
+  assert.equal(created.statusCode, 201, JSON.stringify(created.payload));
+  const stored = await Appointment.findById(created.payload._id);
+  assert.equal(String(stored.clinic), String(targetClinic._id));
+  assert.equal(stored.agreedValue, 42);
+
+  const callCenterReq = H.mockReq(activeClinic._id, userId, body('10:00'), {
+    role: 'call_center',
+  });
+  callCenterReq.user.clinics = [{ clinic: activeClinic._id, role: 'call_center' }];
+  const denied = await H.runController(appt.createAppointment, callCenterReq);
+  assert.equal(denied.statusCode, 403, JSON.stringify(denied.payload));
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

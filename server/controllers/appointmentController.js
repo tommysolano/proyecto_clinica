@@ -7,7 +7,7 @@ require('../models/AppointmentServiceItem');
 // Igual con el consultorio (ya no se pide al agendar, pero las citas viejas lo
 // tienen y el listado lo sigue poblando) y con la sucursal.
 require('../models/Room');
-require('../models/Clinic');
+const Clinic = require('../models/Clinic');
 const { emitToClinic, emitToUser, emitToRole } = require('../realtime');
 const {
   asignarTurnos,
@@ -44,7 +44,6 @@ const { isDoctorRole } = require('../constants/roles');
  * justo cuando lo acaba de hacer para probarlo.
  */
 async function slotMinutesDeClinica(clinicId) {
-  const Clinic = require('../models/Clinic');
   const c = await Clinic.findById(clinicId).select('appointmentSlotMinutes').lean();
   return Number(c?.appointmentSlotMinutes) || 0;
 }
@@ -367,17 +366,29 @@ exports.createAppointment = async (req, res) => {
       .map((s) => (typeof s === 'string' ? s : s?.product))
       .filter(Boolean);
 
-    // El call_center puede operar para cualquiera de las clínicas a las que tiene acceso.
-    // Si envía un `clinic` distinto al activo, validamos que sea una clínica donde tiene rol.
+    // Caja y administración agendan para cualquier sucursal de la organización,
+    // aunque su usuario esté asignado operativamente a una sola. Call center
+    // conserva el alcance de las sucursales que tiene asignadas.
     let targetClinicId = req.clinicId;
     if (req.body.clinic && String(req.body.clinic) !== String(req.clinicId)) {
       const allowedClinic = (req.user.clinics || []).find(
         (c) => String(c.clinic) === String(req.body.clinic)
       );
-      if (!allowedClinic && !req.user.isSuperAdmin) {
+      const canChooseOrganizationClinic =
+        req.user.isSuperAdmin || ['admin', 'cajero'].includes(req.role);
+      if (!allowedClinic && !canChooseOrganizationClinic) {
         return res
           .status(403)
           .json({ message: 'No tienes acceso a esa clínica para crear citas.' });
+      }
+      // El selector solo ofrece sedes activas, pero la API también protege la
+      // operación frente a un id manipulado o una sucursal dada de baja.
+      const targetClinic = await Clinic.findOne({
+        _id: req.body.clinic,
+        active: { $ne: false },
+      }).select('_id');
+      if (!targetClinic) {
+        return res.status(400).json({ message: 'La sucursal destino no existe o está inactiva.' });
       }
       targetClinicId = req.body.clinic;
     }
@@ -406,7 +417,7 @@ exports.createAppointment = async (req, res) => {
     // AQUÍ y no solo en la pantalla porque agendan tres sitios distintos: la
     // página de Citas, el chat del call center y la reserva pública.
     {
-      const paso = await slotMinutesDeClinica(req.clinicId);
+      const paso = await slotMinutesDeClinica(targetClinicId);
       if (!isValidSlotTime(startTime, paso)) {
         return res.status(400).json({ message: slotMessage(paso), code: 'SLOT_INVALID' });
       }

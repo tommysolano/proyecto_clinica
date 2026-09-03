@@ -9,6 +9,7 @@ import { inicioDeMiTurno } from '../utils/appointmentTurns';
 import SameSlotPanel from '../components/SameSlotPanel';
 import AssignAttentionModal from '../components/AssignAttentionModal';
 import AppointmentServiceValueModal from '../components/AppointmentServiceValueModal';
+import AppointmentValueFields from '../components/AppointmentValueFields';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
@@ -70,8 +71,11 @@ const emptyForm = {
   // Servicio del catálogo propio de la agenda: { _id, name } o null.
   serviceItem: null,
   clinic: '',
+  // Dato operativo de mostrador: no genera cobro ni factura.
+  agreedValue: '',
+  isCanje: false,
   // Citas adicionales para agendar en una sola operación (solo al crear).
-  // Cada entrada: { date, startTime, reason, services: [productId] }
+  // Cada entrada: { date, startTime, reason, serviceItem, agreedValue, isCanje }
   extraAppointments: [],
 };
 
@@ -206,8 +210,6 @@ const hhmmToMin = (s) => {
 export default function Appointments() {
   const navigate = useNavigate();
   const { user, role, hasRole, activeClinic, clinics } = useAuth();
-  // Espacios de la agenda de esta sucursal: 0 = cualquier hora (Configuración → Agenda).
-  const slotMinutes = Number(activeClinic?.appointmentSlotMinutes) || 0;
   const canWrite = hasRole('admin', 'cajero', 'call_center');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
   // 'optica' no se expande desde 'doctor' en el cliente, por eso va aparte.
@@ -217,8 +219,6 @@ export default function Appointments() {
   const isReception = hasRole('admin', 'cajero', 'enfermero');
   // Quién puede ejecutar el flujo asistir → cobrar → derivar (requiere cobrar).
   const canCharge = hasRole('admin', 'cajero');
-  // Mostrar selector de clínica si el usuario tiene más de una asignada
-  const showClinicSelector = (clinics?.length || 0) > 1;
 
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);
@@ -232,6 +232,21 @@ export default function Appointments() {
   const [detailModal, setDetailModal] = useState(null);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
+  // Para administración/caja contiene todas las sucursales de la organización;
+  // para los demás roles se conserva el alcance de sus asignaciones.
+  const [clinicasFiltro, setClinicasFiltro] = useState([]);
+  const appointmentClinics = (
+    canCharge && clinicasFiltro.length ? clinicasFiltro : (clinics || [])
+  ).filter((c) => c.active !== false);
+  const showClinicSelector = appointmentClinics.length > 1;
+  const destinationClinic = appointmentClinics.find(
+    (c) => String(c._id) === String(form.clinic || activeClinic?._id)
+  );
+  // Los espacios pertenecen a la sucursal DESTINO, no necesariamente a la que
+  // está activa en la sesión del cajero.
+  const slotMinutes = Number(
+    destinationClinic?.appointmentSlotMinutes ?? activeClinic?.appointmentSlotMinutes
+  ) || 0;
   const [saving, setSaving] = useState(false);
   // Modal para asignar doctor al marcar 'asistida'
   const [assignModal, setAssignModal] = useState(null); // { appointment }
@@ -374,7 +389,6 @@ export default function Appointments() {
    * —solo nombres, ver `scope=names` en clinicController—; el resto de roles se
    * queda con las suyas, como hasta ahora.
    */
-  const [clinicasFiltro, setClinicasFiltro] = useState([]);
   const fetchClinicasFiltro = async () => {
     if (!canCharge) { setClinicasFiltro(clinics || []); return; }
     try {
@@ -602,7 +616,7 @@ export default function Appointments() {
       serviceItem: apt.serviceItem
         ? { _id: apt.serviceItem._id || apt.serviceItem, name: apt.serviceItem.name || apt.serviceName || '' }
         : null,
-      clinic: apt.clinic || activeClinic?._id || '',
+      clinic: apt.clinic?._id || apt.clinic || activeClinic?._id || '',
     });
     setPatientSearch(
       apt.patient
@@ -626,6 +640,12 @@ export default function Appointments() {
         ...form,
         serviceItem: form.serviceItem?._id || null,
       };
+      // El servidor aplica la misma guardia; evitar mandar estos campos desde
+      // roles que no trabajan con valores de mostrador.
+      if (!canCharge) {
+        delete basePayload.agreedValue;
+        delete basePayload.isCanje;
+      }
       //  (inventario) ya no se manda: enviarlo vacío BORRARÍA los de
       // una cita antigua que se esté editando, y con ellos su cobro.
       delete basePayload.services;
@@ -648,6 +668,12 @@ export default function Appointments() {
             // Cada cita adicional puede llevar su propio servicio; si no se
             // eligió, hereda el de la principal.
             serviceItem: it.serviceItem?._id || basePayload.serviceItem || null,
+            ...(canCharge
+              ? {
+                  agreedValue: it.isCanje ? 0 : (it.agreedValue ?? ''),
+                  isCanje: !!it.isCanje,
+                }
+              : {}),
           };
           await api.post('/appointments', extraPayload);
         }
@@ -1569,7 +1595,8 @@ export default function Appointments() {
       >
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-5">
           <form onSubmit={handleSubmit} className="space-y-4 min-w-0">
-          {/* Selector de consultorio médico: visible para todos los roles con >1 clínica */}
+          {/* Caja y administración pueden escoger cualquier sucursal operativa de
+              la organización, aunque su usuario esté asignado a una sola. */}
           {showClinicSelector && (
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -1583,7 +1610,7 @@ export default function Appointments() {
                 className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
               >
                 <option value="">Seleccionar sucursal</option>
-                {clinics.map((c) => (
+                {appointmentClinics.map((c) => (
                   <option key={c._id} value={c._id}>
                     {c.nombreComercial || c.name}
                   </option>
@@ -1762,6 +1789,18 @@ export default function Appointments() {
             </p>
           </div>
 
+          {/* Al crear, caja registra el valor acordado con el paciente o si fue
+              canje, igual que en Pacientes → Agendar cita. Las correcciones de
+              citas existentes siguen usando su modal específico y auditado. */}
+          {!editing && canCharge && (
+            <AppointmentValueFields
+              value={form.agreedValue}
+              onValueChange={(value) => setForm((f) => ({ ...f, agreedValue: value }))}
+              isCanje={form.isCanje}
+              onCanjeChange={(isCanje) => setForm((f) => ({ ...f, isCanje }))}
+            />
+          )}
+
           {/* Citas adicionales: solo al crear (no al editar). */}
           {!editing && (
             <div className="space-y-2">
@@ -1821,13 +1860,34 @@ export default function Appointments() {
                       }))}
                     />
                   </div>
+                  {canCharge && (
+                    <AppointmentValueFields
+                      value={it.agreedValue ?? ''}
+                      onValueChange={(value) => setForm((f) => ({
+                        ...f,
+                        extraAppointments: f.extraAppointments.map((x, i) => (
+                          i === idx ? { ...x, agreedValue: value } : x
+                        )),
+                      }))}
+                      isCanje={!!it.isCanje}
+                      onCanjeChange={(isCanje) => setForm((f) => ({
+                        ...f,
+                        extraAppointments: f.extraAppointments.map((x, i) => (
+                          i === idx ? { ...x, isCanje } : x
+                        )),
+                      }))}
+                    />
+                  )}
                 </div>
               ))}
               <button
                 type="button"
                 onClick={() => setForm((f) => ({
                   ...f,
-                  extraAppointments: [...(f.extraAppointments || []), { date: '', startTime: '', reason: '', serviceItem: null }],
+                  extraAppointments: [...(f.extraAppointments || []), {
+                    date: '', startTime: '', reason: '', serviceItem: null,
+                    agreedValue: '', isCanje: false,
+                  }],
                 }))}
                 className="w-full text-xs py-2 rounded-lg border border-dashed border-emerald-300 text-emerald-700 bg-emerald-50/40 hover:bg-emerald-100 cursor-pointer"
               >
