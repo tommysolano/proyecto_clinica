@@ -214,3 +214,19 @@ test('R10) no se revisan fichas de otra sucursal', async () => {
 
   assert.equal(r.statusCode, 404);
 });
+
+test('R11) al revisar se resuelven los dos valores: se queda uno y el otro se retira', async () => {
+  // El paciente venía de Contífico con un teléfono y la ficha física decía otro.
+  // La revisión es justamente el acto de decidir; dejar el alterno después haría
+  // que la ficha del paciente siguiera enseñando los dos para siempre.
+  const { clinicId, userId, paciente } = await escenario();
+  paciente.phone = '0991112233';
+  paciente.scanImport.alternos = [{ campo: 'celular', valor: '0999999999' }];
+  await paciente.save();
+
+  await revisar(clinicId, userId, paciente._id, { phone: '0999999999' });
+
+  const p = await Patient.findById(paciente._id);
+  assert.equal(p.phone, '0999999999', 'gana el que eligió quien revisó');
+  assert.deepEqual(p.scanImport.alternos, [], 'y el otro deja de aparecer');
+});

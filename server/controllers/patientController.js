@@ -58,12 +58,31 @@ const wantsBillingContact = (req) =>
   ['1', 'true', 'yes'].includes(String(req.query?.withContact || '').toLowerCase()) &&
   canReq(req, 'patients.billingData');
 
+/**
+ * El campo del paciente al que corresponde cada valor alterno de la ficha física.
+ * Sin esto, censurar `phone` y dejar `scanImport.alternos` sería una puerta de
+ * atrás: ahí está el mismo teléfono, escrito por el paciente en el papel.
+ */
+const CAMPO_DE_ALTERNO = {
+  cedula: 'cedula', celular: 'phone', correo: 'email', direccion: 'address',
+};
+
 const stripContactData = (patient, req) => {
   const obj = patient.toObject ? patient.toObject() : { ...patient };
   CONTACT_FIELDS.forEach((f) => {
     if (canSeeContactField(req, f)) return;
     obj[f] = undefined;
   });
+  const alternos = obj.scanImport?.alternos;
+  if (Array.isArray(alternos) && alternos.length) {
+    obj.scanImport = {
+      ...obj.scanImport,
+      alternos: alternos.filter((a) => {
+        const campo = CAMPO_DE_ALTERNO[a?.campo];
+        return !campo || canSeeContactField(req, campo);
+      }),
+    };
+  }
   return obj;
 };
 

@@ -164,8 +164,15 @@ function ListaFichas({ lista, selId, onSelect }) {
   );
 }
 
-/** Un campo del formulario. Si se leyó con dudas, se resalta y se muestra el original. */
-function Campo({ label, name, value, onChange, duda, crudo, tipo = 'text' }) {
+/**
+ * Un campo del formulario. Si se leyó con dudas, se resalta y se muestra el original.
+ *
+ * `otros` son los valores que decía la FICHA FÍSICA y no coinciden con lo que el
+ * sistema ya tenía (`scanImport.alternos`). No se pisó ninguno de los dos: aquí
+ * se enseñan juntos y se adoptan de un clic, con el PDF al lado para decidir.
+ */
+function Campo({ label, name, value, onChange, duda, crudo, otros = [], tipo = 'text' }) {
+  const usar = (v) => onChange({ target: { name, value: v } });
   return (
     <label className="block">
       <span className={`block text-xs mb-1 ${duda ? 'text-amber-700 font-semibold' : 'text-slate-500'}`}>
@@ -187,9 +194,20 @@ function Campo({ label, name, value, onChange, duda, crudo, tipo = 'text' }) {
           onChange={onChange}
         />
       )}
-      {duda && crudo ? (
+      {otros.filter((o) => String(o.valor || '').trim() !== String(value || '').trim()).map((o, i) => (
+        <button
+          key={`${o.valor}-${i}`}
+          type="button"
+          onClick={() => usar(o.valor)}
+          title="Usar el valor de la ficha física"
+          className="block text-[11px] text-amber-700 mt-1 underline text-left bg-transparent border-0 p-0"
+        >
+          En la ficha física: «{o.valor}» — usar
+        </button>
+      ))}
+      {!otros.length && duda && crudo ? (
         <span className="block text-[11px] text-amber-700 mt-1">Se leyó: «{crudo}»</span>
-      ) : duda ? (
+      ) : !otros.length && duda ? (
         <span className="block text-[11px] text-amber-700 mt-1">No se pudo leer en la ficha.</span>
       ) : null}
     </label>
@@ -214,6 +232,8 @@ function Revisor({ paciente, onGuardado }) {
   const dudas = new Set(paciente.scanImport?.dudas || []);
   const crudo = paciente.scanImport?.crudo || {};
   const revisado = Boolean(paciente.scanImport?.revisadoAt);
+  /** Lo que decía el papel y no coincide con lo que ya tenía el paciente. */
+  const otros = (campo) => (paciente.scanImport?.alternos || []).filter((a) => a.campo === campo);
 
   // El PDF se pide como blob (la ruta va autenticada) y se libera al cambiar de
   // ficha: con más de cien documentos, no liberar deja la memoria por los suelos.
@@ -278,20 +298,20 @@ function Revisor({ paciente, onGuardado }) {
           <Campo label="Apellidos" name="lastName" value={form.lastName} onChange={cambiar}
             duda={dudas.has('apellidos')} crudo={crudo.apellidos} />
           <Campo label="Cédula" name="cedula" value={form.cedula} onChange={cambiar}
-            duda={dudas.has('cedula')} crudo={crudo.cedula} />
+            duda={dudas.has('cedula')} crudo={crudo.cedula} otros={otros('cedula')} />
           <Campo label="Edad" name="age" value={form.age} onChange={cambiar}
-            duda={dudas.has('edad')} crudo={crudo.edad} />
+            duda={dudas.has('edad')} crudo={crudo.edad} otros={otros('edad')} />
           <Campo label="Celular" name="phone" value={form.phone} onChange={cambiar}
-            duda={dudas.has('celular')} crudo={crudo.celular} />
+            duda={dudas.has('celular')} crudo={crudo.celular} otros={otros('celular')} />
           <Campo label="Fecha de la ficha" name="fecha" value={form.fecha} onChange={cambiar}
             duda={dudas.has('fecha')} crudo={crudo.fecha} tipo="fecha" />
           <div className="col-span-2">
             <Campo label="Correo" name="email" value={form.email} onChange={cambiar}
-              duda={dudas.has('correo')} crudo={crudo.correo} />
+              duda={dudas.has('correo')} crudo={crudo.correo} otros={otros('correo')} />
           </div>
           <div className="col-span-2">
             <Campo label="Dirección" name="address" value={form.address} onChange={cambiar}
-              duda={dudas.has('direccion')} crudo={crudo.direccion} />
+              duda={dudas.has('direccion')} crudo={crudo.direccion} otros={otros('direccion')} />
           </div>
         </div>
 

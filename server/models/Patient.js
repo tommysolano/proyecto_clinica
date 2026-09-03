@@ -75,6 +75,35 @@ const patientSchema = new mongoose.Schema(
       dudas: { type: [String], default: [] },
       // Lo que la IA leyó literalmente en los campos dudosos, para comparar con el PDF.
       crudo: { type: mongoose.Schema.Types.Mixed, default: null },
+      /**
+       * EL OTRO VALOR. Cuando la ficha física dice algo distinto de lo que ya
+       * tiene el paciente, NO se pisa el dato bueno… pero tampoco se tira lo que
+       * decía el papel: se guarda aquí y la ficha del paciente enseña los dos.
+       *
+       * Nace de la tanda de 6.000 fichas: el paciente ya existía (vino de
+       * Contífico, con la cédula tecleada por una persona) y la transcripción de
+       * la letra a mano difería en un carácter. Pisar habría degradado la base;
+       * descartar habría ocultado el papel. Así quien revisa decide, con el PDF
+       * al lado, cuál de los dos es el bueno.
+       *
+       * Es una LISTA porque un paciente puede tener varias fichas físicas, cada
+       * una con su lectura. Se guarda de qué escaneo salió cada valor para poder
+       * abrir ese PDF concreto.
+       */
+      alternos: {
+        type: [
+          {
+            _id: false,
+            // 'cedula' | 'celular' | 'correo' | 'direccion' | 'edad' | 'nombre'
+            campo: { type: String, required: true },
+            valor: { type: String, default: '' },
+            scan: { type: mongoose.Schema.Types.ObjectId, ref: 'ScannedDocument', default: null },
+            // Fecha escrita en esa ficha, para ordenar por antigüedad del papel.
+            fecha: { type: Date, default: null },
+          },
+        ],
+        default: [],
+      },
       revisadoAt: { type: Date, default: null },
       revisadoBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     },

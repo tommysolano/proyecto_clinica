@@ -242,6 +242,7 @@ if ! ( cd "$APP_DIR/server" && node scripts/importPatientsFromScans.js --datos=.
 fi
 # ─────────────────────────────────────────────────────────────────────────────────────
 
+
 # Vigente: reencolar las inscripciones que quedaron programadas para dispararse en pleno
 # horario de silencio (ago-2026, al invertir el significado de las ventanas horarias).
 if ! ( cd "$APP_DIR/server" && node scripts/rescheduleQuietWindowsOnce.js --commit ); then
@@ -326,5 +327,47 @@ if ! ( cd "$APP_DIR/server" && node scripts/backfillCurrentTurn.js --commit ); t
   echo "ADVERTENCIA: no se pudo rellenar el turno vigente de las citas. Reintenta a mano:"
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/backfillCurrentTurn.js --commit'"
 fi
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# Vigente: las FICHAS FISICAS escaneadas (sep-2026). DOS tandas, las dos EN SEGUNDO
+# PLANO — juntas son ~6.100 PDF que hay que despiezar y reescalar con Chromium, o sea
+# HORAS. Dejarlas en el camino del despliegue lo colgaria media tarde.
+#
+# Van al final y desatendidas a proposito: el backend YA se reinicio con el codigo
+# nuevo (paso 5/6), asi que la clinica trabaja normal mientras esto avanza por detras.
+# El `--once` guarda la marca en `onetimetasks`, asi que un segundo push no arranca una
+# importacion en paralelo ni repite lo hecho.
+#
+# Corren como el usuario `clinica`: los adjuntos que crean (storage/followups y
+# storage/observations) los tiene que poder leer y borrar el backend, que es suyo.
+#
+# QUE HACE con cada ficha (ver server/scripts/importPatientsFromScans.js):
+#   · reconoce al paciente que YA existe (vino de Contifico): cedula -> nombre+celular
+#     -> nombre+correo -> nombre;
+#   · le COMPLETA lo que tiene vacio (la edad sobre todo) y, lo que difiere, lo guarda
+#     como "el otro valor" SIN pisar el dato bueno;
+#   · le cuelga la ficha de registro en su primer seguimiento y las hojas de
+#     seguimiento en Observaciones;
+#   · le vincula su chat del CRM, para que el call center agende sin registrar a nadie.
+#
+# Para mirar como va:   tail -f /home/clinica/import-fichas.log
+# Para ver que haria sin escribir nada:
+#   sudo -iu clinica bash -lc 'cd /var/www/clinica/server && node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas-2026-08-31.json'
+LOG_FICHAS=/home/clinica/import-fichas.log
+# Primero las 113 de agosto, que quedaron con el PDF ENTERO en el seguimiento: se les
+# cambia el adjunto por la primera pagina y se les crea la observacion que faltaba.
+# Despues la tanda grande. En serie y en el mismo proceso de fondo: las dos abren un
+# Chromium y compiten por la memoria del droplet si van a la vez.
+CMD_FICHAS="cd $APP_DIR/server \
+  && node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas.json --key=convertir-fichas-escaneadas-2026-08-16-v2 --once --commit \
+  ; node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas-2026-08-31.json --key=importar-fichas-escaneadas-2026-09-03 --once --commit"
+if [ "$(id -un)" = "clinica" ]; then
+  nohup bash -lc "$CMD_FICHAS" >> "$LOG_FICHAS" 2>&1 &
+else
+  sudo -iu clinica bash -lc "nohup bash -lc '$CMD_FICHAS' >> $LOG_FICHAS 2>&1 &"
+fi
+echo "==> Fichas escaneadas: importando en segundo plano. Sigue el avance con:"
+echo "    tail -f $LOG_FICHAS"
+# ─────────────────────────────────────────────────────────────────────────────────────
 
 echo "==> Despliegue completado: $(date)"

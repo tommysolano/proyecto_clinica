@@ -191,9 +191,15 @@ function normalizarExtraccion(raw) {
     // Sin nombre no hay a quién registrar: se avisa aparte de las dudas de campo.
     utilizable: Boolean(nombres || apellidos),
     dudas: [...dudas],
+    // Lo que decía el papel, LITERAL. La pantalla de revisión lo enseña debajo
+    // de cada campo ("Se leyó: …") para poder contrastarlo con el PDF, así que
+    // van los ocho, no solo los que fallaron la validación: al fusionar con un
+    // paciente que ya existe, el dato que interesa comparar es justamente el que
+    // sí parecía correcto pero no coincide con el que ya había.
     crudo: {
-      fecha: txt(r.fecha), cedula: txt(r.cedula), edad: txt(r.edad),
-      celular: txt(r.celular), correo: correoBruto,
+      fecha: txt(r.fecha), nombres, apellidos,
+      cedula: txt(r.cedula), edad: txt(r.edad),
+      celular: txt(r.celular), correo: correoBruto, direccion: txt(r.direccion),
     },
   };
 }

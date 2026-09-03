@@ -437,13 +437,22 @@ function DatosTab({ patient }) {
     recepcion: 'Recepción',
     organico: 'Orgánico',
   };
+  /**
+   * Lo que decía la ficha física cuando NO coincide con lo que hay en el sistema.
+   *
+   * No se pisó ninguno de los dos: el del sistema lo tecleó una persona y el de la
+   * ficha se leyó de letra manuscrita, así que se enseñan ambos y decide quien
+   * mira (con el PDF a un clic en «Fichas por revisar»).
+   */
+  const otros = (campo) =>
+    (patient.scanImport?.alternos || []).filter((a) => a.campo === campo);
   return (
     <div className="space-y-6">
       <dl className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-        {showCedula && <Item label="Cédula" value={patient.cedula} />}
+        {showCedula && <Item label="Cédula" value={patient.cedula} otros={otros('cedula')} />}
         <Item label="Nombre completo" value={`${patient.firstName} ${patient.lastName}`} />
-        {showContact && <Item label="Email" value={patient.email} />}
-        {showContact && <Item label="Teléfono" value={patient.phone} />}
+        {showContact && <Item label="Email" value={patient.email} otros={otros('correo')} />}
+        {showContact && <Item label="Teléfono" value={patient.phone} otros={otros('celular')} />}
         {showContact && <Item label="WhatsApp" value={patient.whatsapp} />}
         <Item
           label="Marketing"
@@ -457,9 +466,9 @@ function DatosTab({ patient }) {
           label="Fecha de nacimiento"
           value={patient.birthDate ? fmtDate(patient.birthDate) : '—'}
         />
-        <Item label="Edad" value={patient.computedAge ?? patient.age ?? '—'} />
+        <Item label="Edad" value={patient.computedAge ?? patient.age ?? '—'} otros={otros('edad')} />
         <Item label="Género" value={patient.gender} />
-        {showContact && <Item label="Dirección" value={patient.address} />}
+        {showContact && <Item label="Dirección" value={patient.address} otros={otros('direccion')} />}
         <Item
           label="Origen del paciente"
           value={
@@ -473,11 +482,21 @@ function DatosTab({ patient }) {
   );
 }
 
-function Item({ label, value, full }) {
+function Item({ label, value, full, otros = [] }) {
   return (
     <div className={full ? 'md:col-span-2' : ''}>
       <dt className="text-xs uppercase text-slate-500 font-semibold">{label}</dt>
       <dd className="text-slate-800 mt-0.5">{value || '—'}</dd>
+      {/**
+       * EL OTRO VALOR. La ficha física decía otra cosa que el sistema y no se
+       * pisó nada: aquí se enseñan los dos para que quien mira decida. Ver
+       * `scanImport.alternos` en models/Patient.js.
+       */}
+      {otros.map((o, i) => (
+        <dd key={`${o.valor}-${i}`} className="text-[11px] text-amber-700 mt-0.5">
+          En la ficha física: «{o.valor}»
+        </dd>
+      ))}
     </div>
   );
 }

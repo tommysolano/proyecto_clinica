@@ -1,0 +1,60 @@
+name: Ensayo fichas escaneadas (no escribe nada)
+
+# Solo manual. Corre el importador de fichas fisicas en DRY-RUN sobre el VPS y
+# devuelve el informe: a cuantos pacientes reconoceria y por que via, que campos
+# completaria, cuantas fichas quedarian apartadas y cuantos errores hay.
+#
+# NO ESCRIBE NADA: sin --commit el script solo lee. Sirve para mirar el resultado
+# antes de dejar que el despliegue haga la importacion de verdad, y tambien para
+# comprobar despues que no quedo nada pendiente.
+on:
+  workflow_dispatch:
+    inputs:
+      datos:
+        description: 'JSON de fichas a ensayar'
+        required: true
+        default: '../data/fichas-escaneadas-2026-08-31.json'
+        type: choice
+        options:
+          - '../data/fichas-escaneadas-2026-08-31.json'
+          - '../data/fichas-escaneadas.json'
+      limite:
+        description: 'Cuantas fichas mirar (0 = todas; empieza por 50, que es rapido)'
+        required: false
+        default: '50'
+
+jobs:
+  ensayo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensayar la importacion por SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: false
+          # Con las 6.000 fichas tarda: cada una abre su PDF para contar paginas.
+          command_timeout: 60m
+          script: |
+            export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+            echo '===== commit desplegado ====='
+            git -C /var/www/clinica log -1 --format='%h %s'
+            echo '===== estado de las tandas en onetimetasks ====='
+            cd /var/www/clinica/server
+            node -e "
+              require('dotenv').config();
+              const m=require('mongoose');
+              (async()=>{
+                await m.connect(process.env.MONGODB_URI);
+                const t=await m.connection.db.collection('onetimetasks')
+                  .find({_id:/fichas-escaneadas/}).toArray();
+                for(const x of t) console.log(x._id, x.status, x.finishedAt||'', JSON.stringify(x.result||{}));
+                if(!t.length) console.log('(ninguna tanda ha corrido todavia)');
+                await m.disconnect();
+              })().catch(e=>{console.error(e.message);process.exit(1)});
+            " || echo 'no se pudo leer onetimetasks'
+            echo '===== ENSAYO (dry-run, no escribe) ====='
+            LIM=''
+            if [ "${{ github.event.inputs.limite }}" != "0" ]; then LIM="--limite=${{ github.event.inputs.limite }}"; fi
+            sudo -iu clinica bash -lc "cd /var/www/clinica/server && node scripts/importPatientsFromScans.js --datos=${{ github.event.inputs.datos }} $LIM"

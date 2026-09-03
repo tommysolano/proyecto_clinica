@@ -130,6 +130,12 @@ exports.saveScanReview = async (req, res) => {
 
     // Revisada: sale de la lista de pendientes y ya no arrastra dudas.
     paciente.scanImport.dudas = [];
+    // Los valores alternos de la ficha física ya cumplieron su función: alguien
+    // los comparó con el PDF delante y se quedó con uno. Dejarlos los volvería a
+    // enseñar en la ficha del paciente para siempre, como si nadie hubiera
+    // decidido nada. Si llega otra ficha con una lectura distinta, la importación
+    // los vuelve a poner.
+    paciente.scanImport.alternos = [];
     paciente.scanImport.revisadoAt = new Date();
     paciente.scanImport.revisadoBy = req.user._id;
     await paciente.save();

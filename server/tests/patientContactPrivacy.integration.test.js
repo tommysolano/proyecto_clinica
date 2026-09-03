@@ -257,3 +257,35 @@ test('P7) el buscador de referidores no devuelve cédulas a quien no puede verla
   assert.ok(fila, 'sigue encontrando al paciente por su nombre');
   assert.equal(fila.detail, '', 'pero sin la cédula al lado');
 });
+
+test('P8) el OTRO valor de la ficha física se censura igual que el campo', async () => {
+  // `scanImport.alternos` guarda lo que decía el papel cuando no coincide con lo
+  // que hay en el sistema. Es el MISMO dato de contacto: censurar `phone` y dejar
+  // ahí el teléfono sería una puerta de atrás.
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId);
+  patient.scanImport = {
+    importadoAt: new Date(),
+    alternos: [
+      { campo: 'cedula', valor: '0102030406' },
+      { campo: 'celular', valor: '0999999999' },
+      { campo: 'correo', valor: 'otra@example.com' },
+      { campo: 'direccion', valor: 'Otra calle' },
+      { campo: 'edad', valor: '54' },
+    ],
+  };
+  await patient.save();
+
+  const campos = (visto) => (visto.scanImport?.alternos || []).map((a) => a.campo).sort();
+
+  const comoAdmin = ok(await getOne(clinicId, userId, 'admin', patient._id));
+  assert.deepEqual(campos(comoAdmin), ['cedula', 'celular', 'correo', 'direccion', 'edad']);
+
+  const comoDoctor = ok(await getOne(clinicId, userId, 'doctor', patient._id));
+  assert.deepEqual(campos(comoDoctor), ['edad'], 'la edad no es un dato de contacto');
+
+  // Mostrador ve la cédula del paciente: también la que dice el papel, que es
+  // justo la que necesita comparar cuando no cuadra.
+  const comoCajero = ok(await getOne(clinicId, userId, 'cajero', patient._id));
+  assert.deepEqual(campos(comoCajero), ['cedula', 'edad']);
+});

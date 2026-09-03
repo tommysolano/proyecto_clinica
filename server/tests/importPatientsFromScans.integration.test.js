@@ -29,6 +29,7 @@ const PatientObservation = require('../models/PatientObservation');
 const { pdfDePaginas } = require('../utils/scanMedia');
 const Workflow = require('../models/Workflow');
 const WorkflowEnrollment = require('../models/WorkflowEnrollment');
+const Conversation = require('../models/Conversation');
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -155,7 +156,11 @@ test('I1) una ficha legible crea paciente, historia y seguimiento con el PDF adj
   assert.equal(fu.observaciones, NOTA_SEGUIMIENTO);
   assert.equal(fu.attachments.length, 1, 'el doctor tiene el PDF a mano');
   assert.equal(fu.attachments[0].mimeType, 'application/pdf');
-  assert.equal(fu.attachments[0].originalName, 'Ficha Jose Cuzco.pdf');
+  assert.equal(
+    fu.attachments[0].originalName,
+    'Ficha Jose Cuzco - ficha.pdf',
+    'el seguimiento lleva la PRIMERA página: la ficha de registro'
+  );
   assert.equal(fu.attachments[0].size, CONTENIDO_PDF.length);
 });
 
@@ -266,7 +271,7 @@ test('I7) si la cédula ya existe, la ficha se le cuelga a ESE paciente en vez d
   const rec = await ClinicalRecord.findOne({ patient: previo._id });
   assert.ok(rec, 'al paciente que ya existía se le abre su historia');
   assert.equal(rec.followUps.length, 1);
-  assert.equal(rec.followUps[0].attachments[0].originalName, 'Ficha Jose Cuzco.pdf');
+  assert.equal(rec.followUps[0].attachments[0].originalName, 'Ficha Jose Cuzco - ficha.pdf');
 });
 
 test('I8) dos fichas de la misma persona dan UN paciente con los dos documentos', async () => {
@@ -284,7 +289,7 @@ test('I8) dos fichas de la misma persona dan UN paciente con los dos documentos'
   assert.equal(rec.followUps.length, 2, 'pero sus dos hojas quedan en la historia');
   assert.deepEqual(
     rec.followUps.map((f) => f.attachments[0].originalName).sort(),
-    ['Ficha A.pdf', 'Ficha B.pdf']
+    ['Ficha A - ficha.pdf', 'Ficha B - ficha.pdf']
   );
 });
 
@@ -424,7 +429,10 @@ test('I16) sin cédula, la misma persona con el mismo celular no se da de alta d
   assert.equal(await Patient.countDocuments({}), 1);
 });
 
-test('I17) mismo nombre pero otro celular son DOS personas distintas', async () => {
+test('I17) mismo nombre y otro celular: es la misma persona, y se guardan los dos números', async () => {
+  // El celular de la segunda hoja está mal leído (un dígito), que es lo que pasa
+  // de verdad. Antes esto daba de alta un duplicado; ahora se reconoce por el
+  // nombre, no se pisa el teléfono bueno y el otro queda a la vista.
   const { clinicId, userId } = await H.seedClinic();
   await seedEscaneo(clinicId, userId, { name: 'Hoja 1' });
   await seedEscaneo(clinicId, userId, { name: 'Hoja 2' });
@@ -434,15 +442,43 @@ test('I17) mismo nombre pero otro celular son DOS personas distintas', async () 
     fichaBuena('Hoja 2', { cedula: '', nombres: 'María', apellidos: 'Pérez', celular: '0992222222' }),
   ]);
 
-  assert.equal(r.creados.length, 2, 'juntar homónimos mezclaría dos historias clínicas');
+  assert.equal(r.creados.length, 1);
+  assert.equal(r.fusionados.length, 1);
+  assert.equal(await Patient.countDocuments({}), 1, 'una sola María Pérez');
+
+  const p = await Patient.findOne({ firstName: 'MARÍA' });
+  assert.equal(p.phone, '0991111111', 'el primero manda: no se pisa');
+  const otro = p.scanImport.alternos.find((a) => a.campo === 'celular');
+  assert.ok(otro, 'el número de la otra hoja no se tira');
+  assert.equal(otro.valor, '0992222222');
+  assert.ok(p.scanImport.dudas.includes('celular'), 'y queda marcado para revisarlo');
+  assert.equal(p.scanImport.revisadoAt, null, 'vuelve a la lista de pendientes');
+});
+
+test('I17b) si en la base YA hay dos pacientes con ese nombre, la ficha se aparta', async () => {
+  // Aquí el nombre no identifica a nadie: meterla en la historia de la que no es
+  // no lo detecta nadie a simple vista, así que no se elige por sorteo.
+  const { clinicId, userId } = await H.seedClinic();
+  await seedEscaneo(clinicId, userId, { name: 'Hoja 1' });
+  await Patient.create({ clinic: clinicId, firstName: 'María', lastName: 'Pérez', phone: '0993333333' });
+  await Patient.create({ clinic: clinicId, firstName: 'María', lastName: 'Pérez', phone: '0994444444' });
+
+  const r = await importar([
+    fichaBuena('Hoja 1', { cedula: '', nombres: 'María', apellidos: 'Pérez', celular: '0991111111' }),
+  ]);
+
+  assert.equal(r.creados.length, 0, 'ni se inventa una tercera');
+  assert.equal(r.fusionados.length, 0, 'ni se le cuelga a una de las dos');
+  assert.equal(r.omitidos.length, 1);
+  assert.match(r.omitidos[0].motivo, /más de un paciente/);
   assert.equal(await Patient.countDocuments({}), 2);
 });
 
-// ───────────────── La hoja de seguimiento (observaciones) ─────────────────
+// ───────────────── Las hojas de seguimiento (observaciones) ─────────────────
 
-test('I18) la ÚLTIMA página del escaneo queda como observación del paciente', async () => {
+test('I18) la ficha va al seguimiento y el RESTO de páginas a observaciones', async () => {
   const { clinicId, userId } = await H.seedClinic();
-  const doc = await seedEscaneo(clinicId, userId, { paginas: 2 });
+  const doc = await seedEscaneo(clinicId, userId, { paginas: 3 });
 
   const r = await importar([fichaBuena()]);
   assert.equal(r.errores.length, 0, JSON.stringify(r.errores));
@@ -453,11 +489,13 @@ test('I18) la ÚLTIMA página del escaneo queda como observación del paciente',
   assert.ok(obs, 'la observación se creó');
   assert.equal(String(obs.scanImport.scan), String(doc._id), 'queda enlazada a su escaneo');
   assert.equal(String(obs.createdBy), String(userId), 'la firma quien escaneó');
-  assert.match(obs.text, /Hoja de seguimiento/);
+  assert.match(obs.text, /2 hojas de seguimiento/, 'dice cuántas hojas trae');
+  assert.match(obs.text, /primer seguimiento/, 'y dónde quedó la ficha de registro');
   assert.match(obs.text, /Ficha Jose Cuzco/, 'dice dónde está el original por si hace falta el detalle');
 
-  assert.equal(obs.attachments.length, 1);
-  assert.equal(obs.attachments[0].mimeType, 'image/jpeg', 'es la foto de la hoja, no el PDF entero');
+  assert.equal(obs.attachments.length, 1, 'todas las hojas en UN archivo, en orden');
+  assert.equal(obs.attachments[0].mimeType, 'application/pdf');
+  assert.match(obs.attachments[0].originalName, /hojas de seguimiento/);
 
   // El archivo está donde lo busca patientObservationController: por PACIENTE.
   const enDisco = await fsp.readFile(
@@ -498,4 +536,191 @@ test('I21) la observación es del paciente que ya existía, no de uno nuevo', as
   assert.equal(r.fusionados.length, 1);
   const obs = await PatientObservation.findOne({});
   assert.equal(String(obs.patient), String(previo._id));
+});
+
+// ───────── El paciente que ya existe: completar sin pisar ─────────
+//
+// Casi todos los pacientes de esta tanda YA estaban (vinieron de Contífico, con
+// la cédula y el teléfono tecleados por una persona). La ficha es letra
+// manuscrita transcrita a ojo: si pisara, degradaría datos buenos.
+
+test('I22) al paciente que ya existía se le COMPLETA lo que tiene vacío', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  await seedEscaneo(clinicId, userId);
+  const previo = await Patient.create({
+    clinic: clinicId, cedula: '0905103495', firstName: 'Jose', lastName: 'Cuzco',
+    phone: '0994967491', // el bueno, tecleado
+  });
+
+  await importar([fichaBuena()]);
+
+  const p = await Patient.findById(previo._id);
+  assert.equal(p.age, 71, 'la edad la aporta la ficha: Contífico no la trae');
+  assert.equal(p.address, 'Barrio Garay');
+  assert.equal(p.email, 'josecuzco@gmail.com');
+  assert.equal(p.phone, '0994967491', 'lo que ya tenía sigue igual');
+  assert.deepEqual(p.scanImport.alternos, [], 'no había nada que difiriera');
+});
+
+test('I23) lo que DIFIERE no se pisa: se guardan los dos valores', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  await seedEscaneo(clinicId, userId);
+  const previo = await Patient.create({
+    clinic: clinicId,
+    cedula: '0905103495',
+    firstName: 'Jose', lastName: 'Cuzco',
+    phone: '0994967491',
+    email: 'jose.cuzco@empresa.com',
+    address: 'Barrio Garay',
+  });
+
+  // La misma persona (casa por cédula) con el celular y el correo mal leídos.
+  await importar([fichaBuena('Ficha Jose Cuzco', {
+    celular: '0994967490',
+    correo: 'josecuzco@gmail.com',
+    direccion: 'BARRIO GARAY',
+  })]);
+
+  const p = await Patient.findById(previo._id);
+  assert.equal(p.phone, '0994967491', 'el del sistema manda');
+  assert.equal(p.email, 'jose.cuzco@empresa.com');
+
+  const campos = p.scanImport.alternos.map((a) => a.campo).sort();
+  assert.deepEqual(campos, ['celular', 'correo'], 'y el papel queda guardado, no tirado');
+  assert.equal(p.scanImport.alternos.find((a) => a.campo === 'celular').valor, '0994967490');
+  assert.ok(
+    p.scanImport.alternos.every((a) => a.scan),
+    'cada valor dice de qué escaneo salió, para poder abrir ESE PDF'
+  );
+  assert.ok(p.scanImport.dudas.includes('celular') && p.scanImport.dudas.includes('correo'));
+  // "BARRIO GARAY" y "Barrio Garay" son lo mismo: comparar en crudo llenaría la
+  // pantalla de revisión de diferencias que no lo son.
+  assert.ok(!campos.includes('direccion'), 'mayúsculas y tildes no son una discrepancia');
+});
+
+test('I24) una cédula que ya es de otro paciente no se escribe: se guarda aparte', async () => {
+  // La cédula es clave ÚNICA en toda la base. Si se escribiera a ciegas, el E11000
+  // tumbaría la ficha entera por un dígito mal leído. El caso llega por reintento:
+  // esta ficha ya creó a su paciente (sin cédula) y, entre medias, esa cédula pasó
+  // a ser de otro.
+  const { clinicId, userId } = await H.seedClinic();
+  const doc = await seedEscaneo(clinicId, userId);
+  await Patient.create({ clinic: clinicId, cedula: '0905103495', firstName: 'Otro', lastName: 'Señor' });
+  const suyo = await Patient.create({
+    clinic: clinicId,
+    firstName: 'José', lastName: 'Cuzco Espinoza', phone: '0994967491',
+    scanImport: { scan: doc._id, importadoAt: new Date() },
+  });
+
+  const r = await importar([fichaBuena()]);
+
+  assert.equal(r.errores.length, 0, 'un choque de cédula no tumba la ficha');
+  const p = await Patient.findById(suyo._id);
+  assert.equal(p.cedula || '', '', 'no se le pone la cédula de otro');
+  assert.equal(p.scanImport.alternos.find((a) => a.campo === 'cedula').valor, '0905103495');
+  assert.ok(p.scanImport.dudas.includes('cedula'), 'se marca para mirarlo con el PDF delante');
+  assert.equal(await Patient.countDocuments({}), 2, 'y no se inventa un tercero');
+});
+
+// ───────── CRM: el chat pasa a ser el chat del paciente ─────────
+//
+// Para qué: el call center abría un chat llamado "Karol❤️" y, para agendar, tenía
+// que registrar al paciente a mano aunque llevara meses en el sistema.
+
+test('I25) el chat de ese número queda vinculado al paciente y toma su nombre', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  await seedEscaneo(clinicId, userId);
+  const chat = await Conversation.create({
+    clinic: clinicId,
+    phone: '593994967491',          // el mismo número, en formato internacional
+    contactName: 'Pepe 🎉',          // el apodo del perfil de WhatsApp
+    contactNameSource: 'profile',
+  });
+
+  await importar([fichaBuena()]);
+
+  const p = await Patient.findOne({ cedula: '0905103495' });
+  const c = await Conversation.findById(chat._id);
+  assert.equal(String(c.patient), String(p._id), 'ya no hay que registrarlo para agendar');
+  assert.equal(c.contactName, 'JOSÉ CUZCO ESPINOZA', 'el agente ve con quién habla');
+  assert.equal(c.contactNameSource, 'contact');
+});
+
+test('I26) no pisa el nombre que escribió un agente ni roba el chat de otro paciente', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  await seedEscaneo(clinicId, userId, { name: 'Hoja 1' });
+  await seedEscaneo(clinicId, userId, { name: 'Hoja 2' });
+
+  const aMano = await Conversation.create({
+    clinic: clinicId, phone: '593994967491',
+    contactName: 'Mamá de José', contactNameSource: 'manual', contactNameEditedAt: new Date(),
+  });
+  const otroPaciente = await Patient.create({ clinic: clinicId, firstName: 'Ana', lastName: 'Vera' });
+  const ajeno = await Conversation.create({
+    clinic: clinicId, phone: '593994967492', patient: otroPaciente._id, contactName: 'Ana',
+  });
+
+  await importar([
+    fichaBuena('Hoja 1'),
+    fichaBuena('Hoja 2', { cedula: '0912172251', nombres: 'Luis', apellidos: 'Mora', celular: '0994967492' }),
+  ]);
+
+  const a = await Conversation.findById(aMano._id);
+  assert.equal(a.contactName, 'Mamá de José', 'lo escrito a mano no lo pisa una importación');
+  assert.ok(a.patient, 'pero sí se vincula: el vínculo no molesta a nadie');
+
+  const b = await Conversation.findById(ajeno._id);
+  assert.equal(String(b.patient), String(otroPaciente._id), 'un chat ya vinculado no cambia de dueño');
+  assert.equal(b.contactName, 'Ana');
+});
+
+// ───────── La importación anterior se convierte, no se duplica ─────────
+
+test('I27) una ficha importada con el criterio viejo se reparte en ficha + hojas', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const doc = await seedEscaneo(clinicId, userId, { paginas: 3 });
+
+  // Estado que dejó la importación de agosto: el PDF ENTERO en el seguimiento y
+  // ninguna observación.
+  const p = await Patient.create({
+    clinic: clinicId, cedula: '0905103495', firstName: 'José', lastName: 'Cuzco Espinoza',
+    scanImport: { scan: doc._id, importadoAt: new Date() },
+  });
+  const dirViejo = path.join(dirs.followups, String(clinicId));
+  await fsp.mkdir(dirViejo, { recursive: true });
+  await fsp.writeFile(path.join(dirViejo, 'viejo.pdf'), Buffer.from('%PDF-1.4 entero'));
+  await ClinicalRecord.create({
+    clinic: clinicId, patient: p._id, fecha: new Date('2026-06-01'), nombre: 'José Cuzco Espinoza',
+    followUps: [{
+      fecha: new Date('2026-06-01'),
+      tipoConsulta: 'primera',
+      observaciones: NOTA_SEGUIMIENTO,
+      attachments: [{
+        filename: 'viejo.pdf',
+        originalName: 'Ficha Jose Cuzco.pdf',   // el nombre del criterio viejo
+        mimeType: 'application/pdf',
+        size: 15,
+      }],
+    }],
+  });
+
+  await importar([fichaBuena()]);
+
+  const rec = await ClinicalRecord.findOne({ patient: p._id });
+  assert.equal(rec.followUps.length, 1, 'no se le cuelga el documento otra vez');
+  assert.equal(rec.followUps[0].attachments.length, 1);
+  assert.equal(
+    rec.followUps[0].attachments[0].originalName,
+    'Ficha Jose Cuzco - ficha.pdf',
+    'el adjunto pasa a ser solo la ficha'
+  );
+  assert.notEqual(rec.followUps[0].attachments[0].filename, 'viejo.pdf', 'y apunta al archivo nuevo');
+
+  const obs = await PatientObservation.findOne({ patient: p._id });
+  assert.ok(obs, 'ahora sí tiene sus hojas de seguimiento en observaciones');
+  assert.equal(obs.attachments[0].mimeType, 'application/pdf');
+
+  // La copia entera que ya no referencia nadie se borra; el ORIGINAL sigue intacto.
+  await assert.rejects(() => fsp.readFile(path.join(dirViejo, 'viejo.pdf')));
+  assert.ok(await ScannedDocument.findById(doc._id), 'el escáner no se toca');
 });
