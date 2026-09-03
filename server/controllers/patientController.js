@@ -12,9 +12,12 @@ const { phoneSearchRegex } = require('../utils/phoneNormalize');
  * DATOS DE CONTACTO del paciente: cédula, dirección, teléfono, WhatsApp y correo.
  *
  * Los ve SOLO el administrador (capacidad `patients.contactData`). El resto del
- * personal trabaja con el nombre: quien agenda, quien atiende, quien hace marketing
- * y quien cobra en mostrador no necesita el número de identificación ni por dónde
- * contactar al paciente por su cuenta.
+ * personal trabaja con el nombre: quien agenda, quien atiende y quien hace marketing
+ * no necesita saber por dónde contactar al paciente por su cuenta.
+ *
+ * Con UNA excepción por campo: la CÉDULA la ve además mostrador (capacidad
+ * `patients.cedula`, ver `canSeeCedula`), porque es con lo que identifica y
+ * factura a la persona que tiene delante. Los otros cuatro campos no se mueven.
  *
  * Se censura en el SERVIDOR, no en React: ocultar una columna no es un permiso —
  * cualquiera abre la pestaña de red y lee el JSON. Lo que no se envía, no se filtra.
@@ -32,14 +35,33 @@ const CONTACT_FIELDS = ['cedula', 'address', 'phone', 'whatsapp', 'email'];
 /** ¿Este usuario puede ver los datos de contacto del paciente? (solo admin). */
 const canSeeContactData = (req) => canReq(req, 'patients.contactData');
 
+/**
+ * LA CÉDULA VA APARTE (pedido de mostrador, 3-sep-2026).
+ *
+ * Caja necesita el número de identificación del paciente que tiene delante: es
+ * con lo que factura, con lo que distingue a dos homónimos y con lo que confirma
+ * que quien llegó es el de la agenda. Pedírsela a un administrador cada vez no
+ * era viable.
+ *
+ * Es una excepción de UN campo, no una puerta a los datos de contacto: dirección,
+ * teléfono, WhatsApp y correo siguen saliendo censurados para todo el que no sea
+ * admin. Por eso el filtro es POR CAMPO y no un booleano para los cinco.
+ */
+const canSeeCedula = (req) => canSeeContactData(req) || canReq(req, 'patients.cedula');
+
+/** ¿Puede ver ESTE campo de contacto? */
+const canSeeContactField = (req, field) =>
+  field === 'cedula' ? canSeeCedula(req) : canSeeContactData(req);
+
 /** ¿La petición es un selector de facturación/cobro que sí puede traerlos? */
 const wantsBillingContact = (req) =>
   ['1', 'true', 'yes'].includes(String(req.query?.withContact || '').toLowerCase()) &&
   canReq(req, 'patients.billingData');
 
-const stripContactData = (patient) => {
+const stripContactData = (patient, req) => {
   const obj = patient.toObject ? patient.toObject() : { ...patient };
   CONTACT_FIELDS.forEach((f) => {
+    if (canSeeContactField(req, f)) return;
     obj[f] = undefined;
   });
   return obj;
@@ -48,7 +70,7 @@ const stripContactData = (patient) => {
 /** Devuelve el paciente tal cual si el rol puede ver el contacto; si no, censurado. */
 const sanitizeForRole = (patient, req) => {
   if (!patient || canSeeContactData(req)) return patient;
-  return stripContactData(patient);
+  return stripContactData(patient, req);
 };
 
 /**
@@ -61,15 +83,18 @@ exports.searchReferralCandidates = async (req, res) => {
     const q = (req.query.q || '').trim();
     const regex = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
 
-    // El selector "¿Quién lo refirió?" es un buscador por nombre. Solo el admin
-    // busca (y ve) por cédula o teléfono — ver CONTACT_FIELDS.
+    // El selector "¿Quién lo refirió?" es un buscador por nombre. El teléfono
+    // sigue siendo del admin; por cédula busca (y la ve) quien puede verla — ver
+    // CONTACT_FIELDS y canSeeCedula.
     const showContact = canSeeContactData(req);
+    const showCedula = canSeeCedula(req);
     const patientFilter = { active: true };
     if (regex) {
       patientFilter.$or = [
         { firstName: regex },
         { lastName: regex },
-        ...(showContact ? [{ cedula: regex }, { phone: regex }] : []),
+        ...(showCedula ? [{ cedula: regex }] : []),
+        ...(showContact ? [{ phone: regex }] : []),
       ];
     }
     const patients = await Patient.find(patientFilter)
@@ -90,7 +115,7 @@ exports.searchReferralCandidates = async (req, res) => {
         id: p._id,
         type: 'patient',
         name: `${p.firstName} ${p.lastName}`.trim(),
-        detail: showContact ? p.cedula || '' : '',
+        detail: showCedula ? p.cedula || '' : '',
       })),
       ...users.map((u) => ({
         id: u._id,
@@ -110,7 +135,9 @@ exports.getPatients = async (req, res) => {
   try {
     const { search, page = 1, limit = 20, isNew } = req.query;
     const query = { active: true };
-    // Facturación/cobro: ver CONTACT_FIELDS arriba.
+    // Facturación/cobro: ver CONTACT_FIELDS arriba. Aunque no sea ninguno de los
+    // dos casos se sigue pasando por el censor: es él quien deja pasar la cédula
+    // a mostrador (canSeeCedula) sin soltar el resto.
     const showContact = canSeeContactData(req) || wantsBillingContact(req);
 
     if (search) {
@@ -158,7 +185,7 @@ exports.getPatients = async (req, res) => {
     const total = await Patient.countDocuments(query);
 
     res.json({
-      patients: showContact ? patients : patients.map(stripContactData),
+      patients: showContact ? patients : patients.map((p) => stripContactData(p, req)),
       total,
       pages: Math.ceil(total / limit),
       currentPage: parseInt(page),
@@ -308,12 +335,16 @@ exports.createPatient = async (req, res) => {
 exports.updatePatient = async (req, res) => {
   try {
     const update = cleanPatientBody(req.body);
-    // Quien no VE los datos de contacto tampoco los edita. No es solo permiso: su
-    // formulario los recibe vacíos, así que sin este filtro un guardado cualquiera
+    // Quien no VE un dato de contacto tampoco lo edita. No es solo permiso: su
+    // formulario lo recibe vacío, así que sin este filtro un guardado cualquiera
     // borraría la cédula y el teléfono del paciente sin que nadie lo notara.
-    if (!canSeeContactData(req)) {
-      CONTACT_FIELDS.forEach((f) => delete update[f]);
-    }
+    //
+    // Campo a campo, y no todo o nada: mostrador ve la cédula, así que también la
+    // corrige (es quien descubre que está mal, al facturar); el teléfono y la
+    // dirección los recibe vacíos y se descartan igual que antes.
+    CONTACT_FIELDS.forEach((f) => {
+      if (!canSeeContactField(req, f)) delete update[f];
+    });
     // Etiquetas previas: para disparar 'tag_added' solo por las realmente nuevas.
     const prev = Array.isArray(update.tags)
       ? await Patient.findById(req.params.id).select('tags')

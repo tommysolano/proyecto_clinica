@@ -36,6 +36,17 @@ export const ROLE_LABELS = {
   enfermero: 'Enfermero/a',
 };
 
+// ─────────────── Cédula del paciente ───────────────
+//
+// Los datos de contacto del paciente son del administrador y el servidor los
+// censura (ver CONTACT_FIELDS en patientController), con UNA excepción: la
+// CÉDULA la ve también mostrador, porque identifica y factura con ella.
+//
+// Esta lista es el espejo de la capacidad `patients.cedula` del servidor: si se
+// cambia una hay que cambiar la otra, o la pantalla pintaría un campo que no le
+// van a mandar (o lo esconderá teniéndolo).
+export const ROLES_VEN_CEDULA = ['admin', 'cajero'];
+
 // ─────────────── Tipo de doctor ───────────────
 //
 // El TIPO de doctor sale de su ROL en la sucursal, no de un campo aparte: quien

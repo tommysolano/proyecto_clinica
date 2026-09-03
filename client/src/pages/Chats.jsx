@@ -6090,7 +6090,10 @@ function RescheduleApptModal({ appt, onClose, onSaved }) {
         const e1 = Math.min(23 * 60 + 59, s1 + (e0 - s0));
         payload.endTime = `${String(Math.floor(e1 / 60)).padStart(2, '0')}:${String(e1 % 60).padStart(2, '0')}`;
       }
-      await api.put(`/appointments/${appt._id}`, payload, { params: { clinic: appt.clinic } });
+      // El chat es global y la cita puede ser de cualquier sede. Ya no se manda
+      // `?clinic=`: el alcance lo pone el rol en el servidor (filtroSucursalCita),
+      // y la sucursal con la que trabaja es la DE LA CITA.
+      await api.put(`/appointments/${appt._id}`, payload);
       toast.success('Cita reagendada');
       onSaved();
     } catch (e) {

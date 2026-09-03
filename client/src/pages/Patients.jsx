@@ -14,6 +14,7 @@ import SriStatus from '../components/SriStatus';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import EmailStatus from '../components/EmailStatus';
 import useEmailValidation from '../hooks/useEmailValidation';
+import { ROLES_VEN_CEDULA } from '../utils/roles';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -88,11 +89,16 @@ export default function Patients() {
    * enseña el campo, y el servidor tampoco se lo aceptaría.
    */
   const puedeFijarValor = hasRole('admin', 'cajero');
-  // Cédula, correo, teléfono, WhatsApp y dirección son solo del administrador: al
-  // resto el servidor ni se los envía (ver CONTACT_FIELDS en patientController).
+  // Correo, teléfono, WhatsApp y dirección son solo del administrador: al resto
+  // el servidor ni se los envía (ver CONTACT_FIELDS en patientController).
   const showContact = hasRole('admin');
-  // Nombre + Acciones siempre; cédula, teléfono y email solo para el admin.
-  const columnCount = showContact ? 5 : 2;
+  // La CÉDULA es la excepción: mostrador identifica y factura con ella, así que
+  // la ve y la corrige (capacidad `patients.cedula` en el servidor).
+  const showCedula = hasRole(...ROLES_VEN_CEDULA);
+  // Nombre + Acciones siempre; cédula según showCedula; teléfono y email solo
+  // para el admin. El número tiene que cuadrar con las columnas de verdad: es el
+  // colSpan del "no se encontraron pacientes" y el ancho del esqueleto.
+  const columnCount = 2 + (showCedula ? 1 : 0) + (showContact ? 2 : 0);
   const canDelete = hasRole('admin');
 
   const [patients, setPatients] = useState([]);
@@ -390,7 +396,7 @@ export default function Patients() {
           <table className="tbl">
             <thead>
               <tr className="bg-emerald-50/50 border-b border-emerald-100">
-                {showContact && <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Cédula</th>}
+                {showCedula && <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Cédula</th>}
                 <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Nombre</th>
                 {showContact && <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden md:table-cell">Teléfono</th>}
                 {showContact && <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden lg:table-cell">Email</th>}
@@ -419,7 +425,7 @@ export default function Patients() {
               ) : (
                 patients.map((p) => (
                   <tr key={p._id} className="border-b border-emerald-50 hover:bg-emerald-50/30">
-                    {showContact && <td className="px-6 py-3.5 text-sm text-slate-600">{p.cedula || '—'}</td>}
+                    {showCedula && <td className="px-6 py-3.5 text-sm text-slate-600">{p.cedula || '—'}</td>}
                     <td className="px-6 py-3.5 text-sm font-medium text-slate-800">
                       {/* El nombre ya no es obligatorio: sin este respaldo, un
                           paciente registrado solo con la cédula o el teléfono
@@ -523,8 +529,9 @@ export default function Patients() {
         >
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Al REGISTRAR se piden siempre (la persona los está dando en el
-                mostrador); al EDITAR ya son datos guardados: solo el admin. */}
-            {(showContact || !editing) && (
+                mostrador); al EDITAR ya son datos guardados: solo el admin —y la
+                cédula, además, mostrador. */}
+            {(showCedula || !editing) && (
             <Field label="Cédula / RUC / Pasaporte">
               <div className="relative">
                 <input

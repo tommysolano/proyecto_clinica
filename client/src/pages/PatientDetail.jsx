@@ -10,6 +10,7 @@ import NumericInput from '../components/NumericInput';
 import Cie10Select from '../components/Cie10Select';
 import Odontograma from '../components/Odontograma';
 import CincoElementos from '../components/CincoElementos';
+import { ROLES_VEN_CEDULA } from '../utils/roles';
 import {
   ANTECEDENTES_CATEGORIAS,
   HABITOS_CATEGORIAS,
@@ -306,13 +307,21 @@ export default function PatientDetail() {
             <h1 className="text-base sm:text-2xl font-bold text-slate-800 tracking-tight break-words leading-tight">
               {patient.firstName} {patient.lastName}
             </h1>
-            {/* Cédula, teléfono y correo son solo del administrador: el servidor ni
-                siquiera los envía al resto (ver CONTACT_FIELDS en patientController). */}
+            {/* Teléfono y correo son solo del administrador; la CÉDULA la ve
+                además mostrador (ROLES_VEN_CEDULA). Al resto el servidor ni
+                siquiera se los envía (ver CONTACT_FIELDS en patientController). */}
             <p className="text-xs sm:text-sm text-slate-500 mt-0.5 sm:mt-1">
-              {hasRole('admin') ? (
+              {hasRole(...ROLES_VEN_CEDULA) ? (
                 <>
-                  CI: {patient.cedula} {patient.phone ? ` · ${patient.phone}` : ''}
-                  {patient.email ? ` · ${patient.email}` : ''}
+                  CI: {patient.cedula || '—'}
+                  {hasRole('admin') ? (
+                    <>
+                      {patient.phone ? ` · ${patient.phone}` : ''}
+                      {patient.email ? ` · ${patient.email}` : ''}
+                    </>
+                  ) : (
+                    ` · Edad: ${patient.computedAge ?? patient.age ?? '—'}`
+                  )}
                 </>
               ) : (
                 <>Edad: {patient.computedAge ?? patient.age ?? '—'}</>
@@ -417,9 +426,11 @@ export default function PatientDetail() {
 // ───────────────────────── Datos ─────────────────────────
 function DatosTab({ patient }) {
   const { hasRole } = useAuth();
-  // Datos de contacto (cédula, correo, teléfono, WhatsApp y dirección): solo el
+  // Datos de contacto (correo, teléfono, WhatsApp y dirección): solo el
   // administrador. Para los demás el servidor los omite, así que ni se pintan.
   const showContact = hasRole('admin');
+  // La cédula es la excepción: mostrador la necesita para identificar y facturar.
+  const showCedula = hasRole(...ROLES_VEN_CEDULA);
   const sourceLabels = {
     anuncio: 'Anuncio',
     referido: 'Referido',
@@ -429,7 +440,7 @@ function DatosTab({ patient }) {
   return (
     <div className="space-y-6">
       <dl className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-        {showContact && <Item label="Cédula" value={patient.cedula} />}
+        {showCedula && <Item label="Cédula" value={patient.cedula} />}
         <Item label="Nombre completo" value={`${patient.firstName} ${patient.lastName}`} />
         {showContact && <Item label="Email" value={patient.email} />}
         {showContact && <Item label="Teléfono" value={patient.phone} />}

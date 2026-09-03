@@ -173,7 +173,15 @@ test('updateAppointment bloquea reagendar al pasado (día u hora) pero permite e
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-test('PUT /appointments/:id?clinic= reagenda una cita de OTRA sucursal solo con acceso', async () => {
+/**
+ * El ALCANCE lo pone el ROL, no el `?clinic=` de la petición (ver
+ * `filtroSucursalCita`): mostrador y administración reagendan cualquier cita de
+ * la organización —es lo mismo que ya veían en la agenda— y el resto de roles
+ * solo las de las sucursales que tienen asignadas. Antes la lectura y la
+ * escritura no coincidían, y de ahí salía un 404 sobre una cita que estaba a la
+ * vista.
+ */
+test('PUT /appointments/:id reagenda una cita de OTRA sucursal según el rol', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const otherClinic = new H.mongoose.Types.ObjectId(); // sucursal B (basta el id)
   const svc = await seedService(clinicId);
@@ -184,24 +192,24 @@ test('PUT /appointments/:id?clinic= reagenda una cita de OTRA sucursal solo con 
   });
   const inTwoDays = ymd(new Date(Date.now() + 2 * 86400000));
 
-  // Sin acceso a la sucursal B: el scope se queda en la activa → 404.
-  const denied = await H.runController(
-    appt.updateAppointment,
-    H.mockReq(clinicId, userId, { date: inTwoDays, startTime: '11:00' }, {
-      params: { id: String(cita._id) }, query: { clinic: String(otherClinic) }, role: 'admin',
-    }),
-  );
+  // Quien atiende solo llega a sus sucursales: la de la sucursal B no es suya.
+  const doctorReq = H.mockReq(clinicId, userId, { date: inTwoDays, startTime: '11:00' }, {
+    params: { id: String(cita._id) }, role: 'doctor',
+  });
+  doctorReq.user.clinics = [{ clinic: clinicId, role: 'doctor' }];
+  const denied = await H.runController(appt.updateAppointment, doctorReq);
   assert.equal(denied.statusCode, 404, JSON.stringify(denied.payload));
 
-  // Con acceso a la sucursal B (reagendar desde el chat global) → 200.
+  // Administración: la organización entera, sin tener que pasar `?clinic=`.
   const req = H.mockReq(clinicId, userId, { date: inTwoDays, startTime: '11:00' }, {
-    params: { id: String(cita._id) }, query: { clinic: String(otherClinic) }, role: 'admin',
+    params: { id: String(cita._id) }, role: 'admin',
   });
-  req.user.clinics = [{ clinic: otherClinic, role: 'cajero' }];
+  req.user.clinics = [{ clinic: clinicId, role: 'admin' }];
   const ok = await H.runController(appt.updateAppointment, req);
   assert.equal(ok.statusCode, 200, JSON.stringify(ok.payload));
   const after = await Appointment.findById(cita._id);
   assert.equal(after.startTime, '11:00');
+  assert.equal(String(after.clinic), String(otherClinic), 'reagendar NO cambia la cita de sucursal');
   assert.equal((after.rescheduleHistory || []).length, 1, 'el reagendamiento debe quedar en el historial');
 });
 

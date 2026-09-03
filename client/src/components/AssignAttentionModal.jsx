@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from './Modal';
@@ -43,8 +43,62 @@ import {
  */
 const ENFERMERIA = 'enfermeria';
 
-export default function AssignAttentionModal({ appointment, doctors = [], nurses = [], onClose, onDone }) {
+export default function AssignAttentionModal({
+  appointment,
+  doctors: doctorsDeLaSedeActiva = [],
+  nurses: nursesDeLaSedeActiva = [],
+  onClose,
+  onDone,
+}) {
   const apt = appointment;
+
+  const { hasRole, activeClinic } = useAuth();
+
+  /**
+   * EL PERSONAL ES EL DE LA SUCURSAL DE LA CITA, NO EL DE LA MÍA.
+   *
+   * Caja ve la agenda de toda la organización y agenda para cualquier sede, así
+   * que este modal se abre a menudo sobre una cita de OTRA sucursal. Las listas
+   * que llegan por props son las de la sucursal activa: asignar con ellas dejaba
+   * la cita a nombre de un doctor de otra sede, que no la ve en su agenda —y el
+   * servidor ahora lo rechaza (ver assignDoctor). Cuando la cita es de otra sede
+   * se pide su personal.
+   */
+  const sedeDeLaCita = String(apt?.clinic?._id || apt?.clinic || '');
+  const esOtraSede = !!sedeDeLaCita && String(activeClinic?._id || '') !== sedeDeLaCita;
+  const nombreDeLaSede = apt?.clinic?.nombreComercial || apt?.clinic?.name || '';
+  const [personalDeLaSede, setPersonalDeLaSede] = useState(null);
+  const [cargandoPersonal, setCargandoPersonal] = useState(false);
+
+  useEffect(() => {
+    if (!esOtraSede) {
+      setPersonalDeLaSede(null);
+      return undefined;
+    }
+    let vivo = true;
+    setCargandoPersonal(true);
+    Promise.all([
+      api.get('/users/doctors', { params: { clinic: sedeDeLaCita } }),
+      api.get('/users/nurses', { params: { clinic: sedeDeLaCita } }),
+    ])
+      .then(([d, n]) => {
+        if (vivo) setPersonalDeLaSede({ doctors: d.data || [], nurses: n.data || [] });
+      })
+      .catch(() => {
+        // Sin lista no se puede asignar a ciegas: se deja vacía y el aviso de
+        // arriba explica que es de otra sucursal.
+        if (vivo) setPersonalDeLaSede({ doctors: [], nurses: [] });
+      })
+      .finally(() => {
+        if (vivo) setCargandoPersonal(false);
+      });
+    return () => {
+      vivo = false;
+    };
+  }, [esOtraSede, sedeDeLaCita]);
+
+  const doctors = personalDeLaSede ? personalDeLaSede.doctors : doctorsDeLaSedeActiva;
+  const nurses = personalDeLaSede ? personalDeLaSede.nurses : nursesDeLaSedeActiva;
 
   // Los turnos ya completados no se tocan: ese profesional ya escribió su
   // seguimiento. Los pendientes se cargan para poder reordenarlos sin empezar
@@ -88,7 +142,6 @@ export default function AssignAttentionModal({ appointment, doctors = [], nurses
    * servidor tampoco se lo aceptaría: es lo que se le va a cobrar, no una
    * decisión de quien atiende.
    */
-  const { hasRole } = useAuth();
   const puedeFijarValor = hasRole('admin', 'cajero');
   // Se precargan con lo que ya tenga la cita: reabrir el modal para añadir un
   // doctor no puede borrar el importe que ya se había anotado.
@@ -176,6 +229,16 @@ export default function AssignAttentionModal({ appointment, doctors = [], nurses
             {apt?.startTime}{servicio ? ` · ${servicio}` : ''}
           </p>
         </div>
+
+        {/* La cita es de otra sucursal: se dice, porque el personal que sale en
+            los selectores es el de ESA sede y no el de la propia. */}
+        {esOtraSede && (
+          <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            {cargandoPersonal
+              ? `Cargando el personal de ${nombreDeLaSede || 'la sucursal de la cita'}…`
+              : `Esta cita es de ${nombreDeLaSede || 'otra sucursal'}: aquí solo aparece el personal de esa sede.`}
+          </div>
+        )}
 
         {completados.length > 0 && (
           <div className="text-xs text-slate-500 bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">

@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const User = require('../models/User');
 const { VALID_ROLES, DOCTOR_LIKE_ROLES } = require('../constants/roles');
+const { sucursalPedida } = require('../utils/clinicScope');
 const { encrypt: encryptSecret } = require('../modules/invoicing/ec/crypto');
 const {
   loadP12,
@@ -425,11 +426,18 @@ exports.deleteMySignatureCert = async (req, res) => {
  * en esta sede no debe salir en la lista de recepción, o acabará con un turno
  * asignado a alguien que está a treinta kilómetros.
  */
+/**
+ * Los selectores de personal aceptan `?clinic=<id>`: mostrador asigna citas de
+ * otras sucursales y quien puede atenderlas es el personal DE ESA SEDE, no el de
+ * la sucursal en la que está el cajero. Sin esto el selector ofrecía doctores de
+ * la sede equivocada y la cita quedaba asignada a alguien que ni la ve.
+ */
 exports.getNurses = async (req, res) => {
   try {
+    const clinicId = sucursalPedida(req);
     const nurses = await User.find({
       active: true,
-      clinics: { $elemMatch: { clinic: req.clinicId, role: 'enfermero' } },
+      clinics: { $elemMatch: { clinic: clinicId, role: 'enfermero' } },
     })
       .select('name email')
       .sort({ name: 1 })
@@ -442,9 +450,11 @@ exports.getNurses = async (req, res) => {
 
 exports.getDoctors = async (req, res) => {
   try {
+    // Ver `getNurses`: `?clinic=<id>` para el personal de otra sucursal.
+    const clinicId = sucursalPedida(req);
     const doctors = await User.find({
       active: true,
-      clinics: { $elemMatch: { clinic: req.clinicId, role: { $in: DOCTOR_LIKE_ROLES } } },
+      clinics: { $elemMatch: { clinic: clinicId, role: { $in: DOCTOR_LIKE_ROLES } } },
     })
       .select('-password')
       .sort({ name: 1 })
@@ -452,7 +462,7 @@ exports.getDoctors = async (req, res) => {
     const withRole = doctors.map((d) => ({
       ...d,
       roleInClinic:
-        (d.clinics || []).find((c) => String(c.clinic) === String(req.clinicId))?.role || null,
+        (d.clinics || []).find((c) => String(c.clinic) === String(clinicId))?.role || null,
     }));
     res.json(withRole);
   } catch (error) {

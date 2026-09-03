@@ -9,8 +9,9 @@
  *
  * Mismo criterio para `patients.contactData` (cédula, dirección, teléfono, WhatsApp y correo
  * del paciente): es SOLO del administrador —le basta con `'*'`, no hace falta listarla—, así
- * que el servidor la borra de la respuesta para todos los demás roles. `patients.billingData`
- * es su única excepción, explicada abajo.
+ * que el servidor la borra de la respuesta para todos los demás roles. Tiene dos excepciones,
+ * las dos de mostrador y las dos explicadas abajo: `patients.billingData` (los selectores de
+ * cliente al facturar) y `patients.cedula` (la cédula, y solo ella, en la ficha del paciente).
  *
  * `patients.observations.moderate` es la otra capacidad exclusiva del admin: una observación
  * del paciente la edita quien la escribió, y el admin además de eso (queda registrado como
@@ -44,9 +45,17 @@ const CAPS = {
   // de cliente de Nueva venta, Cotizaciones y Pagos —los únicos que lo piden, con
   // `?withContact=1`— traigan cédula, correo y teléfono: sin ellos el comprobante
   // electrónico saldría a consumidor final y la cartera quedaría sin identificación.
+  //
+  // 'patients.cedula' SÍ es "ver un dato del paciente", y es la única grieta abierta en
+  // 'patients.contactData': mostrador identifica a la persona que tiene delante por su número
+  // de cédula —para facturarle, para no cobrarle a un homónimo y para saber que el paciente
+  // que llegó es el de la agenda—, y hasta ahora tenía que pedírsela a un administrador.
+  // Da la cédula Y SOLO LA CÉDULA: dirección, teléfono, WhatsApp y correo siguen siendo del
+  // admin. El Excel de pacientes tampoco la incluye: sacar la cédula de toda la base en un
+  // archivo no es identificar al cliente del mostrador (ver 'exportPatients').
   cajero: [
     'inventory.view', 'count.start', 'count.edit', 'warehouse.view', 'sales.report', 'cashflow.view',
-    'patients.billingData',
+    'patients.billingData', 'patients.cedula',
   ],
   // Enfermería y bodega consultan existencias; nada de dinero.
   enfermeria: ['inventory.view', 'count.start', 'count.edit', 'warehouse.view'],

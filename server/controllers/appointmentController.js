@@ -35,6 +35,7 @@ const {
   PAST_TIME_MESSAGE,
 } = require('../utils/appointmentDate');
 const { isDoctorRole } = require('../constants/roles');
+const { veTodaLaOrganizacion } = require('../utils/clinicScope');
 
 /**
  * Espacios de la agenda de una sucursal, en minutos (0 = cualquier hora).
@@ -106,6 +107,30 @@ const toMinutes = (hhmm) => {
   return h * 60 + min;
 };
 
+/**
+ * FILTRO DE SUCURSAL PARA BUSCAR UNA CITA QUE SE VA A TOCAR.
+ *
+ * Tiene que ser EL MISMO alcance con el que se LEE la agenda: mostrador y
+ * administración operan la organización entera, y el resto de roles las
+ * sucursales que tienen asignadas (que es lo que devuelve `clinic=all`).
+ *
+ * Buscarla por la sucursal ACTIVA (`clinic: req.clinicId`) era el «Cita no
+ * encontrada» al asignar el doctor: una cita agendada por caja para OTRA sede
+ * se ve perfectamente en la agenda —que es org-wide para caja—, pero cualquier
+ * botón sobre ella respondía que no existía. La lectura y la escritura no
+ * usaban la misma regla.
+ *
+ * OJO al usarlo: una vez encontrada la cita, todo lo que dependa de la sucursal
+ * (bloqueos de horario, avisos en tiempo real, notificaciones push, el
+ * seguimiento de enfermería) va con `cita.clinic`, NUNCA con `req.clinicId`, o
+ * acabaría en la sede equivocada.
+ */
+const filtroSucursalCita = (req) => {
+  if (veTodaLaOrganizacion(req)) return {};
+  const asignadas = (req.user.clinics || []).map((c) => c.clinic);
+  return { clinic: { $in: [req.clinicId, ...asignadas] } };
+};
+
 exports.getAppointments = async (req, res) => {
   try {
     const {
@@ -146,13 +171,13 @@ exports.getAppointments = async (req, res) => {
      * siguen viendo solo las sucursales que tienen asignadas — ni a ningún otro
      * endpoint.
      */
-    const veTodaLaOrganizacion = req.user.isSuperAdmin || ['admin', 'cajero'].includes(req.role);
+    const veTodaLaOrg = veTodaLaOrganizacion(req);
     let clinicScope; // valor para query.clinic; null = sin filtro (todas)
     if (clinicParam === 'all') {
-      clinicScope = veTodaLaOrganizacion ? null : { $in: accessibleClinicIds };
+      clinicScope = veTodaLaOrg ? null : { $in: accessibleClinicIds };
     } else if (clinicParam && String(clinicParam) !== String(req.clinicId)) {
       const allowed =
-        veTodaLaOrganizacion ||
+        veTodaLaOrg ||
         accessibleClinicIds.some((c) => String(c) === String(clinicParam));
       clinicScope = allowed ? clinicParam : req.clinicId;
     } else {
@@ -255,7 +280,7 @@ exports.getAppointment = async (req, res) => {
     // Verificar acceso: la sucursal de la cita debe estar entre las del usuario.
     const apptClinicId = String(appointment.clinic?._id || appointment.clinic);
     const canAccess =
-      req.user.isSuperAdmin ||
+      veTodaLaOrganizacion(req) ||
       (req.user.clinics || []).some((c) => String(c.clinic) === apptClinicId);
     if (!canAccess) return res.status(404).json({ message: 'Cita no encontrada' });
     res.json(appointment);
@@ -374,8 +399,7 @@ exports.createAppointment = async (req, res) => {
       const allowedClinic = (req.user.clinics || []).find(
         (c) => String(c.clinic) === String(req.body.clinic)
       );
-      const canChooseOrganizationClinic =
-        req.user.isSuperAdmin || ['admin', 'cajero'].includes(req.role);
+      const canChooseOrganizationClinic = veTodaLaOrganizacion(req);
       if (!allowedClinic && !canChooseOrganizationClinic) {
         return res
           .status(403)
@@ -610,24 +634,21 @@ exports.createAppointment = async (req, res) => {
 
 exports.updateAppointment = async (req, res) => {
   try {
-    // Sucursal de la cita: por defecto la activa. `?clinic=<id>` permite editar
-    // una cita de OTRA sucursal si el usuario tiene acceso (p.ej. reagendar
-    // desde el chat del CRM, que es global y lista citas de todas las sedes).
-    let clinicScope = req.clinicId;
-    if (req.query.clinic && String(req.query.clinic) !== String(req.clinicId)) {
-      const allowed =
-        req.user.isSuperAdmin ||
-        (req.user.clinics || []).some((c) => String(c.clinic) === String(req.query.clinic));
-      if (allowed) clinicScope = req.query.clinic;
-    }
     // Permisos: solo admin puede editar cualquier cita.
     // Otros roles solo pueden editar las citas que ellos mismos crearon.
     // El doctor puede actualizar las suyas (diagnóstico, tratamiento, cronómetro, completar).
     const existing = await Appointment.findOne({
       _id: req.params.id,
-      clinic: clinicScope,
+      ...filtroSucursalCita(req),
     });
     if (!existing) return res.status(404).json({ message: 'Cita no encontrada' });
+    /**
+     * La sucursal de trabajo es LA DE LA CITA, no la activa ni la que venga por
+     * `?clinic=` (que ya no hace falta: el alcance lo pone el rol). Reagendar
+     * desde el chat del CRM —que es global— o desde otra sede tiene que validar
+     * los bloqueos de horario y avisar en tiempo real donde de verdad está.
+     */
+    const clinicScope = existing.clinic;
 
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
     const isCreator = String(existing.createdBy || '') === String(req.user._id);
@@ -717,7 +738,7 @@ exports.updateAppointment = async (req, res) => {
       // conservan su hora suelta y se pueden seguir editando (asistencia,
       // servicios, notas) sin que el sistema las dé por inválidas.
       if (scheduleChanged) {
-        const paso = await slotMinutesDeClinica(req.clinicId);
+        const paso = await slotMinutesDeClinica(clinicScope);
         if (!isValidSlotTime(finalStart2, paso)) {
           return res.status(400).json({ message: slotMessage(paso), code: 'SLOT_INVALID' });
         }
@@ -725,7 +746,7 @@ exports.updateAppointment = async (req, res) => {
     }
 
     if (Array.isArray(update.services)) {
-      update.services = await buildServicesSnapshot(req.clinicId, update.services);
+      update.services = await buildServicesSnapshot(clinicScope, update.services);
     }
 
     // Servicio de agenda (catálogo propio). Solo se toca si viene en la
@@ -851,7 +872,7 @@ exports.deleteAppointment = async (req, res) => {
   try {
     const appointment = await Appointment.findOne({
       _id: req.params.id,
-      clinic: req.clinicId,
+      ...filtroSucursalCita(req),
     });
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
 
@@ -886,7 +907,7 @@ exports.startConsultation = async (req, res) => {
   try {
     const appointment = await Appointment.findOne({
       _id: req.params.id,
-      clinic: req.clinicId,
+      ...filtroSucursalCita(req),
     });
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
 
@@ -921,7 +942,7 @@ exports.endConsultation = async (req, res) => {
   try {
     const appointment = await Appointment.findOne({
       _id: req.params.id,
-      clinic: req.clinicId,
+      ...filtroSucursalCita(req),
     });
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
 
@@ -937,7 +958,7 @@ exports.endConsultation = async (req, res) => {
     appointment.consultationEndedAt = new Date();
     appointment.status = 'completada';
     await appointment.save();
-    emitToClinic(req.clinicId, 'appointment:updated', appointment);
+    emitToClinic(appointment.clinic, 'appointment:updated', appointment);
     emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(appointment));
 
     // Sincronizar derivación asociada
@@ -945,7 +966,7 @@ exports.endConsultation = async (req, res) => {
       try {
         const Referral = require('../models/Referral');
         await Referral.findOneAndUpdate(
-          { _id: appointment.referral, clinic: req.clinicId },
+          { _id: appointment.referral, clinic: appointment.clinic },
           { status: 'atendida' }
         );
       } catch (e) {
@@ -960,7 +981,7 @@ exports.endConsultation = async (req, res) => {
       const services = (appointment.services || []).map((s) => String(s.product));
       if (services.length && appointment.patient) {
         const treatments = await Treatment.find({
-          clinic: req.clinicId,
+          clinic: appointment.clinic,
           patient: appointment.patient,
           status: 'activo',
         });
@@ -1043,7 +1064,7 @@ exports.getTodayAppointments = async (req, res) => {
  */
 exports.getAppointmentPdf = async (req, res) => {
   try {
-    const appointment = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId })
+    const appointment = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) })
       .populate('patient', POPULATE_PATIENT + ' address')
       .populate('doctor', POPULATE_DOCTOR)
       .populate('createdBy', POPULATE_CREATOR)
@@ -1053,7 +1074,10 @@ exports.getAppointmentPdf = async (req, res) => {
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
 
     const Clinic = require('../models/Clinic');
-    const clinic = await Clinic.findById(req.clinicId);
+    // La sucursal QUE IMPRIME es la de la cita: el PDF lleva su nombre y su
+    // dirección, y con la activa una cita de otra sede saldría con el membrete
+    // equivocado.
+    const clinic = await Clinic.findById(appointment.clinic);
 
     const isoDate = appointment.date instanceof Date
       ? appointment.date.toISOString()
@@ -1249,7 +1273,7 @@ exports.getStats = async (req, res) => {
  */
 exports.markAttended = async (req, res) => {
   try {
-    const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    const apt = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
     const wasAttended = apt.status === 'asistida';
     if (req.body.doctorId) {
@@ -1271,7 +1295,7 @@ exports.markAttended = async (req, res) => {
       try {
         const Referral = require('../models/Referral');
         await Referral.findOneAndUpdate(
-          { _id: apt.referral, clinic: req.clinicId },
+          { _id: apt.referral, clinic: apt.clinic },
           { status: 'atendida' }
         );
       } catch (_) {}
@@ -1280,7 +1304,7 @@ exports.markAttended = async (req, res) => {
       .populate('patient', POPULATE_PATIENT)
       .populate('doctor', POPULATE_DOCTOR)
       .populate('services.product', 'name code salePrice category');
-    emitToClinic(req.clinicId, 'appointment:updated', populated);
+    emitToClinic(apt.clinic, 'appointment:updated', populated);
     if (populated.doctor?._id) emitToUser(populated.doctor._id, 'appointment:updated', populated);
     // Solo la PRIMERA vez: re-marcar (doble clic, reasignar doctor) no debe
     // re-disparar la automatización de "cita asistida".
@@ -1315,7 +1339,7 @@ exports.markAttended = async (req, res) => {
  */
 exports.updateServiceAndValue = async (req, res) => {
   try {
-    const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    const apt = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
 
     let cambio = false;
@@ -1418,7 +1442,7 @@ exports.updateServiceAndValue = async (req, res) => {
       .populate('serviceItem', 'name color nursingService')
       .populate('services.product', 'name code salePrice category');
 
-    emitToClinic(req.clinicId, 'appointment:updated', populated);
+    emitToClinic(apt.clinic, 'appointment:updated', populated);
     if (populated.doctor?._id) emitToUser(populated.doctor._id, 'appointment:updated', populated);
     res.json(populated);
   } catch (error) {
@@ -1571,7 +1595,7 @@ exports.assignDoctor = async (req, res) => {
     // Observaciones del paciente, que es donde lo va a buscar el resto.
     const observacion = String(req.body.observation || '').trim();
 
-    const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    const apt = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
 
     /**
@@ -1583,6 +1607,44 @@ exports.assignDoctor = async (req, res) => {
     const previo = apt.doctor ? String(apt.doctor) : '';
     if (previo && consultationDone(apt) && !doctores.includes(previo)) {
       return res.status(400).json({ message: DOCTOR_LOCKED_MESSAGE });
+    }
+
+    /**
+     * QUIEN ATIENDE TIENE QUE SER DE LA SUCURSAL DE LA CITA.
+     *
+     * Caja asigna citas de cualquier sede desde su mostrador, y el selector le
+     * ofrece el personal DE ESA SEDE (ver AssignAttentionModal). Pero si llega
+     * un id de otra sucursal —una pestaña abierta desde antes, una pantalla sin
+     * recargar— la cita quedaría a nombre de alguien que no la va a ver nunca:
+     * la agenda de un doctor filtra por las sucursales que tiene asignadas. Un
+     * error claro en el mostrador es mucho mejor que una cita en el limbo.
+     */
+    const aAsignar = [...new Set(pasos.map((p) => p.user).filter(Boolean).map(String))];
+    if (aAsignar.length) {
+      const User = require('../models/User');
+      const encontrados = await User.find({ _id: { $in: aAsignar } })
+        .select('name clinics active isSuperAdmin')
+        .lean();
+      /**
+       * Se juzga solo a quien TIENE sucursales asignadas: si el usuario no tiene
+       * ninguna no se sabe dónde atiende, y el caso que importa —el doctor que
+       * trabaja en otra sede— siempre las tiene. El super-admin ve todas las
+       * sucursales, así que él nunca está fuera.
+       */
+      const atiendeAqui = (u) =>
+        u.active !== false &&
+        (u.isSuperAdmin ||
+          !(u.clinics || []).length ||
+          (u.clinics || []).some((c) => String(c.clinic) === String(apt.clinic)));
+      const fuera = encontrados.filter((u) => !atiendeAqui(u));
+      if (fuera.length || encontrados.length !== aAsignar.length) {
+        const nombres = fuera.map((u) => u.name).filter(Boolean).join(', ');
+        return res.status(400).json({
+          message: nombres
+            ? `${nombres} no atiende en la sucursal de esta cita. Elige personal de esa sede.`
+            : 'Alguien de la cola ya no existe o no atiende en la sucursal de esta cita.',
+        });
+      }
     }
 
     const anteriores = doctoresPendientes(apt);
@@ -1610,7 +1672,24 @@ exports.assignDoctor = async (req, res) => {
      * marcarla ausente como cualquier otra.
      */
     const esDeHoy = !isFutureLocalDate(apt.date);
-    if (esDeHoy && (apt.status === 'pendiente' || apt.status === 'confirmada')) {
+    /**
+     * 'no_asistio' TAMBIÉN se corrige. Lo pone `autoNoShow` un minuto después de
+     * la hora, sin que nadie decida nada; si recepción está asignando al doctor
+     * es porque el paciente está delante del mostrador, así que la marca
+     * automática estaba equivocada. Sin esto la cita se atendía —el doctor la
+     * recibía igual, su bandeja va por turnos y no por estado— pero quedaba
+     * registrada como que el paciente no vino, y así entraba en los reportes.
+     *
+     * Vale igual para la marca a mano ("No asistió" del mostrador): si luego se
+     * asigna al doctor, el paciente llegó y lo que manda es lo último.
+     *
+     * 'cancelada' NO se toca: esa la canceló una persona a propósito.
+     */
+    const estabaAusente = apt.status === 'no_asistio';
+    if (
+      esDeHoy &&
+      (apt.status === 'pendiente' || apt.status === 'confirmada' || estabaAusente)
+    ) {
       apt.status = 'asistida';
     }
     await apt.save();
@@ -1619,7 +1698,7 @@ exports.assignDoctor = async (req, res) => {
       try {
         const Referral = require('../models/Referral');
         await Referral.findOneAndUpdate(
-          { _id: apt.referral, clinic: req.clinicId },
+          { _id: apt.referral, clinic: apt.clinic },
           { status: 'atendida' }
         );
       } catch (_) {}
@@ -1639,7 +1718,7 @@ exports.assignDoctor = async (req, res) => {
       try {
         const PatientObservation = require('../models/PatientObservation');
         await PatientObservation.create({
-          clinic: req.clinicId,
+          clinic: apt.clinic,
           patient: apt.patient,
           text: observacion,
           createdBy: req.user._id,
@@ -1649,7 +1728,7 @@ exports.assignDoctor = async (req, res) => {
       }
     }
 
-    emitToClinic(req.clinicId, 'appointment:updated', populated);
+    emitToClinic(apt.clinic, 'appointment:updated', populated);
     await notificarAsignacion(req, populated, { doctores, enfermeria, anteriores });
 
     // Igual que antes: la automatización de "cita asistida" solo la primera vez.
@@ -1670,6 +1749,13 @@ exports.assignDoctor = async (req, res) => {
  * abierto, va al rol entero y la toma el primero que pueda.
  */
 async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores = [] }) {
+  /**
+   * La sucursal es la DE LA CITA, no la activa de quien asigna. Caja agenda y
+   * asigna para otra sede desde su mostrador: con `req.clinicId` el turno de
+   * enfermería salía a la bandeja —y al móvil— de los enfermeros de la sucursal
+   * equivocada, y en la que de verdad atiende no se enteraba nadie.
+   */
+  const clinicId = apt.clinic;
   const paciente = [apt.patient?.firstName, apt.patient?.lastName].filter(Boolean).join(' ') || 'un paciente';
   const servicio = apt.serviceName || apt.serviceItem?.name || '';
   const cuerpo = `${paciente}${servicio ? ` · ${servicio}` : ''} · ${apt.startTime || ''}`;
@@ -1695,14 +1781,14 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
   }
   if (leTocaEnfermeria) {
     if (enfermeroNombrado) emitToUser(enfermeroNombrado, 'appointment:assigned', apt);
-    else emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
+    else emitToRole(clinicId, 'enfermero', 'appointment:assigned', apt);
   }
 
   try {
     const { notificarUsuarios, notificarRol } = require('../utils/pushNotifications');
     if (enTurno) {
       await notificarUsuarios([enTurno], {
-        clinicId: req.clinicId,
+        clinicId,
         type: 'appointment_assigned',
         title: 'Cita asignada',
         body: cuerpo,
@@ -1717,9 +1803,9 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
         url: '/appointments',
       };
       if (enfermeroNombrado) {
-        await notificarUsuarios([enfermeroNombrado], { clinicId: req.clinicId, ...aviso });
+        await notificarUsuarios([enfermeroNombrado], { clinicId, ...aviso });
       } else {
-        await notificarRol(req.clinicId, 'enfermero', aviso);
+        await notificarRol(clinicId, 'enfermero', aviso);
       }
     }
   } catch (err) {
@@ -1734,14 +1820,14 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
  */
 exports.markNoShow = async (req, res) => {
   try {
-    const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    const apt = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
     // Idempotente: un doble clic no debe re-emitir el evento (y con él, otro
     // mensaje de la automatización de no-show).
     if (apt.status === 'no_asistio') return res.json(apt);
     apt.status = 'no_asistio';
     await apt.save();
-    emitToClinic(req.clinicId, 'appointment:updated', apt);
+    emitToClinic(apt.clinic, 'appointment:updated', apt);
     // Sin este evento, el botón "No asistió" jamás disparaba los workflows de
     // no-show (solo el job nocturno de citas vencidas lo hacía).
     emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_NO_SHOW, appointmentEventPayload(apt));
@@ -1756,13 +1842,13 @@ exports.markNoShow = async (req, res) => {
  */
 exports.markConfirmed = async (req, res) => {
   try {
-    const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    const apt = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
     // Idempotente: confirmar dos veces no re-dispara la automatización.
     if (apt.status === 'confirmada') return res.json(apt);
     apt.status = 'confirmada';
     await apt.save();
-    emitToClinic(req.clinicId, 'appointment:updated', apt);
+    emitToClinic(apt.clinic, 'appointment:updated', apt);
     emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CONFIRMED, appointmentEventPayload(apt));
     res.json(apt);
   } catch (error) {
@@ -1813,8 +1899,8 @@ const advanceTreatmentsForAppointment = async (clinicId, apt) => {
  */
 exports.nurseClaim = async (req, res) => {
   try {
-    const previa = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId })
-      .select('currentTurnKind currentTurnUser turns attendedByNurse')
+    const previa = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) })
+      .select('clinic currentTurnKind currentTurnUser turns attendedByNurse')
       .lean();
     if (!previa) return res.status(404).json({ message: 'Cita no encontrada' });
 
@@ -1862,7 +1948,7 @@ exports.nurseClaim = async (req, res) => {
         (t) => t.kind === 'enfermeria' && t.status === 'pendiente'
       )?._id;
       apt = await Appointment.findOneAndUpdate(
-        { _id: req.params.id, clinic: req.clinicId, currentTurnKind: 'enfermeria' },
+        { _id: req.params.id, clinic: previa.clinic, currentTurnKind: 'enfermeria' },
         {
           $set: {
             'turns.$[t].user': req.user._id,
@@ -1905,14 +1991,14 @@ exports.nurseClaim = async (req, res) => {
       apt = await Appointment.findOneAndUpdate(
         {
           _id: req.params.id,
-          clinic: req.clinicId,
+          clinic: previa.clinic,
           $or: [{ attendedByNurse: null }, { attendedByNurse: req.user._id }],
         },
         { $set: { attendedByNurse: req.user._id, nurseClaimedAt: new Date(), status: 'asistida' } },
         { new: true }
       );
       if (!apt) {
-        const existe = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId })
+        const existe = await Appointment.findOne({ _id: req.params.id, clinic: previa.clinic })
           .populate('attendedByNurse', 'name')
           .lean();
         return res.status(409).json({
@@ -1935,10 +2021,10 @@ exports.nurseClaim = async (req, res) => {
       .populate('turns.user', POPULATE_DOCTOR)
       .populate('serviceItem', 'name color nursingService')
       .populate('services.product', 'name code salePrice category nursingService');
-    emitToClinic(req.clinicId, 'appointment:updated', populated);
+    emitToClinic(apt.clinic, 'appointment:updated', populated);
     // A los demás enfermeros les desaparece de la bandeja en el momento, sin
     // recargar: es lo que evita que dos vayan a por el mismo paciente.
-    emitToRole(req.clinicId, 'enfermero', 'appointment:claimed', populated);
+    emitToRole(apt.clinic, 'enfermero', 'appointment:claimed', populated);
     res.json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al reclamar la cita', error: error.message });
@@ -1952,7 +2038,7 @@ exports.nurseClaim = async (req, res) => {
  */
 exports.nurseComplete = async (req, res) => {
   try {
-    const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    const apt = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
     /**
@@ -2019,7 +2105,7 @@ exports.nurseComplete = async (req, res) => {
       emitToUser(siguiente.user, 'appointment:assigned', apt);
       const { notificarUsuarios } = require('../utils/pushNotifications');
       await notificarUsuarios([siguiente.user], {
-        clinicId: req.clinicId,
+        clinicId: apt.clinic,
         type: 'appointment_assigned',
         title: 'Te toca atender',
         body: `${siguiente.serviceName || 'Enfermería terminó su parte.'}`,
@@ -2028,9 +2114,9 @@ exports.nurseComplete = async (req, res) => {
           : `/patients/${apt.patient}?tab=ficha&appointment=${apt._id}`,
       }).catch(() => {});
     } else if (siguiente) {
-      emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
+      emitToRole(apt.clinic, 'enfermero', 'appointment:assigned', apt);
       const { notificarRol } = require('../utils/pushNotifications');
-      await notificarRol(req.clinicId, 'enfermero', {
+      await notificarRol(apt.clinic, 'enfermero', {
         type: 'appointment_nursing',
         title: 'Cita para enfermería',
         body: siguiente.serviceName || 'Continúa el servicio.',
@@ -2038,7 +2124,7 @@ exports.nurseComplete = async (req, res) => {
       }).catch(() => {});
     }
 
-    await advanceTreatmentsForAppointment(req.clinicId, apt);
+    await advanceTreatmentsForAppointment(apt.clinic, apt);
 
     // Auto-registro en el seguimiento del paciente (no lo llena el enfermero).
     try {
@@ -2057,9 +2143,12 @@ exports.nurseComplete = async (req, res) => {
         apt.serviceName ||
         (apt.services || []).map((s) => s.name).filter(Boolean).join(', ') ||
         'Servicio de enfermería';
-      let record = await ClinicalRecord.findOne({ clinic: req.clinicId, patient: apt.patient });
+      // La historia clínica es la de la sucursal DE LA CITA: con la activa, una
+      // cita atendida desde otra sede abriría una segunda historia del mismo
+      // paciente y el parte de enfermería se guardaría donde nadie lo busca.
+      let record = await ClinicalRecord.findOne({ clinic: apt.clinic, patient: apt.patient });
       if (!record) {
-        record = await ClinicalRecord.create({ clinic: req.clinicId, patient: apt.patient, createdBy: req.user._id });
+        record = await ClinicalRecord.create({ clinic: apt.clinic, patient: apt.patient, createdBy: req.user._id });
       }
       /**
        * LO QUE DE VERDAD SE APLICÓ.
@@ -2109,7 +2198,7 @@ exports.nurseComplete = async (req, res) => {
       .populate('doctor', POPULATE_DOCTOR)
       .populate('attendedByNurse', POPULATE_DOCTOR)
       .populate('services.product', 'name code salePrice category nursingService');
-    emitToClinic(req.clinicId, 'appointment:updated', populated);
+    emitToClinic(apt.clinic, 'appointment:updated', populated);
     res.json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al finalizar la cita', error: error.message });
