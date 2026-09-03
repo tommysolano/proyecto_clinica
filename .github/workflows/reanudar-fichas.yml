@@ -1,0 +1,65 @@
+name: Reanudar importacion de fichas
+
+# Solo manual. Mata la importacion que se haya quedado colgada y la vuelve a
+# lanzar desde donde estaba.
+#
+# POR QUE HACE FALTA: el reductor de imagenes trabaja con Chromium y, cuando al
+# VPS se le acaba la memoria, el navegador muere sin avisar. Un `page.evaluate`
+# sobre un Chromium muerto NO falla: se queda esperando para siempre. El proceso
+# sigue vivo, el latido de `onetimetasks` sigue latiendo puntual... y no avanza ni
+# una ficha. Como la marca sigue en RUNNING y fresca, ningun despliegue posterior
+# se atreve a relanzarla. Hay que matarla a mano: esto es ese "a mano".
+#
+# (El codigo ya lleva tope de tiempo por foto y se rinde tras varios fallos
+# seguidos, asi que esto deberia ser cada vez menos necesario.)
+#
+# LO QUE NO PIERDE: nada. La importacion es idempotente y ahora ademas salta sin
+# abrir el PDF lo que ya esta hecho, asi que reanudar es rapido hasta llegar al
+# punto donde se corto.
+on:
+  workflow_dispatch:
+    inputs:
+      datos:
+        description: 'JSON de fichas'
+        required: true
+        default: '../data/fichas-escaneadas-2026-08-31.json'
+      clave:
+        description: 'Clave de la tanda en onetimetasks'
+        required: true
+        default: 'importar-fichas-escaneadas-2026-09-03'
+
+jobs:
+  reanudar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Matar la importacion colgada y relanzarla
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: false
+          script: |
+            export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+            echo '===== commit desplegado ====='
+            git -C /var/www/clinica log -1 --format='%h %s'
+            echo '===== procesos de importacion vivos ====='
+            ps -eo pid,etime,rss,args | grep -F 'importPatientsFromScans' | grep -v grep || echo 'ninguno'
+            echo '===== memoria y OOM (por que se murio Chromium) ====='
+            free -m || true
+            ( dmesg -T 2>/dev/null || journalctl -k --no-pager -n 2000 2>/dev/null ) \
+              | grep -iE 'out of memory|killed process|oom-kill' | tail -n 10 || echo 'sin rastro de OOM'
+            echo '===== ultimas lineas del log ====='
+            tail -n 25 /home/clinica/import-fichas.log 2>/dev/null || echo 'sin log'
+            echo '===== matando importacion y navegadores huerfanos ====='
+            pkill -f 'importPatientsFromScans' && echo 'importacion terminada' || echo 'no habia ninguna corriendo'
+            sleep 3
+            pkill -f 'chrome.*--headless' && echo 'chromium huerfano cerrado' || echo 'sin chromium huerfano'
+            sleep 2
+            echo '===== relanzando en segundo plano (con --force, la marca esta en RUNNING) ====='
+            CMD="cd /var/www/clinica/server && node scripts/importPatientsFromScans.js --datos=${{ github.event.inputs.datos }} --key=${{ github.event.inputs.clave }} --once --commit --force"
+            sudo -iu clinica bash -lc "nohup bash -lc '$CMD' >> /home/clinica/import-fichas.log 2>&1 &"
+            sleep 20
+            echo '===== arranco bien? ====='
+            ps -eo pid,etime,args | grep -F 'importPatientsFromScans' | grep -v grep || echo 'NO ARRANCO: revisa el log'
+            tail -n 15 /home/clinica/import-fichas.log 2>/dev/null || true

@@ -60,26 +60,67 @@ function paginasJpeg(buf) {
  * `reducir` devuelve el JPEG reescalado, o el ORIGINAL si el navegador falla: en
  * una tanda de horas, quedarse sin adjunto es peor que guardar uno grande.
  */
-function crearReductor({ ancho = 1200, calidad = 0.8 } = {}) {
+function crearReductor({
+  ancho = 1200,
+  calidad = 0.8,
+  tope = 30000,
+  fallosSeguidos = 5,
+  // Cómo se abre el navegador. Se puede sustituir para probar qué pasa cuando
+  // Chromium muere o se queda colgado, que es justo lo que hay que garantizar y
+  // no se puede provocar con un Chromium de verdad.
+  lanzar = null,
+} = {}) {
   let navegador = null;
   let pagina = null;
+  let fallos = 0;
+  let rendido = false;
 
   async function preparar() {
     if (pagina) return pagina;
-    const puppeteer = require('puppeteer');
-    navegador = await puppeteer.launch({
+    const abrir = lanzar || (() => require('puppeteer').launch({
       headless: 'new',
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
+    }));
+    navegador = await abrir();
+    // Si el navegador se cae —en este VPS lo mata el kernel por memoria— hay que
+    // olvidarlo para que la siguiente foto abra uno nuevo. Sin esto se seguiría
+    // usando una página muerta, cuyo `evaluate` NO falla: se queda esperando.
+    navegador.on('disconnected', () => { navegador = null; pagina = null; });
     pagina = await navegador.newPage();
     return pagina;
   }
 
+  async function cerrarNavegador() {
+    const n = navegador;
+    navegador = null;
+    pagina = null;
+    if (n) await n.close().catch(() => {});
+  }
+
+  /**
+   * Un `evaluate` sobre un Chromium que acaba de morir no rechaza: se queda
+   * colgado para siempre. Y colgado es MUCHO peor que fallado — en la tanda de
+   * septiembre la importación se quedó clavada a las dos horas, con el latido
+   * latiendo tan tranquilo y sin crear ni una ficha más, así que nada avisaba.
+   * Con tope de tiempo, una foto que no vuelve se da por perdida y se sigue.
+   */
+  const conTope = (promesa) => Promise.race([
+    promesa,
+    new Promise((_, rechazar) => {
+      const t = setTimeout(() => rechazar(new Error(`la reducción pasó de ${tope} ms`)), tope);
+      t.unref?.();
+    }),
+  ]);
+
   return {
     async reducir(jpeg) {
+      // Tras varios fallos seguidos el navegador no va a volver: seguir
+      // intentándolo son 30 s tirados por foto. Se pasa a copiar tal cual, que da
+      // adjuntos más pesados pero deja la importación avanzando.
+      if (rendido) return jpeg;
       try {
-        const p = await preparar();
-        const url = await p.evaluate(
+        const p = await conTope(preparar());
+        const url = await conTope(p.evaluate(
           async (b64, w, q) => {
             const img = new Image();
             img.src = `data:image/jpeg;base64,${b64}`;
@@ -96,19 +137,23 @@ function crearReductor({ ancho = 1200, calidad = 0.8 } = {}) {
           jpeg.toString('base64'),
           ancho,
           calidad
-        );
+        ));
+        fallos = 0;
         const reducida = Buffer.from(url.split(',')[1], 'base64');
         return esJpeg(reducida) && reducida.length < jpeg.length ? reducida : jpeg;
       } catch (_) {
+        // La página puede haber quedado inservible (navegador muerto): se suelta
+        // para que la siguiente foto abra una nueva.
+        pagina = null;
+        fallos += 1;
+        if (fallos >= fallosSeguidos) {
+          rendido = true;
+          await cerrarNavegador();
+        }
         return jpeg;
       }
     },
-    async cerrar() {
-      const n = navegador;
-      navegador = null;
-      pagina = null;
-      if (n) await n.close().catch(() => {});
-    },
+    cerrar: cerrarNavegador,
   };
 }
 

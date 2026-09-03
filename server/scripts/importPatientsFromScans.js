@@ -300,6 +300,28 @@ async function materialFicha(doc, { dirs, reductor, reducir = true }) {
   };
 }
 
+/**
+ * ¿Esta ficha ya está entera? Se mira ANTES de tocar el PDF.
+ *
+ * Importa por el REANUDAR: una tanda de 6.000 fichas se corta (aquí se colgó el
+ * Chromium a las dos horas) y hay que relanzarla. Sin esta comprobación, el
+ * segundo intento vuelve a abrir, despiezar y reescalar las 2.000 ya hechas para
+ * acabar descartándolas — horas de trabajo para no cambiar nada.
+ */
+async function fichaCompleta(doc, paciente) {
+  if (!paciente) return false;
+  const historia = await ClinicalRecord.findOne({ clinic: doc.clinic, patient: paciente._id })
+    .select('followUps.attachments.originalName').lean();
+  const tieneFicha = (historia?.followUps || []).some((f) =>
+    (f.attachments || []).some((a) => a.originalName === NOMBRE_FICHA(doc))
+  );
+  if (!tieneFicha) return false;
+  // De una sola página no hay observación que crear: con el seguimiento basta.
+  if ((doc.pages || 0) <= 1) return true;
+  const obs = await PatientObservation.findOne({ 'scanImport.scan': doc._id }).select('_id').lean();
+  return Boolean(obs);
+}
+
 /** Nombres visibles de los adjuntos. Son la marca de que la ficha ya se procesó. */
 const NOMBRE_FICHA = (doc) => `${sanitizeName(doc.name)} - ficha.pdf`;
 const NOMBRE_HOJAS = (doc, paginas) =>
@@ -634,6 +656,7 @@ async function importarFichas({
     chatsVinculados: 0,
     chatsRenombrados: 0,
     convertidos: 0,
+    yaHechas: 0,
   };
   /** Teléfonos cuyos chats ya se miraron en esta pasada (ver vincularConversaciones). */
   const telefonosVistos = new Set();
@@ -676,6 +699,24 @@ async function importarFichas({
           omitidos.push({
             ficha: etiqueta,
             motivo: `hay más de un paciente llamado "${norm.datos.nombres} ${norm.datos.apellidos}": hay que decidir a mano de quién es esta ficha`,
+          });
+          continue;
+        }
+
+        // Reanudar: lo que ya está hecho se salta sin abrir el PDF (ver `fichaCompleta`).
+        if (commit && hallado.paciente && await fichaCompleta(doc, hallado.paciente)) {
+          resumen.yaHechas += 1;
+          fusionados.push({
+            ficha: etiqueta,
+            paciente: String(hallado.paciente._id),
+            nombre: `${hallado.paciente.firstName} ${hallado.paciente.lastName}`.trim(),
+            cedula: hallado.paciente.cedula,
+            fecha,
+            dudas,
+            via: hallado.via,
+            seguimiento: false,
+            observacion: false,
+            sinHoja: '',
           });
           continue;
         }
@@ -871,6 +912,7 @@ async function runOnce({ key = TASK_KEY, ruta, force = false, dirs, log = consol
       chatsVinculados: r.resumen?.chatsVinculados || 0,
       chatsRenombrados: r.resumen?.chatsRenombrados || 0,
       convertidos: r.resumen?.convertidos || 0,
+      yaHechas: r.resumen?.yaHechas || 0,
     };
     await OneTimeTask.updateOne({ _id: key }, { $set: { status: 'DONE', finishedAt: new Date(), result } });
     log(`🔒  Marca "${key}" = DONE: no volverá a ejecutarse en los próximos despliegues.`);
@@ -927,6 +969,7 @@ function informe({ creados, fusionados, omitidos, errores, resumen }, commit) {
       console.log(`\nCampos COMPLETADOS (los tenía vacíos): ${cuenta(resumen.completados)}`);
       console.log(`Campos con OTRO valor (se guardan los dos): ${cuenta(resumen.discrepancias)}`);
       console.log(`Fichas de la importación vieja convertidas al criterio nuevo: ${resumen.convertidos}`);
+      console.log(`Fichas que ya estaban hechas (reanudar): ${resumen.yaHechas}`);
       console.log(`CRM: ${resumen.chatsVinculados} chats vinculados al paciente, ${resumen.chatsRenombrados} renombrados`);
     }
   }
