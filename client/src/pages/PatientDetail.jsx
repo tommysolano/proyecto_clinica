@@ -10,7 +10,7 @@ import NumericInput from '../components/NumericInput';
 import Cie10Select from '../components/Cie10Select';
 import Odontograma from '../components/Odontograma';
 import CincoElementos from '../components/CincoElementos';
-import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO } from '../utils/roles';
+import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO, ROLES_VEN_DIRECCION } from '../utils/roles';
 import {
   ANTECEDENTES_CATEGORIAS,
   HABITOS_CATEGORIAS,
@@ -428,13 +428,14 @@ export default function PatientDetail() {
 // ───────────────────────── Datos ─────────────────────────
 function DatosTab({ patient }) {
   const { hasRole } = useAuth();
-  // Datos de contacto (correo, teléfono, WhatsApp y dirección): solo el
-  // administrador. Para los demás el servidor los omite, así que ni se pintan.
+  // Teléfono y WhatsApp: solo el administrador. Para los demás el servidor los
+  // omite, así que ni se pintan.
   const showContact = hasRole('admin');
-  // La cédula es la excepción: mostrador la necesita para identificar y facturar.
+  // Cédula, dirección y correo son las excepciones: los tres campos que lleva la
+  // factura, así que mostrador los ve (el correo, además, quien atiende).
   const showCedula = hasRole(...ROLES_VEN_CEDULA);
-  // Y el correo la otra: quien atiende manda por ahí un resultado o una receta.
   const showEmail = hasRole(...ROLES_VEN_CORREO);
+  const showDireccion = hasRole(...ROLES_VEN_DIRECCION);
   const sourceLabels = {
     anuncio: 'Anuncio',
     referido: 'Referido',
@@ -472,7 +473,7 @@ function DatosTab({ patient }) {
         />
         <Item label="Edad" value={patient.computedAge ?? patient.age ?? '—'} otros={otros('edad')} />
         <Item label="Género" value={patient.gender} />
-        {showContact && <Item label="Dirección" value={patient.address} otros={otros('direccion')} />}
+        {showDireccion && <Item label="Dirección" value={patient.address} otros={otros('direccion')} />}
         <Item
           label="Origen del paciente"
           value={

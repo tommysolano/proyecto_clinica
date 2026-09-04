@@ -15,9 +15,11 @@ const { phoneSearchRegex } = require('../utils/phoneNormalize');
  * personal trabaja con el nombre: quien agenda, quien atiende y quien hace marketing
  * no necesita saber por dónde contactar al paciente por su cuenta.
  *
- * Con UNA excepción por campo: la CÉDULA la ve además mostrador (capacidad
- * `patients.cedula`, ver `canSeeCedula`), porque es con lo que identifica y
- * factura a la persona que tiene delante. Los otros cuatro campos no se mueven.
+ * Con excepciones POR CAMPO, no por rol: la CÉDULA, el CORREO y la DIRECCIÓN los
+ * ve además mostrador (son los tres datos que lleva la factura electrónica), y el
+ * CORREO lo ve también quien atiende (por ahí manda el resultado). El TELÉFONO y
+ * el WHATSAPP no se mueven de ahí: son la vía de contacto directa con el paciente
+ * y siguen siendo solo del administrador.
  *
  * Se censura en el SERVIDOR, no en React: ocultar una columna no es un permiso —
  * cualquiera abre la pestaña de red y lee el JSON. Lo que no se envía, no se filtra.
@@ -57,15 +59,31 @@ const canSeeCedula = (req) => canSeeContactData(req) || canReq(req, 'patients.ce
  * administración cada vez terminaba con el dato apuntado en un papel sobre el
  * escritorio, que es peor sitio que la ficha.
  *
- * Otra excepción de UN campo, igual que la cédula: dirección, teléfono y
- * WhatsApp siguen siendo del admin. Por eso el filtro es POR CAMPO.
+ * Mostrador lo ve también, pero por otro motivo: es la dirección de correo a la
+ * que se manda el RIDE de la factura (ver `canSeeAddress`).
  */
 const canSeeEmail = (req) => canSeeContactData(req) || canReq(req, 'patients.email');
+
+/**
+ * Y LA DIRECCIÓN, PARA MOSTRADOR (pedido de caja, sep-2026).
+ *
+ * Junto con la cédula y el correo, completa los tres campos que van en el
+ * comprobante electrónico del SRI. Caja ya los recibía al facturar —los
+ * selectores de cliente los piden con `?withContact=1`, capacidad
+ * `patients.billingData`—, así que el dato no es nuevo para ese rol: lo que
+ * pasaba es que la ficha del paciente y el listado de Clientes se los censuraban
+ * igualmente y había que abrir Nueva venta para leerlos.
+ *
+ * Teléfono y WhatsApp NO entran: no son datos del comprobante, son la vía de
+ * contacto directa con el paciente. Ahí está la línea.
+ */
+const canSeeAddress = (req) => canSeeContactData(req) || canReq(req, 'patients.address');
 
 /** ¿Puede ver ESTE campo de contacto? */
 const canSeeContactField = (req, field) => {
   if (field === 'cedula') return canSeeCedula(req);
   if (field === 'email') return canSeeEmail(req);
+  if (field === 'address') return canSeeAddress(req);
   return canSeeContactData(req);
 };
 

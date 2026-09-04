@@ -14,7 +14,7 @@ import SriStatus from '../components/SriStatus';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import EmailStatus from '../components/EmailStatus';
 import useEmailValidation from '../hooks/useEmailValidation';
-import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO } from '../utils/roles';
+import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO, ROLES_VEN_DIRECCION } from '../utils/roles';
 import { nombreSucursal } from '../utils/clinicName';
 import {
   HiOutlinePlus,
@@ -109,15 +109,17 @@ export default function Patients() {
    * enseña el campo, y el servidor tampoco se lo aceptaría.
    */
   const puedeFijarValor = hasRole('admin', 'cajero');
-  // Teléfono, WhatsApp y dirección son solo del administrador: al resto el
-  // servidor ni se los envía (ver CONTACT_FIELDS en patientController).
+  // Teléfono y WhatsApp son solo del administrador: al resto el servidor ni se
+  // los envía (ver CONTACT_FIELDS en patientController).
   const showContact = hasRole('admin');
-  // La CÉDULA es la excepción: mostrador identifica y factura con ella, así que
-  // la ve y la corrige (capacidad `patients.cedula` en el servidor).
+  // CÉDULA, DIRECCIÓN y CORREO son las excepciones, y todas por lo mismo: son
+  // los tres datos que lleva la factura, así que mostrador los ve Y LOS CORRIGE
+  // (es quien descubre que están mal, al facturar). El correo lo ve además quien
+  // atiende. Capacidades `patients.cedula` / `patients.address` /
+  // `patients.email` en el servidor, que es quien manda.
   const showCedula = hasRole(...ROLES_VEN_CEDULA);
-  // El CORREO es la otra: quien atiende manda por ahí un resultado o una receta
-  // (capacidad `patients.email`).
   const showEmail = hasRole(...ROLES_VEN_CORREO);
+  const showDireccion = hasRole(...ROLES_VEN_DIRECCION);
   // Nombre + Edad + Acciones siempre; cédula según showCedula; teléfono solo
   // para el admin y correo para quien puede verlo. El número tiene que cuadrar
   // con las columnas de verdad: es el colSpan del "no se encontraron pacientes"
@@ -703,7 +705,7 @@ export default function Patients() {
               />
             </Field>
           </div>
-          {(showContact || !editing) && (
+          {(showDireccion || !editing) && (
             <Field label="Dirección">
               <input name="address" value={form.address} onChange={handleChange} className="input" />
             </Field>

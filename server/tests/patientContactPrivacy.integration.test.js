@@ -1,13 +1,18 @@
 /**
  * DATOS DE CONTACTO DEL PACIENTE: cédula, dirección, teléfono, WhatsApp y correo.
  *
- * La regla es que los ve SOLO el administrador, con DOS excepciones de un campo
- * cada una: la CÉDULA la ve además mostrador (`patients.cedula`), porque es con
- * lo que identifica y factura a la persona que tiene delante; y el CORREO lo ve
- * además quien atiende (`patients.email`), porque por ahí manda el resultado de
- * un examen o la receta. Lo que se vigila aquí es que se cumpla en el SERVIDOR y
- * no solo en React: ocultar una columna no es un permiso, cualquiera abre la
- * pestaña de red y lee el JSON.
+ * La regla es que los ve SOLO el administrador, con excepciones POR CAMPO:
+ *  · MOSTRADOR ve cédula, dirección y correo (`patients.cedula`,
+ *    `patients.address`, `patients.email`): son los TRES DATOS QUE LLEVA LA
+ *    FACTURA ELECTRÓNICA, y ya los recibía al facturar con `?withContact=1`.
+ *  · QUIEN ATIENDE ve el correo (`patients.email`), porque por ahí manda el
+ *    resultado de un examen o la receta.
+ *
+ * TELÉFONO Y WHATSAPP no tienen excepción y son la línea que separa las dos
+ * cosas: un dato del comprobante no es la vía de contacto directa con el
+ * paciente. Lo que se vigila aquí es que se cumpla en el SERVIDOR y no solo en
+ * React: ocultar una columna no es un permiso, cualquiera abre la pestaña de red
+ * y lee el JSON.
  *
  * La EDAD no está en esta lista y nunca lo estuvo: no es un dato de contacto y
  * le llega a todo el mundo. Si sale vacía es porque el paciente no tiene fecha
@@ -29,8 +34,8 @@ const patients = require('../controllers/patientController');
 const clinicalRecords = require('../controllers/clinicalRecordController');
 
 const CONTACT_FIELDS = ['cedula', 'address', 'phone', 'whatsapp', 'email'];
-// Los cuatro que NO tienen excepción: siguen siendo solo del admin.
-const SOLO_ADMIN = ['address', 'phone', 'whatsapp', 'email'];
+// Los dos que NO tienen excepción para nadie: siguen siendo solo del admin.
+const SOLO_ADMIN = ['phone', 'whatsapp'];
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -101,9 +106,17 @@ test('P1) la ficha del paciente llega con los datos de contacto solo para el adm
   const comoDoctor = ok(await getOne(clinicId, userId, 'doctor', patient._id));
   assert.equal(typeof (comoDoctor.computedAge ?? comoDoctor.age), 'number', 'la edad llega calculada');
 
-  // Mostrador: la cédula sí, y SOLO la cédula.
+  /**
+   * MOSTRADOR VE LOS TRES CAMPOS DE LA FACTURA (sep-2026).
+   *
+   * Cédula, dirección y correo son lo que va en el comprobante electrónico y lo
+   * que caja ya recibía por la otra puerta (`?withContact=1` en los selectores
+   * de Nueva venta). Teléfono y WhatsApp NO: esa es la línea.
+   */
   const comoCajero = ok(await getOne(clinicId, userId, 'cajero', patient._id));
   assert.equal(comoCajero.cedula, '0102030405', 'mostrador identifica al paciente por su cédula');
+  assert.equal(comoCajero.address, 'Av. Siempre Viva 123', 'la dirección va en la factura');
+  assert.equal(comoCajero.email, 'ana@example.com', 'y a ese correo se manda el RIDE');
   for (const f of SOLO_ADMIN) {
     assert.equal(comoCajero[f], undefined, `el cajero NO debe recibir ${f}`);
   }
@@ -125,6 +138,8 @@ test('P3) el listado censura igual, y solo el selector de facturación pide el c
 
   const paraCajero = ok(await list(clinicId, userId, 'cajero'));
   assert.equal(paraCajero.patients[0].cedula, '0102030405', 'mostrador ve la cédula');
+  assert.equal(paraCajero.patients[0].address, 'Av. Siempre Viva 123');
+  assert.equal(paraCajero.patients[0].email, 'ana@example.com');
   for (const f of SOLO_ADMIN) {
     assert.equal(paraCajero.patients[0][f], undefined, `el listado sigue censurando ${f}`);
   }
@@ -194,14 +209,15 @@ test('P5) guardar desde un rol sin acceso NO borra la cédula ni el teléfono', 
   const { clinicId, userId } = await H.seedClinic();
   const patient = await seedPaciente(clinicId);
 
-  // Justo lo que manda el formulario del cajero: los campos que no ve, vacíos.
-  // La cédula NO va vacía porque su formulario sí la trae: se manda tal cual.
+  // Justo lo que manda el formulario del cajero: teléfono y WhatsApp vacíos,
+  // porque son los únicos dos que no ve. Cédula, dirección y correo SÍ los trae
+  // rellenos (los ve), así que se mandan tal cual.
   const body = {
     firstName: 'ANA MARIA',
     cedula: '0102030405',
+    email: 'ana@example.com',
+    address: 'Av. Siempre Viva 123',
     phone: '',
-    email: '',
-    address: '',
     whatsapp: '',
   };
   ok(await H.runController(
@@ -213,8 +229,22 @@ test('P5) guardar desde un rol sin acceso NO borra la cédula ni el teléfono', 
   assert.equal(enBase.firstName, 'ANA MARIA', 'lo que sí puede editar se guarda');
   assert.equal(enBase.cedula, '0102030405', 'la cédula sigue ahí');
   assert.equal(enBase.phone, '0991112233', 'el teléfono sigue ahí');
+  assert.equal(enBase.whatsapp, '0991112233', 'y el WhatsApp también');
   assert.equal(enBase.email, 'ana@example.com');
   assert.equal(enBase.address, 'Av. Siempre Viva 123');
+
+  // Y la corrige: es quien descubre al facturar que la dirección o el correo del
+  // comprobante están mal.
+  ok(await H.runController(
+    patients.updatePatient,
+    H.mockReq(clinicId, userId, {
+      address: 'Av. Amazonas N34-12', email: 'ana.nueva@example.com',
+    }, { role: 'cajero', params: { id: String(patient._id) } })
+  ));
+  const corregido = await Patient.findById(patient._id);
+  assert.equal(corregido.address, 'Av. Amazonas N34-12', 'mostrador corrige la dirección');
+  assert.equal(corregido.email, 'ana.nueva@example.com', 'y el correo');
+  assert.equal(corregido.phone, '0991112233', 'sin tocar el teléfono');
 
   // Y quien NO ve la cédula tampoco la borra al guardar (el doctor la recibe
   // vacía, así que su formulario la manda vacía).
@@ -321,10 +351,11 @@ test('P8) el OTRO valor de la ficha física se censura igual que el campo', asyn
   const comoDoctor = ok(await getOne(clinicId, userId, 'doctor', patient._id));
   assert.deepEqual(campos(comoDoctor), ['correo', 'edad'], 'el correo sí; la edad nunca fue de contacto');
 
-  // Mostrador ve la cédula del paciente: también la que dice el papel, que es
-  // justo la que necesita comparar cuando no cuadra.
+  // Mostrador ve los tres campos de la factura: también los que dice el papel,
+  // que son justo los que necesita comparar cuando no cuadran. El celular del
+  // papel NO, que es el mismo teléfono que se le censura en el campo.
   const comoCajero = ok(await getOne(clinicId, userId, 'cajero', patient._id));
-  assert.deepEqual(campos(comoCajero), ['cedula', 'edad']);
+  assert.deepEqual(campos(comoCajero), ['cedula', 'correo', 'direccion', 'edad']);
 });
 
 /**

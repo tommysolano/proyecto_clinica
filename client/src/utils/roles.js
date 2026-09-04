@@ -48,18 +48,30 @@ export const ROLE_LABELS = {
 export const ROLES_VEN_CEDULA = ['admin', 'cajero'];
 
 /**
- * Quién ve el CORREO del paciente: el admin y quien lo atiende (sep-2026).
+ * Quién ve el CORREO del paciente: el admin, quien lo atiende y mostrador.
  *
  * El médico manda por correo un resultado, una receta o las indicaciones de un
  * examen; tenerlo que pedir a administración cada vez acababa con el dato en un
- * papel encima del escritorio. Es una excepción de UN campo, como la cédula:
- * teléfono, WhatsApp y dirección siguen siendo solo del admin.
+ * papel encima del escritorio. Caja lo ve por otro motivo: es la dirección a la
+ * que se manda el RIDE de la factura (ver ROLES_VEN_DIRECCION).
  *
  * Espejo de la capacidad `patients.email` del servidor, que es quien manda: esto
  * solo decide si se pinta el hueco. 'optica' va enumerada porque en el cliente
  * NO expande desde 'doctor' (ver DOCTOR_SPECIALTY_ROLES arriba).
  */
-export const ROLES_VEN_CORREO = ['admin', 'doctor', 'optica'];
+export const ROLES_VEN_CORREO = ['admin', 'doctor', 'optica', 'cajero'];
+
+/**
+ * Quién ve la DIRECCIÓN del paciente: el admin y mostrador (sep-2026).
+ *
+ * Cédula + dirección + correo son los tres campos que lleva el comprobante
+ * electrónico, y caja ya los recibía al facturar (`?withContact=1`): la ficha se
+ * los seguía escondiendo, así que tenía que abrir Nueva venta para leerlos.
+ *
+ * TELÉFONO Y WHATSAPP siguen siendo solo del admin: no son datos de la factura,
+ * son la vía de contacto directa con el paciente. Espejo de `patients.address`.
+ */
+export const ROLES_VEN_DIRECCION = ['admin', 'cajero'];
 
 /**
  * Quién VE Y OPERA toda la organización, no solo su sucursal: administración,
