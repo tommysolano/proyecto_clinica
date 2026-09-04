@@ -22,9 +22,53 @@ const buildPublicUser = (user, activeClinic = null, role = null) => ({
   cedula: user.cedula,
   phone: user.phone,
   clinics: user.clinics || [],
+  worksInAllClinics: !!user.worksInAllClinics,
   activeClinic,
   role,
 });
+
+/** Los campos de sucursal que necesita el selector del frontend. */
+const CAMPOS_SUCURSAL = 'name razonSocial nombreComercial appointmentSlotMinutes';
+
+const aplanar = (clinic, role) => ({
+  _id: clinic._id,
+  name: clinic.name,
+  razonSocial: clinic.razonSocial,
+  nombreComercial: clinic.nombreComercial,
+  // La rejilla de la agenda viaja con cada sucursal: el call center agenda en
+  // sedes distintas desde el mismo formulario.
+  appointmentSlotMinutes: clinic.appointmentSlotMinutes || 0,
+  role,
+});
+
+/**
+ * A QUÉ SUCURSALES PUEDE ENTRAR ESTA PERSONA, y con qué rol en cada una.
+ *
+ * Estaba escrito dos veces —en el login y en `/auth/me`— con la misma forma y el
+ * mismo caso especial (el super-admin las ve todas). Al aparecer el SEGUNDO caso
+ * de "las ve todas" (`worksInAllClinics`: el doctor que rota por las sedes según
+ * el horario) tocaba escribirlo dos veces más, y la copia que se olvidara
+ * dejaría a esa persona sin poder cambiarse a la sede donde le pusieron la cita.
+ *
+ * `getRoleForClinic` es quien decide el rol, siempre: aquí no se vuelve a
+ * razonar sobre `clinics[]`.
+ */
+async function sucursalesAccesibles(user) {
+  const todas = user.isSuperAdmin || user.worksInAllClinics;
+  const filtro = todas
+    ? { active: true }
+    : { _id: { $in: (user.clinics || []).map((c) => c.clinic) }, active: true };
+
+  const clinics = await Clinic.find(filtro).select(CAMPOS_SUCURSAL).sort({ name: 1 });
+  return clinics
+    .map((clinic) => {
+      // El super-admin entra como admin allí donde no tenga rol propio; es la
+      // regla que ya aplicaba `middleware/auth`.
+      const role = user.getRoleForClinic(clinic._id) || (user.isSuperAdmin ? 'admin' : null);
+      return role ? aplanar(clinic, role) : null;
+    })
+    .filter(Boolean);
+}
 
 /**
  * Cambia la contraseña del usuario autenticado.
@@ -118,45 +162,10 @@ exports.login = async (req, res) => {
       return res.status(403).json({ message: blockMessage(block.rule), code: 'ACCESS_BLOCKED' });
     }
 
-    const clinicIds = user.clinics.map((c) => c.clinic);
-    const clinics = await Clinic.find({ _id: { $in: clinicIds }, active: true }).select(
-      'name razonSocial nombreComercial appointmentSlotMinutes'
-    );
-
-    // Mapear clínicas con su rol
-    const clinicsWithRole = user.clinics
-      .map((c) => {
-        const clinic = clinics.find((cl) => String(cl._id) === String(c.clinic));
-        return clinic ? { clinic, role: c.role } : null;
-      })
-      .filter(Boolean);
-
-    // Si super-admin sin clínicas asignadas, listar todas
-    let availableClinics = clinicsWithRole;
-    if (user.isSuperAdmin) {
-      const allClinics = await Clinic.find({ active: true }).select(
-        'name razonSocial nombreComercial appointmentSlotMinutes'
-      );
-      availableClinics = allClinics.map((clinic) => {
-        const existing = clinicsWithRole.find((c) => String(c.clinic._id) === String(clinic._id));
-        return existing || { clinic, role: 'admin' };
-      });
-    }
+    const flatClinics = await sucursalesAccesibles(user);
 
     // Token "preliminar" sin clinicId (solo permite seleccionar)
     const token = signToken({ id: user._id });
-
-    // Aplanar lista para el frontend
-    const flatClinics = availableClinics.map(({ clinic, role }) => ({
-      _id: clinic._id,
-      name: clinic.name,
-      razonSocial: clinic.razonSocial,
-      nombreComercial: clinic.nombreComercial,
-              // La rejilla de la agenda viaja con cada sucursal: el call center
-              // agenda en sedes distintas desde el mismo formulario.
-              appointmentSlotMinutes: clinic.appointmentSlotMinutes || 0,
-      role,
-    }));
 
     res.json({
       token,
@@ -206,48 +215,7 @@ exports.getMe = async (req, res) => {
       );
     }
 
-    // Lista plana de clínicas accesibles (igual que en login)
-    const clinicIds = req.user.clinics.map((c) => c.clinic);
-    let clinicsDocs = await Clinic.find({ _id: { $in: clinicIds }, active: true }).select(
-      'name razonSocial nombreComercial appointmentSlotMinutes'
-    );
-    let flatClinics = req.user.clinics
-      .map((c) => {
-        const clinic = clinicsDocs.find((cl) => String(cl._id) === String(c.clinic));
-        return clinic
-          ? {
-              _id: clinic._id,
-              name: clinic.name,
-              razonSocial: clinic.razonSocial,
-              nombreComercial: clinic.nombreComercial,
-              // La rejilla de la agenda viaja con cada sucursal: el call center
-              // agenda en sedes distintas desde el mismo formulario.
-              appointmentSlotMinutes: clinic.appointmentSlotMinutes || 0,
-              role: c.role,
-            }
-          : null;
-      })
-      .filter(Boolean);
-    if (req.user.isSuperAdmin) {
-      const all = await Clinic.find({ active: true }).select(
-        'name razonSocial nombreComercial appointmentSlotMinutes'
-      );
-      flatClinics = all.map((clinic) => {
-        const ex = flatClinics.find((c) => String(c._id) === String(clinic._id));
-        return (
-          ex || {
-            _id: clinic._id,
-            name: clinic.name,
-            razonSocial: clinic.razonSocial,
-            nombreComercial: clinic.nombreComercial,
-              // La rejilla de la agenda viaja con cada sucursal: el call center
-              // agenda en sedes distintas desde el mismo formulario.
-              appointmentSlotMinutes: clinic.appointmentSlotMinutes || 0,
-            role: 'admin',
-          }
-        );
-      });
-    }
+    const flatClinics = await sucursalesAccesibles(req.user);
 
     res.json({
       user: buildPublicUser(req.user, activeClinic, req.role),

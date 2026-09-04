@@ -142,10 +142,12 @@ async function notificarUsuarios(userIds, { clinicId, type, title, body, url, me
 
 /** Igual, pero a todos los usuarios con un rol en esa sucursal (enfermería). */
 async function notificarRol(clinicId, role, datos) {
-  // $elemMatch y no dos condiciones sueltas: sin él, mongo daría por bueno a
-  // quien es enfermero en OTRA sucursal y además tiene un rol cualquiera en esta.
+  // `enSucursal` monta el $elemMatch (y no dos condiciones sueltas: sin él, mongo
+  // daría por bueno a quien es enfermero en OTRA sucursal y además tiene un rol
+  // cualquiera en esta) e incluye a quien trabaja en todas las sedes — que si
+  // puede atender aquí, tiene que enterarse de que hay alguien esperando.
   const usuarios = await User.find({
-    clinics: { $elemMatch: { clinic: clinicId, role } },
+    ...User.enSucursal(clinicId, role),
     active: { $ne: false },
   })
     .select('_id')

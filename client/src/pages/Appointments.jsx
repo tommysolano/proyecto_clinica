@@ -599,10 +599,18 @@ export default function Appointments() {
    * cuadraba.
    */
   const canEdit = (apt) => {
+    /**
+     * QUIEN ATIENDE NO EDITA LA CITA.
+     *
+     * El doctor asignado tenía el lápiz («es su cita») y con él el formulario
+     * entero: fecha, hora, servicio, paciente y precio de una visita que además
+     * suele ser la suya. Eso es trabajo de mostrador, no clínico — lo suyo es la
+     * ficha— y el botón, ahí puesto, invitaba a tocarlo. El servidor aplica la
+     * misma regla (`updateAppointment`), así que esto solo evita el intento.
+     */
+    if (!isAdmin && !canCharge && !isCallCenter) return false;
     if (apt.status === 'completada') return isAdmin || canCharge;
-    if (isAdmin) return true;
-    if (isDoctor && String(apt.doctor?._id || apt.doctor) === String(user?.id)) return true;
-    return String(apt.createdBy?._id || apt.createdBy) === String(user?.id);
+    return true;
   };
 
   // Cita que se está editando: hace falta su estado real (no solo el del
@@ -1394,19 +1402,36 @@ export default function Appointments() {
                    *
                    * Si la cita sigue siendo MÍA no hace falta: para eso están
                    * «Atender» y «Receta», que es por donde se entra a trabajar.
+                   * Pero solo mientras esté VIVA: una cita cerrada no la tiene
+                   * ya nadie, por mucho que su turno diga otra cosa (ver abajo).
                    */
-                  const laTengoYo = esMiTurno || (apt.status === 'asistida' && isNurse && enfermeriaMia);
+                  const laTengoYo =
+                    apt.status !== 'completada'
+                    && (esMiTurno || (apt.status === 'asistida' && isNurse && enfermeriaMia));
+                  /**
+                   * Con la cita CERRADA basta con ser su doctor (o su enfermera)
+                   * para poder volver a entrar, aunque el turno no lo diga.
+                   *
+                   * Antes se exigía un turno `completado` a mi nombre, y solo se
+                   * caía al espejo en citas sin turnos. El resultado fue el caso
+                   * que reportó la clínica: quien cerró con el botón «Finalizar»
+                   * dejaba la cita completada CON SU TURNO PENDIENTE (eso ya se
+                   * arregló en `endConsultation`), y entonces no le salía ni
+                   * «Ver / corregir» —porque no había turno cerrado suyo— ni
+                   * «Atender» —porque la cita estaba completada—: se quedaba sin
+                   * ninguna forma de volver a lo que acababa de escribir.
+                   *
+                   * El espejo vale aquí porque la cita ya terminó: apunta a
+                   * quien la atendió, que es exactamente a quien preguntamos.
+                   */
+                  const soyElEspejo =
+                    idDe(apt.doctor) === String(user?.id)
+                    || idDe(apt.attendedByNurse) === String(user?.id);
                   const puedoCorregir =
                     (isDoctor || isNurse)
                     && ['asistida', 'completada'].includes(apt.status)
                     && !laTengoYo
-                    && (yaAtendi
-                      // Citas anteriores a los turnos: ahí manda el espejo, que
-                      // es lo único que dice quién atendió. Solo una vez cerrada:
-                      // sin turnos no hay forma de saber si ya escribió lo suyo.
-                      || (apt.status === 'completada' && !conTurnos
-                        && (idDe(apt.doctor) === String(user?.id)
-                          || idDe(apt.attendedByNurse) === String(user?.id))));
+                    && (yaAtendi || (apt.status === 'completada' && soyElEspejo));
                   const showDoctorTimer =
                     isDoctor && esMiTurno && apt.status !== 'completada';
                   const inProgress =

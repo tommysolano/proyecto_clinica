@@ -587,9 +587,17 @@ exports.createAppointment = async (req, res) => {
 
 exports.updateAppointment = async (req, res) => {
   try {
-    // Permisos: solo admin puede editar cualquier cita.
-    // Otros roles solo pueden editar las citas que ellos mismos crearon.
-    // El doctor puede actualizar las suyas (diagnóstico, tratamiento, cronómetro, completar).
+    /**
+     * QUIÉN EDITA UNA CITA: mostrador y administración. Quien ATIENDE, no.
+     *
+     * El doctor asignado podía editar «las suyas», y eso venía de cuando esta
+     * ruta era también por donde se atendía. Ya no: la consulta va por `/start`
+     * y `/end` y el seguimiento por la ficha clínica, así que lo único que le
+     * quedaba abierto era el formulario de la cita — mover la fecha, la hora, el
+     * servicio, el paciente o el precio de una visita que además suele ser suya.
+     * Nada de eso es trabajo clínico, y en la práctica el lápiz aparecía en su
+     * agenda invitando a tocarlo.
+     */
     const existing = await Appointment.findOne({
       _id: req.params.id,
       ...filtroSucursalCita(req),
@@ -604,16 +612,13 @@ exports.updateAppointment = async (req, res) => {
     const clinicScope = existing.clinic;
 
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
-    const isCreator = String(existing.createdBy || '') === String(req.user._id);
-    const isAssignedDoctor =
-      (isDoctorRole(req.role)) && String(existing.doctor || '') === String(req.user._id);
     // Recepción (cajero/call_center) puede reagendar/editar cualquier cita.
     // La comisión NO cambia: queda con el creador original (createdBy se preserva).
     const isFrontDesk = ['cajero', 'call_center'].includes(req.role);
-    if (!isAdmin && !isCreator && !isAssignedDoctor && !isFrontDesk) {
+    if (!isAdmin && !isFrontDesk) {
       return res.status(403).json({
-        message:
-          'Solo los administradores o el creador de la cita pueden editarla.',
+        message: 'La cita la edita mostrador o un administrador.',
+        code: 'APPOINTMENT_EDIT_FRONT_DESK',
       });
     }
 
@@ -970,10 +975,31 @@ exports.endConsultation = async (req, res) => {
       });
     }
 
-    appointment.consultationEndedAt = new Date();
-    appointment.status = 'completada';
+    /**
+     * FINALIZAR TAMBIÉN CIERRA EL TURNO.
+     *
+     * Antes solo ponía `status = 'completada'` y dejaba el turno del doctor en
+     * «pendiente». La cita quedaba en un estado que no existe —cerrada y con la
+     * pelota todavía en manos de alguien— y el efecto lo sufría justo quien la
+     * atendió: para la pantalla la cita seguía siendo SUYA (`currentTurnUser`),
+     * así que no le ofrecía «Ver / corregir», y por estar completada tampoco le
+     * ofrecía «Atender». Se quedaba sin ninguna forma de volver a entrar a lo
+     * que acababa de escribir.
+     *
+     * Guardar el seguimiento ya lo hacía bien (ver `addFollowUp`); esta puerta
+     * era la que se lo saltaba. Y por eso mismo el estado ya no se fuerza: si
+     * detrás queda otro profesional, la cita CAMBIA DE MANOS en vez de cerrarse.
+     */
+    const { completarTurno } = require('../utils/appointmentTurns');
+    const { siguiente, terminado } = completarTurno(appointment, { userId: req.user._id });
+    if (terminado || !appointment.turns?.length) {
+      appointment.consultationEndedAt = new Date();
+      appointment.status = 'completada';
+    }
     await appointment.save();
     emitToClinic(appointment.clinic, 'appointment:updated', appointment);
+    // Al siguiente le llega la cita ahora, igual que al guardar un seguimiento.
+    if (siguiente?.user) emitToUser(siguiente.user, 'appointment:assigned', appointment);
     emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(appointment));
 
     // Sincronizar derivación asociada

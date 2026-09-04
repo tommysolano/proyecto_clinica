@@ -9,11 +9,11 @@
  *
  * Mismo criterio para `patients.contactData` (cédula, dirección, teléfono, WhatsApp y correo
  * del paciente): es SOLO del administrador —le basta con `'*'`, no hace falta listarla—, así
- * que el servidor la borra de la respuesta para todos los demás roles. Tiene cuatro
- * excepciones, todas explicadas abajo y todas de UN campo: `patients.billingData` (los
- * selectores de cliente al facturar), `patients.cedula` (la cédula, y solo ella, para
- * mostrador), `patients.email` (el correo, para quien atiende y para mostrador) y
- * `patients.address` (la dirección, y solo ella, para mostrador).
+ * que el servidor la borra de la respuesta para todos los demás roles. Las excepciones son
+ * POR CAMPO, y están explicadas abajo: `patients.billingData` (los selectores de cliente al
+ * facturar), `patients.cedula`, `patients.address`, `patients.phone` (teléfono y WhatsApp,
+ * que van juntos) y `patients.email` — este último es el único que sale de mostrador: lo
+ * tiene también quien atiende, porque por ahí manda el resultado.
  *
  * `patients.observations.moderate` es la otra capacidad exclusiva del admin: una observación
  * del paciente la edita quien la escribió, y el admin además de eso (queda registrado como
@@ -48,25 +48,24 @@ const CAPS = {
   // `?withContact=1`— traigan cédula, correo y teléfono: sin ellos el comprobante
   // electrónico saldría a consumidor final y la cartera quedaría sin identificación.
   //
-  // 'patients.cedula', 'patients.email' y 'patients.address' SÍ son "ver datos del paciente",
-  // y son las grietas abiertas en 'patients.contactData' para mostrador: son LOS TRES CAMPOS
-  // QUE LLEVA LA FACTURA ELECTRÓNICA (identificación, dirección y correo al que se manda el
-  // RIDE), más lo que hace falta para no cobrarle a un homónimo y para saber que el paciente
-  // que llegó es el de la agenda.
+  // MOSTRADOR VE LOS DATOS DE CONTACTO DEL PACIENTE, campo a campo (sep-2026).
   //
-  // No es una concesión nueva de confianza: caja YA recibe esos tres campos al facturar por
-  // 'patients.billingData' (?withContact=1). Lo único que pasaba es que la ficha del paciente
-  // y el listado de Clientes se los seguían censurando, así que tenía que abrir Nueva venta
-  // para leer un correo que el sistema ya le estaba enviando por otra puerta.
+  // Empezó por la cédula (identificar y facturar a quien tiene delante), siguió por correo y
+  // dirección —los otros dos campos que van en el comprobante electrónico— y terminó en
+  // teléfono y WhatsApp, a petición expresa: recepción es quien llama para confirmar una
+  // cita, avisar de un resultado o localizar a quien no llegó, y tenía que pedirle cada
+  // número a un administrador.
   //
-  // TELÉFONO Y WHATSAPP NO: siguen siendo del admin. Son la vía de contacto directa con el
-  // paciente, no un dato del comprobante, y esa es justo la línea que separa las dos cosas.
-  //
-  // El Excel de pacientes no incluye ninguno de los tres: sacar la base entera en un archivo
-  // no es identificar al cliente del mostrador (ver 'exportPatients').
+  // Con los cinco concedidos, el efecto es el mismo que 'patients.contactData'. Se dejan
+  // ENUMERADOS igualmente, y no se le da la capacidad entera, porque no son lo mismo:
+  // 'patients.contactData' abre además la hoja MSP con la cabecera completa
+  // (`clinicalRecordController`) y las columnas del Excel de pacientes, que son decisiones
+  // distintas y siguen siendo del administrador. Sacar la base entera en un archivo no es
+  // identificar al cliente del mostrador (ver 'exportPatients').
   cajero: [
     'inventory.view', 'count.start', 'count.edit', 'warehouse.view', 'sales.report', 'cashflow.view',
-    'patients.billingData', 'patients.cedula', 'patients.email', 'patients.address',
+    'patients.billingData',
+    'patients.cedula', 'patients.email', 'patients.address', 'patients.phone',
   ],
   /**
    * EL CORREO DEL PACIENTE, PARA QUIEN LO ATIENDE (sep-2026).

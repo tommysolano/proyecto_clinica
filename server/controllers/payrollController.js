@@ -360,7 +360,7 @@ exports.getEmployee = async (req, res) => {
 exports.listLinkableUsers = async (req, res) => {
   try {
     const users = await User.find({ active: true, 'clinics.clinic': req.clinicId })
-      .select('name email phone cedula clinics')
+      .select('name email phone cedula clinics worksInAllClinics')
       .sort({ name: 1 });
     const employees = await Employee.find({ clinic: req.clinicId, user: { $ne: null } }).select('user');
     const linked = new Set(employees.map((e) => String(e.user)));

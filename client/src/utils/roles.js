@@ -68,10 +68,22 @@ export const ROLES_VEN_CORREO = ['admin', 'doctor', 'optica', 'cajero'];
  * electrónico, y caja ya los recibía al facturar (`?withContact=1`): la ficha se
  * los seguía escondiendo, así que tenía que abrir Nueva venta para leerlos.
  *
- * TELÉFONO Y WHATSAPP siguen siendo solo del admin: no son datos de la factura,
- * son la vía de contacto directa con el paciente. Espejo de `patients.address`.
+ * Espejo de la capacidad `patients.address`.
  */
 export const ROLES_VEN_DIRECCION = ['admin', 'cajero'];
+
+/**
+ * Quién ve el TELÉFONO y el WHATSAPP del paciente: el admin y mostrador.
+ *
+ * Van juntos porque son el mismo número en dos campos. Recepción es quien llama
+ * —confirma la cita, avisa de un resultado, localiza a quien no llegó—, y tenía
+ * que pedirle cada número a un administrador.
+ *
+ * Espejo de `patients.phone`. Con esto mostrador ve los cinco datos de contacto;
+ * lo que NO tiene es la capacidad entera `patients.contactData`, que además abre
+ * la hoja MSP completa y las columnas del Excel de pacientes.
+ */
+export const ROLES_VEN_TELEFONO = ['admin', 'cajero'];
 
 /**
  * Quién VE Y OPERA toda la organización, no solo su sucursal: administración,

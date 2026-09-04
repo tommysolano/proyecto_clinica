@@ -10,7 +10,7 @@ import NumericInput from '../components/NumericInput';
 import Cie10Select from '../components/Cie10Select';
 import Odontograma from '../components/Odontograma';
 import CincoElementos from '../components/CincoElementos';
-import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO, ROLES_VEN_DIRECCION } from '../utils/roles';
+import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO, ROLES_VEN_DIRECCION, ROLES_VEN_TELEFONO } from '../utils/roles';
 import {
   ANTECEDENTES_CATEGORIAS,
   HABITOS_CATEGORIAS,
@@ -323,7 +323,7 @@ export default function PatientDetail() {
               {[
                 hasRole(...ROLES_VEN_CEDULA) ? `CI: ${patient.cedula || '—'}` : '',
                 `Edad: ${patient.computedAge ?? patient.age ?? '—'}`,
-                hasRole('admin') ? patient.phone : '',
+                hasRole(...ROLES_VEN_TELEFONO) ? patient.phone : '',
                 showEmail ? patient.email : '',
               ]
                 .filter(Boolean)
@@ -428,9 +428,9 @@ export default function PatientDetail() {
 // ───────────────────────── Datos ─────────────────────────
 function DatosTab({ patient }) {
   const { hasRole } = useAuth();
-  // Teléfono y WhatsApp: solo el administrador. Para los demás el servidor los
-  // omite, así que ni se pintan.
-  const showContact = hasRole('admin');
+  // Teléfono y WhatsApp: admin y mostrador (es quien llama). Para los demás el
+  // servidor los omite, así que ni se pintan.
+  const showContact = hasRole(...ROLES_VEN_TELEFONO);
   // Cédula, dirección y correo son las excepciones: los tres campos que lleva la
   // factura, así que mostrador los ve (el correo, además, quien atiende).
   const showCedula = hasRole(...ROLES_VEN_CEDULA);

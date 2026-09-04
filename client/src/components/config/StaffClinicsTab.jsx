@@ -56,7 +56,7 @@ const ROLES_OPERATIVOS = [
 const plano = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 
 export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
-  // Cambios sin guardar: { [userId]: clinicId | '' }
+  // Cambios sin guardar: { [userId]: { sede: clinicId | '', todas: boolean } }
   const [borrador, setBorrador] = useState({});
   const [guardando, setGuardando] = useState(null);
   const [q, setQ] = useState('');
@@ -71,11 +71,14 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
   /** Sucursal guardada ('' si no trabaja en ninguna de las visibles). */
   const sedeGuardada = (u) => idDe(asignacionesVisibles(u)[0]) || SIN_SEDE;
 
-  /** Sucursal que se está mostrando: la del borrador si se tocó, si no la guardada. */
-  const sedeActual = (u) => {
-    const cambio = borrador[u._id];
-    return cambio === undefined ? sedeGuardada(u) : cambio;
-  };
+  /** Lo que se está MOSTRANDO: el borrador si se tocó la fila, si no lo guardado. */
+  const estado = (u) => borrador[u._id] || { sede: sedeGuardada(u), todas: !!u.worksInAllClinics };
+  const sedeActual = (u) => estado(u).sede;
+  const todasActual = (u) => estado(u).todas;
+
+  /** ¿Esta persona sale en el desplegable de ESTA sede? */
+  const trabajaEn = (u, clinicId) =>
+    todasActual(u) || String(sedeActual(u)) === String(clinicId);
 
   /**
    * EL ROL SE CONSERVA, NO SE ELIGE.
@@ -91,7 +94,8 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
     || (u.clinics || [])[0]?.role
     || '';
 
-  const cambiar = (u, clinicId) => setBorrador((b) => ({ ...b, [u._id]: clinicId }));
+  const cambiar = (u, campos) =>
+    setBorrador((b) => ({ ...b, [u._id]: { ...estado(u), ...campos } }));
 
   const descartar = (u) =>
     setBorrador((b) => {
@@ -101,7 +105,7 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
     });
 
   const guardar = async (u) => {
-    const sede = sedeActual(u);
+    const { sede, todas } = estado(u);
     const role = rolDe(u);
     if (sede && !role) {
       toast.error(`${u.name} no tiene rol. Asígnaselo en Configuración → Usuarios.`);
@@ -114,14 +118,30 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
        * lo que no va, el servidor lo entiende como «ya no trabaja ahí», y así
        * mover a alguien lo QUITA de la anterior en la misma operación. Las sedes
        * que este admin no gestiona no viajan y el servidor las conserva.
+       *
+       * La sucursal viaja también con el check puesto: de ella sale el ROL, que
+       * es lo que se extiende a todas las sedes.
        */
       const assignments = sede ? [{ clinic: sede, role }] : [];
-      const { data } = await api.put(`/users/${u._id}/assignments`, { assignments });
-      onUsersChange((list) => list.map((x) => (x._id === u._id ? { ...x, clinics: data.clinics } : x)));
+      const { data } = await api.put(`/users/${u._id}/assignments`, {
+        assignments,
+        worksInAllClinics: todas,
+      });
+      onUsersChange((list) =>
+        list.map((x) =>
+          x._id === u._id
+            ? { ...x, clinics: data.clinics, worksInAllClinics: data.worksInAllClinics }
+            : x,
+        ),
+      );
       descartar(u);
       const nombre = clinics.find((c) => String(c._id) === String(sede));
       toast.success(
-        sede ? `${u.name} trabaja en ${nombreSucursal(nombre)}` : `${u.name} ya no está en ninguna sucursal`,
+        todas
+          ? `${u.name} aparece en todas las sucursales`
+          : sede
+            ? `${u.name} trabaja en ${nombreSucursal(nombre)}`
+            : `${u.name} ya no está en ninguna sucursal`,
       );
     } catch (err) {
       toast.error(err.response?.data?.message || 'No se pudo guardar');
@@ -135,7 +155,9 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
     return users.filter((u) => {
       if (texto && !plano(u.name).includes(texto) && !plano(u.email).includes(texto)) return false;
       if (filtroRol && rolDe(u) !== filtroRol) return false;
-      if (filtroSede && String(sedeActual(u)) !== String(filtroSede)) return false;
+      // Quien rota por todas sale en el filtro de cualquier sede: es la verdad
+      // de lo que va a pasar en esa sucursal.
+      if (filtroSede && !trabajaEn(u, filtroSede)) return false;
       return true;
     });
     // `borrador` entra a propósito: al cambiar la sede la fila debe seguir (o
@@ -150,7 +172,7 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
     clinics.forEach((c) => {
       acc[c._id] = users.filter(
         (u) =>
-          String(sedeActual(u)) === String(c._id)
+          trabajaEn(u, c._id)
           && (!filtroRol || rolDe(u) === filtroRol)
           && u.active !== false,
       ).length;
@@ -172,7 +194,8 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
   return (
     <div className="space-y-4">
       <div className="bg-sky-50 border border-sky-200 text-sky-900 text-xs sm:text-sm rounded-xl px-3 py-2">
-        Cada persona trabaja en <b>una</b> sucursal. De aquí sale quién aparece al asignar la
+        Cada persona trabaja en <b>una</b> sucursal, salvo que marques <b>En todas</b> — para
+        quien rota entre sedes según el horario. De aquí sale quién aparece al asignar la
         atención de una cita y a quién le suenan los avisos de enfermería.
       </div>
 
@@ -229,13 +252,14 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
               <th className="text-left px-4 py-3 font-semibold min-w-[220px]">Persona</th>
               <th className="text-left px-3 py-3 font-semibold">Rol</th>
               <th className="text-left px-3 py-3 font-semibold min-w-[220px]">Sucursal</th>
+              <th className="text-left px-3 py-3 font-semibold w-32">En todas</th>
               <th className="px-3 py-3 w-40"></th>
             </tr>
           </thead>
           <tbody>
             {visibles.length === 0 && (
               <tr>
-                <td colSpan={4}>
+                <td colSpan={5}>
                   <EmptyState
                     icon={HiOutlineBuildingOffice2}
                     title="Nadie coincide"
@@ -245,8 +269,8 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
               </tr>
             )}
             {visibles.map((u) => {
-              const sede = sedeActual(u);
-              const sucio = sede !== sedeGuardada(u);
+              const { sede, todas } = estado(u);
+              const sucio = sede !== sedeGuardada(u) || todas !== !!u.worksInAllClinics;
               const rol = rolDe(u);
               return (
                 <tr
@@ -279,7 +303,7 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
                   <td className="px-3 py-2">
                     <select
                       value={sede}
-                      onChange={(e) => cambiar(u, e.target.value)}
+                      onChange={(e) => cambiar(u, { sede: e.target.value })}
                       className={`input text-xs py-1.5 ${
                         sucio ? 'border-amber-400 bg-amber-50' : sede ? '' : 'border-amber-300 bg-amber-50 text-amber-800'
                       }`}
@@ -300,6 +324,30 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
                         <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
                       ))}
                     </select>
+                    {todas && (
+                      <p className="text-[11px] text-emerald-700 mt-1">
+                        De aquí sale su rol; aparece en todas.
+                      </p>
+                    )}
+                  </td>
+
+                  {/**
+                    * «EN TODAS»: para quien rota por sedes según el horario.
+                    *
+                    * No sustituye a la sucursal, la extiende — de la fila de al
+                    * lado sale el rol y este check dice que vale en cualquier
+                    * sede. Por eso la sucursal se sigue eligiendo igual.
+                    */}
+                  <td className="px-3 py-2">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={todas}
+                        onChange={(e) => cambiar(u, { todas: e.target.checked })}
+                        className="w-4 h-4 accent-emerald-600 cursor-pointer"
+                      />
+                      <span>Todas</span>
+                    </label>
                   </td>
 
                   <td className="px-3 py-2">

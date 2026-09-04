@@ -62,7 +62,7 @@ exports.getStaffAssignments = async (req, res) => {
     // Se listan también los desactivados: aparecen en gris y se pueden reactivar
     // sin tener que adivinar que existen.
     const users = await User.find({ 'clinics.clinic': { $in: ids } })
-      .select('name email specialty active isSuperAdmin clinics')
+      .select('name email specialty active isSuperAdmin clinics worksInAllClinics')
       .sort({ name: 1 })
       .lean();
     res.json({ clinics, users });
@@ -127,6 +127,26 @@ exports.updateStaffAssignments = async (req, res) => {
     }
 
     target.clinics = [...intactas, ...porClinica.values()];
+
+    /**
+     * «TRABAJA EN TODAS LAS SUCURSALES».
+     *
+     * No sustituye a la asignación, la EXTIENDE: de la fila sale el rol, y el
+     * check dice que ese rol vale en cualquier sede (ver User.worksInAllClinics).
+     * Por eso se exige tener sucursal — sin ella no hay rol que extender y la
+     * persona quedaría marcada como "en todas" y sin ser nada en ninguna.
+     */
+    if (req.body.worksInAllClinics !== undefined) {
+      const marcar = !!req.body.worksInAllClinics;
+      if (marcar && !target.clinics.length) {
+        return res.status(400).json({
+          message: 'Para marcar «trabaja en todas las sucursales» primero hay que asignarle una: de ahí sale su rol.',
+          code: 'ALL_CLINICS_WITHOUT_ROLE',
+        });
+      }
+      target.worksInAllClinics = marcar;
+    }
+
     await target.save();
 
     // El middleware `auth` cachea el usuario: sin esto el cambio tardaría hasta
@@ -134,7 +154,7 @@ exports.updateStaffAssignments = async (req, res) => {
     require('../utils/userCache').invalidate(String(target._id));
 
     const populated = await User.findById(target._id)
-      .select('name email specialty active isSuperAdmin clinics')
+      .select('name email specialty active isSuperAdmin clinics worksInAllClinics')
       .lean();
     res.json(populated);
   } catch (error) {
@@ -437,7 +457,9 @@ exports.getNurses = async (req, res) => {
     const clinicId = sucursalPedida(req);
     const nurses = await User.find({
       active: true,
-      clinics: { $elemMatch: { clinic: clinicId, role: 'enfermero' } },
+      // `enSucursal` y no un $elemMatch a mano: incluye a quien está marcado
+      // como "trabaja en todas las sucursales" (ver User.worksInAllClinics).
+      ...User.enSucursal(clinicId, 'enfermero'),
     })
       .select('name email')
       .sort({ name: 1 })
@@ -454,15 +476,19 @@ exports.getDoctors = async (req, res) => {
     const clinicId = sucursalPedida(req);
     const doctors = await User.find({
       active: true,
-      clinics: { $elemMatch: { clinic: clinicId, role: { $in: DOCTOR_LIKE_ROLES } } },
+      ...User.enSucursal(clinicId, DOCTOR_LIKE_ROLES),
     })
       .select('-password')
       .sort({ name: 1 })
       .lean();
     const withRole = doctors.map((d) => ({
       ...d,
+      // Quien rota por todas no tiene fila para ESTA sede: su rol es el de su
+      // asignación, igual que resuelve `getRoleForClinic`.
       roleInClinic:
-        (d.clinics || []).find((c) => String(c.clinic) === String(clinicId))?.role || null,
+        (d.clinics || []).find((c) => String(c.clinic) === String(clinicId))?.role
+        || (d.worksInAllClinics ? d.clinics?.[0]?.role : null)
+        || null,
     }));
     res.json(withRole);
   } catch (error) {

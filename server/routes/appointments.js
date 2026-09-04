@@ -37,7 +37,15 @@ router.post('/', requireRole('admin', 'cajero', 'call_center'), createAppointmen
 // a las especialidades — nace para óptica, donde el paciente entra sin cita y lo
 // registra el propio optómetra.
 router.post('/walk-in', requireRole('admin', 'doctor'), createWalkIn);
-router.put('/:id', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero'), updateAppointment);
+/**
+ * EDITAR LA CITA es de mostrador: fecha, hora, servicio, paciente, precio.
+ *
+ * 'doctor' y 'enfermero' estaban aquí de cuando esta ruta era también por donde
+ * se atendía; hoy la consulta va por `/start` y `/end` y lo que se escribe va a
+ * la ficha clínica. Lo único que les quedaba abierto era el formulario de la
+ * cita, que no es trabajo clínico. El controlador aplica la misma regla.
+ */
+router.put('/:id', requireRole('admin', 'cajero', 'call_center'), updateAppointment);
 router.post('/:id/start', requireRole('admin', 'doctor'), startConsultation);
 router.post('/:id/end', requireRole('admin', 'doctor'), endConsultation);
 router.post('/:id/confirm', requireRole('admin', 'cajero', 'call_center', 'enfermero'), markConfirmed);

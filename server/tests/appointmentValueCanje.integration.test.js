@@ -291,29 +291,32 @@ test('quien atiende NO puede colar el valor al crear la cita', async () => {
 });
 
 /**
- * EL VALOR ES DE MOSTRADOR TAMBIÉN AL EDITAR LA CITA.
+ * QUIEN ATIENDE NO LLEGA NI A LA PUERTA DE EDITAR (sep-2026).
  *
- * Las otras tres puertas por las que entra el importe pasan por
- * `aplicarValorDeCita`, que comprueba el rol y sella quién lo puso. El PUT de la
- * cita se volcaba entero en el update: call center —que puede editar citas— le
- * ponía precio a una consulta y encima sin dejar rastro de quién fue.
+ * Antes este test comprobaba algo más flojo: que enfermería podía editar la cita
+ * pero el importe se le ignoraba. Desde que editar la cita es de mostrador
+ * (`updateAppointment`), la respuesta es un 403 y el filtro del valor queda como
+ * segunda línea — sigue ahí, porque protege de que mañana se vuelva a abrir la
+ * ruta a alguien que no deba poner precios.
  */
 test('quien ATIENDE no le pone precio a la cita ni por la puerta de editar', async () => {
   const { clinicId, userId, make } = await seedCase();
   const apt = await make({ status: 'pendiente', agreedValue: 40 });
 
-  const r = await H.runController(
-    appt.updateAppointment,
-    H.mockReq(
-      clinicId, userId,
-      { reason: 'Corrijo el motivo', agreedValue: 999, isCanje: true, advancePayment: 'total' },
-      { role: 'enfermero', params: { id: String(apt._id) } }
-    )
-  );
-  assert.equal(r.statusCode ?? 200, 200, JSON.stringify(r.payload));
+  for (const rol of ['enfermero', 'doctor', 'ginecologia']) {
+    const r = await H.runController(
+      appt.updateAppointment,
+      H.mockReq(
+        clinicId, userId,
+        { reason: 'Corrijo el motivo', agreedValue: 999, isCanje: true, advancePayment: 'total' },
+        { role: rol, params: { id: String(apt._id) } }
+      )
+    );
+    assert.equal(r.statusCode, 403, `${rol}: ${JSON.stringify(r.payload)}`);
+  }
 
   const enBase = await Appointment.findById(apt._id);
-  assert.equal(enBase.reason, 'Corrijo el motivo', 'lo que sí puede tocar, se guarda');
+  assert.equal(enBase.reason, undefined, 'ni el motivo se toca');
   assert.equal(enBase.agreedValue, 40, 'el importe se queda como estaba');
   assert.equal(enBase.isCanje, false, 'y el canje tampoco es suyo');
   assert.equal(enBase.advancePayment, '', 'ni el pago adelantado');

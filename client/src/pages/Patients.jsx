@@ -14,7 +14,7 @@ import SriStatus from '../components/SriStatus';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import EmailStatus from '../components/EmailStatus';
 import useEmailValidation from '../hooks/useEmailValidation';
-import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO, ROLES_VEN_DIRECCION } from '../utils/roles';
+import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO, ROLES_VEN_DIRECCION, ROLES_VEN_TELEFONO } from '../utils/roles';
 import { nombreSucursal } from '../utils/clinicName';
 import {
   HiOutlinePlus,
@@ -109,21 +109,19 @@ export default function Patients() {
    * enseña el campo, y el servidor tampoco se lo aceptaría.
    */
   const puedeFijarValor = hasRole('admin', 'cajero');
-  // Teléfono y WhatsApp son solo del administrador: al resto el servidor ni se
-  // los envía (ver CONTACT_FIELDS en patientController).
-  const showContact = hasRole('admin');
-  // CÉDULA, DIRECCIÓN y CORREO son las excepciones, y todas por lo mismo: son
-  // los tres datos que lleva la factura, así que mostrador los ve Y LOS CORRIGE
-  // (es quien descubre que están mal, al facturar). El correo lo ve además quien
-  // atiende. Capacidades `patients.cedula` / `patients.address` /
-  // `patients.email` en el servidor, que es quien manda.
+  // Teléfono y WhatsApp: admin y mostrador, que es quien llama. Al resto el
+  // servidor ni se los envía (ver CONTACT_FIELDS en patientController).
+  const showContact = hasRole(...ROLES_VEN_TELEFONO);
+  // CÉDULA, DIRECCIÓN y CORREO: mostrador los ve Y LOS CORRIGE, porque es quien
+  // descubre que están mal al facturar. El correo lo ve además quien atiende.
+  // Capacidades `patients.cedula` / `patients.address` / `patients.email` en el
+  // servidor, que es quien manda.
   const showCedula = hasRole(...ROLES_VEN_CEDULA);
   const showEmail = hasRole(...ROLES_VEN_CORREO);
   const showDireccion = hasRole(...ROLES_VEN_DIRECCION);
-  // Nombre + Edad + Acciones siempre; cédula según showCedula; teléfono solo
-  // para el admin y correo para quien puede verlo. El número tiene que cuadrar
-  // con las columnas de verdad: es el colSpan del "no se encontraron pacientes"
-  // y el ancho del esqueleto.
+  // Nombre + Edad + Acciones siempre; las demás según quién mire. El número
+  // tiene que cuadrar con las columnas de verdad: es el colSpan del "no se
+  // encontraron pacientes" y el ancho del esqueleto.
   const columnCount = 3 + (showCedula ? 1 : 0) + (showContact ? 1 : 0) + (showEmail ? 1 : 0);
   const canDelete = hasRole('admin');
 

@@ -79,11 +79,24 @@ const canSeeEmail = (req) => canSeeContactData(req) || canReq(req, 'patients.ema
  */
 const canSeeAddress = (req) => canSeeContactData(req) || canReq(req, 'patients.address');
 
+/**
+ * EL TELÉFONO Y EL WHATSAPP, PARA MOSTRADOR (pedido de recepción, sep-2026).
+ *
+ * Van juntos y no por separado a propósito: son el mismo número escrito en dos
+ * campos, y dar uno sin el otro no protege nada, solo obliga a mirar dos veces.
+ *
+ * Recepción es quien llama: confirma la cita del día siguiente, avisa de que un
+ * resultado ya está, localiza a quien no llegó. Pedirle cada número a un
+ * administrador era el mismo rodeo que ya había con el correo.
+ */
+const canSeePhone = (req) => canSeeContactData(req) || canReq(req, 'patients.phone');
+
 /** ¿Puede ver ESTE campo de contacto? */
 const canSeeContactField = (req, field) => {
   if (field === 'cedula') return canSeeCedula(req);
   if (field === 'email') return canSeeEmail(req);
   if (field === 'address') return canSeeAddress(req);
+  if (field === 'phone' || field === 'whatsapp') return canSeePhone(req);
   return canSeeContactData(req);
 };
 
