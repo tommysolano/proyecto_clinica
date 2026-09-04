@@ -190,6 +190,10 @@ saleSchema.index(
   { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
 );
 
+// Mismo motivo que en Appointment: 'firstVisit' pregunta si el paciente ya compró
+// aquí alguna vez, sin filtrar por sucursal, en cada agendamiento.
+saleSchema.index({ patient: 1 });
+
 // Generar saleNumber por clínica
 saleSchema.pre('save', async function (next) {
   if (!this.saleNumber) {

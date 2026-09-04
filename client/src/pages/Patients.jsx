@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import useDebounce from '../hooks/useDebounce';
 import { downloadFile } from '../utils/download';
-import { todayEc, nowEcHHMM } from '../utils/date';
+import { todayEc, nowEcHHMM, edadDesdeFecha } from '../utils/date';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
@@ -209,11 +209,14 @@ export default function Patients() {
     const visible = Object.fromEntries(
       Object.entries(patient).filter(([, v]) => v !== undefined && v !== null)
     );
+    const nacimiento = patient.birthDate ? patient.birthDate.split('T')[0] : '';
     setForm({
       ...emptyForm,
       ...visible,
-      birthDate: patient.birthDate ? patient.birthDate.split('T')[0] : '',
-      age: patient.age ?? '',
+      birthDate: nacimiento,
+      // Con fecha de nacimiento la edad se recalcula al abrir: la guardada puede
+      // ser de hace tres años y el campo ya no se puede corregir a mano.
+      age: nacimiento ? edadDesdeFecha(nacimiento) : (patient.age ?? ''),
     });
     setAptForm(emptyApt);
     setModalOpen(true);
@@ -313,6 +316,21 @@ export default function Patients() {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
+    /**
+     * LA EDAD SE CALCULA SOLA en cuanto hay fecha de nacimiento.
+     *
+     * Los dos campos decían lo mismo y se tecleaban por separado, así que se
+     * contradecían: la ficha de un paciente de 1990 podía decir «28 años» porque
+     * la edad se escribió una vez y ahí se quedó. Con la fecha puesta, la edad
+     * es un dato derivado y se comporta como tal (el campo queda de solo
+     * lectura); borrando la fecha se vuelve a poder escribir a mano, que es como
+     * se registra a quien no se acuerda del día en que nació.
+     */
+    if (name === 'birthDate') {
+      const edad = edadDesdeFecha(value);
+      setForm({ ...form, birthDate: value, age: value ? edad : form.age });
+      return;
+    }
     setForm({ ...form, [name]: (name === 'firstName' || name === 'lastName') ? value.toUpperCase() : value });
   };
 
@@ -624,15 +642,19 @@ export default function Patients() {
                 className="input"
               />
             </Field>
-            <Field label="Edad (si no tiene fecha)">
+            {/* Con fecha de nacimiento la edad es un dato derivado: se enseña,
+                pero no se teclea (así no puede contradecir a la fecha). */}
+            <Field label={form.birthDate ? 'Edad (calculada)' : 'Edad (si no tiene fecha)'}>
               <NumericInput
                 name="age"
                 min="0"
                 max="150"
                 value={form.age}
                 onChange={handleChange}
-                className="input"
+                readOnly={!!form.birthDate}
+                className={`input ${form.birthDate ? 'bg-slate-50 text-slate-500' : ''}`}
                 placeholder="Ej: 35"
+                title={form.birthDate ? 'Se calcula con la fecha de nacimiento' : ''}
               />
             </Field>
           </div>

@@ -14,6 +14,7 @@ const {
 } = require('../utils/booking');
 const { lookupTaxId } = require('../utils/cedulaLookup');
 const { checkEmail } = require('../utils/emailValidation');
+const { esPrimeraVisita } = require('../utils/firstVisit');
 
 async function loadEnabledConfig(token) {
   if (!token) return null;
@@ -226,7 +227,9 @@ exports.book = async (req, res) => {
       });
     }
 
-    const previousCount = await Appointment.countDocuments({ clinic: cfg.clinic, patient: patient._id });
+    // Nuevo es quien no tiene NINGÚN rastro previo, no solo quien no tiene citas:
+    // los pacientes que se atendían en papel llevan años viniendo (firstVisit.js).
+    const primeraVisita = await esPrimeraVisita(patient._id);
     const appointment = await Appointment.create({
       clinic: cfg.clinic,
       patient: patient._id,
@@ -235,7 +238,7 @@ exports.book = async (req, res) => {
       endTime: addMinutesHHMM(startTime, svc.durationMinutes),
       services: [{ product: svc.product, name: svc.name }],
       status: 'pendiente',
-      isFirstVisit: previousCount === 0,
+      isFirstVisit: primeraVisita,
       createdByRole: 'online',
       reason: `Reserva online: ${svc.name}`,
     });

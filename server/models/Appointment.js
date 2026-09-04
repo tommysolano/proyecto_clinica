@@ -293,6 +293,13 @@ const appointmentSchema = new mongoose.Schema(
 appointmentSchema.index({ clinic: 1, 'turns.user': 1, date: 1 });
 appointmentSchema.index({ clinic: 1, 'turns.kind': 1, 'turns.status': 1, date: 1 });
 
+// «¿Este paciente ha venido alguna vez?» (`utils/firstVisit.js`) se pregunta en
+// CADA agendamiento y va sin sucursal —nuevo se es para la clínica, no para la
+// sede—, así que no puede apoyarse en el índice por `clinic`. Sin este, la
+// pregunta recorre la colección entera justo cuando el paciente ES nuevo, que es
+// cuando no hay ninguna cita en la que parar.
+appointmentSchema.index({ patient: 1 });
+
 // Mapeo de estados legacy. Mantenemos compatibilidad pero ahora preservamos
 // los estados detallados (cancelada / no_asistio) que antes se descartaban.
 const LEGACY_STATUS_MAP = {

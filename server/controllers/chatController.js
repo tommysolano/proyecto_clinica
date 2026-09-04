@@ -23,6 +23,7 @@ const {
   shiftForDay,
 } = require('../utils/agentSchedule');
 const { restrictionIsActive } = require('../utils/workflowChatRestriction');
+const { esPrimeraVisita } = require('../utils/firstVisit');
 
 /**
  * Normaliza un número de teléfono a sólo dígitos (sin +, ni espacios).
@@ -5129,13 +5130,10 @@ exports.createAppointmentFromChat = async (req, res) => {
       products.forEach((p) => productsMap.set(String(p._id), p));
     }
 
-    const previousCount = await Appointment.countDocuments({
-      clinic: req.clinicId,
-      patient: conv.patient._id,
-    });
-
     const created = [];
-    let first = previousCount === 0;
+    // Nuevo es quien no tiene NINGÚN rastro previo, no solo quien no tiene citas:
+    // los que se atendían en papel llevan años viniendo (ver utils/firstVisit.js).
+    let first = await esPrimeraVisita(conv.patient._id);
     for (const a of requested) {
       const localDate = parseLocalDate(a.date);
       const serviceItems = (a.services || [])

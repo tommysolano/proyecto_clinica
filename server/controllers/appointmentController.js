@@ -36,6 +36,7 @@ const {
 } = require('../utils/appointmentDate');
 const { isDoctorRole } = require('../constants/roles');
 const { veTodaLaOrganizacion } = require('../utils/clinicScope');
+const { esPrimeraVisita } = require('../utils/firstVisit');
 
 /**
  * Espacios de la agenda de una sucursal, en minutos (0 = cualquier hora).
@@ -535,12 +536,13 @@ exports.createAppointment = async (req, res) => {
     // ¿Es primera cita del paciente?
     // Solo se considera "nuevo" si tiene servicios que NO estén marcados como
     // excludeFromFirstVisit. Si todos los servicios son recurrentes, no es nuevo.
+    //
+    // «Sin rastro previo» ya no es «sin citas previas»: los pacientes que se
+    // atendían en papel entraban como nuevos el día que se les agendaba la
+    // primera cita, aunque su historia llevara años en la clínica (ver
+    // utils/firstVisit.js).
     let isFirstVisit = false;
-    const previousCount = await Appointment.countDocuments({
-      clinic: targetClinicId,
-      patient,
-    });
-    if (previousCount === 0) {
+    if (await esPrimeraVisita(patient)) {
       if (serviceIds.length === 0) {
         isFirstVisit = true;
       } else {

@@ -1143,6 +1143,10 @@ exports.addFollowUp = async (req, res) => {
       };
     });
 
+    // Los sueros de esta receta. Un suero no se toma en casa: se lo pone alguien,
+    // y de ahí sale la cita que se le deja preparada a enfermería (más abajo).
+    const sueros = hydratedItems.filter((it) => it.isSerum);
+
     // Descontar del inventario los componentes de los items compuestos recetados.
     try {
       const InventoryMovement = require('../models/InventoryMovement');
@@ -1407,6 +1411,9 @@ exports.addFollowUp = async (req, res) => {
           role: req.role,
           estado: 'cerrada',
           followUpId: nuevoFu?._id,
+          // La consulta que se acaba de escribir es de ESTA atención: no puede
+          // contar como historia previa para decidir si el paciente es nuevo.
+          seguimientosDeEstaAtencion: 1,
           // El enfermero abre un turno de ENFERMERÍA, no de doctor: si no,
           // quedaría como el médico de la cita y cobraría comisión de médico.
           kind: req.role === NURSE_ROLE ? 'enfermeria' : 'doctor',
@@ -1426,6 +1433,100 @@ exports.addFollowUp = async (req, res) => {
         emitToClinic(req.clinicId, 'appointment:created', apt);
       } catch (e) {
         console.warn('No se pudo registrar la cita de la atención sin cita:', e.message);
+      }
+    } else if (sueros.length) {
+      /**
+       * MOSTRADOR RECETA UN SUERO → LA CITA LE SALE SOLA A ENFERMERÍA.
+       *
+       * El caso es de todos los días: el paciente paga en caja, el cajero le
+       * escribe el suero en su ficha y el paciente pasa a que se lo pongan. Pero
+       * en la agenda de enfermería no aparecía nadie: el enfermero tenía que
+       * saberse el nombre, buscar al paciente en la lista de pacientes y entrar
+       * a su ficha a mano. Con dos o tres a la vez, eso es exactamente el sitio
+       * donde se pierde una aplicación o se le pone a quien no era.
+       *
+       * Así que la receta agenda. La cita nace 'asistida' —el paciente está
+       * delante— con UN turno de enfermería SIN DUEÑO: le sale a todos los
+       * enfermeros de la sucursal y la toma el primero que la reclame, igual que
+       * cuando un doctor termina su parte y les pasa el paciente.
+       *
+       * NO se le abre turno a quien la escribe. Mostrador no atiende: un turno
+       * suyo le metería el paciente en los dashboards de atención y, peor, en
+       * las comisiones de médico (`apt.doctor` es el espejo del turno de
+       * doctor). Por eso la cita queda a su nombre solo como quien la agendó.
+       *
+       * En su propio try, como la de arriba: el seguimiento ya está guardado y
+       * no se puede perder porque falle el registro de la cita.
+       */
+      try {
+        const Appointment = require('../models/Appointment');
+        const { crearCitaAtencionInmediata } = require('../utils/walkInAppointment');
+
+        /**
+         * ¿YA ESTÁ EN LA COLA DE ENFERMERÍA? Entonces no se agenda otra vez.
+         *
+         * El paciente puede tener ya una cita esperando a que le pongan algo —la
+         * asignó recepción, o el cajero le recetó otro suero hace un rato—. Una
+         * segunda fila para la misma persona a la misma hora no añade trabajo,
+         * añade dudas: el enfermero no sabe si son dos aplicaciones o la misma
+         * repetida, y una de las dos se queda sin cerrar en la agenda.
+         */
+        const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+        const manana = new Date(hoy); manana.setDate(manana.getDate() + 1);
+        const yaEnCola = await Appointment.findOne({
+          clinic: req.clinicId,
+          patient: patientId,
+          status: 'asistida',
+          currentTurnKind: 'enfermeria',
+          date: { $gte: hoy, $lt: manana },
+        }).lean();
+        if (yaEnCola) {
+          // Ya estaba esperando: se le dice a la pantalla que sí, que enfermería
+          // lo tiene, apuntando a la cita que YA existe.
+          citaAutomatica = {
+            _id: yaEnCola._id,
+            startTime: yaEnCola.startTime,
+            isFirstVisit: yaEnCola.isFirstVisit,
+            paraEnfermeria: true,
+          };
+        } else {
+          const apt = await crearCitaAtencionInmediata({
+            Appointment,
+            clinicId: req.clinicId,
+            patientId,
+            user: req.user,
+            role: req.role,
+            estado: 'abierta',
+            kind: 'enfermeria',
+            sinDueno: true,
+            seguimientosDeEstaAtencion: 1,
+            reason: 'Aplicación de suero recetado en mostrador',
+            // Qué hay que poner, en la propia fila de la agenda: el enfermero ve
+            // el suero sin tener que abrir la ficha para saber a qué va.
+            serviceName: sueros.map((s) => s.name).filter(Boolean).join(', ') || 'Suero',
+          });
+          citaAutomatica = {
+            _id: apt._id,
+            startTime: apt.startTime,
+            isFirstVisit: apt.isFirstVisit,
+            // La pantalla lo dice con otras palabras: esta cita no registra algo
+            // que ya pasó, deja algo PENDIENTE en la bandeja de enfermería.
+            paraEnfermeria: true,
+          };
+          emitToClinic(req.clinicId, 'appointment:created', apt);
+          // Y les llega el aviso, con la pestaña cerrada incluida: es el mismo
+          // camino que cuando el doctor termina y les pasa el paciente.
+          emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
+          const { notificarRol } = require('../utils/pushNotifications');
+          await notificarRol(req.clinicId, 'enfermero', {
+            type: 'appointment_nursing',
+            title: 'Suero por aplicar',
+            body: 'Mostrador acaba de recetar un suero. El paciente está esperando.',
+            url: '/appointments',
+          }).catch(() => {});
+        }
+      } catch (e) {
+        console.warn('No se pudo registrar la cita del suero recetado:', e.message);
       }
     }
 

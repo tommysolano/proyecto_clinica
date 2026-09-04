@@ -809,5 +809,8 @@ const clinicalRecordSchema = new mongoose.Schema(
 );
 
 clinicalRecordSchema.index({ clinic: 1, patient: 1 }, { unique: true });
+// Y por paciente a secas: 'firstVisit' pregunta si tiene historia sin saber (ni
+// necesitar) la sucursal, y el índice compuesto no sirve con la segunda clave sola.
+clinicalRecordSchema.index({ patient: 1 });
 
 module.exports = mongoose.model('ClinicalRecord', clinicalRecordSchema);

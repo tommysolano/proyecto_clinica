@@ -2368,10 +2368,18 @@ function SeguimientosTab({ patientId, appointmentId }) {
          * agenda a crear la cita a mano — y entonces hay dos.
          */
         const auto = updated.autoAppointment || res.data?.autoAppointment;
+        /**
+         * Mostrador receta un suero: la cita no registra algo que ya pasó, deja
+         * al paciente EN LA COLA de enfermería. Decirlo con las mismas palabras
+         * que una atención ya cerrada haría que el cajero se fuera pensando que
+         * ahí se acabó, cuando lo que falta es que alguien ponga el suero.
+         */
         toast.success(
-          auto
-            ? `Seguimiento guardado. Se registró la atención de las ${auto.startTime}.`
-            : 'Seguimiento guardado'
+          auto?.paraEnfermeria
+            ? 'Suero recetado. El paciente ya le aparece a enfermería para que se lo apliquen.'
+            : auto
+              ? `Seguimiento guardado. Se registró la atención de las ${auto.startTime}.`
+              : 'Seguimiento guardado'
         );
       }
 

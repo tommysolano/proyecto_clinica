@@ -121,3 +121,34 @@ export function fmtTimeEc(value) {
     .reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
   return `${p.hour === '24' ? '00' : p.hour}:${p.minute}`;
 }
+
+/**
+ * EDAD A PARTIR DE LA FECHA DE NACIMIENTO ('YYYY-MM-DD').
+ *
+ * Se cuenta por cumpleaños, no dividiendo milisegundos: los años bisiestos hacen
+ * que el reparto por 365.25 se equivoque en un año justo alrededor del
+ * cumpleaños, y en pediatría esa diferencia cambia la dosis.
+ *
+ * Se compara contra HOY en Ecuador (`todayEc`) por lo mismo de siempre: con la
+ * hora UTC, a partir de las 19:00 el sistema ya está en el día siguiente y
+ * alguien cumpliría años una tarde antes.
+ *
+ * Devuelve '' si la fecha no está completa, está en el futuro o no es real: el
+ * campo de edad se queda como estaba y nadie ve un «-1» ni un «NaN».
+ */
+export function edadDesdeFecha(fechaNacimiento) {
+  const texto = String(fechaNacimiento || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(texto)) return '';
+  const [año, mes, dia] = texto.split('-').map(Number);
+  // Se valida que la fecha exista de verdad (un 31/02 lo corrige el Date y
+  // devolvería una edad para un día que no está en el calendario).
+  const fecha = new Date(año, mes - 1, dia);
+  if (fecha.getFullYear() !== año || fecha.getMonth() !== mes - 1 || fecha.getDate() !== dia) return '';
+
+  const [añoHoy, mesHoy, diaHoy] = todayEc().split('-').map(Number);
+  let edad = añoHoy - año;
+  // Todavía no ha cumplido este año: se le quita uno.
+  if (mesHoy < mes || (mesHoy === mes && diaHoy < dia)) edad -= 1;
+  if (edad < 0 || edad > 150) return '';
+  return edad;
+}

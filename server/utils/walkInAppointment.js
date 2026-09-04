@@ -1,5 +1,6 @@
 const { nowHHMM } = require('./appointmentDate');
 const { asignarTurnos, completarTurno } = require('./appointmentTurns');
+const { esPrimeraVisita } = require('./firstVisit');
 
 /**
  * LA CITA DE UNA ATENCIÓN SIN CITA.
@@ -15,9 +16,10 @@ const { asignarTurnos, completarTurno } = require('./appointmentTurns');
  * cita es una atención que ocurrió y que el sistema no vio.
  *
  * FUENTE ÚNICA a propósito: la usan la atención inmediata de óptica
- * (`createWalkIn`) y el guardado de un seguimiento sin cita (`addFollowUp`). Que
- * cada una construyera su cita a mano es como acaban dos flujos gemelos
- * separándose en silencio.
+ * (`createWalkIn`), el guardado de un seguimiento sin cita (`addFollowUp`) y el
+ * suero que mostrador receta para que lo ponga enfermería (mismo `addFollowUp`,
+ * con `sinDueno`). Que cada una construyera su cita a mano es como acaban tres
+ * flujos gemelos separándose en silencio.
  *
  * @param {object} opts
  * @param {'abierta'|'cerrada'} opts.estado  'abierta' = el profesional va a
@@ -29,6 +31,15 @@ const { asignarTurnos, completarTurno } = require('./appointmentTurns');
  *        de la cita: `apt.doctor` es el espejo del turno médico, y de ahí salen
  *        las comisiones de médico y los reportes por doctor. Le pagaríamos como
  *        a un doctor y las estadísticas dirían que atendió una consulta.
+ * @param {boolean} [opts.sinDueno] el turno nace SIN dueño: sale a la bandeja de
+ *        todos los enfermeros y lo toma el primero que lo vea. Es lo que pasa
+ *        cuando quien escribe NO es quien va a atender — mostrador receta un
+ *        suero y lo pone enfermería. Solo tiene sentido con `kind:'enfermeria'`:
+ *        la cola de doctores va nombrada (`asignarTurnos` descarta un paso de
+ *        doctor sin usuario y la cita nacería sin turnos, invisible para todos).
+ * @param {number} [opts.seguimientosDeEstaAtencion] cuántas consultas de la
+ *        historia son de esta misma atención, para no contarlas como pasado al
+ *        decidir si el paciente es nuevo (ver utils/firstVisit.js).
  */
 async function crearCitaAtencionInmediata({
   Appointment,
@@ -42,9 +53,16 @@ async function crearCitaAtencionInmediata({
   estado = 'abierta',
   followUpId = null,
   kind = 'doctor',
+  sinDueno = false,
+  seguimientosDeEstaAtencion = 0,
 }) {
   const ahora = new Date();
-  const previas = await Appointment.countDocuments({ clinic: clinicId, patient: patientId });
+  const esEnfermeria = kind === 'enfermeria';
+  // Un turno sin dueño solo existe en enfermería (ver `sinDueno` arriba).
+  const paraLaBandeja = sinDueno && esEnfermeria;
+  const primeraVisita = await esPrimeraVisita(patientId, {
+    ignoraSeguimientos: seguimientosDeEstaAtencion,
+  });
 
   const apt = new Appointment({
     clinic: clinicId,
@@ -60,21 +78,32 @@ async function crearCitaAtencionInmediata({
     reason,
     serviceItem: serviceItem || null,
     serviceName: serviceName || '',
-    isFirstVisit: previas === 0,
+    isFirstVisit: primeraVisita,
     createdBy: user._id,
     createdByName: user.name || '',
     createdByRole: role || null,
-    consultationStartedAt: ahora,
+    /**
+     * El reloj solo arranca si hay alguien atendiendo. En la cita que se deja
+     * PREPARADA para enfermería todavía no ha entrado nadie: ponerle hora de
+     * inicio diría en la agenda «atendida a las 10:12» de un suero que sigue sin
+     * poner, y el turno lo sellará su hora de verdad cuando lo reclamen.
+     */
+    consultationStartedAt: paraLaBandeja ? undefined : ahora,
   });
 
   // Un único turno, el suyo —de doctor o de enfermería, según quién atendió— y
   // con su nombre puesto: al guardar el seguimiento la cita se cierra sola como
-  // cualquier otra.
+  // cualquier otra. Si es para la bandeja, va sin dueño y lo toma quien pueda.
   asignarTurnos(apt, {
-    pasos: [{ kind: kind === 'enfermeria' ? 'enfermeria' : 'doctor', user: user._id, serviceName, serviceItem }],
+    pasos: [{
+      kind: esEnfermeria ? 'enfermeria' : 'doctor',
+      user: paraLaBandeja ? null : user._id,
+      serviceName,
+      serviceItem,
+    }],
     por: user._id,
   });
-  if (apt.turns[0]) apt.turns[0].startedAt = ahora;
+  if (apt.turns[0] && !paraLaBandeja) apt.turns[0].startedAt = ahora;
 
   if (estado === 'cerrada') {
     // Ya atendió: el turno se cierra aquí mismo, con su seguimiento colgado, y

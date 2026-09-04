@@ -141,12 +141,34 @@ patientSchema.virtual('fullName').get(function () {
   return `${this.firstName || ''} ${this.lastName || ''}`.trim();
 });
 
-// Edad calculada (prioriza birthDate). Si no hay birthDate, usa el campo age guardado.
+/**
+ * EDAD CALCULADA. Manda la fecha de nacimiento; el campo `age` es el respaldo
+ * para quien se registró sin acordarse del día en que nació.
+ *
+ * Se cuenta POR CUMPLEAÑOS, no restando milisegundos: el reparto por duración se
+ * equivoca en un año justo el día del cumpleaños, que es cuando alguien lo mira.
+ *
+ * Dos zonas horarias a la vez, y las dos a propósito:
+ *  · la fecha de nacimiento se lee en UTC, porque así se guardó ('1990-05-10'
+ *    entra como …T00:00:00Z); leída en hora de Ecuador (UTC-5) ese instante es
+ *    la tarde del día 9 y todos cumplirían años un día antes;
+ *  · «hoy» se lee en local, que es Ecuador (index.js fuerza process.env.TZ).
+ *
+ * Es el mismo cálculo que hace el formulario al teclear la fecha (ver
+ * `edadDesdeFecha` en el cliente): si no coincidieran, la ficha diría una edad y
+ * el formulario otra.
+ */
 patientSchema.virtual('computedAge').get(function () {
   if (this.birthDate) {
-    const diff = Date.now() - new Date(this.birthDate).getTime();
-    const ageDate = new Date(diff);
-    return Math.abs(ageDate.getUTCFullYear() - 1970);
+    const nacimiento = new Date(this.birthDate);
+    const año = nacimiento.getUTCFullYear();
+    const mes = nacimiento.getUTCMonth();
+    const dia = nacimiento.getUTCDate();
+    const hoy = new Date();
+    let edad = hoy.getFullYear() - año;
+    // Todavía no ha cumplido este año.
+    if (hoy.getMonth() < mes || (hoy.getMonth() === mes && hoy.getDate() < dia)) edad -= 1;
+    return edad < 0 ? null : edad;
   }
   return this.age ?? null;
 });

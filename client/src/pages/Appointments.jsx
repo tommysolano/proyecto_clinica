@@ -1314,6 +1314,33 @@ export default function Appointments() {
                   const enfermeriaMia = conTurnos
                     ? apt.currentTurnKind === 'enfermeria' && esMiTurno
                     : idDe(apt.attendedByNurse) === String(user?.id);
+                  /**
+                   * ¿PUEDO VOLVER A ENTRAR A CORREGIR LO QUE ESCRIBÍ?
+                   *
+                   * Sí, en cuanto hice lo mío en esta cita — esté completada o
+                   * todavía en manos del siguiente profesional. Antes solo se
+                   * ofrecía en las completadas, y a quien ya había atendido una
+                   * cita que seguía viva le salía un cartelito de «Ya atendida»
+                   * y ahí se acababa todo: el doctor que escribió la impresión
+                   * diagnóstica y se olvidó de subir el archivo no tenía por
+                   * dónde volver. Un olvido no puede depender de que la cita
+                   * llegue a completarse (que además puede ser mañana).
+                   *
+                   * Si la cita sigue siendo MÍA no hace falta: para eso están
+                   * «Atender» y «Receta», que es por donde se entra a trabajar.
+                   */
+                  const laTengoYo = esMiTurno || (apt.status === 'asistida' && isNurse && enfermeriaMia);
+                  const puedoCorregir =
+                    (isDoctor || isNurse)
+                    && ['asistida', 'completada'].includes(apt.status)
+                    && !laTengoYo
+                    && (yaAtendi
+                      // Citas anteriores a los turnos: ahí manda el espejo, que
+                      // es lo único que dice quién atendió. Solo una vez cerrada:
+                      // sin turnos no hay forma de saber si ya escribió lo suyo.
+                      || (apt.status === 'completada' && !conTurnos
+                        && (idDe(apt.doctor) === String(user?.id)
+                          || idDe(apt.attendedByNurse) === String(user?.id))));
                   const showDoctorTimer =
                     isDoctor && esMiTurno && apt.status !== 'completada';
                   const inProgress =
@@ -1451,16 +1478,6 @@ export default function Appointments() {
                               Atender
                             </button>
                           )}
-                        {/* Ya atendió y la cita sigue viva con otro: se le dice,
-                            en vez de dejarle un botón que no le corresponde. */}
-                        {isDoctor && apt.status === 'asistida' && !esMiTurno && yaAtendi && (
-                            <span
-                              className="inline-block px-2 py-1 rounded-lg text-[11px] font-medium text-slate-500 bg-slate-100 mr-1 align-middle"
-                              title="Ya guardaste tu seguimiento de esta cita"
-                            >
-                              Ya atendida
-                            </span>
-                          )}
                         {/* Enfermero: reclamar una cita de enfermería libre */}
                         {isNurse && apt.status === 'asistida' && enfermeriaLibre && (
                           <button
@@ -1510,29 +1527,18 @@ export default function Appointments() {
                           </button>
                         )}
                         {/**
-                          * VOLVER A LA CONSULTA que ya se cerró.
-                          *
-                          * Al guardar el seguimiento la cita pasa a «completada»
-                          * y quien la atendió se quedaba fuera: si había mandado
-                          * algo por error o se acordaba de un dato después, no
-                          * tenía por dónde volver. Lo único que le quedaba era
-                          * «ver» e «imprimir», que no sirven para corregir.
+                          * VOLVER A LA CONSULTA que ya escribí (ver `puedoCorregir`).
                           *
                           * No reabre la cita ni reinicia el cronómetro (ver
                           * `abrirAtencion`): entra a la ficha, y desde ahí se
-                          * corrige el seguimiento con su propio botón.
+                          * corrige el seguimiento con su propio botón o se le
+                          * adjunta el archivo que faltaba.
                           */}
-                        {(isDoctor || isNurse) && apt.status === 'completada' && (
-                          yaAtendi
-                          // Citas anteriores a los turnos: ahí manda el espejo,
-                          // que es lo único que dice quién atendió.
-                          || (!conTurnos && (idDe(apt.doctor) === String(user?.id)
-                              || idDe(apt.attendedByNurse) === String(user?.id)))
-                        ) && (
+                        {puedoCorregir && (
                           <button
                             onClick={() => abrirAtencion(apt, { soloVolver: true })}
                             className="p-1.5 rounded-lg hover:bg-indigo-50 text-indigo-600 bg-transparent border border-indigo-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
-                            title="Volver a la consulta para corregirla o ampliarla"
+                            title="Volver a la consulta para corregirla, ampliarla o adjuntar un archivo"
                           >
                             Ver / corregir
                           </button>

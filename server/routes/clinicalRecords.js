@@ -53,7 +53,10 @@ router.put('/:patientId', allRoles, updateByPatient);
  * cita, el sistema la registra solo (ver `crearCitaAtencionInmediata`).
  *
  * Mostrador (cajero) sigue pudiendo escribir: documenta por otro cuando hace
- * falta, y por eso no se le crea cita automática.
+ * falta, y por eso no se le crea una cita a SU nombre. La excepción es el suero:
+ * ahí no está documentando, está mandando al paciente a que se lo pongan, así
+ * que la cita se crea con un turno de ENFERMERÍA sin dueño y les sale en la
+ * bandeja (ver `addFollowUp`).
  */
 router.post('/:patientId/follow-ups', requireRole('admin', 'cajero', 'doctor', 'enfermero'), addFollowUp);
 
