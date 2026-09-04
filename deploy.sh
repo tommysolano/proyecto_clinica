@@ -354,6 +354,14 @@ fi
 # Para ver que haria sin escribir nada:
 #   sudo -iu clinica bash -lc 'cd /var/www/clinica/server && node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas-2026-08-31.json'
 LOG_FICHAS=/home/clinica/import-fichas.log
+# Antes de nada, el VIGILANTE: si la tanda anterior se quedo atascada —viva, latiendo
+# y sin avanzar una ficha porque el kernel le mato el Chromium— la mata y deja la
+# marca en FAILED. Sin esto la marca se queda RUNNING y FRESCA para siempre y ningun
+# despliegue se atreve a relanzar encima: hacia falta entrar al servidor a mano.
+# Mira 90 s antes de dictaminar; una tanda sana hace ~30 fichas/min.
+if ! ( cd "$APP_DIR/server" && node scripts/desatascarImportacionFichas.js --commit ); then
+  echo "ADVERTENCIA: el vigilante de la importacion fallo (se sigue igual)."
+fi
 # Primero las 113 de agosto, que quedaron con el PDF ENTERO en el seguimiento: se les
 # cambia el adjunto por la primera pagina y se les crea la observacion que faltaba.
 # Despues la tanda grande. En serie y en el mismo proceso de fondo: las dos abren un
