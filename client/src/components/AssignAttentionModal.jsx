@@ -3,6 +3,7 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from './Modal';
 import AppointmentValueFields from './AppointmentValueFields';
+import SearchableSelect from './SearchableSelect';
 import { useAuth } from '../context/AuthContext';
 import { doctorOptionLabel, doctorTypeLabel } from '../utils/roles';
 import {
@@ -316,16 +317,21 @@ export default function AssignAttentionModal({
                       le nombra siempre y su servicio es el de la cita. */}
                   {esEnf && (
                     <div className="mt-2 pl-8 flex flex-col sm:flex-row gap-2">
-                      <select
-                        value={paso.user || ''}
-                        onChange={(e) => editarPaso(idx, { user: e.target.value })}
-                        className="input input-sm flex-1 bg-white cursor-pointer"
-                      >
-                        <option value="">Cualquier enfermero</option>
-                        {nurses.map((n) => (
-                          <option key={n._id} value={n._id}>{n.name}</option>
-                        ))}
-                      </select>
+                      {/* Mismo buscador que en los doctores: en enfermería la
+                          lista también crece, y «cualquier enfermero» sigue
+                          siendo la opción por defecto (limpiar). */}
+                      <div className="flex-1 min-w-0">
+                        <SearchableSelect
+                          options={nurses}
+                          value={paso.user || ''}
+                          onChange={(v) => editarPaso(idx, { user: v })}
+                          getLabel={(n) => n.name || ''}
+                          placeholder="Cualquier enfermero"
+                          searchPlaceholder="Buscar enfermero…"
+                          allowClear
+                          size="sm"
+                        />
+                      </div>
                       <input
                         type="text"
                         value={paso.serviceName || ''}
@@ -341,16 +347,21 @@ export default function AssignAttentionModal({
           </ul>
 
           <div className="flex flex-col sm:flex-row gap-2">
-            <select
-              value=""
-              onChange={(e) => agregarDoctor(e.target.value)}
-              className="flex-1 px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50/50 cursor-pointer"
-            >
-              <option value="">+ Añadir doctor…</option>
-              {disponibles.map((d) => (
-                <option key={d._id} value={d._id}>{doctorOptionLabel(d)}</option>
-              ))}
-            </select>
+            {/* CON BUSCADOR: con treinta doctores en la lista se tardaba más en
+                bajar el desplegable que en escribir el apellido. Se queda vacío
+                después de elegir —es un «añadir a la cola», no un valor— y por
+                eso el `value` va fijo en ''. */}
+            <div className="flex-1 min-w-0">
+              <SearchableSelect
+                options={disponibles}
+                value=""
+                onChange={(v) => v && agregarDoctor(v)}
+                getLabel={doctorOptionLabel}
+                getSearchText={(d) => `${d.name || ''} ${d.specialty || ''} ${doctorOptionLabel(d)}`}
+                placeholder="+ Añadir doctor…"
+                searchPlaceholder="Buscar por nombre o especialidad…"
+              />
+            </div>
             <button
               type="button"
               onClick={agregarEnfermeria}

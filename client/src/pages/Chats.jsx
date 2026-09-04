@@ -6308,19 +6308,46 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
   /**
    * LA SUCURSAL SE ESCOGE, NO SE HEREDA.
    *
-   * Venía puesta la sede activa del asesor, y el call center agenda para todas:
-   * el campo ya decía algo razonable, nadie lo tocaba, y la cita quedaba en la
-   * sucursal equivocada. Eso no se descubre hasta que el paciente llega a la
-   * otra puerta. Con una sola sucursal el selector ni se enseña y manda esa.
+   * Venía puesta la sede activa del asesor: el campo ya decía algo razonable,
+   * nadie lo tocaba, y la cita quedaba en la sucursal equivocada. Eso no se
+   * descubre hasta que el paciente llega a la otra puerta.
+   *
+   * Y LA LISTA NO ES LA DEL USUARIO, ES LA DE LA ORGANIZACIÓN. El call center
+   * suele estar asignado a UNA sucursal —no trabaja en una sede, agenda para
+   * todas—, así que con `clinics` de la sesión el selector ni le aparecía: sus
+   * citas caían siempre en su sede. Se pide la lista completa igual que hace la
+   * agenda (`/clinics?scope=names`); si no llega (rol sin permiso, o fallo), se
+   * cae a las suyas y todo sigue funcionando como antes.
    */
-  const unaSolaSede = (clinics?.length || 0) <= 1;
-  const [clinicId, setClinicId] = useState(unaSolaSede ? (activeClinic?._id || conv.clinic || '') : '');
+  const [sedes, setSedes] = useState(clinics || []);
+  useEffect(() => {
+    let vivo = true;
+    api.get('/clinics', { params: { scope: 'names' } })
+      .then((r) => {
+        const lista = (r.data || []).filter((c) => c.active !== false);
+        if (vivo && lista.length) setSedes(lista);
+      })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, []);
+
+  const unaSolaSede = (sedes?.length || 0) <= 1;
+  const [clinicId, setClinicId] = useState('');
+  // Con una sola sucursal no hay nada que escoger: se manda esa y el selector ni
+  // se enseña. Va en efecto porque la lista puede llegar después.
+  useEffect(() => {
+    if (unaSolaSede) setClinicId(sedes[0]?._id || activeClinic?._id || conv.clinic || '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unaSolaSede, sedes]);
   const [saving, setSaving] = useState(false);
   // Espacios de la agenda de la sucursal ELEGIDA en este formulario: el asesor
   // agenda en la sede que le pida el paciente, no siempre en la suya.
+  // Sale de `sedes` (la lista de la organización): con las del usuario, agendar
+  // en otra sucursal usaba la rejilla equivocada y el servidor devolvía
+  // SLOT_INVALID sobre una hora que el formulario había ofrecido como válida.
   const slotMinutesDeSede =
     Number(
-      (clinics || []).find((c) => String(c._id) === String(clinicId))?.appointmentSlotMinutes
+      (sedes || []).find((c) => String(c._id) === String(clinicId))?.appointmentSlotMinutes
         ?? (String(activeClinic?._id) === String(clinicId) ? activeClinic?.appointmentSlotMinutes : 0),
     ) || 0;
 
@@ -6377,7 +6404,7 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
               }`}
             >
               <option value="">Seleccionar sucursal…</option>
-              {clinics.map((c) => (
+              {sedes.map((c) => (
                 <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
               ))}
             </select>

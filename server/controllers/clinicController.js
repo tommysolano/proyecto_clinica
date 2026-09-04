@@ -70,9 +70,20 @@ exports.removeLogo = async (req, res) => {
 exports.getClinics = async (req, res) => {
   try {
     if (req.query.scope === 'names') {
-      if (!req.user.isSuperAdmin && !['admin', 'cajero'].includes(req.role)) {
-        return res.status(403).json({ message: 'No tienes permisos para esta acción' });
-      }
+      /**
+       * SIN FILTRO DE ROL, y a propósito.
+       *
+       * Es el contenido de un desplegable: id, nombre y el tamaño de los
+       * espacios de agenda. Nada de esto es reservado —el nombre de una sede
+       * está en su puerta— y lo necesita cualquiera que agende, que ya no son
+       * dos roles: mostrador, administración, el call center y marketing desde
+       * el chat. La lista de roles que había aquí era una COPIA de la de
+       * agendar, se quedó atrás en cuanto esa cambió, y el síntoma fue un 403
+       * mudo que dejaba al call center sin selector de sucursal.
+       *
+       * Quién puede AGENDAR lo sigue decidiendo la ruta de citas; esto solo
+       * pinta el desplegable.
+       */
       const todas = await Clinic.find(
         {},
         '_id name nombreComercial active appointmentSlotMinutes'

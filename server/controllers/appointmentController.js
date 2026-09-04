@@ -35,7 +35,7 @@ const {
   PAST_TIME_MESSAGE,
 } = require('../utils/appointmentDate');
 const { isDoctorRole } = require('../constants/roles');
-const { veTodaLaOrganizacion } = require('../utils/clinicScope');
+const { veTodaLaOrganizacion, validarSucursalDestino } = require('../utils/clinicScope');
 const { esPrimeraVisita } = require('../utils/firstVisit');
 
 /**
@@ -405,28 +405,17 @@ exports.createAppointment = async (req, res) => {
     // Caja y administración agendan para cualquier sucursal de la organización,
     // aunque su usuario esté asignado operativamente a una sola. Call center
     // conserva el alcance de las sucursales que tiene asignadas.
-    let targetClinicId = req.clinicId;
-    if (req.body.clinic && String(req.body.clinic) !== String(req.clinicId)) {
-      const allowedClinic = (req.user.clinics || []).find(
-        (c) => String(c.clinic) === String(req.body.clinic)
-      );
-      const canChooseOrganizationClinic = veTodaLaOrganizacion(req);
-      if (!allowedClinic && !canChooseOrganizationClinic) {
-        return res
-          .status(403)
-          .json({ message: 'No tienes acceso a esa clínica para crear citas.' });
-      }
-      // El selector solo ofrece sedes activas, pero la API también protege la
-      // operación frente a un id manipulado o una sucursal dada de baja.
-      const targetClinic = await Clinic.findOne({
-        _id: req.body.clinic,
-        active: { $ne: false },
-      }).select('_id');
-      if (!targetClinic) {
-        return res.status(400).json({ message: 'La sucursal destino no existe o está inactiva.' });
-      }
-      targetClinicId = req.body.clinic;
-    }
+    /**
+     * QUIEN PUEDE AGENDAR, ESCOGE LA SEDE. La ruta ya decide quién agenda; una
+     * vez dentro, la sucursal es un dato de la cita y no un permiso: el paciente
+     * pide la que le queda cerca. Antes se exigía tenerla asignada o ver toda la
+     * organización, y eso dejaba fuera a gente que sí agenda (ver
+     * `validarSucursalDestino`). Lo que sigue comprobándose es que exista y esté
+     * activa, frente a un id manipulado o una sede dada de baja.
+     */
+    const destino = await validarSucursalDestino(req, req.body.clinic);
+    if (!destino.ok) return res.status(destino.status).json({ message: destino.message });
+    const targetClinicId = destino.clinicId;
 
     // --- Validaciones de fecha y horario ---
     const localDate = parseLocalDate(date);
@@ -676,18 +665,48 @@ exports.updateAppointment = async (req, res) => {
       });
     }
 
-    // Una cita completada solo puede ser editada por administradores
+    const update = { ...req.body };
+
+    /**
+     * Una cita completada no se reescribe por esta puerta: mover su fecha, su
+     * hora, su estado o su paciente reescribiría una atención que ya ocurrió,
+     * con su seguimiento, su comisión y su turno.
+     *
+     * Lo que mostrador SÍ necesita corregir de una cita terminada —el servicio
+     * de la visita, el importe acordado y el canje, que es justo lo que se sabe
+     * al cobrar— tiene su propia puerta: `PATCH /appointments/:id/service-value`
+     * (`updateServiceAndValue`), que solo toca esos campos. El administrador
+     * sigue entrando por aquí para todo lo demás.
+     */
     if (existing.status === 'completada' && !isAdmin) {
       return res.status(403).json({
-        message: 'Una cita completada no puede editarse. Contacta a un administrador.',
+        message: 'Una cita completada solo admite corregir el servicio y el valor.',
+        code: 'COMPLETED_ONLY_SERVICE_VALUE',
       });
     }
-
-    const update = { ...req.body };
     // No permitir alterar isFirstVisit ni createdBy en updates
     delete update.isFirstVisit;
     delete update.createdBy;
     delete update.createdByRole;
+
+    /**
+     * EL VALOR ACORDADO Y EL CANJE SON DE MOSTRADOR, también al editar.
+     *
+     * Las otras tres puertas por las que entra el importe pasan por
+     * `aplicarValorDeCita`, que comprueba el rol y sella quién lo puso; esta se
+     * volcaba entera en el `findOneAndUpdate`, así que cualquiera con permiso
+     * para editar la cita podía fijar el precio y encima sin dejar rastro.
+     */
+    if (!puedeFijarValor(req)) {
+      for (const k of ['agreedValue', 'isCanje', 'valueSetAt', 'valueSetBy']) delete update[k];
+    } else if (update.agreedValue !== undefined || update.isCanje !== undefined) {
+      // Canje = no entró dinero (ver el comentario del modelo). Y '' o null son
+      // «bórralo», que es lo que manda el formulario con el campo vacío.
+      if (update.isCanje) update.agreedValue = 0;
+      else if (update.agreedValue === '' || update.agreedValue === null) update.agreedValue = null;
+      update.valueSetAt = new Date();
+      update.valueSetBy = req.user._id;
+    }
 
     // Reasignación de doctor: libre hasta que la consulta se atiende. Se compara
     // contra el doctor actual para no bloquear una edición que reenvía el mismo.
@@ -894,6 +913,22 @@ exports.deleteAppointment = async (req, res) => {
       return res.status(403).json({
         message:
           'Solo los administradores o el creador de la cita pueden eliminarla.',
+      });
+    }
+
+    /**
+     * UNA CITA COMPLETADA NO SE CANCELA (salvo administrador).
+     *
+     * Detrás hay una atención que ocurrió: su seguimiento escrito, su comisión
+     * devengada y su turno cerrado. Marcarla 'cancelada' la borraría de los
+     * reportes dejando la historia clínica donde está, y nadie volvería a
+     * cuadrarlo. Antes no hacía falta decirlo porque la pantalla escondía el
+     * botón; desde que mostrador puede corregirle el servicio y el valor, el
+     * botón está a la vista y la regla tiene que vivir aquí.
+     */
+    if (appointment.status === 'completada' && !isAdmin) {
+      return res.status(403).json({
+        message: 'Una cita completada no se puede cancelar. Contacta a un administrador.',
       });
     }
 

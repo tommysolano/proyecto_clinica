@@ -24,6 +24,7 @@ const {
 } = require('../utils/agentSchedule');
 const { restrictionIsActive } = require('../utils/workflowChatRestriction');
 const { esPrimeraVisita } = require('../utils/firstVisit');
+const { validarSucursalDestino } = require('../utils/clinicScope');
 
 /**
  * Normaliza un número de teléfono a sólo dígitos (sin +, ni espacios).
@@ -5158,7 +5159,15 @@ exports.createAppointmentFromChat = async (req, res) => {
         ).catch(() => null);
       }
 
-      const targetClinic = a.clinic || req.clinicId;
+      /**
+       * La sucursal destino se comprueba igual que en el alta normal de citas,
+       * y por la MISMA función: aquí llegaba tal cual del cuerpo de la petición,
+       * así que una sede dada de baja —o un id inventado— dejaba la cita en un
+       * limbo del que nadie la ve. Ver `validarSucursalDestino`.
+       */
+      const destino = await validarSucursalDestino(req, a.clinic);
+      if (!destino.ok) return res.status(destino.status).json({ message: destino.message });
+      const targetClinic = destino.clinicId;
       const appointment = await Appointment.create({
         clinic: targetClinic,
         patient: conv.patient._id,

@@ -73,7 +73,26 @@ const emptyApt = {
 export default function Patients() {
   const navigate = useNavigate();
   const { hasRole, clinics, activeClinic } = useAuth();
-  const showClinicSelector = (clinics?.length || 0) > 1;
+  /**
+   * LAS SUCURSALES PARA AGENDAR SON LAS DE LA ORGANIZACIÓN, no las del usuario.
+   *
+   * Quien agenda desde aquí (mostrador, administración, call center) suele estar
+   * asignado a UNA sede, y con `clinics` de la sesión el selector ni aparecía:
+   * la cita caía siempre en su sucursal. Es la misma lista que usa la agenda
+   * (`/clinics?scope=names`); si no llega, se cae a las suyas.
+   */
+  const [sedes, setSedes] = useState(clinics || []);
+  useEffect(() => {
+    let vivo = true;
+    api.get('/clinics', { params: { scope: 'names' } })
+      .then((r) => {
+        const lista = (r.data || []).filter((c) => c.active !== false);
+        if (vivo && lista.length) setSedes(lista);
+      })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, []);
+  const showClinicSelector = (sedes?.length || 0) > 1;
   // 'doctor' entra aquí porque expande a las especialidades: en óptica el
   // paciente llega sin cita y quien lo registra es el propio optómetra.
   //
@@ -150,7 +169,7 @@ export default function Patients() {
    */
   const slotMinutes =
     Number(
-      (clinics || []).find((c) => String(c._id) === String(aptForm.clinic || activeClinic?._id))
+      (sedes || []).find((c) => String(c._id) === String(aptForm.clinic || activeClinic?._id))
         ?.appointmentSlotMinutes ?? activeClinic?.appointmentSlotMinutes
     ) || 0;
 
@@ -805,7 +824,7 @@ export default function Patients() {
                         required
                       >
                         <option value="">Seleccionar sucursal…</option>
-                        {clinics.map((c) => (
+                        {sedes.map((c) => (
                           <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
                         ))}
                       </select>

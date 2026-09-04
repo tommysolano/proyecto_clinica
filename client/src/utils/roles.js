@@ -61,6 +61,17 @@ export const ROLES_VEN_CEDULA = ['admin', 'cajero'];
  */
 export const ROLES_VEN_CORREO = ['admin', 'doctor', 'optica'];
 
+/**
+ * Quién VE Y OPERA toda la organización, no solo su sucursal: administración,
+ * mostrador y el call center. Espejo de `veTodaLaOrganizacion` en el servidor
+ * (server/utils/clinicScope.js) — si cambia una, cambia la otra, o la pantalla
+ * ofrece filtros que la API devuelve vacíos.
+ *
+ * El call center entra porque no trabaja EN una sede: atiende el teléfono y el
+ * WhatsApp de la clínica entera y agenda donde le pida el paciente.
+ */
+export const ROLES_TODA_LA_ORG = ['admin', 'cajero', 'call_center'];
+
 // ─────────────── Tipo de doctor ───────────────
 //
 // El TIPO de doctor sale de su ROL en la sucursal, no de un campo aparte: quien

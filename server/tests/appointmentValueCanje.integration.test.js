@@ -289,3 +289,74 @@ test('quien atiende NO puede colar el valor al crear la cita', async () => {
   assert.equal(enBase.agreedValue, null, 'el importe se ignora: no es decisión suya');
   assert.equal(enBase.isCanje, false);
 });
+
+/**
+ * EL VALOR ES DE MOSTRADOR TAMBIÉN AL EDITAR LA CITA.
+ *
+ * Las otras tres puertas por las que entra el importe pasan por
+ * `aplicarValorDeCita`, que comprueba el rol y sella quién lo puso. El PUT de la
+ * cita se volcaba entero en el update: call center —que puede editar citas— le
+ * ponía precio a una consulta y encima sin dejar rastro de quién fue.
+ */
+test('call center puede editar la cita pero NO ponerle precio', async () => {
+  const { clinicId, userId, make } = await seedCase();
+  const apt = await make({ status: 'pendiente', agreedValue: 40 });
+
+  const r = await H.runController(
+    appt.updateAppointment,
+    H.mockReq(
+      clinicId, userId,
+      { reason: 'Reagendada por el paciente', agreedValue: 999, isCanje: true },
+      { role: 'call_center', params: { id: String(apt._id) } }
+    )
+  );
+  assert.equal(r.statusCode ?? 200, 200, JSON.stringify(r.payload));
+
+  const enBase = await Appointment.findById(apt._id);
+  assert.equal(enBase.reason, 'Reagendada por el paciente', 'lo que sí puede tocar, se guarda');
+  assert.equal(enBase.agreedValue, 40, 'el importe se queda como estaba');
+  assert.equal(enBase.isCanje, false, 'y el canje tampoco es suyo');
+});
+
+test('caja sí lo cambia por esa misma puerta, y queda quién y cuándo', async () => {
+  const { clinicId, userId, make } = await seedCase();
+  const apt = await make({ status: 'pendiente', agreedValue: 40 });
+
+  await H.runController(
+    appt.updateAppointment,
+    H.mockReq(clinicId, userId, { agreedValue: 75 }, { role: 'cajero', params: { id: String(apt._id) } })
+  );
+
+  const enBase = await Appointment.findById(apt._id);
+  assert.equal(enBase.agreedValue, 75);
+  assert.ok(enBase.valueSetAt, 'queda sellado cuándo');
+  assert.equal(String(enBase.valueSetBy), String(userId), 'y quién');
+});
+
+test('una cita completada NO se reescribe por el PUT: para eso está service-value', async () => {
+  const { clinicId, userId, make } = await seedCase();
+  const apt = await make({ status: 'completada', consultationEndedAt: new Date() });
+
+  const r = await H.runController(
+    appt.updateAppointment,
+    H.mockReq(clinicId, userId, { date: '2030-01-01', status: 'pendiente' },
+      { role: 'cajero', params: { id: String(apt._id) } })
+  );
+  assert.equal(r.statusCode, 403, JSON.stringify(r.payload));
+  assert.equal(r.payload.code, 'COMPLETED_ONLY_SERVICE_VALUE');
+
+  const enBase = await Appointment.findById(apt._id);
+  assert.equal(enBase.status, 'completada', 'la atención que ya ocurrió no se mueve');
+});
+
+test('una cita completada tampoco se cancela: la atención ocurrió', async () => {
+  const { clinicId, userId, make } = await seedCase();
+  const apt = await make({ status: 'completada', consultationEndedAt: new Date() });
+
+  const r = await H.runController(
+    appt.deleteAppointment,
+    H.mockReq(clinicId, userId, {}, { role: 'cajero', params: { id: String(apt._id) }, query: {} })
+  );
+  assert.equal(r.statusCode, 403, JSON.stringify(r.payload));
+  assert.equal((await Appointment.findById(apt._id)).status, 'completada');
+});

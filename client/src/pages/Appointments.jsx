@@ -30,7 +30,8 @@ import {
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import TimeSlotInput from '../components/TimeSlotInput';
-import { doctorOptionLabel, roleSatisfies, ROLE_LABELS } from '../utils/roles';
+import SearchableSelect from '../components/SearchableSelect';
+import { doctorOptionLabel, roleSatisfies, ROLE_LABELS, ROLES_TODA_LA_ORG } from '../utils/roles';
 
 // 6 estados soportados por el backend.
 const statusColors = {
@@ -219,6 +220,14 @@ export default function Appointments() {
   const isReception = hasRole('admin', 'cajero', 'enfermero');
   // Quién puede ejecutar el flujo asistir → cobrar → derivar (requiere cobrar).
   const canCharge = hasRole('admin', 'cajero');
+  /**
+   * Quién trabaja con TODA la organización y no solo con su sede. No es lo mismo
+   * que `canCharge`: el call center no cobra, pero atiende el teléfono de la
+   * clínica entera —ve dónde está agendado un paciente y agenda donde le pidan—.
+   * Usarlo aquí es lo que le devuelve el selector de sucursal, que con
+   * `canCharge` se quedaba con las sedes de su usuario (casi siempre una).
+   */
+  const veTodaLaOrg = hasRole(...ROLES_TODA_LA_ORG);
 
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);
@@ -236,7 +245,7 @@ export default function Appointments() {
   // para los demás roles se conserva el alcance de sus asignaciones.
   const [clinicasFiltro, setClinicasFiltro] = useState([]);
   const appointmentClinics = (
-    canCharge && clinicasFiltro.length ? clinicasFiltro : (clinics || [])
+    veTodaLaOrg && clinicasFiltro.length ? clinicasFiltro : (clinics || [])
   ).filter((c) => c.active !== false);
   const showClinicSelector = appointmentClinics.length > 1;
   // Mientras no se escoja sucursal no hay destino: los espacios de la agenda se
@@ -393,7 +402,7 @@ export default function Appointments() {
    * queda con las suyas, como hasta ahora.
    */
   const fetchClinicasFiltro = async () => {
-    if (!canCharge) { setClinicasFiltro(clinics || []); return; }
+    if (!veTodaLaOrg) { setClinicasFiltro(clinics || []); return; }
     try {
       const res = await api.get('/clinics', { params: { scope: 'names' } });
       setClinicasFiltro(res.data || []);
@@ -417,12 +426,12 @@ export default function Appointments() {
    * número uno. Quien ya veía todas las de la organización no nota nada.
    */
   useEffect(() => {
-    if (!canCharge) return;
+    if (!veTodaLaOrg) return;
     const propia = activeClinic?._id;
     if (!propia) return;
     if (clinicasFiltro.length <= (clinics?.length || 0)) return;
     setFilter((f) => (f.clinic ? f : { ...f, clinic: propia }));
-  }, [canCharge, clinics?.length, activeClinic?._id, clinicasFiltro.length]);
+  }, [veTodaLaOrg, clinics?.length, activeClinic?._id, clinicasFiltro.length]);
 
   const fetchNurses = async () => {
     try {
@@ -568,9 +577,14 @@ export default function Appointments() {
     });
   }, [now, appointments, isDoctor, isNurse, user?.id]);
 
+  /**
+   * De una cita COMPLETADA, mostrador corrige lo del cobro: el lápiz le abre
+   * «Cambiar servicio y valor» (ver `openEdit`). Antes el lápiz simplemente no
+   * aparecía y había que llamar a un administrador para cada cobro que no
+   * cuadraba.
+   */
   const canEdit = (apt) => {
-    // Una cita completada solo puede ser editada por administradores
-    if (apt.status === 'completada' && !isAdmin) return false;
+    if (apt.status === 'completada') return isAdmin || canCharge;
     if (isAdmin) return true;
     if (isDoctor && String(apt.doctor?._id || apt.doctor) === String(user?.id)) return true;
     return String(apt.createdBy?._id || apt.createdBy) === String(user?.id);
@@ -606,6 +620,22 @@ export default function Appointments() {
   const openEdit = (apt) => {
     if (!canEdit(apt)) {
       toast.error('Solo el creador o un administrador puede editar esta cita.');
+      return;
+    }
+    /**
+     * DE UNA CITA COMPLETADA, MOSTRADOR CORRIGE EL COBRO.
+     *
+     * El paciente termina la consulta, pasa a pagar y AHÍ se sabe qué se hizo de
+     * verdad: otro servicio, otro precio, o que fue canje. Eso ya tenía su
+     * puerta —«Cambiar servicio y valor», dentro del detalle de la cita— pero
+     * escondida donde nadie la busca: al ver que el lápiz no abría nada, la
+     * conclusión era «ya no se puede corregir» y se llamaba a un administrador.
+     * Ahora el lápiz lleva a esa misma puerta, que es la única que toca esos
+     * campos con la cita cerrada (el formulario completo lo sigue rechazando el
+     * servidor: la fecha, la hora y el doctor de algo que ya pasó no se mueven).
+     */
+    if (apt.status === 'completada' && !isAdmin) {
+      setServiceValueModal(apt);
       return;
     }
     setEditing(apt._id);
@@ -698,8 +728,18 @@ export default function Appointments() {
     }
   };
 
+  /**
+   * BORRAR NO ES EDITAR. Una cita completada solo la cancela un administrador:
+   * detrás hay una atención que ocurrió —seguimiento escrito, comisión
+   * devengada, turno cerrado— y cancelarla la borraría de los reportes dejando
+   * la historia clínica donde está. Antes las dos reglas coincidían porque el
+   * lápiz tampoco se enseñaba; ahora que mostrador corrige el cobro, no.
+   * El servidor aplica lo mismo (ver `deleteAppointment`).
+   */
+  const puedeBorrar = (apt) => (apt.status === 'completada' ? isAdmin : canEdit(apt));
+
   const handleDelete = async (apt) => {
-    if (!canEdit(apt)) {
+    if (!puedeBorrar(apt)) {
       toast.error('Solo el creador o un administrador puede eliminar esta cita.');
       return;
     }
@@ -1581,7 +1621,7 @@ export default function Appointments() {
                             <HiOutlinePencil className="w-4 h-4" />
                           </button>
                         )}
-                        {editable && canWrite && (
+                        {puedeBorrar(apt) && canWrite && (
                           <button
                             onClick={() => handleDelete(apt)}
                             className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer transition-colors"
@@ -1707,20 +1747,19 @@ export default function Appointments() {
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">
                   Doctor asignado
                 </label>
-                <select
-                  name="doctor"
+                {/* Con buscador: en un desplegable de treinta doctores se pierde
+                    más tiempo bajando la lista que escribiendo el apellido. */}
+                <SearchableSelect
+                  options={doctors}
                   value={form.doctor}
-                  onChange={handleChange}
+                  onChange={(v) => setForm((f) => ({ ...f, doctor: v }))}
+                  getLabel={doctorOptionLabel}
+                  getSearchText={(d) => `${d.name || ''} ${d.specialty || ''} ${doctorOptionLabel(d)}`}
+                  placeholder="Sin asignar"
+                  searchPlaceholder="Buscar por nombre o especialidad…"
+                  allowClear
                   disabled={doctorLocked}
-                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed"
-                >
-                  <option value="">Sin asignar</option>
-                  {doctors.map((d) => (
-                    <option key={d._id} value={d._id}>
-                      {doctorOptionLabel(d)}
-                    </option>
-                  ))}
-                </select>
+                />
                 <p className="text-[11px] text-slate-400 mt-1">
                   {doctorLocked
                     ? 'La consulta ya fue atendida: el doctor no se puede cambiar.'
