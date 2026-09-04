@@ -35,6 +35,11 @@ export default function AppointmentServiceValueModal({ appointment, onClose, onD
     apt?.agreedValue === null || apt?.agreedValue === undefined ? '' : String(apt.agreedValue)
   );
   const [canje, setCanje] = useState(!!apt?.isCanje);
+  // Lo que el paciente dejó pagado (normalmente por teléfono, al agendar). Se
+  // corrige aquí junto al valor: al cobrar es cuando se sabe si aquello cubría
+  // lo que al final se hizo.
+  const [adelanto, setAdelanto] = useState(apt?.advancePayment || '');
+  const [abonado, setAbonado] = useState(apt?.advanceAmount ? String(apt.advanceAmount) : '');
   const [busy, setBusy] = useState(false);
 
   // Los OTROS servicios de la visita, como {_id, name}. El nombre guardado es el
@@ -84,6 +89,8 @@ export default function AppointmentServiceValueModal({ appointment, onClose, onD
         additionalServices: extras.map((s) => s._id),
         agreedValue: canje ? 0 : valor === '' ? null : Number(valor),
         isCanje: canje,
+        advancePayment: adelanto || '',
+        advanceAmount: abonado === '' ? 0 : Number(abonado),
       });
       toast.success('Servicio y valor actualizados');
       onDone?.(data);
@@ -160,6 +167,10 @@ export default function AppointmentServiceValueModal({ appointment, onClose, onD
           onValueChange={setValor}
           isCanje={canje}
           onCanjeChange={setCanje}
+          advancePayment={adelanto}
+          onAdvancePaymentChange={setAdelanto}
+          advanceAmount={abonado}
+          onAdvanceAmountChange={setAbonado}
         />
 
         <p className="flex items-start gap-2 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">

@@ -75,6 +75,9 @@ const emptyForm = {
   // Dato operativo de mostrador: no genera cobro ni factura.
   agreedValue: '',
   isCanje: false,
+  // Pago por adelantado: '' | 'abono' | 'total' (ver utils/appointmentValue.js).
+  advancePayment: '',
+  advanceAmount: '',
   // Citas adicionales para agendar en una sola operación (solo al crear).
   // Cada entrada: { date, startTime, reason, serviceItem, agreedValue, isCanje }
   extraAppointments: [],
@@ -117,6 +120,18 @@ function nombreServicio(apt) {
     apt.serviceItem?.name ||
     (apt.services || []).map((s) => s.name || s.product?.name).filter(Boolean).join(', ')
   );
+}
+
+/**
+ * LO QUE YA PAGÓ, en una línea. Es lo que mostrador necesita leer de un vistazo
+ * al recibir al paciente: si le cobra el resto, todo, o nada. Devuelve '' cuando
+ * no pagó nada por adelantado, que es el caso normal y no merece ruido.
+ */
+function textoAdelanto(apt) {
+  if (!apt?.advancePayment) return '';
+  if (apt.advancePayment === 'total') return 'Pagó todo';
+  const abonado = Number(apt.advanceAmount) || 0;
+  return abonado > 0 ? `Abonó $${abonado.toFixed(2)}` : 'Abonó';
 }
 
 /** Los OTROS servicios de la visita, sin el principal. Nombres, ya en snapshot. */
@@ -684,6 +699,8 @@ export default function Appointments() {
       if (!canCharge) {
         delete basePayload.agreedValue;
         delete basePayload.isCanje;
+        delete basePayload.advancePayment;
+        delete basePayload.advanceAmount;
       }
       //  (inventario) ya no se manda: enviarlo vacío BORRARÍA los de
       // una cita antigua que se esté editando, y con ellos su cobro.
@@ -1471,6 +1488,34 @@ export default function Appointments() {
                             Motivo: {apt.reason.length > 60 ? apt.reason.slice(0, 60) + '…' : apt.reason}
                           </div>
                         )}
+                        {/* LO QUE PAGÓ, en la fila y no escondido en el detalle:
+                            quien recibe al paciente tiene que saber sin abrir
+                            nada si le cobra el resto, todo, o nada. Solo para
+                            quien trabaja con el dinero de la cita. */}
+                        {veTodaLaOrg && (apt.isCanje || apt.agreedValue != null || apt.advancePayment) && (
+                          <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                            {apt.isCanje ? (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
+                                Canje
+                              </span>
+                            ) : apt.agreedValue != null ? (
+                              <span className="text-[11px] text-slate-600 font-medium">
+                                ${Number(apt.agreedValue).toFixed(2)}
+                              </span>
+                            ) : null}
+                            {apt.advancePayment && (
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                  apt.advancePayment === 'total'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : 'bg-sky-100 text-sky-800'
+                                }`}
+                              >
+                                {textoAdelanto(apt)}
+                              </span>
+                            )}
+                          </div>
+                        )}
                         {apt.doctor?.name && (
                           <div className="text-[11px] text-emerald-700 mt-0.5">
                             Dr. {apt.doctor.name}
@@ -1852,6 +1897,10 @@ export default function Appointments() {
               onValueChange={(value) => setForm((f) => ({ ...f, agreedValue: value }))}
               isCanje={form.isCanje}
               onCanjeChange={(isCanje) => setForm((f) => ({ ...f, isCanje }))}
+              advancePayment={form.advancePayment}
+              onAdvancePaymentChange={(v) => setForm((f) => ({ ...f, advancePayment: v }))}
+              advanceAmount={form.advanceAmount}
+              onAdvanceAmountChange={(v) => setForm((f) => ({ ...f, advanceAmount: v }))}
             />
           )}
 
@@ -2124,7 +2173,7 @@ export default function Appointments() {
                 {/* Valor acordado de la cita. Es un dato operativo —lo que se le
                     va a cobrar al paciente—, no el cobro en sí. Solo mostrador lo
                     ve y lo cambia. */}
-                {canCharge && (detailModal.isCanje || detailModal.agreedValue != null) && (
+                {veTodaLaOrg && (detailModal.isCanje || detailModal.agreedValue != null) && (
                   <>
                     <p className="text-xs text-emerald-600 font-medium pt-1">Valor</p>
                     <p className="text-sm text-slate-800">
@@ -2136,6 +2185,14 @@ export default function Appointments() {
                         `$${Number(detailModal.agreedValue).toFixed(2)}`
                       )}
                     </p>
+                  </>
+                )}
+                {/* Lo que ya pagó por teléfono. Es lo que mostrador necesita
+                    saber al recibirlo: si le cobra el resto, todo, o nada. */}
+                {veTodaLaOrg && detailModal.advancePayment && (
+                  <>
+                    <p className="text-xs text-emerald-600 font-medium pt-1">Pago adelantado</p>
+                    <p className="text-sm text-slate-800">{textoAdelanto(detailModal)}</p>
                   </>
                 )}
                 {quienAgendo(detailModal) && (

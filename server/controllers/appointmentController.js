@@ -319,58 +319,10 @@ const buildServicesSnapshot = async (clinicId, items) => {
     .map((p) => ({ product: p._id, name: p.name, price: p.salePrice }));
 };
 
-/**
- * ¿Este rol puede poner o cambiar el VALOR de una cita?
- *
- * Solo mostrador: administración y caja. El valor es lo que se le va a cobrar
- * al paciente, y quien atiende no lo negocia — que un doctor pudiera cambiarlo
- * desde su seguimiento sería exactamente el problema que se quiere evitar.
- */
-const puedeFijarValor = (req) =>
-  !!req.user?.isSuperAdmin || ['admin', 'cajero'].includes(req.role);
-
-/**
- * Aplica sobre la cita el valor acordado y/o el canje que venga en el cuerpo de
- * la petición. Devuelve `true` si tocó algo.
- *
- * Vive aparte porque entra por TRES puertas —al asignar la atención, al marcar
- * asistencia y al corregirlo después— y las tres tienen que tratarlo igual: un
- * canje deja el importe en 0, y cualquier cambio deja registrado quién fue.
- *
- * Los campos son OPCIONALES: si no vienen, la cita se queda como estaba. Eso es
- * lo que permite que recepción reciba al paciente sin saber todavía el importe
- * y lo anote más tarde, sin que el flujo se lo exija.
- */
-function aplicarValorDeCita(apt, body, req) {
-  if (!puedeFijarValor(req)) return false;
-
-  const traeCanje = body.isCanje !== undefined;
-  const traeValor = body.agreedValue !== undefined;
-  if (!traeCanje && !traeValor) return false;
-
-  if (traeCanje) apt.isCanje = !!body.isCanje;
-
-  if (apt.isCanje) {
-    // Canje = no entró dinero. Ver el comentario del modelo.
-    apt.agreedValue = 0;
-  } else if (traeValor) {
-    const crudo = body.agreedValue;
-    // '' y null significan "bórralo", no "cero": son lo que manda el formulario
-    // cuando el campo se deja vacío.
-    if (crudo === null || crudo === '') {
-      apt.agreedValue = null;
-    } else {
-      const num = Number(crudo);
-      if (!Number.isFinite(num) || num < 0) return false;
-      apt.agreedValue = num;
-    }
-  }
-
-  apt.valueSetAt = new Date();
-  apt.valueSetBy = req.user._id;
-  return true;
-}
-
+// El valor de la cita, su canje y su pago adelantado viven en su propia
+// utilidad: entran por cinco puertas y una copia por puerta ya se demostro que
+// se desincroniza (ver utils/appointmentValue.js).
+const { puedeFijarValor, aplicarValorDeCita } = require('../utils/appointmentValue');
 /**
  * Resuelve el servicio de agenda y le suma un uso (ordena el buscador por lo
  * más pedido). Devuelve null si no llega ninguno: el servicio dejó de ser
@@ -570,7 +522,7 @@ exports.createAppointment = async (req, res) => {
      * Se agenda con valor desde el alta del paciente (Pacientes → «Agendar cita
      * para este paciente»), que es mostrador registrando a quien tiene delante.
      */
-    for (const k of ['agreedValue', 'isCanje', 'valueSetAt', 'valueSetBy']) delete cleanBody[k];
+    for (const k of ['agreedValue', 'isCanje', 'valueSetAt', 'valueSetBy', 'advancePayment', 'paidInAdvance', 'advanceAmount']) delete cleanBody[k];
     const valorCita = {};
     aplicarValorDeCita(valorCita, req.body, req);
     if (cleanBody.doctor === '') delete cleanBody.doctor;
@@ -697,15 +649,31 @@ exports.updateAppointment = async (req, res) => {
      * volcaba entera en el `findOneAndUpdate`, así que cualquiera con permiso
      * para editar la cita podía fijar el precio y encima sin dejar rastro.
      */
+    const CAMPOS_DEL_VALOR = [
+      'agreedValue', 'isCanje', 'advancePayment', 'paidInAdvance', 'advanceAmount',
+      'valueSetAt', 'valueSetBy',
+    ];
     if (!puedeFijarValor(req)) {
-      for (const k of ['agreedValue', 'isCanje', 'valueSetAt', 'valueSetBy']) delete update[k];
-    } else if (update.agreedValue !== undefined || update.isCanje !== undefined) {
-      // Canje = no entró dinero (ver el comentario del modelo). Y '' o null son
-      // «bórralo», que es lo que manda el formulario con el campo vacío.
-      if (update.isCanje) update.agreedValue = 0;
-      else if (update.agreedValue === '' || update.agreedValue === null) update.agreedValue = null;
-      update.valueSetAt = new Date();
-      update.valueSetBy = req.user._id;
+      for (const k of CAMPOS_DEL_VALOR) delete update[k];
+    } else {
+      /**
+       * Por la MISMA función que las otras tres puertas, no por una copia: aquí
+       * había una versión reducida (canje → 0, vacío → null) que ya no sabía del
+       * pago adelantado. Se parte del estado actual de la cita porque las reglas
+       * se cruzan —un canje borra el adelanto, «pagó todo» sigue al valor— y
+       * decidirlas solo con lo que llega en el cuerpo daría resultados distintos
+       * según qué campo se haya tocado en la pantalla.
+       */
+      const valor = {
+        agreedValue: existing.agreedValue,
+        isCanje: existing.isCanje,
+        advancePayment: existing.advancePayment,
+        paidInAdvance: existing.paidInAdvance,
+        advanceAmount: existing.advanceAmount,
+      };
+      const cambio = aplicarValorDeCita(valor, update, req);
+      for (const k of CAMPOS_DEL_VALOR) delete update[k];
+      if (cambio) Object.assign(update, valor);
     }
 
     // Reasignación de doctor: libre hasta que la consulta se atiende. Se compara

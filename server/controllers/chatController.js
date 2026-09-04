@@ -25,6 +25,7 @@ const {
 const { restrictionIsActive } = require('../utils/workflowChatRestriction');
 const { esPrimeraVisita } = require('../utils/firstVisit');
 const { validarSucursalDestino } = require('../utils/clinicScope');
+const { aplicarValorDeCita } = require('../utils/appointmentValue');
 
 /**
  * Normaliza un número de teléfono a sólo dígitos (sin +, ni espacios).
@@ -5168,11 +5169,28 @@ exports.createAppointmentFromChat = async (req, res) => {
       const destino = await validarSucursalDestino(req, a.clinic);
       if (!destino.ok) return res.status(destino.status).json({ message: destino.message });
       const targetClinic = destino.clinicId;
+
+      /**
+       * VALOR ACORDADO Y PAGO ADELANTADO, por la misma puerta que el resto.
+       *
+       * El call center cierra la cita por teléfono y cobra en el momento: puede
+       * abonar para reservar o pagarla entera. Antes eso no cabía en ningún
+       * campo y acababa escrito en el motivo de la cita, donde no lo lee ningún
+       * reporte y mostrador no lo ve al recibir al paciente.
+       *
+       * `aplicarValorDeCita` es quien decide —comprueba el rol, resuelve canje
+       * contra importe y sella quién lo puso—; aquí solo se le pasa la cita que
+       * se está creando. Va por ítem porque cada cita de la tanda tiene su
+       * precio.
+       */
+      const valorCita = {};
+      aplicarValorDeCita(valorCita, a, req);
       const appointment = await Appointment.create({
         clinic: targetClinic,
         patient: conv.patient._id,
         date: localDate,
         startTime: a.startTime,
+        ...valorCita,
         reason: a.reason || conv.opportunity?.notes || `Cita desde chat ${conv.phone}`,
         services: serviceItems,
         serviceItem: servicioAgenda?._id || null,

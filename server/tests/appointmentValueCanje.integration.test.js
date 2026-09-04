@@ -298,7 +298,7 @@ test('quien atiende NO puede colar el valor al crear la cita', async () => {
  * cita se volcaba entero en el update: call center —que puede editar citas— le
  * ponía precio a una consulta y encima sin dejar rastro de quién fue.
  */
-test('call center puede editar la cita pero NO ponerle precio', async () => {
+test('quien ATIENDE no le pone precio a la cita ni por la puerta de editar', async () => {
   const { clinicId, userId, make } = await seedCase();
   const apt = await make({ status: 'pendiente', agreedValue: 40 });
 
@@ -306,16 +306,76 @@ test('call center puede editar la cita pero NO ponerle precio', async () => {
     appt.updateAppointment,
     H.mockReq(
       clinicId, userId,
-      { reason: 'Reagendada por el paciente', agreedValue: 999, isCanje: true },
-      { role: 'call_center', params: { id: String(apt._id) } }
+      { reason: 'Corrijo el motivo', agreedValue: 999, isCanje: true, advancePayment: 'total' },
+      { role: 'enfermero', params: { id: String(apt._id) } }
     )
   );
   assert.equal(r.statusCode ?? 200, 200, JSON.stringify(r.payload));
 
   const enBase = await Appointment.findById(apt._id);
-  assert.equal(enBase.reason, 'Reagendada por el paciente', 'lo que sí puede tocar, se guarda');
+  assert.equal(enBase.reason, 'Corrijo el motivo', 'lo que sí puede tocar, se guarda');
   assert.equal(enBase.agreedValue, 40, 'el importe se queda como estaba');
   assert.equal(enBase.isCanje, false, 'y el canje tampoco es suyo');
+  assert.equal(enBase.advancePayment, '', 'ni el pago adelantado');
+});
+
+/**
+ * EL CALL CENTER SÍ (sep-2026). Cierra la cita por teléfono y cobra en el
+ * momento: es quien sabe cuánto se acordó y si el paciente abonó o pagó entero.
+ */
+test('el call center pone el valor y el pago adelantado al agendar', async () => {
+  const { clinicId, userId, make } = await seedCase();
+  const apt = await make({ status: 'pendiente' });
+
+  await H.runController(
+    appt.updateAppointment,
+    H.mockReq(
+      clinicId, userId,
+      { agreedValue: 80, advancePayment: 'abono', advanceAmount: 30 },
+      { role: 'call_center', params: { id: String(apt._id) } }
+    )
+  );
+
+  const enBase = await Appointment.findById(apt._id);
+  assert.equal(enBase.agreedValue, 80);
+  assert.equal(enBase.advancePayment, 'abono');
+  assert.equal(enBase.advanceAmount, 30, 'lo que abonó para reservar');
+  assert.equal(enBase.paidInAdvance, true, 'el espejo booleano lo sigue');
+  assert.equal(String(enBase.valueSetBy), String(userId), 'y queda quién lo puso');
+});
+
+test('«pagó todo» copia el valor de la cita: un solo número, no dos', async () => {
+  const { clinicId, userId, make } = await seedCase();
+  const apt = await make({ status: 'pendiente' });
+
+  await H.runController(
+    appt.updateAppointment,
+    H.mockReq(clinicId, userId, { agreedValue: 55, advancePayment: 'total', advanceAmount: 5 },
+      { role: 'call_center', params: { id: String(apt._id) } })
+  );
+
+  const enBase = await Appointment.findById(apt._id);
+  assert.equal(enBase.advanceAmount, 55, 'lo pagado ES el valor, no el importe que llegó');
+  assert.equal(enBase.advancePayment, 'total');
+});
+
+test('un canje borra el pago adelantado: no entró dinero', async () => {
+  const { clinicId, userId, make } = await seedCase();
+  const apt = await make({
+    status: 'pendiente', agreedValue: 40, advancePayment: 'total', paidInAdvance: true, advanceAmount: 40,
+  });
+
+  await H.runController(
+    appt.updateAppointment,
+    H.mockReq(clinicId, userId, { isCanje: true }, { role: 'cajero', params: { id: String(apt._id) } })
+  );
+
+  const enBase = await Appointment.findById(apt._id);
+  assert.equal(enBase.isCanje, true);
+  assert.equal(enBase.agreedValue, 0);
+  assert.equal(enBase.advancePayment, '', 'sin dinero no hay adelanto que anotar');
+  assert.equal(enBase.paidInAdvance, false);
+  assert.equal(enBase.advanceAmount, 0);
 });
 
 test('caja sí lo cambia por esa misma puerta, y queda quién y cuándo', async () => {

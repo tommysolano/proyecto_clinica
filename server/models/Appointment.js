@@ -188,7 +188,28 @@ const appointmentSchema = new mongoose.Schema(
       enum: ['pendiente', 'confirmada', 'asistida', 'no_asistio', 'cancelada', 'completada'],
       default: 'pendiente',
     },
-    // Marca si abonó por adelantado (check al agendar)
+    /**
+     * PAGO POR ADELANTADO, tal como lo cuenta quien agenda por teléfono.
+     *
+     * El call center cierra la cita y el paciente paga en el momento: a veces
+     * abona una parte para reservar y a veces la paga entera. Esa diferencia
+     * decide lo que hace mostrador cuando llega —cobrarle el resto o no cobrarle
+     * nada— y hasta ahora se apuntaba en el motivo de la cita o se perdía.
+     *
+     * `advancePayment` es la FUENTE ('' = no pagó nada por adelantado) y
+     * `paidInAdvance` su espejo booleano, que se conserva porque ya lo leía el
+     * Excel de citas. Nadie lo escribe a mano: lo sincroniza
+     * `aplicarValorDeCita` (appointmentController), igual que `doctor` con los
+     * turnos.
+     *
+     * Es un dato OPERATIVO, como el valor de la cita: no genera venta, ni
+     * factura, ni asiento. Lo contable vive en su módulo.
+     */
+    advancePayment: {
+      type: String,
+      enum: ['', 'abono', 'total'],
+      default: '',
+    },
     paidInAdvance: { type: Boolean, default: false },
     advanceAmount: { type: Number, default: 0, min: 0 },
     /**

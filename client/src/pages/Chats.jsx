@@ -7,6 +7,7 @@ import useDebounce from '../hooks/useDebounce';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import SriStatus from '../components/SriStatus';
 import { nombreSucursal } from '../utils/clinicName';
+import AppointmentValueFields from '../components/AppointmentValueFields';
 import {
   HiOutlineStar,
   HiStar,
@@ -6293,7 +6294,14 @@ function TransferChatModal({ conv, meId, canAutoAssign, onClose, onTransfer }) {
 }
 
 function AppointmentFromChatModal({ conv, onClose, onCreated }) {
-  const { clinics, activeClinic } = useAuth();
+  const { clinics, activeClinic, hasRole } = useAuth();
+  /**
+   * El VALOR y el pago adelantado son de quien VENDE la cita: administración,
+   * caja y el call center (espejo de `puedeFijarValor` en el servidor). A
+   * marketing —que también agenda desde el chat— ni se le enseñan: el servidor
+   * los descartaría y habría tecleado un precio que se pierde en silencio.
+   */
+  const puedeFijarValor = hasRole('admin', 'cajero', 'call_center');
   const today = todayEc();
   // Soporte para agendar múltiples citas en una sola operación.
   // Importante: arrancamos SIN servicios pre-seleccionados (el usuario los elige cada vez).
@@ -6303,6 +6311,16 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
     reason: '',
     // Servicio del catálogo propio de la agenda: { _id, name } o null.
     serviceItem: null,
+    /**
+     * Lo que se acuerda por teléfono: cuánto vale la visita y si el paciente
+     * pagó algo ya. El call center cierra la cita y cobra en el momento, y
+     * mostrador necesita saber al recibirlo si le cobra el resto, todo o nada.
+     * Va POR CITA porque cada una de la tanda tiene su precio.
+     */
+    agreedValue: '',
+    isCanje: false,
+    advancePayment: '',
+    advanceAmount: '',
   });
   const [items, setItems] = useState([emptyAppt()]);
   /**
@@ -6377,6 +6395,11 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
           reason: it.reason,
           clinic: clinicId || undefined,
           serviceItem: it.serviceItem?._id || null,
+          // El servidor decide si este rol puede fijarlos (aplicarValorDeCita).
+          agreedValue: it.isCanje ? 0 : (it.agreedValue ?? ''),
+          isCanje: !!it.isCanje,
+          advancePayment: it.advancePayment || '',
+          advanceAmount: it.advanceAmount ?? '',
         })),
       });
       onCreated(r.data.conversation, (r.data.appointments || []).length || 1);
@@ -6449,6 +6472,19 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
                   onChange={(item) => updateItem(idx, { serviceItem: item })}
                 />
               </div>
+              {puedeFijarValor && (
+              <AppointmentValueFields
+                value={it.agreedValue ?? ''}
+                onValueChange={(v) => updateItem(idx, { agreedValue: v })}
+                isCanje={!!it.isCanje}
+                onCanjeChange={(v) => updateItem(idx, { isCanje: v })}
+                advancePayment={it.advancePayment || ''}
+                onAdvancePaymentChange={(v) => updateItem(idx, { advancePayment: v })}
+                advanceAmount={it.advanceAmount ?? ''}
+                onAdvanceAmountChange={(v) => updateItem(idx, { advanceAmount: v })}
+              />
+              )}
+
               {/* Disponibilidad de horario para esta cita */}
               <SameSlotPanel
                 date={it.date}

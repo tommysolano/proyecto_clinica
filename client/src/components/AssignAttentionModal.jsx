@@ -150,6 +150,12 @@ export default function AssignAttentionModal({
     apt?.agreedValue === null || apt?.agreedValue === undefined ? '' : String(apt.agreedValue)
   );
   const [canje, setCanje] = useState(!!apt?.isCanje);
+  // Lo que ya pagó por teléfono. Se precarga igual que el importe: recepción
+  // llega a esta pantalla para CONFIRMARLO, no para volver a preguntarlo.
+  const [adelanto, setAdelanto] = useState(apt?.advancePayment || '');
+  const [abonado, setAbonado] = useState(
+    apt?.advanceAmount ? String(apt.advanceAmount) : ''
+  );
 
   const porId = useMemo(() => new Map(doctors.map((d) => [String(d._id), d])), [doctors]);
   const enfermeroPorId = useMemo(() => new Map(nurses.map((n) => [String(n._id), n])), [nurses]);
@@ -197,7 +203,14 @@ export default function AssignAttentionModal({
         // Solo se mandan si este rol puede fijarlos: así una asignación hecha por
         // enfermería no viaja con los campos vacíos y borra el valor que caja ya
         // había anotado.
-        ...(puedeFijarValor ? { agreedValue: canje ? 0 : valor === '' ? null : Number(valor), isCanje: canje } : {}),
+        ...(puedeFijarValor
+          ? {
+              agreedValue: canje ? 0 : valor === '' ? null : Number(valor),
+              isCanje: canje,
+              advancePayment: adelanto || '',
+              advanceAmount: abonado === '' ? 0 : Number(abonado),
+            }
+          : {}),
       });
       const nombres = cola.map((p) =>
         p.kind === ENFERMERIA
@@ -386,6 +399,10 @@ export default function AssignAttentionModal({
             onValueChange={setValor}
             isCanje={canje}
             onCanjeChange={setCanje}
+            advancePayment={adelanto}
+            onAdvancePaymentChange={setAdelanto}
+            advanceAmount={abonado}
+            onAdvanceAmountChange={setAbonado}
           />
         )}
 

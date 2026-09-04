@@ -116,3 +116,58 @@ test('sin sucursal en el cuerpo se sigue agendando en la propia', async () => {
   const cita = await Appointment.findOne({}).lean();
   assert.equal(String(cita.clinic), String(matriz));
 });
+
+/**
+ * EL VALOR Y EL PAGO ADELANTADO, DESDE EL CHAT.
+ *
+ * El call center cierra la cita por teléfono y cobra en el momento: puede abonar
+ * para reservar o pagarla entera. Antes eso no cabía en ningún campo —el alta
+ * desde el chat ni miraba el importe— y acababa escrito en el motivo de la cita,
+ * donde no lo lee ningún reporte y mostrador no lo ve al recibir al paciente.
+ */
+test('el call center agenda cobrando: valor y abono quedan en la cita', async () => {
+  const { matriz, userId, conv } = await seed();
+
+  const req = H.mockReq(matriz, userId, {
+    appointments: [{
+      date: manana(), startTime: '09:00',
+      agreedValue: 90, advancePayment: 'abono', advanceAmount: 25,
+    }],
+  }, { role: 'call_center', params: { id: String(conv._id) } });
+  req.user.clinics = [{ clinic: matriz, role: 'call_center' }];
+  ok(await H.runController(chats.createAppointmentFromChat, req));
+
+  const cita = await Appointment.findOne({}).lean();
+  assert.equal(cita.agreedValue, 90, 'lo que se acordó por teléfono');
+  assert.equal(cita.advancePayment, 'abono');
+  assert.equal(cita.advanceAmount, 25, 'lo que dejó pagado para reservar');
+  assert.equal(cita.paidInAdvance, true, 'el espejo que lee el Excel de citas');
+});
+
+test('«pagó todo» desde el chat deja pagado el valor de la cita', async () => {
+  const { matriz, userId, conv } = await seed();
+
+  const req = H.mockReq(matriz, userId, {
+    appointments: [{ date: manana(), startTime: '09:00', agreedValue: 60, advancePayment: 'total' }],
+  }, { role: 'call_center', params: { id: String(conv._id) } });
+  req.user.clinics = [{ clinic: matriz, role: 'call_center' }];
+  ok(await H.runController(chats.createAppointmentFromChat, req));
+
+  const cita = await Appointment.findOne({}).lean();
+  assert.equal(cita.advancePayment, 'total');
+  assert.equal(cita.advanceAmount, 60, 'al llegar no hay que cobrarle nada');
+});
+
+test('marketing agenda desde el chat, pero el importe no es suyo', async () => {
+  const { matriz, userId, conv } = await seed();
+
+  const req = H.mockReq(matriz, userId, {
+    appointments: [{ date: manana(), startTime: '09:00', agreedValue: 90, advancePayment: 'total' }],
+  }, { role: 'marketing', params: { id: String(conv._id) } });
+  req.user.clinics = [{ clinic: matriz, role: 'marketing' }];
+  ok(await H.runController(chats.createAppointmentFromChat, req));
+
+  const cita = await Appointment.findOne({}).lean();
+  assert.equal(cita.agreedValue ?? null, null, 'la cita se agenda, el precio no se cuela');
+  assert.equal(cita.advancePayment, '');
+});

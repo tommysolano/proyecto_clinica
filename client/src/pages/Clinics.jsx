@@ -6,6 +6,7 @@ import SriStatus from '../components/SriStatus';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import EmailStatus from '../components/EmailStatus';
 import useEmailValidation from '../hooks/useEmailValidation';
+import { nombreSucursal } from '../utils/clinicName';
 import { useAuth } from '../context/AuthContext';
 import { HiOutlineBuildingOffice2, HiOutlinePlus, HiOutlinePencil, HiOutlineTrash } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
@@ -233,7 +234,10 @@ export default function Clinics() {
         <table className="tbl">
           <thead className="bg-emerald-50/50 text-emerald-700">
             <tr>
-              <th className="text-left px-5 py-3 text-xs font-semibold uppercase">Nombre</th>
+              {/* El nombre VISIBLE, que es el comercial si lo tiene: esta columna
+                  enseñaba el legal, así que renombrar una sede aquí parecía no
+                  hacer nada en el resto del sistema (ver `nombreSucursal`). */}
+              <th className="text-left px-5 py-3 text-xs font-semibold uppercase">Nombre visible</th>
               <th className="text-left px-5 py-3 text-xs font-semibold uppercase">RUC</th>
               <th className="text-left px-5 py-3 text-xs font-semibold uppercase">Razón social</th>
               <th className="text-left px-5 py-3 text-xs font-semibold uppercase">Email</th>
@@ -249,7 +253,14 @@ export default function Clinics() {
             ) : (
               clinics.map((c) => (
                 <tr key={c._id} className="border-t border-emerald-50 hover:bg-emerald-50/30">
-                  <td className="px-5 py-3 text-slate-800 font-medium">{c.name}</td>
+                  <td className="px-5 py-3 text-slate-800 font-medium">
+                    {nombreSucursal(c)}
+                    {c.nombreComercial && c.nombreComercial !== c.name && (
+                      <span className="block text-[11px] font-normal text-slate-400">
+                        Nombre legal: {c.name}
+                      </span>
+                    )}
+                  </td>
                   <td className="px-5 py-3 font-mono text-xs">{c.ruc || '—'}</td>
                   <td className="px-5 py-3 text-slate-600">{c.razonSocial || '—'}</td>
                   <td className="px-5 py-3 text-slate-600">{c.email || '—'}</td>
@@ -302,7 +313,26 @@ export default function Clinics() {
               <SriStatus status={rucLookup} />
             </Field>
             <Field label="Razón social" value={form.razonSocial} onChange={(v) => setForm({ ...form, razonSocial: v })} />
-            <Field label="Nombre comercial" value={form.nombreComercial} onChange={(v) => setForm({ ...form, nombreComercial: v })} />
+            {/**
+              * CUÁL DE LOS DOS NOMBRES SE VE, dicho aquí.
+              *
+              * `nombreComercial` gana sobre `name` en TODA la aplicación (ver
+              * `nombreSucursal`), y eso no se adivinaba: al renombrar una sede
+              * se editaba «Nombre» —que es la columna de esta misma tabla—, se
+              * guardaba, y la agenda seguía llamándola como antes. Parecía que
+              * el cambio no funcionaba.
+              */}
+            <Field label="Nombre comercial" value={form.nombreComercial} onChange={(v) => setForm({ ...form, nombreComercial: v })}>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Es el nombre que se ve en <b>toda la aplicación</b>: agenda, selector de
+                sucursal, recetas y hoja clínica. Si lo dejas vacío se usa el «Nombre».
+                {(form.nombreComercial || form.name) && (
+                  <>
+                    {' '}Se verá como <b>{form.nombreComercial || form.name}</b>.
+                  </>
+                )}
+              </p>
+            </Field>
             <Field label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })}>
               <EmailStatus status={emailCheck} onApplySuggestion={(s) => setForm({ ...form, email: s })} />
             </Field>
