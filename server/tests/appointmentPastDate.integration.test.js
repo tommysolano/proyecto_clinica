@@ -119,12 +119,35 @@ test('caja agenda en otra sucursal y se respetan los espacios de la sucursal des
   assert.equal(String(stored.clinic), String(targetClinic._id));
   assert.equal(stored.agreedValue, 42);
 
+  /**
+   * EL CALL CENTER TAMBIÉN AGENDA EN OTRA SEDE (cambiado sep-2026).
+   *
+   * Antes esto devolvía 403: la sede destino se decidía con
+   * `veTodaLaOrganizacion`, que es un permiso de VER, y el call center estaba
+   * fuera. En la práctica un asesor está asignado a UNA sucursal, así que sus
+   * citas caían siempre en la suya — y quien agenda por teléfono agenda justo
+   * donde le pide el paciente. Ahora la sede no lleva filtro de rol: quién
+   * agenda ya lo decide la ruta (ver `validarSucursalDestino`).
+   */
   const callCenterReq = H.mockReq(activeClinic._id, userId, body('10:00'), {
     role: 'call_center',
   });
   callCenterReq.user.clinics = [{ clinic: activeClinic._id, role: 'call_center' }];
-  const denied = await H.runController(appt.createAppointment, callCenterReq);
-  assert.equal(denied.statusCode, 403, JSON.stringify(denied.payload));
+  const porTelefono = await H.runController(appt.createAppointment, callCenterReq);
+  assert.equal(porTelefono.statusCode, 201, JSON.stringify(porTelefono.payload));
+  assert.equal(
+    String((await Appointment.findById(porTelefono.payload._id)).clinic),
+    String(targetClinic._id),
+    'la cita queda en la sucursal que se escogió, no en la del asesor',
+  );
+
+  // Lo que sí sigue cerrado: una sede que no existe o está dada de baja.
+  const cerrada = await Clinic.create({ name: 'Sucursal cerrada', active: false });
+  const aBaja = H.mockReq(activeClinic._id, userId,
+    { ...body('10:30'), clinic: cerrada._id }, { role: 'cajero' });
+  aBaja.user.clinics = [{ clinic: activeClinic._id, role: 'cajero' }];
+  const rechazada = await H.runController(appt.createAppointment, aBaja);
+  assert.equal(rechazada.statusCode, 400, JSON.stringify(rechazada.payload));
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
