@@ -134,6 +134,67 @@ test('la cita del suero aparece en la bandeja de enfermería y se puede reclamar
   assert.ok(cita.turns[0].startedAt, 'y con su hora de inicio, la de verdad');
 });
 
+/**
+ * La pantalla NO pide «todas las citas»: pide LAS DE UN DÍA (`startDate` =
+ * `endDate` = el día que se está mirando). El primer test se saltaba ese filtro
+ * y por eso pasaba con una cita que en producción no salía: `date` guardaba la
+ * hora de la atención y el rango arrancaba al MEDIODÍA, así que todo lo
+ * registrado por la mañana se caía de la lista. La notificación llegaba y la
+ * agenda decía «No se encontraron citas».
+ */
+test('la cita del suero sale en la agenda del DÍA, aunque se recete por la mañana', async () => {
+  const { clinicId, patient, cajero, enfermera } = await seed();
+  await guardarSeguimiento(clinicId, cajero._id, patient._id, 'cajero', {
+    recetaItems: [lineaSuero()],
+  });
+
+  const hoy = new Date();
+  const ymd = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-${String(hoy.getDate()).padStart(2, '0')}`;
+  const lista = await H.runController(
+    appt.getAppointments,
+    H.mockReq(clinicId, enfermera._id, {}, {
+      role: 'enfermero',
+      query: { startDate: ymd, endDate: ymd },
+    }),
+  );
+  const citas = Array.isArray(lista.payload) ? lista.payload : lista.payload?.appointments || [];
+  assert.equal(citas.length, 1, 'la agenda del día tiene que enseñarla');
+
+  // Y el día se guarda como en cualquier otra cita: la hora vive en `startTime`.
+  // Esta comprobación no depende de la hora a la que corra el test —la de arriba
+  // sí: por la tarde el rango la habría dejado pasar con el fallo puesto—.
+  const cita = await Appointment.findOne({ clinic: clinicId }).lean();
+  assert.equal(cita.date.getHours(), 12, 'el campo `date` es el DÍA, a las 12:00');
+  assert.match(cita.startTime, /^\d{2}:\d{2}$/, 'la hora real va en startTime');
+});
+
+test('una cita con la hora dentro de `date` (las ya guardadas) tampoco se cae del día', async () => {
+  const { clinicId, patient, enfermera, userId } = await seed();
+  // Como quedaron en la base las atenciones sin cita registradas antes del
+  // mediodía: el día trae la hora pegada. El filtro tiene que enseñarlas igual,
+  // porque esas ya están guardadas y nadie va a reescribirlas.
+  const manana = new Date();
+  manana.setHours(8, 5, 0, 0);
+  const cita = await Appointment.create({
+    clinic: clinicId, patient: patient._id, date: manana, startTime: '08:05',
+    status: 'asistida',
+    turns: [{ kind: 'enfermeria', user: null, order: 0, status: 'pendiente' }],
+    currentTurnKind: 'enfermeria', currentTurnUser: null, createdBy: userId,
+  });
+
+  const ymd = `${manana.getFullYear()}-${String(manana.getMonth() + 1).padStart(2, '0')}-${String(manana.getDate()).padStart(2, '0')}`;
+  const lista = await H.runController(
+    appt.getAppointments,
+    H.mockReq(clinicId, enfermera._id, {}, {
+      role: 'enfermero',
+      query: { startDate: ymd, endDate: ymd },
+    }),
+  );
+  const citas = Array.isArray(lista.payload) ? lista.payload : lista.payload?.appointments || [];
+  assert.equal(citas.length, 1, 'el rango del día empieza a medianoche, no a mediodía');
+  assert.equal(String(citas[0]._id), String(cita._id));
+});
+
 test('el suero recetado queda en la historia, listo para administrar', async () => {
   const { clinicId, patient, cajero } = await seed();
   await guardarSeguimiento(clinicId, cajero._id, patient._id, 'cajero', {

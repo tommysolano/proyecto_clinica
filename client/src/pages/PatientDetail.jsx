@@ -1481,9 +1481,18 @@ function SueroComposicionEditor({ base, componentes, onChangeBase, onChangeCompo
         Preparación del suero
       </p>
 
-      {/* El cloruro va en todos: lo único que se elige es el tamaño de la bolsa.
-          Se avisa cuando falta porque sin volumen la base desaparece de la receta
-          impresa y del parte de enfermería, y antes se iba en silencio. */}
+      {/**
+        * El cloruro va en todos: lo único que se elige es el tamaño de la bolsa,
+        * y ELEGIRLO ES OPCIONAL.
+        *
+        * Antes el campo se pintaba en ámbar con un «falta el volumen de la
+        * bolsa», que se lee como un error por corregir: el médico que no quiere
+        * fijar el tamaño —porque lo decide enfermería con lo que haya en la
+        * sala— se quedaba con una advertencia permanente en la receta. La
+        * preocupación de entonces era que sin volumen el cloruro desapareciera
+        * de la receta impresa; eso está resuelto en `describeSuero`, que ahora
+        * nombra la base aunque no lleve medida.
+        */}
       <label className="flex flex-wrap items-center gap-2 text-xs text-slate-700">
         <span className="font-medium">{base?.name || SUERO_CLORURO_NOMBRE}</span>
         {/* El ancho lo pone el contenedor, no una utilidad encima del campo:
@@ -1497,16 +1506,16 @@ function SueroComposicionEditor({ base, componentes, onChangeBase, onChangeCompo
                 volumeMl: e.target.value === '' ? null : Number(e.target.value),
               })
             }
-            className={`input input-sm cursor-pointer ${volumen ? '' : 'border-amber-300 bg-amber-50'}`}
+            className="input input-sm cursor-pointer"
           >
-            <option value="">Volumen…</option>
+            <option value="">Sin especificar</option>
             {SUERO_CLORURO_VOLUMENES.map((v) => (
               <option key={v} value={v}>{v} ml</option>
             ))}
           </select>
         </span>
-        <span className={volumen ? 'text-slate-400' : 'text-amber-700 font-medium'}>
-          {volumen ? 'va en todos los sueros' : 'falta el volumen de la bolsa'}
+        <span className="text-slate-400">
+          {volumen ? 'va en todos los sueros' : 'volumen opcional: lo decide enfermería'}
         </span>
       </label>
 
@@ -1621,12 +1630,14 @@ function SueroResumen({ item, className = '' }) {
   if (!vol && !comps.length) return null;
   return (
     <div className={`text-[11px] text-slate-700 ${className}`}>
-      {vol && (
-        <div>
-          <span className="text-slate-500">Base:</span>{' '}
-          <b>{item.serumBase?.name || SUERO_CLORURO_NOMBRE} {vol} ml</b>
-        </div>
-      )}
+      {/* El volumen es opcional (ver SueroComposicionEditor): sin él se nombra la
+          base igual, porque las ampollas van diluidas en ALGO y quien prepara
+          tiene que leerlo. Es el mismo criterio que `describeSuero` en el PDF. */}
+      <div>
+        <span className="text-slate-500">Base:</span>{' '}
+        <b>{item.serumBase?.name || SUERO_CLORURO_NOMBRE}{vol ? ` ${vol} ml` : ''}</b>
+        {!vol && <span className="text-slate-400"> · volumen a criterio de enfermería</span>}
+      </div>
       {comps.length > 0 && (
         <ul className="mt-0.5 mb-0 pl-4 list-disc space-y-0.5">
           {comps.map((c, i) => (

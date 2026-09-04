@@ -500,3 +500,31 @@ test('la misma ampolla recetada dos veces se cuenta por separado', async () => {
   );
   assert.equal(await stockDe(APIMEL.code), 9, 'sale solo la que se puso');
 });
+
+test('el volumen del cloruro es OPCIONAL y la base no desaparece de la receta', async () => {
+  const { clinicId, userId, patient } = await seed();
+
+  // El médico no fija el tamaño de la bolsa: lo decide enfermería con lo que
+  // haya en la sala. La preparación tiene que guardarse y leerse igual.
+  const r = await H.runController(
+    ctrl.addFollowUp,
+    H.mockReq(clinicId, userId, {
+      motivoConsulta: 'Sueroterapia',
+      recetaItems: [{
+        name: 'Suero energizante',
+        quantity: 3,
+        isSerum: true,
+        serumBase: { name: 'Cloruro' },
+        serumComponents: [{ name: 'Vitamina C', quantity: 2 }],
+      }],
+    }, { role: 'doctor', params: { patientId: String(patient._id) } }),
+  );
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  const rec = await ClinicalRecord.findOne({ clinic: clinicId, patient: patient._id }).lean();
+  const item = rec.followUps.slice(-1)[0].recetaItems[0];
+  assert.equal(item.isSerum, true, 'sigue siendo un suero sin volumen');
+  assert.equal(item.serumBase.volumeMl, null, 'el volumen queda sin fijar, no falla');
+  assert.equal(item.serumBase.name, 'Cloruro', 'pero la base se guarda');
+  assert.equal(item.serumComponents.length, 1, 'y lo que va dentro también');
+});

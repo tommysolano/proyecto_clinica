@@ -158,10 +158,30 @@ function nowHHMM() {
     .replace(/^24:/, '00:');
 }
 
+/**
+ * EL DÍA de un instante, a las 12:00 locales.
+ *
+ * `Appointment.date` es un DÍA, no un momento: la hora vive en `startTime`. Toda
+ * cita agendada se guarda así (`parseLocalDate` fija las 12:00 para que ningún
+ * cambio de zona horaria mueva el día), y la agenda filtra el día contra ese
+ * formato.
+ *
+ * Existe porque una cita registrada con `new Date()` a secas —las atenciones sin
+ * cita— guardaba la HORA dentro del campo del día, y una atención de la mañana
+ * quedaba por debajo del corte del filtro: la cita existía, pero no salía en la
+ * lista del día. Cualquier cita que se cree con la hora que sea tiene que pasar
+ * por aquí.
+ */
+function localDayAtNoon(value = new Date()) {
+  const d = value instanceof Date ? value : new Date(value);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0);
+}
+
 module.exports = {
   nowHHMM,
   startOfToday,
   parseLocalDate,
+  localDayAtNoon,
   isPastLocalDate,
   isFutureLocalDate,
   isPastLocalDateTime,

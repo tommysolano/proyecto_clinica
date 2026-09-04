@@ -293,10 +293,19 @@ const describeSuero = (it) => {
   if (!it?.isSerum) return '';
   const partes = [];
   const vol = it.serumBase?.volumeMl;
-  if (vol) partes.push(`${it.serumBase?.name || SUERO_CLORURO_NOMBRE} ${vol} ml`);
-  (it.serumComponents || []).forEach((c) => {
-    if (c?.name) partes.push(`${c.name} ×${c.quantity || 1}`);
-  });
+  const nombreBase = it.serumBase?.name || SUERO_CLORURO_NOMBRE;
+  const componentes = (it.serumComponents || []).filter((c) => c?.name);
+  /**
+   * EL VOLUMEN ES OPCIONAL, LA BASE NO DESAPARECE POR ELLO.
+   *
+   * El médico no siempre fija el tamaño de la bolsa —lo decide enfermería con lo
+   * que haya en la sala— y antes, sin volumen, el cloruro se caía entero de la
+   * receta impresa y del parte: quedaba una lista de ampollas sin decir en qué
+   * van diluidas. Sin volumen se nombra la base a secas.
+   */
+  if (vol) partes.push(`${nombreBase} ${vol} ml`);
+  else if (componentes.length) partes.push(nombreBase);
+  componentes.forEach((c) => partes.push(`${c.name} ×${c.quantity || 1}`));
   return partes.join(' · ');
 };
 

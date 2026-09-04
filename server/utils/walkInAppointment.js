@@ -1,4 +1,4 @@
-const { nowHHMM } = require('./appointmentDate');
+const { nowHHMM, localDayAtNoon } = require('./appointmentDate');
 const { asignarTurnos, completarTurno } = require('./appointmentTurns');
 const { esPrimeraVisita } = require('./firstVisit');
 
@@ -67,7 +67,16 @@ async function crearCitaAtencionInmediata({
   const apt = new Appointment({
     clinic: clinicId,
     patient: patientId,
-    date: ahora,
+    /**
+     * EL DÍA, no el instante. `date` guarda el día a las 12:00 como cualquier
+     * cita agendada, y la hora real va en `startTime`.
+     *
+     * Con `new Date()` a secas la hora se colaba dentro del campo del día, y el
+     * filtro de la agenda —que arranca el rango en la fecha normalizada— dejaba
+     * fuera todo lo registrado ANTES del mediodía: la atención existía, salía el
+     * aviso, y en la lista del día no aparecía nadie.
+     */
+    date: localDayAtNoon(ahora),
     startTime: nowHHMM(),
     /**
      * Se salta 'pendiente' a propósito: el paciente ya está delante. Además

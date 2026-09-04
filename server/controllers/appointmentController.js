@@ -188,8 +188,18 @@ exports.getAppointments = async (req, res) => {
     if (clinicScope !== null) query.clinic = clinicScope;
 
     if (startDate && endDate) {
+      /**
+       * EL RANGO ES DE DÍAS ENTEROS, POR LAS DOS PUNTAS.
+       *
+       * `parseLocalDate` devuelve las 12:00 (así se guarda `date`), y el final
+       * se estiraba a las 23:59 pero el principio se quedaba a mediodía. Con las
+       * citas agendadas daba igual —todas caen justo en las 12:00— pero una cita
+       * registrada con la hora dentro del campo del día, como las atenciones sin
+       * cita de la MAÑANA, quedaba por debajo del corte: existía y no salía.
+       */
       const start = parseLocalDate(startDate);
       const end = parseLocalDate(endDate);
+      if (start) start.setHours(0, 0, 0, 0);
       if (end) end.setHours(23, 59, 59, 999);
       query.date = { $gte: start, $lte: end };
     }
@@ -1196,7 +1206,10 @@ exports.getStats = async (req, res) => {
     const match = { clinic: clinicObjId };
     const { startDate, endDate, patient, doctor, service } = req.query;
     if (startDate && endDate) {
+      // Días enteros por las dos puntas, igual que en el listado: si no, las
+      // atenciones registradas por la mañana no entran en las estadísticas.
       match.date = { $gte: parseLocalDate(startDate), $lte: parseLocalDate(endDate) };
+      if (match.date.$gte) match.date.$gte.setHours(0, 0, 0, 0);
       if (match.date.$lte) match.date.$lte.setHours(23, 59, 59, 999);
     }
     if (patient) match.patient = new mongoose.Types.ObjectId(patient);
