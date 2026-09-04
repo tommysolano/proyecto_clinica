@@ -310,7 +310,7 @@ async function materialFicha(doc, { dirs, reductor, reducir = true }) {
  */
 async function fichaCompleta(doc, paciente) {
   if (!paciente) return false;
-  const historia = await ClinicalRecord.findOne({ clinic: doc.clinic, patient: paciente._id })
+  const historia = await ClinicalRecord.findOne({ patient: paciente._id })
     .select('followUps.attachments.originalName').lean();
   const tieneFicha = (historia?.followUps || []).some((f) =>
     (f.attachments || []).some((a) => a.originalName === NOMBRE_FICHA(doc))
@@ -346,7 +346,7 @@ async function asegurarSeguimiento(paciente, doc, { fecha, pdf, dirs, creados })
   const antiguo = NOMBRE_ANTIGUO(doc);
   // La sucursal es la del ESCANEO, no la del paciente: la ficha del paciente es
   // global y la historia clínica es única por (sucursal, paciente).
-  const historia = await ClinicalRecord.findOne({ clinic: doc.clinic, patient: paciente._id });
+  const historia = await ClinicalRecord.findOne({ patient: paciente._id });
   const yaEstá = historia?.followUps?.some((f) =>
     (f.attachments || []).some((a) => a.originalName === originalName)
   );

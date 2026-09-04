@@ -100,7 +100,9 @@ async function main({ commit = false, minimoKb = MINIMO_KB, limite = 0 } = {}) {
       for (const a of fu.attachments || []) {
         if (!/- ficha\.pdf$/.test(a.originalName || '') || (a.size || 0) < minimo) continue;
         if (limite && vistos >= limite) break;
-        const ruta = path.join(FOLLOWUPS_DIR, String(h.clinic), a.filename);
+        // `a.clinic` manda: la ficha es del paciente y sus adjuntos pueden estar en
+        // carpetas de sucursales distintas (ver `rutaDelAdjunto`).
+        const ruta = path.join(FOLLOWUPS_DIR, String(a.clinic || h.clinic), a.filename);
         await procesar(ruta, a.originalName, a.size, (nuevo) =>
           ClinicalRecord.updateOne(
             { _id: h._id, 'followUps.attachments._id': a._id },

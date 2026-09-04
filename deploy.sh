@@ -153,6 +153,28 @@ if ! ( cd "$APP_DIR/server" && node scripts/wipePhantomOpportunitiesOnce.js --co
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/wipePhantomOpportunitiesOnce.js --commit'"
 fi
 
+# Vigente: UNA historia clinica por paciente (sep-2026).
+#
+# `clinicalrecords` tenia indice unico (clinic, patient): UNA FICHA POR SUCURSAL. El
+# mismo paciente atendido en dos sedes tenia dos historias, cada una invisible desde la
+# otra, y al abrirlo desde la sede sin ficha el sistema le creaba una NUEVA EN BLANCO:
+# el medico lo veia sin alergias, sin antecedentes y sin ninguna consulta previa.
+#
+# Esta tarea funde las fichas duplicadas (ordenando los seguimientos por fecha) y deja
+# el indice unico correcto: fuera clinic_1_patient_1, dentro patient_1 unico. TIENE QUE
+# CORRER ANTES DE QUE ARRANQUE EL CODIGO NUEVO: mongoose no puede construir el indice
+# unico mientras queden duplicados, y sin el candado dos peticiones simultaneas desde
+# sedes distintas vuelven a crear dos historias.
+#
+# Guarda copia entera de cada ficha absorbida en `clinicalrecords_merge_backup` (el M0
+# no tiene backups y esto es historia clinica). Para ver que haria sin tocar nada:
+#   sudo -iu clinica bash -lc 'cd /var/www/clinica/server && node scripts/mergeClinicalRecordsOnce.js'
+# Cuando ya este DONE se puede quitar esta linea sin riesgo (la marca la protege igual).
+if ! ( cd "$APP_DIR/server" && node scripts/mergeClinicalRecordsOnce.js --commit ); then
+  echo "ADVERTENCIA: la fusion de historias clinicas fallo. Reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/mergeClinicalRecordsOnce.js --commit'"
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────────────
 # DESACTIVADA A PROPOSITO — dejar la CONTABILIDAD EN CERO para rehacer las pruebas.
 #

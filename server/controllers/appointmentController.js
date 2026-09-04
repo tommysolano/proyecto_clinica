@@ -2161,10 +2161,10 @@ exports.nurseComplete = async (req, res) => {
         apt.serviceName ||
         (apt.services || []).map((s) => s.name).filter(Boolean).join(', ') ||
         'Servicio de enfermería';
-      // La historia clínica es la de la sucursal DE LA CITA: con la activa, una
-      // cita atendida desde otra sede abriría una segunda historia del mismo
-      // paciente y el parte de enfermería se guardaría donde nadie lo busca.
-      let record = await ClinicalRecord.findOne({ clinic: apt.clinic, patient: apt.patient });
+      // La historia clínica es UNA por paciente, venga la cita de la sede que
+      // venga (ver la cabecera de models/ClinicalRecord). `clinic` solo se
+      // escribe al abrirla, para dejar dicho dónde empezó.
+      let record = await ClinicalRecord.findOne({ patient: apt.patient });
       if (!record) {
         record = await ClinicalRecord.create({ clinic: apt.clinic, patient: apt.patient, createdBy: req.user._id });
       }

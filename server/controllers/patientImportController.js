@@ -434,9 +434,9 @@ exports.importPatients = async (req, res) => {
       return p;
     };
 
-    /** Ficha clínica del paciente (la crea si no existe en esta clínica). */
+    /** Ficha clínica del paciente: una sola, sea cual sea la sucursal. */
     const getRecord = async (patient) => {
-      let rec = await ClinicalRecord.findOne({ clinic: req.clinicId, patient: patient._id });
+      let rec = await ClinicalRecord.findOne({ patient: patient._id });
       if (!rec) {
         rec = await ClinicalRecord.create({
           clinic: req.clinicId,

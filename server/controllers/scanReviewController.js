@@ -162,7 +162,7 @@ exports.saveScanReview = async (req, res) => {
 
     // La ficha clínica lleva copia de los mismos datos: si no se actualiza aquí,
     // el doctor sigue viendo el dato equivocado por mucho que se corrija el paciente.
-    const historia = await ClinicalRecord.findOne({ patient: paciente._id, clinic: req.clinicId });
+    const historia = await ClinicalRecord.findOne({ patient: paciente._id });
     if (historia) {
       historia.nombre = `${paciente.firstName} ${paciente.lastName}`;
       historia.cedula = paciente.cedula;

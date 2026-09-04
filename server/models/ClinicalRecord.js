@@ -329,6 +329,14 @@ const followUpSchema = new mongoose.Schema(
         size: { type: Number, default: 0 },
         uploadedAt: { type: Date, default: Date.now },
         uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        /**
+         * EN QUÉ SUCURSAL SE SUBIÓ, que es la carpeta donde está el archivo
+         * (`storage/followups/<clinic>/`). Antes se daba por hecho que era la
+         * sucursal activa de quien lo pedía, y con la ficha compartida entre
+         * sedes eso deja de ser verdad: la ecografía subida en Central salía
+         * «no existe en disco» al abrirla desde Extensión.
+         */
+        clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic' },
       },
     ],
     // Datos ópticos (rol 'optica'). Columnas: SPH CYL AX ADD DNP ALT. Filas OD / OI.
@@ -701,6 +709,27 @@ const followUpSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+/**
+ * LA HISTORIA CLÍNICA ES DEL PACIENTE, NO DE LA SUCURSAL (sep-2026).
+ *
+ * Nació con índice único (clinic, patient), o sea UNA FICHA POR SEDE. Con una
+ * sola sucursal nadie lo notaba; al abrir la segunda salió lo que tenía que
+ * salir: el mismo paciente atendido en Central y en Extensión tenía dos
+ * historias, y cada una era invisible desde la otra. Peor que invisible —
+ * `getOrCreateByPatient` no encontraba la ficha de la otra sede y CREABA una
+ * nueva, en blanco: el médico de Extensión veía a un paciente sin alergias, sin
+ * antecedentes y sin ninguna consulta previa, y no tenía forma de saber que
+ * existían.
+ *
+ * Un paciente tiene UNA historia clínica. Es así en el MSP (la HCU es única por
+ * persona) y es lo que hace falta para atender: quien pone un suero necesita
+ * saber a qué reaccionó el mes pasado, lo pusieran donde lo pusieran.
+ *
+ * `clinic` se queda como DÓNDE SE ABRIÓ la ficha, igual que `Patient.clinic`:
+ * es historia de cómo entró, no un filtro. NADIE debe volver a consultar por él
+ * — si ves `{ clinic: req.clinicId, patient }` en una consulta de fichas, es el
+ * bug de arriba otra vez.
+ */
 const clinicalRecordSchema = new mongoose.Schema(
   {
     clinic: {
@@ -808,9 +837,16 @@ const clinicalRecordSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-clinicalRecordSchema.index({ clinic: 1, patient: 1 }, { unique: true });
-// Y por paciente a secas: 'firstVisit' pregunta si tiene historia sin saber (ni
-// necesitar) la sucursal, y el índice compuesto no sirve con la segunda clave sola.
-clinicalRecordSchema.index({ patient: 1 });
+/**
+ * UNA FICHA POR PACIENTE, y el índice es quien lo garantiza.
+ *
+ * Sustituye al viejo (clinic, patient) único, que es el que permitía la segunda
+ * ficha. El candado importa: sin él, dos peticiones simultáneas desde sedes
+ * distintas vuelven a crear dos historias y el problema renace en silencio.
+ *
+ * El índice viejo se borra en `mergeClinicalRecordsOnce.js`, que también funde
+ * las fichas duplicadas: este índice NO se puede construir mientras queden.
+ */
+clinicalRecordSchema.index({ patient: 1 }, { unique: true });
 
 module.exports = mongoose.model('ClinicalRecord', clinicalRecordSchema);

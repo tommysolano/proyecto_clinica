@@ -85,6 +85,40 @@ const followupStorage = multer.diskStorage({
   },
 });
 
+/**
+ * DÓNDE ESTÁ EL ARCHIVO DE UN ADJUNTO.
+ *
+ * Los adjuntos se guardan en `storage/followups/<sucursal>/`, y hasta ahora la
+ * sucursal se daba por sabida: era la activa de quien lo pedía, porque la ficha
+ * era de esa sede y no había otra posibilidad. Con la historia clínica
+ * compartida entre sucursales eso deja de ser cierto — la ecografía subida en
+ * Central se abre desde Extensión— y el resultado era un «El archivo no existe
+ * en disco» con el archivo perfectamente ahí.
+ *
+ * Los nuevos guardan su `clinic` y van directos. Los VIEJOS no lo dicen, así que
+ * se buscan: el nombre lleva marca de tiempo y seis bytes al azar, o sea que es
+ * único en toda la instalación y encontrarlo en otra carpeta no es una
+ * coincidencia, es el mismo archivo.
+ */
+const rutaDelAdjunto = (att, clinicIdActiva) => {
+  const nombre = path.basename(String(att?.filename || ''));
+  if (!nombre) return null;
+
+  const candidatas = [att?.clinic, clinicIdActiva].filter(Boolean).map(String);
+  for (const c of candidatas) {
+    const p = path.join(FOLLOWUPS_DIR, c, nombre);
+    if (fs.existsSync(p)) return p;
+  }
+  try {
+    for (const dir of fs.readdirSync(FOLLOWUPS_DIR)) {
+      if (candidatas.includes(dir)) continue;
+      const p = path.join(FOLLOWUPS_DIR, dir, nombre);
+      if (fs.existsSync(p)) return p;
+    }
+  } catch (_) {}
+  return null;
+};
+
 // Se aceptan PDFs e imágenes (ecografías, resultados de laboratorio, fotos, etc.).
 const OK_ATTACHMENT_TYPES = [
   'application/pdf',
@@ -502,7 +536,6 @@ exports.getOrCreateByPatient = async (req, res) => {
     if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
 
     let record = await ClinicalRecord.findOne({
-      clinic: req.clinicId,
       patient: patientId,
     })
       .populate('followUps.createdBy', 'name')
@@ -600,8 +633,11 @@ exports.updateByPatient = async (req, res) => {
     }
 
     const record = await ClinicalRecord.findOneAndUpdate(
-      { clinic: req.clinicId, patient: patientId },
-      { $set: update, $setOnInsert: { createdBy: req.user._id } },
+      { patient: patientId },
+      // `clinic` va en el $setOnInsert porque ya no está en el filtro y el
+      // esquema lo exige: es DÓNDE SE ABRIÓ la ficha, y solo se escribe si esta
+      // llamada es la que la crea.
+      { $set: update, $setOnInsert: { createdBy: req.user._id, clinic: req.clinicId } },
       { new: true, upsert: true, runValidators: true }
     );
 
@@ -1220,7 +1256,7 @@ exports.addFollowUp = async (req, res) => {
     let aplicacionesEnfermeria = [];
     if (req.role === NURSE_ROLE) {
       const { aplicacionesDelTurno, desdeElUltimoParteDe } = require('../utils/nurseApplications');
-      const previo = await ClinicalRecord.findOne({ clinic: req.clinicId, patient: patientId }).lean();
+      const previo = await ClinicalRecord.findOne({ patient: patientId }).lean();
       let desde = desdeElUltimoParteDe(previo, req.user._id);
       /**
        * Con cita, manda el INICIO DEL TURNO si es más tarde. Es un corte más
@@ -1248,7 +1284,7 @@ exports.addFollowUp = async (req, res) => {
     }
 
     const record = await ClinicalRecord.findOneAndUpdate(
-      { clinic: req.clinicId, patient: patientId },
+      { patient: patientId },
       {
         $push: {
           followUps: {
@@ -1483,6 +1519,8 @@ exports.addFollowUp = async (req, res) => {
         const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
         const manana = new Date(hoy); manana.setDate(manana.getDate() + 1);
         const yaEnCola = await Appointment.findOne({
+          // La CITA sí es de una sucursal (a diferencia de la ficha): la cola de
+          // enfermería de Central no bloquea una aplicación en Extensión.
           clinic: req.clinicId,
           patient: patientId,
           status: 'asistida',
@@ -1590,7 +1628,7 @@ exports.updateFollowUp = async (req, res) => {
   try {
     const { patientId, followUpId } = req.params;
 
-    const record = await ClinicalRecord.findOne({ clinic: req.clinicId, patient: patientId });
+    const record = await ClinicalRecord.findOne({ patient: patientId });
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
 
     const fu = record.followUps.id(followUpId);
@@ -1847,7 +1885,7 @@ exports.administerSerum = async (req, res) => {
   try {
     const { patientId, followUpId, itemId } = req.params;
 
-    const record = await ClinicalRecord.findOne({ clinic: req.clinicId, patient: patientId });
+    const record = await ClinicalRecord.findOne({ patient: patientId });
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
 
     const fu = record.followUps.id(followUpId);
@@ -1914,7 +1952,7 @@ exports.administerSerum = async (req, res) => {
     };
 
     const tras = await ClinicalRecord.findOneAndUpdate(
-      { _id: record._id, clinic: req.clinicId },
+      { _id: record._id },
       { $push: { 'followUps.$[fu].recetaItems.$[it].administrations': dosis } },
       {
         new: true,
@@ -1986,7 +2024,7 @@ exports.undoSerumAdministration = async (req, res) => {
   try {
     const { patientId, followUpId, itemId } = req.params;
 
-    const record = await ClinicalRecord.findOne({ clinic: req.clinicId, patient: patientId });
+    const record = await ClinicalRecord.findOne({ patient: patientId });
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
 
     const fu = record.followUps.id(followUpId);
@@ -2012,7 +2050,7 @@ exports.undoSerumAdministration = async (req, res) => {
      * la percha acababa con ampollas que nunca salieron.
      */
     const antes = await ClinicalRecord.findOneAndUpdate(
-      { _id: record._id, clinic: req.clinicId },
+      { _id: record._id },
       { $pull: { 'followUps.$[fu].recetaItems.$[it].administrations': { _id: ultima._id } } },
       // `new: false` a propósito: interesa la foto de ANTES. `findOneAndUpdate`
       // es atómico, así que de dos peticiones a la vez solo la primera ve la
@@ -2054,7 +2092,7 @@ exports.deleteFollowUp = async (req, res) => {
     const { patientId, followUpId } = req.params;
 
     const record = await ClinicalRecord.findOneAndUpdate(
-      { clinic: req.clinicId, patient: patientId },
+      { patient: patientId },
       { $pull: { followUps: { _id: followUpId } } },
       { new: true }
     );
@@ -2080,7 +2118,6 @@ exports.uploadFollowUpAttachment = async (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'No se recibió archivo' });
 
     const record = await ClinicalRecord.findOne({
-      clinic: req.clinicId,
       patient: patientId,
     });
     if (!record) {
@@ -2107,6 +2144,8 @@ exports.uploadFollowUpAttachment = async (req, res) => {
       size: req.file.size,
       uploadedAt: new Date(),
       uploadedBy: req.user._id,
+      // En qué carpeta acaba de dejarlo multer (ver `rutaDelAdjunto`).
+      clinic: req.clinicId,
     };
     fu.attachments.push(attachment);
     await record.save();
@@ -2128,7 +2167,6 @@ exports.downloadFollowUpAttachment = async (req, res) => {
   try {
     const { patientId, followUpId, attachmentId } = req.params;
     const record = await ClinicalRecord.findOne({
-      clinic: req.clinicId,
       patient: patientId,
     });
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
@@ -2141,8 +2179,8 @@ exports.downloadFollowUpAttachment = async (req, res) => {
     const att = fu.attachments.id(attachmentId);
     if (!att) return res.status(404).json({ message: 'Archivo no encontrado' });
 
-    const filePath = path.join(FOLLOWUPS_DIR, String(req.clinicId), att.filename);
-    if (!fs.existsSync(filePath)) {
+    const filePath = rutaDelAdjunto(att, req.clinicId);
+    if (!filePath) {
       return res.status(404).json({ message: 'Archivo no existe en disco' });
     }
     res.setHeader('Content-Type', att.mimeType || 'application/pdf');
@@ -2163,7 +2201,6 @@ exports.deleteFollowUpAttachment = async (req, res) => {
   try {
     const { patientId, followUpId, attachmentId } = req.params;
     const record = await ClinicalRecord.findOne({
-      clinic: req.clinicId,
       patient: patientId,
     });
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
@@ -2176,8 +2213,8 @@ exports.deleteFollowUpAttachment = async (req, res) => {
     const att = fu.attachments.id(attachmentId);
     if (!att) return res.status(404).json({ message: 'Archivo no encontrado' });
 
-    const filePath = path.join(FOLLOWUPS_DIR, String(req.clinicId), att.filename);
-    try { fs.unlinkSync(filePath); } catch (_) {}
+    const filePath = rutaDelAdjunto(att, req.clinicId);
+    if (filePath) { try { fs.unlinkSync(filePath); } catch (_) {} }
     att.deleteOne();
     await record.save();
     res.json({ message: 'Archivo eliminado' });
@@ -2194,7 +2231,6 @@ exports.printFollowUp = async (req, res) => {
   try {
     const { patientId, followUpId } = req.params;
     const record = await ClinicalRecord.findOne({
-      clinic: req.clinicId,
       patient: patientId,
     }).populate('followUps.createdBy', 'name specialty email signatureCert');
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
@@ -2414,7 +2450,6 @@ exports.printMspForm = async (req, res) => {
   try {
     const { patientId, followUpId } = req.params;
     const record = await ClinicalRecord.findOne({
-      clinic: req.clinicId,
       patient: patientId,
     }).populate('followUps.createdBy', 'name specialty email cedula signatureCert');
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
@@ -2712,7 +2747,7 @@ exports.printMspForm = async (req, res) => {
 exports.printHcu005 = async (req, res) => {
   try {
     const { patientId } = req.params;
-    const record = await ClinicalRecord.findOne({ clinic: req.clinicId, patient: patientId })
+    const record = await ClinicalRecord.findOne({ patient: patientId })
       .populate('followUps.createdBy', 'name specialty cedula');
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
 
