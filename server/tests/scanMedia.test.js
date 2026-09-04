@@ -48,27 +48,41 @@ test('M1) si el navegador se queda colgado, la foto se devuelve tal cual y se si
   await reductor.cerrar();
 });
 
-test('M2) tras varios fallos seguidos deja de intentarlo y no gasta el tope en cada foto', async () => {
-  // Si el navegador ya no vuelve, insistir son 30 s tirados POR FOTO: con 4.000
-  // fotas por delante, la importación no termina nunca.
+test('M2) tras varios fallos seguidos descansa: ni insiste en cada foto ni se rinde para siempre', async () => {
+  // Las dos mitades importan. Insistir son 30 s tirados POR FOTO y con 4.000 por
+  // delante la importación no termina nunca. Pero rendirse de por vida es lo que
+  // costó 3 GB de más en septiembre: al VPS le mata el Chromium un pico de memoria
+  // puntual y minutos después vuelve a abrirse tan campante.
   let aperturas = 0;
+  let responde = false;
   const reductor = crearReductor({
     tope: 30,
     fallosSeguidos: 3,
-    lanzar: async () => { aperturas += 1; return navegadorFalso(() => new Promise(() => {})); },
+    descansoMs: 250,
+    lanzar: async () => {
+      aperturas += 1;
+      return navegadorFalso(responde
+        ? async () => `data:image/jpeg;base64,${JPEG_1x1.toString('base64')}`
+        : () => new Promise(() => {}));
+    },
   });
 
   for (let i = 0; i < 3; i += 1) await reductor.reducir(JPEG_1x1);
-  const intentosAntes = aperturas;
+  const trasRendirse = aperturas;
 
   const t0 = Date.now();
   for (let i = 0; i < 20; i += 1) {
     assert.deepEqual(await reductor.reducir(JPEG_1x1), JPEG_1x1);
   }
-  const tardo = Date.now() - t0;
+  assert.equal(aperturas, trasRendirse, 'mientras descansa no vuelve a abrir el navegador');
+  assert.ok(Date.now() - t0 < 100, 'y las fotos pasan de largo, sin gastar el tope');
 
-  assert.equal(aperturas, intentosAntes, 'ya no vuelve a abrir el navegador');
-  assert.ok(tardo < 100, `las 20 siguientes pasan de largo (tardó ${tardo} ms)`);
+  // Pasado el descanso lo vuelve a intentar, y si el navegador ya va, reduce.
+  responde = true;
+  await new Promise((r) => setTimeout(r, 300));
+  const grande = Buffer.concat([JPEG_1x1, Buffer.alloc(50)]);
+  assert.deepEqual(await reductor.reducir(grande), JPEG_1x1, 'vuelve a reducir en cuanto puede');
+  assert.ok(aperturas > trasRendirse, 'ha reintentado abrir el navegador');
   await reductor.cerrar();
 });
 

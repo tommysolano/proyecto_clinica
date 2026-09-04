@@ -65,6 +65,11 @@ function crearReductor({
   calidad = 0.8,
   tope = 30000,
   fallosSeguidos = 5,
+  // Cuánto se deja de intentar tras rendirse. NO es para siempre: al VPS le mata
+  // el Chromium un pico de memoria puntual, y minutos después vuelve a abrirse sin
+  // problema. Rendirse de por vida costó 3 GB de más en la tanda de septiembre —
+  // las fotos se copiaron a tamaño completo hasta el final.
+  descansoMs = 10 * 60 * 1000,
   // Cómo se abre el navegador. Se puede sustituir para probar qué pasa cuando
   // Chromium muere o se queda colgado, que es justo lo que hay que garantizar y
   // no se puede provocar con un Chromium de verdad.
@@ -73,7 +78,8 @@ function crearReductor({
   let navegador = null;
   let pagina = null;
   let fallos = 0;
-  let rendido = false;
+  /** Hasta cuándo no se vuelve a intentar (0 = se puede intentar ya). */
+  let descansaHasta = 0;
 
   async function preparar() {
     if (pagina) return pagina;
@@ -114,10 +120,11 @@ function crearReductor({
 
   return {
     async reducir(jpeg) {
-      // Tras varios fallos seguidos el navegador no va a volver: seguir
-      // intentándolo son 30 s tirados por foto. Se pasa a copiar tal cual, que da
-      // adjuntos más pesados pero deja la importación avanzando.
-      if (rendido) return jpeg;
+      // Tras varios fallos seguidos se para un rato: insistir son 30 s tirados por
+      // foto. Mientras descansa se copia tal cual —adjuntos más pesados, pero la
+      // importación avanza— y pasado el descanso se vuelve a probar, porque lo
+      // normal es que el navegador se pueda abrir otra vez.
+      if (Date.now() < descansaHasta) return jpeg;
       try {
         const p = await conTope(preparar());
         const url = await conTope(p.evaluate(
@@ -147,7 +154,8 @@ function crearReductor({
         pagina = null;
         fallos += 1;
         if (fallos >= fallosSeguidos) {
-          rendido = true;
+          descansaHasta = Date.now() + descansoMs;
+          fallos = 0;
           await cerrarNavegador();
         }
         return jpeg;
