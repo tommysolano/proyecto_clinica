@@ -192,10 +192,10 @@ export default function Patients() {
      * QUIEN ATIENDE ENTRA A LA CONSULTA, no agenda.
      *
      * En óptica el paciente está delante del optómetra cuando se le registra:
-     * el camino normal —guardar, marcar "agendar cita", marcar "atender ahora",
-     * elegir día y hora— es papeleo para algo que está pasando ya. Para esos
-     * roles el registro nace con la atención inmediata puesta, y quien quiera
-     * agendar para otro día la desmarca.
+     * el camino normal —guardar, marcar "agendar cita", elegir día y hora— es
+     * papeleo para algo que está pasando ya. Para esos roles el registro ES la
+     * atención: no hay casilla que marcar ni que desmarcar (ver el bloque de la
+     * cita en el formulario). Agendar para otro día se hace desde la agenda.
      */
     setAptForm({ ...emptyApt, enabled: puedeAtenderYa, ahora: puedeAtenderYa });
     setDayApts([]);
@@ -697,47 +697,72 @@ export default function Patients() {
           </div>
           {!editing && (
             <div className="border-t border-emerald-100 pt-4">
-              {/* Quien atiende ve PRIMERO "atender ahora", y viene marcado: es lo
-                  que va a hacer el 90% de las veces, con el paciente delante.
-                  Agendar para otro día queda como la alternativa, debajo. */}
-              {puedeAtenderYa && (
-                <label className="flex items-start gap-2 cursor-pointer bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2.5 mb-3">
+              {/**
+                * QUIEN ATIENDE NO AGENDA: ATIENDE.
+                *
+                * En óptica el cliente entra por la puerta y está delante del
+                * optómetra mientras lo registra. Agendarse a sí mismo una cita
+                * —elegir día, elegir hora, guardar, y luego buscarla en la
+                * agenda para abrirla— es papeleo para algo que está pasando ya.
+                *
+                * Antes esto era una casilla marcada por defecto que se podía
+                * desmarcar para volver al camino de agendar. Ya no: para estos
+                * roles el registro ABRE LA CONSULTA, y la cita la escribe el
+                * sistema con la hora real y a su nombre (`POST /appointments/
+                * walk-in`). Quien necesite agendar para otro día lo hace desde
+                * la agenda, que es donde se agenda.
+                *
+                * Lo único que queda debajo es «solo registrar», que NO crea
+                * cita: registrar a alguien no siempre es atenderlo.
+                */}
+              {puedeAtenderYa ? (
+                <>
+                  {aptForm.ahora ? (
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2.5 mb-2">
+                      <span className="block text-sm font-medium text-slate-800">
+                        Al guardar se abre la consulta
+                      </span>
+                      <span className="block text-[11px] text-slate-500">
+                        El sistema registra la atención de ahora —a esta hora y a tu nombre— y entras
+                        directo a llenar la ficha. No hay que agendar nada.
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 mb-2 text-[11px] text-slate-500">
+                      Se guarda solo la ficha del paciente. No se registra ninguna atención.
+                    </div>
+                  )}
+                  {/**
+                    * LA SALIDA para cuando NO se está atendiendo: tomar los datos
+                    * por teléfono, corregir un duplicado, dejar a alguien creado
+                    * para más tarde. Sin esto, cada registro abriría una consulta
+                    * y dejaría una cita fantasma —que cuenta en los reportes, en
+                    * «paciente nuevo» y en las comisiones— por haber tecleado una
+                    * ficha. Va discreta y desmarcada: lo normal es lo de arriba.
+                    */}
+                  <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-500 mb-1">
+                    <input
+                      type="checkbox"
+                      checked={!aptForm.ahora}
+                      onChange={(e) =>
+                        setAptForm({ ...aptForm, ahora: !e.target.checked, enabled: !e.target.checked })
+                      }
+                      className="w-3.5 h-3.5 accent-slate-400"
+                    />
+                    Solo registrar al paciente (no lo estoy atendiendo ahora)
+                  </label>
+                </>
+              ) : (
+                <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-700">
                   <input
                     type="checkbox"
-                    checked={aptForm.ahora}
-                    onChange={(e) =>
-                      setAptForm({
-                        ...aptForm,
-                        ahora: e.target.checked,
-                        // Al marcarla se activa la cita; al desmarcarla se vuelve
-                        // al camino normal, con la casilla de agendar a la vista.
-                        enabled: e.target.checked ? true : aptForm.enabled,
-                      })
-                    }
-                    className="w-4 h-4 accent-emerald-600 mt-0.5"
+                    checked={aptForm.enabled}
+                    onChange={(e) => setAptForm({ ...aptForm, enabled: e.target.checked })}
+                    className="w-4 h-4 accent-emerald-600"
                   />
-                  <span>
-                    <span className="block text-sm font-medium text-slate-800">Atender ahora</span>
-                    <span className="block text-[11px] text-slate-500">
-                      Se guarda el paciente, el sistema registra la cita solo —a esta hora y a tu
-                      nombre— y se abre la consulta para llenarla.
-                    </span>
-                  </span>
+                  Agendar cita para este paciente
                 </label>
               )}
-              <label
-                className={`flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-700 ${
-                  aptForm.ahora ? 'hidden' : ''
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={aptForm.enabled}
-                  onChange={(e) => setAptForm({ ...aptForm, enabled: e.target.checked })}
-                  className="w-4 h-4 accent-emerald-600"
-                />
-                Agendar cita para este paciente
-              </label>
               {aptForm.enabled && (
                 <div className="mt-3 space-y-3 bg-emerald-50/40 rounded-xl p-3">
                   {/* La atención inmediata siempre es en la sucursal activa (la

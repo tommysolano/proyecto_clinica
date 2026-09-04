@@ -188,3 +188,49 @@ test('si la cita no se pudiera registrar, el seguimiento NO se pierde', async ()
   const rec = await ClinicalRecord.findOne({ clinic: clinicId, patient: patient._id }).lean();
   assert.equal(rec.followUps.length, 1, 'la consulta quedó escrita');
 });
+
+// ───────── registrar y atender de una vez (el camino de óptica) ─────────
+
+/**
+ * Desde sep-2026 óptica YA NO agenda desde el registro del paciente: registrar
+ * ES atender. La pantalla llama a `createWalkIn` y entra a la consulta, así que
+ * este es ahora su único camino y tiene que estar cubierto.
+ */
+test('óptica registra y atiende: la cita nace abierta, suya y a la hora real', async () => {
+  const { clinicId, patient, optico } = await seed();
+
+  const r = await H.runController(
+    appt.createWalkIn,
+    H.mockReq(clinicId, optico._id, { patient: String(patient._id), reason: 'Examen visual' },
+      { role: 'optica' }),
+  );
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  const cita = await Appointment.findOne({ clinic: clinicId }).lean();
+  assert.equal(cita.status, 'asistida', 'abierta: el cliente está delante, aún no ha terminado');
+  assert.equal(String(cita.doctor), String(optico._id), 'a su nombre');
+  assert.equal(cita.turns.length, 1);
+  assert.equal(cita.turns[0].status, 'pendiente', 'su turno está en marcha');
+  assert.ok(cita.consultationStartedAt, 'con el reloj arrancado');
+  assert.match(cita.startTime, /^\d{2}:\d{2}$/, 'la hora es la real, no una de la rejilla');
+  assert.equal(cita.date.getHours(), 12, 'y `date` es el DÍA, como en cualquier cita');
+});
+
+test('la atención inmediata sale en la agenda del DÍA de quien la abrió', async () => {
+  const { clinicId, patient, optico } = await seed();
+  await H.runController(
+    appt.createWalkIn,
+    H.mockReq(clinicId, optico._id, { patient: String(patient._id) }, { role: 'optica' }),
+  );
+
+  // Como la pide la pantalla: acotada al día que se está mirando. Sin el rango
+  // de días enteros, una atención de la mañana no salía por ningún lado.
+  const hoy = new Date();
+  const ymd = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-${String(hoy.getDate()).padStart(2, '0')}`;
+  const r = await H.runController(
+    appt.getAppointments,
+    H.mockReq(clinicId, optico._id, {}, { role: 'optica', query: { startDate: ymd, endDate: ymd } }),
+  );
+  const lista = Array.isArray(r.payload) ? r.payload : r.payload?.appointments || [];
+  assert.equal(lista.length, 1, 'la tiene delante en su agenda del día');
+});
