@@ -7,29 +7,34 @@ import { nombreSucursal } from '../../utils/clinicName';
 import { HiOutlineBuildingOffice2, HiOutlineMagnifyingGlass } from 'react-icons/hi2';
 
 /**
- * PERSONAL POR SUCURSAL.
- *
- * Una rejilla: una fila por persona, una columna por sucursal, y en cada cruce
- * el rol que tiene ahí (o nada, si no trabaja en esa sede).
+ * PERSONAL POR SUCURSAL: una fila por persona y UNA columna, la sucursal.
  *
  * POR QUÉ ESTA PANTALLA. La asignación persona→sucursal ya existía en el modelo
  * (`User.clinics[]`), pero solo se tocaba desde «Usuarios», que enseña
  * ÚNICAMENTE la sucursal activa: para saber si Karla también estaba en Norte
  * había que cambiar de sede en el menú y volver a mirar. El resultado práctico
- * era gente asignada a sedes donde ya no trabaja.
+ * era gente asignada a sedes donde ya no trabaja — o, peor, TODOS en la matriz,
+ * que es como se llegó aquí: se agendaba una cita en Extensión y al ir a asignar
+ * doctor no aparecía ninguno, porque ninguno estaba puesto en esa sede.
  *
- * Y de esto dependen los avisos. Cuando una cita pasa a enfermería, el aviso
- * sale a los enfermeros DE ESA SUCURSAL. Un enfermero asignado a tres sedes
- * recibe los avisos de las tres, se acostumbra a ignorarlos, y el día que le
- * toca a él tampoco lo mira.
+ * ANTES ERA UNA REJILLA de persona × sucursal con el ROL en cada cruce. Se
+ * cambió (sep-2026) por dos motivos:
+ *  · con tres sedes eran tres desplegables por persona para contestar una
+ *    pregunta que tiene UNA respuesta: dónde trabaja;
+ *  · y el rol se editaba desde aquí. El rol de alguien no es un ajuste de
+ *    agenda: cambia lo que ve y lo que puede hacer en TODO el sistema, y se
+ *    decide en Configuración → Usuarios. Aquí ahora se enseña, no se toca.
+ *
+ * Y de esto dependen los avisos: cuando una cita pasa a enfermería, el aviso
+ * sale a los enfermeros DE ESA SUCURSAL.
  */
 
 // El "sin asignar" de un desplegable. Cadena vacía y no null: es el value de un
 // <option>, y con null React lo trataría como no controlado.
-const SIN_ASIGNAR = '';
+const SIN_SEDE = '';
 
-// Roles que se reparten por sucursal. Primero los que atienden en una sede
-// física, que son los que se mueven de sitio.
+// Roles que se reparten por sucursal, para el filtro de arriba. Primero los que
+// atienden en una sede física, que son los que se mueven de sitio.
 const ROLES_OPERATIVOS = [
   'doctor',
   'optica',
@@ -51,27 +56,42 @@ const ROLES_OPERATIVOS = [
 const plano = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 
 export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
-  // Cambios sin guardar: { [userId]: { [clinicId]: role | '' } }
+  // Cambios sin guardar: { [userId]: clinicId | '' }
   const [borrador, setBorrador] = useState({});
   const [guardando, setGuardando] = useState(null);
   const [q, setQ] = useState('');
   const [filtroRol, setFiltroRol] = useState('');
   const [filtroSede, setFiltroSede] = useState('');
 
-  /** Rol guardado de `u` en la sucursal `clinicId` ('' si no trabaja ahí). */
-  const rolGuardado = (u, clinicId) =>
-    (u.clinics || []).find((c) => String(c.clinic?._id || c.clinic) === String(clinicId))?.role || SIN_ASIGNAR;
+  const idDe = (c) => String(c?.clinic?._id || c?.clinic || '');
+  /** Las asignaciones de `u` que caen en las sedes que este admin gestiona. */
+  const asignacionesVisibles = (u) =>
+    (u.clinics || []).filter((c) => clinics.some((k) => String(k._id) === idDe(c)));
 
-  /** Rol que se está mostrando: el del borrador si se tocó, si no el guardado. */
-  const rolActual = (u, clinicId) => {
-    const cambio = borrador[u._id]?.[clinicId];
-    return cambio === undefined ? rolGuardado(u, clinicId) : cambio;
+  /** Sucursal guardada ('' si no trabaja en ninguna de las visibles). */
+  const sedeGuardada = (u) => idDe(asignacionesVisibles(u)[0]) || SIN_SEDE;
+
+  /** Sucursal que se está mostrando: la del borrador si se tocó, si no la guardada. */
+  const sedeActual = (u) => {
+    const cambio = borrador[u._id];
+    return cambio === undefined ? sedeGuardada(u) : cambio;
   };
 
-  const tieneCambios = (u) => clinics.some((c) => rolActual(u, c._id) !== rolGuardado(u, c._id));
+  /**
+   * EL ROL SE CONSERVA, NO SE ELIGE.
+   *
+   * Al mover a alguien de sede se lleva el rol que ya tenía. Si no tiene ninguna
+   * asignación visible no hay rol que llevarse: esa persona se arregla en
+   * Usuarios, y aquí se dice en vez de dejar un desplegable que no guardaría.
+   */
+  const rolDe = (u) =>
+    asignacionesVisibles(u)[0]?.role
+    // Respaldo: su rol en una sede que este admin NO gestiona. Es el mismo rol y
+    // es el que hay que llevarse al moverlo, no un hueco.
+    || (u.clinics || [])[0]?.role
+    || '';
 
-  const cambiar = (u, clinicId, role) =>
-    setBorrador((b) => ({ ...b, [u._id]: { ...(b[u._id] || {}), [clinicId]: role } }));
+  const cambiar = (u, clinicId) => setBorrador((b) => ({ ...b, [u._id]: clinicId }));
 
   const descartar = (u) =>
     setBorrador((b) => {
@@ -81,22 +101,27 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
     });
 
   const guardar = async (u) => {
+    const sede = sedeActual(u);
+    const role = rolDe(u);
+    if (sede && !role) {
+      toast.error(`${u.name} no tiene rol. Asígnaselo en Configuración → Usuarios.`);
+      return;
+    }
     setGuardando(u._id);
     try {
-      // Se manda la lista COMPLETA de las sucursales visibles: lo que no va, el
-      // servidor lo entiende como "ya no trabaja ahí". Las sedes que este admin
-      // no gestiona no viajan y el servidor las conserva.
-      const assignments = clinics
-        .map((c) => ({ clinic: c._id, role: rolActual(u, c._id) }))
-        .filter((a) => a.role);
+      /**
+       * Se manda la lista COMPLETA de las sedes visibles —aquí, una o ninguna—:
+       * lo que no va, el servidor lo entiende como «ya no trabaja ahí», y así
+       * mover a alguien lo QUITA de la anterior en la misma operación. Las sedes
+       * que este admin no gestiona no viajan y el servidor las conserva.
+       */
+      const assignments = sede ? [{ clinic: sede, role }] : [];
       const { data } = await api.put(`/users/${u._id}/assignments`, { assignments });
       onUsersChange((list) => list.map((x) => (x._id === u._id ? { ...x, clinics: data.clinics } : x)));
       descartar(u);
-      const sedes = assignments.length;
+      const nombre = clinics.find((c) => String(c._id) === String(sede));
       toast.success(
-        sedes === 0
-          ? `${u.name} ya no está en ninguna sucursal`
-          : `${u.name}: ${sedes} ${sedes === 1 ? 'sucursal' : 'sucursales'}`,
+        sede ? `${u.name} trabaja en ${nombreSucursal(nombre)}` : `${u.name} ya no está en ninguna sucursal`,
       );
     } catch (err) {
       toast.error(err.response?.data?.message || 'No se pudo guardar');
@@ -109,12 +134,11 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
     const texto = plano(q.trim());
     return users.filter((u) => {
       if (texto && !plano(u.name).includes(texto) && !plano(u.email).includes(texto)) return false;
-      const roles = clinics.map((c) => rolActual(u, c._id)).filter(Boolean);
-      if (filtroRol && !roles.includes(filtroRol)) return false;
-      if (filtroSede && !rolActual(u, filtroSede)) return false;
+      if (filtroRol && rolDe(u) !== filtroRol) return false;
+      if (filtroSede && String(sedeActual(u)) !== String(filtroSede)) return false;
       return true;
     });
-    // `borrador` entra a propósito: al cambiar un rol la fila debe seguir (o
+    // `borrador` entra a propósito: al cambiar la sede la fila debe seguir (o
     // dejar de) cumplir el filtro sin esperar a guardar.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [users, clinics, q, filtroRol, filtroSede, borrador]);
@@ -124,10 +148,12 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
   const conteo = useMemo(() => {
     const acc = {};
     clinics.forEach((c) => {
-      acc[c._id] = users.filter((u) => {
-        const r = rolActual(u, c._id);
-        return r && (!filtroRol || r === filtroRol) && u.active !== false;
-      }).length;
+      acc[c._id] = users.filter(
+        (u) =>
+          String(sedeActual(u)) === String(c._id)
+          && (!filtroRol || rolDe(u) === filtroRol)
+          && u.active !== false,
+      ).length;
     });
     return acc;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -146,8 +172,29 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
   return (
     <div className="space-y-4">
       <div className="bg-sky-50 border border-sky-200 text-sky-900 text-xs sm:text-sm rounded-xl px-3 py-2">
-        Cuando una cita necesita enfermería, el aviso llega solo a los enfermeros de
-        <b> esa</b> sucursal. Si alguien está asignado a varias, le suenan todas.
+        Cada persona trabaja en <b>una</b> sucursal. De aquí sale quién aparece al asignar la
+        atención de una cita y a quién le suenan los avisos de enfermería.
+      </div>
+
+      {/* El recuento por sede, que es lo que se venía a mirar en las columnas. */}
+      <div className="flex flex-wrap gap-2">
+        {clinics.map((c) => (
+          <button
+            key={c._id}
+            type="button"
+            onClick={() => setFiltroSede((s) => (String(s) === String(c._id) ? '' : c._id))}
+            className={`px-3 py-1.5 rounded-xl border text-xs font-medium cursor-pointer ${
+              String(filtroSede) === String(c._id)
+                ? 'bg-emerald-600 text-white border-emerald-600'
+                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            {nombreSucursal(c)}
+            <span className="ml-1.5 opacity-70">
+              {conteo[c._id] || 0} {conteo[c._id] === 1 ? 'persona' : 'personas'}
+            </span>
+          </button>
+        ))}
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -179,24 +226,16 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
         <table className="tbl">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
-              <th className="text-left px-4 py-3 font-semibold sticky left-0 bg-slate-50 z-10 min-w-[200px]">
-                Persona
-              </th>
-              {clinics.map((c) => (
-                <th key={c._id} className="text-left px-3 py-3 font-semibold min-w-[170px]">
-                  {nombreSucursal(c)}
-                  <span className="block text-[11px] font-normal text-slate-400">
-                    {conteo[c._id] || 0} {conteo[c._id] === 1 ? 'persona' : 'personas'}
-                  </span>
-                </th>
-              ))}
+              <th className="text-left px-4 py-3 font-semibold min-w-[220px]">Persona</th>
+              <th className="text-left px-3 py-3 font-semibold">Rol</th>
+              <th className="text-left px-3 py-3 font-semibold min-w-[220px]">Sucursal</th>
               <th className="px-3 py-3 w-40"></th>
             </tr>
           </thead>
           <tbody>
             {visibles.length === 0 && (
               <tr>
-                <td colSpan={clinics.length + 2}>
+                <td colSpan={4}>
                   <EmptyState
                     icon={HiOutlineBuildingOffice2}
                     title="Nadie coincide"
@@ -206,14 +245,15 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
               </tr>
             )}
             {visibles.map((u) => {
-              const sucio = tieneCambios(u);
-              const sinSede = clinics.every((c) => !rolActual(u, c._id));
+              const sede = sedeActual(u);
+              const sucio = sede !== sedeGuardada(u);
+              const rol = rolDe(u);
               return (
                 <tr
                   key={u._id}
                   className={`border-t border-slate-100 ${sucio ? 'bg-amber-50/60' : 'hover:bg-slate-50'}`}
                 >
-                  <td className={`px-4 py-3 sticky left-0 z-10 ${sucio ? 'bg-amber-50' : 'bg-white'}`}>
+                  <td className="px-4 py-3">
                     <div className="font-medium text-slate-800 flex items-center gap-1.5 flex-wrap">
                       {u.name}
                       {u.isSuperAdmin && (
@@ -223,48 +263,44 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
                         <span className="text-[10px] px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded">inactivo</span>
                       )}
                     </div>
-                    <div className="text-xs text-slate-500 truncate max-w-[220px]">{u.email}</div>
-                    {/* Alguien sin sede no le aparece a nadie: ni en la agenda ni
-                        en los avisos. Es un estado válido (se fue, está de baja)
-                        pero tiene que verse, no adivinarse. */}
-                    {sinSede && (
-                      <div className="text-[11px] text-amber-700 mt-0.5">Sin sucursal asignada</div>
+                    <div className="text-xs text-slate-500 truncate max-w-[260px]">{u.email}</div>
+                  </td>
+
+                  {/* EL ROL SE ENSEÑA, NO SE EDITA: se cambia en Usuarios, donde
+                      se ve todo lo que ese rol abre en el resto del sistema. */}
+                  <td className="px-3 py-3 text-slate-600">
+                    {rol ? (
+                      ROLE_LABELS[rol] || rol
+                    ) : (
+                      <span className="text-amber-700 text-xs">Sin rol — ponlo en Usuarios</span>
                     )}
                   </td>
 
-                  {clinics.map((c) => {
-                    const valor = rolActual(u, c._id);
-                    const cambiado = valor !== rolGuardado(u, c._id);
-                    return (
-                      <td key={c._id} className="px-3 py-2">
-                        <select
-                          value={valor}
-                          onChange={(e) => cambiar(u, c._id, e.target.value)}
-                          className={`input text-xs py-1.5 ${
-                            cambiado ? 'border-amber-400 bg-amber-50' : valor ? '' : 'text-slate-400'
-                          }`}
-                        >
-                          <option value={SIN_ASIGNAR}>— No trabaja aquí —</option>
-                          {ROLES_OPERATIVOS.map((r) => (
-                            <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>
-                          ))}
-                          {/**
-                            * UN ROL RETIRADO SIGUE SIENDO UN ROL HASTA QUE SE MIGRE.
-                            *
-                            * Sin esta opción, el <select> de alguien que todavía
-                            * tiene guardado un rol que se quitó de la lista (pasó
-                            * con 'ecografista') sale EN BLANCO. Y como guardar
-                            * manda la fila entera y descarta las sedes sin rol,
-                            * abrir esta pantalla y darle a guardar le borraba la
-                            * sucursal a esa persona sin decir nada.
-                            */}
-                          {valor && !ROLES_OPERATIVOS.includes(valor) && (
-                            <option value={valor}>{ROLE_LABELS[valor] || valor} (rol retirado)</option>
-                          )}
-                        </select>
-                      </td>
-                    );
-                  })}
+                  <td className="px-3 py-2">
+                    <select
+                      value={sede}
+                      onChange={(e) => cambiar(u, e.target.value)}
+                      className={`input text-xs py-1.5 ${
+                        sucio ? 'border-amber-400 bg-amber-50' : sede ? '' : 'border-amber-300 bg-amber-50 text-amber-800'
+                      }`}
+                    >
+                      {/**
+                        * «Sin sucursal» SE VE PERO NO SE ELIGE (`disabled`).
+                        *
+                        * Alguien sin sede no le aparece a nadie —ni en la agenda,
+                        * ni al asignar la atención, ni en los avisos— y además
+                        * DESAPARECE de esta pantalla y de Usuarios en cuanto se
+                        * recarga: las dos filtran por sucursal, así que no habría
+                        * forma de traerlo de vuelta salvo el super-admin. Para
+                        * alguien que se va, lo correcto es desactivarlo en
+                        * Usuarios: conserva su sede y su rol, y se reactiva.
+                        */}
+                      <option value={SIN_SEDE} disabled>— Sin sucursal —</option>
+                      {clinics.map((c) => (
+                        <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
+                      ))}
+                    </select>
+                  </td>
 
                   <td className="px-3 py-2">
                     {sucio && (
@@ -295,7 +331,8 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
       </div>
 
       <p className="text-xs text-slate-400">
-        Para crear personas nuevas, cambiar contraseñas o desactivarlas, ve a Configuración → Usuarios.
+        Para crear personas nuevas, cambiar su rol o su contraseña y desactivarlas, ve a
+        Configuración → Usuarios.
       </p>
     </div>
   );

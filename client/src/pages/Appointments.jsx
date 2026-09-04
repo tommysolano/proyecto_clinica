@@ -239,6 +239,9 @@ export default function Appointments() {
     canCharge && clinicasFiltro.length ? clinicasFiltro : (clinics || [])
   ).filter((c) => c.active !== false);
   const showClinicSelector = appointmentClinics.length > 1;
+  // Mientras no se escoja sucursal no hay destino: los espacios de la agenda se
+  // calculan con la sede activa como respaldo (ver `slotMinutes`), pero lo que
+  // se guarda es lo que diga el selector.
   const destinationClinic = appointmentClinics.find(
     (c) => String(c._id) === String(form.clinic || activeClinic?._id)
   );
@@ -584,10 +587,16 @@ export default function Appointments() {
 
   const openNew = () => {
     setEditing(null);
-    setForm({
-      ...emptyForm,
-      clinic: activeClinic?._id || '',
-    });
+    /**
+     * LA SUCURSAL SE ESCOGE, NO SE HEREDA.
+     *
+     * Venía puesta la sucursal activa, y con caja mirando la agenda de toda la
+     * organización eso era una trampa: el campo ya decía algo razonable, nadie
+     * lo tocaba, y la cita acababa agendada en la sede equivocada. La cita mal
+     * ubicada no se ve hasta que el paciente llega a la otra puerta y allí no
+     * hay nadie esperándolo. Se abre en blanco y es obligatoria.
+     */
+    setForm({ ...emptyForm });
     setPatients([]);
     setPatientSearch('');
     setPatientSearchError(false);

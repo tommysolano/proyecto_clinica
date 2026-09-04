@@ -15,6 +15,7 @@ import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import EmailStatus from '../components/EmailStatus';
 import useEmailValidation from '../hooks/useEmailValidation';
 import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO } from '../utils/roles';
+import { nombreSucursal } from '../utils/clinicName';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -237,6 +238,13 @@ export default function Patients() {
     if (aptForm.enabled && !editing && !aptForm.ahora) {
       if (!aptForm.date || !aptForm.startTime) {
         toast.error('Completa los datos de la cita (fecha y hora)');
+        return;
+      }
+      // Con varias sedes, la sucursal es obligatoria y ya no se hereda de la
+      // activa: agendar en la equivocada no se descubre hasta que el paciente
+      // llega a la otra puerta.
+      if (showClinicSelector && !aptForm.clinic) {
+        toast.error('Escoge la sucursal de la cita');
         return;
       }
     }
@@ -785,15 +793,20 @@ export default function Patients() {
                 <div className="mt-3 space-y-3 bg-emerald-50/40 rounded-xl p-3">
                   {/* La atención inmediata siempre es en la sucursal activa (la
                       decide el servidor), así que el selector no pinta nada. */}
+                  {/* La sucursal se ESCOGE: venía puesta la activa y la cita se
+                      agendaba en la sede equivocada sin que nadie lo notara
+                      (mismo cambio que en la agenda). */}
                   {showClinicSelector && !aptForm.ahora && (
-                    <Field label="Sucursal destino *">
+                    <Field label="Sucursal destino" required>
                       <select
-                        value={aptForm.clinic || activeClinic?._id || ''}
+                        value={aptForm.clinic}
                         onChange={(e) => setAptForm({ ...aptForm, clinic: e.target.value, room: '' })}
                         className="input"
+                        required
                       >
+                        <option value="">Seleccionar sucursal…</option>
                         {clinics.map((c) => (
-                          <option key={c._id} value={c._id}>{c.nombreComercial || c.name}</option>
+                          <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
                         ))}
                       </select>
                     </Field>

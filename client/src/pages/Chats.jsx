@@ -6,6 +6,7 @@ import NumericInput from '../components/NumericInput';
 import useDebounce from '../hooks/useDebounce';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import SriStatus from '../components/SriStatus';
+import { nombreSucursal } from '../utils/clinicName';
 import {
   HiOutlineStar,
   HiStar,
@@ -6304,7 +6305,16 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
     serviceItem: null,
   });
   const [items, setItems] = useState([emptyAppt()]);
-  const [clinicId, setClinicId] = useState(activeClinic?._id || conv.clinic || '');
+  /**
+   * LA SUCURSAL SE ESCOGE, NO SE HEREDA.
+   *
+   * Venía puesta la sede activa del asesor, y el call center agenda para todas:
+   * el campo ya decía algo razonable, nadie lo tocaba, y la cita quedaba en la
+   * sucursal equivocada. Eso no se descubre hasta que el paciente llega a la
+   * otra puerta. Con una sola sucursal el selector ni se enseña y manda esa.
+   */
+  const unaSolaSede = (clinics?.length || 0) <= 1;
+  const [clinicId, setClinicId] = useState(unaSolaSede ? (activeClinic?._id || conv.clinic || '') : '');
   const [saving, setSaving] = useState(false);
   // Espacios de la agenda de la sucursal ELEGIDA en este formulario: el asesor
   // agenda en la sede que le pida el paciente, no siempre en la suya.
@@ -6319,6 +6329,11 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
   };
 
   const submit = async () => {
+    // Con varias sedes la sucursal es obligatoria: sin esto el servidor caería
+    // en la del asesor, que es justo el error que se quiere impedir.
+    if (!unaSolaSede && !clinicId) {
+      return toast.error('Escoge la sucursal de la cita');
+    }
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       if (!it.date || !it.startTime) {
@@ -6351,16 +6366,19 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
         <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-2 text-xs text-emerald-800">
           Paciente: <strong>{conv.contactName || conv.phone}</strong>
         </div>
-        {clinics?.length > 1 && (
+        {!unaSolaSede && (
           <div>
-            <label className="text-xs font-medium text-slate-600">Clínica</label>
+            <label className="text-xs font-medium text-slate-600">Sucursal *</label>
             <select
               value={clinicId}
               onChange={(e) => setClinicId(e.target.value)}
-              className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1"
+              className={`w-full border rounded-xl px-2 py-1.5 mt-1 ${
+                clinicId ? 'border-slate-200' : 'border-amber-300 bg-amber-50'
+              }`}
             >
+              <option value="">Seleccionar sucursal…</option>
               {clinics.map((c) => (
-                <option key={c._id} value={c._id}>{c.name}</option>
+                <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
               ))}
             </select>
           </div>
