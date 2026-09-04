@@ -28,6 +28,26 @@ const EDITABLES = ['firstName', 'lastName', 'cedula', 'age', 'phone', 'email', '
 const txt = (v) => String(v ?? '').trim();
 
 /**
+ * Qué es "estar pendiente de revisar".
+ *
+ * NO basta con venir de una ficha escaneada. La tanda de septiembre marcó 5.555
+ * pacientes y solo 4.243 tenían algo que mirar: los otros 1.300 se leyeron
+ * enteros y coinciden con lo que ya había. Listarlos también convertía la
+ * pantalla en un trámite de pasar fichas correctas, que es la mejor forma de que
+ * nadie llegue a las que sí importan.
+ *
+ * Pendiente = sin revisar Y con algo que decidir: un campo dudoso, o un valor de
+ * la ficha física que no coincide con el del sistema.
+ */
+const PENDIENTE = {
+  'scanImport.revisadoAt': null,
+  $or: [
+    { 'scanImport.dudas.0': { $exists: true } },
+    { 'scanImport.alternos.0': { $exists: true } },
+  ],
+};
+
+/**
  * Lista los pacientes importados desde un escaneo.
  * ?estado=pendientes (por defecto) | revisados | todos
  */
@@ -35,7 +55,7 @@ exports.listScanImports = async (req, res) => {
   try {
     const estado = req.query.estado || 'pendientes';
     const filtro = { clinic: req.clinicId, 'scanImport.scan': { $ne: null }, active: true };
-    if (estado === 'pendientes') filtro['scanImport.revisadoAt'] = null;
+    if (estado === 'pendientes') Object.assign(filtro, PENDIENTE);
     if (estado === 'revisados') filtro['scanImport.revisadoAt'] = { $ne: null };
 
     const pacientes = await Patient.find(filtro)
@@ -71,8 +91,8 @@ exports.countPendingScanImports = async (req, res) => {
     const pendientes = await Patient.countDocuments({
       clinic: req.clinicId,
       'scanImport.scan': { $ne: null },
-      'scanImport.revisadoAt': null,
       active: true,
+      ...PENDIENTE,
     });
     res.json({ pendientes });
   } catch (error) {

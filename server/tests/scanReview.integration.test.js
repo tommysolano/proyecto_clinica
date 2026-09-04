@@ -230,3 +230,32 @@ test('R11) al revisar se resuelven los dos valores: se queda uno y el otro se re
   assert.equal(p.phone, '0999999999', 'gana el que eligió quien revisó');
   assert.deepEqual(p.scanImport.alternos, [], 'y el otro deja de aparecer');
 });
+
+test('R12) solo está "por revisar" lo que tiene algo que decidir', async () => {
+  // La tanda de septiembre marcó 5.555 pacientes como importados y solo 4.243
+  // tenían algo que mirar. Listar también los 1.300 correctos convierte la
+  // pantalla en un trámite de pasar fichas buenas, que es la mejor forma de que
+  // nadie llegue a las que sí importan.
+  const { clinicId, userId, paciente } = await escenario();
+
+  const limpio = await Patient.create({
+    clinic: clinicId, firstName: 'SIN', lastName: 'DUDAS',
+    scanImport: { scan: paciente.scanImport.scan, importadoAt: new Date(), dudas: [], alternos: [] },
+  });
+  const conOtroValor = await Patient.create({
+    clinic: clinicId, firstName: 'CON', lastName: 'OTRO VALOR', phone: '0991112233',
+    scanImport: {
+      scan: paciente.scanImport.scan, importadoAt: new Date(), dudas: [],
+      alternos: [{ campo: 'celular', valor: '0999999999' }],
+    },
+  });
+
+  const r = await H.runController(ctrl.listScanImports, H.mockReq(clinicId, userId, {}, { query: {} }));
+  const ids = r.payload.map((p) => String(p._id));
+  assert.ok(ids.includes(String(paciente._id)), 'la que tiene dudas sí sale');
+  assert.ok(ids.includes(String(conOtroValor._id)), 'la que tiene otro valor también');
+  assert.ok(!ids.includes(String(limpio._id)), 'la que se leyó entera y coincide, no');
+
+  const c = await H.runController(ctrl.countPendingScanImports, H.mockReq(clinicId, userId, {}, {}));
+  assert.equal(c.payload.pendientes, ids.length, 'el aviso cuenta lo mismo que se lista');
+});
