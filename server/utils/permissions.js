@@ -9,9 +9,10 @@
  *
  * Mismo criterio para `patients.contactData` (cédula, dirección, teléfono, WhatsApp y correo
  * del paciente): es SOLO del administrador —le basta con `'*'`, no hace falta listarla—, así
- * que el servidor la borra de la respuesta para todos los demás roles. Tiene dos excepciones,
- * las dos de mostrador y las dos explicadas abajo: `patients.billingData` (los selectores de
- * cliente al facturar) y `patients.cedula` (la cédula, y solo ella, en la ficha del paciente).
+ * que el servidor la borra de la respuesta para todos los demás roles. Tiene tres excepciones,
+ * todas explicadas abajo y todas de UN campo: `patients.billingData` (los selectores de
+ * cliente al facturar), `patients.cedula` (la cédula, y solo ella, para mostrador) y
+ * `patients.email` (el correo, y solo él, para quien atiende).
  *
  * `patients.observations.moderate` es la otra capacidad exclusiva del admin: una observación
  * del paciente la edita quien la escribió, y el admin además de eso (queda registrado como
@@ -57,6 +58,24 @@ const CAPS = {
     'inventory.view', 'count.start', 'count.edit', 'warehouse.view', 'sales.report', 'cashflow.view',
     'patients.billingData', 'patients.cedula',
   ],
+  /**
+   * EL CORREO DEL PACIENTE, PARA QUIEN LO ATIENDE (sep-2026).
+   *
+   * Segunda grieta —y del mismo tamaño que la primera— en `patients.contactData`:
+   * da el correo Y SOLO EL CORREO. Cédula, dirección, teléfono y WhatsApp siguen
+   * siendo del administrador.
+   *
+   * El motivo es clínico: el médico manda por correo un resultado, una receta o
+   * las indicaciones de un examen, y tenerlo que pedir a administración cada vez
+   * acababa con el dato copiado en un papel encima del escritorio, que es peor
+   * sitio que la ficha.
+   *
+   * La clave es 'doctor' a propósito: `can()` mapea TODAS las especialidades
+   * (óptica, ginecología, podología, odontología, cosmetología, cardiología,
+   * terapeuta) a esta misma entrada, así que la concesión les llega a todas sin
+   * enumerarlas — y la que se cree mañana la hereda sola.
+   */
+  doctor: ['patients.email'],
   // Enfermería y bodega consultan existencias; nada de dinero.
   enfermeria: ['inventory.view', 'count.start', 'count.edit', 'warehouse.view'],
   // Marketing solo mira ventas (sin costos ni márgenes) y no exporta.

@@ -47,6 +47,20 @@ export const ROLE_LABELS = {
 // van a mandar (o lo esconderá teniéndolo).
 export const ROLES_VEN_CEDULA = ['admin', 'cajero'];
 
+/**
+ * Quién ve el CORREO del paciente: el admin y quien lo atiende (sep-2026).
+ *
+ * El médico manda por correo un resultado, una receta o las indicaciones de un
+ * examen; tenerlo que pedir a administración cada vez acababa con el dato en un
+ * papel encima del escritorio. Es una excepción de UN campo, como la cédula:
+ * teléfono, WhatsApp y dirección siguen siendo solo del admin.
+ *
+ * Espejo de la capacidad `patients.email` del servidor, que es quien manda: esto
+ * solo decide si se pinta el hueco. 'optica' va enumerada porque en el cliente
+ * NO expande desde 'doctor' (ver DOCTOR_SPECIALTY_ROLES arriba).
+ */
+export const ROLES_VEN_CORREO = ['admin', 'doctor', 'optica'];
+
 // ─────────────── Tipo de doctor ───────────────
 //
 // El TIPO de doctor sale de su ROL en la sucursal, no de un campo aparte: quien

@@ -10,7 +10,7 @@ import NumericInput from '../components/NumericInput';
 import Cie10Select from '../components/Cie10Select';
 import Odontograma from '../components/Odontograma';
 import CincoElementos from '../components/CincoElementos';
-import { ROLES_VEN_CEDULA } from '../utils/roles';
+import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO } from '../utils/roles';
 import {
   ANTECEDENTES_CATEGORIAS,
   HABITOS_CATEGORIAS,
@@ -238,6 +238,8 @@ export default function PatientDetail() {
   // 19 minutos). Enfermería no consulta: pone un suero o hace una curación, que
   // duran lo que tienen que durar. Ponerle un reloj en rojo sería meterle prisa
   // sin motivo.
+  // El correo lo ve el admin y quien atiende (capacidad `patients.email`).
+  const showEmail = hasRole(...ROLES_VEN_CORREO);
   const esEnfermero = hasRole('enfermero');
   // Cuenta desde que empezó EL TURNO en curso. `consultationStartedAt` es de la
   // cita entera: el segundo doctor entraba con el tiempo del primero ya corrido.
@@ -307,25 +309,25 @@ export default function PatientDetail() {
             <h1 className="text-base sm:text-2xl font-bold text-slate-800 tracking-tight break-words leading-tight">
               {patient.firstName} {patient.lastName}
             </h1>
-            {/* Teléfono y correo son solo del administrador; la CÉDULA la ve
-                además mostrador (ROLES_VEN_CEDULA). Al resto el servidor ni
-                siquiera se los envía (ver CONTACT_FIELDS en patientController). */}
+            {/**
+              * LA CABECERA DICE LO IMPRESCINDIBLE DE CADA UNO, y nada más.
+              *
+              * Mostrador identifica por la CÉDULA; quien atiende necesita la
+              * EDAD (de ella salen las dosis) y el CORREO (por ahí manda el
+              * resultado o la receta). El teléfono, el WhatsApp y la dirección
+              * siguen siendo del administrador — y a quien no le toca, el
+              * servidor ni se los envía (ver CONTACT_FIELDS en
+              * patientController): esto solo decide si se pinta el hueco.
+              */}
             <p className="text-xs sm:text-sm text-slate-500 mt-0.5 sm:mt-1">
-              {hasRole(...ROLES_VEN_CEDULA) ? (
-                <>
-                  CI: {patient.cedula || '—'}
-                  {hasRole('admin') ? (
-                    <>
-                      {patient.phone ? ` · ${patient.phone}` : ''}
-                      {patient.email ? ` · ${patient.email}` : ''}
-                    </>
-                  ) : (
-                    ` · Edad: ${patient.computedAge ?? patient.age ?? '—'}`
-                  )}
-                </>
-              ) : (
-                <>Edad: {patient.computedAge ?? patient.age ?? '—'}</>
-              )}
+              {[
+                hasRole(...ROLES_VEN_CEDULA) ? `CI: ${patient.cedula || '—'}` : '',
+                `Edad: ${patient.computedAge ?? patient.age ?? '—'}`,
+                hasRole('admin') ? patient.phone : '',
+                showEmail ? patient.email : '',
+              ]
+                .filter(Boolean)
+                .join(' · ')}
             </p>
             <div className="mt-1.5 sm:mt-2">
               <TagEditor
@@ -431,6 +433,8 @@ function DatosTab({ patient }) {
   const showContact = hasRole('admin');
   // La cédula es la excepción: mostrador la necesita para identificar y facturar.
   const showCedula = hasRole(...ROLES_VEN_CEDULA);
+  // Y el correo la otra: quien atiende manda por ahí un resultado o una receta.
+  const showEmail = hasRole(...ROLES_VEN_CORREO);
   const sourceLabels = {
     anuncio: 'Anuncio',
     referido: 'Referido',
@@ -451,7 +455,7 @@ function DatosTab({ patient }) {
       <dl className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
         {showCedula && <Item label="Cédula" value={patient.cedula} otros={otros('cedula')} />}
         <Item label="Nombre completo" value={`${patient.firstName} ${patient.lastName}`} />
-        {showContact && <Item label="Email" value={patient.email} otros={otros('correo')} />}
+        {showEmail && <Item label="Email" value={patient.email} otros={otros('correo')} />}
         {showContact && <Item label="Teléfono" value={patient.phone} otros={otros('celular')} />}
         {showContact && <Item label="WhatsApp" value={patient.whatsapp} />}
         <Item

@@ -49,9 +49,25 @@ const canSeeContactData = (req) => canReq(req, 'patients.contactData');
  */
 const canSeeCedula = (req) => canSeeContactData(req) || canReq(req, 'patients.cedula');
 
+/**
+ * Y EL CORREO TAMBIÉN VA APARTE (pedido de consulta, sep-2026).
+ *
+ * Quien atiende —doctor y todas las especialidades— manda por correo un
+ * resultado, una receta o las indicaciones de un examen. Pedírselo a
+ * administración cada vez terminaba con el dato apuntado en un papel sobre el
+ * escritorio, que es peor sitio que la ficha.
+ *
+ * Otra excepción de UN campo, igual que la cédula: dirección, teléfono y
+ * WhatsApp siguen siendo del admin. Por eso el filtro es POR CAMPO.
+ */
+const canSeeEmail = (req) => canSeeContactData(req) || canReq(req, 'patients.email');
+
 /** ¿Puede ver ESTE campo de contacto? */
-const canSeeContactField = (req, field) =>
-  field === 'cedula' ? canSeeCedula(req) : canSeeContactData(req);
+const canSeeContactField = (req, field) => {
+  if (field === 'cedula') return canSeeCedula(req);
+  if (field === 'email') return canSeeEmail(req);
+  return canSeeContactData(req);
+};
 
 /** ¿La petición es un selector de facturación/cobro que sí puede traerlos? */
 const wantsBillingContact = (req) =>

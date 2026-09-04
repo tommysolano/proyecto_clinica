@@ -14,7 +14,7 @@ import SriStatus from '../components/SriStatus';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import EmailStatus from '../components/EmailStatus';
 import useEmailValidation from '../hooks/useEmailValidation';
-import { ROLES_VEN_CEDULA } from '../utils/roles';
+import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO } from '../utils/roles';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -89,16 +89,20 @@ export default function Patients() {
    * enseña el campo, y el servidor tampoco se lo aceptaría.
    */
   const puedeFijarValor = hasRole('admin', 'cajero');
-  // Correo, teléfono, WhatsApp y dirección son solo del administrador: al resto
-  // el servidor ni se los envía (ver CONTACT_FIELDS en patientController).
+  // Teléfono, WhatsApp y dirección son solo del administrador: al resto el
+  // servidor ni se los envía (ver CONTACT_FIELDS en patientController).
   const showContact = hasRole('admin');
   // La CÉDULA es la excepción: mostrador identifica y factura con ella, así que
   // la ve y la corrige (capacidad `patients.cedula` en el servidor).
   const showCedula = hasRole(...ROLES_VEN_CEDULA);
-  // Nombre + Acciones siempre; cédula según showCedula; teléfono y email solo
-  // para el admin. El número tiene que cuadrar con las columnas de verdad: es el
-  // colSpan del "no se encontraron pacientes" y el ancho del esqueleto.
-  const columnCount = 2 + (showCedula ? 1 : 0) + (showContact ? 2 : 0);
+  // El CORREO es la otra: quien atiende manda por ahí un resultado o una receta
+  // (capacidad `patients.email`).
+  const showEmail = hasRole(...ROLES_VEN_CORREO);
+  // Nombre + Edad + Acciones siempre; cédula según showCedula; teléfono solo
+  // para el admin y correo para quien puede verlo. El número tiene que cuadrar
+  // con las columnas de verdad: es el colSpan del "no se encontraron pacientes"
+  // y el ancho del esqueleto.
+  const columnCount = 3 + (showCedula ? 1 : 0) + (showContact ? 1 : 0) + (showEmail ? 1 : 0);
   const canDelete = hasRole('admin');
 
   const [patients, setPatients] = useState([]);
@@ -416,8 +420,12 @@ export default function Patients() {
               <tr className="bg-emerald-50/50 border-b border-emerald-100">
                 {showCedula && <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Cédula</th>}
                 <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Nombre</th>
+                {/* La EDAD no es un dato de contacto: la ve todo el mundo, y a
+                    quien atiende le sirve de un vistazo (de ella salen las
+                    dosis) sin tener que abrir la ficha de uno en uno. */}
+                <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Edad</th>
                 {showContact && <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden md:table-cell">Teléfono</th>}
-                {showContact && <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden lg:table-cell">Email</th>}
+                {showEmail && <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden lg:table-cell">Email</th>}
                 <th className="text-right px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Acciones</th>
               </tr>
             </thead>
@@ -457,12 +465,18 @@ export default function Patients() {
                         </span>
                       )}
                     </td>
+                    {/* `computedAge` lo calcula el servidor con la fecha de
+                        nacimiento; `age` es el respaldo de quien se registró sin
+                        acordarse del día (ver el virtual en models/Patient.js). */}
+                    <td className="px-6 py-3.5 text-sm text-slate-600">
+                      {p.computedAge ?? p.age ?? '—'}
+                    </td>
                     {showContact && (
                       <td className="px-6 py-3.5 text-sm text-slate-600 hidden md:table-cell">
                         {p.phone || '—'}
                       </td>
                     )}
-                    {showContact && (
+                    {showEmail && (
                       <td className="px-6 py-3.5 text-sm text-slate-600 hidden lg:table-cell">
                         {p.email || '—'}
                       </td>
@@ -602,7 +616,11 @@ export default function Patients() {
                 className="input"
               />
             </Field>
-            {(showContact || !editing) && (
+            {/* Al EDITAR, un campo de contacto solo se enseña a quien lo ve: el
+                resto lo recibiría vacío y guardaría un borrado sin querer (el
+                servidor lo descarta igual, ver CONTACT_FIELDS). El correo lo ve
+                también quien atiende, así que también lo corrige. */}
+            {(showEmail || !editing) && (
             <Field label="Email">
               <input
                 name="email"
