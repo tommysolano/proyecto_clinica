@@ -14,6 +14,7 @@ const {
   administerSerum,
   undoSerumAdministration,
   printHcu005,
+  getFollowUpsByAppointment,
 } = require('../controllers/clinicalRecordController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
@@ -39,6 +40,19 @@ const rolesQueAtienden = requireRole('admin', 'doctor', 'enfermero');
  * aunque sí lea la historia dentro de la app.
  */
 router.get('/:patientId/hcu005', requireRole('admin', 'cajero', 'doctor'), printHcu005);
+
+/**
+ * LO QUE SE ESCRIBIÓ EN UNA CITA CONCRETA (para la agenda).
+ *
+ * Va antes de '/:patientId' por claridad, aunque Express no las confunda: esta
+ * tiene dos segmentos y aquella uno.
+ *
+ * Con los MISMOS roles que la ficha, y no con los de la agenda, que son más:
+ * esto es historia clínica. El call center y marketing entran a /appointments
+ * pero no tienen acceso a los seguimientos en ninguna otra pantalla, y darles
+ * una receta por esta puerta sería abrirles la historia por la ventana.
+ */
+router.get('/by-appointment/:appointmentId', allRoles, getFollowUpsByAppointment);
 
 router.get('/:patientId', allRoles, getOrCreateByPatient);
 router.put('/:patientId', allRoles, updateByPatient);

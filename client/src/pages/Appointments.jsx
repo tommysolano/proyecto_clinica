@@ -9,6 +9,7 @@ import { inicioDeMiTurno } from '../utils/appointmentTurns';
 import SameSlotPanel from '../components/SameSlotPanel';
 import AssignAttentionModal from '../components/AssignAttentionModal';
 import AppointmentServiceValueModal from '../components/AppointmentServiceValueModal';
+import AppointmentFollowUpModal from '../components/AppointmentFollowUpModal';
 import AppointmentValueFields from '../components/AppointmentValueFields';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
@@ -280,6 +281,8 @@ export default function Appointments() {
   // Corregir el servicio y el valor de una cita, incluso ya completada. Es lo
   // único que mostrador puede tocar después de que el paciente fue atendido.
   const [serviceValueModal, setServiceValueModal] = useState(null); // cita
+  // Ver (solo leer) lo que se escribió en una cita ya atendida.
+  const [consultaModal, setConsultaModal] = useState(null); // cita
   /**
    * Filtros secundarios plegados EN EL MÓVIL (en pantalla grande siempre se ven).
    * Desplegados ocupaban media pantalla y empujaban las citas —que es a lo que
@@ -612,6 +615,18 @@ export default function Appointments() {
     if (apt.status === 'completada') return isAdmin || canCharge;
     return true;
   };
+
+  /**
+   * VER LO QUE SE ESCRIBIÓ EN LA CITA (receta, diagnóstico, indicaciones).
+   *
+   * Los MISMOS roles que ya entran a los seguimientos del paciente, no los de la
+   * agenda, que son más: esto es historia clínica. El call center y marketing
+   * ven la agenda pero no los seguimientos en ninguna otra pantalla, y el
+   * servidor tampoco se los daría (ver la ruta `by-appointment`).
+   */
+  const veSeguimientos = isAdmin || canCharge || isDoctor || isNurse;
+  const puedeVerConsulta = (apt) =>
+    veSeguimientos && ['asistida', 'completada'].includes(apt.status);
 
   // Cita que se está editando: hace falta su estado real (no solo el del
   // formulario) para saber si el doctor todavía se puede reasignar.
@@ -1636,9 +1651,22 @@ export default function Appointments() {
                             <HiOutlinePlay className="w-4 h-4" />
                           </button>
                         )}
+                        {/**
+                          * FINALIZAR PIDE CONFIRMACIÓN, y no por cortesía.
+                          *
+                          * Este botón ocupa EL MISMO SITIO que «Iniciar»: en
+                          * cuanto arranca la consulta, uno se convierte en el
+                          * otro. Un doble clic en «Iniciar» —que es lo que pasó—
+                          * arrancaba y cerraba la consulta con el paciente
+                          * todavía sentándose. Cerrar una atención no puede ser
+                          * un clic de más.
+                          */}
                         {showDoctorTimer && inProgress && (
                           <button
-                            onClick={() => endConsultation(apt)}
+                            onClick={() => {
+                              if (!window.confirm(`¿Terminaste la consulta de ${apt.patient?.firstName || 'este paciente'}?`)) return;
+                              endConsultation(apt);
+                            }}
                             className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer transition-colors"
                             title="Finalizar consulta"
                           >
@@ -1653,6 +1681,23 @@ export default function Appointments() {
                           * corrige el seguimiento con su propio botón o se le
                           * adjunta el archivo que faltaba.
                           */}
+                        {/**
+                          * VER LA RECETA de una visita ya atendida, sin salir de
+                          * la agenda. Antes había que abrir la ficha del paciente
+                          * y buscar el seguimiento por fecha entre todos los
+                          * suyos; con dos consultas el mismo día eso es adivinar.
+                          * Es de solo lectura: corregir sigue siendo cosa de su
+                          * autor, por «Ver / corregir».
+                          */}
+                        {puedeVerConsulta(apt) && (
+                          <button
+                            onClick={() => setConsultaModal(apt)}
+                            className="p-1.5 rounded-lg hover:bg-violet-50 text-violet-700 bg-transparent border border-violet-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
+                            title="Ver la receta y lo que se escribió en esta cita"
+                          >
+                            Consulta
+                          </button>
+                        )}
                         {puedoCorregir && (
                           <button
                             onClick={() => abrirAtencion(apt, { soloVolver: true })}
@@ -2244,6 +2289,18 @@ export default function Appointments() {
                     Cambiar servicio y valor
                   </button>
                 )}
+                {puedeVerConsulta(detailModal) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConsultaModal(detailModal);
+                      setDetailModal(null);
+                    }}
+                    className="mt-2 ml-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-white border border-violet-200 text-violet-700 hover:bg-violet-50 cursor-pointer"
+                  >
+                    Ver la consulta y la receta
+                  </button>
+                )}
               </div>
             )}
             {(detailModal.origin && detailModal.origin !== 'standalone') && (
@@ -2405,6 +2462,13 @@ export default function Appointments() {
           appointment={serviceValueModal}
           onClose={() => setServiceValueModal(null)}
           onDone={fetchAppointments}
+        />
+      )}
+
+      {consultaModal && (
+        <AppointmentFollowUpModal
+          appointment={consultaModal}
+          onClose={() => setConsultaModal(null)}
         />
       )}
 

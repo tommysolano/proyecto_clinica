@@ -2224,6 +2224,80 @@ exports.deleteFollowUpAttachment = async (req, res) => {
 };
 
 /**
+ * LO QUE SE ESCRIBIÓ EN ESTA CITA CONCRETA.
+ *
+ * Desde la agenda, ver la receta de una visita terminada obligaba a abrir la
+ * ficha del paciente y buscar el seguimiento por fecha entre todos los suyos.
+ * Con dos consultas el mismo día —o con la enfermera y el doctor escribiendo
+ * cada uno lo suyo— eso es adivinar, y adivinar una receta no vale.
+ *
+ * EL VÍNCULO YA EXISTÍA y no se estaba usando: cada turno guarda el `_id` del
+ * seguimiento que escribió (`turns[].followUp`, lo sella `completarTurno`). Eso
+ * es exacto, incluye a todos los que atendieron y no depende de fechas.
+ *
+ * EL RESPALDO, para lo que no lo tiene. En producción una de cada tres citas
+ * atendidas no lleva ese sello: son las que se cerraron con el botón de
+ * finalizar sin escribir nada, y las anteriores a los turnos. Ahí se busca por
+ * el DÍA y por QUIÉN ATENDIÓ esta cita — las dos condiciones, no solo la fecha:
+ * con dos doctores atendiendo al mismo paciente el mismo día, la fecha sola
+ * mezclaría las dos consultas. Va marcado como `aproximado` para que la pantalla
+ * pueda decir que eso es lo de ese día, no necesariamente lo de esta cita.
+ */
+exports.getFollowUpsByAppointment = async (req, res) => {
+  try {
+    const Appointment = require('../models/Appointment');
+    const { isSameLocalDay } = require('../utils/appointmentDate');
+
+    const apt = await Appointment.findOne({ _id: req.params.appointmentId })
+      .select('clinic patient date startTime status turns doctor attendedByNurse serviceName')
+      .lean();
+    if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+
+    const record = await ClinicalRecord.findOne({ patient: apt.patient })
+      .populate('followUps.createdBy', 'name specialty')
+      .lean();
+    if (!record) return res.json({ appointment: apt, followUps: [], aproximado: false });
+
+    // El recorte del terapeuta se aplica ANTES de elegir: su consulta es privada
+    // también por esta puerta, y aquí se devolvería entera.
+    const todos = hideTherapyNotes(record, req).followUps || [];
+
+    const sellados = new Set(
+      (apt.turns || []).map((t) => t.followUp).filter(Boolean).map(String)
+    );
+    let followUps = todos.filter((f) => sellados.has(String(f._id)));
+    let aproximado = false;
+
+    if (!followUps.length) {
+      const idDe = (v) => String(v?._id || v || '');
+      const atendieron = new Set(
+        [...(apt.turns || []).map((t) => t.user), apt.doctor, apt.attendedByNurse]
+          .filter(Boolean)
+          .map(idDe)
+      );
+      followUps = todos.filter((f) => {
+        if (!isSameLocalDay(f.fecha, apt.date)) return false;
+        // Sin nadie identificado (cita vieja sin turnos ni espejo) manda el día:
+        // es lo único que hay, y es mejor que no enseñar nada.
+        return atendieron.size === 0 || atendieron.has(idDe(f.createdBy));
+      });
+      aproximado = followUps.length > 0;
+    }
+
+    res.json({
+      appointment: {
+        _id: apt._id, date: apt.date, startTime: apt.startTime,
+        status: apt.status, serviceName: apt.serviceName, patient: apt.patient,
+      },
+      followUps,
+      aproximado,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener la consulta de la cita', error: error.message });
+  }
+};
+
+/**
  * Genera un PDF imprimible del seguimiento (receta, estudio/síntomas, observaciones,
  * tratamiento asociado) listo para entregar al paciente.
  */
