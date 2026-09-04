@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { roleSatisfies, ROLE_LABELS } from '../utils/roles';
 import NotificationBell from './NotificationBell';
 import shiluvLogo from '../Shiluv-logo-4.png';
+import { nombreSucursal } from '../utils/clinicName';
 import {
   HiOutlineHome,
   HiOutlineUsers,
@@ -351,9 +352,13 @@ export default function Layout({ children }) {
               onChange={handleClinicChange}
               className="w-full bg-white/10 text-white border border-white/20 rounded-lg px-3 py-2 text-sm cursor-pointer"
             >
+              {/* Por el ayudante común y no por `c.name` a pelo: el nombre
+                  visible de una sucursal es el comercial si lo tiene. Leyéndolo
+                  en crudo, este selector era el único sitio que seguía diciendo
+                  el nombre legal cuando se renombraba la sede. */}
               {clinics.map((c) => (
                 <option key={c._id} value={c._id} className="text-slate-800">
-                  {c.name}
+                  {nombreSucursal(c)}
                 </option>
               ))}
             </select>
