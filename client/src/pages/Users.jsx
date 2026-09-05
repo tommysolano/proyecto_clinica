@@ -44,14 +44,25 @@ export default function Users() {
   const [form, setForm] = useState(EMPTY);
   const [saving, setSaving] = useState(false);
 
-  // Autocompletado por cédula/RUC desde el SRI (nombre completo).
+  /**
+   * El SRI AQUÍ SOLO AYUDA A ESCRIBIR, NO DECIDE QUIÉN PUEDE SER USUARIO.
+   *
+   * Se mantiene la búsqueda —escribir la cédula y que salga el nombre solo es la
+   * mitad del trabajo del alta—, pero en modo `informativo`: lo que el SRI no
+   * reconozca se dice en gris y se guarda igual. Esto es personal de la clínica,
+   * no el receptor de una factura: hay pasaportes, cédulas extranjeras y alguna
+   * que el dígito verificador rechaza, y el aviso rojo se leía como «esta cédula
+   * está mal, no puedes continuar». Lo mismo con el correo, donde la comprobación
+   * de dominio con MX daba falsos negativos.
+   */
   const cedulaLookup = useSriLookup(form.cedula, {
     enabled: showModal && !editing,
+    informativo: true,
     onData: (d, prev) => {
       setForm((f) => ({ ...f, name: fillField(f.name, d.found ? d.fullName || '' : '', prev?.fullName) }));
     },
   });
-  const emailCheck = useEmailValidation(form.email, { enabled: showModal });
+  const emailCheck = useEmailValidation(form.email, { enabled: showModal, informativo: true });
 
   const load = async () => {
     setLoading(true);
@@ -271,12 +282,19 @@ export default function Users() {
               />
             </Field>
             <Field label="Email" required>
+              {/*
+                `type="text"` a propósito: con `type="email"` es el NAVEGADOR el
+                que se planta al enviar («Incluye una @…») y ahí no hay nada que
+                el sistema pueda permitir. Sigue siendo obligatorio —es el usuario
+                con el que se entra— pero el formato lo decide quien lo escribe.
+              */}
               <input
-                type="email"
+                type="text"
                 value={form.email}
                 onChange={(e) => handleChange('email', e.target.value)}
                 required
                 className="input"
+                autoComplete="off"
               />
               <EmailStatus status={emailCheck} onApplySuggestion={(s) => handleChange('email', s)} />
             </Field>

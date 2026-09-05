@@ -50,10 +50,19 @@ export function fillField(current, next, prevAuto, defaults = []) {
  *   - existingIsError: si true, cuando ya existe un paciente con esa cédula se
  *     marca error y NO se llama onData (evita duplicados en el alta de pacientes).
  *   - endpoint(id): url alternativa (para la página pública de reservas).
+ *   - informativo: el SRI AYUDA, no manda. Nada de lo que responda se pinta como
+ *     error: si no reconoce la identificación o la consulta falla, se dice en
+ *     gris y el formulario se guarda igual. Es para los formularios donde la
+ *     identificación es un dato interno (el personal de la clínica) y no el de
+ *     un comprobante fiscal — ahí una cédula que el SRI no valida seguía siendo
+ *     un aviso rojo que se leía como «no puedes guardar esto», y bloqueaba dar
+ *     de alta a alguien con pasaporte, cédula extranjera o una que el dígito
+ *     verificador rechaza. En facturación NO se usa: allí un RUC malo revienta
+ *     el comprobante en el SRI y el rojo está bien puesto.
  */
 export default function useSriLookup(
   taxId,
-  { enabled = true, onData, existingIsError = false, endpoint } = {}
+  { enabled = true, onData, existingIsError = false, endpoint, informativo = false } = {}
 ) {
   const [status, setStatus] = useState(EMPTY);
   const onDataRef = useRef(onData);
@@ -92,7 +101,13 @@ export default function useSriLookup(
       } catch (err) {
         if (cancelled) return;
         const m = err.response?.data?.message || 'No se pudo consultar el SRI';
-        setStatus({ loading: false, error: true, found: false, msg: m });
+        // En modo informativo el fallo del SRI es una nota, no un veto: el
+        // formulario se guarda igual con lo que se haya escrito.
+        setStatus(
+          informativo
+            ? { loading: false, error: false, found: false, msg: `${m}. Puedes guardarla igual.` }
+            : { loading: false, error: true, found: false, msg: m }
+        );
       }
     }, 500);
     return () => {
@@ -100,7 +115,7 @@ export default function useSriLookup(
       clearTimeout(t);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, enabled, existingIsError]);
+  }, [id, enabled, existingIsError, informativo]);
 
   return status;
 }
