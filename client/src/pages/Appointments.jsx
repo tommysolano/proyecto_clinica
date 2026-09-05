@@ -32,6 +32,9 @@ import {
 import DateInput from '../components/DateInput';
 import TimeSlotInput from '../components/TimeSlotInput';
 import SearchableSelect from '../components/SearchableSelect';
+import SelectorComponentesSuero from '../components/SelectorComponentesSuero';
+import SueroComposicionEditor from '../components/SueroComposicionEditor';
+import { SUERO_CLORURO_NOMBRE } from '../constants/sueroterapia';
 import { doctorOptionLabel, roleSatisfies, ROLE_LABELS, ROLES_TODA_LA_ORG } from '../utils/roles';
 
 // 6 estados soportados por el backend.
@@ -79,12 +82,163 @@ const emptyForm = {
   // Pago por adelantado: '' | 'abono' | 'total' (ver utils/appointmentValue.js).
   advancePayment: '',
   advanceAmount: '',
+  /**
+   * QUIÉN ATIENDE, elegido ya al agendar (solo al crear).
+   *
+   * Guarda el id de la persona; si es enfermero, el turno se abre de enfermería
+   * y si no, de doctor — lo decide `esEnfermero`, no un campo aparte, para que
+   * no puedan contradecirse. Vacío = se reparte después, como siempre, cuando el
+   * paciente llegue al mostrador.
+   */
+  attendant: '',
+  /**
+   * SUERO INDICADO AL AGENDAR (opcional, solo con enfermero).
+   *
+   * Se escribe en los seguimientos del paciente para que el enfermero lo vea en
+   * la ficha y pueda darlo por aplicado. `null` = no se indica ninguno; los
+   * servicios que ya traen el suyo de serie (Detox Plus) no necesitan esto.
+   */
+  serum: null,
   // Citas adicionales para agendar en una sola operación (solo al crear).
   // Cada entrada: { date, startTime, reason, serviceItem, agreedValue, isCanje }
   extraAppointments: [],
 };
 
 const roleLabels = ROLE_LABELS;
+
+/**
+ * QUIÉN ATIENDE, elegido ya al agendar.
+ *
+ * Antes la cola se repartía SIEMPRE después, en el mostrador («Asignar
+ * atención»). Pero muchas citas se agendan sabiendo de sobra quién las atiende
+ * —el paciente pide con su doctora, o viene a su serie de sueros con la misma
+ * enfermera— y repetir esa elección al día siguiente es un paso que se olvida:
+ * la cita llega sin dueño y hay que buscar a alguien con el paciente delante.
+ *
+ * Queda ELEGIDO, no atendido: la cita sigue pendiente hasta que el paciente
+ * entre por la puerta. Marcarla asistida aquí daría por venido a quien viene la
+ * semana que viene, y con eso se falsean los reportes y el no-show.
+ *
+ * CON UN ENFERMERO SE PUEDE INDICAR EL SUERO. Es lo que enfermería tiene que
+ * poner, y se escribe en los seguimientos del paciente para que lo lea en la
+ * ficha —que es donde mira— y pueda darlo por aplicado. Es opcional: hay citas
+ * de enfermería que no son un suero (signos, curaciones).
+ */
+function QuienAtiende({ form, setForm, doctors, nurses }) {
+  const [catalogoAbierto, setCatalogoAbierto] = useState(false);
+
+  // Una sola lista: la pregunta es «quién», no «de qué clase». El rol se enseña
+  // en la etiqueta y es lo que decide la clase del turno más abajo.
+  const personal = useMemo(
+    () => [
+      ...(doctors || []).map((d) => ({ ...d, _kind: 'doctor' })),
+      ...(nurses || []).map((n) => ({ ...n, _kind: 'enfermeria' })),
+    ],
+    [doctors, nurses]
+  );
+
+  const elegido = personal.find((p) => String(p._id) === String(form.attendant)) || null;
+  const esEnfermero = elegido?._kind === 'enfermeria';
+
+  // El servicio ya trae su suero: decirlo evita la duplicación más obvia —
+  // agendar un Detox Plus y escribir además la ampolla de detox a mano.
+  const sueroDelServicio = form.serviceItem?.autoSerum?.enabled ? form.serviceItem : null;
+
+  const serum = form.serum;
+  const setSerum = (patch) =>
+    setForm((f) => ({
+      ...f,
+      serum: {
+        base: f.serum?.base || { name: SUERO_CLORURO_NOMBRE, volumeMl: null },
+        components: f.serum?.components || [],
+        ...patch,
+      },
+    }));
+
+  return (
+    <div>
+      <label className="block text-sm font-medium text-slate-700 mb-1.5">
+        Quién atiende <span className="font-normal text-slate-400">(opcional)</span>
+      </label>
+      <SearchableSelect
+        options={personal}
+        value={form.attendant}
+        onChange={(v) =>
+          setForm((f) => {
+            const nuevo = personal.find((p) => String(p._id) === String(v));
+            return {
+              ...f,
+              attendant: v || '',
+              // Cambiar a un doctor tira el suero: no es suyo, y dejarlo puesto
+              // escribiría en la ficha una preparación que nadie va a poner.
+              serum: nuevo?._kind === 'enfermeria' ? f.serum : null,
+            };
+          })
+        }
+        getLabel={(p) => (p._kind === 'enfermeria' ? `${p.name} — Enfermería` : doctorOptionLabel(p))}
+        getSearchText={(p) => `${p.name || ''} ${p.specialty || ''} ${p._kind === 'enfermeria' ? 'enfermeria enfermero' : doctorOptionLabel(p)}`}
+        placeholder="Se decide en el mostrador"
+        searchPlaceholder="Buscar por nombre o especialidad…"
+        allowClear
+      />
+      <p className="text-[11px] text-slate-400 mt-1">
+        Queda preparado para esa persona. La cita sigue pendiente hasta que el paciente llegue.
+      </p>
+
+      {esEnfermero && (
+        <div className="mt-2">
+          {sueroDelServicio ? (
+            <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-900">
+              <b>«{sueroDelServicio.name}» ya crea su suero.</b> Se escribirá solo en los
+              seguimientos (
+              {(sueroDelServicio.autoSerum.components || [])
+                .map((c) => `${c.name} ×${c.quantity || 1}`)
+                .join(', ')}
+              ), así que no hace falta registrarlo aquí.
+            </div>
+          ) : !serum ? (
+            <button
+              type="button"
+              onClick={() => setSerum({})}
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-700 bg-transparent border-none cursor-pointer p-0"
+            >
+              <HiOutlinePlus className="w-3.5 h-3.5" /> Indicar el suero que se va a aplicar
+            </button>
+          ) : (
+            <>
+              <SueroComposicionEditor
+                base={serum.base}
+                componentes={serum.components}
+                onChangeBase={(base) => setSerum({ base })}
+                onChangeComponentes={(components) => setSerum({ components })}
+                onAbrirCatalogo={() => setCatalogoAbierto(true)}
+              />
+              <button
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, serum: null }))}
+                className="mt-1 text-[11px] text-red-500 bg-transparent border-none cursor-pointer p-0"
+              >
+                Quitar el suero
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {catalogoAbierto && (
+        <SelectorComponentesSuero
+          isOpen
+          seleccionados={serum?.components || []}
+          onClose={() => setCatalogoAbierto(false)}
+          onConfirm={(components) => {
+            setSerum({ components });
+            setCatalogoAbierto(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
 
 /**
  * Quién agendó la cita, con su rol. Tres fuentes, en este orden:
@@ -740,10 +894,41 @@ export default function Appointments() {
     // alguien y decidir después a qué viene.
     setSaving(true);
     try {
+      /**
+       * QUIÉN ATIENDE viaja como la MISMA cola que manda el mostrador
+       * (`steps`), no como un campo nuevo: así el servidor la reparte por la
+       * única puerta que escribe los turnos y sus espejos, y no hay dos formas
+       * de decir lo mismo que puedan discrepar.
+       *
+       * `attendant` es solo del formulario y no se manda: el servidor no lo
+       * conoce, y colarlo en el cuerpo es como se acaban guardando campos
+       * fantasma en la cita.
+       */
+      const elegido =
+        [...doctors, ...nurses].find((p) => String(p._id) === String(form.attendant)) || null;
+      const esEnfermero = !!elegido && nurses.some((n) => String(n._id) === String(elegido._id));
       const basePayload = {
         ...form,
         serviceItem: form.serviceItem?._id || null,
+        steps: elegido
+          ? [
+              esEnfermero
+                ? {
+                    kind: 'enfermeria',
+                    user: elegido._id,
+                    serviceName: form.serviceItem?.name || '',
+                    serviceItem: form.serviceItem?._id || null,
+                  }
+                : { kind: 'doctor', user: elegido._id },
+            ]
+          : undefined,
+        // Solo con enfermero y con algo dentro: una bolsa vacía no es un suero.
+        serum:
+          esEnfermero && form.serum?.components?.some((c) => c.name?.trim())
+            ? form.serum
+            : undefined,
       };
+      delete basePayload.attendant;
       // El servidor aplica la misma guardia; evitar mandar estos campos desde
       // roles que no trabajan con valores de mostrador.
       if (!canCharge) {
@@ -762,7 +947,7 @@ export default function Appointments() {
         toast.success('Cita actualizada');
       } else {
         // Primero la cita principal
-        await api.post('/appointments', basePayload);
+        const { data: creada } = await api.post('/appointments', basePayload);
         // Luego cada cita adicional con los mismos datos compartidos
         const extras = (form.extraAppointments || []).filter((it) => it.date && it.startTime);
         for (const it of extras) {
@@ -785,6 +970,17 @@ export default function Appointments() {
         }
         const totalCreated = 1 + extras.length;
         toast.success(totalCreated > 1 ? `${totalCreated} citas creadas` : 'Cita creada');
+        /**
+         * Se dice que el suero YA QUEDÓ ESCRITO. Sin esto, quien agenda no tiene
+         * forma de saber que la ficha ya lo lleva y acaba escribiéndolo otra vez
+         * a mano — que es justamente el trabajo que esto viene a quitar.
+         */
+        if (creada?.autoSerum?.items?.length) {
+          toast.success(
+            `Suero anotado en los seguimientos: ${creada.autoSerum.items.join(', ')}`,
+            { icon: '💧', duration: 5000 }
+          );
+        }
       }
       setModalOpen(false);
       fetchAppointments();
@@ -2110,6 +2306,11 @@ export default function Appointments() {
               Pincha para ver la lista. Si no está, escríbelo y se crea para todos.
             </p>
           </div>
+
+          {/* QUIÉN ATIENDE, ya al agendar. Solo al crear: una cita existente se
+              reparte por «Asignar atención», que además sabe reordenar la cola y
+              conserva los turnos ya completados. */}
+          {!editing && <QuienAtiende form={form} setForm={setForm} doctors={doctors} nurses={nurses} />}
 
           {/* Al crear, caja registra el valor acordado con el paciente o si fue
               canje, igual que en Pacientes → Agendar cita. Las correcciones de

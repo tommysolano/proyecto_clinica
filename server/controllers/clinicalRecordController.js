@@ -10,7 +10,10 @@ const {
   EXAMEN_REGIONAL,
   EXAMEN_SISTEMICO,
 } = require('../constants/mspCatalogs');
-const { SUERO_CLORURO_NOMBRE, SUERO_CLORURO_VOLUMENES, buscarComponenteSuero } = require('../constants/sueroterapia');
+const { SUERO_CLORURO_NOMBRE, SUERO_CLORURO_VOLUMENES } = require('../constants/sueroterapia');
+// El saneo de la composición vive en utils/suero.js: lo comparten la receta, el
+// suero de serie del servicio de agenda y el que se indica al agendar la cita.
+const { saneaComposicionSuero } = require('../utils/suero');
 const {
   CARDIOLOGIA_ANTECEDENTES_KEYS,
   CARDIOLOGIA_ESTUDIOS_KEYS,
@@ -275,46 +278,6 @@ const fechaDocumento = (d) => {
   return `${String(dia).padStart(2, '0')}/${String(mes).padStart(2, '0')}/${anio}`;
 };
 
-/**
- * Sanea la COMPOSICIÓN de un suero tal y como llega del cliente.
- *
- * El cloruro es la base y va en todos: lo único que se elige es el volumen, y
- * solo se aceptan los cuatro que existen (100/250/500/1000 ml) — un "750"
- * tecleado de más es una bolsa que no está en la nevera.
- *
- * Las ampollas y moléculas se resuelven contra el catálogo para quedarse con el
- * NOMBRE y el CÓDIGO buenos: es lo que luego permite encontrar la ampolla en el
- * inventario y descontarla. Lo que no está en el catálogo NO se descarta —el
- * médico puede recetar algo que la lista no tiene— pero se guarda sin código, y
- * entonces simplemente no habrá stock que mover.
- */
-const saneaComposicionSuero = (it) => {
-  const base = it?.serumBase || {};
-  const volumen = Number(base.volumeMl);
-  const serumBase = {
-    name: String(base.name || '').trim() || SUERO_CLORURO_NOMBRE,
-    volumeMl: SUERO_CLORURO_VOLUMENES.includes(volumen) ? volumen : null,
-  };
-  const serumComponents = (Array.isArray(it?.serumComponents) ? it.serumComponents : [])
-    .map((c) => {
-      const nombre = String(c?.name || '').trim();
-      if (!nombre) return null;
-      const delCatalogo = buscarComponenteSuero({ code: c?.code, name: nombre });
-      const cantidad = Number(c?.quantity);
-      return {
-        code: delCatalogo?.code || String(c?.code || '').trim(),
-        name: delCatalogo?.name || nombre,
-        grupo:
-          delCatalogo?.grupo ||
-          (['ampolla', 'molecula', 'otro'].includes(c?.grupo) ? c.grupo : 'otro'),
-        // Una ampolla "de 0" no es una ampolla: si no viene un número válido se
-        // asume 1, que es lo que el médico quiso decir al añadirla a la lista.
-        quantity: Number.isFinite(cantidad) && cantidad > 0 ? cantidad : 1,
-      };
-    })
-    .filter(Boolean);
-  return { serumBase, serumComponents };
-};
 
 /**
  * La preparación del suero en una línea: la base y lo que lleva dentro.

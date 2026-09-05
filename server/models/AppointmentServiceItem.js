@@ -42,6 +42,53 @@ const appointmentServiceItemSchema = new mongoose.Schema(
      * cuando la agenda va en espacios más cortos que el servicio.
      */
     durationMinutes: { type: Number, default: 0, min: 0, max: 480 },
+    /**
+     * SUERO DE SERIE DEL SERVICIO.
+     *
+     * Hay servicios que SON un suero concreto y siempre el mismo: «Detox Plus»
+     * es una bolsa con la ampolla de detox dentro, y ninguna cita de Detox Plus
+     * lleva otra cosa. Hasta ahora eso se escribía a mano en la ficha del
+     * paciente, una por una, para que enfermería tuviera qué dar por aplicado —
+     * un trámite de copiar y pegar que se olvida justo los días de trabajo, y
+     * entonces la aplicación no queda registrada ni descuenta la ampolla.
+     *
+     * Con esto, agendar el servicio deja el suero escrito en los seguimientos.
+     * Es una PLANTILLA, no un candado: el médico puede cambiarlo o quitarlo en
+     * la ficha como cualquier otra línea de receta.
+     *
+     * Va en el catálogo y no en el código a propósito. Mañana hay un «Detox
+     * Simple» o cambia la ampolla, y eso lo tiene que poder hacer el
+     * administrador desde Configuración → Servicios, no un despliegue.
+     *
+     * La estructura es la MISMA que la de una línea de receta
+     * (`ClinicalRecord.recetaItems[].serumBase` / `serumComponents`), con los
+     * nombres cortos porque aquí no hay línea de receta de la que colgar: es la
+     * preparación a secas. `utils/suero.js` traduce entre las dos.
+     */
+    autoSerum: {
+      enabled: { type: Boolean, default: false },
+      base: {
+        name: { type: String, trim: true, default: '' },
+        // null = lo decide enfermería con la bolsa que haya en la sala.
+        volumeMl: { type: Number, default: null },
+      },
+      components: {
+        type: [
+          new mongoose.Schema(
+            {
+              // Código del catálogo de sueroterapia, que es el mismo con el que
+              // la ampolla está en el inventario: por ahí se la descuenta.
+              code: { type: String, trim: true, default: '' },
+              name: { type: String, trim: true, required: true },
+              grupo: { type: String, enum: ['ampolla', 'molecula', 'otro'], default: 'otro' },
+              quantity: { type: Number, default: 1, min: 0 },
+            },
+            { _id: false }
+          ),
+        ],
+        default: [],
+      },
+    },
     // Cuántas citas se agendaron con él: ordena el buscador por lo más usado.
     usageCount: { type: Number, default: 0 },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

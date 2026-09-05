@@ -1,5 +1,6 @@
 const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const { emitToClinic } = require('../realtime');
+const { saneaSueroPlano } = require('../utils/suero');
 
 /**
  * Catálogo de servicios de agenda. Ver el modelo para el porqué de que sea de
@@ -110,6 +111,32 @@ exports.update = async (req, res) => {
         return res.status(400).json({ message: 'La duración debe estar entre 0 y 480 minutos.' });
       }
       item.durationMinutes = min;
+    }
+    /**
+     * SUERO DE SERIE. Se sanea contra el catálogo de sueroterapia por la MISMA
+     * función que la receta (`utils/suero.js`): así la ampolla se guarda con su
+     * código y, al aplicarla, se encuentra en el inventario y se descuenta. Una
+     * plantilla guardada sin código sería un suero que no mueve stock nunca, y
+     * eso no se ve hasta que alguien cuadra la percha.
+     *
+     * Sin ninguna ampolla se APAGA. Un suero vacío es media bolsa de cloruro que
+     * nadie pidió, y dejarlo encendido llenaría la ficha de líneas en blanco
+     * cada vez que se agenda el servicio.
+     */
+    if (req.body.autoSerum !== undefined) {
+      const limpio = saneaSueroPlano(req.body.autoSerum);
+      // Apagarlo NO borra la composición: el administrador que lo desmarca por
+      // una temporada no tiene que volver a escoger las ampollas. Los campos se
+      // copian uno a uno —y no el objeto entero— porque `autoSerum` es una ruta
+      // anidada, no un subdocumento: reasignarla con lo que devuelve su propio
+      // getter deja a mongoose intentando castear su envoltorio.
+      const previo = item.toObject().autoSerum || {};
+      const base = limpio?.serumBase || previo.base || {};
+      item.autoSerum = {
+        enabled: !!limpio && req.body.autoSerum?.enabled !== false,
+        base: { name: base.name || '', volumeMl: base.volumeMl ?? null },
+        components: limpio?.serumComponents || previo.components || [],
+      };
     }
 
     await item.save();

@@ -342,6 +342,80 @@ async function resolverServicioAgenda(serviceItemId) {
   }
 }
 
+/**
+ * QUIEN ATIENDE TIENE QUE SER DE LA SUCURSAL DE LA CITA.
+ *
+ * Caja asigna citas de cualquier sede desde su mostrador, y el selector le
+ * ofrece el personal DE ESA SEDE. Pero si llega un id de otra sucursal —una
+ * pestaña abierta desde antes, una pantalla sin recargar— la cita quedaría a
+ * nombre de alguien que no la va a ver nunca: la agenda de un doctor filtra por
+ * las sucursales que tiene asignadas. Un error claro en el mostrador es mucho
+ * mejor que una cita en el limbo.
+ *
+ * Fuente única de las DOS puertas por las que se reparte la atención: asignarla
+ * cuando el paciente llega (`assignDoctor`) y dejarla elegida al agendar
+ * (`createAppointment`). Ya pasó una vez que una comprobación sobre personal se
+ * quedó sin `worksInAllClinics` y el selector ofrecía a quien la escritura
+ * rechazaba (ver la memoria de "personal en todas las sucursales").
+ *
+ * @returns {string|null} el mensaje de error, o null si todo el mundo encaja.
+ */
+async function validarPersonalDeLaSede(ids, clinicId) {
+  const aAsignar = [...new Set((ids || []).filter(Boolean).map(String))];
+  if (!aAsignar.length) return null;
+
+  const User = require('../models/User');
+  const encontrados = await User.find({ _id: { $in: aAsignar } })
+    .select('name clinics active isSuperAdmin worksInAllClinics')
+    .lean();
+  /**
+   * Se juzga solo a quien TIENE sucursales asignadas: si el usuario no tiene
+   * ninguna no se sabe dónde atiende, y el caso que importa —el doctor que
+   * trabaja en otra sede— siempre las tiene. El super-admin ve todas las
+   * sucursales, así que él nunca está fuera. Y `worksInAllClinics` —el check de
+   * "rota entre sedes"— cuenta aquí igual que en `getRoleForClinic`: si el
+   * selector se lo ofrece al mostrador, tiene que poder asignarlo.
+   */
+  const atiendeAqui = (u) =>
+    u.active !== false &&
+    (u.isSuperAdmin ||
+      u.worksInAllClinics ||
+      !(u.clinics || []).length ||
+      (u.clinics || []).some((c) => String(c.clinic) === String(clinicId)));
+  const fuera = encontrados.filter((u) => !atiendeAqui(u));
+  if (!fuera.length && encontrados.length === aAsignar.length) return null;
+
+  const nombres = fuera.map((u) => u.name).filter(Boolean).join(', ');
+  return nombres
+    ? `${nombres} no atiende en la sucursal de esta cita. Elige personal de esa sede.`
+    : 'Alguien de la cola ya no existe o no atiende en la sucursal de esta cita.';
+}
+
+/**
+ * Normaliza la cola de atención que llega del cliente (`steps`).
+ *
+ * Un paso de doctor SIN persona no existe (`asignarTurnos` lo descarta y la
+ * cita nacería sin turnos, invisible para todos); uno de enfermería sí: sin
+ * nombre sale a la bandeja de todos y lo toma el primero que lo vea.
+ */
+function normalizarPasos(steps) {
+  if (!Array.isArray(steps)) return [];
+  return steps
+    .map((p) =>
+      p?.kind === 'enfermeria'
+        ? {
+            kind: 'enfermeria',
+            user: p.user ? String(p.user) : null,
+            serviceName: String(p.serviceName || '').trim(),
+            serviceItem: p.serviceItem || null,
+          }
+        : p?.user
+          ? { kind: 'doctor', user: String(p.user) }
+          : null
+    )
+    .filter(Boolean);
+}
+
 exports.createAppointment = async (req, res) => {
   try {
     const { doctor, date, startTime, endTime, patient, services } = req.body;
@@ -523,6 +597,14 @@ exports.createAppointment = async (req, res) => {
      * para este paciente»), que es mostrador registrando a quien tiene delante.
      */
     for (const k of ['agreedValue', 'isCanje', 'valueSetAt', 'valueSetBy', 'advancePayment', 'paidInAdvance', 'advanceAmount']) delete cleanBody[k];
+    /**
+     * Los turnos NO entran a pelo por el cuerpo. `cleanBody` se vuelca entero en
+     * el `create`, así que un `turns` en el JSON se guardaría sin pasar por
+     * `asignarTurnos` —el único que escribe el espejo `doctor` y `currentTurn*`—
+     * y la cita nacería con la cola y sus espejos ya separados. La cola se
+     * reparte más abajo, por la misma puerta que usa el mostrador.
+     */
+    for (const k of ['turns', 'steps', 'serum', 'currentTurnKind', 'currentTurnUser']) delete cleanBody[k];
     const valorCita = {};
     aplicarValorDeCita(valorCita, req.body, req);
     if (cleanBody.doctor === '') delete cleanBody.doctor;
@@ -531,6 +613,29 @@ exports.createAppointment = async (req, res) => {
     if (cleanBody.treatmentRef === '') delete cleanBody.treatmentRef;
 
     const servicioAgenda = await resolverServicioAgenda(req.body.serviceItem);
+
+    /**
+     * QUIÉN ATIENDE, ELEGIDO YA AL AGENDAR.
+     *
+     * Antes la cola se repartía SIEMPRE después, cuando el paciente llegaba
+     * (`assignDoctor`). Pero muchas citas se agendan sabiendo de sobra quién las
+     * atiende —el paciente pide con su doctora, o viene a su serie de sueros con
+     * la misma enfermera— y obligar a repetir esa elección en el mostrador es un
+     * paso de más que se olvida: la cita llega al día sin dueño.
+     *
+     * Se deja ELEGIDA, no atendida: el estado no se toca. Marcar 'asistida' aquí
+     * daría por venido a un paciente de la semana que viene, y con ello se
+     * falsean los reportes, las comisiones y el barrido de no-show. Eso lo sigue
+     * decidiendo el mostrador cuando el paciente entra por la puerta.
+     */
+    const pasos = normalizarPasos(req.body.steps);
+    if (pasos.length) {
+      const errorPersonal = await validarPersonalDeLaSede(
+        pasos.map((p) => p.user),
+        targetClinicId
+      );
+      if (errorPersonal) return res.status(400).json({ message: errorPersonal });
+    }
 
     const appointment = await Appointment.create({
       ...cleanBody,
@@ -549,6 +654,56 @@ exports.createAppointment = async (req, res) => {
       createdByName: req.user.name || '',
       createdByRole: req.role || null,
     });
+
+    // La cola de atención, por la ÚNICA puerta que la escribe (ver
+    // utils/appointmentTurns.js): así el espejo `doctor` y `currentTurn*` nacen
+    // sincronizados con los turnos, como en cualquier otra cita.
+    if (pasos.length) {
+      asignarTurnos(appointment, { pasos, por: req.user._id });
+      await appointment.save();
+    }
+
+    /**
+     * EL SUERO QUEDA ESCRITO EN LA FICHA, sin que nadie lo copie a mano.
+     *
+     * Dos formas de llegar aquí, y la misma salida: un seguimiento con la línea
+     * de receta que enfermería puede dar por aplicada.
+     *  · el SERVICIO trae el suyo de serie —«Detox Plus» es siempre la misma
+     *    bolsa— y entonces agendar basta;
+     *  · quien agenda lo indica a mano al mandar la cita a un enfermero.
+     *
+     * En su propio try: la cita ya está creada y no se puede perder porque falle
+     * el añadido a la ficha. Mismo criterio que la cita automática del suero
+     * recetado en mostrador (ver clinicalRecordController).
+     */
+    let sueroSembrado = null;
+    try {
+      const { sueroterapiaDeLaCita, sembrarSueroEnFicha } = require('../utils/sueroDeCita');
+      const lineas = sueroterapiaDeLaCita(servicioAgenda, req.body.serum);
+      if (lineas.length) {
+        const fu = await sembrarSueroEnFicha({
+          clinicId: targetClinicId,
+          patientId: patient,
+          user: req.user,
+          role: req.role,
+          lineas,
+          motivo: servicioAgenda?.name
+            ? `Suero indicado al agendar (${servicioAgenda.name})`
+            : 'Suero indicado al agendar',
+        });
+        if (fu) {
+          // La pantalla lo dice al guardar: si no, quien agenda no sabe que el
+          // suero ya está puesto en la ficha y acaba escribiéndolo otra vez.
+          sueroSembrado = {
+            followUpId: fu._id,
+            items: lineas.map((l) => l.name),
+          };
+          emitToClinic(targetClinicId, 'clinicalRecord:updated', { patient });
+        }
+      }
+    } catch (e) {
+      console.warn('No se pudo escribir el suero de la cita en la ficha:', e.message);
+    }
 
     // Si la cita proviene de una derivación, sincronizar la derivación
     if (req.body.referral) {
@@ -578,7 +733,9 @@ exports.createAppointment = async (req, res) => {
     }
     emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CREATED, appointmentEventPayload(populated));
 
-    res.status(201).json(populated);
+    // `autoSerum` lo lee la pantalla para avisar de que el suero ya quedó
+    // escrito. Va aparte del documento: no es un campo de la cita.
+    res.status(201).json(sueroSembrado ? { ...populated.toObject(), autoSerum: sueroSembrado } : populated);
   } catch (error) {
     console.error('[createAppointment] ERROR:', error);
     res.status(500).json({ message: 'Error al crear cita', error: error.message, stack: error.stack });
@@ -755,8 +912,20 @@ exports.updateAppointment = async (req, res) => {
 
     // Servicio de agenda (catálogo propio). Solo se toca si viene en la
     // petición: editar otra cosa de una cita no puede borrarle el servicio.
+    /**
+     * Si el servicio CAMBIA a uno que trae suero de serie, el suero se escribe
+     * también aquí: mostrador agenda a menudo sin servicio («viene mañana, ya
+     * veremos a qué») y lo corrige después, y sin esto ese Detox Plus se quedaba
+     * sin su suero solo por haberse elegido un minuto más tarde.
+     *
+     * Solo cuando CAMBIA, no en cada guardado: reeditar la hora de una cita de
+     * Detox Plus no puede añadirle una segunda bolsa a la ficha.
+     */
+    let servicioNuevoConSuero = null;
     if (update.serviceItem !== undefined) {
       const svc = await resolverServicioAgenda(update.serviceItem);
+      const cambia = String(svc?._id || '') !== String(existing.serviceItem || '');
+      if (cambia && svc?.autoSerum?.enabled) servicioNuevoConSuero = svc;
       update.serviceItem = svc?._id || null;
       update.serviceName = svc?.name || '';
     }
@@ -841,6 +1010,34 @@ exports.updateAppointment = async (req, res) => {
       .populate('services.product', 'name code salePrice category');
 
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
+
+    // El servicio pasó a ser uno con suero de serie: se escribe en la ficha,
+    // igual que al agendarlo directo (ver el comentario de arriba y
+    // `utils/sueroDeCita.js`). En su propio try: la cita ya está guardada.
+    let sueroSembrado = null;
+    if (servicioNuevoConSuero) {
+      try {
+        const { sueroterapiaDeLaCita, sembrarSueroEnFicha } = require('../utils/sueroDeCita');
+        const lineas = sueroterapiaDeLaCita(servicioNuevoConSuero, null);
+        const fu = await sembrarSueroEnFicha({
+          clinicId: clinicScope,
+          patientId: appointment.patient?._id || appointment.patient,
+          user: req.user,
+          role: req.role,
+          lineas,
+          motivo: `Suero indicado al agendar (${servicioNuevoConSuero.name})`,
+        });
+        if (fu) {
+          sueroSembrado = { followUpId: fu._id, items: lineas.map((l) => l.name) };
+          emitToClinic(clinicScope, 'clinicalRecord:updated', {
+            patient: appointment.patient?._id || appointment.patient,
+          });
+        }
+      } catch (e) {
+        console.warn('No se pudo escribir el suero del servicio en la ficha:', e.message);
+      }
+    }
+
     emitToClinic(clinicScope, 'appointment:updated', appointment);
     if (appointment.doctor?._id) emitToUser(appointment.doctor._id, 'appointment:updated', appointment);
     // Reasignación: el doctor entrante recibe la cita como asignada y el saliente
@@ -866,7 +1063,7 @@ exports.updateAppointment = async (req, res) => {
         emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(appointment));
       }
     }
-    res.json(appointment);
+    res.json(sueroSembrado ? { ...appointment.toObject(), autoSerum: sueroSembrado } : appointment);
   } catch (error) {
     res.status(500).json({ message: 'Error al actualizar cita', error: error.message });
   }
@@ -1608,23 +1805,7 @@ exports.assignDoctor = async (req, res) => {
     // Cola tal cual la mandó recepción. Si viene el formato viejo, se traduce a
     // pasos: los doctores en fila y enfermería detrás.
     const pasos = Array.isArray(req.body.steps)
-      ? req.body.steps
-          .map((p) =>
-            p?.kind === 'enfermeria'
-              ? {
-                  kind: 'enfermeria',
-                  // OPCIONAL: con enfermero, el turno es suyo; sin él, sale a la
-                  // bandeja de todos. Antes se descartaba siempre y no había
-                  // forma de dejar preparado «primero Ana, luego quien pueda».
-                  user: p.user ? String(p.user) : null,
-                  serviceName: String(p.serviceName || '').trim(),
-                  serviceItem: p.serviceItem || null,
-                }
-              : p?.user
-                ? { kind: 'doctor', user: String(p.user) }
-                : null
-          )
-          .filter(Boolean)
+      ? normalizarPasos(req.body.steps)
       : [
           ...(Array.isArray(req.body.doctors)
             ? req.body.doctors.filter(Boolean).map((u) => ({ kind: 'doctor', user: String(u) }))
@@ -1658,46 +1839,13 @@ exports.assignDoctor = async (req, res) => {
       return res.status(400).json({ message: DOCTOR_LOCKED_MESSAGE });
     }
 
-    /**
-     * QUIEN ATIENDE TIENE QUE SER DE LA SUCURSAL DE LA CITA.
-     *
-     * Caja asigna citas de cualquier sede desde su mostrador, y el selector le
-     * ofrece el personal DE ESA SEDE (ver AssignAttentionModal). Pero si llega
-     * un id de otra sucursal —una pestaña abierta desde antes, una pantalla sin
-     * recargar— la cita quedaría a nombre de alguien que no la va a ver nunca:
-     * la agenda de un doctor filtra por las sucursales que tiene asignadas. Un
-     * error claro en el mostrador es mucho mejor que una cita en el limbo.
-     */
-    const aAsignar = [...new Set(pasos.map((p) => p.user).filter(Boolean).map(String))];
-    if (aAsignar.length) {
-      const User = require('../models/User');
-      const encontrados = await User.find({ _id: { $in: aAsignar } })
-        .select('name clinics active isSuperAdmin worksInAllClinics')
-        .lean();
-      /**
-       * Se juzga solo a quien TIENE sucursales asignadas: si el usuario no tiene
-       * ninguna no se sabe dónde atiende, y el caso que importa —el doctor que
-       * trabaja en otra sede— siempre las tiene. El super-admin ve todas las
-       * sucursales, así que él nunca está fuera. Y `worksInAllClinics` —el check
-       * de "rota entre sedes"— cuenta aquí igual que en `getRoleForClinic`: si
-       * el selector se lo ofrece al mostrador, tiene que poder asignarlo.
-       */
-      const atiendeAqui = (u) =>
-        u.active !== false &&
-        (u.isSuperAdmin ||
-          u.worksInAllClinics ||
-          !(u.clinics || []).length ||
-          (u.clinics || []).some((c) => String(c.clinic) === String(apt.clinic)));
-      const fuera = encontrados.filter((u) => !atiendeAqui(u));
-      if (fuera.length || encontrados.length !== aAsignar.length) {
-        const nombres = fuera.map((u) => u.name).filter(Boolean).join(', ');
-        return res.status(400).json({
-          message: nombres
-            ? `${nombres} no atiende en la sucursal de esta cita. Elige personal de esa sede.`
-            : 'Alguien de la cola ya no existe o no atiende en la sucursal de esta cita.',
-        });
-      }
-    }
+    // Quien atiende tiene que ser de la sucursal de la cita (ver
+    // `validarPersonalDeLaSede`, que comparte con el alta de la cita).
+    const errorPersonal = await validarPersonalDeLaSede(
+      pasos.map((p) => p.user),
+      apt.clinic
+    );
+    if (errorPersonal) return res.status(400).json({ message: errorPersonal });
 
     const anteriores = doctoresPendientes(apt);
     const wasAttended = apt.status === 'asistida' || apt.status === 'completada';
