@@ -33,6 +33,11 @@ import DateInput from '../components/DateInput';
 import ServiceItemPicker from '../components/ServiceItemPicker';
 import TimeSlotInput from '../components/TimeSlotInput';
 import AppointmentValueFields from '../components/AppointmentValueFields';
+import QuienAtiende, {
+  CAMPOS_QUIEN_ATIENDE,
+  pasosDeAtencion,
+  usePersonalDeLaSede,
+} from '../components/QuienAtiende';
 
 const emptyForm = {
   cedula: '',
@@ -66,6 +71,11 @@ const emptyApt = {
    */
   agreedValue: '',
   isCanje: false,
+  // Quién atiende, si pasa por enfermería y el suero que se le va a poner. Es el
+  // mismo bloque que la agenda (ver components/QuienAtiende): quien registra al
+  // paciente en el mostrador ya sabe a qué viene, y hacerle volver a la agenda
+  // para decirlo es el paso que se olvida.
+  ...CAMPOS_QUIEN_ATIENDE,
   // Atención inmediata: en vez de agendar para más tarde, se abre la consulta
   // ya, asignada a quien está registrando al paciente.
   ahora: false,
@@ -176,6 +186,17 @@ export default function Patients() {
       (sedes || []).find((c) => String(c._id) === String(aptForm.clinic || activeClinic?._id))
         ?.appointmentSlotMinutes ?? activeClinic?.appointmentSlotMinutes
     ) || 0;
+
+  /**
+   * Personal de la sucursal DESTINO, no de la mía. Mostrador registra pacientes
+   * que se atienden en otra sede, y quien puede atender esa cita es el personal
+   * de allí: ofrecer al de aquí acaba en un «no atiende en la sucursal de esta
+   * cita» del servidor, con el paciente ya creado.
+   */
+  const personalCita = usePersonalDeLaSede(
+    aptForm.clinic || activeClinic?._id,
+    aptForm.enabled && !aptForm.ahora
+  );
 
   useEffect(() => {
     if (!aptForm.enabled || !aptForm.date) { setDayApts([]); return; }
@@ -311,7 +332,7 @@ export default function Patients() {
             return;
           }
           const aptClinic = aptForm.clinic || activeClinic?._id;
-          await api.post('/appointments', {
+          const { data: creada } = await api.post('/appointments', {
             patient: createdId,
             clinic: aptClinic,
             date: aptForm.date,
@@ -319,6 +340,9 @@ export default function Patients() {
             reason: aptForm.reason,
             status: 'pendiente',
             serviceItem: aptForm.serviceItem?._id || null,
+            // Quién atiende, enfermería y el suero, por la misma función que la
+            // agenda (ver components/QuienAtiende).
+            steps: pasosDeAtencion(aptForm, personalCita),
             // Valor acordado. Solo se manda si este rol puede fijarlo; el
             // servidor lo comprueba otra vez (`puedeFijarValor`). Vacío = «no
             // lo anotaron», que no es lo mismo que cero.
@@ -327,6 +351,14 @@ export default function Patients() {
               : {}),
           });
           toast.success('Cita agendada');
+          // El suero ya quedó escrito en la ficha: si no se dice, mostrador lo
+          // vuelve a escribir a mano y acaba duplicado.
+          if (creada?.autoSerum?.items?.length) {
+            toast.success(
+              `Suero anotado en los seguimientos: ${creada.autoSerum.items.join(', ')}`,
+              { icon: '💧', duration: 5000 }
+            );
+          }
         } catch (err) {
           toast.error(
             err.response?.data?.message ||
@@ -869,6 +901,22 @@ export default function Patients() {
                       className="input resize-none"
                     />
                   </Field>
+                  {/* Quién atiende, si pasa por enfermería y el suero. El mismo
+                      bloque que la agenda, y por eso vive en su componente: dos
+                      copias es como una de las dos pantallas se queda sin el
+                      selector de ampollas (que es justo lo que pasó).
+
+                      En «atender ahora» no se pinta: esa cita la abre el
+                      servidor a nombre de quien está registrando al paciente, y
+                      un segundo dueño la dejaría en manos de otro. */}
+                  {!aptForm.ahora && (
+                    <QuienAtiende
+                      form={aptForm}
+                      setForm={setAptForm}
+                      doctors={personalCita.doctors}
+                      nurses={personalCita.nurses}
+                    />
+                  )}
                   {/* Valor y canje: el mismo bloque que usa la agenda al recibir
                       al paciente. En «atender ahora» no se pide —esa cita la abre
                       quien atiende, que no fija importes—. */}
