@@ -20,37 +20,19 @@ const { saneaSueroPlano, lineaDeRecetaDeSuero } = require('./suero');
  */
 
 /**
- * Los sueros que le tocan a una cita, ya saneados y sin repetir.
+ * El suero DE SERIE del servicio, ya saneado y como línea de receta.
+ *
+ * Solo el del servicio: el que escoge una persona a mano cuelga de SU paso de
+ * enfermería (`Appointment.turns[].serum`), porque es ahí donde se pone y es lo
+ * que permite tener dos pasos con dos preparaciones distintas en la misma cita.
  *
  * @param {object} serviceItem  el servicio de agenda (documento o lean), o null
- * @param {object} sueroManual  `{ base, components }` indicado al agendar, o null
- * @returns {Array} líneas de receta listas para guardar (puede venir vacío)
+ * @returns {Array} líneas de receta listas para guardar (vacío si no trae suero)
  */
-function sueroterapiaDeLaCita(serviceItem, sueroManual) {
-  const lineas = [];
-
-  const deServicio = serviceItem?.autoSerum?.enabled
-    ? saneaSueroPlano(serviceItem.autoSerum)
-    : null;
-  if (deServicio) lineas.push(lineaDeRecetaDeSuero(deServicio, serviceItem.name));
-
-  const aMano = saneaSueroPlano(sueroManual);
-  if (aMano) {
-    /**
-     * NO SE DUPLICA LO QUE EL SERVICIO YA TRAE. Quien agenda un Detox Plus y
-     * además escribe la ampolla de detox en el campo del suero está diciendo lo
-     * mismo dos veces —es justo la confusión que la pantalla avisa— y dos líneas
-     * iguales en la ficha son dos aplicaciones que enfermería no sabe si son una
-     * o de verdad dos.
-     */
-    const yaEsta =
-      deServicio &&
-      JSON.stringify(deServicio.serumComponents.map((c) => [c.code, c.name, c.quantity])) ===
-        JSON.stringify(aMano.serumComponents.map((c) => [c.code, c.name, c.quantity]));
-    if (!yaEsta) lineas.push(lineaDeRecetaDeSuero(aMano, ''));
-  }
-
-  return lineas;
+function sueroterapiaDeLaCita(serviceItem) {
+  if (!serviceItem?.autoSerum?.enabled) return [];
+  const limpio = saneaSueroPlano(serviceItem.autoSerum);
+  return limpio ? [lineaDeRecetaDeSuero(limpio, serviceItem.name)] : [];
 }
 
 /**

@@ -117,13 +117,15 @@ test('T2) sin la marca activa, el servicio NO escribe nada', async () => {
   assert.equal(rec, null, 'ni siquiera se abre la ficha por una cita normal');
 });
 
-test('T3) el suero indicado a mano al mandar la cita a un enfermero', async () => {
+test('T3) el suero escogido al mandar la cita a un enfermero', async () => {
   const { clinicId, userId, patient, enfermera } = await seed();
 
   ok(await agendar(clinicId, userId, {
     patient: patient._id, date: manana(), startTime: '11:00',
-    steps: [{ kind: 'enfermeria', user: enfermera._id }],
-    serum: { base: { volumeMl: 500 }, components: [{ name: 'APIMEL 2ML AMP', quantity: 2 }] },
+    steps: [{
+      kind: 'enfermeria', user: enfermera._id,
+      serum: { base: { volumeMl: 500 }, components: [{ name: 'APIMEL 2ML AMP', quantity: 2 }] },
+    }],
   }));
 
   const { items } = await sueroDeLaFicha(patient._id);
@@ -136,27 +138,36 @@ test('T3) el suero indicado a mano al mandar la cita a un enfermero', async () =
   );
 });
 
-test('T4) el mismo suero por las dos puertas NO se duplica', async () => {
+test('T4) el suero queda en el TURNO, y volver a guardar no lo escribe otra vez', async () => {
   const { clinicId, userId, patient, enfermera } = await seed();
-  const servicio = await AppointmentServiceItem.create({
-    clinic: clinicId, name: 'Detox Plus', slug: 'detox plus',
-    autoSerum: {
-      enabled: true,
-      base: { name: 'Cloruro', volumeMl: 250 },
-      components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }],
-    },
-  });
 
-  ok(await agendar(clinicId, userId, {
-    patient: patient._id, date: manana(), startTime: '12:00', serviceItem: servicio._id,
-    steps: [{ kind: 'enfermeria', user: enfermera._id }],
-    // Lo mismo que ya trae el servicio: dos líneas iguales son dos aplicaciones
-    // que enfermería no sabe si son una o de verdad dos.
-    serum: { base: { volumeMl: 250 }, components: [{ ...DETOX, quantity: 1 }] },
+  const cita = ok(await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '12:00',
+    steps: [{
+      kind: 'enfermeria', user: enfermera._id,
+      serum: { base: { volumeMl: 250 }, components: [{ ...DETOX, quantity: 1 }] },
+    }],
   }));
 
-  const { items } = await sueroDeLaFicha(patient._id);
-  assert.equal(items.length, 1, 'una sola bolsa');
+  const guardada = await Appointment.findById(cita._id).lean();
+  const turno = guardada.turns[0];
+  assert.equal(turno.serum.components[0].code, DETOX.code, 'el turno recuerda qué se indicó');
+  assert.ok(turno.serumFollowUp, 'y dónde quedó escrito');
+  assert.equal((await sueroDeLaFicha(patient._id)).items.length, 1);
+
+  // La pantalla devuelve la marca: reordenar la cola o añadir un doctor no puede
+  // añadir una segunda bolsa a la ficha.
+  const asignar = (steps) =>
+    H.runController(
+      appt.assignDoctor,
+      H.mockReq(clinicId, userId, { steps }, { role: 'cajero', params: { id: String(cita._id) } })
+    );
+  ok(await asignar([{
+    kind: 'enfermeria', user: String(enfermera._id),
+    serum: { base: { volumeMl: 250 }, components: [{ ...DETOX, quantity: 1 }] },
+    serumFollowUp: String(turno.serumFollowUp),
+  }]));
+  assert.equal((await sueroDeLaFicha(patient._id)).items.length, 1, 'sigue habiendo una sola');
 });
 
 test('T5) elegir quién atiende al agendar deja el turno puesto, NO la cita atendida', async () => {
@@ -239,6 +250,109 @@ test('T8) cambiar el servicio a uno con suero también lo escribe (y solo una ve
   // Reeditar otra cosa NO añade una segunda bolsa.
   ok(await editar({ serviceItem: String(servicio._id), startTime: '17:00' }));
   assert.equal((await sueroDeLaFicha(patient._id)).items.length, 1, 'sigue habiendo una sola');
+});
+
+test('T10) ASIGNAR ATENCIÓN: el suero escogido ahí se escribe en los seguimientos', async () => {
+  const { clinicId, userId, patient, enfermera } = await seed();
+  const cita = ok(await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '11:10',
+  }));
+
+  const r = ok(await H.runController(
+    appt.assignDoctor,
+    H.mockReq(
+      clinicId, userId,
+      {
+        steps: [{
+          kind: 'enfermeria', user: null, serviceName: 'Sueroterapia',
+          serum: { base: { volumeMl: 250 }, components: [{ ...DETOX, quantity: 1 }] },
+        }],
+      },
+      { role: 'cajero', params: { id: String(cita._id) } }
+    )
+  ));
+
+  const { items } = await sueroDeLaFicha(patient._id);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].name, 'Sueroterapia', 'la línea se llama como el paso');
+  assert.equal(items[0].serumComponents[0].code, DETOX.code);
+  assert.deepEqual(r.autoSerum?.items, ['Sueroterapia'], 'y la pantalla lo dice');
+  assert.ok(String(enfermera._id), 'el turno abierto vale igual: el suero no es de nadie en concreto');
+});
+
+test('T11) el suero escrito así es ADMINISTRABLE, igual que uno recetado por el doctor', async () => {
+  const { clinicId, userId, patient, enfermera } = await seed();
+  // La ampolla existe en el inventario: aplicar tiene que descontarla.
+  const ampolla = await H.makeProduct(clinicId, { code: DETOX.code, name: DETOX.name, stock: 10 });
+
+  const cita = ok(await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '11:20',
+  }));
+  ok(await H.runController(
+    appt.assignDoctor,
+    H.mockReq(
+      clinicId, userId,
+      { steps: [{ kind: 'enfermeria', user: String(enfermera._id), serviceName: 'Detox',
+        serum: { base: { volumeMl: 250 }, components: [{ ...DETOX, quantity: 1 }] } }] },
+      { role: 'cajero', params: { id: String(cita._id) } }
+    )
+  ));
+
+  const rec = await ClinicalRecord.findOne({ patient: patient._id }).lean();
+  const fu = rec.followUps[0];
+  const item = fu.recetaItems[0];
+  assert.ok(item._id, 'la línea tiene su propio _id: sin él no hay a qué apuntar el «Administrar»');
+
+  // Y el enfermero la aplica por la MISMA ruta que un suero recetado.
+  const records = require('../controllers/clinicalRecordController');
+  ok(await H.runController(
+    records.administerSerum,
+    H.mockReq(clinicId, enfermera._id, { baseVolumeMl: 250 }, {
+      role: 'enfermero',
+      params: { patientId: String(patient._id), followUpId: String(fu._id), itemId: String(item._id) },
+    })
+  ));
+
+  const despues = await ClinicalRecord.findOne({ patient: patient._id }).lean();
+  const aplicaciones = despues.followUps[0].recetaItems[0].administrations;
+  assert.equal(aplicaciones.length, 1, 'queda registrado que se aplicó');
+  assert.equal(String(aplicaciones[0].by), String(enfermera._id));
+  const Product = require('../models/Product');
+  assert.equal((await Product.findById(ampolla._id)).stock, 9, 'y la ampolla sale del inventario');
+});
+
+test('T12) una cita YA agendada con servicio que trae suero lo recibe al asignar', async () => {
+  const { clinicId, userId, patient } = await seed();
+  // Se agenda ANTES de que el servicio tenga suero (o sea una cita vieja).
+  const servicio = await AppointmentServiceItem.create({
+    clinic: clinicId, name: 'Detox Plus', slug: 'detox plus',
+  });
+  const cita = ok(await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '13:00', serviceItem: servicio._id,
+  }));
+  assert.equal((await sueroDeLaFicha(patient._id)).items.length, 0);
+
+  // Se configura el suero del servicio…
+  await AppointmentServiceItem.updateOne({ _id: servicio._id }, {
+    $set: {
+      autoSerum: {
+        enabled: true, base: { name: 'Cloruro', volumeMl: null },
+        components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }],
+      },
+    },
+  });
+
+  const asignar = () =>
+    H.runController(
+      appt.assignDoctor,
+      H.mockReq(clinicId, userId, { steps: [{ kind: 'enfermeria', user: null }] },
+        { role: 'cajero', params: { id: String(cita._id) } })
+    );
+
+  ok(await asignar());
+  assert.equal((await sueroDeLaFicha(patient._id)).items.length, 1, 'se recupera al asignar');
+  ok(await asignar());
+  assert.equal((await sueroDeLaFicha(patient._id)).items.length, 1, 'y no se repite');
 });
 
 test('T9) el suero de serie se configura desde el catálogo, y sin ampollas se apaga', async () => {

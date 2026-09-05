@@ -150,6 +150,14 @@ function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, p
       assignedBy: por,
       serviceName: String(paso?.serviceName || '').trim(),
       serviceItem: paso?.serviceItem || null,
+      /**
+       * El suero viaja con el paso, y con él su seguimiento ya escrito. Los DOS
+       * hacen falta: sin `serum` la pantalla no puede enseñar lo que ya se
+       * indicó al reabrir la asignación, y sin `serumFollowUp` reordenar la cola
+       * volvería a escribirlo en la ficha (ver `Appointment.turns[].serum`).
+       */
+      serum: paso?.serum || undefined,
+      serumFollowUp: paso?.serumFollowUp || null,
     });
   }
 

@@ -22,6 +22,10 @@ const {
 } = require('../utils/appointmentTurns');
 const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
 const { crearCitaAtencionInmediata } = require('../utils/walkInAppointment');
+// Buscar al paciente como lo dice la gente: por palabras sueltas y sin tildes el
+// nombre, por dígitos el teléfono.
+const { nameSearchFilter } = require('../utils/nameSearch');
+const { phoneSearchRegex } = require('../utils/phoneNormalize');
 const {
   nowHHMM,
   isPastLocalDate,
@@ -231,19 +235,27 @@ exports.getAppointments = async (req, res) => {
       Object.assign(query, await filtroEnfermeria(req));
     }
 
-    // Búsqueda libre por paciente (nombre, apellido, cédula o teléfono)
+    /**
+     * Búsqueda libre por paciente (nombre, apellido, cédula o teléfono).
+     *
+     * POR PALABRAS SUELTAS y sin tildes (ver `utils/nameSearch.js`): «tommy
+     * solano» encuentra a «TOMMY NELSON SOLANO PEÑAFIEL», que con la expresión
+     * regular del texto tal cual no aparecía. El teléfono va aparte, por
+     * `phoneSearchRegex`, que compara dígitos y no se puede partir en palabras.
+     */
     if (q && String(q).trim()) {
       const term = String(q).trim();
-      const regex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      const porNombre = nameSearchFilter(term, ['firstName', 'lastName', 'cedula']);
+      const telefono = phoneSearchRegex(term);
+      const alternativas = [
+        ...(porNombre ? [porNombre] : []),
+        ...(telefono ? [{ phone: telefono }, { whatsapp: telefono }] : []),
+      ];
       const matched = await Patient.find({
         ...(clinicScope !== null ? { clinic: clinicScope } : {}),
-        $or: [
-          { firstName: regex },
-          { lastName: regex },
-          { cedula: regex },
-          { phone: regex },
-          { whatsapp: regex },
-        ],
+        // Sin ninguna alternativa (texto de solo signos) no debe casar nada, y
+        // un `$or: []` lo rechaza mongo.
+        ...(alternativas.length ? { $or: alternativas } : { _id: null }),
       }).select('_id');
       const ids = matched.map((p) => p._id);
       if (query.patient) {
@@ -400,20 +412,74 @@ async function validarPersonalDeLaSede(ids, clinicId) {
  */
 function normalizarPasos(steps) {
   if (!Array.isArray(steps)) return [];
+  const { saneaSueroPlano } = require('../utils/suero');
   return steps
-    .map((p) =>
-      p?.kind === 'enfermeria'
-        ? {
-            kind: 'enfermeria',
-            user: p.user ? String(p.user) : null,
-            serviceName: String(p.serviceName || '').trim(),
-            serviceItem: p.serviceItem || null,
-          }
-        : p?.user
-          ? { kind: 'doctor', user: String(p.user) }
-          : null
-    )
+    .map((p) => {
+      if (p?.kind !== 'enfermeria') return p?.user ? { kind: 'doctor', user: String(p.user) } : null;
+      /**
+       * El suero del paso se sanea contra el catálogo por la MISMA función que
+       * la receta: así la ampolla se guarda con su código y, al aplicarla, se
+       * encuentra en el inventario y se descuenta. Sin ampollas no hay suero
+       * (una bolsa vacía no es nada que aplicar).
+       *
+       * Un suero solo tiene sentido en un turno de enfermería: el doctor receta,
+       * no pone la vía.
+       */
+      const suero = saneaSueroPlano(p.serum);
+      return {
+        kind: 'enfermeria',
+        user: p.user ? String(p.user) : null,
+        serviceName: String(p.serviceName || '').trim(),
+        serviceItem: p.serviceItem || null,
+        serum: suero ? { base: suero.serumBase, components: suero.serumComponents } : undefined,
+        // Lo devuelve la pantalla tal cual lo recibió: es la marca de que ese
+        // suero YA está escrito en la ficha y no hay que volver a escribirlo.
+        serumFollowUp: suero && p.serumFollowUp ? p.serumFollowUp : null,
+      };
+    })
     .filter(Boolean);
+}
+
+/**
+ * ESCRIBE EN LA FICHA LOS SUEROS QUE TODAVÍA NO ESTÁN.
+ *
+ * Recorre los turnos de enfermería con suero indicado y sin `serumFollowUp`, los
+ * escribe como una línea de receta más —la que enfermería puede dar por
+ * aplicada— y anota en el turno dónde quedaron. Volver a guardar la asignación
+ * ya no escribe nada: es la marca la que lo impide, no la suerte.
+ *
+ * Devuelve los nombres sembrados, para que la pantalla lo diga.
+ */
+async function sembrarSuerosDeLosTurnos(apt, req) {
+  const { sembrarSueroEnFicha } = require('../utils/sueroDeCita');
+  const { lineaDeRecetaDeSuero } = require('../utils/suero');
+  const sembrados = [];
+
+  for (const turno of apt.turns || []) {
+    if (turno.kind !== 'enfermeria' || turno.serumFollowUp) continue;
+    const componentes = turno.serum?.components || [];
+    if (!componentes.length) continue;
+
+    const linea = lineaDeRecetaDeSuero(
+      { serumBase: turno.serum.base, serumComponents: componentes.map((c) => c.toObject?.() || c) },
+      turno.serviceName || apt.serviceName
+    );
+    const fu = await sembrarSueroEnFicha({
+      clinicId: apt.clinic,
+      patientId: apt.patient,
+      user: req.user,
+      role: req.role,
+      lineas: [linea],
+      motivo: turno.serviceName
+        ? `Suero indicado al asignar la atención (${turno.serviceName})`
+        : 'Suero indicado al asignar la atención',
+    });
+    if (fu) {
+      turno.serumFollowUp = fu._id;
+      sembrados.push(linea.name);
+    }
+  }
+  return sembrados;
 }
 
 exports.createAppointment = async (req, res) => {
@@ -667,10 +733,11 @@ exports.createAppointment = async (req, res) => {
      * EL SUERO QUEDA ESCRITO EN LA FICHA, sin que nadie lo copie a mano.
      *
      * Dos formas de llegar aquí, y la misma salida: un seguimiento con la línea
-     * de receta que enfermería puede dar por aplicada.
+     * de receta que enfermería puede dar por aplicada, igual que si la hubiera
+     * escrito un médico.
      *  · el SERVICIO trae el suyo de serie —«Detox Plus» es siempre la misma
      *    bolsa— y entonces agendar basta;
-     *  · quien agenda lo indica a mano al mandar la cita a un enfermero.
+     *  · quien agenda escoge las ampollas en el paso de enfermería.
      *
      * En su propio try: la cita ya está creada y no se puede perder porque falle
      * el añadido a la ficha. Mismo criterio que la cita automática del suero
@@ -678,28 +745,36 @@ exports.createAppointment = async (req, res) => {
      */
     let sueroSembrado = null;
     try {
+      const items = [];
+
+      // 1) El de serie del servicio. Se anota en la cita (`autoSerumFollowUp`)
+      // para que asignar la atención después no lo escriba por segunda vez.
       const { sueroterapiaDeLaCita, sembrarSueroEnFicha } = require('../utils/sueroDeCita');
-      const lineas = sueroterapiaDeLaCita(servicioAgenda, req.body.serum);
-      if (lineas.length) {
+      const deServicio = sueroterapiaDeLaCita(servicioAgenda);
+      if (deServicio.length) {
         const fu = await sembrarSueroEnFicha({
           clinicId: targetClinicId,
           patientId: patient,
           user: req.user,
           role: req.role,
-          lineas,
-          motivo: servicioAgenda?.name
-            ? `Suero indicado al agendar (${servicioAgenda.name})`
-            : 'Suero indicado al agendar',
+          lineas: deServicio,
+          motivo: `Suero indicado al agendar (${servicioAgenda.name})`,
         });
         if (fu) {
-          // La pantalla lo dice al guardar: si no, quien agenda no sabe que el
-          // suero ya está puesto en la ficha y acaba escribiéndolo otra vez.
-          sueroSembrado = {
-            followUpId: fu._id,
-            items: lineas.map((l) => l.name),
-          };
-          emitToClinic(targetClinicId, 'clinicalRecord:updated', { patient });
+          appointment.autoSerumFollowUp = fu._id;
+          items.push(...deServicio.map((l) => l.name));
         }
+      }
+
+      // 2) Los que se escogieron en los pasos de enfermería.
+      items.push(...(await sembrarSuerosDeLosTurnos(appointment, req)));
+
+      if (items.length) {
+        await appointment.save();
+        // La pantalla lo dice al guardar: si no, quien agenda no sabe que el
+        // suero ya está puesto en la ficha y acaba escribiéndolo otra vez.
+        sueroSembrado = { items };
+        emitToClinic(targetClinicId, 'clinicalRecord:updated', { patient });
       }
     } catch (e) {
       console.warn('No se pudo escribir el suero de la cita en la ficha:', e.message);
@@ -1018,7 +1093,7 @@ exports.updateAppointment = async (req, res) => {
     if (servicioNuevoConSuero) {
       try {
         const { sueroterapiaDeLaCita, sembrarSueroEnFicha } = require('../utils/sueroDeCita');
-        const lineas = sueroterapiaDeLaCita(servicioNuevoConSuero, null);
+        const lineas = sueroterapiaDeLaCita(servicioNuevoConSuero);
         const fu = await sembrarSueroEnFicha({
           clinicId: clinicScope,
           patientId: appointment.patient?._id || appointment.patient,
@@ -1893,6 +1968,58 @@ exports.assignDoctor = async (req, res) => {
     }
     await apt.save();
 
+    /**
+     * EL SUERO INDICADO AQUÍ SE ESCRIBE EN LA FICHA.
+     *
+     * El nombre del paso es un rótulo: escribir «suero ala 20 ml» en él no le
+     * deja a enfermería nada que aplicar, porque lo que se aplica es una línea
+     * de receta con `isSerum`. Mostrador escoge las ampollas del catálogo en el
+     * mismo modal y aquí se escriben, tal cual las receta un médico —con su
+     * «Administrar» y su descuento de inventario—.
+     *
+     * En su propio try: la asignación ya está guardada y es lo que el paciente
+     * está esperando en el mostrador; que falle el añadido a la ficha no puede
+     * tirarla. La marca `serumFollowUp` hace que el siguiente guardado lo
+     * reintente sin duplicar lo ya escrito.
+     */
+    let suerosSembrados = [];
+    try {
+      /**
+       * El de serie del SERVICIO, si la cita todavía no lo tiene. Cubre a las
+       * agendadas antes de que esto existiera —un «Detox Plus» de la semana
+       * pasada— y a las que se agendaron sin servicio y se lo pusieron después.
+       * `autoSerumFollowUp` es lo que impide que se escriba dos veces.
+       */
+      if (!apt.autoSerumFollowUp && apt.serviceItem) {
+        const AppointmentServiceItem = require('../models/AppointmentServiceItem');
+        const svc = await AppointmentServiceItem.findById(apt.serviceItem).lean();
+        const { sueroterapiaDeLaCita, sembrarSueroEnFicha } = require('../utils/sueroDeCita');
+        const lineas = sueroterapiaDeLaCita(svc);
+        if (lineas.length) {
+          const fu = await sembrarSueroEnFicha({
+            clinicId: apt.clinic,
+            patientId: apt.patient,
+            user: req.user,
+            role: req.role,
+            lineas,
+            motivo: `Suero del servicio (${svc.name})`,
+          });
+          if (fu) {
+            apt.autoSerumFollowUp = fu._id;
+            suerosSembrados.push(...lineas.map((l) => l.name));
+          }
+        }
+      }
+
+      suerosSembrados.push(...(await sembrarSuerosDeLosTurnos(apt, req)));
+      if (suerosSembrados.length) {
+        await apt.save();
+        emitToClinic(apt.clinic, 'clinicalRecord:updated', { patient: apt.patient });
+      }
+    } catch (e) {
+      console.warn('No se pudo escribir el suero de la asignación en la ficha:', e.message);
+    }
+
     if (apt.referral) {
       try {
         const Referral = require('../models/Referral');
@@ -1932,7 +2059,13 @@ exports.assignDoctor = async (req, res) => {
 
     // Igual que antes: la automatización de "cita asistida" solo la primera vez.
     if (!wasAttended) emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(populated));
-    res.json(populated);
+    // `autoSerum` lo lee la pantalla para decir que el suero ya quedó escrito en
+    // los seguimientos. Va aparte del documento: no es un campo de la cita.
+    res.json(
+      suerosSembrados.length
+        ? { ...populated.toObject(), autoSerum: { items: suerosSembrados } }
+        : populated
+    );
   } catch (error) {
     res.status(500).json({ message: 'Error al asignar la atención', error: error.message });
   }

@@ -4,15 +4,22 @@ import toast from 'react-hot-toast';
 import Modal from './Modal';
 import AppointmentValueFields from './AppointmentValueFields';
 import SearchableSelect from './SearchableSelect';
+import SelectorComponentesSuero from './SelectorComponentesSuero';
+import SueroComposicionEditor from './SueroComposicionEditor';
+import { SUERO_CLORURO_NOMBRE } from '../constants/sueroterapia';
 import { useAuth } from '../context/AuthContext';
 import { doctorOptionLabel, doctorTypeLabel } from '../utils/roles';
 import {
+  HiOutlineBeaker,
   HiOutlineHeart,
   HiOutlineTrash,
   HiOutlineArrowUp,
   HiOutlineArrowDown,
   HiOutlineCheck,
 } from 'react-icons/hi2';
+
+/** Preparación en blanco: el cloruro va en todos y el volumen lo decide quien la pone. */
+const sueroVacio = () => ({ base: { name: SUERO_CLORURO_NOMBRE, volumeMl: null }, components: [] });
 
 /**
  * ASIGNAR LA ATENCIÓN cuando el paciente llega a la clínica.
@@ -122,6 +129,13 @@ export default function AssignAttentionModal({
               kind: ENFERMERIA,
               user: t.user ? String(t.user?._id || t.user) : '',
               serviceName: t.serviceName || '',
+              // El suero que ya se indicó, y DÓNDE quedó escrito. Los dos viajan
+              // de vuelta: sin el segundo, reordenar la cola volvería a
+              // escribirlo en la ficha (ver Appointment.turns[].serumFollowUp).
+              serum: t.serum?.components?.length
+                ? { base: { ...(t.serum.base || {}) }, components: t.serum.components.map((c) => ({ ...c })) }
+                : null,
+              serumFollowUp: t.serumFollowUp || null,
               key: `enf-${i}`,
             }
           : { kind: 'doctor', user: String(t.user?._id || t.user), key: `doc-${t.user?._id || t.user}` }
@@ -132,6 +146,9 @@ export default function AssignAttentionModal({
       : [];
   });
   const [busy, setBusy] = useState(false);
+  // Índice del paso cuyo catálogo de ampollas está abierto (uno para toda la
+  // cola: solo se escoge en uno a la vez).
+  const [catalogoDe, setCatalogoDe] = useState(null);
   // Nota de recepción al recibir al paciente. No se queda en la cita: va a la
   // bitácora de Observaciones del paciente, junto a las demás.
   const [observacion, setObservacion] = useState('');
@@ -196,7 +213,16 @@ export default function AssignAttentionModal({
       const { data } = await api.post(`/appointments/${apt._id}/assign-doctor`, {
         steps: cola.map((p) =>
           p.kind === ENFERMERIA
-            ? { kind: ENFERMERIA, user: p.user || null, serviceName: (p.serviceName || '').trim() }
+            ? {
+                kind: ENFERMERIA,
+                user: p.user || null,
+                serviceName: (p.serviceName || '').trim(),
+                // Sin ampollas no se manda nada: una bolsa vacía no es un suero.
+                serum: p.serum?.components?.some((c) => c.name?.trim()) ? p.serum : null,
+                // La marca de "ya está escrito" solo vale si el suero NO se ha
+                // tocado: si se cambió, es otro y hay que escribirlo de nuevo.
+                serumFollowUp: p.serumTocado ? null : p.serumFollowUp || null,
+              }
             : { kind: 'doctor', user: p.user }
         ),
         observation: observacion.trim(),
@@ -222,6 +248,18 @@ export default function AssignAttentionModal({
       toast.success(
         nombres.length > 1 ? `Paciente asignado: ${nombres.join(' → ')}` : `Paciente asignado a ${nombres[0]}`
       );
+      /**
+       * Se dice que el suero YA QUEDÓ ESCRITO en la ficha. Sin esto, mostrador
+       * no tiene forma de saber que enfermería ya lo tiene y acaba escribiéndolo
+       * a mano en el seguimiento — que es justo el trabajo que esto viene a
+       * quitar, y de paso quedaría duplicado.
+       */
+      if (data?.autoSerum?.items?.length) {
+        toast.success(
+          `Suero anotado en los seguimientos: ${data.autoSerum.items.join(', ')}`,
+          { icon: '💧', duration: 5000 }
+        );
+      }
       onDone?.(data);
       onClose?.();
     } catch (err) {
@@ -234,8 +272,29 @@ export default function AssignAttentionModal({
   const paciente = apt?.patient ? `${apt.patient.firstName} ${apt.patient.lastName}` : 'Paciente';
   const servicio = apt?.serviceName || apt?.serviceItem?.name || (apt?.services || []).map((s) => s.name).filter(Boolean).join(', ');
 
+  /**
+   * UN SOLO catálogo para toda la cola, y no uno por paso: son 104 ampollas a
+   * pantalla completa y solo se escoge en un paso a la vez. Montar uno por fila
+   * multiplicaría el trabajo del render por nada.
+   */
+  const catalogo = catalogoDe !== null && (
+    <SelectorComponentesSuero
+      isOpen
+      seleccionados={cola[catalogoDe]?.serum?.components || []}
+      onClose={() => setCatalogoDe(null)}
+      onConfirm={(components) => {
+        editarPaso(catalogoDe, {
+          serum: { ...(cola[catalogoDe]?.serum || sueroVacio()), components },
+          serumTocado: true,
+        });
+        setCatalogoDe(null);
+      }}
+    />
+  );
+
   return (
     <Modal isOpen onClose={onClose} title="Asignar atención" size="lg">
+      {catalogo}
       <div className="space-y-4">
         <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
           <p className="font-semibold text-slate-800">{paciente}</p>
@@ -352,6 +411,57 @@ export default function AssignAttentionModal({
                         placeholder="Qué hace (Detox, Sueroterapia…)"
                         className="input input-sm flex-1 bg-white"
                       />
+                    </div>
+                  )}
+
+                  {/**
+                    * EL SUERO, ESCOGIDO DEL CATÁLOGO — no escrito en el rótulo.
+                    *
+                    * El campo de arriba es solo el NOMBRE del paso: escribir ahí
+                    * «suero ala 20 ml» no le deja a enfermería nada que aplicar,
+                    * porque lo que se aplica es una línea de receta en la ficha,
+                    * con su «Administrar» y su descuento de inventario. Aquí se
+                    * escogen las ampollas igual que en la receta del médico, y
+                    * al guardar se escriben en los seguimientos.
+                    */}
+                  {esEnf && (
+                    <div className="mt-2 pl-8">
+                      {paso.serumFollowUp && !paso.serumTocado ? (
+                        <p className="m-0 text-[11px] text-emerald-700">
+                          <HiOutlineCheck className="inline w-3.5 h-3.5 -mt-px" /> Suero ya escrito
+                          en los seguimientos:{' '}
+                          {(paso.serum?.components || []).map((c) => `${c.name} ×${c.quantity || 1}`).join(', ')}
+                        </p>
+                      ) : !paso.serum ? (
+                        <button
+                          type="button"
+                          onClick={() => editarPaso(idx, { serum: sueroVacio(), serumTocado: true })}
+                          className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-700 bg-transparent border-none cursor-pointer p-0"
+                        >
+                          <HiOutlineBeaker className="w-4 h-4" /> Escoger el suero que se va a aplicar
+                        </button>
+                      ) : (
+                        <>
+                          <SueroComposicionEditor
+                            base={paso.serum.base}
+                            componentes={paso.serum.components}
+                            onChangeBase={(base) =>
+                              editarPaso(idx, { serum: { ...paso.serum, base }, serumTocado: true })
+                            }
+                            onChangeComponentes={(components) =>
+                              editarPaso(idx, { serum: { ...paso.serum, components }, serumTocado: true })
+                            }
+                            onAbrirCatalogo={() => setCatalogoDe(idx)}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => editarPaso(idx, { serum: null, serumTocado: true })}
+                            className="mt-1 text-[11px] text-red-500 bg-transparent border-none cursor-pointer p-0"
+                          >
+                            Quitar el suero
+                          </button>
+                        </>
+                      )}
                     </div>
                   )}
                 </li>

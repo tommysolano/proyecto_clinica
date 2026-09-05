@@ -88,6 +88,48 @@ const appointmentTurnSchema = new mongoose.Schema(
       ref: 'AppointmentServiceItem',
       default: null,
     },
+    /**
+     * EL SUERO QUE HAY QUE PONER EN ESTE TURNO.
+     *
+     * El nombre del turno (`serviceName`) es un rótulo y nada más: escribir ahí
+     * «suero ala 20 ml» no le deja a enfermería NADA que aplicar, porque lo que
+     * se aplica es una línea de receta con `isSerum` en la ficha. Así que
+     * mostrador escoge aquí las ampollas del catálogo, igual que el médico en la
+     * receta, y al asignar se escribe en los seguimientos.
+     *
+     * Se guarda también en el turno —y no solo en la ficha— para que al reabrir
+     * «Asignar atención» se vea lo que ya se indicó. Sin esto, reasignar la cola
+     * (mover un paso, añadir un doctor) dejaría el suero invisible y acabaría
+     * escrito dos veces.
+     *
+     * Misma forma que `AppointmentServiceItem.autoSerum` (ver `utils/suero.js`).
+     */
+    serum: {
+      base: {
+        name: { type: String, trim: true, default: '' },
+        volumeMl: { type: Number, default: null },
+      },
+      components: {
+        type: [
+          new mongoose.Schema(
+            {
+              code: { type: String, trim: true, default: '' },
+              name: { type: String, trim: true, required: true },
+              grupo: { type: String, enum: ['ampolla', 'molecula', 'otro'], default: 'otro' },
+              quantity: { type: Number, default: 1, min: 0 },
+            },
+            { _id: false }
+          ),
+        ],
+        default: [],
+      },
+    },
+    /**
+     * Seguimiento donde quedó escrito ese suero. Es lo que hace la siembra
+     * IDEMPOTENTE: con él puesto, volver a guardar la asignación no añade una
+     * segunda bolsa a la ficha.
+     */
+    serumFollowUp: { type: mongoose.Schema.Types.ObjectId, default: null },
     order: { type: Number, default: 0 },
     status: {
       type: String,
@@ -257,6 +299,18 @@ const appointmentSchema = new mongoose.Schema(
       index: true,
     },
     serviceName: { type: String, trim: true, default: '' },
+    /**
+     * Seguimiento donde quedó escrito el suero DE SERIE DEL SERVICIO
+     * (`AppointmentServiceItem.autoSerum`): un «Detox Plus» es siempre la misma
+     * bolsa y se escribe solo al agendar.
+     *
+     * Existe para que se escriba UNA vez y no una por cada guardado. La cita
+     * pasa por tres puertas —agendarla, corregirle el servicio y asignar la
+     * atención— y las tres tendrían que preguntarse si ya está; con la marca, la
+     * respuesta es mirar aquí. Sirve además para las citas agendadas ANTES de
+     * que existiera esto: al asignar la atención se les escribe entonces.
+     */
+    autoSerumFollowUp: { type: mongoose.Schema.Types.ObjectId, default: null },
     /**
      * LO QUE ADEMÁS se hizo en la visita. `serviceItem`/`serviceName` siguen
      * siendo EL servicio de la cita —lo que leen la agenda, los reportes y el

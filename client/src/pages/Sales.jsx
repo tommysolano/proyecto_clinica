@@ -30,6 +30,7 @@ import {
 import JournalEntryViewModal from '../components/JournalEntryViewModal';
 import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../utils/idempotency';
 import DateInput from '../components/DateInput';
+import { nameMatches } from '../utils/nameSearch';
 
 const paymentMethods = {
   efectivo: 'Efectivo',
@@ -1001,13 +1002,12 @@ export default function Sales() {
               {/* Busca en los DOS maestros: pacientes de la clínica y personas registradas como
                   CLIENTE en Personas (proveedores/clientes). Antes solo miraba pacientes. */}
               {patientSearch && !pickedFromList && (() => {
-                const q = patientSearch.toLowerCase();
-                const pac = patients.filter((p) => (
-                  p.firstName?.toLowerCase().includes(q) ||
-                  p.lastName?.toLowerCase().includes(q) ||
-                  p.cedula?.includes(q) ||
-                  p.phone?.includes(q)
-                )).slice(0, 15);
+                // Por PALABRAS SUELTAS y sin tildes (ver utils/nameSearch): «tommy
+                // solano» encuentra a «TOMMY NELSON SOLANO PEÑAFIEL», que
+                // comparando la cadena entera no aparecía.
+                const pac = patients
+                  .filter((p) => nameMatches(patientSearch, p.firstName, p.lastName, p.cedula, p.phone))
+                  .slice(0, 15);
                 return (
                   <div className="absolute z-10 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white border border-emerald-100 rounded-xl shadow-lg">
                     {pac.map((p) => (

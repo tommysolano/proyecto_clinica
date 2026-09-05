@@ -3,6 +3,7 @@ const Appointment = require('../models/Appointment');
 const { emitToClinic } = require('../realtime');
 const { canReq } = require('../utils/permissions');
 const { phoneSearchRegex } = require('../utils/phoneNormalize');
+const { nameSearchFilter } = require('../utils/nameSearch');
 
 // NOTA: los DATOS de los pacientes se comparten entre todas las clínicas
 // (cédula única global). El campo `clinic` queda como referencia de la clínica
@@ -147,33 +148,30 @@ exports.searchReferralCandidates = async (req, res) => {
   try {
     const User = require('./../models/User');
     const q = (req.query.q || '').trim();
-    const regex = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
 
     // El selector "¿Quién lo refirió?" es un buscador por nombre. El teléfono
     // sigue siendo del admin; por cédula busca (y la ve) quien puede verla — ver
     // CONTACT_FIELDS y canSeeCedula.
     const showContact = canSeeContactData(req);
     const showCedula = canSeeCedula(req);
+    // Por palabras sueltas y sin tildes, igual que el listado (ver nameSearch).
+    const buscar = (campos) => (q ? nameSearchFilter(q, campos) : null);
+
     const patientFilter = { active: true };
-    if (regex) {
-      patientFilter.$or = [
-        { firstName: regex },
-        { lastName: regex },
-        ...(showCedula ? [{ cedula: regex }] : []),
-        ...(showContact ? [{ phone: regex }] : []),
-      ];
-    }
+    const pacientePorNombre = buscar([
+      'firstName',
+      'lastName',
+      ...(showCedula ? ['cedula'] : []),
+      ...(showContact ? ['phone'] : []),
+    ]);
+    if (pacientePorNombre) Object.assign(patientFilter, pacientePorNombre);
     const patients = await Patient.find(patientFilter)
       .select('firstName lastName cedula')
       .limit(15);
 
     const userFilter = { active: true, 'clinics.clinic': req.clinicId };
-    if (regex) {
-      userFilter.$or = [
-        { name: regex },
-        ...(showContact ? [{ cedula: regex }, { email: regex }] : []),
-      ];
-    }
+    const usuarioPorNombre = buscar(['name', ...(showContact ? ['cedula', 'email'] : [])]);
+    if (usuarioPorNombre) Object.assign(userFilter, usuarioPorNombre);
     const users = await User.find(userFilter).select('name cedula').limit(15);
 
     const results = [
@@ -208,13 +206,17 @@ exports.getPatients = async (req, res) => {
 
     if (search) {
       /**
-       * El texto del buscador va ESCAPADO. Tal cual, un '(' o un '+' —normales
-       * en un teléfono copiado y pegado— rompen la expresión regular y la
-       * consulta revienta con un 500. Mismo criterio que en
-       * `searchReferralCandidates`, que ya lo escapaba.
+       * POR PALABRAS SUELTAS y sin tildes (ver `utils/nameSearch.js`): el
+       * paciente es «TOMMY NELSON SOLANO PEÑAFIEL» y en recepción se le busca
+       * como «tommy solano». Con una sola expresión regular del texto tal cual
+       * —que es como estaba— eso no devolvía nada: había que escribir el nombre
+       * entero, en orden, con sus tildes y sin un espacio de más.
+       *
+       * El texto va escapado dentro del util: tal cual, un '(' o un '+'
+       * —normales en un teléfono copiado y pegado— rompen la expresión y la
+       * consulta revienta con un 500.
        */
-      const texto = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      query.$or = [{ firstName: texto }, { lastName: texto }];
+      const porNombre = nameSearchFilter(search, ['firstName', 'lastName', 'cedula']);
       /**
        * BUSCAR por cédula o teléfono lo puede hacer cualquiera que ya entre al
        * listado; VERLOS en la tabla sigue siendo solo del admin (más abajo, en
@@ -225,13 +227,18 @@ exports.getPatients = async (req, res) => {
        * recepción y óptica solo podían buscar por nombre, que es justo lo que
        * peor se escribe y peor se repite.
        *
-       * El teléfono usa `phoneSearchRegex` para casar en cualquier formato:
-       * guardado como '+593 98 853 5561' y tecleado como '0988535561'.
+       * El teléfono NO se parte en palabras: usa `phoneSearchRegex` sobre el
+       * texto entero, que compara dígitos y casa en cualquier formato (guardado
+       * como '+593 98 853 5561' y tecleado como '0988535561').
        */
-      query.$or.push({ cedula: texto });
       const telefono = phoneSearchRegex(search);
-      if (telefono) query.$or.push({ phone: telefono }, { whatsapp: telefono });
-      else query.$or.push({ phone: texto });
+      query.$or = [
+        ...(porNombre ? [porNombre] : []),
+        ...(telefono ? [{ phone: telefono }, { whatsapp: telefono }] : []),
+      ];
+      // Un texto que no deja ni una palabra ni un teléfono (solo signos) no
+      // puede acabar en un `$or: []`, que mongo rechaza.
+      if (!query.$or.length) delete query.$or;
     }
 
     if (isNew === 'true' || isNew === '1') {
