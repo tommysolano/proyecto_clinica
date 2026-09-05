@@ -609,3 +609,40 @@ test('enfermería cierra su turno SIN escribir seguimiento y la cita pasa al doc
   assert.equal(guardada.currentTurnKind, 'doctor');
   assert.equal(String(guardada.currentTurnUser), String(docA._id));
 });
+
+// ───────────── asistió SIN repartir la atención ─────────────
+
+/**
+ * QUIÉN VIENE Y QUIÉN LE ATIENDE SON DOS PREGUNTAS DISTINTAS.
+ *
+ * Reclamo real (5-sep-2026): para corregir una cita marcada como ausente hubo
+ * que asignarle un doctor, porque «Asignar atención» era la única puerta que
+ * dejaba la cita en 'asistida' y exige al menos un profesional en la cola. Eso
+ * obliga a inventarse quién atiende para poder decir que el paciente vino.
+ */
+test('se marca asistió sin elegir a nadie, y sirve para corregir un "no asistió"', async () => {
+  const { clinicId, userId, cita } = await seed();
+  await Appointment.updateOne({ _id: cita._id }, { status: 'no_asistio' });
+
+  const r = await H.runController(
+    appt.markAttended,
+    H.mockReq(clinicId, userId, {}, params(cita._id)),
+  );
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const guardada = await Appointment.findById(cita._id);
+  assert.equal(guardada.status, 'asistida');
+  assert.equal(guardada.doctor, null, 'no se inventa un doctor para poder marcar la asistencia');
+  assert.equal(guardada.turns.length, 0, 'tampoco se crea ningún turno');
+});
+
+test('asignar la atención SIGUE exigiendo a alguien: no es la misma pregunta', async () => {
+  const { clinicId, userId, cita } = await seed();
+
+  const r = await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, { steps: [] }, params(cita._id)),
+  );
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.equal((await Appointment.findById(cita._id)).status, 'pendiente');
+});

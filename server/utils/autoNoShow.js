@@ -5,11 +5,22 @@ const { appointmentDateTime } = require('./appointmentDate');
 // Ecuador no tiene horario de verano (UTC-5 todo el año).
 const EC_OFFSET_MS = 5 * 60 * 60 * 1000;
 
-// Margen mínimo tras la hora de INICIO antes de marcar no-show. Regla de
-// negocio: pasada la hora de la cita sin que recepción la marque 'asistida',
-// es no-show (dispara la automatización de inmediato). Si el paciente llega
-// tarde, recepción puede marcarla 'asistida' igual después.
-const GRACE_MS = 60 * 1000;
+/**
+ * EL NO-SHOW SE DECIDE AL CERRAR EL DÍA, NO AL PASAR LA HORA.
+ *
+ * Antes bastaba con que pasara un minuto de la hora de inicio: la cita de las
+ * 9:00 quedaba «no asistió» a las 9:01. Eso no es lo que ocurre en la clínica —
+ * el paciente llega tarde, la consulta anterior se alargó, o entra por la puerta
+ * mientras recepción atiende a otro— y tenía consecuencias que no se deshacían
+ * solas: la agenda daba por ausente a alguien que estaba en la sala de espera,
+ * el reporte lo contaba como falta, y la automatización de no-show le mandaba
+ * un «lamentamos que no hayas podido venir» al móvil estando en recepción.
+ *
+ * Ahora una cita solo se da por perdida cuando su día ya terminó (medianoche en
+ * Ecuador) y nadie la cerró. Durante todo el día sigue 'pendiente', que es la
+ * verdad: todavía puede llegar. Marcarla antes sigue siendo posible a mano,
+ * desde el mostrador, que es quien sabe si el paciente vino o no.
+ */
 
 /**
  * Devuelve la medianoche (UTC) del día calendario actual en Ecuador.
@@ -20,19 +31,6 @@ const GRACE_MS = 60 * 1000;
 function ecTodayUtcMidnight() {
   const ec = new Date(Date.now() - EC_OFFSET_MS);
   return new Date(Date.UTC(ec.getUTCFullYear(), ec.getUTCMonth(), ec.getUTCDate()));
-}
-
-/**
- * ¿Una cita de HOY ya venció sin que nadie la atienda? PURO y testeable.
- * Vence apenas pasa su hora de INICIO (margen de 1 min): el paciente no llegó.
- * La hora de fin no cuenta: si nadie la recibió al empezar, es no-show.
- * Sin hora de inicio válida no se puede saber: se marca recién al día siguiente.
- */
-function isNoShowDue(appt, now = new Date()) {
-  if (!/^\d{1,2}:\d{2}$/.test(String(appt?.startTime || ''))) return false;
-  const start = appointmentDateTime(appt.date, appt.startTime);
-  if (!start) return false;
-  return now.getTime() > start.getTime() + GRACE_MS;
 }
 
 /** Marca las citas dadas como no_asistio y emite el evento de dominio por cada una. */
@@ -64,32 +62,26 @@ async function markNoShows(appointments) {
 const SELECT = 'clinic patient date startTime endTime isFirstVisit services';
 
 /**
- * Marca como 'no_asistio' las citas que quedaron en 'pendiente'/'confirmada':
- *  1) TODAS las de días anteriores a hoy (nadie las cerró), y
- *  2) las de HOY cuya hora de inicio ya pasó — antes seguían "pendientes"
- *     toda la tarde.
+ * Marca como 'no_asistio' las citas de días YA TERMINADOS que siguen en
+ * 'pendiente'/'confirmada' — nadie las cerró y el día en que podían atenderse
+ * se acabó.
+ *
+ * Las de HOY no se tocan, sea cual sea la hora: mientras el día siga corriendo
+ * el paciente todavía puede llegar (ver la nota de arriba).
  */
 async function runAutoNoShow() {
   try {
     const cutoff = ecTodayUtcMidnight();
-    const OPEN = { status: { $in: ['pendiente', 'confirmada'] } };
-
-    // 1) Días anteriores: vencidas sin importar la hora.
-    const pastDays = await Appointment.find({ ...OPEN, date: { $lt: cutoff } })
+    const vencidas = await Appointment.find({
+      status: { $in: ['pendiente', 'confirmada'] },
+      date: { $lt: cutoff },
+    })
       .select(SELECT)
       .lean();
 
-    // 2) Hoy: las que ya pasaron de su hora de inicio.
-    const todayEnd = new Date(cutoff.getTime() + 24 * 60 * 60 * 1000);
-    const todays = await Appointment.find({ ...OPEN, date: { $gte: cutoff, $lt: todayEnd } })
-      .select(SELECT)
-      .lean();
-    const now = new Date();
-    const dueToday = todays.filter((a) => isNoShowDue(a, now));
-
-    const modified = await markNoShows([...pastDays, ...dueToday]);
+    const modified = await markNoShows(vencidas);
     if (modified > 0) {
-      console.log(`[autoNoShow] ${modified} cita(s) marcadas como "no asistió" (${dueToday.length} de hoy).`);
+      console.log(`[autoNoShow] ${modified} cita(s) de días anteriores marcadas como "no asistió".`);
     }
     return modified;
   } catch (err) {
@@ -99,12 +91,15 @@ async function runAutoNoShow() {
 }
 
 /**
- * Arranca el job: corre una vez al inicio y luego cada 5 minutos (una cita
- * vencida debe reflejar el no-show a los pocos minutos, no al día siguiente).
+ * Arranca el job: corre una vez al inicio y luego cada 5 minutos.
+ *
+ * El intervalo corto ya no es para pillar las citas de hoy (esas esperan a que
+ * termine el día), sino para que el barrido de medianoche ocurra a los pocos
+ * minutos de cambiar el día y no cuando alguien reinicie el servidor.
  */
 function startAutoNoShowJob() {
   runAutoNoShow();
   setInterval(runAutoNoShow, 5 * 60 * 1000);
 }
 
-module.exports = { runAutoNoShow, startAutoNoShowJob, isNoShowDue };
+module.exports = { runAutoNoShow, startAutoNoShowJob };

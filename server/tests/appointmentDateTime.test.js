@@ -7,7 +7,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { appointmentDateTime, isPastLocalDateTime } = require('../utils/appointmentDate');
-const { isNoShowDue } = require('../utils/autoNoShow');
 
 test('combina el día (guardado a las 12:00 local) con startTime en hora Ecuador', () => {
   // Forma actual de guardado: 12:00 hora local Ecuador = 17:00Z.
@@ -58,21 +57,23 @@ test('isPastLocalDateTime: días completos y casos sin hora', () => {
   assert.equal(isPastLocalDateTime(null, '09:00', now), false);
 });
 
-// ─────────── isNoShowDue (no-show automático de citas de HOY) ───────────
+// ─────────── no-show automático: se decide al CERRAR el día ───────────
 
-test('isNoShowDue: la cita vence apenas pasa su hora de inicio (margen de 1 min)', () => {
-  const date = new Date('2026-07-15T17:00:00Z'); // día guardado a las 12:00 hora Ecuador
-  const appt = { date, startTime: '16:35' };
-  assert.equal(isNoShowDue(appt, new Date('2026-07-15T16:35:30-05:00')), false); // dentro del margen
-  assert.equal(isNoShowDue(appt, new Date('2026-07-15T16:37:00-05:00')), true); // pasó la hora → no-show
-
-  // La hora de FIN no pospone el no-show: si nadie la recibió al inicio, venció.
-  const withEnd = { date, startTime: '16:35', endTime: '17:30' };
-  assert.equal(isNoShowDue(withEnd, new Date('2026-07-15T16:37:00-05:00')), true);
-});
-
-test('isNoShowDue: sin hora de inicio válida no se marca (queda para el barrido del día siguiente)', () => {
-  const date = new Date('2026-07-15T17:00:00Z');
-  assert.equal(isNoShowDue({ date, startTime: '' }, new Date('2026-07-16T10:00:00-05:00')), false);
-  assert.equal(isNoShowDue({ date, startTime: 'x' }, new Date('2026-07-16T10:00:00-05:00')), false);
+/**
+ * La regla cambió (5-sep-2026): antes la cita vencía un minuto después de su
+ * hora de inicio y `isNoShowDue` era quien lo decidía. Ahora una cita solo se da
+ * por perdida cuando su día terminó, así que esa función ya no existe: lo único
+ * que separa "aún puede llegar" de "se acabó" es el día calendario.
+ *
+ * El barrido en sí (que consulta la base) se prueba en
+ * workflowTriggers.integration.test.js.
+ */
+test('runAutoNoShow no toca las citas de HOY aunque su hora ya haya pasado', () => {
+  const autoNoShow = require('../utils/autoNoShow');
+  assert.equal(typeof autoNoShow.runAutoNoShow, 'function');
+  assert.equal(
+    autoNoShow.isNoShowDue,
+    undefined,
+    'isNoShowDue se eliminó: pasar de la hora ya no marca ausente a nadie'
+  );
 });

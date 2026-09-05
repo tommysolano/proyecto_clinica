@@ -79,9 +79,9 @@ async function crearCitaAtencionInmediata({
     date: localDayAtNoon(ahora),
     startTime: nowHHMM(),
     /**
-     * Se salta 'pendiente' a propósito: el paciente ya está delante. Además
-     * evita que `autoNoShow` la marque como ausente por su hora de inicio —una
-     * cita creada a la hora que es sería ausente un minuto después—.
+     * Se salta 'pendiente' a propósito: el paciente ya está delante, así que la
+     * cita nace atendida. De paso queda fuera del barrido de `autoNoShow`, que
+     * al cerrar el día da por ausente todo lo que siga 'pendiente'.
      */
     status: 'asistida',
     reason,

@@ -1730,8 +1730,10 @@ export default function Appointments() {
                       <td data-cell="acciones" className="md:px-6 md:py-3.5 text-right">
                         {/* Recepción: a quién pasa el paciente. También en las ya
                             asistidas, para poder añadir un doctor o mandarla a
-                            enfermería cuando la consulta ya empezó. */}
-                        {canCharge && ['pendiente', 'confirmada', 'asistida'].includes(apt.status) && (
+                            enfermería cuando la consulta ya empezó, y en las
+                            marcadas como ausentes: si el paciente aparece, hay
+                            que poder recibirlo sin pelearse con el estado. */}
+                        {canCharge && ['pendiente', 'confirmada', 'asistida', 'no_asistio'].includes(apt.status) && (
                           <button
                             onClick={() => setAssignModal({ appointment: apt })}
                             className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
@@ -2513,7 +2515,34 @@ export default function Appointments() {
                       className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-100 text-blue-700 hover:bg-blue-200 border-none cursor-pointer"
                     >Confirmar</button>
                   )}
-                  {canCharge && !['completada', 'cancelada', 'no_asistio'].includes(detailModal.status) && (
+                  {/*
+                    ASISTIÓ, SIN TENER QUE ELEGIR A NADIE.
+                    «Asignar atención» exige al menos un profesional en la cola, y
+                    eso convertía «este paciente sí vino» en «invéntate quién le
+                    atiende»: para corregir un no-show había que asignar un doctor
+                    que a lo mejor no era el suyo. El estado de la cita y quién la
+                    atiende son dos cosas distintas y aquí se separan.
+                  */}
+                  {detailModal.status !== 'asistida' && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await api.post(`/appointments/${detailModal._id}/attended`);
+                          toast.success('Marcada como asistió');
+                          setDetailModal(null);
+                          fetchAppointments();
+                        } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-100 text-emerald-700 hover:bg-emerald-200 border-none cursor-pointer"
+                    >Asistió</button>
+                  )}
+                  {/*
+                    Se ofrece TAMBIÉN sobre una cita marcada como ausente: si
+                    recepción está asignando al doctor es porque el paciente está
+                    delante, y `assignDoctor` ya corrige el 'no_asistio' solo.
+                  */}
+                  {canCharge && !['completada', 'cancelada'].includes(detailModal.status) && (
                     <button
                       type="button"
                       onClick={() => {

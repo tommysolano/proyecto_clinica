@@ -1593,10 +1593,15 @@ async function filtroEnfermeria(req) {
  * de antes, para los clientes viejos.
  *
  * PONE LA CITA EN 'asistida' AUNQUE NADIE PULSE "asistió". Se quitó ese paso
- * porque se sobreentiende, pero el estado NO es cosmético: `utils/autoNoShow.js`
- * marca como `no_asistio` toda cita que siga 'pendiente' un minuto después de su
- * hora. Sin esto, cada paciente que entra por la puerta acabaría registrado como
- * ausente. Además es lo que alimenta comisiones, supervisión y "paciente nuevo".
+ * porque se sobreentiende: si recepción está repartiendo la atención es porque
+ * el paciente está delante. El estado no es cosmético — alimenta comisiones,
+ * supervisión, "paciente nuevo" y el barrido de `utils/autoNoShow.js`, que al
+ * cerrar el día da por ausente todo lo que siga 'pendiente'.
+ *
+ * Marcar asistencia SIN repartir la atención tiene su propia puerta
+ * (`markAttended`, POST /:id/attended): quién viene y quién le atiende son dos
+ * preguntas distintas y no hay que contestar la segunda para contestar la
+ * primera.
  */
 exports.assignDoctor = async (req, res) => {
   try {
@@ -1708,22 +1713,21 @@ exports.assignDoctor = async (req, res) => {
     /**
      * Asignar da la cita por ASISTIDA, pero SOLO si es de hoy.
      *
-     * Se hace porque el paso de "marcar asistió" desapareció y `autoNoShow`
-     * marca ausente toda cita que siga 'pendiente' un minuto después de su hora:
-     * sin esto, el paciente que está delante del mostrador quedaría registrado
-     * como que no vino.
+     * Se hace porque el paso de "marcar asistió" desapareció del flujo normal:
+     * si recepción está repartiendo la atención, el paciente está delante y la
+     * cita tiene que reflejarlo sin un clic más.
      *
      * Pero eso vale para el paciente que YA llegó. Dejar preparado el doctor de
      * una cita de mañana no puede darla por atendida hoy: esa cita sigue
-     * pendiente, y si el paciente no aparece, `autoNoShow` tiene que poder
-     * marcarla ausente como cualquier otra.
+     * pendiente, y si el paciente no aparece, `autoNoShow` la marcará ausente
+     * como cualquier otra cuando termine su día.
      */
     const esDeHoy = !isFutureLocalDate(apt.date);
     /**
-     * 'no_asistio' TAMBIÉN se corrige. Lo pone `autoNoShow` un minuto después de
-     * la hora, sin que nadie decida nada; si recepción está asignando al doctor
-     * es porque el paciente está delante del mostrador, así que la marca
-     * automática estaba equivocada. Sin esto la cita se atendía —el doctor la
+     * 'no_asistio' TAMBIÉN se corrige. Puede venir del barrido de fin de día o
+     * del botón del mostrador; si ahora se está asignando al doctor es porque el
+     * paciente está delante, así que la marca anterior estaba equivocada y lo
+     * que manda es lo último. Sin esto la cita se atendía —el doctor la
      * recibía igual, su bandeja va por turnos y no por estado— pero quedaba
      * registrada como que el paciente no vino, y así entraba en los reportes.
      *

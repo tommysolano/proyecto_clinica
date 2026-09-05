@@ -732,7 +732,7 @@ test('Filtro por sucursal en el disparador: cada sede corre SOLO su flujo (un vi
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-test('autoNoShow marca las citas de HOY cuya hora ya venció y dispara el workflow de no-show', async () => {
+test('autoNoShow deja en paz las citas de HOY y solo marca las de días ya cerrados', async () => {
   const Appointment = require('../models/Appointment');
   const { runAutoNoShow } = require('../utils/autoNoShow');
   const clinic = await Clinic.create({ name: 'Principal' });
@@ -740,24 +740,42 @@ test('autoNoShow marca las citas de HOY cuya hora ya venció y dispara el workfl
   const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true });
   const wf = await graphWorkflow(clinic._id, { triggerType: 'appointment_no_show' });
 
-  // Cita hace 3 horas (insertada directo: el controller ya no permite crearla en
-  // el pasado). Si el test corre de madrugada la hora cae en el día anterior y
-  // la marca el barrido de días pasados: el resultado esperado es el mismo.
-  const start = new Date(Date.now() - 3 * 3600000);
-  const dateAnchor = new Date(start);
-  dateAnchor.setHours(12, 0, 0, 0); // forma de guardado: día calendario a las 12:00 local
-  const startHHMM = `${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}`;
-  const appt = await Appointment.create({
-    clinic: clinic._id, patient: patient._id, date: dateAnchor, startTime: startHHMM,
+  const diaALas12 = (d) => { const x = new Date(d); x.setHours(12, 0, 0, 0); return x; };
+  const hhmm = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+  /**
+   * LA DE HOY, con la hora ya pasada hace 3 horas. Es el caso que se reclamó: la
+   * cita de las 9:00 quedaba ausente a las 9:01 y el paciente aún podía llegar.
+   * Se ancla al mediodía de HOY para que la prueba no dependa de la hora a la
+   * que se ejecute (de madrugada, "hace 3 horas" cae en el día anterior).
+   */
+  const hace3h = new Date(Date.now() - 3 * 3600000);
+  const hoy = await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: diaALas12(new Date()), startTime: hhmm(hace3h),
     services: [{ product: prod._id, name: 'Consulta' }], status: 'pendiente',
   });
 
-  const marked = await runAutoNoShow();
-  assert.ok(marked >= 1, 'el barrido debió marcar al menos esta cita');
-  const after = await Appointment.findById(appt._id);
-  assert.equal(after.status, 'no_asistio', 'la cita de hoy con hora vencida debe pasar a no_asistio');
+  // La de AYER: su día terminó, nadie la cerró.
+  const ayer = new Date(Date.now() - 24 * 3600000);
+  const vieja = await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: diaALas12(ayer), startTime: '09:00',
+    services: [{ product: prod._id, name: 'Consulta' }], status: 'pendiente',
+  });
 
-  // Y el evento inscribió el workflow de no-show.
+  await runAutoNoShow();
+
+  assert.equal(
+    (await Appointment.findById(hoy._id)).status,
+    'pendiente',
+    'la cita de hoy sigue pendiente aunque su hora ya pasó: el paciente todavía puede llegar'
+  );
+  assert.equal(
+    (await Appointment.findById(vieja._id)).status,
+    'no_asistio',
+    'la de un día ya cerrado sí se da por perdida'
+  );
+
+  // Y ese no-show —el del día cerrado— es el que dispara el workflow.
   const enrollment = await waitFor(() =>
     WorkflowEnrollment.findOne({ workflow: wf._id, patient: patient._id, status: 'done' })
   );
