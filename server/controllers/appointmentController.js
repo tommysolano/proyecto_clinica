@@ -1800,9 +1800,13 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
    * equivocada, y en la que de verdad atiende no se enteraba nadie.
    */
   const clinicId = apt.clinic;
-  const paciente = [apt.patient?.firstName, apt.patient?.lastName].filter(Boolean).join(' ') || 'un paciente';
-  const servicio = apt.serviceName || apt.serviceItem?.name || '';
-  const cuerpo = `${paciente}${servicio ? ` · ${servicio}` : ''} · ${apt.startTime || ''}`;
+  const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion } = require('../utils/appointmentNotice');
+  const paciente = await pacienteDeCita(apt);
+  const cuerpo = cuerpoDeAviso({
+    paciente,
+    servicio: servicioDeCita(apt),
+    hora: apt.startTime,
+  });
 
   /**
    * Solo se avisa a QUIEN LE TOCA AHORA. Si se asignan tres doctores en fila,
@@ -1836,7 +1840,7 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
         type: 'appointment_assigned',
         title: 'Cita asignada',
         body: cuerpo,
-        url: `/patients/${apt.patient?._id || apt.patient}?tab=seguimientos&appointment=${apt._id}`,
+        url: urlDeAtencion(apt.patient, apt._id),
       });
     }
     if (leTocaEnfermeria) {
@@ -1844,7 +1848,9 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
         type: 'appointment_nursing',
         title: 'Cita para enfermería',
         body: cuerpo,
-        url: '/appointments',
+        // A los seguimientos del paciente, no a la agenda: el aviso ya sabe a
+        // quién hay que atender y dejarlo dicho a medias obligaba a buscarlo.
+        url: urlDeAtencion(apt.patient, apt._id),
       };
       if (enfermeroNombrado) {
         await notificarUsuarios([enfermeroNombrado], { clinicId, ...aviso });
@@ -2145,27 +2151,40 @@ exports.nurseComplete = async (req, res) => {
      *  · el siguiente es un turno de enfermería ABIERTO → a todos los enfermeros;
      *  · no hay siguiente → no se avisa a nadie, la cita terminó.
      */
-    if (siguiente?.user) {
-      emitToUser(siguiente.user, 'appointment:assigned', apt);
-      const { notificarUsuarios } = require('../utils/pushNotifications');
-      await notificarUsuarios([siguiente.user], {
-        clinicId: apt.clinic,
-        type: 'appointment_assigned',
-        title: 'Te toca atender',
-        body: `${siguiente.serviceName || 'Enfermería terminó su parte.'}`,
-        url: siguiente.kind === 'enfermeria'
-          ? '/appointments'
-          : `/patients/${apt.patient}?tab=ficha&appointment=${apt._id}`,
-      }).catch(() => {});
-    } else if (siguiente) {
-      emitToRole(apt.clinic, 'enfermero', 'appointment:assigned', apt);
-      const { notificarRol } = require('../utils/pushNotifications');
-      await notificarRol(apt.clinic, 'enfermero', {
-        type: 'appointment_nursing',
-        title: 'Cita para enfermería',
-        body: siguiente.serviceName || 'Continúa el servicio.',
-        url: '/appointments',
-      }).catch(() => {});
+    if (siguiente) {
+      const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion } = require('../utils/appointmentNotice');
+      // El nombre del paciente encabeza el aviso: «Enfermería terminó su parte»
+      // a secas no dice a por quién hay que ir (ver utils/appointmentNotice).
+      const paciente = await pacienteDeCita(apt);
+      const servicio = servicioDeCita(apt, siguiente);
+      const cuerpo = cuerpoDeAviso({
+        paciente,
+        servicio,
+        hora: apt.startTime,
+        motivo: servicio ? '' : 'Enfermería terminó su parte.',
+      });
+      if (siguiente.user) {
+        emitToUser(siguiente.user, 'appointment:assigned', apt);
+        const { notificarUsuarios } = require('../utils/pushNotifications');
+        await notificarUsuarios([siguiente.user], {
+          clinicId: apt.clinic,
+          type: 'appointment_assigned',
+          title: 'Te toca atender',
+          body: cuerpo,
+          // El doctor abre por la ficha (antecedentes antes de explorar);
+          // enfermería, directa a los seguimientos, que es donde trabaja.
+          url: urlDeAtencion(apt.patient, apt._id, siguiente.kind === 'enfermeria' ? 'seguimientos' : 'ficha'),
+        }).catch(() => {});
+      } else {
+        emitToRole(apt.clinic, 'enfermero', 'appointment:assigned', apt);
+        const { notificarRol } = require('../utils/pushNotifications');
+        await notificarRol(apt.clinic, 'enfermero', {
+          type: 'appointment_nursing',
+          title: 'Cita para enfermería',
+          body: cuerpo,
+          url: urlDeAtencion(apt.patient, apt._id),
+        }).catch(() => {});
+      }
     }
 
     await advanceTreatmentsForAppointment(apt.clinic, apt);

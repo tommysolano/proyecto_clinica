@@ -1385,6 +1385,15 @@ exports.addFollowUp = async (req, res) => {
           await apt.save();
           emitToClinic(req.clinicId, 'appointment:updated', apt);
 
+          /**
+           * El aviso del relevo lleva EL NOMBRE DEL PACIENTE por delante y va a
+           * sus seguimientos (ver utils/appointmentNotice): «el doctor terminó
+           * su parte» a secas dejaba a enfermería sin saber a por quién ir, y
+           * mandarla a la agenda la obligaba a buscar la cita otra vez.
+           */
+          const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion } = require('../utils/appointmentNotice');
+          const paciente = siguiente ? await pacienteDeCita(apt) : '';
+
           if (siguiente?.user) {
             // Con el nombre resuelto: la pantalla dice "pasa al Dr. X" en vez de
             // un id, y quien acaba de atender sabe a quién le deja el paciente.
@@ -1398,8 +1407,13 @@ exports.addFollowUp = async (req, res) => {
               clinicId: req.clinicId,
               type: 'appointment_assigned',
               title: 'Te toca atender',
-              body: 'El profesional anterior terminó su parte de la consulta.',
-              url: `/patients/${patientId}?tab=seguimientos&appointment=${apt._id}`,
+              body: cuerpoDeAviso({
+                paciente,
+                servicio: servicioDeCita(apt, siguiente),
+                hora: apt.startTime,
+                motivo: 'El profesional anterior terminó su parte.',
+              }),
+              url: urlDeAtencion(patientId, apt._id),
             }).catch(() => {});
           } else if (siguiente) {
             // Turno de enfermería sin dueño: sale a la bandeja de todos, y les
@@ -1411,8 +1425,13 @@ exports.addFollowUp = async (req, res) => {
             await notificarRol(req.clinicId, 'enfermero', {
               type: 'appointment_nursing',
               title: 'Cita para enfermería',
-              body: 'El doctor terminó su parte de la consulta.',
-              url: '/appointments',
+              body: cuerpoDeAviso({
+                paciente,
+                servicio: servicioDeCita(apt, siguiente),
+                hora: apt.startTime,
+                motivo: 'El doctor terminó su parte.',
+              }),
+              url: urlDeAtencion(patientId, apt._id),
             }).catch(() => {});
           }
         }
@@ -1565,11 +1584,20 @@ exports.addFollowUp = async (req, res) => {
           // camino que cuando el doctor termina y les pasa el paciente.
           emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
           const { notificarRol } = require('../utils/pushNotifications');
+          const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion } = require('../utils/appointmentNotice');
           await notificarRol(req.clinicId, 'enfermero', {
             type: 'appointment_nursing',
             title: 'Suero por aplicar',
-            body: 'Mostrador acaba de recetar un suero. El paciente está esperando.',
-            url: '/appointments',
+            // Con el nombre y el suero delante, el aviso ya dice a quién y qué:
+            // seis «mostrador acaba de recetar un suero» seguidos en la campana
+            // eran seis avisos indistinguibles.
+            body: cuerpoDeAviso({
+              paciente: await pacienteDeCita(apt),
+              servicio: servicioDeCita(apt),
+              hora: apt.startTime,
+              motivo: 'El paciente está esperando.',
+            }),
+            url: urlDeAtencion(patientId, apt._id),
           }).catch(() => {});
         }
       } catch (e) {

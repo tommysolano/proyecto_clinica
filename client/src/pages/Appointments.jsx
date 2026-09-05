@@ -143,6 +143,13 @@ function serviciosExtra(apt) {
 }
 
 /**
+ * Id de un campo que puede venir poblado (el usuario entero) o en crudo. Las
+ * filas de la tabla ya tenían el suyo dentro del `map`; este es el mismo, arriba,
+ * para lo que se calcula fuera de la fila (las bandejas).
+ */
+const idDeCampo = (v) => String(v?._id || v || '');
+
+/**
  * A QUÉ HORA se atendió de verdad, frente a la hora agendada.
  *
  * No hay un único campo que lo diga porque la atención no siempre se cronometra:
@@ -302,6 +309,26 @@ export default function Appointments() {
     timeTo: '',
     patientQuery: '',
   });
+  /**
+   * BANDEJAS POR ESTADO: pendientes → en atención → finalizadas.
+   *
+   * Un día con treinta citas se leía como una sola lista donde todo estaba
+   * mezclado: la que hay que llamar, la que ya está en el consultorio y la que
+   * terminó hace dos horas. Enfermería, que es quien más pasa por aquí, tenía
+   * que ir estado por estado con la vista. Ahora la lista enseña UNA bandeja a
+   * la vez y el trabajo pendiente no comparte pantalla con el ya hecho.
+   *
+   * «Todas» no es decorativa: las canceladas y las que no asistieron no caben en
+   * ninguna de las tres y sin ella desaparecerían de la agenda de mostrador.
+   *
+   * Quien ATIENDE entra por «Pendientes», que es su cola. Mostrador entra por
+   * «Todas»: su trabajo es la agenda entera, y abrirle una vista recortada se
+   * leería como que faltan citas.
+   */
+  const [bandeja, setBandeja] = useState(isDoctor || isNurse ? 'pendiente' : 'todas');
+  // Id del que mira, para decidir su bandeja: lo que para él está pendiente es
+  // lo que todavía no ha tomado, no lo que la cita diga de sí misma.
+  const miId = String(user?.id || user?._id || '');
   const [view, setView] = useState(isDoctor || isNurse ? 'list' : 'calendar'); // 'calendar' | 'list'
   // Mes visible en la vista calendario
   const [calMonth, setCalMonth] = useState(() => {
@@ -932,7 +959,12 @@ export default function Appointments() {
   // Aplica filtros en el cliente para servicio/sucursal/rango horario.
   // Ordena cronológicamente (por fecha y hora) para verlas en forma de HORARIO,
   // no en el orden en que se agendaron.
-  const filteredAppointments = useMemo(() => {
+  //
+  // La BANDEJA (pendiente/atendido/finalizado) se aplica aparte, más abajo: los
+  // contadores de las pestañas tienen que salir de esta lista —la de «todo lo
+  // demás ya filtrado»— o cada pestaña se contaría a sí misma y siempre diría
+  // lo mismo que se está viendo.
+  const citasFiltradas = useMemo(() => {
     return appointments
       .filter((apt) => {
         if (filter.service) {
@@ -958,6 +990,71 @@ export default function Appointments() {
   }, [appointments, filter.service, filter.clinic, filter.timeFrom, filter.timeTo]);
 
   /**
+   * A qué bandeja pertenece cada cita. «Atendida» es literalmente lo que dice el
+   * botón: alguien le dio a Atender. Y ese «alguien» es QUIEN MIRA, así que la
+   * bandeja se calcula distinto según el rol.
+   *
+   * QUIEN ATIENDE mira SU TURNO, no el estado de la cita. Para enfermería casi
+   * todas están en 'asistida' —el paciente ya está delante desde que mostrador
+   * lo recibe, y el suero recetado en caja nace así—, de modo que con el estado
+   * a secas «Pendientes» le habría salido siempre vacía y todo su trabajo por
+   * hacer estaría amontonado en «Atendidas», que es justo lo que se venía a
+   * separar. Lo que de verdad divide su día es si la ha tomado o no.
+   *
+   * MOSTRADOR sí mira el estado: no atiende a nadie, lleva la agenda.
+   */
+  const bandejaDe = (apt) => {
+    if (apt.status === 'cancelada' || apt.status === 'no_asistio') return null; // solo en «Todas»
+    if (apt.status === 'completada') return 'finalizado';
+    const conTurnos = (apt.turns || []).length > 0;
+
+    if (isNurse) {
+      // Mismo criterio que los botones de la fila (ver `enfermeriaLibre`).
+      const libre = conTurnos
+        ? apt.currentTurnKind === 'enfermeria' && !apt.currentTurnUser
+        : !apt.attendedByNurse;
+      const mia = conTurnos
+        ? apt.currentTurnKind === 'enfermeria' && idDeCampo(apt.currentTurnUser) === miId
+        : idDeCampo(apt.attendedByNurse) === miId;
+      if (mia) return 'atendido';
+      if (libre) return 'pendiente';
+      // Su turno ya está cerrado y la cita sigue con otro profesional: lo suyo
+      // aquí terminó, aunque la cita no.
+      return 'finalizado';
+    }
+
+    if (isDoctor) {
+      // Cita anterior a los turnos: lo único que tiene es el reloj de la cita.
+      if (!conTurnos) return apt.consultationStartedAt ? 'atendido' : 'pendiente';
+      const esMiTurno = idDeCampo(apt.currentTurnUser) === miId;
+      if (esMiTurno) return inicioDeMiTurno(apt) ? 'atendido' : 'pendiente';
+      const yaAtendi = (apt.turns || []).some(
+        (t) => t.status === 'completado' && idDeCampo(t.user) === miId
+      );
+      if (yaAtendi) return 'finalizado';
+      return 'pendiente';
+    }
+
+    return apt.status === 'asistida' ? 'atendido' : 'pendiente';
+  };
+
+  const conteoBandejas = useMemo(() => {
+    const c = { pendiente: 0, atendido: 0, finalizado: 0, todas: citasFiltradas.length };
+    citasFiltradas.forEach((a) => {
+      const b = bandejaDe(a);
+      if (b) c[b] += 1;
+    });
+    return c;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [citasFiltradas, isNurse, isDoctor, miId]);
+
+  const filteredAppointments = useMemo(
+    () => (bandeja === 'todas' ? citasFiltradas : citasFiltradas.filter((a) => bandejaDe(a) === bandeja)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [citasFiltradas, bandeja, isNurse, isDoctor, miId]
+  );
+
+  /**
    * Cuántos filtros SECUNDARIOS están puestos. Es lo que lleva el globito del
    * botón "Filtros" del móvil: plegados, un filtro olvidado explicaría una lista
    * vacía sin que se vea por qué.
@@ -970,15 +1067,17 @@ export default function Appointments() {
   ].filter(Boolean).length;
 
   // Agrupa las citas (ya filtradas) por día YYYY-MM-DD para pintar la cuadrícula.
+  // SIN la bandeja: esa es de la lista, y el calendario no tiene dónde enseñarla
+  // — un mes recortado, sin el control a la vista, se lee como citas perdidas.
   const calApptsByDay = useMemo(() => {
     const map = new Map();
-    filteredAppointments.forEach((a) => {
+    citasFiltradas.forEach((a) => {
       const k = String(a.date || '').slice(0, 10);
       if (!map.has(k)) map.set(k, []);
       map.get(k).push(a);
     });
     return map;
-  }, [filteredAppointments]);
+  }, [citasFiltradas]);
 
   // Celdas del mes (con relleno para alinear a lunes). null = celda vacía.
   const calendarCells = useMemo(() => {
@@ -1169,9 +1268,15 @@ export default function Appointments() {
           <div
             className={`${filtrosAbiertos ? 'grid' : 'hidden'} md:grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2`}
           >
+            {/* Pedir un estado concreto es más específico que una bandeja, así
+                que manda: se vuelve a «Todas» para que la lista no salga vacía
+                por la contradicción entre los dos controles. */}
             <select
               value={filter.status}
-              onChange={(e) => setFilter({ ...filter, status: e.target.value })}
+              onChange={(e) => {
+                setFilter({ ...filter, status: e.target.value });
+                if (e.target.value) setBandeja('todas');
+              }}
               className="px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
             >
               <option value="">Todos los estados</option>
@@ -1236,7 +1341,9 @@ export default function Appointments() {
             )}
           </div>
           <div className="flex items-center justify-between text-[11px] text-slate-500">
-            <span>Total filtrado: <strong className="text-slate-800">{filteredAppointments.length}</strong> citas</span>
+            {/* En la lista cuenta lo que se está viendo (la bandeja abierta); en
+                el calendario, el mes entero, que es lo que se pinta. */}
+            <span>Total filtrado: <strong className="text-slate-800">{view === 'calendar' ? citasFiltradas.length : filteredAppointments.length}</strong> citas</span>
             {(filter.service || filter.clinic || filter.timeFrom || filter.timeTo || filter.status || filter.isFirstVisit || filter.patientQuery) && (
               <button
                 onClick={() => setFilter({ startDate: '', endDate: '', status: '', isFirstVisit: '', clinic: '', service: '', timeFrom: '', timeTo: '', patientQuery: '' })}
@@ -1328,6 +1435,50 @@ export default function Appointments() {
           <div className="px-5 py-2 text-xs text-slate-400 border-t border-slate-100">
             Haz clic en un día para ver sus citas en forma de tabla, ordenadas por horario.
           </div>
+        </div>
+      )}
+
+      {/**
+        * BANDEJAS: pendientes → en atención → finalizadas.
+        *
+        * Va justo encima de la lista y debajo de los filtros porque es lo último
+        * que se decide antes de mirar las citas: primero QUÉ día y qué filtros,
+        * después EN QUÉ punto están. Cada pestaña lleva su cuenta para que se
+        * vea lo que hay detrás sin tener que entrar a mirar.
+        */}
+      {view !== 'calendar' && (
+        <div className="flex gap-1.5 overflow-x-auto mb-2 md:mb-3 pb-0.5">
+          {[
+            ['pendiente', 'Pendientes'],
+            ['atendido', 'Atendidas'],
+            ['finalizado', 'Finalizadas'],
+            ['todas', 'Todas'],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => {
+                setBandeja(id);
+                // El desplegable de estado y las bandejas dicen lo mismo de dos
+                // formas: si quedaran los dos puestos, un «Pendientes» sobre un
+                // filtro «Completada» daría una lista vacía sin explicar por qué.
+                if (filter.status) setFilter((f) => ({ ...f, status: '' }));
+              }}
+              className={`shrink-0 flex items-center gap-1.5 px-3 sm:px-4 py-2 rounded-xl text-sm font-medium cursor-pointer border transition-colors ${
+                bandeja === id
+                  ? 'bg-emerald-600 text-white border-emerald-600'
+                  : 'bg-white text-slate-600 border-slate-200 hover:bg-emerald-50'
+              }`}
+            >
+              {label}
+              <span
+                className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                  bandeja === id ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-500'
+                }`}
+              >
+                {conteoBandejas[id]}
+              </span>
+            </button>
+          ))}
         </div>
       )}
 

@@ -184,7 +184,8 @@ export default function PatientDetail() {
   const [searchParams] = useSearchParams();
   const appointmentId = searchParams.get('appointment') || null;
   const tabParam = searchParams.get('tab') || null;
-  const { hasRole } = useAuth();
+  const navigate = useNavigate();
+  const { hasRole, user } = useAuth();
   // Quien entra desde una cita entra a atender: el doctor arranca en la ficha
   // (los antecedentes antes de explorar) y el resto directo a seguimientos.
   const initialTab = tabParam
@@ -251,6 +252,82 @@ export default function PatientDetail() {
   const fmtTimer = (s) =>
     `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 
+  /**
+   * ¿ESTA ATENCIÓN SIGUE SIN DUEÑO?
+   *
+   * Desde que el aviso de enfermería trae aquí directamente (antes soltaba en la
+   * agenda, ver utils/appointmentNotice), se puede llegar a la ficha sin haber
+   * pasado por el botón «Atender» — que es el que RECLAMA el turno. Sin reclamo,
+   * dos enfermeros pueden abrir al mismo paciente y ninguno de los dos lo sabe:
+   * justo lo que el reclamo atómico existe para impedir.
+   *
+   * Mismo criterio que la agenda: manda el turno vigente y, en las citas viejas
+   * sin turnos, el campo de antes.
+   */
+  const idDe = (v) => String(v?._id || v || '');
+  const miId = String(user?.id || user?._id || '');
+  const enTramite = !!aptData && aptData.status !== 'completada';
+  const enfermeriaLibre = enTramite && (
+    (aptData.turns || []).length
+      ? aptData.currentTurnKind === 'enfermeria' && !aptData.currentTurnUser
+      : !aptData.attendedByNurse
+  );
+  // Ya es SUYA: es la única situación en la que puede cerrar su parte. Antes el
+  // botón «Terminar» salía con solo entrar con una cita, y pulsarlo cuando el
+  // turno era del doctor —o de otra compañera— solo devolvía un 403.
+  const enfermeriaMia = enTramite && (
+    (aptData.turns || []).length
+      ? aptData.currentTurnKind === 'enfermeria' && idDe(aptData.currentTurnUser) === miId
+      : idDe(aptData.attendedByNurse) === miId
+  );
+  const [reclamando, setReclamando] = useState(false);
+  const [cerrandoTurno, setCerrandoTurno] = useState(false);
+  /**
+   * No se reclama solo al abrir: tocar el aviso para ver de quién se trata no
+   * puede dejar la cita atada a quien solo estaba mirando (y el reclamo no tiene
+   * vuelta atrás). Se pide con un clic, igual que en la agenda.
+   */
+  const reclamarTurno = async () => {
+    if (reclamando) return;
+    setReclamando(true);
+    try {
+      const { data } = await api.post(`/appointments/${appointmentId}/nurse-claim`);
+      setAptData(data);
+      toast.success('La atención es tuya. Los demás ya no la ven en su bandeja.');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo tomar la atención');
+      // Si otro se adelantó, que la pantalla lo diga ya y no siga ofreciendo el botón.
+      api.get(`/appointments/${appointmentId}`).then((r) => setAptData(r.data)).catch(() => {});
+    } finally {
+      setReclamando(false);
+    }
+  };
+
+  /**
+   * Enfermería cierra SU turno sin pasar por la agenda.
+   *
+   * Es el mismo endpoint que el botón «Terminar» de la lista de citas: cierra el
+   * turno, pasa la cita al siguiente profesional si lo hay y la completa si no
+   * queda nadie. Después se vuelve a la agenda, igual que hace el doctor al
+   * guardar: quedarse en la ficha con todo igual se lee como «no pasó nada».
+   */
+  const terminarTurnoEnfermeria = async () => {
+    if (cerrandoTurno) return;
+    setCerrandoTurno(true);
+    try {
+      const { data } = await api.post(`/appointments/${appointmentId}/nurse-complete`, {});
+      // Se dice la verdad sobre lo que pasó: si detrás queda otro profesional, la
+      // cita NO está completada y decirlo evita que alguien la dé por cerrada.
+      const quedaAlguien = data?.status !== 'completada';
+      toast.success(quedaAlguien ? 'Tu parte quedó cerrada. La cita sigue con el siguiente.' : 'Atención finalizada.');
+      navigate('/appointments');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo cerrar tu parte');
+    } finally {
+      setCerrandoTurno(false);
+    }
+  };
+
   const timerStyle = timerSeconds === null ? null
     : timerSeconds >= 19 * 60 ? 'bg-red-50 border-red-300 text-red-600'
     : timerSeconds >= 14 * 60 ? 'bg-amber-50 border-amber-300 text-amber-600'
@@ -289,6 +366,64 @@ export default function PatientDetail() {
 
   return (
     <div className="px-0 py-1 sm:p-6 max-w-6xl mx-auto">
+      {/**
+        * BARRA DE ATENCIÓN DE ENFERMERÍA, PEGADA ARRIBA.
+        *
+        * Enseña la ÚNICA acción que toca en cada momento: tomar la atención si
+        * todavía no la ha tomado nadie, o cerrar su parte cuando ya es suya.
+        *
+        * Va pegada al borde superior (`sticky`) y NO dentro de la pestaña, por
+        * dos motivos. Uno de uso: la receta de un suero es larga y el botón de
+        * terminar quedaba al final, así que había que volver a subir con el
+        * paciente delante. Y otro técnico: la tarjeta de las pestañas tiene
+        * `overflow-hidden`, y dentro de ella `sticky` no se pega a nada.
+        *
+        * Lo de tomar la atención hace falta desde que el aviso de enfermería
+        * trae aquí directamente (ver server/utils/appointmentNotice): se llega
+        * sin pasar por el botón «Atender» de la agenda, que es el que RECLAMA el
+        * turno, y sin reclamo dos enfermeros pueden abrir al mismo paciente sin
+        * enterarse. No se reclama solo al abrir a propósito: mirar de quién se
+        * trata no puede dejar la cita atada a quien solo estaba mirando.
+        */}
+      {appointmentId && esEnfermero && (enfermeriaLibre || enfermeriaMia) && (
+        <div className="sticky top-0 z-30 mb-2 sm:mb-4">
+          <div
+            className={`flex flex-wrap items-center justify-between gap-2 border text-xs sm:text-sm rounded-xl px-3 py-2 shadow-md ${
+              enfermeriaLibre
+                ? 'bg-amber-50 border-amber-200 text-amber-900'
+                : 'bg-sky-50 border-sky-200 text-sky-900'
+            }`}
+          >
+            <span>
+              {enfermeriaLibre
+                ? 'Esta atención todavía no la ha tomado nadie. Tómala para que tus compañeros sepan que vas tú.'
+                : 'Estás atendiendo esta cita. Cuando acabes de aplicar lo indicado, cierra tu parte.'}
+            </span>
+            {enfermeriaLibre ? (
+              <button
+                type="button"
+                onClick={reclamarTurno}
+                disabled={reclamando}
+                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-semibold border-none cursor-pointer disabled:opacity-50"
+              >
+                <HiOutlineCheck className="w-4 h-4" />
+                {reclamando ? 'Tomando…' : 'La atiendo yo'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={terminarTurnoEnfermeria}
+                disabled={cerrandoTurno}
+                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-600 text-white text-xs font-semibold border-none cursor-pointer disabled:opacity-50"
+              >
+                <HiOutlineCheck className="w-4 h-4" />
+                {cerrandoTurno ? 'Cerrando…' : 'Terminar mi parte'}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       <Link
         to="/patients"
         className="inline-flex items-center gap-1 text-xs sm:text-sm text-slate-500 hover:text-emerald-600 mb-2 sm:mb-4 no-underline"
@@ -1698,7 +1833,28 @@ function SeguimientosTab({ patientId, appointmentId }) {
    * MSP; escribe qué aplicó, a quién y cómo quedó.
    */
   const esEnfermero = hasRole('enfermero') && !isAdmin;
-  const puedeEscribir = true;
+  /**
+   * ENFERMERÍA YA NO REDACTA SEGUIMIENTOS (sep-2026). Solo los LEE.
+   *
+   * Le tocaba un formulario de consulta entero —fecha, servicio, signos
+   * vitales, la tabla de «qué se aplicó», adjuntos— para hacer lo único que de
+   * verdad hace aquí: poner lo que el doctor recetó y cerrar su parte. Eso ya
+   * tiene su sitio, y no es este formulario:
+   *
+   *  · Lo que APLICA se anota en la propia receta del doctor, línea por línea
+   *    (ver `SueroLinea` y `puedeAdministrarSuero`): ahí está el suero, su
+   *    composición y las dosis que quedan.
+   *  · Su PARTE lo escribe el servidor al cerrar el turno («Terminar mi parte»,
+   *    en la barra de arriba), con lo que aplicó y desde cuándo — es el
+   *    auto-registro de `nurseComplete`.
+   *
+   * Consecuencia a tener presente: sin formulario, enfermería tampoco puede
+   * registrar una atención SIN cita. Hoy no le hace falta —el suero que receta
+   * mostrador ya le crea la cita sola, y recepción crea el resto—, pero si algún
+   * día vuelve a atender a alguien que no está en la agenda, esto es lo que hay
+   * que volver a abrir.
+   */
+  const puedeEscribir = !esEnfermero;
   /**
    * ¿El formulario es una CONSULTA médica completa? Enfermería no: se le
    * esconden las secciones que no le tocan en vez de enseñarle veinte campos
@@ -1715,31 +1871,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
   const esHojaMsp = esConsultaMedica && !isTerapeuta;
   const puedeAdministrarSuero = hasRole('admin', 'doctor', 'enfermero');
 
-  /**
-   * Enfermería cierra SU turno desde aquí, sin pasar por la agenda.
-   *
-   * Es el mismo endpoint que el botón «Terminar» de la agenda: cierra el turno,
-   * pasa la cita al siguiente profesional si lo hay y la completa si no queda
-   * nadie. Después se vuelve a la agenda, igual que hace el doctor al guardar:
-   * quedarse en la ficha con todo igual se lee como «no pasó nada».
-   */
-  const [cerrandoTurno, setCerrandoTurno] = useState(false);
-  const terminarTurnoEnfermeria = async () => {
-    if (cerrandoTurno) return;
-    setCerrandoTurno(true);
-    try {
-      const { data } = await api.post(`/appointments/${appointmentId}/nurse-complete`, {});
-      // Se dice la verdad sobre lo que pasó: si detrás queda otro profesional, la
-      // cita NO está completada y decirlo evitaría que alguien la dé por cerrada.
-      const quedaAlguien = data?.status !== 'completada';
-      toast.success(quedaAlguien ? 'Tu parte quedó cerrada. La cita sigue con el siguiente.' : 'Atención finalizada.');
-      navigate('/appointments');
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'No se pudo cerrar tu parte');
-    } finally {
-      setCerrandoTurno(false);
-    }
-  };
+  // Cerrar el turno de enfermería ya no vive aquí: subió a la barra pegada de
+  // PatientDetail, para no tener que volver arriba con el paciente delante.
 
   // Borrar un seguimiento sigue siendo solo del administrador: es historia
   // clínica y se corrige, no se hace desaparecer.
@@ -2561,35 +2694,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
         </div>
       )}
 
-      {/**
-       * ENFERMERÍA TAMBIÉN TIENE QUE PODER TERMINAR.
-       *
-       * El doctor cierra su turno al guardar el seguimiento; enfermería no
-       * redacta ninguno, así que no tenía forma de cerrar el suyo desde aquí: se
-       * aplicaba el suero y la cita se quedaba abierta para siempre, y el botón
-       * «Terminar» solo existía en la agenda —había que salir a buscarlo—.
-       */}
-      {appointmentId && esEnfermero && !editandoId && (
-        <div className="flex flex-wrap items-center justify-between gap-2 bg-sky-50 border border-sky-200 text-sky-900 text-xs sm:text-sm rounded-xl px-3 py-2">
-          <span>
-            Cuando acabes de aplicar lo indicado, cierra tu parte de la atención — o
-            guarda abajo lo que aplicaste, que también la cierra.
-          </span>
-          <button
-            type="button"
-            onClick={terminarTurnoEnfermeria}
-            disabled={cerrandoTurno}
-            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-600 text-white text-xs font-semibold border-none cursor-pointer disabled:opacity-50"
-          >
-            <HiOutlineCheck className="w-4 h-4" />
-            {cerrandoTurno ? 'Cerrando…' : 'Terminar mi parte'}
-          </button>
-        </div>
-      )}
-
       {/* El formulario es el mismo para todos; lo que cambia es cuánto se ve
-          (ver `esConsultaMedica`). `puedeEscribir` se conserva por si mañana
-          vuelve a haber un rol de solo lectura. */}
+          (ver `esConsultaMedica`) y quién lo ve (ver `puedeEscribir`: enfermería
+          ya no redacta seguimientos). El botón de cerrar su parte se subió a la
+          barra pegada de arriba, en PatientDetail. */}
       {puedeEscribir && (
       <form
         ref={formRef}
