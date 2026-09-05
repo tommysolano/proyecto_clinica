@@ -14,6 +14,7 @@ import {
   HiOutlinePencilSquare,
   HiOutlineTrash,
   HiOutlineUsers,
+  HiOutlineArrowPath,
 } from 'react-icons/hi2';
 
 // Los roles que se pueden asignar salen de ROLE_LABELS (utils/roles.js), que es
@@ -31,6 +32,7 @@ const EMPTY = {
   cedula: '',
   phone: '',
   specialty: '',
+  active: true,
 };
 
 export default function Users() {
@@ -86,6 +88,7 @@ export default function Users() {
       cedula: u.cedula || '',
       phone: u.phone || '',
       specialty: u.specialty || '',
+      active: u.active !== false,
     });
     setShowModal(true);
   };
@@ -103,6 +106,10 @@ export default function Users() {
           cedula: form.cedula,
           phone: form.phone,
           specialty: form.specialty,
+          // Un usuario desactivado no entra AUNQUE se le cambie la contraseña, y
+          // el login no distinguía un caso del otro. Reactivar tiene que estar
+          // aquí mismo, junto a la contraseña: es el sitio donde se va a buscar.
+          active: form.active,
           clinics: [{ clinic: activeClinic._id, role: form.role }],
         };
         if (form.password) payload.password = form.password;
@@ -126,11 +133,18 @@ export default function Users() {
     }
   };
 
-  const handleDelete = async (u) => {
-    if (!confirm(`¿Desactivar al usuario ${u.name}?`)) return;
+  /**
+   * Desactivar y REACTIVAR desde la misma fila. Antes solo se podía desactivar:
+   * el botón llamaba a DELETE y no había ningún sitio, en toda la aplicación,
+   * para volver a encender a esa persona. Quedaba fuera para siempre.
+   */
+  const toggleActive = async (u) => {
+    const activo = u.active !== false;
+    if (!confirm(`¿${activo ? 'Desactivar' : 'Reactivar'} al usuario ${u.name}?`)) return;
     try {
-      await api.delete(`/users/${u._id}`);
-      toast.success('Usuario desactivado');
+      if (activo) await api.delete(`/users/${u._id}`);
+      else await api.put(`/users/${u._id}`, { active: true });
+      toast.success(activo ? 'Usuario desactivado' : 'Usuario reactivado');
       load();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error');
@@ -216,12 +230,20 @@ export default function Users() {
                       <HiOutlinePencilSquare className="w-4 h-4" />
                     </button>
                     <button
-                      onClick={() => handleDelete(u)}
-                      className="p-1.5 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded cursor-pointer bg-transparent border-none"
-                      title="Desactivar"
+                      onClick={() => toggleActive(u)}
+                      className={`p-1.5 rounded cursor-pointer bg-transparent border-none ${
+                        u.active !== false
+                          ? 'text-slate-500 hover:text-red-600 hover:bg-red-50'
+                          : 'text-emerald-600 hover:bg-emerald-50'
+                      }`}
+                      title={u.active !== false ? 'Desactivar' : 'Reactivar'}
                       disabled={u.isSuperAdmin}
                     >
-                      <HiOutlineTrash className="w-4 h-4" />
+                      {u.active !== false ? (
+                        <HiOutlineTrash className="w-4 h-4" />
+                      ) : (
+                        <HiOutlineArrowPath className="w-4 h-4" />
+                      )}
                     </button>
                   </div>
                 </td>
@@ -267,7 +289,26 @@ export default function Users() {
                 autoComplete="new-password"
                 minLength={editing ? undefined : 6}
               />
+              {editing && !form.active && (
+                <p className="mt-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+                  Este usuario está <strong>desactivado</strong>: no podrá entrar aunque le pongas
+                  una contraseña nueva. Márcalo como activo aquí abajo.
+                </p>
+              )}
             </Field>
+            {editing && (
+              <Field label="Estado">
+                <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer h-[42px]">
+                  <input
+                    type="checkbox"
+                    checked={form.active}
+                    onChange={(e) => handleChange('active', e.target.checked)}
+                    className="w-4 h-4 accent-emerald-600"
+                  />
+                  Activo (puede iniciar sesión)
+                </label>
+              </Field>
+            )}
             <Field label="Rol" required>
               <select
                 value={form.role}

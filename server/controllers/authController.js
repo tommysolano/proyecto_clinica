@@ -147,13 +147,33 @@ exports.login = async (req, res) => {
 
     const { email, password } = req.body;
     const user = await User.findOne({ email });
-    if (!user || !user.active) {
+    if (!user) {
       return res.status(400).json({ message: 'Credenciales inválidas' });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: 'Credenciales inválidas' });
+    }
+
+    /**
+     * CUENTA DESACTIVADA: SE DICE, NO SE DISFRAZA.
+     *
+     * Antes esto viajaba junto al `!user` en un único «Credenciales inválidas»,
+     * y ese ahorro costaba caro: el admin le cambiaba la contraseña a alguien
+     * desactivado, la pantalla decía «Usuario actualizado», la persona seguía sin
+     * poder entrar y todo apuntaba a que el cambio de contraseña no se guardaba.
+     * Se guardaba; lo que fallaba era otra cosa y el mensaje la tapaba.
+     *
+     * Se comprueba DESPUÉS de acertar la contraseña, a propósito: así el mensaje
+     * solo lo ve el dueño de la cuenta y no sirve para sondear qué correos
+     * existen en el sistema.
+     */
+    if (!user.active) {
+      return res.status(403).json({
+        message: 'Tu usuario está desactivado. Pide a un administrador que lo reactive.',
+        code: 'USER_INACTIVE',
+      });
     }
 
     // Bloqueo de acceso al sistema (super-admin y exceptuados quedan libres).
