@@ -4994,12 +4994,16 @@ exports.registerPatientFromChat = async (req, res) => {
       if (existing) return res.json({ patient: existing, conversation: conv });
     }
 
-    const { firstName, lastName, cedula, gender } = req.body;
+    const { firstName, lastName, cedula, gender, email, address } = req.body;
     // Nombre, apellido y género DEJARON DE SER OBLIGATORIOS (misma regla que en
     // el alta desde Clientes): al contacto de un chat muchas veces se le conoce
     // solo por el nombre que trae de WhatsApp, y exigir los tres empujaba a
     // rellenarlos a ojo. El género va a `undefined` y no a '' porque el enum del
     // modelo no admite la cadena vacía.
+    //
+    // `gender` sigue aceptándose aunque el modal del call center ya no lo
+    // pregunte —pide CORREO y DIRECCIÓN, que es lo que el contacto da por el
+    // chat—: el campo no desapareció del paciente, solo de este formulario.
 
     // `conv.phone` SOLO es un teléfono real en WhatsApp: en Messenger/Instagram es
     // el identificador interno del contacto (PSID/IGSID) — Meta no comparte el
@@ -5027,10 +5031,29 @@ exports.registerPatientFromChat = async (req, res) => {
         lastName: lastName || '',
         cedula: cedula || '',
         gender: gender || undefined,
+        email: String(email || '').trim(),
+        address: String(address || '').trim(),
         phone,
         whatsapp: phone,
         source: 'anuncio',
       });
+    } else {
+      /**
+       * El paciente YA EXISTÍA (se encontró por cédula o por teléfono) y aquí no
+       * se crea nada. Sin esto, el correo y la dirección que el agente acababa de
+       * escribir se tiraban en silencio: se registraba el chat, se decía
+       * «Paciente agregado» y el dato no estaba en ninguna parte.
+       *
+       * Solo se RELLENAN LOS HUECOS. Lo que el paciente ya tenía no se pisa: el
+       * correo de su ficha puede ser el bueno y este el que dictó por el chat.
+       */
+      const huecos = {};
+      if (email && !patient.email) huecos.email = String(email).trim();
+      if (address && !patient.address) huecos.address = String(address).trim();
+      if (Object.keys(huecos).length) {
+        Object.assign(patient, huecos);
+        await patient.save();
+      }
     }
     conv.patient = patient._id;
     // `|| undefined` para no dejar el nombre del chat en un espacio en blanco

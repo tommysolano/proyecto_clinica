@@ -54,3 +54,45 @@ export function contactName(c) {
   const full = `${c.firstName || ''} ${c.lastName || ''}`.trim();
   return full || c.displayName || formatPhone(c.phone);
 }
+
+/**
+ * UN SOLO CAMPO «TELÉFONO» PARA LOS DOS NÚMEROS.
+ *
+ * El formulario pedía «Teléfono» y «WhatsApp» por separado, y en la práctica es
+ * el mismo número: se tecleaba dos veces, o se dejaba el segundo en blanco. Pero
+ * los dos campos NO son decorativos — todo el envío del CRM resuelve el destino
+ * como `whatsapp || phone` (workflows, campañas, recordatorios) —, así que la
+ * gente que sí tiene dos números tenía que poder seguir guardando los dos.
+ *
+ * La solución es de pantalla, no de datos: un único campo donde caben uno o dos
+ * números separados por «/», y estas dos funciones los juntan al abrir y los
+ * reparten al guardar. En la base sigue habiendo `phone` y `whatsapp` y nada
+ * más abajo cambia.
+ */
+const SEPARADOR = ' / ';
+
+/** phone + whatsapp → lo que se enseña en el campo (sin repetir si son iguales). */
+export const unirTelefonos = (phone, whatsapp) => {
+  const a = String(phone || '').trim();
+  const b = String(whatsapp || '').trim();
+  if (a && b && a !== b) return `${a}${SEPARADOR}${b}`;
+  return a || b;
+};
+
+/**
+ * Lo escrito → { phone, whatsapp }. El PRIMERO es el teléfono y el SEGUNDO el de
+ * WhatsApp, que es el orden en que estaban los dos campos de antes: así un
+ * paciente que ya tenía dos números distintos se abre y se vuelve a guardar sin
+ * que se le crucen.
+ *
+ * Con un solo número, `whatsapp` se deja VACÍO a propósito en vez de duplicarlo:
+ * quien envía ya hace `whatsapp || phone`, y duplicar el dato obliga a acertar en
+ * dos sitios cada vez que alguien cambia de número.
+ */
+export const partirTelefonos = (texto) => {
+  const partes = String(texto || '')
+    .split(/[/,;|]+|\s+y\s+/i)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  return { phone: partes[0] || '', whatsapp: partes[1] || '' };
+};

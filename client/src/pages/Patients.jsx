@@ -15,6 +15,7 @@ import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import EmailStatus from '../components/EmailStatus';
 import useEmailValidation from '../hooks/useEmailValidation';
 import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO, ROLES_VEN_DIRECCION, ROLES_VEN_TELEFONO } from '../utils/roles';
+import { unirTelefonos, partirTelefonos } from '../utils/phone';
 import { nombreSucursal } from '../utils/clinicName';
 import {
   HiOutlinePlus,
@@ -134,6 +135,9 @@ export default function Patients() {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
+  // Los dos números en un solo campo (ver unirTelefonos/partirTelefonos). Se
+  // guarda como texto suelto para que escribir el separador no se deshaga solo.
+  const [telefonos, setTelefonos] = useState('');
   const [saving, setSaving] = useState(false);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -212,6 +216,7 @@ export default function Patients() {
   const openNew = () => {
     setEditing(null);
     setForm(emptyForm);
+    setTelefonos('');
     /**
      * QUIEN ATIENDE ENTRA A LA CONSULTA, no agenda.
      *
@@ -242,6 +247,7 @@ export default function Patients() {
       // ser de hace tres años y el campo ya no se puede corregir a mano.
       age: nacimiento ? edadDesdeFecha(nacimiento) : (patient.age ?? ''),
     });
+    setTelefonos(unirTelefonos(patient.phone, patient.whatsapp));
     setAptForm(emptyApt);
     setModalOpen(true);
   };
@@ -273,6 +279,9 @@ export default function Patients() {
       // '' a ObjectId/número/enum y el guardado fallaba con un error opaco.
       const payload = {
         ...form,
+        // El campo único vuelve a ser `phone` + `whatsapp`, que es lo que
+        // entiende el resto del sistema.
+        ...partirTelefonos(telefonos),
         age: form.age === '' ? undefined : Number(form.age),
         birthDate: form.birthDate || undefined,
         referredById: form.referredById || undefined,
@@ -662,21 +671,16 @@ export default function Patients() {
             {(showContact || !editing) && (
             <Field label="Teléfono">
               <input
-                name="phone"
-                value={form.phone}
-                onChange={handleChange}
+                name="telefonos"
+                value={telefonos}
+                onChange={(e) => setTelefonos(e.target.value)}
+                placeholder="0991234567"
                 className="input"
               />
-            </Field>
-            )}
-            {(showContact || !editing) && (
-            <Field label="WhatsApp">
-              <input
-                name="whatsapp"
-                value={form.whatsapp}
-                onChange={handleChange}
-                className="input"
-              />
+              <p className="text-[11px] text-slate-400 mt-1">
+                ¿Tiene dos números? Escríbelos separados por «/». El segundo es el que se usa
+                para WhatsApp.
+              </p>
             </Field>
             )}
             <Field label="Fecha de nacimiento">

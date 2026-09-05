@@ -5220,11 +5220,24 @@ function RegisterPatientModal({ conv, onClose, onRegistered }) {
   // marcar. Ahí el agente tiene que escribir el teléfono real (si el contacto lo
   // dio) para vincular este chat con su WhatsApp — ver registerPatientFromChat.
   const isWhatsapp = (conv.channel || 'whatsapp') === 'whatsapp';
+  /**
+   * CORREO Y DIRECCIÓN EN LUGAR DEL GÉNERO.
+   *
+   * El call center registra al paciente con lo que acaba de darle por el chat, y
+   * eso es el correo y la dirección — el género no se lo dicta nadie por
+   * WhatsApp y se rellenaba a ojo o se quedaba en «Seleccionar». Sigue estando
+   * en la ficha del paciente, que es donde se corrige con el dato delante.
+   *
+   * El correo arranca con el que el contacto ESCRIBIÓ en la conversación
+   * (`detectedEmail`, que el servidor saca del último mensaje entrante que
+   * contenga uno): es justo el dato que el agente iba a copiar a mano.
+   */
   const [form, setForm] = useState({
     firstName: guessName[0] || '',
     lastName: guessName.slice(1).join(' ') || '',
     cedula: '',
-    gender: '',
+    email: conv.detectedEmail || '',
+    address: '',
     phone: '',
   });
   const [saving, setSaving] = useState(false);
@@ -5277,14 +5290,24 @@ function RegisterPatientModal({ conv, onClose, onRegistered }) {
             <SriStatus status={cedulaLookup} />
           </div>
           <div>
-            <label className="text-xs font-semibold text-slate-600 block mb-1">Género</label>
-            <select value={form.gender} onChange={(e) => setForm({ ...form, gender: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
-              <option value="">Seleccionar</option>
-              <option value="masculino">Masculino</option>
-              <option value="femenino">Femenino</option>
-              <option value="otro">Otro</option>
-            </select>
+            <label className="text-xs font-semibold text-slate-600 block mb-1">Correo electrónico</label>
+            <input
+              type="text"
+              value={form.email}
+              onChange={(e) => setForm({ ...form, email: e.target.value })}
+              placeholder="correo@dominio.com"
+              className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
+            />
           </div>
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-600 block mb-1">Dirección</label>
+          <input
+            value={form.address}
+            onChange={(e) => setForm({ ...form, address: e.target.value })}
+            placeholder="Calle, número, referencia"
+            className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
+          />
         </div>
         {isWhatsapp ? (
           <p className="text-xs text-slate-500">Teléfono: {conv.phone}</p>
