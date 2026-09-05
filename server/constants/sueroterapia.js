@@ -112,6 +112,15 @@ const SUERO_MOLECULAS = [
   { code: 'GLU001', name: 'BIO GLUTATHIONE AMP 2ML', activo: true },
   { code: 'PTBIOT01', name: 'BIOTINA B7 10ML MOL', activo: true },
   { code: 'PTCARN01', name: 'CARNITINA 10ML MOL', activo: false },
+  /**
+   * CÓDIGO PROVISIONAL. `CELLVIT01` no es el código con el que CELLVITALIS está
+   * dado de alta en el inventario —todavía no se sabe cuál es—, así que el
+   * médico puede recetarlo desde ya pero al aplicarlo NO se descuenta stock:
+   * `buscarComponenteSuero` lo encuentra aquí, y luego no hay Product con ese
+   * código. En cuanto se conozca el real, se cambia AQUÍ y en el espejo del
+   * cliente y el descuento empieza a funcionar solo.
+   */
+  { code: 'CELLVIT01', name: 'CELLVITALIS', activo: true },
   { code: 'CLODECA01', name: 'CLORURO DE CALCIO 10ML MOLECULA', activo: true },
   { code: 'PTCOMB01', name: 'COMPLEJO B 10ML MOL', activo: true },
   { code: 'COM001', name: 'COMVIPLEX FCO X 200G', activo: true },

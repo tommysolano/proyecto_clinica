@@ -98,6 +98,10 @@ export const SUERO_MOLECULAS = [
   { code: "GLU001", name: "BIO GLUTATHIONE AMP 2ML", activo: true },
   { code: "PTBIOT01", name: "BIOTINA B7 10ML MOL", activo: true },
   { code: "PTCARN01", name: "CARNITINA 10ML MOL", activo: false },
+  // Código PROVISIONAL: no es el del inventario (aún no se sabe cuál es), así que
+  // se receta pero no descuenta stock. Al conocerlo se cambia aquí y en el
+  // espejo del servidor. Ver la nota en server/constants/sueroterapia.js.
+  { code: "CELLVIT01", name: "CELLVITALIS", activo: true },
   { code: "CLODECA01", name: "CLORURO DE CALCIO 10ML MOLECULA", activo: true },
   { code: "PTCOMB01", name: "COMPLEJO B 10ML MOL", activo: true },
   { code: "COM001", name: "COMVIPLEX FCO X 200G", activo: true },
