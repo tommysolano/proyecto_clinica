@@ -1667,17 +1667,20 @@ exports.assignDoctor = async (req, res) => {
     if (aAsignar.length) {
       const User = require('../models/User');
       const encontrados = await User.find({ _id: { $in: aAsignar } })
-        .select('name clinics active isSuperAdmin')
+        .select('name clinics active isSuperAdmin worksInAllClinics')
         .lean();
       /**
        * Se juzga solo a quien TIENE sucursales asignadas: si el usuario no tiene
        * ninguna no se sabe dónde atiende, y el caso que importa —el doctor que
        * trabaja en otra sede— siempre las tiene. El super-admin ve todas las
-       * sucursales, así que él nunca está fuera.
+       * sucursales, así que él nunca está fuera. Y `worksInAllClinics` —el check
+       * de "rota entre sedes"— cuenta aquí igual que en `getRoleForClinic`: si
+       * el selector se lo ofrece al mostrador, tiene que poder asignarlo.
        */
       const atiendeAqui = (u) =>
         u.active !== false &&
         (u.isSuperAdmin ||
+          u.worksInAllClinics ||
           !(u.clinics || []).length ||
           (u.clinics || []).some((c) => String(c.clinic) === String(apt.clinic)));
       const fuera = encontrados.filter((u) => !atiendeAqui(u));

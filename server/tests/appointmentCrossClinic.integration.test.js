@@ -234,3 +234,29 @@ test('una cita inexistente sigue devolviendo 404 y no revienta', async () => {
   );
   assert.equal(r.statusCode, 404);
 });
+
+/**
+ * QUIEN ROTA ENTRE SEDES SÍ SE PUEDE ASIGNAR.
+ *
+ * El check "trabaja en todas las sucursales" (`worksInAllClinics`) ya hacía que
+ * el doctor saliera en el selector de cualquier sede —`User.enSucursal` lo
+ * contempla— pero la validación de `assignDoctor` solo miraba su lista de
+ * sucursales y lo rechazaba con «no atiende en la sucursal de esta cita». Si el
+ * mostrador lo ve en la lista, tiene que poder asignarlo.
+ */
+test('quien trabaja en todas las sucursales se puede asignar a cualquier cita', async () => {
+  const { sedeCajero, userId, cita, doctorDeMiSede } = await seedDosSedes();
+  await User.updateOne({ _id: doctorDeMiSede._id }, { worksInAllClinics: true });
+
+  const r = await H.runController(
+    appt.assignDoctor,
+    reqCajero(
+      sedeCajero,
+      userId,
+      { steps: [{ kind: 'doctor', user: String(doctorDeMiSede._id) }] },
+      { params: { id: String(cita._id) } }
+    )
+  );
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  assert.equal(String((await Appointment.findById(cita._id)).doctor), String(doctorDeMiSede._id));
+});
