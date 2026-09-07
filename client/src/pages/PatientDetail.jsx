@@ -4,6 +4,7 @@ import api from '../api/axios';
 import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
+import { useSocketEvent } from '../context/SocketContext';
 import { fmtDate, fmtDateTime, nowEcHHMM, todayEc } from '../utils/date';
 import TagEditor from '../components/TagEditor';
 import NumericInput from '../components/NumericInput';
@@ -281,6 +282,26 @@ export default function PatientDetail() {
       .then((r) => setAptData(r.data))
       .catch(() => {});
   }, [appointmentId]);
+
+  /**
+   * LA CITA SE SIGUE EN VIVO: el turno puede pasar a ser mío mientras miro.
+   *
+   * En una cita con dos pasos de enfermería, la segunda persona abre la ficha
+   * mientras la primera todavía está aplicando lo suyo. La cita se leía UNA vez
+   * al entrar, así que cuando la compañera cerraba su parte —y el turno pasaba a
+   * ella— esta pantalla seguía con la foto vieja: ni «La atiendo yo» ni
+   * «Terminar mi parte», y la única salida era recargar o irse a la agenda.
+   */
+  useSocketEvent(
+    'appointment:updated',
+    (apt) => { if (appointmentId && String(apt?._id) === String(appointmentId)) setAptData(apt); },
+    [appointmentId]
+  );
+  useSocketEvent(
+    'appointment:assigned',
+    (apt) => { if (appointmentId && String(apt?._id) === String(appointmentId)) setAptData(apt); },
+    [appointmentId]
+  );
 
   useEffect(() => {
     if (!aptData?.consultationStartedAt || aptData?.consultationEndedAt) return;

@@ -180,6 +180,7 @@ function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, p
        */
       serum: paso?.serum || undefined,
       serumFollowUp: paso?.serumFollowUp || null,
+      serumMergeIntoService: !!paso?.serumMergeIntoService,
     });
   }
 

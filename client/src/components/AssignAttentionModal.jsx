@@ -137,6 +137,7 @@ export default function AssignAttentionModal({
                 ? { base: { ...(t.serum.base || {}) }, components: t.serum.components.map((c) => ({ ...c })) }
                 : null,
               serumFollowUp: t.serumFollowUp || null,
+              serumMergeIntoService: !!t.serumMergeIntoService,
               key: `enf-${i}`,
             }
           : { kind: 'doctor', user: String(t.user?._id || t.user), key: `doc-${t.user?._id || t.user}` }
@@ -158,11 +159,30 @@ export default function AssignAttentionModal({
    * Y no es cosmético: si el servicio nuevo trae su propio suero, al guardar se
    * escribe solo en los seguimientos, igual que si se hubiera agendado así.
    */
+  // Se conserva el objeto ENTERO del servicio (no solo id + nombre): de él sale
+  // `autoSerum`, y sin eso esta pantalla no sabe que el servicio ya escribe su
+  // propia bolsa y ofrece escoger otra como si no hubiera ninguna.
   const [servicio, setServicio] = useState(
     apt?.serviceItem
-      ? { _id: apt.serviceItem._id || apt.serviceItem, name: apt.serviceItem.name || apt.serviceName || '' }
+      ? (typeof apt.serviceItem === 'object'
+          ? { ...apt.serviceItem, name: apt.serviceItem.name || apt.serviceName || '' }
+          : { _id: apt.serviceItem, name: apt.serviceName || '' })
       : null
   );
+  /**
+   * El suero DE SERIE del servicio elegido, si lo trae. Es lo que convierte
+   * «escoger un suero» en «añadir ampollas al suero que ya hay»: son la misma
+   * bolsa, y escribirlas por separado dejaba dos recetas con el mismo nombre.
+   */
+  const sueroDelServicio = servicio?.autoSerum?.enabled ? servicio : null;
+  const sueroDelServicioTexto = (sueroDelServicio?.autoSerum?.components || [])
+    .map((c) => `${c.name}${Number(c.quantity) > 1 ? ` ×${c.quantity}` : ''}`)
+    .join(', ');
+  /** La bolsa del servicio, lista para editarla en un paso de enfermería. */
+  const bolsaDelServicio = () => ({
+    base: { ...(sueroDelServicio?.autoSerum?.base || sueroVacio().base) },
+    components: (sueroDelServicio?.autoSerum?.components || []).map((c) => ({ ...c })),
+  });
   const [busy, setBusy] = useState(false);
   // Índice del paso cuyo catálogo de ampollas está abierto (uno para toda la
   // cola: solo se escoge en uno a la vez).
@@ -247,6 +267,9 @@ export default function AssignAttentionModal({
                 // La marca de "ya está escrito" solo vale si el suero NO se ha
                 // tocado: si se cambió, es otro y hay que escribirlo de nuevo.
                 serumFollowUp: p.serumTocado ? null : p.serumFollowUp || null,
+                // Lo escogido aquí se SUMA a la bolsa que ya escribió el servicio
+                // (no abre una segunda receta con el mismo nombre).
+                serumMergeIntoService: !!p.serumMergeIntoService,
               }
             : { kind: 'doctor', user: p.user }
         ),
@@ -482,15 +505,43 @@ export default function AssignAttentionModal({
                           {(paso.serum?.components || []).map((c) => `${c.name} ×${c.quantity || 1}`).join(', ')}
                         </p>
                       ) : !paso.serum ? (
-                        <button
-                          type="button"
-                          onClick={() => editarPaso(idx, { serum: sueroVacio(), serumTocado: true })}
-                          className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-700 bg-transparent border-none cursor-pointer p-0"
-                        >
-                          <HiOutlineBeaker className="w-4 h-4" /> Escoger el suero que se va a aplicar
-                        </button>
+                        <>
+                          {/* El servicio YA escribe su bolsa: lo que se escoja aquí
+                              se le suma, no abre una segunda receta con su mismo
+                              nombre (que es como acabaron dos «Detox Plus» con
+                              ampollas distintas en la ficha de un paciente). */}
+                          {sueroDelServicio && (
+                            <p className="m-0 mb-1 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+                              <b>«{sueroDelServicio.name}» ya escribe su suero</b>
+                              {sueroDelServicioTexto ? ` (${sueroDelServicioTexto})` : ''}. Lo que
+                              añadas aquí se suma a <b>esa misma receta</b>: no se crea una segunda.
+                            </p>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              editarPaso(idx, {
+                                serum: sueroDelServicio ? bolsaDelServicio() : sueroVacio(),
+                                serumTocado: true,
+                                serumMergeIntoService: !!sueroDelServicio,
+                              })
+                            }
+                            className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-700 bg-transparent border-none cursor-pointer p-0"
+                          >
+                            <HiOutlineBeaker className="w-4 h-4" />
+                            {sueroDelServicio
+                              ? `Añadir ampollas al suero de «${sueroDelServicio.name}»`
+                              : 'Escoger el suero que se va a aplicar'}
+                          </button>
+                        </>
                       ) : (
                         <>
+                          {paso.serumMergeIntoService && (
+                            <p className="m-0 mb-1 text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5">
+                              Estás editando el suero de <b>«{sueroDelServicio?.name || servicio?.name}»</b>,
+                              el que ya está escrito en la ficha. Se guarda como <b>una sola receta</b>.
+                            </p>
+                          )}
                           <SueroComposicionEditor
                             base={paso.serum.base}
                             componentes={paso.serum.components}
@@ -504,7 +555,9 @@ export default function AssignAttentionModal({
                           />
                           <button
                             type="button"
-                            onClick={() => editarPaso(idx, { serum: null, serumTocado: true })}
+                            onClick={() =>
+                              editarPaso(idx, { serum: null, serumTocado: true, serumMergeIntoService: false })
+                            }
                             className="mt-1 text-[11px] text-red-500 bg-transparent border-none cursor-pointer p-0"
                           >
                             Quitar el suero

@@ -162,6 +162,13 @@ test('T8) guardar sin mencionar la marca no la toca', async () => {
  */
 const Appointment = require('../models/Appointment');
 const Patient = require('../models/Patient');
+// Leer una cita por id las POPULA todas. Fuera del server, donde `index.js`
+// carga los modelos, mongoose no las conoce y `populate` revienta con un
+// MissingSchemaError que el controlador devuelve como un 500 genérico.
+require('../models/AppointmentServiceItem');
+require('../models/Referral');
+require('../models/Treatment');
+require('../models/Product');
 const appt = require('../controllers/appointmentController');
 
 /** La agenda tal y como la pide la pantalla: vista unificada (`clinic=all`). */
@@ -232,4 +239,89 @@ test('T11) y puede reclamar esa cita, no solo verla', async () => {
   assert.ok(r.statusCode < 400, JSON.stringify(r.payload));
   const guardada = await Appointment.findById(libre._id);
   assert.equal(String(guardada.currentTurnUser), String(enfRotativa._id));
+});
+
+/**
+ * EL CUARTO ESPEJO, y el que quedaba sin arreglar: LEER **UNA** CITA POR ID.
+ *
+ * `getAppointment` se armaba el alcance a mano con `user.clinics[]` a secas. Ver
+ * la agenda (T9) y reclamar (T11) ya respetaban la marca, pero pedir la cita
+ * suelta devolvía 404 — y eso no se lee como un problema de sucursales:
+ *
+ *   la enfermera abre la ficha del paciente desde el aviso, ve sus seguimientos
+ *   —esos no se filtran por sede— y NO le sale «Terminar mi parte», porque esa
+ *   pantalla pide la cita por id para saber de quién es el turno. Tenía que
+ *   salirse a la agenda para cerrar su propia atención.
+ */
+const leerCita = (persona, sedeActiva, citaId) => {
+  const req = H.mockReq(sedeActiva, persona._id, {}, {
+    role: persona.clinics[0].role,
+    params: { id: String(citaId) },
+  });
+  req.user = persona;
+  return H.runController(appt.getAppointment, req);
+};
+
+test('T12) puede ABRIR la cita de la otra sucursal (es lo que enseña el botón de terminar)', async () => {
+  const { central, extension, enfRotativa } = await seed();
+  const suya = await citaDeEnfermeria(extension, enfRotativa._id);
+
+  const r = await leerCita(enfRotativa, central, suya._id);
+  assert.ok(r.statusCode < 400, JSON.stringify(r.payload));
+  assert.equal(
+    String(r.payload.currentTurnUser),
+    String(enfRotativa._id),
+    'y el turno viene a su nombre: es lo que la ficha mira para ofrecerle cerrar'
+  );
+});
+
+test('T13) la de una sola sede sigue sin poder abrir la cita de la otra', async () => {
+  const { central, extension } = await seed();
+  const fija = await User.create({
+    name: 'EnfFija2', email: 'enffija2@t.com', password: 'secreto123',
+    clinics: [{ clinic: central, role: 'enfermero' }],
+  });
+  const ajena = await citaDeEnfermeria(extension, fija._id);
+
+  const r = await leerCita(fija, central, ajena._id);
+  assert.equal(r.statusCode, 404, 'el alcance sigue siendo el mismo para quien no rota');
+});
+
+/**
+ * EL CASO COMPLETO DE LA CITA CON DOS ENFERMEROS: la segunda tiene que poder
+ * cerrar su parte desde la ficha, sin volver a la agenda.
+ */
+test('T14) en una cita con dos pasos de enfermería, la segunda abre la cita ya con su turno', async () => {
+  const { central, extension, enfRotativa } = await seed();
+  const primera = await User.create({
+    name: 'EnfUno', email: 'enfuno@t.com', password: 'secreto123',
+    clinics: [{ clinic: extension, role: 'enfermero' }],
+  });
+  const paciente = await Patient.create({ clinic: extension, firstName: 'Andrés', lastName: 'Ramos' });
+  const cita = await Appointment.create({
+    clinic: extension,
+    patient: paciente._id,
+    date: H.docDate(),
+    startTime: '10:00',
+    status: 'asistida',
+    turns: [
+      { kind: 'enfermeria', user: primera._id, status: 'pendiente', order: 0 },
+      { kind: 'enfermeria', user: enfRotativa._id, status: 'pendiente', order: 1 },
+    ],
+    currentTurnKind: 'enfermeria',
+    currentTurnUser: primera._id,
+  });
+
+  // La primera cierra su parte.
+  const reqPrimera = H.mockReq(extension, primera._id, {}, {
+    role: 'enfermero', params: { id: String(cita._id) },
+  });
+  reqPrimera.user = primera;
+  ok(await H.runController(appt.nurseComplete, reqPrimera));
+
+  // Y la segunda abre la ficha: la cita tiene que llegarle, y a su nombre.
+  const r = await leerCita(enfRotativa, central, cita._id);
+  assert.ok(r.statusCode < 400, JSON.stringify(r.payload));
+  assert.equal(r.payload.status, 'asistida', 'la cita sigue viva: queda su turno');
+  assert.equal(String(r.payload.currentTurnUser), String(enfRotativa._id));
 });

@@ -355,6 +355,247 @@ test('T12) una cita YA agendada con servicio que trae suero lo recibe al asignar
   assert.equal((await sueroDeLaFicha(patient._id)).items.length, 1, 'y no se repite');
 });
 
+/**
+ * EL CASO REAL: mostrador agenda «ya veremos a qué», le pone el servicio después
+ * y luego abre «Asignar atención» para poner a los dos enfermeros. Eran las TRES
+ * puertas del suero seguidas, y la de en medio —corregir el servicio— escribía
+ * la receta sin dejar la marca `autoSerumFollowUp`: la tercera no la encontraba
+ * y volvía a escribir la MISMA bolsa. En la ficha aparecían dos, y eso se lee
+ * como que al paciente le recetaron dos sueros.
+ */
+test('T15) corregir el servicio y DESPUÉS asignar la atención no escribe el suero dos veces', async () => {
+  const { clinicId, userId, patient, enfermera } = await seed();
+  const servicio = await AppointmentServiceItem.create({
+    clinic: clinicId, name: 'Detox Plus', slug: 'detox plus',
+    autoSerum: {
+      enabled: true,
+      base: { name: 'Cloruro', volumeMl: 250 },
+      components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }],
+    },
+  });
+
+  // 1) Se agenda sin servicio.
+  const cita = ok(await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '09:30',
+  }));
+  assert.equal((await sueroDeLaFicha(patient._id)).items.length, 0);
+
+  // 2) Mostrador le pone el servicio: aquí se escribe la bolsa.
+  ok(await H.runController(
+    appt.updateAppointment,
+    H.mockReq(clinicId, userId, { serviceItem: String(servicio._id) },
+      { role: 'cajero', params: { id: String(cita._id) } })
+  ));
+  assert.equal((await sueroDeLaFicha(patient._id)).items.length, 1);
+  assert.ok(
+    (await Appointment.findById(cita._id)).autoSerumFollowUp,
+    'y queda anotado dónde, que es lo que impide que la siguiente puerta la repita'
+  );
+
+  // 3) Y ahora se asigna la atención con DOS enfermeros, como hizo el cajero.
+  ok(await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [
+        { kind: 'enfermeria', user: String(enfermera._id) },
+        { kind: 'enfermeria', user: null },
+      ],
+    }, { role: 'cajero', params: { id: String(cita._id) } })
+  ));
+  assert.equal(
+    (await sueroDeLaFicha(patient._id)).items.length,
+    1,
+    'sigue habiendo UNA sola bolsa: dos serían dos sueros recetados que nadie mandó'
+  );
+});
+
+/**
+ * La marca sabe DE QUÉ SERVICIO salió la bolsa, y por eso distingue las dos
+ * cosas que antes se confundían: volver a poner el mismo servicio (no se escribe
+ * nada) y cambiarlo por otro (hay que escribir SU bolsa).
+ */
+test('T16) quitar el servicio y volver a ponerlo NO escribe una segunda bolsa', async () => {
+  const { clinicId, userId, patient } = await seed();
+  const conSuero = (name) => AppointmentServiceItem.create({
+    clinic: clinicId, name, slug: name.toLowerCase(),
+    autoSerum: {
+      enabled: true,
+      base: { name: 'Cloruro', volumeMl: 250 },
+      components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }],
+    },
+  });
+  const detox = await conSuero('Detox Plus');
+
+  const cita = ok(await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '08:00', serviceItem: detox._id,
+  }));
+  assert.equal((await sueroDeLaFicha(patient._id)).items.length, 1);
+
+  const editar = (body) =>
+    H.runController(
+      appt.updateAppointment,
+      H.mockReq(clinicId, userId, body, { role: 'cajero', params: { id: String(cita._id) } })
+    );
+
+  // Mostrador se equivoca, lo quita…
+  ok(await editar({ serviceItem: null }));
+  // …y lo vuelve a poner. Es el MISMO servicio: la bolsa ya está escrita.
+  ok(await editar({ serviceItem: String(detox._id) }));
+  assert.equal(
+    (await sueroDeLaFicha(patient._id)).items.length,
+    1,
+    'sigue habiendo una: volver a poner el mismo servicio no es una indicación nueva'
+  );
+
+  // Pero cambiarlo a OTRO servicio con su propio suero sí escribe el suyo.
+  const hepato = await conSuero('Hepatoprotector');
+  ok(await editar({ serviceItem: String(hepato._id) }));
+  const { items } = await sueroDeLaFicha(patient._id);
+  assert.equal(items.length, 2, 'otro servicio es otra indicación');
+  assert.deepEqual(items.map((i) => i.name).sort(), ['Detox Plus', 'Hepatoprotector']);
+});
+
+/**
+ * EL CASO DE ANDRÉS RAMOS (7-sep-2026), tal como estaba en su ficha:
+ *
+ *   «Suero indicado al agendar (Detox Plus)»       → Detox Plus [DETOX PLUS ×1]
+ *   «Suero indicado al asignar la atención»        → Detox Plus [BERBERIS ×1]
+ *
+ * Dos recetas con el MISMO nombre y ampollas distintas, porque el servicio ya
+ * escribía su bolsa y mostrador escogió ampollas encima al repartir la atención.
+ * No era la misma bolsa duplicada: era una bolsa partida en dos recetas. Ahora
+ * lo que se escoge en el paso se SUMA a la del servicio.
+ */
+const BERBERIS = { code: 'BERB01', name: 'BERBERIS 2ML AMP', grupo: 'ampolla', quantity: 1 };
+
+test('T17) las ampollas escogidas al asignar se SUMAN a la bolsa del servicio, no abren otra receta', async () => {
+  const { clinicId, userId, patient, enfermera } = await seed();
+  const detox = await AppointmentServiceItem.create({
+    clinic: clinicId, name: 'Detox Plus', slug: 'detox plus',
+    autoSerum: {
+      enabled: true,
+      base: { name: 'Cloruro', volumeMl: 250 },
+      components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }],
+    },
+  });
+
+  const cita = ok(await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '09:00', serviceItem: detox._id,
+  }));
+  const { items: alAgendar } = await sueroDeLaFicha(patient._id);
+  assert.equal(alAgendar.length, 1, 'el servicio escribe la suya al agendar');
+
+  // Mostrador reparte la atención entre DOS enfermeros y, en el primer paso,
+  // añade una ampolla a la bolsa del servicio (la pantalla manda la marca).
+  ok(await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [
+        {
+          kind: 'enfermeria',
+          user: String(enfermera._id),
+          serum: {
+            base: { name: 'Cloruro', volumeMl: 250 },
+            components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }, { ...BERBERIS }],
+          },
+          serumMergeIntoService: true,
+        },
+        { kind: 'enfermeria', user: null },
+      ],
+    }, { role: 'cajero', params: { id: String(cita._id) } })
+  ));
+
+  const { items } = await sueroDeLaFicha(patient._id);
+  assert.equal(items.length, 1, 'UNA sola receta: dos parecían dos sueros recetados');
+  assert.deepEqual(
+    items[0].serumComponents.map((c) => c.name).sort(),
+    ['BERBERIS 2ML AMP', 'SUEROTERAPIA DETOX PLUS'],
+    'y lleva las ampollas del servicio MÁS la que añadió mostrador'
+  );
+
+  // El turno apunta a esa misma receta: volver a guardar no la toca.
+  const guardada = await Appointment.findById(cita._id).lean();
+  const turno = guardada.turns.find((t) => t.kind === 'enfermeria' && t.serumFollowUp);
+  assert.equal(String(turno.serumFollowUp), String(guardada.autoSerumFollowUp));
+});
+
+test('T18) un paso que arma su bolsa DESDE CERO sigue teniendo su receta aparte', async () => {
+  const { clinicId, userId, patient, enfermera } = await seed();
+  const detox = await AppointmentServiceItem.create({
+    clinic: clinicId, name: 'Detox Plus', slug: 'detox plus',
+    autoSerum: {
+      enabled: true,
+      base: { name: 'Cloruro', volumeMl: 250 },
+      components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }],
+    },
+  });
+  const cita = ok(await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '09:00', serviceItem: detox._id,
+  }));
+
+  // Sin la marca: es una segunda aplicación de verdad, no la misma bolsa.
+  ok(await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [{
+        kind: 'enfermeria',
+        user: String(enfermera._id),
+        serviceName: 'Hidratación',
+        serum: { base: { name: 'Cloruro', volumeMl: 500 }, components: [{ ...BERBERIS }] },
+      }],
+    }, { role: 'cajero', params: { id: String(cita._id) } })
+  ));
+
+  const { items } = await sueroDeLaFicha(patient._id);
+  assert.equal(items.length, 2, 'dos bolsas distintas son dos indicaciones');
+  assert.deepEqual(items.map((i) => i.name).sort(), ['Detox Plus', 'Hidratación']);
+});
+
+test('T19) si la bolsa del servicio YA se aplicó, lo añadido se escribe aparte (no se reescribe la historia)', async () => {
+  const { clinicId, userId, patient, enfermera } = await seed();
+  const detox = await AppointmentServiceItem.create({
+    clinic: clinicId, name: 'Detox Plus', slug: 'detox plus',
+    autoSerum: {
+      enabled: true,
+      base: { name: 'Cloruro', volumeMl: 250 },
+      components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }],
+    },
+  });
+  const cita = ok(await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '09:00', serviceItem: detox._id,
+  }));
+
+  // Enfermería ya la puso: eso movió inventario y es lo que de verdad pasó.
+  const rec = await ClinicalRecord.findOne({ patient: patient._id });
+  rec.followUps.id((await Appointment.findById(cita._id)).autoSerumFollowUp)
+    .recetaItems[0].administrations.push({ at: new Date(), byName: 'Enf', baseVolumeMl: 250 });
+  await rec.save();
+
+  ok(await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [{
+        kind: 'enfermeria',
+        user: String(enfermera._id),
+        serum: {
+          base: { name: 'Cloruro', volumeMl: 250 },
+          components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }, { ...BERBERIS }],
+        },
+        serumMergeIntoService: true,
+      }],
+    }, { role: 'cajero', params: { id: String(cita._id) } })
+  ));
+
+  const { items } = await sueroDeLaFicha(patient._id);
+  assert.equal(items.length, 2, 'lo escogido no se pierde: se escribe aparte');
+  const aplicada = items.find((i) => (i.administrations || []).length);
+  assert.deepEqual(
+    aplicada.serumComponents.map((c) => c.name),
+    ['SUEROTERAPIA DETOX PLUS'],
+    'y la que ya se aplicó queda EXACTAMENTE como estaba'
+  );
+});
+
 test('T9) el suero de serie se configura desde el catálogo, y sin ampollas se apaga', async () => {
   const { clinicId, userId } = await seed();
   const servicio = await AppointmentServiceItem.create({

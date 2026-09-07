@@ -73,4 +73,70 @@ async function sembrarSueroEnFicha({ clinicId, patientId, user, role, lineas, mo
   return (record?.followUps || []).slice(-1)[0] || null;
 }
 
-module.exports = { sueroterapiaDeLaCita, sembrarSueroEnFicha };
+/**
+ * ¿HAY QUE ESCRIBIR EL SUERO DE SERIE DE ESTE SERVICIO EN ESTA CITA?
+ *
+ * Es la pregunta de las TRES puertas por las que pasa una cita —agendarla,
+ * corregirle el servicio y asignar la atención— y por eso vive aquí y no
+ * repetida en cada una: cuando la respuesta se escribía a mano en cada sitio,
+ * una de las tres se la contestaba distinto y el paciente acababa con dos bolsas
+ * idénticas en su ficha, que se lee como que le recetaron dos sueros.
+ *
+ * La marca son DOS campos y hacen falta los dos:
+ *   `autoSerumFollowUp`     → ya se escribió una;
+ *   `autoSerumServiceItem`  → la de ESTE servicio.
+ * Con solo el primero no se distingue «volvió a poner el mismo servicio» (no se
+ * escribe nada) de «lo cambió por otro» (hay que escribir la bolsa nueva).
+ *
+ * OJO con las citas ANTERIORES a `autoSerumServiceItem`: traen la marca pero no
+ * el servicio. Ahí se da la marca por buena en vez de suponer que es otro
+ * servicio, que las duplicaría todas de una vez.
+ */
+function faltaElSueroDelServicio(apt, serviceItem) {
+  if (!serviceItem?.autoSerum?.enabled) return false;
+  if (!apt?.autoSerumFollowUp) return true;
+  if (!apt.autoSerumServiceItem) return false;
+  return String(apt.autoSerumServiceItem) !== String(serviceItem._id || serviceItem);
+}
+
+/**
+ * SUMA AMPOLLAS A LA BOLSA QUE YA ESCRIBIÓ EL SERVICIO, en vez de abrir otra.
+ *
+ * El servicio con suero de serie («Detox Plus») escribe su receta al agendar. Si
+ * mostrador, al repartir la atención, escoge además unas ampollas para el paso de
+ * enfermería, hasta ahora eso abría una SEGUNDA receta — con el mismo nombre, el
+ * del servicio, así que en la ficha aparecían dos «Detox Plus» con ampollas
+ * distintas y parecía que se le habían recetado dos sueros. Es lo que pasó de
+ * verdad (Andrés Ramos, 7-sep-2026): una bolsa con DETOX PLUS y otra con BERBERIS.
+ *
+ * Es UNA bolsa: la del servicio, con lo que mostrador le añada. Aquí se reescribe
+ * su composición.
+ *
+ * NO se toca si ya tiene una aplicación registrada: eso movió inventario y es lo
+ * que de verdad se le puso al paciente; reescribirlo sería falsear la historia.
+ * Devuelve true si se pudo sumar.
+ */
+async function sumarSueroAlSeguimiento({ patientId, followUpId, linea }) {
+  if (!patientId || !followUpId || !linea) return false;
+  const record = await ClinicalRecord.findOne({ patient: patientId });
+  const fu = record?.followUps?.id(followUpId);
+  if (!fu) return false;
+
+  const item = (fu.recetaItems || []).find((i) => i.isSerum);
+  if (!item) return false;
+  if ((item.administrations || []).length) return false; // ya aplicado: no se reescribe
+
+  // Solo la COMPOSICIÓN. El nombre se conserva: sigue siendo el suero del
+  // servicio, y es como lo reconocen la ficha, los PDF y la hoja del MSP.
+  item.serumBase = linea.serumBase;
+  item.serumComponents = linea.serumComponents;
+  await record.save();
+  return true;
+}
+
+module.exports = {
+  sueroterapiaDeLaCita,
+  sembrarSueroEnFicha,
+  faltaElSueroDelServicio,
+  sumarSueroAlSeguimiento,
+};

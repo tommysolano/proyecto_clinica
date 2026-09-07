@@ -130,6 +130,18 @@ const appointmentTurnSchema = new mongoose.Schema(
      * segunda bolsa a la ficha.
      */
     serumFollowUp: { type: mongoose.Schema.Types.ObjectId, default: null },
+    /**
+     * Este suero NO abre receta propia: se SUMA al que ya escribió el servicio
+     * (`Appointment.autoSerumFollowUp`).
+     *
+     * Lo marca la pantalla cuando mostrador escoge ampollas en un paso de
+     * enfermería de una cita cuyo servicio ya trae su bolsa. Sin esto se
+     * escribían dos recetas con el MISMO nombre —el del servicio— y ampollas
+     * distintas, y en la ficha parecía que al paciente le recetaron dos sueros.
+     * Un paso que arma su propia bolsa desde cero (una segunda aplicación de
+     * verdad) no lleva la marca y sigue teniendo su receta aparte.
+     */
+    serumMergeIntoService: { type: Boolean, default: false },
     order: { type: Number, default: 0 },
     status: {
       type: String,
@@ -325,6 +337,20 @@ const appointmentSchema = new mongoose.Schema(
      * que existiera esto: al asignar la atención se les escribe entonces.
      */
     autoSerumFollowUp: { type: mongoose.Schema.Types.ObjectId, default: null },
+    /**
+     * DE QUÉ SERVICIO salió ese suero.
+     *
+     * Sin esto la marca solo sabía decir «ya hay uno escrito», y eso no basta
+     * para las dos preguntas distintas que se le hacen: «¿es el mismo servicio,
+     * y entonces no escribo nada?» y «¿se cambió a otro, y entonces hay que
+     * escribir SU bolsa?». Quitarle el servicio a una cita y volver a ponérselo
+     * se leía como un cambio y escribía una segunda bolsa idéntica.
+     *
+     * En las citas anteriores a este campo viene vacío: ahí la marca se da por
+     * buena tal cual (ver `faltaElSueroDelServicio`), porque suponer «es otro
+     * servicio» las duplicaría todas de golpe.
+     */
+    autoSerumServiceItem: { type: mongoose.Schema.Types.ObjectId, ref: 'AppointmentServiceItem', default: null },
     /**
      * LO QUE ADEMÁS se hizo en la visita. `serviceItem`/`serviceName` siguen
      * siendo EL servicio de la cita —lo que leen la agenda, los reportes y el

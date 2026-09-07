@@ -41,7 +41,6 @@ const {
 } = require('../utils/appointmentDate');
 const { isDoctorRole } = require('../constants/roles');
 const {
-  veTodaLaOrganizacion,
   sucursalesVisibles,
   alcanzaSucursal,
   validarSucursalDestino,
@@ -93,6 +92,13 @@ const DOCTOR_LOCKED_MESSAGE =
 const POPULATE_PATIENT = 'firstName lastName cedula phone whatsapp email birthDate age gender';
 const POPULATE_DOCTOR = 'name specialty';
 const POPULATE_CREATOR = 'name email';
+/**
+ * El servicio de agenda que viaja con la cita. `autoSerum` va incluido porque la
+ * pantalla de asignar atención necesita saber si el servicio YA escribe su propia
+ * bolsa: sin ese dato ofrecía «escoger el suero» como si no hubiera ninguno, y lo
+ * que escogía mostrador se escribía como una SEGUNDA receta con el mismo nombre.
+ */
+const POPULATE_SERVICE_ITEM = 'name color nursingService autoSerum';
 
 // Convierte 'YYYY-MM-DD' (o ISO) a Date en zona local, fijando 12:00 para evitar
 // que el cambio de zona horaria mueva el día al guardar/leer.
@@ -277,7 +283,7 @@ exports.getAppointments = async (req, res) => {
       .populate('doctor', POPULATE_DOCTOR)
       .populate('attendedByNurse', POPULATE_DOCTOR)
       .populate('createdBy', POPULATE_CREATOR)
-      .populate('serviceItem', 'name color nursingService')
+      .populate('serviceItem', POPULATE_SERVICE_ITEM)
       .populate('turns.user', POPULATE_DOCTOR)
       .populate('room', 'name code')
       .populate('clinic', 'name nombreComercial')
@@ -298,7 +304,7 @@ exports.getAppointment = async (req, res) => {
       .populate('patient', POPULATE_PATIENT + ' address')
       .populate('doctor', POPULATE_DOCTOR)
       .populate('createdBy', POPULATE_CREATOR)
-      .populate('serviceItem', 'name color nursingService')
+      .populate('serviceItem', POPULATE_SERVICE_ITEM)
       .populate('turns.user', POPULATE_DOCTOR)
       .populate('clinic', 'name nombreComercial')
       .populate('rescheduleHistory.rescheduledBy', 'name email')
@@ -307,15 +313,29 @@ exports.getAppointment = async (req, res) => {
       .populate('services.product', 'name code salePrice category nursingService');
 
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
-    // Verificar acceso: la sucursal de la cita debe estar entre las del usuario.
+    /**
+     * ALCANCE: la MISMA fuente que la lista y que las escrituras.
+     *
+     * Aquí se armaba a mano con `user.clinics[]` a secas, y ese era el último
+     * espejo que quedaba sin actualizar del arreglo de «la enfermera que rota
+     * entre sedes»: el check de «trabaja en todas las sucursales» ya valía para
+     * VER la agenda y para tocar la cita, pero no para leer UNA cita por id.
+     *
+     * Se veía así, y cuesta relacionarlo con una sucursal: la enfermera abría la
+     * ficha del paciente desde el aviso, veía sus seguimientos —esos no se
+     * filtran por sede— y no le salía «Terminar mi parte», porque la pantalla
+     * pide la cita por id para saber de quién es el turno y esa petición
+     * devolvía 404. Tenía que salir a la agenda a cerrarla, donde sí funcionaba.
+     */
     const apptClinicId = String(appointment.clinic?._id || appointment.clinic);
-    const canAccess =
-      veTodaLaOrganizacion(req) ||
-      (req.user.clinics || []).some((c) => String(c.clinic) === apptClinicId);
+    const visibles = sucursalesVisibles(req);
+    const canAccess = visibles === null || visibles.some((c) => String(c) === apptClinicId);
     if (!canAccess) return res.status(404).json({ message: 'Cita no encontrada' });
     res.json(appointment);
   } catch (error) {
-    res.status(500).json({ message: 'Error al obtener cita' });
+    // Con el motivo: el resto del archivo lo devuelve y aquí no, así que un fallo
+    // de esta ruta llegaba como un 500 mudo imposible de diagnosticar.
+    res.status(500).json({ message: 'Error al obtener cita', error: error.message });
   }
 };
 
@@ -442,6 +462,9 @@ function normalizarPasos(steps) {
         // Lo devuelve la pantalla tal cual lo recibió: es la marca de que ese
         // suero YA está escrito en la ficha y no hay que volver a escribirlo.
         serumFollowUp: suero && p.serumFollowUp ? p.serumFollowUp : null,
+        // Y si lo que escogió mostrador se SUMA a la bolsa del servicio en vez
+        // de abrir una receta nueva (ver el campo en models/Appointment.js).
+        serumMergeIntoService: !!(suero && p.serumMergeIntoService),
       };
     })
     .filter(Boolean);
@@ -458,7 +481,7 @@ function normalizarPasos(steps) {
  * Devuelve los nombres sembrados, para que la pantalla lo diga.
  */
 async function sembrarSuerosDeLosTurnos(apt, req) {
-  const { sembrarSueroEnFicha } = require('../utils/sueroDeCita');
+  const { sembrarSueroEnFicha, sumarSueroAlSeguimiento } = require('../utils/sueroDeCita');
   const { lineaDeRecetaDeSuero } = require('../utils/suero');
   const sembrados = [];
 
@@ -471,6 +494,33 @@ async function sembrarSuerosDeLosTurnos(apt, req) {
       { serumBase: turno.serum.base, serumComponents: componentes.map((c) => c.toObject?.() || c) },
       turno.serviceName || apt.serviceName
     );
+
+    /**
+     * SE SUMA A LA BOLSA DEL SERVICIO en vez de abrir una receta nueva.
+     *
+     * Es lo que pide el caso real: el servicio ya escribió su «Detox Plus» y
+     * mostrador le añade una ampolla al repartir la atención. Con dos recetas
+     * —las dos llamadas como el servicio— la ficha decía que se le recetaron dos
+     * sueros. La pantalla marca el paso y aquí se reescribe AQUELLA composición.
+     * Un paso que arma su bolsa desde cero no lleva la marca y sigue su camino.
+     */
+    if (turno.serumMergeIntoService && apt.autoSerumFollowUp) {
+      // eslint-disable-next-line no-await-in-loop
+      const sumado = await sumarSueroAlSeguimiento({
+        patientId: apt.patient,
+        followUpId: apt.autoSerumFollowUp,
+        linea,
+      });
+      if (sumado) {
+        // Apunta a la MISMA receta: volver a guardar no vuelve a tocarla.
+        turno.serumFollowUp = apt.autoSerumFollowUp;
+        sembrados.push(linea.name);
+        continue;
+      }
+      // Si no se pudo (ya la aplicaron, o la receta ya no está), NO se pierde lo
+      // que escogió mostrador: cae al camino normal y se escribe aparte.
+    }
+
     const fu = await sembrarSueroEnFicha({
       clinicId: apt.clinic,
       patientId: apt.patient,
@@ -779,6 +829,9 @@ exports.createAppointment = async (req, res) => {
         });
         if (fu) {
           appointment.autoSerumFollowUp = fu._id;
+          // Y DE QUÉ SERVICIO: es lo que deja distinguir después «volvió a poner
+          // el mismo» de «lo cambió por otro» (ver `faltaElSueroDelServicio`).
+          appointment.autoSerumServiceItem = servicioAgenda._id;
           items.push(...deServicio.map((l) => l.name));
         }
       }
@@ -1027,8 +1080,12 @@ exports.updateAppointment = async (req, res) => {
     let servicioNuevoConSuero = null;
     if (update.serviceItem !== undefined) {
       const svc = await resolverServicioAgenda(update.serviceItem);
-      const cambia = String(svc?._id || '') !== String(existing.serviceItem || '');
-      if (cambia && svc?.autoSerum?.enabled) servicioNuevoConSuero = svc;
+      // La pregunta la contesta `faltaElSueroDelServicio`, la MISMA que usan las
+      // otras dos puertas. Antes se comparaba contra `existing.serviceItem`, y
+      // por eso quitar el servicio y volver a ponerlo se leía como un cambio:
+      // escribía una segunda bolsa idéntica.
+      const { faltaElSueroDelServicio } = require('../utils/sueroDeCita');
+      if (faltaElSueroDelServicio(existing, svc)) servicioNuevoConSuero = svc;
       update.serviceItem = svc?._id || null;
       update.serviceName = svc?.name || '';
     }
@@ -1108,7 +1165,7 @@ exports.updateAppointment = async (req, res) => {
       .populate('patient', POPULATE_PATIENT)
       .populate('doctor', POPULATE_DOCTOR)
       .populate('createdBy', POPULATE_CREATOR)
-      .populate('serviceItem', 'name color nursingService')
+      .populate('serviceItem', POPULATE_SERVICE_ITEM)
       .populate('turns.user', POPULATE_DOCTOR)
       .populate('services.product', 'name code salePrice category');
 
@@ -1135,9 +1192,21 @@ exports.updateAppointment = async (req, res) => {
       ]);
     }
 
-    // El servicio pasó a ser uno con suero de serie: se escribe en la ficha,
-    // igual que al agendarlo directo (ver el comentario de arriba y
-    // `utils/sueroDeCita.js`). En su propio try: la cita ya está guardada.
+    /**
+     * El servicio pasó a ser uno con suero de serie: se escribe en la ficha,
+     * igual que al agendarlo directo (ver el comentario de arriba y
+     * `utils/sueroDeCita.js`). En su propio try: la cita ya está guardada.
+     *
+     * Y SE DEJA LA MARCA `autoSerumFollowUp`. Esta es la segunda de las tres
+     * puertas por las que pasa una cita —agendarla, corregirle el servicio,
+     * asignar la atención— y era la única que escribía el suero SIN anotar que
+     * ya estaba escrito. El resultado, con el caso real de todos los días:
+     * mostrador agenda «ya veremos a qué», le pone el servicio después (aquí se
+     * escribe la receta, sin marca) y luego abre «Asignar atención» para poner a
+     * los enfermeros; esa tercera puerta pregunta por la marca, no la encuentra,
+     * y escribe el MISMO suero por segunda vez. En la ficha del paciente aparecen
+     * dos bolsas y parece que se le recetaron dos.
+     */
     let sueroSembrado = null;
     if (servicioNuevoConSuero) {
       try {
@@ -1152,6 +1221,9 @@ exports.updateAppointment = async (req, res) => {
           motivo: `Suero indicado al agendar (${servicioNuevoConSuero.name})`,
         });
         if (fu) {
+          appointment.autoSerumFollowUp = fu._id;
+          appointment.autoSerumServiceItem = servicioNuevoConSuero._id;
+          await appointment.save();
           sueroSembrado = { followUpId: fu._id, items: lineas.map((l) => l.name) };
           emitToClinic(clinicScope, 'clinicalRecord:updated', {
             patient: appointment.patient?._id || appointment.patient,
@@ -1409,7 +1481,7 @@ exports.getTodayAppointments = async (req, res) => {
       .populate('doctor', POPULATE_DOCTOR)
       .populate('attendedByNurse', POPULATE_DOCTOR)
       .populate('createdBy', POPULATE_CREATOR)
-      .populate('serviceItem', 'name color nursingService')
+      .populate('serviceItem', POPULATE_SERVICE_ITEM)
       .populate('turns.user', POPULATE_DOCTOR)
       .populate('services.product', 'name code salePrice category nursingService')
       .sort({ startTime: 1 });
@@ -1430,7 +1502,7 @@ exports.getAppointmentPdf = async (req, res) => {
       .populate('patient', POPULATE_PATIENT + ' address')
       .populate('doctor', POPULATE_DOCTOR)
       .populate('createdBy', POPULATE_CREATOR)
-      .populate('serviceItem', 'name color nursingService')
+      .populate('serviceItem', POPULATE_SERVICE_ITEM)
       .populate('turns.user', POPULATE_DOCTOR);
 
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
@@ -1804,7 +1876,7 @@ exports.updateServiceAndValue = async (req, res) => {
       .populate('patient', POPULATE_PATIENT)
       .populate('doctor', POPULATE_DOCTOR)
       .populate('turns.user', POPULATE_DOCTOR)
-      .populate('serviceItem', 'name color nursingService')
+      .populate('serviceItem', POPULATE_SERVICE_ITEM)
       .populate('services.product', 'name code salePrice category');
 
     emitToClinic(apt.clinic, 'appointment:updated', populated);
@@ -1849,7 +1921,7 @@ exports.createWalkIn = async (req, res) => {
     const populated = await Appointment.findById(apt._id)
       .populate('patient', POPULATE_PATIENT)
       .populate('doctor', POPULATE_DOCTOR)
-      .populate('serviceItem', 'name color nursingService')
+      .populate('serviceItem', POPULATE_SERVICE_ITEM)
       .populate('turns.user', POPULATE_DOCTOR);
 
     emitToClinic(req.clinicId, 'appointment:created', populated);
@@ -2075,11 +2147,14 @@ exports.assignDoctor = async (req, res) => {
        * pasada— y a las que se agendaron sin servicio y se lo pusieron después.
        * `autoSerumFollowUp` es lo que impide que se escriba dos veces.
        */
-      if (!apt.autoSerumFollowUp && apt.serviceItem) {
+      if (apt.serviceItem) {
         const AppointmentServiceItem = require('../models/AppointmentServiceItem');
         const svc = await AppointmentServiceItem.findById(apt.serviceItem).lean();
-        const { sueroterapiaDeLaCita, sembrarSueroEnFicha } = require('../utils/sueroDeCita');
-        const lineas = sueroterapiaDeLaCita(svc);
+        const { sueroterapiaDeLaCita, sembrarSueroEnFicha, faltaElSueroDelServicio } = require('../utils/sueroDeCita');
+        // La MISMA pregunta que las otras dos puertas: no basta con «¿hay marca?»,
+        // porque en este modal también se corrige el servicio de la cita y el
+        // suero que hay escrito puede ser el del servicio anterior.
+        const lineas = faltaElSueroDelServicio(apt, svc) ? sueroterapiaDeLaCita(svc) : [];
         if (lineas.length) {
           const fu = await sembrarSueroEnFicha({
             clinicId: apt.clinic,
@@ -2091,6 +2166,7 @@ exports.assignDoctor = async (req, res) => {
           });
           if (fu) {
             apt.autoSerumFollowUp = fu._id;
+            apt.autoSerumServiceItem = svc._id;
             suerosSembrados.push(...lineas.map((l) => l.name));
           }
         }
@@ -2119,7 +2195,7 @@ exports.assignDoctor = async (req, res) => {
       .populate('patient', POPULATE_PATIENT)
       .populate('doctor', POPULATE_DOCTOR)
       .populate('turns.user', POPULATE_DOCTOR)
-      .populate('serviceItem', 'name color nursingService')
+      .populate('serviceItem', POPULATE_SERVICE_ITEM)
       .populate('services.product', 'name code salePrice category');
 
     // La observación se guarda DESPUÉS de que la asignación esté hecha y en su
@@ -2451,7 +2527,7 @@ exports.nurseClaim = async (req, res) => {
       .populate('doctor', POPULATE_DOCTOR)
       .populate('attendedByNurse', POPULATE_DOCTOR)
       .populate('turns.user', POPULATE_DOCTOR)
-      .populate('serviceItem', 'name color nursingService')
+      .populate('serviceItem', POPULATE_SERVICE_ITEM)
       .populate('services.product', 'name code salePrice category nursingService');
     emitToClinic(apt.clinic, 'appointment:updated', populated);
     // A los demás enfermeros les desaparece de la bandeja en el momento, sin
