@@ -172,6 +172,10 @@ export const TRIGGERS = [
   { value: 'opportunity_stage', label: 'Entró a una etapa de oportunidad' },
   { value: 'ctwa_ad', label: 'Mensaje desde anuncio (Meta Ads)' },
   { value: 'contact_import', label: 'Contactos importados (Excel)' },
+  // Envío manual desde Contactos → "Recordatorios de citas": no lo dispara
+  // agendar, lo dispara el botón. Sirve para las citas que ya estaban agendadas
+  // antes de existir el flujo y para decidir a mano a quién se le escribe hoy.
+  { value: 'appointment_bulk', label: 'Citas de la agenda (envío manual)' },
 ];
 export const AUDIENCES = [
   { value: 'all', label: 'Todos' },
@@ -2522,7 +2526,13 @@ function AdIdsInput({ value = '', onChange, options = [] }) {
 // ─────────── Configuración del disparador ───────────
 function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [], metaAds = [], metaAdsNotice = '' }) {
   const set = (patch) => onChange?.({ ...trigger, ...patch });
-  const isApptTrigger = trigger.type?.startsWith('appointment');
+  // 'appointment_bulk' empieza por "appointment" pero NO es un evento de cita: la
+  // audiencia la elige a mano el asistente de "Recordatorios de citas" (fecha,
+  // sede, estado, doctor, servicio). Por eso aquí no se enseñan los filtros de
+  // audiencia / servicio / sucursal: nadie los aplicaría, y un filtro que no
+  // filtra es peor que no tenerlo.
+  const isBulkAppt = trigger.type === 'appointment_bulk';
+  const isApptTrigger = trigger.type?.startsWith('appointment') && !isBulkAppt;
   const isChatTrigger = ['inbound_message', 'keyword', 'new_conversation', 'ctwa_ad'].includes(trigger.type);
   const isOppTrigger = trigger.type === 'opportunity_stage';
   const bookable = products.filter((p) => ['servicio', 'programa'].includes(p.category));
@@ -2556,7 +2566,7 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [], me
           </span>
         </label>
       )}
-      {!isChatTrigger && !isOppTrigger && clinics.length > 1 && (
+      {!isChatTrigger && !isOppTrigger && !isBulkAppt && clinics.length > 1 && (
         <label className="text-sm">
           <span className="text-slate-600 block mb-1">Solo si ocurre en esta sucursal</span>
           <select
@@ -2646,7 +2656,16 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [], me
           </span>
         </div>
       )}
-      {trigger.type === 'contact_import' && (
+      {isBulkAppt && (
+        <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2">
+          Este flujo <b>no se dispara solo</b>: lo lanzas desde <b>Contactos → Recordatorios de citas</b>,
+          eligiendo ahí las citas (fecha, sucursal, estado, doctor, servicio). Cada inscripción sabe de
+          qué cita habla, así que <b>{'{{fecha}}'}, {'{{hora}}'}, {'{{servicio}}'}, {'{{doctor}}'} y {'{{sede}}'}</b> salen
+          de la cita real. Como el paciente no habrá escrito en las últimas 24 h, por Cloud API el
+          mensaje tiene que ir en un paso <b>Enviar plantilla</b>.
+        </p>
+      )}
+      {['contact_import', 'appointment_bulk'].includes(trigger.type) && (
         <label className="text-sm">
           <span className="text-slate-600 block mb-1">Hora de envío por defecto (envíos masivos)</span>
           <input
@@ -2656,9 +2675,10 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [], me
             className="w-40 border border-slate-200 rounded-lg px-2 py-2 text-sm"
           />
           <span className="text-[11px] text-slate-400 block mt-1">
-            Al importar contactos a este flujo, el 1er mensaje se enviará a esta hora (hoy si aún no
-            pasa, mañana si ya pasó). Déjalo vacío para enviar de inmediato. Al hacer el envío masivo
-            el sistema avisará y podrás usar esta hora o indicar otra en ese momento.
+            {trigger.type === 'appointment_bulk'
+              ? 'Al lanzar un envío de recordatorios con este flujo, el 1er mensaje saldrá a esta hora (hoy si aún no pasa, mañana si ya pasó). Es la hora típica del recordatorio: "todos los días a las 18:00". Déjalo vacío para enviar de inmediato.'
+              : 'Al importar contactos a este flujo, el 1er mensaje se enviará a esta hora (hoy si aún no pasa, mañana si ya pasó). Déjalo vacío para enviar de inmediato.'}
+            {' '}Al hacer el envío masivo el sistema avisará y podrás usar esta hora o indicar otra en ese momento.
           </span>
         </label>
       )}

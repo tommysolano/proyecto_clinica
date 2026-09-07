@@ -136,16 +136,21 @@ function nextOccurrenceOfLocalTime(hhmm, now = new Date()) {
 }
 
 /**
- * "Hora de envío" configurada en el disparador contact_import del flujo ("HH:MM") o
- * '' si no trae ninguna. Grafo (nodes) y legacy (trigger único).
+ * "Hora de envío" configurada en el disparador del flujo ("HH:MM") o '' si no trae
+ * ninguna. Grafo (nodes) y legacy (trigger único).
+ *
+ * `type` existe porque el mismo mecanismo lo usan los dos envíos masivos: el de
+ * contactos importados y el de las citas de la agenda ('appointment_bulk', ver
+ * utils/appointmentBlastRunner.js). La hora vive en el disparador, así que hay
+ * que preguntarle al disparador correcto.
  */
-function flowSendHour(wf) {
+function flowSendHour(wf, type = 'contact_import') {
   const triggerNodes = (wf?.nodes || []).filter((n) => n.type === 'trigger');
   const triggers = triggerNodes.length
     ? triggerNodes.flatMap((n) => n.data?.triggers || [])
     : [wf?.trigger].filter(Boolean);
   for (const tr of triggers) {
-    if (tr?.type === 'contact_import' && HHMM_RE.test(tr.sendHour || '')) return tr.sendHour;
+    if (tr?.type === type && HHMM_RE.test(tr.sendHour || '')) return tr.sendHour;
   }
   return '';
 }

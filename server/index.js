@@ -128,6 +128,8 @@ app.use('/api/clinical-records', require('./routes/clinicalRecords'));
 app.use('/api/cie10', require('./routes/cie10'));
 app.use('/api/appointments', require('./routes/appointments'));
 app.use('/api/appointment-service-items', require('./routes/appointmentServiceItems'));
+// Envío masivo a las citas de la agenda (recordatorios sin pasar por el Excel).
+app.use('/api/appointment-blasts', require('./routes/appointmentBlasts'));
 app.use('/api/push', require('./routes/push'));
 app.use('/api/products', require('./routes/products'));
 app.use('/api/inventory', require('./routes/inventory'));
@@ -262,6 +264,12 @@ connectDB().then(() => {
     // petición HTTP porque 47k filas tardan minutos y nginx corta a los 60s.
     const { processPendingImports } = require('./utils/contactImportRunner');
     setInterval(only(() => { processPendingImports().catch(() => {}); }), 60 * 1000);
+    // Job: envíos masivos a las citas de la agenda (recordatorios). Fuera de la
+    // petición HTTP por lo mismo: con la latencia real contra la base, inscribir
+    // 300 citas no cabe en el minuto que da nginx. El controlador además lo lanza
+    // al confirmar, y el reclamo atómico del runner evita que se procese dos veces.
+    const { processPendingBlasts } = require('./utils/appointmentBlastRunner');
+    setInterval(only(() => { processPendingBlasts().catch(() => {}); }), 60 * 1000);
     // Job: tandas del envío masivo por goteo (cada 60s). El goteo es lo que evita
     // que una ráfaga tumbe el número (por QR) o rebote contra el límite de Meta.
     const { processDueDrips } = require('./utils/dripRunner');

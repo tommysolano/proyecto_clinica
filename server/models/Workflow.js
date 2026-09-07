@@ -223,6 +223,14 @@ const TRIGGER_TYPES = [
   // contactos del Excel en los workflows que tengan este disparador. No se emite
   // como evento de dominio: inscribe directamente el runner de importación.
   'contact_import',
+  // Citas de la AGENDA (envío masivo manual): el asistente de "Recordatorios de
+  // citas" inscribe las citas elegidas en los flujos que tengan este disparador.
+  // Como 'contact_import', no es un evento de dominio: lo inscribe su propio
+  // runner (utils/appointmentBlastRunner.js). Va aparte de 'appointment_created'
+  // porque aquí no manda el momento de agendar, manda el botón que aprieta el
+  // usuario: sirve para las citas que ya estaban agendadas antes de existir el
+  // flujo y para decidir a mano a quién se le escribe esta noche.
+  'appointment_bulk',
 ];
 
 // Nodo del grafo visual (editor estilo GoHighLevel). `type` es el tipo de paso
@@ -288,7 +296,8 @@ const triggerSchema = new mongoose.Schema(
     // Si adFilter y adTextFilter están vacíos → cualquier anuncio. Si alguno tiene
     // valor, el mensaje coincide si casa por ID O por texto.
     adTextFilter: { type: String, trim: true, default: '' },
-    // Trigger 'contact_import': "Hora de envío" por defecto del flujo ("HH:MM"). Al
+    // Triggers 'contact_import' y 'appointment_bulk': "Hora de envío" por defecto
+    // del flujo ("HH:MM"). Al
     // hacer un envío masivo, el 1er mensaje sale a esta hora salvo que el usuario
     // elija otra. Vacío = de inmediato. (En flujos de grafo vive en node.data —Mixed—,
     // pero también se declara aquí para el trigger/triggers legacy.)

@@ -2921,10 +2921,20 @@ async function cancelEnrollmentsOnBooking(payload = {}) {
 }
 
 /**
- * Cita CANCELADA: una inscripción pausada en "esperar hasta la cita" enviaría el
- * recordatorio de una cita que ya no existe. Se anula y queda constancia en el log.
- * Solo toca inscripciones con el marcador de wait_until (no las que esperan
- * respuesta ni las de otros flujos del mismo paciente).
+ * Cita CANCELADA: una inscripción pausada enviaría el recordatorio de una cita
+ * que ya no existe. Se anula y queda constancia en el log.
+ *
+ * Alcanza dos formas de estar en espera, y la segunda faltaba:
+ *  · parada en un `wait_until` ("espera hasta 24 h antes de la cita");
+ *  · ESPERANDO SU TURNO DE GOTEO en un envío masivo de recordatorios
+ *    (`appointment_bulk`). Esas inscripciones están 'waiting' con su `nextRunAt`
+ *    en el futuro pero SIN marcador de espera, así que el filtro de wait_until no
+ *    las veía: el paciente cancelaba la cita a las 5 y a las 6 le llegaba igual
+ *    el recordatorio. Son minutos u horas de cola, tiempo de sobra para que la
+ *    cita cambie.
+ *
+ * No toca las que esperan respuesta del paciente (`waitingForReply`) ni las de
+ * otros flujos del mismo paciente que no cuelguen de esta cita.
  */
 async function cancelWaitingEnrollmentsForAppointment(payload = {}) {
   if (!payload.appointmentId) return;
@@ -2935,15 +2945,19 @@ async function cancelWaitingEnrollmentsForAppointment(payload = {}) {
     $or: [
       { 'context.waitNodeId': { $exists: true, $ne: null } },
       { 'context.waitStepIndex': { $exists: true, $ne: null } },
+      { 'context.eventType': 'appointment_bulk' },
     ],
   });
   for (const enrollment of enrollments) {
+    const enEspera = enrollment.context?.waitNodeId != null || enrollment.context?.waitStepIndex != null;
     enrollment.status = 'cancelled';
     pushLog(enrollment, {
       nodeId: enrollment.context?.waitNodeId || null,
       stepIndex: enrollment.context?.waitStepIndex ?? null,
-      type: 'wait_until',
-      info: 'Cita cancelada: se anuló la espera para no enviar un recordatorio obsoleto.',
+      type: enEspera ? 'wait_until' : 'stop',
+      info: enEspera
+        ? 'Cita cancelada: se anuló la espera para no enviar un recordatorio obsoleto.'
+        : 'Cita cancelada: el recordatorio se anuló antes de salir (estaba en la cola del envío masivo).',
     });
     // eslint-disable-next-line no-await-in-loop
     await enrollment.save();

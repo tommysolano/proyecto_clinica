@@ -257,6 +257,10 @@ const TRIGGER_MAP = {
   'ETIQUETA AGREGADA': 'tag_added',
   'ANUNCIO': 'ctwa_ad',
   'ANUNCIO META': 'ctwa_ad',
+  // Envío manual desde Contactos → "Recordatorios de citas". No lo dispara
+  // agendar: lo dispara el botón, con las citas que elige el usuario.
+  'CITAS DE LA AGENDA': 'appointment_bulk',
+  'RECORDATORIO DE CITAS': 'appointment_bulk',
 };
 
 const STEP_MAP = {

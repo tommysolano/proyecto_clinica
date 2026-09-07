@@ -33,6 +33,10 @@ const TRIGGERS = [
   { value: 'new_conversation', label: 'Nueva conversación (chat)' },
   { value: 'tag_added', label: 'Etiqueta añadida' },
   { value: 'ctwa_ad', label: 'Mensaje desde anuncio (Meta Ads)' },
+  // Los dos envíos masivos manuales. Faltaban aquí, así que un flujo de
+  // importación aparecía en la lista con un guion por disparador.
+  { value: 'contact_import', label: 'Contactos importados (Excel)' },
+  { value: 'appointment_bulk', label: 'Citas de la agenda (envío manual)' },
 ];
 
 // Resumen de disparadores para la lista (soporta varios; lógica OR).

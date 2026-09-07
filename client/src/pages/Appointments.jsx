@@ -30,6 +30,7 @@ import {
   HiOutlineAdjustmentsHorizontal,
   HiOutlineChevronDown,
   HiOutlineBeaker,
+  HiOutlinePaperAirplane,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import TimeSlotInput from '../components/TimeSlotInput';
@@ -263,6 +264,10 @@ export default function Appointments() {
   const isNurse = role === 'enfermero';
   const isCallCenter = role === 'call_center';
   const isReception = hasRole('admin', 'cajero', 'enfermero');
+  // Quién puede lanzar el envío de recordatorios desde aquí. Son los mismos roles
+  // que hacen los otros envíos masivos (ver routes/appointmentBlasts.js): si el
+  // botón apareciera para más gente, llevaría a un 403.
+  const puedeEnviarRecordatorios = hasRole('admin', 'marketing', 'call_center');
   // Quién puede ejecutar el flujo asistir → cobrar → derivar (requiere cobrar).
   const canCharge = hasRole('admin', 'cajero');
   /**
@@ -1303,6 +1308,19 @@ export default function Appointments() {
               >
                 Hoy
               </button>
+              {/* Atajo al envío de recordatorios YA APUNTANDO al día que se está
+                  mirando: el caso real es abrir la agenda de mañana por la tarde
+                  y mandarles el aviso desde ahí, sin volver a elegir la fecha. */}
+              {puedeEnviarRecordatorios && (
+                <button
+                  onClick={() => navigate(`/contacts?tab=reminders&date=${listDay}&nuevo=1`)}
+                  title="Enviar recordatorios de WhatsApp a las citas de este día"
+                  className="px-3 py-2 rounded-lg cursor-pointer text-sm bg-white text-violet-700 border border-violet-200 hover:bg-violet-50 shrink-0 flex items-center gap-1.5"
+                >
+                  <HiOutlinePaperAirplane className="w-4 h-4" />
+                  <span className="hidden md:inline">Recordatorios</span>
+                </button>
+              )}
             </div>
           )}
           </div>

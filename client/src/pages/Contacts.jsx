@@ -6,11 +6,16 @@ import ContactsTab from '../components/contacts/ContactsTab';
 import GroupsTab from '../components/contacts/GroupsTab';
 import DripsTab from '../components/contacts/DripsTab';
 import ImportsTab from '../components/contacts/ImportsTab';
+import AppointmentBlastsTab from '../components/contacts/AppointmentBlastsTab';
 
 const TABS = [
   { key: 'contacts', label: 'Contactos' },
   { key: 'groups', label: 'Grupos' },
   { key: 'drips', label: 'Envíos por goteo' },
+  // Recordatorios a las citas ya agendadas. Va aquí, junto a los otros envíos
+  // masivos, y no en la agenda: es la misma faena (elegir gente, elegir la
+  // automatización, gotear) con otra fuente de destinatarios.
+  { key: 'reminders', label: 'Recordatorios de citas' },
   { key: 'imports', label: 'Importaciones' },
 ];
 
@@ -72,6 +77,14 @@ export default function Contacts() {
       {tab === 'contacts' && <ContactsTab groups={groups} onGroupsChanged={reloadGroups} />}
       {tab === 'groups' && <GroupsTab groups={groups} onGroupsChanged={reloadGroups} />}
       {tab === 'drips' && <DripsTab groups={groups} />}
+      {/* La agenda enlaza aquí con ?date= y &nuevo=1 para abrir el asistente ya
+          apuntando al día que el usuario estaba mirando. */}
+      {tab === 'reminders' && (
+        <AppointmentBlastsTab
+          initialDate={params.get('date') || ''}
+          autoOpen={params.get('nuevo') === '1'}
+        />
+      )}
       {tab === 'imports' && <ImportsTab groups={groups} onGroupsChanged={reloadGroups} />}
     </div>
   );

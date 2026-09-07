@@ -94,6 +94,8 @@ const TRIGGER_LABELS_CHAT = {
   new_conversation: 'Nueva conversación',
   tag_added: 'Etiqueta añadida',
   ctwa_ad: 'Anuncio Meta',
+  contact_import: 'Contactos importados',
+  appointment_bulk: 'Recordatorio de cita',
 };
 
 const STAGES = [
