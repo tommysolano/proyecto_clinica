@@ -44,8 +44,14 @@ async function seed(datosPaciente = {}) {
   return { clinicId, userId, patient };
 }
 
-/** Agenda una cita como mostrador y devuelve la cita guardada. */
-async function agendar(clinicId, userId, patientId) {
+/**
+ * Agenda una cita como mostrador y devuelve la cita guardada.
+ *
+ * La HORA es un parámetro porque al mismo paciente no se le puede agendar dos
+ * veces en el mismo hueco (ver `utils/citaRepetida.js`), y aquí se agenda dos
+ * veces seguidas para comprobar otra cosa: cuál de las dos es su primera visita.
+ */
+async function agendar(clinicId, userId, patientId, startTime = '10:00') {
   const manana = new Date();
   manana.setDate(manana.getDate() + 1);
   const r = await H.runController(
@@ -53,7 +59,7 @@ async function agendar(clinicId, userId, patientId) {
     H.mockReq(clinicId, userId, {
       patient: String(patientId),
       date: manana.toISOString().slice(0, 10),
-      startTime: '10:00',
+      startTime,
       reason: 'Control',
     }, { role: 'cajero' }),
   );
@@ -116,7 +122,7 @@ test('una cita en otra sucursal también cuenta: nuevo se es para la clínica', 
 test('la segunda cita del mismo paciente nunca es la primera', async () => {
   const { clinicId, userId, patient } = await seed();
   const primera = await agendar(clinicId, userId, patient._id);
-  const segunda = await agendar(clinicId, userId, patient._id);
+  const segunda = await agendar(clinicId, userId, patient._id, '11:00');
 
   assert.equal(primera.isFirstVisit, true);
   assert.equal(segunda.isFirstVisit, false);

@@ -778,6 +778,31 @@ export default function Appointments() {
     }
     // El servicio dejó de ser obligatorio para poder agendar: se puede citar a
     // alguien y decidir después a qué viene.
+
+    /**
+     * DOS FILAS EN LA MISMA HORA, ANTES DE MANDAR NADA. Las citas adicionales
+     * salen en peticiones sueltas —primero la principal y luego una por cada
+     * extra—, así que si la tercera choca, la primera ya quedó creada y el
+     * usuario ve un error con media tanda escrita. Esto se comprueba aquí para
+     * que eso no llegue a pasar; el servidor vuelve a comprobarlo de todos
+     * modos (`utils/citaRepetida.js`), que es quien manda.
+     */
+    {
+      const huecos = [
+        { date: form.date, startTime: form.startTime },
+        ...(form.extraAppointments || []).filter((it) => it.date && it.startTime),
+      ];
+      const vistos = new Set();
+      for (const h of huecos) {
+        const clave = `${h.date}|${h.startTime}`;
+        if (vistos.has(clave)) {
+          toast.error(`Hay dos citas para el mismo día y hora (${h.date} ${h.startTime}). Quita una.`);
+          return;
+        }
+        vistos.add(clave);
+      }
+    }
+
     setSaving(true);
     try {
       /**

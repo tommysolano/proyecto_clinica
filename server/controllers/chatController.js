@@ -5167,6 +5167,22 @@ exports.createAppointmentFromChat = async (req, res) => {
       // contable, y ese tampoco bloquea el agendamiento.
     }
 
+    /**
+     * NI REPETIDA NI REPETIDA CONSIGO MISMA. Se agenda desde aquí en tandas, y
+     * quien las escribe vuelve a abrir esta ventana con frecuencia —para poner
+     * el motivo, o porque no vio la cita aparecer y creyó que no se guardó—; sin
+     * esto la tanda entera se creaba otra vez y el paciente salía dos veces en
+     * la agenda del día. Se comprueba TODO antes de crear la primera cita: ver
+     * `utils/citaRepetida.js`.
+     */
+    const { revisarTandaDeCitas } = require('../utils/citaRepetida');
+    const tanda = await revisarTandaDeCitas({
+      Appointment,
+      patient: conv.patient._id,
+      filas: requested,
+    });
+    if (!tanda.ok) return res.status(tanda.status).json({ message: tanda.message });
+
     // Normaliza 'YYYY-MM-DD' a fecha local-noon para que el filtro por día coincida.
     const parseLocalDate = (value) => {
       if (!value) return null;

@@ -227,6 +227,27 @@ exports.book = async (req, res) => {
       });
     }
 
+    /**
+     * Que el hueco esté libre en la agenda no basta: el propio paciente puede
+     * estar reservando por segunda vez (recargar la página de confirmación ya lo
+     * conseguía). Ver `utils/citaRepetida.js`.
+     */
+    {
+      const { buscarCitaRepetida } = require('../utils/citaRepetida');
+      const yaExiste = await buscarCitaRepetida({
+        Appointment,
+        patient: patient._id,
+        date: localDate,
+        startTime,
+      });
+      if (yaExiste) {
+        return res.status(409).json({
+          message: 'Ya tienes una reserva para ese día y esa hora.',
+          code: 'APPOINTMENT_DUPLICATE',
+        });
+      }
+    }
+
     // Nuevo es quien no tiene NINGÚN rastro previo, no solo quien no tiene citas:
     // los pacientes que se atendían en papel llevan años viniendo (firstVisit.js).
     const primeraVisita = await esPrimeraVisita(patient._id);

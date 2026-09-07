@@ -595,6 +595,29 @@ exports.createAppointment = async (req, res) => {
         return res.status(400).json({ message: slotMessage(paso), code: 'SLOT_INVALID' });
       }
     }
+
+    /**
+     * EL MISMO PACIENTE NO SE AGENDA DOS VECES A LA MISMA HORA. Ojo: es OTRA
+     * regla que la de aquí abajo —un doctor sí puede tener varias citas a la vez—.
+     * Lo que se cierra aquí es guardar por segunda vez la cita que ya existe.
+     * Ver `utils/citaRepetida.js`.
+     */
+    {
+      const { buscarCitaRepetida, mensajeDeCitaRepetida } = require('../utils/citaRepetida');
+      const yaExiste = await buscarCitaRepetida({
+        Appointment,
+        patient,
+        date: localDate,
+        startTime,
+      });
+      if (yaExiste) {
+        return res.status(409).json({
+          message: mensajeDeCitaRepetida(yaExiste),
+          code: 'APPOINTMENT_DUPLICATE',
+          appointmentId: String(yaExiste._id),
+        });
+      }
+    }
     if (endMin !== null && endMin <= startMin) {
       return res
         .status(400)
@@ -1096,6 +1119,38 @@ exports.updateAppointment = async (req, res) => {
     const finalEnd = update.endTime !== undefined ? update.endTime : existing.endTime;
     const finalDoctor = update.doctor !== undefined ? update.doctor : existing.doctor;
     const finalRoom = update.room !== undefined ? update.room : existing.room;
+
+    /**
+     * REAGENDAR TAMPOCO PUEDE PISAR OTRA CITA DEL MISMO PACIENTE. Mover la de
+     * las 12:00 a las 11:30 cuando ya tiene una a las 11:30 deja dos citas
+     * encima, que es el mismo enredo que crearla repetida. Solo se mira si la
+     * fecha o la hora CAMBIAN: guardar cualquier otra cosa de la cita no puede
+     * chocar consigo misma (y por eso, además, se excluye su propio id).
+     */
+    {
+      const cambiaElHueco =
+        (update.date instanceof Date &&
+          new Date(update.date).toDateString() !== new Date(existing.date).toDateString()) ||
+        (update.startTime !== undefined && update.startTime !== existing.startTime);
+      if (cambiaElHueco && finalDate && finalStart) {
+        const { buscarCitaRepetida, mensajeDeCitaRepetida } = require('../utils/citaRepetida');
+        const yaExiste = await buscarCitaRepetida({
+          Appointment,
+          patient: existing.patient?._id || existing.patient,
+          date: finalDate,
+          startTime: finalStart,
+          excludeId: existing._id,
+        });
+        if (yaExiste) {
+          return res.status(409).json({
+            message: mensajeDeCitaRepetida(yaExiste),
+            code: 'APPOINTMENT_DUPLICATE',
+            appointmentId: String(yaExiste._id),
+          });
+        }
+      }
+    }
+
     if (!isAdmin && finalDate && finalStart) {
       const TimeBlock = require('../models/TimeBlock');
       const blocks = await TimeBlock.find({
