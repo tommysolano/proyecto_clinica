@@ -636,13 +636,65 @@ test('se marca asistió sin elegir a nadie, y sirve para corregir un "no asisti�
   assert.equal(guardada.turns.length, 0, 'tampoco se crea ningún turno');
 });
 
-test('asignar la atención SIGUE exigiendo a alguien: no es la misma pregunta', async () => {
-  const { clinicId, userId, cita } = await seed();
+/**
+ * GUARDAR SIN NADIE ES QUITAR A QUIEN ESTUVIERA (7-sep-2026).
+ *
+ * Antes esto devolvía 400 («elige al menos un doctor»), y con eso al doctor
+ * puesto por error no había forma de quitarlo desde el mismo sitio donde se
+ * puso. Ahora se acepta, pero NO marca asistida: quién viene y quién le atiende
+ * siguen siendo dos preguntas distintas, y la primera la contesta «Asistió»
+ * (`markAttended`), como comprueba el test de arriba.
+ */
+test('asignar con la cola vacía quita al doctor y NO da la cita por asistida', async () => {
+  const { clinicId, userId, docA, cita } = await seed();
 
+  // Primero se le asigna un doctor (y con ello la cita queda asistida).
+  const asignada = await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, { steps: [{ kind: 'doctor', user: String(docA._id) }] }, params(cita._id)),
+  );
+  assert.equal(asignada.statusCode < 400, true, JSON.stringify(asignada.payload));
+  const conDoctor = await Appointment.findById(cita._id);
+  assert.equal(String(conDoctor.doctor), String(docA._id));
+
+  // Y ahora se le quita: sin nadie en la cola.
   const r = await H.runController(
     appt.assignDoctor,
     H.mockReq(clinicId, userId, { steps: [] }, params(cita._id)),
   );
-  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
-  assert.equal((await Appointment.findById(cita._id)).status, 'pendiente');
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const guardada = await Appointment.findById(cita._id);
+  assert.equal(guardada.doctor, null, 'el espejo deja de nombrar a un doctor que no atendió');
+  assert.equal(guardada.turns.length, 0, 'y su turno desaparece de la cola');
+  assert.equal(guardada.currentTurnUser, null);
+  // El estado no vuelve atrás: el paciente había llegado y sigue habiendo
+  // llegado. Lo que se quitó es quién le atiende.
+  assert.equal(guardada.status, 'asistida');
+});
+
+/**
+ * EL FORMULARIO DE LA CITA TAMBIÉN MUEVE EL TURNO.
+ *
+ * Quitar el doctor desde «Doctor asignado» escribía solo el espejo: su turno
+ * seguía en la cola, la cita continuaba en su agenda y al primer guardado suyo
+ * volvía a aparecer como si la hubiera atendido él.
+ */
+test('quitar el doctor desde el formulario le quita también el turno', async () => {
+  const { clinicId, userId, docA, cita } = await seed();
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, { steps: [{ kind: 'doctor', user: String(docA._id) }] }, params(cita._id)),
+  );
+
+  const r = await H.runController(
+    appt.updateAppointment,
+    H.mockReq(clinicId, userId, { doctor: '' }, params(cita._id)),
+  );
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const guardada = await Appointment.findById(cita._id);
+  assert.equal(guardada.doctor, null);
+  assert.equal(guardada.turns.length, 0, 'no queda un turno huérfano en su agenda');
+  assert.equal(guardada.currentTurnUser, null);
 });

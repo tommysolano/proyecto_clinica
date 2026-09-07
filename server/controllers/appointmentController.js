@@ -11,6 +11,7 @@ const Clinic = require('../models/Clinic');
 const { emitToClinic, emitToUser, emitToRole } = require('../realtime');
 const {
   asignarTurnos,
+  fijarDoctorDeLaCita,
   doctoresPendientes,
   doctorEnTurno,
   enfermeroEnTurno,
@@ -41,6 +42,7 @@ const {
 const { isDoctorRole } = require('../constants/roles');
 const { veTodaLaOrganizacion, validarSucursalDestino } = require('../utils/clinicScope');
 const { esPrimeraVisita } = require('../utils/firstVisit');
+const { resolverAgendadoPor } = require('../utils/appointmentBooker');
 
 /**
  * Espacios de la agenda de una sucursal, en minutos (0 = cualquier hora).
@@ -662,7 +664,7 @@ exports.createAppointment = async (req, res) => {
      * Se agenda con valor desde el alta del paciente (Pacientes → «Agendar cita
      * para este paciente»), que es mostrador registrando a quien tiene delante.
      */
-    for (const k of ['agreedValue', 'isCanje', 'valueSetAt', 'valueSetBy', 'advancePayment', 'paidInAdvance', 'advanceAmount']) delete cleanBody[k];
+    for (const k of ['agreedValue', 'isCanje', 'valueSetAt', 'valueSetBy', 'advancePayment', 'paidInAdvance', 'advanceAmount', 'advanceMethod']) delete cleanBody[k];
     /**
      * Los turnos NO entran a pelo por el cuerpo. `cleanBody` se vuelca entero en
      * el `create`, así que un `turns` en el JSON se guardaría sin pasar por
@@ -674,6 +676,8 @@ exports.createAppointment = async (req, res) => {
     const valorCita = {};
     aplicarValorDeCita(valorCita, req.body, req);
     if (cleanBody.doctor === '') delete cleanBody.doctor;
+    // (En el PUT, `''` significa «quítale el doctor» y se traduce a null; ver
+    // `updateAppointment`. Aquí, al crear, es simplemente que no se eligió.)
     if (cleanBody.room === '') delete cleanBody.room;
     if (cleanBody.referral === '') delete cleanBody.referral;
     if (cleanBody.treatmentRef === '') delete cleanBody.treatmentRef;
@@ -703,6 +707,16 @@ exports.createAppointment = async (req, res) => {
       if (errorPersonal) return res.status(400).json({ message: errorPersonal });
     }
 
+    /**
+     * A NOMBRE DE QUIÉN QUEDA LA CITA. Normalmente de quien la escribe; el call
+     * center puede acreditarla a la compañera que la cerró por teléfono
+     * (`bookedBy`), y entonces se guarda además quién la digitó. Ver
+     * `utils/appointmentBooker.js`.
+     */
+    const atribucion = await resolverAgendadoPor(req, req.body.bookedBy);
+    if (!atribucion.ok) return res.status(atribucion.status).json({ message: atribucion.message });
+    delete cleanBody.bookedBy;
+
     const appointment = await Appointment.create({
       ...cleanBody,
       ...valorCita,
@@ -714,11 +728,9 @@ exports.createAppointment = async (req, res) => {
       serviceName: servicioAgenda?.name || '',
       isFirstVisit,
       clinic: targetClinicId,
-      createdBy: req.user._id,
       // Snapshot del nombre: si el usuario se da de baja, "agendada por" tiene
       // que seguir diciendo quién fue.
-      createdByName: req.user.name || '',
-      createdByRole: req.role || null,
+      ...atribucion.fields,
     });
 
     // La cola de atención, por la ÚNICA puerta que la escribe (ver
@@ -877,6 +889,8 @@ exports.updateAppointment = async (req, res) => {
     delete update.isFirstVisit;
     delete update.createdBy;
     delete update.createdByRole;
+    delete update.registeredBy;
+    delete update.registeredByName;
 
     /**
      * EL VALOR ACORDADO Y EL CANJE SON DE MOSTRADOR, también al editar.
@@ -887,7 +901,7 @@ exports.updateAppointment = async (req, res) => {
      * para editar la cita podía fijar el precio y encima sin dejar rastro.
      */
     const CAMPOS_DEL_VALOR = [
-      'agreedValue', 'isCanje', 'advancePayment', 'paidInAdvance', 'advanceAmount',
+      'agreedValue', 'isCanje', 'advancePayment', 'paidInAdvance', 'advanceAmount', 'advanceMethod',
       'valueSetAt', 'valueSetBy',
     ];
     if (!puedeFijarValor(req)) {
@@ -905,6 +919,7 @@ exports.updateAppointment = async (req, res) => {
         agreedValue: existing.agreedValue,
         isCanje: existing.isCanje,
         advancePayment: existing.advancePayment,
+        advanceMethod: existing.advanceMethod,
         paidInAdvance: existing.paidInAdvance,
         advanceAmount: existing.advanceAmount,
       };
@@ -912,6 +927,14 @@ exports.updateAppointment = async (req, res) => {
       for (const k of CAMPOS_DEL_VALOR) delete update[k];
       if (cambio) Object.assign(update, valor);
     }
+
+    /**
+     * QUITARLE EL DOCTOR A UNA CITA: el selector manda `''` al limpiarlo, y eso
+     * reventaba con un «Cast to ObjectId failed» —error 500, sin explicación—
+     * porque Mongoose no sabe convertir la cadena vacía. Vacío aquí significa
+     * «sin doctor», que es null.
+     */
+    if (update.doctor === '') update.doctor = null;
 
     // Reasignación de doctor: libre hasta que la consulta se atiende. Se compara
     // contra el doctor actual para no bloquear una edición que reenvía el mismo.
@@ -1085,6 +1108,27 @@ exports.updateAppointment = async (req, res) => {
       .populate('services.product', 'name code salePrice category');
 
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
+
+    /**
+     * CAMBIAR EL DOCTOR DESDE EL FORMULARIO MUEVE SU TURNO.
+     *
+     * El campo «Doctor asignado» escribía solo el espejo, y la cola se quedaba
+     * como estaba: quitarle el doctor a una cita no la quitaba de su agenda —que
+     * va por `currentTurnUser`— y al primer guardado suyo el espejo volvía a
+     * decir su nombre. Se veía como «le quité el doctor y sigue apareciendo que
+     * la atendió él».
+     *
+     * Va por la única puerta que escribe la cola y sus espejos (ver
+     * utils/appointmentTurns.js). Los turnos ya completados no se tocan.
+     */
+    if (doctorChanged) {
+      fijarDoctorDeLaCita(appointment, update.doctor || null, { por: req.user._id });
+      await appointment.save();
+      await appointment.populate([
+        { path: 'doctor', select: POPULATE_DOCTOR },
+        { path: 'turns.user', select: POPULATE_DOCTOR },
+      ]);
+    }
 
     // El servicio pasó a ser uno con suero de serie: se escribe en la ficha,
     // igual que al agendarlo directo (ver el comentario de arriba y
@@ -1892,9 +1936,19 @@ exports.assignDoctor = async (req, res) => {
 
     const doctores = pasos.filter((p) => p.kind === 'doctor').map((p) => p.user);
     const enfermeria = pasos.some((p) => p.kind === 'enfermeria');
-    if (!pasos.length) {
-      return res.status(400).json({ message: 'Elige al menos un doctor o marca enfermería' });
-    }
+    /**
+     * LA COLA PUEDE QUEDAR VACÍA, y eso es una respuesta legítima.
+     *
+     * Antes se exigía «al menos un doctor o enfermería», y con eso pasaban dos
+     * cosas que mostrador reportó: para corregir un no-show —«sí vino»— había que
+     * inventarse un profesional, y quitar al doctor que se había puesto por error
+     * era imposible, porque guardar sin nadie estaba prohibido. El ESTADO de la
+     * cita y QUIÉN la atiende son dos cosas distintas.
+     *
+     * Sin nadie en la cola, la cita queda recibida y a la espera de que se
+     * decida quién la ve. Los turnos ya completados no se tocan (los conserva
+     * `asignarTurnos`), así que esto no borra a nadie que ya haya atendido.
+     */
     // Lo que recepción anota al recibir al paciente ("viene con la mamá", "pidió
     // factura a nombre de la empresa"). No es dato clínico: va a la bitácora de
     // Observaciones del paciente, que es donde lo va a buscar el resto.
@@ -1961,6 +2015,11 @@ exports.assignDoctor = async (req, res) => {
      */
     const estabaAusente = apt.status === 'no_asistio';
     if (
+      // Con la cola VACÍA no se toca el estado: eso no es recibir a nadie, es
+      // quitar a quien estuviera asignado. Quién viene y quién le atiende siguen
+      // siendo dos preguntas distintas —para la primera está `markAttended`, el
+      // botón «Asistió»— y guardar sin nadie no puede contestar las dos.
+      pasos.length &&
       esDeHoy &&
       (apt.status === 'pendiente' || apt.status === 'confirmada' || estabaAusente)
     ) {
@@ -2057,8 +2116,17 @@ exports.assignDoctor = async (req, res) => {
     emitToClinic(apt.clinic, 'appointment:updated', populated);
     await notificarAsignacion(req, populated, { doctores, enfermeria, anteriores });
 
-    // Igual que antes: la automatización de "cita asistida" solo la primera vez.
-    if (!wasAttended) emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(populated));
+    /**
+     * La automatización de "cita asistida", solo la primera vez Y solo si la
+     * cita quedó de verdad asistida. Antes bastaba con asignar para dispararla,
+     * así que dejar preparado el doctor de una cita de la semana que viene —o
+     * quitarle el doctor a una cualquiera— anunciaba una asistencia que no había
+     * ocurrido.
+     */
+    const quedaAsistida = populated.status === 'asistida' || populated.status === 'completada';
+    if (!wasAttended && quedaAsistida) {
+      emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(populated));
+    }
     // `autoSerum` lo lee la pantalla para decir que el suero ya quedó escrito en
     // los seguimientos. Va aparte del documento: no es un campo de la cita.
     res.json(

@@ -38,7 +38,7 @@ function turnosTerminados(apt) {
  * en el historial, las comisiones ni los reportes. Los turnos de enfermería no
  * tocan `doctor`: para eso está `attendedByNurse`.
  */
-function sincronizarEspejo(apt) {
+function sincronizarEspejo(apt, { colaReescrita = false } = {}) {
   const orden = turnosOrdenados(apt);
 
   // Clase del turno que tiene la pelota: de esto depende que la cita salga (o no)
@@ -84,9 +84,31 @@ function sincronizarEspejo(apt) {
   const ultimoDoctor = [...orden].reverse().find((t) => t.kind === 'doctor' && t.user);
   const elegido = vigente && vigente.user ? vigente : ultimoDoctor;
 
-  // Sin ningún turno de doctor no se pisa lo que hubiera: una cita solo de
-  // enfermería no debe borrar el doctor de una cita vieja ya atendida.
-  if (!elegido || !elegido.user) return apt;
+  if (!elegido || !elegido.user) {
+    /**
+     * QUITAR AL DOCTOR DE LA COLA LO QUITA DE LA CITA.
+     *
+     * Antes esto se iba sin tocar el espejo, y el resultado era que una cita a la
+     * que se le quitaba el doctor —porque se asignó por error, o porque al final
+     * la atendió otro— seguía diciendo «Dr. Fulano» en la agenda, en el detalle y
+     * en los reportes. El doctor no la había atendido y la cita lo nombraba
+     * igual: quitarlo no servía de nada.
+     *
+     * Solo cuando la cola se ACABA DE REESCRIBIR (`colaReescrita`), que es cuando
+     * la ausencia de doctores es una decisión de quien asignó. Al cerrar un turno
+     * no: ahí una cita vieja sin turnos —de antes de que existieran— perdería su
+     * médico sin que nadie lo hubiera pedido.
+     *
+     * Y si algún turno de doctor está COMPLETADO, arriba ya lo habría elegido: a
+     * quien de verdad atendió no se le borra nunca por esta vía.
+     */
+    if (colaReescrita) {
+      apt.doctor = null;
+      apt.doctorAssignedAt = null;
+      apt.doctorAssignedBy = null;
+    }
+    return apt;
+  }
 
   apt.doctor = elegido.user;
   apt.doctorAssignedAt = elegido.assignedAt || apt.doctorAssignedAt;
@@ -162,7 +184,46 @@ function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, p
   }
 
   apt.turns = [...completados, ...nuevos];
-  sincronizarEspejo(apt);
+  // La cola se acaba de reescribir entera: si no quedó ningún doctor, es porque
+  // se le quitó, no porque no se sepa.
+  sincronizarEspejo(apt, { colaReescrita: true });
+  return apt;
+}
+
+/**
+ * CAMBIA (o QUITA) el doctor de una cita desde el formulario de edición.
+ *
+ * El campo «Doctor asignado» del formulario escribía el espejo `doctor` a pelo y
+ * no tocaba la cola. Con eso, quitar al doctor no quitaba nada: su TURNO seguía
+ * ahí, la cita continuaba en su agenda (que va por `currentTurnUser`) y, en
+ * cuanto guardaba cualquier cosa, `completarTurno` volvía a poner su nombre en
+ * el espejo. El resultado que se veía: «le quité el doctor y sigue diciendo que
+ * la atendió él».
+ *
+ * Reemplaza el turno de doctor PENDIENTE por el nuevo —en su misma posición,
+ * para no adelantar ni retrasar a enfermería—, o lo quita si no hay doctor. A
+ * los turnos ya COMPLETADOS no los toca: ese profesional ya atendió y su
+ * seguimiento está escrito a su nombre.
+ */
+function fijarDoctorDeLaCita(apt, userId, { por = null } = {}) {
+  const orden = turnosOrdenados(apt);
+  const esDoctorPendiente = (t) => t.kind === 'doctor' && t.status === 'pendiente';
+  const posicionOriginal = orden.findIndex(esDoctorPendiente);
+  const resto = orden.filter((t) => !esDoctorPendiente(t));
+  let cola = resto;
+  if (userId) {
+    const nuevo = {
+      kind: 'doctor',
+      user: userId,
+      status: 'pendiente',
+      assignedAt: new Date(),
+      assignedBy: por,
+    };
+    const en = posicionOriginal >= 0 ? Math.min(posicionOriginal, resto.length) : resto.length;
+    cola = [...resto.slice(0, en), nuevo, ...resto.slice(en)];
+  }
+  apt.turns = cola.map((t, i) => ({ ...(t.toObject ? t.toObject() : t), order: i }));
+  sincronizarEspejo(apt, { colaReescrita: true });
   return apt;
 }
 
@@ -346,6 +407,7 @@ module.exports = {
   turnosTerminados,
   sincronizarEspejo,
   asignarTurnos,
+  fijarDoctorDeLaCita,
   completarTurno,
   turnoEnfermeriaPendiente,
   turnoEnfermeriaParaUsuario,

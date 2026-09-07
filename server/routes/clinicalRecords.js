@@ -25,6 +25,20 @@ router.use(auth, requireClinic);
 // lo que hizo. Antes el sistema le generaba un seguimiento automático y él no
 // podía ni abrir la ficha.
 const allRoles = requireRole('admin', 'cajero', 'doctor', 'enfermero');
+/**
+ * QUIEN LEE LA HISTORIA, que ya no es lo mismo que quien la escribe.
+ *
+ * El CALL CENTER entra aquí desde sep-2026, y SOLO a leer. No es un permiso
+ * cómodo, es el trabajo: el paciente llama preguntando qué le recetaron, cuándo
+ * fue su última consulta o si tiene que volver, y la asesora tenía que
+ * interrumpir a un doctor para responder algo que está escrito. Ve lo mismo que
+ * cualquier otro rol no administrativo: sin datos de contacto (`hideContactData`)
+ * y sin lo que escribió el terapeuta, que es reservado (`hideTherapyNotes`).
+ *
+ * Escribir, corregir, administrar sueros o borrar sigue siendo de quien atiende:
+ * eso lo defienden las rutas de abajo, que NO llevan este grupo.
+ */
+const rolesQueLeen = requireRole('admin', 'cajero', 'doctor', 'enfermero', 'call_center');
 // Quien ATIENDE al paciente: doctores, especialidades y enfermería. Es quien
 // redacta lo que hizo. Mostrador (cajero) no: documenta por otro.
 const rolesQueAtienden = requireRole('admin', 'doctor', 'enfermero');
@@ -47,14 +61,15 @@ router.get('/:patientId/hcu005', requireRole('admin', 'cajero', 'doctor'), print
  * Va antes de '/:patientId' por claridad, aunque Express no las confunda: esta
  * tiene dos segmentos y aquella uno.
  *
- * Con los MISMOS roles que la ficha, y no con los de la agenda, que son más:
- * esto es historia clínica. El call center y marketing entran a /appointments
- * pero no tienen acceso a los seguimientos en ninguna otra pantalla, y darles
- * una receta por esta puerta sería abrirles la historia por la ventana.
+ * Con los roles de la FICHA, y no con los de la agenda, que son más: esto es
+ * historia clínica. Marketing entra a /appointments pero no a los seguimientos
+ * en ninguna otra pantalla, y darle una receta por esta puerta sería abrirle la
+ * historia por la ventana. (El call center sí la lee desde sep-2026, pero por la
+ * ficha del paciente —ver `rolesQueLeen`—, no desde la agenda.)
  */
 router.get('/by-appointment/:appointmentId', allRoles, getFollowUpsByAppointment);
 
-router.get('/:patientId', allRoles, getOrCreateByPatient);
+router.get('/:patientId', rolesQueLeen, getOrCreateByPatient);
 router.put('/:patientId', allRoles, updateByPatient);
 /**
  * Escribir un seguimiento. Enfermería SÍ, desde sep-2026.
@@ -95,7 +110,8 @@ router.delete(
   requireRole('admin', 'doctor', 'enfermero'),
   undoSerumAdministration
 );
-router.get('/:patientId/follow-ups/:followUpId/print', allRoles, printFollowUp);
+// La receta impresa: el call center también se la manda al paciente que la pide.
+router.get('/:patientId/follow-ups/:followUpId/print', rolesQueLeen, printFollowUp);
 /**
  * La hoja MSP NO es para enfermería, aunque desde ago-2026 sí lea la historia
  * clínica dentro de la app. El motivo no es lo clínico: la hoja oficial lleva la
@@ -123,7 +139,7 @@ router.post(
 );
 router.get(
   '/:patientId/follow-ups/:followUpId/attachments/:attachmentId',
-  allRoles,
+  rolesQueLeen,
   downloadFollowUpAttachment
 );
 // Borrar un adjunto va con el mismo criterio que borrar el seguimiento: es parte

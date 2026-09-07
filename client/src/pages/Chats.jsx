@@ -4,10 +4,10 @@ import { Link, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import NumericInput from '../components/NumericInput';
 import useDebounce from '../hooks/useDebounce';
-import useSriLookup, { fillField } from '../hooks/useSriLookup';
-import SriStatus from '../components/SriStatus';
 import { nombreSucursal } from '../utils/clinicName';
 import AppointmentValueFields from '../components/AppointmentValueFields';
+import AgendadoPorSelect from '../components/AgendadoPorSelect';
+import { partirNombreCompleto } from '../utils/fullName';
 import {
   HiOutlineStar,
   HiStar,
@@ -1036,12 +1036,42 @@ export default function Chats() {
    * detalle del panel. Hay que refrescar las dos cosas: si solo se actualizara la
    * lista, el panel seguiría mostrando el paciente o las oportunidades de antes
    * de guardar, porque esos campos salen del detalle (ver activeConv).
+   *
+   * Y LOS DATOS DERIVADOS NO SE PIERDEN POR EL CAMINO.
+   *
+   * `window`, `sendingAccount`, `inboundAccount` y `effectiveConnectionType` no
+   * están en la base: los calcula el servidor al responder. Si una respuesta no
+   * los trae, conservar los que ya había es lo correcto —el número por el que
+   * entró el contacto no cambia porque se destaque el chat—, mientras que
+   * pisarlos con `undefined` dejaba el chat con el aviso rojo «no tiene ningún
+   * número por el que responder» y el cuadro de escribir bloqueado.
+   *
+   * El servidor ya devuelve estos campos en todas sus mutaciones (ver
+   * `respondConversation`); esto es el cinturón: cubre a un navegador con la
+   * versión anterior cargada y a cualquier endpoint que se añada mañana.
    */
+  const DERIVADOS_DEL_CHAT = [
+    'window', 'sendingAccount', 'inboundAccount', 'effectiveConnectionType',
+    'sendingAccountIsFallback', 'accountPinned', 'linkedConversations', 'detectedEmail',
+  ];
+  const conservarDerivados = (prev, next) => {
+    if (!prev) return next;
+    const out = { ...next };
+    for (const k of DERIVADOS_DEL_CHAT) {
+      if (out[k] === undefined && prev[k] !== undefined) out[k] = prev[k];
+    }
+    return out;
+  };
   const applyConversationUpdate = (c) => {
     if (!c?._id) return;
-    setConversations((prev) => prev.map((x) => (String(x._id) === String(c._id) ? c : x)));
-    setOpenConvSnap((prev) => (prev && String(prev._id) === String(c._id) ? c : prev));
-    if (String(c._id) === String(activeIdRef.current)) setActiveDetail(c);
+    setConversations((prev) =>
+      prev.map((x) => (String(x._id) === String(c._id) ? conservarDerivados(x, c) : x)));
+    setOpenConvSnap((prev) =>
+      (prev && String(prev._id) === String(c._id) ? conservarDerivados(prev, c) : prev));
+    if (String(c._id) === String(activeIdRef.current)) {
+      setActiveDetail((prev) =>
+        (prev && String(prev._id) === String(c._id) ? conservarDerivados(prev, c) : c));
+    }
   };
   // El orden ya viene ordenado del servidor (ver paramsForView): con la lista
   // paginada tiene que ser así, porque los chats que más llevan esperando están
@@ -2614,13 +2644,17 @@ export default function Chats() {
         />
       )}
       {appointmentModal && activeConv && (
-        <AppointmentFromChatModal
+        <AgregarYAgendarModal
           conv={activeConv}
           onClose={() => setAppointmentModal(false)}
-          onCreated={(c, count) => {
+          onDone={(c, count) => {
             applyConversationUpdate(c);
             setAppointmentModal(false);
-            toast.success(count > 1 ? `${count} citas creadas desde el chat` : 'Cita creada desde el chat');
+            // `count === 0` = solo se dio de alta al contacto (no marcó agendar):
+            // el aviso del alta ya lo dio el propio modal.
+            if (count > 0) {
+              toast.success(count > 1 ? `${count} citas creadas desde el chat` : 'Cita creada desde el chat');
+            }
           }}
         />
       )}
@@ -4442,7 +4476,6 @@ function ChatAutomationsSection({ conv, version = 0 }) {
 function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onScheduleAppointment, onCreateQuotation, automationsVersion = 0, waAccounts = [] }) {
   const op = conv.opportunity || {};
   const meta = op.isOpportunity ? stageMeta(op.stage) : null;
-  const [registerModal, setRegisterModal] = useState(false);
   const [appts, setAppts] = useState([]);
   const [resched, setResched] = useState(null); // cita a reagendar
   const [apptsVersion, setApptsVersion] = useState(0); // fuerza recarga tras reagendar
@@ -4490,22 +4523,28 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
           </div>
         )}
         <div className="mt-2 flex flex-col gap-1.5">
-          {!conv.patient && (
-            <button
-              onClick={() => setRegisterModal(true)}
-              className="w-full text-xs px-2 py-1.5 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 border-none cursor-pointer"
-            >
-              + Agregar al sistema
-            </button>
-          )}
+          {/**
+            * UN SOLO BOTÓN para dar de alta y agendar.
+            *
+            * Eran dos —«Agregar al sistema» y «Agendar cita(s)»— y el segundo no
+            * servía para nada hasta pulsar el primero: el asesor que acababa de
+            * cerrar la cita por teléfono tenía que abrir dos modales seguidos, y
+            * si le daba al de agendar primero solo recibía un «agrega primero al
+            * paciente». Ahora es el mismo gesto que en /patients: se registra y
+            * se marca la casilla de agendar si además hay cita.
+            *
+            * Con el contacto YA registrado no hay nada que dar de alta: el botón
+            * lleva directo a la cita.
+            */}
           <button
-            onClick={() => {
-              if (!conv.patient) { toast.error('Primero agrega al paciente al sistema'); return; }
-              onScheduleAppointment?.();
-            }}
-            className="w-full text-xs px-2 py-1.5 bg-sky-50 text-sky-700 rounded-lg hover:bg-sky-100 border border-sky-200 cursor-pointer"
+            onClick={() => onScheduleAppointment?.()}
+            className={`w-full text-xs px-2 py-1.5 rounded-xl cursor-pointer ${
+              conv.patient
+                ? 'bg-sky-50 text-sky-700 hover:bg-sky-100 border border-sky-200'
+                : 'bg-emerald-600 text-white shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 border-none'
+            }`}
           >
-            Agendar cita(s)
+            {conv.patient ? 'Agendar cita(s)' : '+ Agregar al sistema y agendar'}
           </button>
           <button
             onClick={() => onCreateQuotation?.()}
@@ -4523,14 +4562,6 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
 
       {/* Qué le está enviando el sistema solo a este contacto (seguimiento). */}
       <ChatAutomationsSection conv={conv} version={automationsVersion} />
-
-      {registerModal && (
-        <RegisterPatientModal
-          conv={conv}
-          onClose={() => setRegisterModal(false)}
-          onRegistered={(c) => { setRegisterModal(false); onUpdated?.(c); toast.success('Paciente agregado al sistema'); }}
-        />
-      )}
 
       {(() => {
         // Todas las oportunidades del chat (una por anuncio/interés). El campo
@@ -5210,133 +5241,6 @@ function TasksSection({ conv, agents = [], meId }) {
         {adding ? 'Creando...' : 'Agregar tarea'}
       </button>
     </div>
-  );
-}
-
-function RegisterPatientModal({ conv, onClose, onRegistered }) {
-  const guessName = (conv.contactName || '').trim().split(/\s+/);
-  // `conv.phone` solo es un teléfono real en WhatsApp: en Messenger/Instagram es
-  // el identificador interno del contacto (PSID/IGSID), no algo que se pueda
-  // marcar. Ahí el agente tiene que escribir el teléfono real (si el contacto lo
-  // dio) para vincular este chat con su WhatsApp — ver registerPatientFromChat.
-  const isWhatsapp = (conv.channel || 'whatsapp') === 'whatsapp';
-  /**
-   * CORREO Y DIRECCIÓN EN LUGAR DEL GÉNERO.
-   *
-   * El call center registra al paciente con lo que acaba de darle por el chat, y
-   * eso es el correo y la dirección — el género no se lo dicta nadie por
-   * WhatsApp y se rellenaba a ojo o se quedaba en «Seleccionar». Sigue estando
-   * en la ficha del paciente, que es donde se corrige con el dato delante.
-   *
-   * El correo arranca con el que el contacto ESCRIBIÓ en la conversación
-   * (`detectedEmail`, que el servidor saca del último mensaje entrante que
-   * contenga uno): es justo el dato que el agente iba a copiar a mano.
-   */
-  const [form, setForm] = useState({
-    firstName: guessName[0] || '',
-    lastName: guessName.slice(1).join(' ') || '',
-    cedula: '',
-    email: conv.detectedEmail || '',
-    address: '',
-    phone: '',
-  });
-  const [saving, setSaving] = useState(false);
-
-  // Autocompletado por cédula/RUC desde el SRI (nombres/apellidos).
-  const cedulaLookup = useSriLookup(form.cedula, {
-    onData: (d, prev) => {
-      setForm((f) => ({
-        ...f,
-        firstName: fillField(f.firstName, d.found ? d.firstName || '' : '', prev?.firstName),
-        lastName: fillField(f.lastName, d.found ? d.lastName || '' : '', prev?.lastName),
-      }));
-    },
-  });
-
-  const submit = async () => {
-    // Nombres, apellidos y género ya NO se exigen (misma regla que el alta desde
-    // Clientes): se registra con lo que se sepa y se completa después. El
-    // teléfono real sigue siendo obligatorio fuera de WhatsApp, que es otra cosa:
-    // sin él este chat no se puede vincular con nada.
-    if (!isWhatsapp && !form.phone.trim()) {
-      return toast.error(`Este chat es de ${CHANNEL_TAB_LABELS[conv.channel] || conv.channel}: escribe el teléfono real del contacto.`);
-    }
-    setSaving(true);
-    try {
-      const r = await api.post(`/chats/${conv._id}/register-patient`, form);
-      onRegistered(r.data.conversation);
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al registrar');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <ModalShell title="Agregar paciente al sistema" onClose={onClose}>
-      <div className="space-y-3">
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="text-xs font-semibold text-slate-600 block mb-1">Nombres</label>
-            <input value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
-          </div>
-          <div>
-            <label className="text-xs font-semibold text-slate-600 block mb-1">Apellidos</label>
-            <input value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
-          </div>
-          <div>
-            <label className="text-xs font-semibold text-slate-600 block mb-1">Cédula / Pasaporte (opcional)</label>
-            <input value={form.cedula} onChange={(e) => setForm({ ...form, cedula: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" maxLength={20} />
-            <SriStatus status={cedulaLookup} />
-          </div>
-          <div>
-            <label className="text-xs font-semibold text-slate-600 block mb-1">Correo electrónico</label>
-            <input
-              type="text"
-              value={form.email}
-              onChange={(e) => setForm({ ...form, email: e.target.value })}
-              placeholder="correo@dominio.com"
-              className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
-            />
-          </div>
-        </div>
-        <div>
-          <label className="text-xs font-semibold text-slate-600 block mb-1">Dirección</label>
-          <input
-            value={form.address}
-            onChange={(e) => setForm({ ...form, address: e.target.value })}
-            placeholder="Calle, número, referencia"
-            className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
-          />
-        </div>
-        {isWhatsapp ? (
-          <p className="text-xs text-slate-500">Teléfono: {conv.phone}</p>
-        ) : (
-          <div>
-            <label className="text-xs font-semibold text-slate-600 block mb-1">
-              Teléfono / WhatsApp real del contacto *
-            </label>
-            <input
-              value={form.phone}
-              onChange={(e) => setForm({ ...form, phone: e.target.value })}
-              placeholder="Ej: 0991234567"
-              className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
-            />
-            <p className="text-[11px] text-slate-400 mt-1">
-              Este chat es de {CHANNEL_TAB_LABELS[conv.channel] || conv.channel}: Meta no comparte el teléfono real
-              del contacto ahí. Si lo escribes aquí, el sistema reconocerá solo su próximo mensaje de WhatsApp como
-              la misma persona (y podrás responderle por cualquiera de los dos canales desde este chat).
-            </p>
-          </div>
-        )}
-        <div className="flex justify-end gap-2">
-          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-700">Cancelar</button>
-          <button onClick={submit} disabled={saving} className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 border-none cursor-pointer">
-            {saving ? 'Guardando...' : 'Agregar paciente'}
-          </button>
-        </div>
-      </div>
-    </ModalShell>
   );
 }
 
@@ -6316,8 +6220,28 @@ function TransferChatModal({ conv, meId, canAutoAssign, onClose, onTransfer }) {
   );
 }
 
-function AppointmentFromChatModal({ conv, onClose, onCreated }) {
+/**
+ * AGREGAR AL SISTEMA **Y** AGENDAR, en un solo modal.
+ *
+ * Antes eran dos botones y dos modales: «Agregar al sistema» y «Agendar
+ * cita(s)». El segundo no servía para nada hasta usar el primero —contestaba
+ * «primero agrega al paciente al sistema»— y el asesor que acababa de cerrar la
+ * cita por teléfono tenía que hacer el mismo trabajo dos veces. Ahora es el
+ * mismo gesto que en /patients: se registra al contacto y se marca la casilla si
+ * además hay cita.
+ *
+ * DOS CAMPOS PARA EL ALTA, no seis. Nombre completo (uno solo: el contacto
+ * escribe «Ana Pérez Chávez», no reparte en casillas — ver
+ * `partirNombreCompleto`) y correo. La cédula y la dirección salieron: no se
+ * dictan por WhatsApp y se rellenaban a ojo, y la ficha del paciente es donde se
+ * completan con el dato delante.
+ *
+ * Si el contacto YA es paciente no hay nada que dar de alta: el modal se abre
+ * directamente en la cita.
+ */
+function AgregarYAgendarModal({ conv, onClose, onDone }) {
   const { clinics, activeClinic, hasRole } = useAuth();
+  const yaEsPaciente = !!conv.patient;
   /**
    * El VALOR y el pago adelantado son de quien VENDE la cita: administración,
    * caja y el call center (espejo de `puedeFijarValor` en el servidor). A
@@ -6326,6 +6250,30 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
    */
   const puedeFijarValor = hasRole('admin', 'cajero', 'call_center');
   const today = todayEc();
+  /**
+   * `conv.phone` solo es un teléfono real en WhatsApp: en Messenger/Instagram es
+   * el identificador interno del contacto (PSID/IGSID), no algo que se pueda
+   * marcar. Ahí el agente tiene que escribir el teléfono real (si el contacto lo
+   * dio) para vincular este chat con su WhatsApp — ver registerPatientFromChat.
+   */
+  const isWhatsapp = (conv.channel || 'whatsapp') === 'whatsapp';
+
+  // ─────────────────────────── Alta del contacto ───────────────────────────
+  /**
+   * El nombre arranca con el que trae el chat y el correo con el que el propio
+   * contacto ESCRIBIÓ en la conversación (`detectedEmail`, que el servidor saca
+   * del último mensaje entrante que contenga uno): es justo el dato que el
+   * agente iba a copiar a mano.
+   */
+  const [datos, setDatos] = useState({
+    fullName: (conv.contactName || '').trim(),
+    email: conv.detectedEmail || '',
+    phone: '',
+  });
+
+  // ──────────────────────────────── Cita(s) ────────────────────────────────
+  // Con el paciente ya registrado el modal ES el de agendar: la casilla sobra.
+  const [agendar, setAgendar] = useState(yaEsPaciente);
   // Soporte para agendar múltiples citas en una sola operación.
   // Importante: arrancamos SIN servicios pre-seleccionados (el usuario los elige cada vez).
   const emptyAppt = () => ({
@@ -6344,8 +6292,15 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
     isCanje: false,
     advancePayment: '',
     advanceAmount: '',
+    advanceMethod: '',
   });
   const [items, setItems] = useState([emptyAppt()]);
+  /**
+   * A NOMBRE DE QUIÉN QUEDA LA CITA. En el call center una asesora cierra la
+   * cita por teléfono y otra la escribe; sin esto se apuntaba a quien teclea.
+   * Vacío = quien la está escribiendo. Ver components/AgendadoPorSelect.
+   */
+  const [agendadoPor, setAgendadoPor] = useState('');
   /**
    * LA SUCURSAL SE ESCOGE, NO SE HEREDA.
    *
@@ -6396,22 +6351,66 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
     setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
   };
 
+  /**
+   * Da de alta al contacto (si hace falta) y agenda (si se marcó).
+   *
+   * El orden importa y el corte también: si el alta sale bien y la cita falla,
+   * el paciente YA está creado y se dice exactamente eso, en vez de dejar al
+   * asesor pensando que no se guardó nada y volver a intentarlo (creando dos).
+   */
   const submit = async () => {
-    // Con varias sedes la sucursal es obligatoria: sin esto el servidor caería
-    // en la del asesor, que es justo el error que se quiere impedir.
-    if (!unaSolaSede && !clinicId) {
-      return toast.error('Escoge la sucursal de la cita');
-    }
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      if (!it.date || !it.startTime) {
-        return toast.error(`La cita #${i + 1} requiere fecha y hora`);
+    if (!yaEsPaciente) {
+      // Nombre y correo NO se exigen (misma regla que el alta desde Clientes):
+      // se registra con lo que se sepa y se completa después. El teléfono real
+      // sigue siendo obligatorio fuera de WhatsApp, que es otra cosa: sin él
+      // este chat no se puede vincular con nada.
+      if (!isWhatsapp && !datos.phone.trim()) {
+        return toast.error(`Este chat es de ${CHANNEL_TAB_LABELS[conv.channel] || conv.channel}: escribe el teléfono real del contacto.`);
       }
-      // El servicio ya no bloquea: se puede agendar y decidir después a qué viene.
     }
+    if (agendar) {
+      // Con varias sedes la sucursal es obligatoria: sin esto el servidor caería
+      // en la del asesor, que es justo el error que se quiere impedir.
+      if (!unaSolaSede && !clinicId) {
+        return toast.error('Escoge la sucursal de la cita');
+      }
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (!it.date || !it.startTime) {
+          return toast.error(`La cita #${i + 1} requiere fecha y hora`);
+        }
+        // El servicio ya no bloquea: se puede agendar y decidir después a qué viene.
+      }
+    }
+
+    setSaving(true);
+    let conversacion = conv;
     try {
-      setSaving(true);
+      if (!yaEsPaciente) {
+        const { firstName, lastName } = partirNombreCompleto(datos.fullName);
+        const r = await api.post(`/chats/${conv._id}/register-patient`, {
+          firstName,
+          lastName,
+          email: datos.email,
+          phone: datos.phone,
+        });
+        conversacion = r.data.conversation;
+        toast.success('Paciente agregado al sistema');
+      }
+    } catch (err) {
+      setSaving(false);
+      return toast.error(err.response?.data?.message || 'Error al registrar');
+    }
+
+    if (!agendar) {
+      setSaving(false);
+      return onDone(conversacion, 0);
+    }
+
+    try {
       const r = await api.post(`/chats/${conv._id}/appointment`, {
+        // A quién se le acredita la tanda entera ('' = a quien la escribe).
+        bookedBy: agendadoPor || undefined,
         appointments: items.map((it) => ({
           date: it.date,
           startTime: it.startTime,
@@ -6423,112 +6422,197 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
           isCanje: !!it.isCanje,
           advancePayment: it.advancePayment || '',
           advanceAmount: it.advanceAmount ?? '',
+          advanceMethod: it.advanceMethod || '',
         })),
       });
-      onCreated(r.data.conversation, (r.data.appointments || []).length || 1);
+      onDone(r.data.conversation, (r.data.appointments || []).length || 1);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al crear cita(s)');
+      // El paciente ya quedó creado aunque la cita falle: decirlo evita que se
+      // vuelva a intentar el alta entera y acaben dos fichas del mismo contacto.
+      toast.error(
+        `${err.response?.data?.message || 'Error al crear cita(s)'}${
+          yaEsPaciente ? '' : '. El paciente sí quedó agregado al sistema.'
+        }`,
+        { duration: 7000 }
+      );
+      if (!yaEsPaciente) onDone(conversacion, 0);
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <ModalShell title="Agendar cita(s) desde chat" onClose={onClose} size="lg">
+    <ModalShell
+      title={yaEsPaciente ? 'Agendar cita(s) desde chat' : 'Agregar al sistema y agendar'}
+      onClose={onClose}
+      size="lg"
+    >
       <div className="space-y-3 text-sm">
         <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-2 text-xs text-emerald-800">
-          Paciente: <strong>{conv.contactName || conv.phone}</strong>
+          {yaEsPaciente ? 'Paciente' : 'Contacto'}:{' '}
+          <strong>{conv.contactName || conv.phone}</strong>
+          {isWhatsapp && conv.contactName && <span className="text-emerald-700/70"> · {conv.phone}</span>}
         </div>
-        {!unaSolaSede && (
-          <div>
-            <label className="text-xs font-medium text-slate-600">Sucursal *</label>
-            <select
-              value={clinicId}
-              onChange={(e) => setClinicId(e.target.value)}
-              className={`w-full border rounded-xl px-2 py-1.5 mt-1 ${
-                clinicId ? 'border-slate-200' : 'border-amber-300 bg-amber-50'
-              }`}
-            >
-              <option value="">Seleccionar sucursal…</option>
-              {sedes.map((c) => (
-                <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
-              ))}
-            </select>
+
+        {/* ─────────── Alta del contacto (solo si aún no es paciente) ─────────── */}
+        {!yaEsPaciente && (
+          <div className="border border-slate-200 rounded-xl p-3 space-y-2">
+            <div>
+              <label className="text-xs font-medium text-slate-600">Nombre completo</label>
+              <input
+                value={datos.fullName}
+                onChange={(e) => setDatos({ ...datos, fullName: e.target.value })}
+                placeholder="Ej: Ana Pérez Chávez"
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 mt-1 text-sm bg-white"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-600">Correo electrónico</label>
+              <input
+                type="text"
+                value={datos.email}
+                onChange={(e) => setDatos({ ...datos, email: e.target.value })}
+                placeholder="correo@dominio.com"
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 mt-1 text-sm bg-white"
+              />
+            </div>
+            {!isWhatsapp && (
+              <div>
+                <label className="text-xs font-medium text-slate-600">
+                  Teléfono / WhatsApp real del contacto *
+                </label>
+                <input
+                  value={datos.phone}
+                  onChange={(e) => setDatos({ ...datos, phone: e.target.value })}
+                  placeholder="Ej: 0991234567"
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2 mt-1 text-sm bg-white"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Este chat es de {CHANNEL_TAB_LABELS[conv.channel] || conv.channel}: Meta no comparte el teléfono
+                  real del contacto ahí. Si lo escribes aquí, el sistema reconocerá su próximo mensaje de WhatsApp
+                  como la misma persona.
+                </p>
+              </div>
+            )}
           </div>
         )}
 
-        <div className="space-y-3">
-          {items.map((it, idx) => (
-            <div key={idx} className="border border-slate-200 rounded-xl p-3 bg-slate-50/40 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-emerald-700">Cita #{idx + 1}</span>
-                {items.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => setItems((prev) => prev.filter((_, i) => i !== idx))}
-                    className="text-rose-600 text-xs bg-transparent border-none cursor-pointer hover:underline"
-                  >
-                    Quitar
-                  </button>
-                )}
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-xs font-medium text-slate-600">Fecha</label>
-                  <DateInput value={it.date} min={today} onChange={(e) => updateItem(idx, { date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
-                </div>
-                <div>
-                  <label className="text-xs font-medium text-slate-600">Hora</label>
-                  {/* Los espacios son los de la SUCURSAL elegida arriba, no los
-                      de la sede del asesor: desde el chat se agenda en cualquiera. */}
-                  <TimeSlotInput value={it.startTime} slotMinutes={slotMinutesDeSede} min={it.date === today ? nowEcHHMM() : undefined} onChange={(e) => updateItem(idx, { startTime: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
-                </div>
-              </div>
-              <div>
-                <label className="text-xs font-medium text-slate-600">Motivo (opcional)</label>
-                <input value={it.reason} onChange={(e) => updateItem(idx, { reason: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
-              </div>
-              <div>
-                <label className="text-xs font-medium text-slate-600">Servicio</label>
-                <ServiceItemPicker
-                  value={it.serviceItem || null}
-                  onChange={(item) => updateItem(idx, { serviceItem: item })}
-                />
-              </div>
-              {puedeFijarValor && (
-              <AppointmentValueFields
-                value={it.agreedValue ?? ''}
-                onValueChange={(v) => updateItem(idx, { agreedValue: v })}
-                isCanje={!!it.isCanje}
-                onCanjeChange={(v) => updateItem(idx, { isCanje: v })}
-                advancePayment={it.advancePayment || ''}
-                onAdvancePaymentChange={(v) => updateItem(idx, { advancePayment: v })}
-                advanceAmount={it.advanceAmount ?? ''}
-                onAdvanceAmountChange={(v) => updateItem(idx, { advanceAmount: v })}
-              />
-              )}
+        {/* La casilla: registrar y agendar en el mismo paso, como en /patients. */}
+        {!yaEsPaciente && (
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={agendar}
+              onChange={(e) => setAgendar(e.target.checked)}
+              className="mt-0.5 cursor-pointer"
+            />
+            <span className="text-sm text-slate-800">
+              Agendar cita para este paciente
+              <span className="block text-xs text-slate-500">
+                Se crea junto con el alta, sin abrir otra ventana.
+              </span>
+            </span>
+          </label>
+        )}
 
-              {/* Disponibilidad de horario para esta cita */}
-              <SameSlotPanel
-                date={it.date}
-                startTime={it.startTime}
-                clinicId={clinicId}
-                // Con el servicio elegido, el panel también avisa de las citas
-                // que empiezan DENTRO de lo que va a durar esta.
-                serviceItemId={it.serviceItem?._id || null}
-                compact
-              />
+        {agendar && (
+          <>
+            {!unaSolaSede && (
+              <div>
+                <label className="text-xs font-medium text-slate-600">Sucursal *</label>
+                <select
+                  value={clinicId}
+                  onChange={(e) => setClinicId(e.target.value)}
+                  className={`w-full border rounded-xl px-2 py-1.5 mt-1 ${
+                    clinicId ? 'border-slate-200' : 'border-amber-300 bg-amber-50'
+                  }`}
+                >
+                  <option value="">Seleccionar sucursal…</option>
+                  {sedes.map((c) => (
+                    <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <AgendadoPorSelect value={agendadoPor} onChange={setAgendadoPor} />
+
+            <div className="space-y-3">
+              {items.map((it, idx) => (
+                <div key={idx} className="border border-slate-200 rounded-xl p-3 bg-slate-50/40 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-emerald-700">Cita #{idx + 1}</span>
+                    {items.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setItems((prev) => prev.filter((_, i) => i !== idx))}
+                        className="text-rose-600 text-xs bg-transparent border-none cursor-pointer hover:underline"
+                      >
+                        Quitar
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs font-medium text-slate-600">Fecha</label>
+                      <DateInput value={it.date} min={today} onChange={(e) => updateItem(idx, { date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-600">Hora</label>
+                      {/* Los espacios son los de la SUCURSAL elegida arriba, no los
+                          de la sede del asesor: desde el chat se agenda en cualquiera. */}
+                      <TimeSlotInput value={it.startTime} slotMinutes={slotMinutesDeSede} min={it.date === today ? nowEcHHMM() : undefined} onChange={(e) => updateItem(idx, { startTime: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-slate-600">Motivo (opcional)</label>
+                    <input value={it.reason} onChange={(e) => updateItem(idx, { reason: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-slate-600">Servicio</label>
+                    <ServiceItemPicker
+                      value={it.serviceItem || null}
+                      onChange={(item) => updateItem(idx, { serviceItem: item })}
+                    />
+                  </div>
+                  {puedeFijarValor && (
+                  <AppointmentValueFields
+                    value={it.agreedValue ?? ''}
+                    onValueChange={(v) => updateItem(idx, { agreedValue: v })}
+                    isCanje={!!it.isCanje}
+                    onCanjeChange={(v) => updateItem(idx, { isCanje: v })}
+                    advancePayment={it.advancePayment || ''}
+                    onAdvancePaymentChange={(v) => updateItem(idx, { advancePayment: v })}
+                    advanceAmount={it.advanceAmount ?? ''}
+                    onAdvanceAmountChange={(v) => updateItem(idx, { advanceAmount: v })}
+                    advanceMethod={it.advanceMethod || ''}
+                    onAdvanceMethodChange={(v) => updateItem(idx, { advanceMethod: v })}
+                  />
+                  )}
+
+                  {/* Disponibilidad de horario para esta cita */}
+                  <SameSlotPanel
+                    date={it.date}
+                    startTime={it.startTime}
+                    clinicId={clinicId}
+                    // Con el servicio elegido, el panel también avisa de las citas
+                    // que empiezan DENTRO de lo que va a durar esta.
+                    serviceItemId={it.serviceItem?._id || null}
+                    compact
+                  />
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
 
-        <button
-          type="button"
-          onClick={() => setItems((prev) => [...prev, emptyAppt()])}
-          className="w-full text-xs py-2 rounded-lg border border-dashed border-emerald-300 text-emerald-700 bg-emerald-50/40 hover:bg-emerald-50 cursor-pointer"
-        >
-          + Agregar otra cita
-        </button>
+            <button
+              type="button"
+              onClick={() => setItems((prev) => [...prev, emptyAppt()])}
+              className="w-full text-xs py-2 rounded-lg border border-dashed border-emerald-300 text-emerald-700 bg-emerald-50/40 hover:bg-emerald-50 cursor-pointer"
+            >
+              + Agregar otra cita
+            </button>
+          </>
+        )}
 
         <div className="flex justify-end gap-2 pt-2">
           <button
@@ -6542,7 +6626,13 @@ function AppointmentFromChatModal({ conv, onClose, onCreated }) {
             disabled={saving}
             className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 border-none cursor-pointer"
           >
-            {saving ? 'Creando…' : items.length > 1 ? `Crear ${items.length} citas` : 'Crear cita'}
+            {saving
+              ? 'Guardando…'
+              : !agendar
+                ? 'Agregar paciente'
+                : items.length > 1
+                  ? `${yaEsPaciente ? '' : 'Agregar y '}crear ${items.length} citas`
+                  : `${yaEsPaciente ? 'Crear cita' : 'Agregar y crear cita'}`}
           </button>
         </div>
       </div>

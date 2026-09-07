@@ -33,6 +33,7 @@ import DateInput from '../components/DateInput';
 import ServiceItemPicker from '../components/ServiceItemPicker';
 import TimeSlotInput from '../components/TimeSlotInput';
 import AppointmentValueFields from '../components/AppointmentValueFields';
+import AgendadoPorSelect from '../components/AgendadoPorSelect';
 import QuienAtiende, {
   CAMPOS_QUIEN_ATIENDE,
   pasosDeAtencion,
@@ -76,6 +77,8 @@ const emptyApt = {
   // paciente en el mostrador ya sabe a qué viene, y hacerle volver a la agenda
   // para decirlo es el paso que se olvida.
   ...CAMPOS_QUIEN_ATIENDE,
+  // A quién se le acredita la cita ('' = a quien la escribe). Ver AgendadoPorSelect.
+  bookedBy: '',
   // Atención inmediata: en vez de agendar para más tarde, se abre la consulta
   // ya, asignada a quien está registrando al paciente.
   ahora: false,
@@ -340,6 +343,8 @@ export default function Patients() {
             reason: aptForm.reason,
             status: 'pendiente',
             serviceItem: aptForm.serviceItem?._id || null,
+            // A nombre de quién queda (vacío = de quien la escribe).
+            bookedBy: aptForm.bookedBy || undefined,
             // Quién atiende, enfermería y el suero, por la misma función que la
             // agenda (ver components/QuienAtiende).
             steps: pasosDeAtencion(aptForm, personalCita),
@@ -915,6 +920,14 @@ export default function Patients() {
                       setForm={setAptForm}
                       doctors={personalCita.doctors}
                       nurses={personalCita.nurses}
+                    />
+                  )}
+                  {/* A nombre de quién queda la cita. En «atender ahora» no:
+                      esa la abre quien atiende, a su nombre. */}
+                  {!aptForm.ahora && (
+                    <AgendadoPorSelect
+                      value={aptForm.bookedBy}
+                      onChange={(v) => setAptForm((f) => ({ ...f, bookedBy: v }))}
                     />
                   )}
                   {/* Valor y canje: el mismo bloque que usa la agenda al recibir

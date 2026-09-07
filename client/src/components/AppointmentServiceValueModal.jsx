@@ -40,6 +40,7 @@ export default function AppointmentServiceValueModal({ appointment, onClose, onD
   // lo que al final se hizo.
   const [adelanto, setAdelanto] = useState(apt?.advancePayment || '');
   const [abonado, setAbonado] = useState(apt?.advanceAmount ? String(apt.advanceAmount) : '');
+  const [formaPago, setFormaPago] = useState(apt?.advanceMethod || '');
   const [busy, setBusy] = useState(false);
 
   // Los OTROS servicios de la visita, como {_id, name}. El nombre guardado es el
@@ -91,6 +92,7 @@ export default function AppointmentServiceValueModal({ appointment, onClose, onD
         isCanje: canje,
         advancePayment: adelanto || '',
         advanceAmount: abonado === '' ? 0 : Number(abonado),
+        advanceMethod: formaPago || '',
       });
       toast.success('Servicio y valor actualizados');
       onDone?.(data);
@@ -170,6 +172,8 @@ export default function AppointmentServiceValueModal({ appointment, onClose, onD
           advancePayment={adelanto}
           onAdvancePaymentChange={setAdelanto}
           advanceAmount={abonado}
+          advanceMethod={formaPago}
+          onAdvanceMethodChange={setFormaPago}
           onAdvanceAmountChange={setAbonado}
         />
 

@@ -109,7 +109,7 @@ test('tomar el chat (sin userId) sigue asignándomelo a mí', async () => {
   );
 
   assert.equal(r.statusCode, 200);
-  assert.equal(String(r.payload.assignedTo), String(ana._id));
+  assert.equal(String(r.payload.assignedTo?._id || r.payload.assignedTo), String(ana._id));
 });
 
 // ─── Lista de destinatarios ──────────────────────────────────────────────────

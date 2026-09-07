@@ -6,6 +6,7 @@ import PageHeader, { EmptyState } from '../components/PageHeader';
 import SriStatus from '../components/SriStatus';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import EmailStatus from '../components/EmailStatus';
+import PasswordInput from '../components/PasswordInput';
 import useEmailValidation from '../hooks/useEmailValidation';
 import { useAuth } from '../context/AuthContext';
 import { roleSatisfies, ROLE_LABELS } from '../utils/roles';
@@ -299,8 +300,10 @@ export default function Users() {
               <EmailStatus status={emailCheck} onApplySuggestion={(s) => handleChange('email', s)} />
             </Field>
             <Field label={editing ? 'Nueva contraseña (opcional)' : 'Contraseña'} required={!editing}>
-              <input
-                type="password"
+              {/* Con «ojito», como el login y Configuración: al dar de alta a
+                  alguien se le dicta la contraseña en voz alta, y escribirla a
+                  ciegas es la causa número uno del «no puedo entrar». */}
+              <PasswordInput
                 value={form.password}
                 onChange={(e) => handleChange('password', e.target.value)}
                 className="input"

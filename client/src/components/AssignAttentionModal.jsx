@@ -173,6 +173,8 @@ export default function AssignAttentionModal({
   const [abonado, setAbonado] = useState(
     apt?.advanceAmount ? String(apt.advanceAmount) : ''
   );
+  // Con qué pagó ese adelanto (efectivo, transferencia, tarjeta).
+  const [formaPago, setFormaPago] = useState(apt?.advanceMethod || '');
 
   const porId = useMemo(() => new Map(doctors.map((d) => [String(d._id), d])), [doctors]);
   const enfermeroPorId = useMemo(() => new Map(nurses.map((n) => [String(n._id), n])), [nurses]);
@@ -204,10 +206,15 @@ export default function AssignAttentionModal({
   };
 
   const guardar = async () => {
-    if (!cola.length) {
-      toast.error('Añade al menos un doctor o un paso de enfermería');
-      return;
-    }
+    /**
+     * LA COLA VACÍA VALE. Antes se exigía «al menos un doctor o un paso de
+     * enfermería», y eso convertía dos cosas normales en imposibles: corregir un
+     * no-show («sí vino») obligaba a inventarse un profesional, y al doctor
+     * puesto por error no había forma de quitarlo, porque guardar sin nadie
+     * estaba prohibido. Se avisa, porque la cita se queda sin dueño, pero se
+     * deja hacer.
+     */
+    if (!cola.length && !confirm('Vas a dejar la cita sin nadie asignado. ¿Continuar?')) return;
     setBusy(true);
     try {
       const { data } = await api.post(`/appointments/${apt._id}/assign-doctor`, {
@@ -235,6 +242,7 @@ export default function AssignAttentionModal({
               isCanje: canje,
               advancePayment: adelanto || '',
               advanceAmount: abonado === '' ? 0 : Number(abonado),
+              advanceMethod: formaPago || '',
             }
           : {}),
       });
@@ -246,7 +254,11 @@ export default function AssignAttentionModal({
           : porId.get(p.user)?.name || 'Doctor'
       );
       toast.success(
-        nombres.length > 1 ? `Paciente asignado: ${nombres.join(' → ')}` : `Paciente asignado a ${nombres[0]}`
+        !nombres.length
+          ? 'Cita guardada sin nadie asignado'
+          : nombres.length > 1
+            ? `Paciente asignado: ${nombres.join(' → ')}`
+            : `Paciente asignado a ${nombres[0]}`
       );
       /**
        * Se dice que el suero YA QUEDÓ ESCRITO en la ficha. Sin esto, mostrador
@@ -331,7 +343,8 @@ export default function AssignAttentionModal({
 
           {cola.length === 0 && (
             <p className="text-xs text-slate-400 italic mb-2">
-              Todavía no has añadido a nadie. Usa los botones de abajo.
+              Todavía no has añadido a nadie. Usa los botones de abajo — o guarda así, y la cita
+              queda recibida a la espera de que se decida quién la ve.
             </p>
           )}
 
@@ -512,6 +525,8 @@ export default function AssignAttentionModal({
             advancePayment={adelanto}
             onAdvancePaymentChange={setAdelanto}
             advanceAmount={abonado}
+            advanceMethod={formaPago}
+            onAdvanceMethodChange={setFormaPago}
             onAdvanceAmountChange={setAbonado}
           />
         )}
@@ -547,7 +562,9 @@ export default function AssignAttentionModal({
             disabled={busy}
             className="flex items-center gap-1.5 px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium border-none cursor-pointer disabled:opacity-50"
           >
-            {busy ? 'Asignando…' : <><HiOutlineCheck className="w-4 h-4" /> Asignar</>}
+            {busy
+              ? 'Guardando…'
+              : <><HiOutlineCheck className="w-4 h-4" /> {cola.length ? 'Asignar' : 'Guardar sin asignar'}</>}
           </button>
         </div>
       </div>

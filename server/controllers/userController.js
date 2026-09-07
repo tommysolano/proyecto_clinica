@@ -3,6 +3,7 @@ const multer = require('multer');
 const User = require('../models/User');
 const { VALID_ROLES, DOCTOR_LIKE_ROLES } = require('../constants/roles');
 const { sucursalPedida } = require('../utils/clinicScope');
+const { ROLES_QUE_AGENDAN } = require('../utils/appointmentBooker');
 const { encrypt: encryptSecret } = require('../modules/invoicing/ec/crypto');
 const {
   loadP12,
@@ -467,6 +468,49 @@ exports.getNurses = async (req, res) => {
     res.json(nurses);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener enfermeros', error: error.message });
+  }
+};
+
+/**
+ * QUIÉN PUEDE FIGURAR COMO «AGENDADA POR».
+ *
+ * Alimenta el selector del mismo nombre en la agenda y en el chat: el call
+ * center trabaja en pareja —una cierra la cita por teléfono y otra la escribe— y
+ * necesita poder acreditarla a quien la cerró (ver utils/appointmentBooker.js,
+ * que valida lo mismo al guardar).
+ *
+ * NO se filtra por sucursal a propósito: el call center atiende el teléfono de
+ * la clínica entera y agenda para todas las sedes; filtrando, la asesora que
+ * está asignada a otra sucursal desaparecía de la lista de sus propias
+ * compañeras.
+ */
+exports.getSchedulers = async (req, res) => {
+  try {
+    const users = await User.find({
+      active: true,
+      $or: [
+        { clinics: { $elemMatch: { role: { $in: ROLES_QUE_AGENDAN } } } },
+        { isSuperAdmin: true },
+      ],
+    })
+      .select('name email clinics isSuperAdmin worksInAllClinics')
+      .sort({ name: 1 })
+      .lean();
+    res.json(
+      users.map((u) => ({
+        _id: u._id,
+        name: u.name,
+        // El rol con el que se le acreditaría la cita: el de esta sede si
+        // trabaja aquí, y si no el de su primera asignación (mismo criterio que
+        // `resolverAgendadoPor`, que es quien manda al guardar).
+        role:
+          (u.clinics || []).find((c) => String(c.clinic) === String(req.clinicId))?.role
+          || u.clinics?.[0]?.role
+          || (u.isSuperAdmin ? 'admin' : null),
+      }))
+    );
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener quién agenda', error: error.message });
   }
 };
 

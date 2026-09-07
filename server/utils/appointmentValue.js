@@ -14,6 +14,12 @@
  * dejaba fijar el precio sin comprobar el rol.
  */
 /**
+ * Formas de pago que acepta un adelanto. Es el espejo del enum del modelo
+ * (Appointment.advanceMethod): si se añade una, va en los dos sitios.
+ */
+const FORMAS_DE_PAGO = ['efectivo', 'transferencia', 'tarjeta_credito', 'tarjeta_debito'];
+
+/**
  * ¿Este rol puede poner o cambiar el VALOR de una cita (y su pago adelantado)?
  *
  * Quien VENDE la cita: administración, caja y —desde sep-2026— el call center.
@@ -45,7 +51,10 @@ function aplicarValorDeCita(apt, body, req) {
 
   const traeCanje = body.isCanje !== undefined;
   const traeValor = body.agreedValue !== undefined;
-  const traeAdelanto = body.advancePayment !== undefined || body.advanceAmount !== undefined;
+  const traeAdelanto =
+    body.advancePayment !== undefined
+    || body.advanceAmount !== undefined
+    || body.advanceMethod !== undefined;
   if (!traeCanje && !traeValor && !traeAdelanto) return false;
 
   /**
@@ -60,6 +69,12 @@ function aplicarValorDeCita(apt, body, req) {
     const modo = ['abono', 'total'].includes(body.advancePayment) ? body.advancePayment : '';
     apt.advancePayment = modo;
     apt.paidInAdvance = modo !== '';
+    /**
+     * CÓMO pagó. Solo tiene sentido si pagó algo: sin adelanto se borra, para
+     * que no quede «efectivo» colgado de una cita que no cobró nada.
+     */
+    apt.advanceMethod =
+      modo && FORMAS_DE_PAGO.includes(body.advanceMethod) ? body.advanceMethod : '';
     if (modo === '') {
       apt.advanceAmount = 0;
     } else if (modo === 'abono') {
@@ -96,6 +111,7 @@ function aplicarValorDeCita(apt, body, req) {
     apt.advancePayment = '';
     apt.paidInAdvance = false;
     apt.advanceAmount = 0;
+    apt.advanceMethod = '';
   } else if (apt.advancePayment === 'total') {
     apt.advanceAmount = Number(apt.agreedValue) > 0 ? Number(apt.agreedValue) : 0;
   }
@@ -105,4 +121,4 @@ function aplicarValorDeCita(apt, body, req) {
   return true;
 }
 
-module.exports = { puedeFijarValor, aplicarValorDeCita };
+module.exports = { puedeFijarValor, aplicarValorDeCita, FORMAS_DE_PAGO };

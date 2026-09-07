@@ -110,7 +110,9 @@ test('round-robin asigna únicamente a asesores que están en turno', async () =
     })
   );
   assert.equal(result.statusCode, 200);
-  assert.equal(String(result.payload.assignedTo), String(available._id));
+  // La respuesta trae la conversación COMPLETA (poblada y con los datos
+  // derivados del número), igual que la bandeja: `assignedTo` viene poblado.
+  assert.equal(String(result.payload.assignedTo?._id || result.payload.assignedTo), String(available._id));
   assert.equal(result.payload.workflowRestrictedTo, null, 'round-robin normal no vuelve privado el chat');
 });
 
@@ -137,7 +139,7 @@ test('reasignar manualmente un chat restringido lo devuelve a la bandeja compart
     })
   );
   assert.equal(result.statusCode, 200, JSON.stringify(result.payload));
-  assert.equal(String(result.payload.assignedTo), String(next._id));
+  assert.equal(String(result.payload.assignedTo?._id || result.payload.assignedTo), String(next._id));
   assert.equal(result.payload.workflowRestrictedTo, null);
 });
 

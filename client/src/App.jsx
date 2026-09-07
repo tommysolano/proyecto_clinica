@@ -243,7 +243,7 @@ function AppRoutes() {
                     // expande desde 'doctor' (ver utils/roles.js). Entra aquí
                     // porque en óptica el paciente llega sin cita: lo registra el
                     // propio optómetra y lo atiende en el momento.
-                    <RoleRoute roles={['admin', 'cajero', 'call_center', 'marketing', 'enfermero', 'optica', 'odontologia']}>
+                    <RoleRoute roles={['admin', 'cajero', 'call_center', 'marketing', 'enfermero', 'optica', 'odontologia', 'terapeuta']}>
                       <Patients />
                     </RoleRoute>
                   }

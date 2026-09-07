@@ -7,6 +7,7 @@ const {
   deleteUser,
   getDoctors,
   getNurses,
+  getSchedulers,
   getMySignatureCert,
   uploadMySignatureCert,
   deleteMySignatureCert,
@@ -19,6 +20,12 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 router.use(auth, requireClinic);
 
 router.get('/doctors', getDoctors);
+/**
+ * Quién puede figurar como «agendada por» (selector de la agenda y del chat).
+ * Lo consulta quien agenda, que es exactamente quien puede acreditar la cita a
+ * otra persona (ver utils/appointmentBooker.js).
+ */
+router.get('/schedulers', requireRole('admin', 'cajero', 'call_center'), getSchedulers);
 // Para nombrar el turno de enfermería al asignar la atención. Lo consulta
 // recepción/caja, no solo el admin.
 router.get('/nurses', requireRole('admin', 'cajero', 'doctor', 'enfermero'), getNurses);

@@ -62,7 +62,19 @@ const { firmarPdfConUsuario, bloqueFirmaHtml, FIRMA_CSS } = require('../utils/pd
 const { describeCie10 } = require('../utils/cie10Catalog');
 const { emitToClinic, emitToUser, emitToRole } = require('../realtime');
 const { canReq } = require('../utils/permissions');
-const { atiendePacientes, NURSE_ROLE } = require('../constants/roles');
+const { atiendePacientes, NURSE_ROLE, isDoctorRole } = require('../constants/roles');
+
+/**
+ * ¿Este rol ESCRIBE en la ficha? (frente a los que solo la leen, como el call
+ * center desde sep-2026). Es el espejo de las rutas: `allRoles` escribe,
+ * `rolesQueLeen` solo mira. Ver routes/clinicalRecords.js.
+ */
+const puedeEscribirFicha = (req) =>
+  !!req.user?.isSuperAdmin
+  || req.role === 'admin'
+  || req.role === 'cajero'
+  || req.role === NURSE_ROLE
+  || isDoctorRole(req.role);
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
@@ -515,7 +527,7 @@ exports.getOrCreateByPatient = async (req, res) => {
         const diff = Date.now() - new Date(patient.birthDate).getTime();
         edad = Math.floor(diff / (1000 * 60 * 60 * 24 * 365.25));
       }
-      record = await ClinicalRecord.create({
+      const enBlanco = {
         clinic: req.clinicId,
         patient: patient._id,
         fecha: new Date(),
@@ -526,7 +538,20 @@ exports.getOrCreateByPatient = async (req, res) => {
         celular: patient.phone || '',
         followUps: [],
         createdBy: req.user._id,
-      });
+      };
+      /**
+       * EL CALL CENTER SOLO MIRA: no abre historias clínicas.
+       *
+       * Lee la ficha para contestar al paciente que llama («¿qué me recetaron?»,
+       * «¿cuándo fue mi última consulta?»), y consultar a alguien que nunca ha
+       * venido no puede dejarle una historia en blanco creada a su nombre. Se le
+       * devuelve la ficha vacía sin guardarla: en pantalla se ve igual, y la
+       * historia nace cuando la abre quien la escribe.
+       */
+      if (!puedeEscribirFicha(req)) {
+        return res.json(hideContactData(hideTherapyNotes(enBlanco, req), req));
+      }
+      record = await ClinicalRecord.create(enBlanco);
     }
 
     res.json(hideContactData(hideTherapyNotes(record, req), req));

@@ -26,6 +26,19 @@ const OPCIONES_ADELANTO = [
   { valor: 'total', etiqueta: 'Pagó todo' },
 ];
 
+/**
+ * CÓMO pagó ese adelanto. Saber que abonó 20 no basta cuando el paciente llega:
+ * un efectivo tiene que estar en la caja del día y una transferencia hay que ir
+ * a buscarla al banco. Los valores son los del enum del modelo
+ * (Appointment.advanceMethod).
+ */
+const FORMAS_DE_PAGO = [
+  { valor: 'efectivo', etiqueta: 'Efectivo' },
+  { valor: 'transferencia', etiqueta: 'Transferencia' },
+  { valor: 'tarjeta_credito', etiqueta: 'T. crédito' },
+  { valor: 'tarjeta_debito', etiqueta: 'T. débito' },
+];
+
 export default function AppointmentValueFields({
   value,
   onValueChange,
@@ -41,6 +54,12 @@ export default function AppointmentValueFields({
   onAdvancePaymentChange,
   advanceAmount,
   onAdvanceAmountChange,
+  /**
+   * Forma de pago del adelanto. Opcional como el resto del bloque: sin
+   * `onAdvanceMethodChange` el componente se comporta como antes.
+   */
+  advanceMethod,
+  onAdvanceMethodChange,
   className = '',
 }) {
   const conAdelanto = typeof onAdvancePaymentChange === 'function';
@@ -89,7 +108,13 @@ export default function AppointmentValueFields({
                 <button
                   key={o.valor || 'no'}
                   type="button"
-                  onClick={() => onAdvancePaymentChange(o.valor)}
+                  onClick={() => {
+                    onAdvancePaymentChange(o.valor);
+                    // Sin adelanto no hay forma de pago que anotar: si se vuelve
+                    // a «No pagó aún», el efectivo que se había marcado se cae
+                    // con él (el servidor hace lo mismo al guardar).
+                    if (!o.valor) onAdvanceMethodChange?.('');
+                  }}
                   className={`px-3 py-1.5 rounded-xl border text-xs font-medium cursor-pointer ${
                     activa
                       ? 'bg-emerald-600 text-white border-emerald-600'
@@ -118,6 +143,35 @@ export default function AppointmentValueFields({
             <p className="text-[11px] text-emerald-700 mt-1.5">
               Al llegar no hay que cobrarle nada.
             </p>
+          )}
+
+          {/* CON QUÉ pagó. Solo si pagó algo, y solo si quien pinta el
+              formulario pasa el manejador (igual que el resto del bloque). */}
+          {!!advancePayment && typeof onAdvanceMethodChange === 'function' && (
+            <div className="mt-2">
+              <label className="block text-xs font-medium text-slate-600 mb-1">¿Cómo pagó?</label>
+              <div className="flex flex-wrap gap-1.5">
+                {FORMAS_DE_PAGO.map((f) => {
+                  const activa = (advanceMethod || '') === f.valor;
+                  return (
+                    <button
+                      key={f.valor}
+                      type="button"
+                      // Volver a pulsar la forma marcada la quita: es la única
+                      // manera de dejarlo en «no se dijo» sin borrar el adelanto.
+                      onClick={() => onAdvanceMethodChange(activa ? '' : f.valor)}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-medium cursor-pointer ${
+                        activa
+                          ? 'bg-sky-600 text-white border-sky-600'
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      {f.etiqueta}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           )}
         </div>
       )}

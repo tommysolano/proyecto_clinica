@@ -61,8 +61,11 @@ const MENU_GROUPS = [
        *  · 'enfermero' — el paciente que ya dejó pagada su serie de sueros pasa
        *    directo con el enfermero, sin cita: sin esta entrada no tenía por dónde
        *    llegar a él (la ruta ya estaba permitida en App.jsx, faltaba el menú).
+       *  · 'terapeuta' — necesita la lista completa de pacientes para llegar a
+       *    cualquiera fuera de la agenda; su consulta y su ficha siguen siendo
+       *    privadas para el resto (ver hideTherapyNotes en el servidor).
        */
-      { path: '/patients', label: 'Clientes', roles: ['admin', 'cajero', 'call_center', 'marketing', 'optica', 'odontologia', 'enfermero'] },
+      { path: '/patients', label: 'Clientes', roles: ['admin', 'cajero', 'call_center', 'marketing', 'optica', 'odontologia', 'enfermero', 'terapeuta'] },
       { path: '/accounting/suppliers', label: 'Proveedores', roles: ['admin', 'contabilidad'] },
     ],
   },

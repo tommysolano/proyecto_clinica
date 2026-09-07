@@ -255,6 +255,20 @@ const appointmentSchema = new mongoose.Schema(
     paidInAdvance: { type: Boolean, default: false },
     advanceAmount: { type: Number, default: 0, min: 0 },
     /**
+     * CÓMO pagó ese adelanto. '' = no se dijo (o no hubo adelanto).
+     *
+     * Lo pidió el call center: saber que abonó 20 no basta cuando el paciente
+     * llega y hay que cuadrar la caja del día — no es lo mismo un efectivo que
+     * mostrador tiene que haber recibido que una transferencia que hay que ir a
+     * buscar al banco. Sigue siendo un dato OPERATIVO, como el resto de este
+     * bloque: no genera cobro ni asiento.
+     */
+    advanceMethod: {
+      type: String,
+      enum: ['', 'efectivo', 'transferencia', 'tarjeta_credito', 'tarjeta_debito'],
+      default: '',
+    },
+    /**
      * VALOR DE LA CITA: lo que se acordó que va a pagar el paciente.
      *
      * Es un dato OPERATIVO, no contable, y esa distinción es el motivo de que
@@ -343,6 +357,16 @@ const appointmentSchema = new mongoose.Schema(
     createdByName: { type: String, trim: true, default: '' },
     // Rol del usuario que creó la cita (snapshot, útil para comisiones de call_center)
     createdByRole: { type: String },
+    /**
+     * QUIÉN LA ESCRIBIÓ, cuando no es quien la agendó.
+     *
+     * En el call center una asesora cierra la cita por teléfono y la digita otra;
+     * `createdBy` pasa a ser la acreditada (es lo que leen los reportes y el
+     * panel de supervisión) y esto guarda quién la tecleó. Vacío = las dos son la
+     * misma persona, que es lo normal. Ver `utils/appointmentBooker.js`.
+     */
+    registeredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    registeredByName: { type: String, trim: true, default: '' },
     // Chat del que nació la cita (solo si se agendó desde el CRM). Es lo que
     // permite al panel de Supervisión contar las citas del call center sin
     // mezclarlas con las que un admin agenda desde la página de Citas.

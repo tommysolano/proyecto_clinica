@@ -11,6 +11,7 @@ import AssignAttentionModal from '../components/AssignAttentionModal';
 import AppointmentServiceValueModal from '../components/AppointmentServiceValueModal';
 import AppointmentFollowUpModal from '../components/AppointmentFollowUpModal';
 import AppointmentValueFields from '../components/AppointmentValueFields';
+import AgendadoPorSelect from '../components/AgendadoPorSelect';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
@@ -83,6 +84,9 @@ const emptyForm = {
   // Pago por adelantado: '' | 'abono' | 'total' (ver utils/appointmentValue.js).
   advancePayment: '',
   advanceAmount: '',
+  advanceMethod: '',
+  // A quién se le acredita la cita ('' = a quien la escribe). Ver AgendadoPorSelect.
+  bookedBy: '',
   // Quién atiende, si pasa por enfermería y el suero (ver components/QuienAtiende).
   ...CAMPOS_QUIEN_ATIENDE,
   // Citas adicionales para agendar en una sola operación (solo al crear).
@@ -135,11 +139,22 @@ function nombreServicio(apt) {
  * al recibir al paciente: si le cobra el resto, todo, o nada. Devuelve '' cuando
  * no pagó nada por adelantado, que es el caso normal y no merece ruido.
  */
+const FORMA_PAGO_ADELANTO = {
+  efectivo: 'efectivo',
+  transferencia: 'transferencia',
+  tarjeta_credito: 'tarjeta de crédito',
+  tarjeta_debito: 'tarjeta de débito',
+};
+
 function textoAdelanto(apt) {
   if (!apt?.advancePayment) return '';
-  if (apt.advancePayment === 'total') return 'Pagó todo';
+  // CÓMO pagó, si se anotó: un efectivo tiene que aparecer en la caja del día y
+  // una transferencia hay que ir a buscarla al banco.
+  const como = FORMA_PAGO_ADELANTO[apt.advanceMethod];
+  const forma = como ? ` en ${como}` : '';
+  if (apt.advancePayment === 'total') return `Pagó todo${forma}`;
   const abonado = Number(apt.advanceAmount) || 0;
-  return abonado > 0 ? `Abonó $${abonado.toFixed(2)}` : 'Abonó';
+  return abonado > 0 ? `Abonó $${abonado.toFixed(2)}${forma}` : `Abonó${forma}`;
 }
 
 /** Los OTROS servicios de la visita, sin el principal. Nombres, ya en snapshot. */
@@ -775,6 +790,7 @@ export default function Appointments() {
         delete basePayload.isCanje;
         delete basePayload.advancePayment;
         delete basePayload.advanceAmount;
+        delete basePayload.advanceMethod;
       }
       //  (inventario) ya no se manda: enviarlo vacío BORRARÍA los de
       // una cita antigua que se esté editando, y con ellos su cobro.
@@ -2151,6 +2167,15 @@ export default function Appointments() {
               conserva los turnos ya completados. */}
           {!editing && <QuienAtiende form={form} setForm={setForm} doctors={doctors} nurses={nurses} />}
 
+          {/* A NOMBRE DE QUIÉN QUEDA. Solo al crear: cambiar después a quién se
+              le acredita una cita ya agendada movería reportes hacia atrás. */}
+          {!editing && (
+            <AgendadoPorSelect
+              value={form.bookedBy}
+              onChange={(v) => setForm((f) => ({ ...f, bookedBy: v }))}
+            />
+          )}
+
           {/* Al crear, caja registra el valor acordado con el paciente o si fue
               canje, igual que en Pacientes → Agendar cita. Las correcciones de
               citas existentes siguen usando su modal específico y auditado. */}
@@ -2164,6 +2189,8 @@ export default function Appointments() {
               onAdvancePaymentChange={(v) => setForm((f) => ({ ...f, advancePayment: v }))}
               advanceAmount={form.advanceAmount}
               onAdvanceAmountChange={(v) => setForm((f) => ({ ...f, advanceAmount: v }))}
+              advanceMethod={form.advanceMethod}
+              onAdvanceMethodChange={(v) => setForm((f) => ({ ...f, advanceMethod: v }))}
             />
           )}
 
@@ -2465,6 +2492,12 @@ export default function Appointments() {
                       {quienAgendo(detailModal)}
                       {detailModal.conversation ? ' · desde el chat' : ''}
                     </p>
+                    {/* La cerró una asesora y la escribió otra: las dos constan. */}
+                    {detailModal.registeredByName && (
+                      <p className="text-[11px] text-slate-500">
+                        Escrita por {detailModal.registeredByName}
+                      </p>
+                    )}
                   </>
                 )}
                 {/* Sin condición de estado a propósito: el servicio real y el

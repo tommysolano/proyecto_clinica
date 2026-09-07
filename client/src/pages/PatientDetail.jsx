@@ -111,6 +111,26 @@ import {
 // entrar en la ficha de un paciente que quizá ni es de ginecología.
 const CurvaPesoGestacional = lazy(() => cargarPagina(() => import('../components/CurvaPesoGestacional')));
 
+/**
+ * EL CALL CENTER LEE LA HISTORIA CLÍNICA, PERO NO LA TOCA (sep-2026).
+ *
+ * El paciente llama y pregunta qué le recetaron, cuándo fue su última consulta o
+ * si tiene que volver: eso está escrito, y hasta ahora había que interrumpir a un
+ * doctor para leerlo. Ahora la asesora lo ve — la ficha, los seguimientos, las
+ * recetas y sus archivos— y no puede escribir NADA: ni redactar, ni corregir, ni
+ * subir, ni guardar la ficha. El servidor aplica la misma regla (ver
+ * `rolesQueLeen` en routes/clinicalRecords.js), que es quien manda; esto solo
+ * evita enseñar campos que darían un 403 al guardar.
+ *
+ * Sigue sin ver lo reservado: los datos de contacto (`hideContactData`) y la
+ * consulta del terapeuta (`hideTherapyNotes`) los recorta el servidor.
+ */
+function useSoloLeeHistoria() {
+  const { hasRole, user } = useAuth();
+  const esAdmin = hasRole('admin') || user?.isSuperAdmin;
+  return hasRole('call_center') && !esAdmin;
+}
+
 const TABS = [
   { id: 'datos', label: 'Datos', icon: HiOutlineUser },
   { id: 'ficha', label: 'Ficha clínica', icon: HiOutlineClipboardDocumentList },
@@ -155,6 +175,48 @@ const filaConDatos = (it) =>
   (!!it?.isSerum &&
     (!!it?.serumBase?.volumeMl ||
       (Array.isArray(it?.serumComponents) && it.serumComponents.some((c) => String(c?.name || '').trim()))));
+
+/**
+ * Cuánto vive un borrador de seguimiento sin guardar. Doce horas: cubre de sobra
+ * una consulta (y hasta un turno entero), pero no reaparece pasado mañana en la
+ * ficha de otro paciente como si fuera lo que se estaba escribiendo.
+ */
+const BORRADOR_TTL_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Comparación profunda de dos trozos del formulario. `''`, `null` y `undefined`
+ * son lo mismo (campo sin escribir) y los números se comparan como texto: el
+ * formulario devuelve '1' donde el valor por defecto es 1, y eso no es un cambio.
+ */
+const igualProfundo = (a, b) => {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') {
+    return String(a ?? '') === String(b ?? '');
+  }
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) return a.length === b.length && a.every((x, i) => igualProfundo(x, b[i]));
+  const claves = new Set([...Object.keys(a), ...Object.keys(b)]);
+  return [...claves].every((k) => igualProfundo(a[k], b[k]));
+};
+
+/**
+ * ¿Este formulario tiene ALGO escrito? Se compara con uno recién abierto, y no
+ * campo por campo: así vale igual para la consulta médica, para la hoja de
+ * ginecología y para la del terapeuta, sin tener que acordarse de sumar cada
+ * sección nueva a una lista.
+ *
+ * Lo usan dos cosas que tienen que estar de acuerdo: el aviso antes de pisar una
+ * consulta a medio escribir al pulsar el lápiz, y el borrador automático —que no
+ * guarda (ni recupera) un formulario en blanco.
+ *
+ * La HORA de los signos vitales se ignora: la pone el sistema sola y va
+ * cambiando, así que un formulario intacto parecería escrito.
+ */
+const formTieneAlgo = (f, vacio) => {
+  if (!f || !vacio) return false;
+  const sinHora = (x) => ({ ...x, vitalSigns: { ...(x.vitalSigns || {}), hora: '' } });
+  return !igualProfundo(sinHora(f), sinHora(vacio));
+};
 
 // Adjuntos permitidos en seguimientos: PDFs e imágenes.
 const isAllowedAttachment = (file) =>
@@ -903,6 +965,7 @@ function TerapiasComplementariasTab() {
 
 function FichaTab({ patientId }) {
   const { hasRole } = useAuth();
+  const soloLectura = useSoloLeeHistoria();
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -972,7 +1035,17 @@ function FichaTab({ patientId }) {
   if (!record) return null;
 
   return (
-    <div className="space-y-6">
+    /**
+     * De solo lectura para quien solo lee (call center): `fieldset disabled`
+     * apaga TODOS los campos de dentro de una vez, que es lo único que no se
+     * queda a medias en un formulario de este tamaño.
+     */
+    <fieldset disabled={soloLectura} className="space-y-6 border-0 p-0 m-0 min-w-0">
+      {soloLectura && (
+        <div className="bg-slate-50 border border-slate-200 text-slate-600 text-xs rounded-xl px-3 py-2">
+          Estás viendo la ficha en <b>solo lectura</b>. La escriben quienes atienden al paciente.
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="Fecha">
           <DateInput
@@ -1143,18 +1216,20 @@ function FichaTab({ patientId }) {
         </Field>
       </div>
 
-      <div className="flex justify-end pt-3 border-t border-slate-100">
-        <button
-          onClick={save}
-          disabled={saving}
-          className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium disabled:opacity-50 cursor-pointer border-none text-sm"
-        >
-          {saving ? 'Guardando...' : 'Guardar ficha'}
-        </button>
-      </div>
+      {!soloLectura && (
+        <div className="flex justify-end pt-3 border-t border-slate-100">
+          <button
+            onClick={save}
+            disabled={saving}
+            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium disabled:opacity-50 cursor-pointer border-none text-sm"
+          >
+            {saving ? 'Guardando...' : 'Guardar ficha'}
+          </button>
+        </div>
+      )}
 
       <FichaStyles />
-    </div>
+    </fieldset>
   );
 }
 
@@ -1678,7 +1753,12 @@ function SeguimientosTab({ patientId, appointmentId }) {
    * día vuelve a atender a alguien que no está en la agenda, esto es lo que hay
    * que volver a abrir.
    */
-  const puedeEscribir = !esEnfermero;
+  /**
+   * El CALL CENTER solo lee (ver `useSoloLeeHistoria`): ve la historia entera —
+   * consultas, recetas, diagnósticos— y no tiene formulario ninguno.
+   */
+  const soloLectura = useSoloLeeHistoria();
+  const puedeEscribir = !esEnfermero && !soloLectura;
   /**
    * ¿El formulario es una CONSULTA médica completa? Enfermería no: se le
    * esconden las secciones que no le tocan en vez de enseñarle veinte campos
@@ -1854,7 +1934,49 @@ function SeguimientosTab({ patientId, appointmentId }) {
       glucose: '',
     },
   });
-  const [form, setForm] = useState(emptyForm());
+  /**
+   * LO QUE SE ESTÁ ESCRIBIENDO NO SE PIERDE.
+   *
+   * Esta pestaña se DESMONTA al cambiar a «Ficha clínica» (React quita lo que no
+   * se ve), así que el doctor que llevaba media consulta escrita e iba a
+   * consultar un antecedente volvía al formulario en blanco. Sin aviso y sin
+   * deshacer: a escribirlo todo otra vez, con el paciente delante.
+   *
+   * El borrador se guarda en el navegador —de este usuario y de esta consulta—
+   * cada vez que se escribe, se recupera al volver y se BORRA al guardar (que es
+   * cuando ya está en la historia clínica). No sustituye a guardar: es una red
+   * bajo el trapecio, y por eso caduca (ver `BORRADOR_TTL_MS`); un borrador de
+   * anteayer reapareciendo en la consulta de otro paciente sería peor que nada.
+   *
+   * Lo único que NO cabe son los archivos todavía sin subir: un File del
+   * navegador no se puede guardar. Se vuelven a escoger, y el aviso lo dice.
+   */
+  const draftKey = `seguimiento-borrador:${patientId}:${appointmentId || 'sin-cita'}`;
+  const leerBorrador = () => {
+    try {
+      const crudo = localStorage.getItem(draftKey);
+      if (!crudo) return null;
+      const { at, form: guardado, editandoId: corrigiendo } = JSON.parse(crudo) || {};
+      if (!guardado || !at || Date.now() - at > BORRADOR_TTL_MS) {
+        localStorage.removeItem(draftKey);
+        return null;
+      }
+      // Sobre la base de HOY: un borrador de antes de que existiera una sección
+      // reventaría el formulario al leer `form.ginecologia.gpac.gestas`.
+      return { form: { ...emptyForm(), ...guardado }, editandoId: corrigiendo || null };
+    } catch {
+      return null;
+    }
+  };
+  const borrarBorrador = () => {
+    try { localStorage.removeItem(draftKey); } catch { /* modo privado: no pasa nada */ }
+  };
+  // Se lee UNA vez, al montar: releerlo en cada render pisaría lo que se escribe.
+  const [borradorInicial] = useState(() => leerBorrador());
+  const [form, setForm] = useState(() => borradorInicial?.form || emptyForm());
+  // El aviso de «recuperamos lo que estabas escribiendo». Se apaga solo al
+  // guardar o al descartarlo.
+  const [borradorRecuperado, setBorradorRecuperado] = useState(!!borradorInicial);
   const [saving, setSaving] = useState(false);
   /**
    * SEGUIMIENTO QUE SE ESTÁ CORRIGIENDO.
@@ -1864,7 +1986,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
    * entrar. Con esto el mismo formulario sirve para escribir y para corregir; lo
    * que cambia es a dónde va (POST nuevo o PUT sobre el existente).
    */
-  const [editandoId, setEditandoId] = useState(null);
+  const [editandoId, setEditandoId] = useState(() => borradorInicial?.editandoId || null);
   const formRef = useRef(null);
   // Odontología ve solo sus seguimientos; esto abre la historia completa cuando
   // hace falta (alergias, anticoagulantes, embarazo). Ver `filtraOdonto` abajo.
@@ -1890,17 +2012,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
      * Un doctor con la consulta entera escrita que lo pulse por error perdería
      * todo sin un solo aviso — y no hay «deshacer».
      */
-    const hayAlgoEscrito =
-      String(form.descripcion || '').trim()
-      || String(form.enfermedadActual || '').trim()
-      || String(form.evolucion || '').trim()
-      || String(form.planTratamiento || '').trim()
-      || String(form.indicaciones || '').trim()
-      || (form.diagnosticos || []).length > 0
-      || pendingFiles.length > 0
-      || [...(form.recetaItems || []), ...(form.derivacionItems || [])].some(
-        (it) => String(it.name || '').trim() || filaConDatos(it)
-      );
+    const hayAlgoEscrito = formTieneAlgo(form, emptyForm()) || pendingFiles.length > 0;
     if (hayAlgoEscrito && editandoId !== fu._id) {
       const aviso = editandoId
         ? '¿Descartar los cambios de la corrección en curso y pasar a este seguimiento?'
@@ -1957,7 +2069,31 @@ function SeguimientosTab({ patientId, appointmentId }) {
     setEditandoId(null);
     setForm(emptyForm());
     setPendingFiles([]);
+    borrarBorrador();
+    setBorradorRecuperado(false);
   };
+
+  /**
+   * Guarda el borrador mientras se escribe (con medio segundo de respiro, para
+   * no tocar el disco en cada tecla). Un formulario en blanco no deja borrador:
+   * borra el que hubiera, que es lo que pasa justo después de guardar.
+   */
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try {
+        if (!formTieneAlgo(form, emptyForm())) {
+          localStorage.removeItem(draftKey);
+          return;
+        }
+        localStorage.setItem(draftKey, JSON.stringify({ at: Date.now(), form, editandoId }));
+      } catch {
+        // Sin sitio (o navegación privada): se sigue trabajando igual, solo que
+        // sin red. No es motivo para molestar a nadie con un aviso.
+      }
+    }, 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form, editandoId, draftKey]);
   // La hora de la toma de signos vitales la lleva el sistema: se mantiene al
   // minuto mientras el seguimiento está abierto y se vuelve a sellar al guardar,
   // así lo que ve el doctor es exactamente lo que queda registrado.
@@ -2236,6 +2372,9 @@ function SeguimientosTab({ patientId, appointmentId }) {
         setForm(emptyForm());
         setPendingFiles([]);
         setEditandoId(null);
+        // Ya está en la historia clínica: el borrador dejó de tener sentido.
+        borrarBorrador();
+        setBorradorRecuperado(false);
         toast.success('Seguimiento actualizado');
         return; // el `finally` de abajo suelta `saving`
       }
@@ -2314,6 +2453,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
       setRecord(updated);
       setForm(emptyForm());
       setPendingFiles([]);
+      // Guardado = el borrador ya no hace falta. Se borra AQUÍ y no se deja al
+      // guardado automático: desde una cita esto navega a la agenda enseguida y
+      // el temporizador se cancelaría con el borrador todavía puesto.
+      borrarBorrador();
+      setBorradorRecuperado(false);
 
       /**
        * Guardar desde una CITA cierra el turno y devuelve a la agenda.
@@ -2477,7 +2621,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
           es UNA consulta; la 005 es el registro secuencial de todas, que es lo
           que se pide cuando alguien dice «imprímeme la historia del paciente».
           Lleva la cédula en la cabecera, así que no es para enfermería. */}
-      {!esEnfermero && followUps.length > 0 && (
+      {/* La hoja HCU-005 lleva la cédula en la cabecera: no es para enfermería
+          ni para el call center (el servidor tampoco se la da a ninguno de los
+          dos). */}
+      {!esEnfermero && !soloLectura && followUps.length > 0 && (
         <div className="flex justify-end">
           <button
             type="button"
@@ -2487,6 +2634,32 @@ function SeguimientosTab({ patientId, appointmentId }) {
           >
             <HiOutlineDocumentText className="w-4 h-4" />
             Historia clínica (HCU-005)
+          </button>
+        </div>
+      )}
+
+      {/* Se recuperó lo que se estaba escribiendo (ver el borrador automático).
+          Se dice SIEMPRE, y no en silencio: el doctor tiene que saber que ese
+          texto es suyo de antes y que todavía NO está guardado. */}
+      {borradorRecuperado && puedeEscribir && (
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-sky-50 border border-sky-200 text-sky-900 text-xs sm:text-sm rounded-xl px-3 py-2">
+          <span>
+            Recuperamos lo que estabas escribiendo. <b>Todavía no está guardado</b>: revísalo y
+            dale a guardar. Los archivos adjuntos hay que volver a escogerlos.
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              if (!confirm('¿Descartar lo que estabas escribiendo?')) return;
+              setForm(emptyForm());
+              setEditandoId(null);
+              setPendingFiles([]);
+              borrarBorrador();
+              setBorradorRecuperado(false);
+            }}
+            className="shrink-0 px-3 py-1.5 rounded-lg bg-white text-sky-700 border border-sky-300 text-xs font-semibold cursor-pointer"
+          >
+            Descartar
           </button>
         </div>
       )}
@@ -3462,10 +3635,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         <HiOutlinePrinter className="w-4 h-4" />
                       </button>
                       {/* La hoja oficial lleva la cédula del paciente en la
-                          cabecera, que es dato de administración. Enfermería lee
-                          la historia dentro de la app, pero no se lleva el PDF
-                          con la identificación (ver routes/clinicalRecords.js). */}
-                      {!esEnfermero && (
+                          cabecera, que es dato de administración. Enfermería y
+                          el call center leen la historia dentro de la app, pero
+                          no se llevan el PDF con la identificación (ver
+                          routes/clinicalRecords.js). */}
+                      {!esEnfermero && !soloLectura && (
                       <button
                         onClick={() => openMspForm(fu._id)}
                         title="Hoja MSP HCU-form.002"
@@ -3534,6 +3708,9 @@ function ArchivosTab({ patientId, appointmentId }) {
   // Mismos roles que acepta el PUT (ver routes/clinicalRecords.js): mostrador no
   // reescribe un acto médico, aunque pueda registrarlo.
   const puedeCorregir = hasRole('admin', 'doctor', 'enfermero', 'optica');
+  // El call center solo mira (ver useSoloLeeHistoria): ve los estudios subidos y
+  // no tiene formulario para añadir ninguno.
+  const soloLectura = useSoloLeeHistoria();
 
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -3745,6 +3922,7 @@ function ArchivosTab({ patientId, appointmentId }) {
         </div>
       )}
 
+      {!soloLectura && (
       <form
         ref={formRef}
         onSubmit={submit}
@@ -3848,6 +4026,7 @@ function ArchivosTab({ patientId, appointmentId }) {
           </button>
         </div>
       </form>
+      )}
 
       {/* El historial de estudios, por fecha (el más reciente arriba). */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">

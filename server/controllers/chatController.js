@@ -24,6 +24,7 @@ const {
 } = require('../utils/agentSchedule');
 const { restrictionIsActive } = require('../utils/workflowChatRestriction');
 const { esPrimeraVisita } = require('../utils/firstVisit');
+const { resolverAgendadoPor } = require('../utils/appointmentBooker');
 const { validarSucursalDestino } = require('../utils/clinicScope');
 const { aplicarValorDeCita } = require('../utils/appointmentValue');
 
@@ -480,6 +481,38 @@ function publicAccount(account) {
   };
 }
 
+/**
+ * DEVOLVER UNA CONVERSACIÓN DESPUÉS DE TOCARLA. Puerta única.
+ *
+ * El navegador REEMPLAZA el chat abierto con lo que responde la mutación (ver
+ * `applyConversationUpdate` en Chats.jsx), así que una respuesta sin los campos
+ * DERIVADOS —`window`, `sendingAccount`, `inboundAccount`,
+ * `effectiveConnectionType`— dejaba el chat como si no se supiera por qué número
+ * había entrado el contacto: salía el aviso rojo «este chat no tiene ningún
+ * número por el que responder» y, con la ventana de 24h sin calcular, el cuadro
+ * de escribir se quedaba inhabilitado. Bastaba con destacar el chat o crearle
+ * una oportunidad para no poder seguir conversando hasta recargar.
+ *
+ * Los derivados no se guardan en Mongo: los calcula `decorateConversation` al
+ * salir. Por eso TODA mutación tiene que devolver por aquí, y no por un
+ * `res.json(conv)` a pelo.
+ */
+async function respondConversation(res, conv, { status = 200 } = {}) {
+  await populateConversation(conv);
+  const plain = conv.toObject ? conv.toObject() : conv;
+  return res.status(status).json(decorateConversation(plain, await loadSendingAccounts()));
+}
+
+/**
+ * Lo mismo, pero para las respuestas que llevan la conversación DENTRO de un
+ * objeto ({ patient, conversation } / { appointments, conversation }).
+ */
+async function conversationPayload(conv) {
+  await populateConversation(conv);
+  const plain = conv.toObject ? conv.toObject() : conv;
+  return decorateConversation(plain, await loadSendingAccounts());
+}
+
 // Repuebla un documento de conversación con los campos que la UI necesita
 // (paciente, agente, productos de la oportunidad). Se usa al devolver el conv
 // tras una mutación para no perder los datos poblados en el cliente.
@@ -649,7 +682,7 @@ exports.createConversation = async (req, res) => {
       if (!canAccessConversation(req, conv)) {
         return res.status(403).json({ message: 'Ese contacto tiene un chat reservado para otro asesor mediante un workflow' });
       }
-      return res.status(200).json(conv);
+      return respondConversation(res, conv);
     }
 
     // Vincular paciente si existe con ese teléfono (CRM global: en toda la organización).
@@ -680,7 +713,7 @@ exports.createConversation = async (req, res) => {
       lastMessageAt: new Date(),
     });
 
-    res.status(201).json(conv);
+    await respondConversation(res, conv, { status: 201 });
   } catch (err) {
     res.status(500).json({ message: 'Error al crear conversación', error: err.message });
   }
@@ -726,7 +759,7 @@ exports.updateConversation = async (req, res) => {
     // Los demás asesores tienen la bandeja abierta: sin esto, un chat renombrado
     // seguía saliendo con el apodo de WhatsApp en sus pantallas hasta recargar.
     emitToCallCenter('chat:updated', { id: conv._id });
-    res.json(conv);
+    await respondConversation(res, conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al actualizar conversación', error: err.message });
   }
@@ -837,7 +870,7 @@ exports.assignConversation = async (req, res) => {
         by: req.user.name,
       });
     }
-    res.json(conv);
+    await respondConversation(res, conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al asignar conversación', error: err.message });
   }
@@ -956,7 +989,7 @@ exports.autoAssign = async (req, res) => {
     emitChatAssignment({
       conversationId: conv._id, assignedTo: agent._id, assignedToName: agent.name, restrictedTo: null,
     });
-    res.json(conv);
+    await respondConversation(res, conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al auto-asignar', error: err.message });
   }
@@ -981,7 +1014,7 @@ exports.toggleFeatured = async (req, res) => {
       conv.featuredNote = '';
     }
     await conv.save();
-    res.json(conv);
+    await respondConversation(res, conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al destacar', error: err.message });
   }
@@ -1032,7 +1065,7 @@ exports.setOpportunity = async (req, res) => {
       });
     }
     if (req.body.stage && req.body.stage !== prevStage) notifyOpportunityStage(conv, req.body.stage);
-    res.json(conv);
+    await respondConversation(res, conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al actualizar oportunidad', error: err.message });
   }
@@ -1051,7 +1084,7 @@ exports.removeOpportunity = async (req, res) => {
     conv.markModified('opportunities');
     opportunities.syncPrimaryOpportunity(conv);
     await conv.save();
-    res.json(conv);
+    await respondConversation(res, conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al eliminar oportunidad', error: err.message });
   }
@@ -1201,8 +1234,7 @@ exports.addOpportunity = async (req, res) => {
     await opportunities.announceOpportunity(conv, { type: 'created', opportunity: opp, actor: humanActor(req) });
     // Una oportunidad nueva entró a su etapa → dispara workflows 'opportunity_stage'.
     notifyOpportunityStage(conv, opp.stage);
-    await populateConversation(conv);
-    res.status(201).json(conv);
+    await respondConversation(res, conv, { status: 201 });
   } catch (err) {
     res.status(500).json({ message: 'Error al crear oportunidad', error: err.message });
   }
@@ -1253,8 +1285,7 @@ exports.updateOpportunityAt = async (req, res) => {
       });
       notifyOpportunityStage(conv, req.body.stage);
     }
-    await populateConversation(conv);
-    res.json(conv);
+    await respondConversation(res, conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al actualizar oportunidad', error: err.message });
   }
@@ -1269,8 +1300,7 @@ exports.removeOpportunityAt = async (req, res) => {
     conv.opportunities = (conv.opportunities || []).filter((_, i) => i !== idx);
     syncPrimaryOpportunity(conv);
     await conv.save();
-    await populateConversation(conv);
-    res.json(conv);
+    await respondConversation(res, conv);
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
   }
@@ -1288,7 +1318,7 @@ exports.toggleBlocked = async (req, res) => {
     conv.blockedAt = next ? new Date() : null;
     conv.blockedBy = next ? req.user._id : null;
     await conv.save();
-    res.json(conv);
+    await respondConversation(res, conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al bloquear', error: err.message });
   }
@@ -4991,7 +5021,7 @@ exports.registerPatientFromChat = async (req, res) => {
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
     if (conv.patient) {
       const existing = await Patient.findById(conv.patient);
-      if (existing) return res.json({ patient: existing, conversation: conv });
+      if (existing) return res.json({ patient: existing, conversation: await conversationPayload(conv) });
     }
 
     const { firstName, lastName, cedula, gender, email, address } = req.body;
@@ -5086,7 +5116,7 @@ exports.registerPatientFromChat = async (req, res) => {
     }
     emitToClinic(req.clinicId, 'patient:created', { id: patient._id });
     emitToCallCenter('chat:updated', { id: conv._id });
-    res.status(201).json({ patient, conversation: conv });
+    res.status(201).json({ patient, conversation: await conversationPayload(conv) });
   } catch (err) {
     res.status(500).json({ message: 'Error al registrar paciente', error: err.message });
   }
@@ -5155,6 +5185,15 @@ exports.createAppointmentFromChat = async (req, res) => {
       products.forEach((p) => productsMap.set(String(p._id), p));
     }
 
+    /**
+     * QUIÉN AGENDA. El call center trabaja en pareja —una cierra la cita por
+     * teléfono, otra la escribe— y sin poder decirlo la cita se apuntaba a quien
+     * teclea, falseando el reporte por asesor. Vale para toda la tanda: se
+     * resuelve una vez. Ver `utils/appointmentBooker.js`.
+     */
+    const atribucion = await resolverAgendadoPor(req, req.body.bookedBy);
+    if (!atribucion.ok) return res.status(atribucion.status).json({ message: atribucion.message });
+
     const created = [];
     // Nuevo es quien no tiene NINGÚN rastro previo, no solo quien no tiene citas:
     // los que se atendían en papel llevan años viniendo (ver utils/firstVisit.js).
@@ -5220,9 +5259,9 @@ exports.createAppointmentFromChat = async (req, res) => {
         serviceName: servicioAgenda?.name || '',
         status: 'pendiente',
         isFirstVisit: first,
-        createdBy: req.user._id,
-        createdByName: req.user.name || '',
-        createdByRole: req.role || null,
+        // A nombre de quién queda (normalmente quien la escribe; el call center
+        // puede acreditarla a la compañera que la cerró por teléfono).
+        ...atribucion.fields,
         // Deja rastro del chat de origen: el panel de Supervisión cuenta por aquí
         // las citas que produjo el call center.
         conversation: conv._id,
@@ -5262,7 +5301,7 @@ exports.createAppointmentFromChat = async (req, res) => {
     res.status(201).json({
       appointment: created[0],
       appointments: created,
-      conversation: conv,
+      conversation: await conversationPayload(conv),
     });
   } catch (err) {
     res.status(500).json({ message: 'Error al crear cita desde chat', error: err.message });
