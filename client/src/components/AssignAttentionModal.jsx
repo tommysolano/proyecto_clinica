@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from './Modal';
 import AppointmentValueFields from './AppointmentValueFields';
 import SearchableSelect from './SearchableSelect';
+import ServiceItemPicker from './ServiceItemPicker';
 import SelectorComponentesSuero from './SelectorComponentesSuero';
 import SueroComposicionEditor from './SueroComposicionEditor';
 import { SUERO_CLORURO_NOMBRE } from '../constants/sueroterapia';
@@ -145,6 +146,23 @@ export default function AssignAttentionModal({
       ? [{ kind: 'doctor', user: String(apt.doctor._id), key: `doc-${apt.doctor._id}` }]
       : [];
   });
+  /**
+   * EL SERVICIO DE LA CITA SE CORRIGE AQUÍ, al recibir al paciente.
+   *
+   * Es el momento en que se sabe a qué viene de verdad: media agenda se llena
+   * por teléfono con «viene mañana, ya veremos a qué», y hasta ahora había que
+   * salir de este modal, abrir el detalle y entrar a «Cambiar servicio y valor»
+   * para escribir una palabra. Va por la misma puerta que la asignación
+   * (`assignDoctor` → `resolverServicioAgenda`), no por otra.
+   *
+   * Y no es cosmético: si el servicio nuevo trae su propio suero, al guardar se
+   * escribe solo en los seguimientos, igual que si se hubiera agendado así.
+   */
+  const [servicio, setServicio] = useState(
+    apt?.serviceItem
+      ? { _id: apt.serviceItem._id || apt.serviceItem, name: apt.serviceItem.name || apt.serviceName || '' }
+      : null
+  );
   const [busy, setBusy] = useState(false);
   // Índice del paso cuyo catálogo de ampollas está abierto (uno para toda la
   // cola: solo se escoge en uno a la vez).
@@ -232,6 +250,8 @@ export default function AssignAttentionModal({
               }
             : { kind: 'doctor', user: p.user }
         ),
+        // El servicio de la cita, tal como quede aquí (vacío = quitarlo).
+        serviceItem: servicio?._id || null,
         observation: observacion.trim(),
         // Solo se mandan si este rol puede fijarlos: así una asignación hecha por
         // enfermería no viaja con los campos vacíos y borra el valor que caja ya
@@ -282,7 +302,10 @@ export default function AssignAttentionModal({
   };
 
   const paciente = apt?.patient ? `${apt.patient.firstName} ${apt.patient.lastName}` : 'Paciente';
-  const servicio = apt?.serviceName || apt?.serviceItem?.name || (apt?.services || []).map((s) => s.name).filter(Boolean).join(', ');
+  // La cabecera dice el servicio ELEGIDO ahora mismo (el selector de abajo lo
+  // cambia en caliente), y cae a los del inventario en las citas antiguas.
+  const nombreServicio =
+    servicio?.name || (apt?.services || []).map((s) => s.name).filter(Boolean).join(', ');
 
   /**
    * UN SOLO catálogo para toda la cola, y no uno por paso: son 104 ampollas a
@@ -311,7 +334,7 @@ export default function AssignAttentionModal({
         <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3">
           <p className="font-semibold text-slate-800">{paciente}</p>
           <p className="text-sm text-slate-500">
-            {apt?.startTime}{servicio ? ` · ${servicio}` : ''}
+            {apt?.startTime}{nombreServicio ? ` · ${nombreServicio}` : ''}
           </p>
         </div>
 
@@ -334,6 +357,19 @@ export default function AssignAttentionModal({
             . No se pueden quitar: su seguimiento ya está escrito.
           </div>
         )}
+
+        {/* A QUÉ VIENE. Se corrige aquí porque es aquí donde se sabe: la cita se
+            cerró por teléfono con un «ya veremos» y el paciente está delante. */}
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">
+            Servicio de la cita <span className="font-normal text-slate-400">(opcional)</span>
+          </label>
+          <ServiceItemPicker value={servicio} onChange={setServicio} />
+          <p className="text-[11px] text-slate-400 mt-1">
+            Pincha para ver la lista. Si no está, escríbelo y se crea para todos. Si el servicio
+            trae su propio suero, se escribe solo en los seguimientos al guardar.
+          </p>
+        </div>
 
         {/* Cola de atención: doctores y enfermería, mezclados y en orden */}
         <div>
@@ -511,6 +547,16 @@ export default function AssignAttentionModal({
             <p className="text-[11px] text-slate-500 mt-1.5">
               La cita pasa sola al siguiente cuando cada uno guarda su seguimiento. Solo le
               aparece a quien le toca.
+            </p>
+          )}
+          {/* DÓNDE ESTÁ EL SUERO. Cuelga del paso de enfermería —es quien lo
+              pone— y sin ningún paso de enfermería no hay dónde escogerlo. Sin
+              este renglón se buscaba en el modal entero y se acababa
+              escribiéndolo a mano en el motivo de la cita. */}
+          {!cola.some((p) => p.kind === ENFERMERIA) && (
+            <p className="text-[11px] text-sky-800 bg-sky-50 border border-sky-100 rounded-lg px-2 py-1.5 mt-1.5">
+              ¿Le van a poner un <b>suero</b>? Pulsa <b>Añadir enfermería</b>: las ampollas se
+              escogen ahí, en el paso de quien lo aplica.
             </p>
           )}
         </div>

@@ -704,6 +704,19 @@ export default function Appointments() {
     setModalOpen(true);
   };
 
+  /**
+   * Del formulario de edición a «Asignar atención», que es donde vive la cola de
+   * atención y el suero. Se cierra el formulario a propósito: los dos modales
+   * escriben sobre la misma cita y dejarlos abiertos a la vez haría que guardar
+   * el de atrás pisara lo que acaba de guardar el de delante.
+   */
+  const abrirAsignacionDesdeEdicion = () => {
+    const apt = appointments.find((a) => String(a._id) === String(editing));
+    if (!apt) return;
+    setModalOpen(false);
+    setAssignModal({ appointment: apt });
+  };
+
   const openEdit = (apt) => {
     if (!canEdit(apt)) {
       toast.error('Solo el creador o un administrador puede editar esta cita.');
@@ -2166,6 +2179,33 @@ export default function Appointments() {
               reparte por «Asignar atención», que además sabe reordenar la cola y
               conserva los turnos ya completados. */}
           {!editing && <QuienAtiende form={form} setForm={setForm} doctors={doctors} nurses={nurses} />}
+
+          {/**
+            * …y desde aquí se llega a esa puerta.
+            *
+            * Editando no se pinta «Quién atiende»: repartir la cola de una cita
+            * que ya existe tiene reglas propias (conservar a quien ya atendió,
+            * reordenar, avisar al que entra y al que sale) y vive entera en
+            * `assignDoctor`. Pero quien abre el lápiz buscando el suero no tenía
+            * forma de saberlo: se quedaba mirando un formulario sin enfermería
+            * y acababa escribiéndolo a mano en el motivo de la cita.
+            */}
+          {editing && canCharge && (
+            <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-3 space-y-2">
+              <p className="text-xs text-sky-900 m-0">
+                <b>¿Pasa por enfermería o le van a poner un suero?</b> Quién la atiende y las
+                ampollas se reparten en <b>Asignar atención</b>, que respeta a quien ya atendió.
+                Se guarda por su cuenta: si has cambiado algo aquí, guárdalo antes.
+              </p>
+              <button
+                type="button"
+                onClick={abrirAsignacionDesdeEdicion}
+                className="px-3 py-1.5 rounded-lg bg-white border border-sky-300 text-sky-800 text-xs font-semibold cursor-pointer hover:bg-sky-100"
+              >
+                Asignar atención y suero
+              </button>
+            </div>
+          )}
 
           {/* A NOMBRE DE QUIÉN QUEDA. Solo al crear: cambiar después a quién se
               le acredita una cita ya agendada movería reportes hacia atrás. */}

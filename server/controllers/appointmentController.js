@@ -1979,6 +1979,27 @@ exports.assignDoctor = async (req, res) => {
     const anteriores = doctoresPendientes(apt);
     const wasAttended = apt.status === 'asistida' || apt.status === 'completada';
 
+    /**
+     * EL SERVICIO DE LA CITA, corregido en el mismo gesto de recibir al paciente.
+     *
+     * Es cuando se sabe a qué viene de verdad: media agenda se cierra por
+     * teléfono con un «viene mañana, ya veremos a qué». Antes había que salir de
+     * la asignación y entrar por «Cambiar servicio y valor», dos pantallas para
+     * escribir una palabra.
+     *
+     * Solo si viene en la petición: quien asigne desde una pantalla vieja no
+     * puede borrarle el servicio a la cita por no mandarlo. Va por la misma
+     * puerta que el resto (`resolverServicioAgenda`) y ANTES del suero, para que
+     * un servicio nuevo con suero de serie se siembre en la ficha aquí mismo.
+     */
+    if (req.body.serviceItem !== undefined) {
+      const svc = await resolverServicioAgenda(req.body.serviceItem);
+      apt.serviceItem = svc?._id || null;
+      // `serviceName` es el snapshot que leen la lista, los reportes y el
+      // recordatorio de WhatsApp sin populate: los dos se cambian juntos.
+      apt.serviceName = svc?.name || '';
+    }
+
     asignarTurnos(apt, { pasos, por: req.user._id });
 
     // El valor de la cita se anota AQUÍ, en el mismo gesto de recibir al

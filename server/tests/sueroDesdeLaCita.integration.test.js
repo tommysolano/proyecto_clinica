@@ -381,3 +381,69 @@ test('T9) el suero de serie se configura desde el catálogo, y sin ampollas se a
   const vacio = ok(await guardar({ enabled: true, base: { volumeMl: 250 }, components: [] }));
   assert.equal(vacio.autoSerum.enabled, false);
 });
+
+/**
+ * T13) EL SERVICIO SE CORRIGE AL RECIBIR AL PACIENTE.
+ *
+ * Reclamo real (7-sep-2026): al asignar al doctor o al enfermero no había forma
+ * de tocar el servicio de la cita — había que salir, abrir el detalle y entrar
+ * por «Cambiar servicio y valor»— y media agenda se cierra por teléfono con un
+ * «viene mañana, ya veremos a qué». Ahora se cambia en el mismo modal, y si el
+ * servicio nuevo trae suero de serie, se escribe en la ficha ahí mismo.
+ */
+test('T13) al asignar la atención se puede corregir el servicio (y su suero se escribe)', async () => {
+  const { clinicId, userId, patient, enfermera } = await seed();
+  const detox = await AppointmentServiceItem.create({
+    clinic: clinicId, name: 'Detox Plus', slug: 'detox plus',
+    autoSerum: {
+      enabled: true,
+      base: { name: 'Cloruro', volumeMl: 250 },
+      components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }],
+    },
+  });
+
+  // Se agenda SIN servicio («ya veremos a qué viene»).
+  const cita = ok(await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '10:00',
+  }));
+  assert.equal(await ClinicalRecord.countDocuments({}), 0, 'todavía no hay nada escrito');
+
+  // Y al recibirlo se dice a qué venía, en el mismo gesto de repartir la atención.
+  const r = await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [{ kind: 'enfermeria', user: String(enfermera._id) }],
+      serviceItem: String(detox._id),
+    }, { role: 'cajero', params: { id: String(cita._id) } }),
+  );
+  ok(r);
+
+  const guardada = await Appointment.findById(cita._id).lean();
+  assert.equal(String(guardada.serviceItem), String(detox._id));
+  assert.equal(guardada.serviceName, 'Detox Plus', 'el snapshot se cambia con él');
+
+  const { items } = await sueroDeLaFicha(patient._id);
+  assert.equal(items.length, 1, 'el suero del servicio queda escrito en la ficha');
+  assert.equal(items[0].name, 'Detox Plus');
+});
+
+test('T14) asignar sin mandar el servicio NO se lo borra a la cita', async () => {
+  const { clinicId, userId, patient, doctora } = await seed();
+  const consulta = await AppointmentServiceItem.create({
+    clinic: clinicId, name: 'Consulta general', slug: 'consulta general',
+  });
+  const cita = ok(await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '09:00', serviceItem: consulta._id,
+  }));
+
+  // Una pantalla vieja manda la cola y nada más.
+  ok(await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, { steps: [{ kind: 'doctor', user: String(doctora._id) }] },
+      { role: 'cajero', params: { id: String(cita._id) } }),
+  ));
+
+  const guardada = await Appointment.findById(cita._id).lean();
+  assert.equal(String(guardada.serviceItem), String(consulta._id), 'sigue teniendo su servicio');
+  assert.equal(guardada.serviceName, 'Consulta general');
+});
