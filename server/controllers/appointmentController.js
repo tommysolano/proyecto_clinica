@@ -40,7 +40,12 @@ const {
   PAST_TIME_MESSAGE,
 } = require('../utils/appointmentDate');
 const { isDoctorRole } = require('../constants/roles');
-const { veTodaLaOrganizacion, validarSucursalDestino } = require('../utils/clinicScope');
+const {
+  veTodaLaOrganizacion,
+  sucursalesVisibles,
+  alcanzaSucursal,
+  validarSucursalDestino,
+} = require('../utils/clinicScope');
 const { esPrimeraVisita } = require('../utils/firstVisit');
 const { resolverAgendadoPor } = require('../utils/appointmentBooker');
 
@@ -133,9 +138,9 @@ const toMinutes = (hhmm) => {
  * acabaría en la sede equivocada.
  */
 const filtroSucursalCita = (req) => {
-  if (veTodaLaOrganizacion(req)) return {};
-  const asignadas = (req.user.clinics || []).map((c) => c.clinic);
-  return { clinic: { $in: [req.clinicId, ...asignadas] } };
+  const visibles = sucursalesVisibles(req);
+  if (visibles === null) return {};
+  return { clinic: { $in: [req.clinicId, ...visibles] } };
 };
 
 exports.getAppointments = async (req, res) => {
@@ -163,30 +168,30 @@ exports.getAppointments = async (req, res) => {
     //  - `clinic=<id>` (distinto al activo, con acceso) → esa sucursal (call center
     //    agendando para otra sede).
     //  - por defecto → la sucursal activa del usuario.
-    const accessibleClinicIds = (req.user.clinics || []).map((c) => c.clinic);
     /**
-     * MOSTRADOR Y ADMINISTRACIÓN VEN LA AGENDA DE TODAS LAS SUCURSALES.
+     * QUIÉN VE LA AGENDA DE TODAS LAS SUCURSALES (`sedesVisibles === null`).
      *
-     * El cajero está asignado a UNA sede, y con eso el filtro «Todas las
-     * sucursales» no le salía nunca (se pinta solo con más de una asignada) y la
-     * vista unificada le devolvía únicamente la suya. Pero quien atiende el
-     * mostrador y el teléfono necesita ver dónde está agendado un paciente sin
-     * tener que preguntar por otra sede.
+     * Sale de `sucursalesVisibles`, la MISMA función que usa `filtroSucursalCita`
+     * para las escrituras: leer y escribir tienen que responder igual, o la cita
+     * se ve en la lista y ningún botón la encuentra. Son dos motivos:
      *
-     * Es una ampliación deliberada de lo que ve mostrador: la agenda completa de
-     * la organización. NO afecta al resto de roles — un doctor o un enfermero
-     * siguen viendo solo las sucursales que tienen asignadas — ni a ningún otro
-     * endpoint.
+     *  · POR EL ROL — mostrador, administración y call center. El cajero está
+     *    asignado a UNA sede y con eso el filtro «Todas las sucursales» no le
+     *    salía nunca; pero quien atiende el mostrador y el teléfono necesita ver
+     *    dónde está agendado un paciente sin preguntar por otra sede.
+     *  · POR LA PERSONA — quien está marcado como «trabaja en todas las
+     *    sucursales». Es el caso de la enfermera que cubre dos sedes: sus citas
+     *    del día estaban agendadas en la otra y la agenda le salía VACÍA.
+     *
+     * Al resto —un doctor o un enfermero de una sola sede— no le cambia nada:
+     * sigue viendo las sucursales que tiene asignadas.
      */
-    const veTodaLaOrg = veTodaLaOrganizacion(req);
+    const sedesVisibles = sucursalesVisibles(req);
     let clinicScope; // valor para query.clinic; null = sin filtro (todas)
     if (clinicParam === 'all') {
-      clinicScope = veTodaLaOrg ? null : { $in: accessibleClinicIds };
+      clinicScope = sedesVisibles === null ? null : { $in: sedesVisibles };
     } else if (clinicParam && String(clinicParam) !== String(req.clinicId)) {
-      const allowed =
-        veTodaLaOrg ||
-        accessibleClinicIds.some((c) => String(c) === String(clinicParam));
-      clinicScope = allowed ? clinicParam : req.clinicId;
+      clinicScope = alcanzaSucursal(req, clinicParam) ? clinicParam : req.clinicId;
     } else {
       clinicScope = req.clinicId;
     }

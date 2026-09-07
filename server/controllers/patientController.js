@@ -18,7 +18,8 @@ const { nameSearchFilter } = require('../utils/nameSearch');
  *
  * Con excepciones POR CAMPO, no por rol: la CÉDULA, el CORREO y la DIRECCIÓN los
  * ve además mostrador (son los tres datos que lleva la factura electrónica), y el
- * CORREO lo ve también quien atiende (por ahí manda el resultado). El TELÉFONO y
+ * CORREO y la CÉDULA los ve también quien atiende (por el correo manda el
+ * resultado; la cédula identifica al paciente que tiene delante). El TELÉFONO y
  * el WHATSAPP no se mueven de ahí: son la vía de contacto directa con el paciente
  * y siguen siendo solo del administrador.
  *
@@ -39,16 +40,21 @@ const CONTACT_FIELDS = ['cedula', 'address', 'phone', 'whatsapp', 'email'];
 const canSeeContactData = (req) => canReq(req, 'patients.contactData');
 
 /**
- * LA CÉDULA VA APARTE (pedido de mostrador, 3-sep-2026).
+ * LA CÉDULA VA APARTE (pedido de mostrador, 3-sep-2026; y de consulta, sep-2026).
  *
  * Caja necesita el número de identificación del paciente que tiene delante: es
  * con lo que factura, con lo que distingue a dos homónimos y con lo que confirma
  * que quien llegó es el de la agenda. Pedírsela a un administrador cada vez no
  * era viable.
  *
+ * QUIEN ATIENDE también, por el mismo motivo llevado a la consulta: la cédula es
+ * lo que identifica al paciente en la receta, en el pedido de laboratorio y en
+ * las hojas del MSP, y es lo que separa a dos homónimos ANTES de escribir en una
+ * historia clínica —escribir en la ficha equivocada no se deshace—.
+ *
  * Es una excepción de UN campo, no una puerta a los datos de contacto: dirección,
- * teléfono, WhatsApp y correo siguen saliendo censurados para todo el que no sea
- * admin. Por eso el filtro es POR CAMPO y no un booleano para los cinco.
+ * teléfono y WhatsApp siguen saliendo censurados para todo el que no sea admin
+ * (o mostrador). Por eso el filtro es POR CAMPO y no un booleano para los cinco.
  */
 const canSeeCedula = (req) => canSeeContactData(req) || canReq(req, 'patients.cedula');
 

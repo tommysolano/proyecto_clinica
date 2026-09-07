@@ -66,6 +66,33 @@ function init(httpServer) {
     if (clinicId) socket.join(`clinic:${clinicId}`);
     socket.join(`user:${user._id}`);
     if (role) socket.join(`clinic:${clinicId}:role:${role}`);
+
+    /**
+     * QUIEN ROTA ENTRE SEDES ESCUCHA LAS DE TODAS.
+     *
+     * `worksInAllClinics` ya le da las citas de cualquier sucursal en la agenda
+     * (ver `sucursalesVisibles`) y los avisos al móvil (`User.enSucursal`), pero
+     * el socket solo lo metía en la sala de su sede ACTIVA: la cita que le
+     * asignaban en la otra no aparecía sola en pantalla, solo al recargar. Con la
+     * enfermera que cubre dos sedes eso es la mitad de su día llegando tarde.
+     *
+     * Se une a la sala de cada sucursal activa y a la de su rol en cada una, que
+     * son las dos por las que se emite (`emitToClinic` y `emitToRole`).
+     */
+    if (user.worksInAllClinics) {
+      require('./models/Clinic')
+        .find({ active: { $ne: false } })
+        .select('_id')
+        .lean()
+        .then((sedes) => {
+          sedes.forEach((c) => {
+            if (String(c._id) === String(clinicId)) return; // ya está dentro
+            socket.join(`clinic:${c._id}`);
+            if (role) socket.join(`clinic:${c._id}:role:${role}`);
+          });
+        })
+        .catch(() => {}); // sin esto sigue viendo su sede: no es motivo para tirar el socket
+    }
     // Call center ÚNICO: los agentes (de cualquier sucursal) comparten una sola
     // bandeja. Se unen a una sala común para recibir los eventos de chat en vivo.
     if (user.isSuperAdmin || ['admin', 'marketing', 'call_center'].includes(role)) {

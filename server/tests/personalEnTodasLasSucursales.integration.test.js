@@ -147,3 +147,89 @@ test('T8) guardar sin mencionar la marca no la toca', async () => {
   }));
   assert.equal((await User.findById(rotativo._id)).worksInAllClinics, true, 'sigue marcado');
 });
+
+// ─────────────────── La agenda de quien rota ───────────────────
+
+/**
+ * EL TERCER SITIO QUE RESPONDE A «¿TRABAJA AQUÍ?»: LA AGENDA.
+ *
+ * La marca valía para salir en los selectores (T1–T3) y para entrar a la sede
+ * (T4), pero el listado de citas filtraba por `clinics[]` a secas. Con eso, la
+ * enfermera marcada como «en todas» y asignada a Central abría el calendario y
+ * no veía NINGUNA cita: las suyas del día estaban agendadas en la otra sucursal
+ * —se las ponía mostrador desde allí— y para la consulta no existían. Ni para
+ * verlas, ni para reclamarlas: la escritura repetía el mismo cálculo.
+ */
+const Appointment = require('../models/Appointment');
+const Patient = require('../models/Patient');
+const appt = require('../controllers/appointmentController');
+
+/** La agenda tal y como la pide la pantalla: vista unificada (`clinic=all`). */
+async function agendaDe(persona, sedeActiva) {
+  const req = H.mockReq(sedeActiva, persona._id, {}, {
+    role: persona.clinics[0].role,
+    query: { clinic: 'all' },
+  });
+  // El alcance se decide con `clinics[]` + `worksInAllClinics`, así que el req
+  // tiene que llevar el usuario entero, no solo su id.
+  req.user = persona;
+  return ok(await H.runController(appt.getAppointments, req)).map((a) => String(a._id));
+}
+
+/** Una cita de enfermería en `sede`, con el turno de `dueño` (o libre). */
+async function citaDeEnfermeria(sede, dueño = null) {
+  const paciente = await Patient.create({ clinic: sede, firstName: 'Ana', lastName: 'Pérez' });
+  return Appointment.create({
+    clinic: sede,
+    patient: paciente._id,
+    date: H.docDate(),
+    startTime: '10:00',
+    // 'asistida' = el paciente ya está delante, que es como llegan a enfermería.
+    status: 'asistida',
+    turns: [{ kind: 'enfermeria', user: dueño, status: 'pendiente', order: 0 }],
+    currentTurnKind: 'enfermeria',
+    currentTurnUser: dueño,
+  });
+}
+
+test('T9) la enfermera que rota ve en su agenda la cita de la OTRA sucursal', async () => {
+  const { central, extension, enfRotativa } = await seed();
+  const suya = await citaDeEnfermeria(extension, enfRotativa._id);
+
+  const agenda = await agendaDe(enfRotativa, central);
+  assert.deepEqual(agenda, [String(suya._id)], 'su sede activa es Central y la cita es de Extensión');
+});
+
+test('T10) la enfermera de una sola sede sigue viendo solo la suya', async () => {
+  const { central, extension } = await seed();
+  const fija = await User.create({
+    name: 'EnfFija', email: 'enffija@t.com', password: 'secreto123',
+    clinics: [{ clinic: central, role: 'enfermero' }],
+  });
+  await citaDeEnfermeria(extension, fija._id);
+  const enSuSede = await citaDeEnfermeria(central, fija._id);
+
+  const agenda = await agendaDe(fija, central);
+  assert.deepEqual(agenda, [String(enSuSede._id)], 'la de Extensión no es asunto suyo');
+});
+
+/**
+ * Verla y no poder tocarla es peor que no verla: es el «Cita no encontrada» al
+ * pulsar el botón. Leer y escribir salen de la misma función a propósito.
+ */
+test('T11) y puede reclamar esa cita, no solo verla', async () => {
+  const { central, extension, enfRotativa } = await seed();
+  const libre = await citaDeEnfermeria(extension, null);
+
+  const req = H.mockReq(central, enfRotativa._id, {}, {
+    role: 'enfermero',
+    params: { id: String(libre._id) },
+  });
+  // Igual que en la agenda: el alcance sale del usuario entero (así lo deja
+  // `middleware/auth`, que carga el documento completo salvo contraseñas).
+  req.user = enfRotativa;
+  const r = await H.runController(appt.nurseClaim, req);
+  assert.ok(r.statusCode < 400, JSON.stringify(r.payload));
+  const guardada = await Appointment.findById(libre._id);
+  assert.equal(String(guardada.currentTurnUser), String(enfRotativa._id));
+});

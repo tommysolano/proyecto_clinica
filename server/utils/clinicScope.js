@@ -32,6 +32,35 @@ const veTodaLaOrganizacion = (req) =>
   !!req.user?.isSuperAdmin || ['admin', 'cajero', 'call_center'].includes(req.role);
 
 /**
+ * LAS SUCURSALES CUYOS DATOS ALCANZA ESTA PERSONA. `null` = TODAS (sin filtro).
+ *
+ * Son DOS motivos distintos para verlas todas y hay que contar los dos:
+ *  · el ROL —mostrador, administración, call center— por `veTodaLaOrganizacion`;
+ *  · la PERSONA marcada como "trabaja en todas las sucursales", que es el check
+ *    de quien rota entre sedes (una enfermera que cubre Central y Laboratorio).
+ *
+ * El segundo se quedaba fuera aquí y esa era la enfermera «sin ninguna cita»:
+ * el login SÍ le daba las sedes —`sucursalesAccesibles` mira
+ * `worksInAllClinics`— y hasta podía cambiarse a Laboratorio en el selector,
+ * pero la agenda filtraba por su `clinics[]` a secas, donde solo está Central.
+ * Sus citas del día, agendadas en la otra sede, no existían para ella: ni en el
+ * listado, ni para reclamarlas (`filtroSucursalCita` repetía el mismo cálculo).
+ *
+ * Es el tercer espejo de la MISMA pregunta —los otros dos son
+ * `User.getRoleForClinic` y `User.enSucursal`—: cámbialos juntos.
+ */
+const sucursalesVisibles = (req) => {
+  if (veTodaLaOrganizacion(req) || req.user?.worksInAllClinics) return null;
+  return (req.user?.clinics || []).map((c) => c.clinic);
+};
+
+/** ¿Llega esta persona a esta sucursal concreta? */
+const alcanzaSucursal = (req, clinicId) => {
+  const visibles = sucursalesVisibles(req);
+  return visibles === null || visibles.some((c) => String(c) === String(clinicId));
+};
+
+/**
  * SUCURSAL PEDIDA por `?clinic=<id>`, si tiene permiso; si no, la activa.
  *
  * Lo usan los selectores que trabajan sobre otra sede (p.ej. el personal que
@@ -41,8 +70,7 @@ const veTodaLaOrganizacion = (req) =>
 const sucursalPedida = (req) => {
   const pedida = req.query?.clinic;
   if (!pedida || String(pedida) === String(req.clinicId)) return req.clinicId;
-  const asignada = (req.user?.clinics || []).some((c) => String(c.clinic) === String(pedida));
-  return veTodaLaOrganizacion(req) || asignada ? pedida : req.clinicId;
+  return alcanzaSucursal(req, pedida) ? pedida : req.clinicId;
 };
 
 /**
@@ -79,4 +107,10 @@ async function validarSucursalDestino(req, pedida) {
   return { ok: true, clinicId: pedida };
 }
 
-module.exports = { veTodaLaOrganizacion, sucursalPedida, validarSucursalDestino };
+module.exports = {
+  veTodaLaOrganizacion,
+  sucursalesVisibles,
+  alcanzaSucursal,
+  sucursalPedida,
+  validarSucursalDestino,
+};

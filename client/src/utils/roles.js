@@ -40,12 +40,16 @@ export const ROLE_LABELS = {
 //
 // Los datos de contacto del paciente son del administrador y el servidor los
 // censura (ver CONTACT_FIELDS en patientController), con UNA excepción: la
-// CÉDULA la ve también mostrador, porque identifica y factura con ella.
+// CÉDULA. La ve mostrador —identifica y factura con ella— y también QUIEN
+// ATIENDE (sep-2026, a petición de los médicos): es el número que va en la
+// receta, en el pedido de laboratorio y en las hojas del MSP, y es lo que
+// distingue a dos homónimos antes de escribir en una historia clínica.
 //
 // Esta lista es el espejo de la capacidad `patients.cedula` del servidor: si se
 // cambia una hay que cambiar la otra, o la pantalla pintaría un campo que no le
-// van a mandar (o lo esconderá teniéndolo).
-export const ROLES_VEN_CEDULA = ['admin', 'cajero'];
+// van a mandar (o lo esconderá teniéndolo). 'optica' va enumerada porque en el
+// cliente NO expande desde 'doctor' (ver DOCTOR_SPECIALTY_ROLES arriba).
+export const ROLES_VEN_CEDULA = ['admin', 'cajero', 'doctor', 'optica'];
 
 /**
  * Quién ve el CORREO del paciente: el admin, quien lo atiende y mostrador.

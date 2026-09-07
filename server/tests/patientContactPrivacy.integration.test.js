@@ -6,8 +6,11 @@
  *    lleva el comprobante electrónico (y ya los recibía al facturar con
  *    `?withContact=1`); teléfono y WhatsApp, porque recepción es quien llama
  *    para confirmar una cita o avisar de un resultado.
- *  · QUIEN ATIENDE ve el correo, y solo el correo (`patients.email`): por ahí
- *    manda el resultado de un examen o la receta.
+ *  · QUIEN ATIENDE ve el correo y la CÉDULA (`patients.email`, `patients.cedula`):
+ *    por el correo manda el resultado de un examen o la receta, y la cédula es el
+ *    número con el que identifica al paciente antes de escribir en su historia
+ *    —va en la receta, en el pedido de laboratorio y en las hojas del MSP—.
+ *    Dirección, teléfono y WhatsApp NO: ahí sigue la línea.
  *
  * Que mostrador los tenga todos NO es lo mismo que darle `patients.contactData`:
  * esa abre además la hoja MSP completa y las columnas del Excel de pacientes, que
@@ -35,8 +38,9 @@ const patients = require('../controllers/patientController');
 const clinicalRecords = require('../controllers/clinicalRecordController');
 
 const CONTACT_FIELDS = ['cedula', 'address', 'phone', 'whatsapp', 'email'];
-// Lo que sigue sin ver NADIE fuera de admin y mostrador.
-const SOLO_ADMIN_Y_CAJA = ['cedula', 'address', 'phone', 'whatsapp'];
+// Lo que sigue sin ver NADIE fuera de admin y mostrador. La cédula salió de esta
+// lista en sep-2026: la ve también quien atiende (ver P1).
+const SOLO_ADMIN_Y_CAJA = ['address', 'phone', 'whatsapp'];
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -86,9 +90,13 @@ test('P1) la ficha del paciente llega con los datos de contacto solo para el adm
   }
 
   /**
-   * QUIEN ATIENDE VE EL CORREO, y solo el correo (sep-2026).
+   * QUIEN ATIENDE VE EL CORREO Y LA CÉDULA, y nada más (sep-2026).
    *
-   * Por ahí manda el resultado de un examen, la receta o las indicaciones.
+   * Por el correo manda el resultado de un examen, la receta o las indicaciones.
+   * La cédula la pidieron los médicos: es el número con el que se identifica al
+   * paciente —y lo que distingue a dos homónimos antes de escribir en una
+   * historia clínica—, además de ir en la receta y en el pedido de laboratorio.
+   *
    * Se comprueban también las ESPECIALIDADES: la capacidad se concede a la clave
    * 'doctor' y `can()` mapea todas ahí; si alguien rompiera esa expansión, el
    * dato desaparecería para todas menos medicina general sin que nadie lo note.
@@ -96,7 +104,7 @@ test('P1) la ficha del paciente llega con los datos de contacto solo para el adm
   for (const rol of ['doctor', 'odontologia', 'optica', 'ginecologia', 'terapeuta']) {
     const visto = ok(await getOne(clinicId, userId, rol, patient._id));
     assert.equal(visto.email, 'ana@example.com', `${rol} necesita el correo del paciente`);
-    assert.equal(visto.cedula, undefined, `${rol} sigue sin ver la cédula`);
+    assert.equal(visto.cedula, '0102030405', `${rol} identifica al paciente por su cédula`);
     for (const f of ['address', 'phone', 'whatsapp']) {
       assert.equal(visto[f], undefined, `${rol} NO debe recibir ${f}`);
     }
@@ -145,8 +153,10 @@ test('P3) el listado censura igual, y solo el selector de facturación pide el c
   for (const f of SOLO_ADMIN_Y_CAJA) {
     assert.equal(paraDoctor.patients[0][f], undefined, `el listado sigue censurando ${f} a quien atiende`);
   }
-  // El correo sí, también en el listado: es donde se busca al paciente.
+  // El correo y la cédula sí, también en el listado: es donde se busca al
+  // paciente y donde se comprueba que es el que se va a atender.
   assert.equal(paraDoctor.patients[0].email, 'ana@example.com');
+  assert.equal(paraDoctor.patients[0].cedula, '0102030405');
 
   // Nueva venta / Cotizaciones / Pagos: `withContact=1` + capacidad de facturar.
   const paraFacturar = ok(await list(clinicId, userId, 'cajero', { withContact: '1' }));
@@ -156,10 +166,19 @@ test('P3) el listado censura igual, y solo el selector de facturación pide el c
   const contable = ok(await list(clinicId, userId, 'contabilidad', { withContact: '1' }));
   assert.equal(contable.patients[0].cedula, '0102030405', 'la cartera identifica al tercero por su cédula');
 
-  // Quien no factura no consigue nada pidiéndolo.
-  for (const rol of ['doctor', 'call_center', 'enfermero', 'marketing']) {
+  // Quien no factura no consigue nada pidiéndolo. (El doctor queda fuera de esta
+  // comprobación desde sep-2026: la cédula ya la ve por su propia capacidad, así
+  // que aquí no probaría nada. Lo que sí sigue sin conseguir es el teléfono, y
+  // eso se comprueba justo debajo.)
+  for (const rol of ['call_center', 'enfermero', 'marketing']) {
     const r = ok(await list(clinicId, userId, rol, { withContact: '1' }));
     assert.equal(r.patients[0].cedula, undefined, `${rol} no puede saltarse la regla con withContact`);
+  }
+  // Y el doctor tampoco lo usa para colarse en lo que NO tiene: el teléfono, el
+  // WhatsApp y la dirección siguen sin llegarle, lo pida como lo pida.
+  const doctorPidiendo = ok(await list(clinicId, userId, 'doctor', { withContact: '1' }));
+  for (const f of SOLO_ADMIN_Y_CAJA) {
+    assert.equal(doctorPidiendo.patients[0][f], undefined, `withContact no le da ${f} a quien atiende`);
   }
 });
 
@@ -186,7 +205,7 @@ test('P4) buscar por cédula o teléfono lo hace cualquiera; VERLOS sigue siendo
 
   const doctor = ok(await list(clinicId, userId, 'doctor', { search: '0102030405' }));
   assert.equal(doctor.total, 1, 'buscar por cédula lo hace cualquiera que entre al listado');
-  assert.equal(doctor.patients[0].cedula, undefined, 'encontrarlo NO le enseña la cédula');
+  assert.equal(doctor.patients[0].cedula, '0102030405', 'y desde sep-2026 la ve: identifica con ella');
 
   // El teléfono casa escrito en cualquier formato (phoneSearchRegex).
   const porTelefono = ok(await list(clinicId, userId, 'cajero', { search: '099 111 22 33' }));
@@ -236,13 +255,15 @@ test('P5) guardar desde un rol sin acceso NO borra la cédula ni el teléfono', 
   assert.equal(enBase.email, 'ana.nueva@example.com');
   assert.equal(enBase.address, 'Av. Amazonas N34-12');
 
-  // Y quien NO ve la cédula tampoco la borra al guardar (el doctor la recibe
-  // vacía, así que su formulario la manda vacía).
+  // Y quien NO ve el teléfono tampoco lo borra al guardar (el doctor lo recibe
+  // vacío, así que su formulario lo manda vacío).
   ok(await H.runController(
     patients.updatePatient,
-    H.mockReq(clinicId, userId, { cedula: '', firstName: 'ANA' }, { role: 'doctor', params: { id: String(patient._id) } })
+    H.mockReq(clinicId, userId, { phone: '', address: '', firstName: 'ANA' }, { role: 'doctor', params: { id: String(patient._id) } })
   ));
-  assert.equal((await Patient.findById(patient._id)).cedula, '0102030405', 'el doctor no la puede borrar');
+  const trasElDoctor = await Patient.findById(patient._id);
+  assert.equal(trasElDoctor.phone, '0991112233', 'el doctor no puede borrar el teléfono');
+  assert.equal(trasElDoctor.address, 'Av. Amazonas N34-12', 'ni la dirección');
 
   // Mostrador SÍ la corrige: es quien descubre que está mal, al facturar.
   ok(await H.runController(
@@ -305,12 +326,22 @@ test('P7) el buscador de referidores no devuelve cédulas a quien no puede verla
   ));
   assert.equal(cajero.find((r) => r.type === 'patient').detail, '0102030405');
 
+  // Quien atiende también la ve desde sep-2026 (capacidad `patients.cedula`).
   const doctor = ok(await H.runController(
     patients.searchReferralCandidates, H.mockReq(clinicId, userId, {}, { role: 'doctor', query: { q: 'ANA' } })
   ));
   const fila = doctor.find((r) => r.type === 'patient');
   assert.ok(fila, 'sigue encontrando al paciente por su nombre');
-  assert.equal(fila.detail, '', 'pero sin la cédula al lado');
+  assert.equal(fila.detail, '0102030405');
+
+  // Quien NO puede verla sigue encontrando al paciente y sin la cédula al lado:
+  // eso es lo que este test vigila de verdad.
+  const marketing = ok(await H.runController(
+    patients.searchReferralCandidates, H.mockReq(clinicId, userId, {}, { role: 'marketing', query: { q: 'ANA' } })
+  ));
+  const filaMkt = marketing.find((r) => r.type === 'patient');
+  assert.ok(filaMkt, 'lo encuentra por el nombre');
+  assert.equal(filaMkt.detail, '', 'pero sin la cédula al lado');
 });
 
 test('P8) el OTRO valor de la ficha física se censura igual que el campo', async () => {
@@ -336,10 +367,11 @@ test('P8) el OTRO valor de la ficha física se censura igual que el campo', asyn
   const comoAdmin = ok(await getOne(clinicId, userId, 'admin', patient._id));
   assert.deepEqual(campos(comoAdmin), ['cedula', 'celular', 'correo', 'direccion', 'edad']);
 
-  // Quien atiende ve el correo del paciente: también el que decía el papel, que
-  // es justo el que necesita comparar cuando el resultado le rebota.
+  // Quien atiende ve el correo y la cédula del paciente: también los que decía el
+  // papel, que son justo los que necesita comparar cuando no cuadran (el correo,
+  // si el resultado le rebota; la cédula, antes de escribir en la historia).
   const comoDoctor = ok(await getOne(clinicId, userId, 'doctor', patient._id));
-  assert.deepEqual(campos(comoDoctor), ['correo', 'edad'], 'el correo sí; la edad nunca fue de contacto');
+  assert.deepEqual(campos(comoDoctor), ['cedula', 'correo', 'edad'], 'el teléfono y la dirección no; la edad nunca fue de contacto');
 
   // Mostrador ve los cinco datos de contacto: también los que dice el papel,
   // que son justo los que necesita comparar cuando no cuadran.
@@ -348,25 +380,28 @@ test('P8) el OTRO valor de la ficha física se censura igual que el campo', asyn
 });
 
 /**
- * El correo se ve Y SE CORRIGE. Quien atiende es quien descubre que está mal —le
- * rebota el resultado que acaba de mandar—, así que puede arreglarlo; lo que no
- * ve (cédula, teléfono, dirección) le sigue llegando vacío y descartándose.
+ * LO QUE SE VE, SE CORRIGE; lo que no, ni se toca. Es la misma regla de siempre
+ * aplicada a los dos campos que hoy tiene quien atiende: el correo —es quien
+ * descubre que está mal, porque le rebota el resultado que acaba de mandar— y la
+ * cédula, desde sep-2026. El teléfono y la dirección le siguen llegando vacíos y
+ * descartándose, que es lo que impide que un guardado cualquiera los borre.
  */
-test('P9) quien atiende corrige el correo, y sigue sin poder tocar el resto', async () => {
+test('P9) quien atiende corrige el correo y la cédula, y sigue sin tocar el resto', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const patient = await seedPaciente(clinicId);
 
-  // El formulario del doctor: el correo con el valor bueno, lo demás vacío.
+  // El formulario del doctor: correo y cédula con su valor, lo demás vacío.
   ok(await H.runController(
     patients.updatePatient,
     H.mockReq(clinicId, userId, {
-      email: 'ana.correcta@example.com', phone: '', cedula: '', address: '', whatsapp: '',
+      email: 'ana.correcta@example.com', cedula: '0999888777', phone: '', address: '', whatsapp: '',
     }, { role: 'doctor', params: { id: String(patient._id) } })
   ));
 
   const enBase = await Patient.findById(patient._id);
   assert.equal(enBase.email, 'ana.correcta@example.com', 'el correo se corrige');
+  assert.equal(enBase.cedula, '0999888777', 'y la cédula también: la ve, así que la arregla');
   assert.equal(enBase.phone, '0991112233', 'el teléfono no se borra');
-  assert.equal(enBase.cedula, '0102030405', 'ni la cédula');
+  assert.equal(enBase.whatsapp, '0991112233', 'ni el WhatsApp');
   assert.equal(enBase.address, 'Av. Siempre Viva 123', 'ni la dirección');
 });

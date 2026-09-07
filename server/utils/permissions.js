@@ -68,23 +68,28 @@ const CAPS = {
     'patients.cedula', 'patients.email', 'patients.address', 'patients.phone',
   ],
   /**
-   * EL CORREO DEL PACIENTE, PARA QUIEN LO ATIENDE (sep-2026).
+   * EL CORREO Y LA CÉDULA DEL PACIENTE, PARA QUIEN LO ATIENDE.
    *
-   * Grieta de UN campo en `patients.contactData`: da el correo Y SOLO EL CORREO.
-   * Cédula, dirección, teléfono y WhatsApp siguen siendo del administrador (a
-   * mostrador se le abrieron además otros dos, por la factura; ver `cajero`).
+   * Dos grietas de UN campo cada una en `patients.contactData`. Dirección,
+   * teléfono y WhatsApp siguen siendo del administrador (a mostrador se le
+   * abrieron los cinco, por la factura y por las llamadas; ver `cajero`).
    *
-   * El motivo es clínico: el médico manda por correo un resultado, una receta o
-   * las indicaciones de un examen, y tenerlo que pedir a administración cada vez
-   * acababa con el dato copiado en un papel encima del escritorio, que es peor
-   * sitio que la ficha.
+   *  · CORREO (sep-2026) — el médico manda por ahí un resultado, una receta o
+   *    las indicaciones de un examen, y tenerlo que pedir a administración cada
+   *    vez acababa con el dato copiado en un papel encima del escritorio, que es
+   *    peor sitio que la ficha.
+   *  · CÉDULA (sep-2026, a petición de los médicos) — es el número que identifica
+   *    al paciente: va en la receta, en el pedido de laboratorio y en las hojas
+   *    del MSP, y es lo que distingue a dos homónimos antes de escribir en una
+   *    historia clínica. Escribir en la ficha equivocada es el error que se
+   *    estaba evitando pidiéndosela al paciente de viva voz.
    *
    * La clave es 'doctor' a propósito: `can()` mapea TODAS las especialidades
    * (óptica, ginecología, podología, odontología, cosmetología, cardiología,
    * terapeuta) a esta misma entrada, así que la concesión les llega a todas sin
    * enumerarlas — y la que se cree mañana la hereda sola.
    */
-  doctor: ['patients.email'],
+  doctor: ['patients.email', 'patients.cedula'],
   // Enfermería y bodega consultan existencias; nada de dinero.
   enfermeria: ['inventory.view', 'count.start', 'count.edit', 'warehouse.view'],
   // Marketing solo mira ventas (sin costos ni márgenes) y no exporta.

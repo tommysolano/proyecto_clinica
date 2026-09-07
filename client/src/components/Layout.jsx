@@ -65,7 +65,10 @@ const MENU_GROUPS = [
        *    cualquiera fuera de la agenda; su consulta y su ficha siguen siendo
        *    privadas para el resto (ver hideTherapyNotes en el servidor).
        */
-      { path: '/patients', label: 'Clientes', roles: ['admin', 'cajero', 'call_center', 'marketing', 'optica', 'odontologia', 'enfermero', 'terapeuta'] },
+      // «Pacientes», no «Clientes» (sep-2026): es como los llama la clínica
+      // entera. En contabilidad siguen siendo clientes —NC/ND y cartera— porque
+      // ahí el término es el del comprobante, no el de la consulta.
+      { path: '/patients', label: 'Pacientes', roles: ['admin', 'cajero', 'call_center', 'marketing', 'optica', 'odontologia', 'enfermero', 'terapeuta'] },
       { path: '/accounting/suppliers', label: 'Proveedores', roles: ['admin', 'contabilidad'] },
     ],
   },
