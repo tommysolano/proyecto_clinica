@@ -9,6 +9,8 @@ const {
   getNurses,
   getSchedulers,
   getMySignatureCert,
+  getMyPrescriptionSignature,
+  updateMyPrescriptionSignature,
   uploadMySignatureCert,
   deleteMySignatureCert,
   signatureCertUploadMiddleware,
@@ -36,6 +38,12 @@ router.get('/nurses', requireRole('admin', 'cajero', 'doctor', 'enfermero'), get
  * solo se firma con el certificado de quien redactó el documento.
  */
 router.get('/me/signature-cert', getMySignatureCert);
+/**
+ * Qué sale al pie de SU receta: su nombre, un alias o nada. Ajuste de su propia
+ * cuenta, como el certificado, y por lo mismo sin requireRole.
+ */
+router.get('/me/prescription-signature', getMyPrescriptionSignature);
+router.put('/me/prescription-signature', updateMyPrescriptionSignature);
 router.post('/me/signature-cert', signatureCertUploadMiddleware, uploadMySignatureCert);
 router.delete('/me/signature-cert', deleteMySignatureCert);
 // Personal por sucursal: en qué sede trabaja cada médico, cajero y enfermero.

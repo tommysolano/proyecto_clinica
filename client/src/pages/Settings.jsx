@@ -3,7 +3,7 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import PasswordInput from '../components/PasswordInput';
-import { HiOutlineCog6Tooth, HiOutlineKey, HiOutlineSwatch, HiOutlinePencilSquare, HiOutlineEnvelope } from 'react-icons/hi2';
+import { HiOutlineCog6Tooth, HiOutlineKey, HiOutlineSwatch, HiOutlinePencilSquare, HiOutlineEnvelope, HiOutlineIdentification } from 'react-icons/hi2';
 
 const THEMES = [
   { value: 'green', label: 'Verde (por defecto)', swatch: '#0f766e' },
@@ -43,10 +43,40 @@ export default function Settings() {
   const loadCert = () =>
     api.get('/users/me/signature-cert').then((r) => setCert(r.data)).catch(() => setCert({ tiene: false }));
 
+  /**
+   * QUÉ SALE AL PIE DE LA RECETA: su nombre, otro texto o nada. Es del
+   * profesional, no de la clínica — unos quieren que aparezca y otros no—, y
+   * vale con certificado o sin él. `null` = todavía no ha llegado.
+   */
+  const [receta, setReceta] = useState(null);
+  const [savingReceta, setSavingReceta] = useState(false);
+
   useEffect(() => {
     if (!showSignature) return;
     loadCert();
+    api.get('/users/me/prescription-signature')
+      .then((r) => setReceta(r.data))
+      // Sin la preferencia se enseña el valor de siempre (su nombre): no se
+      // deja la tarjeta cargando para siempre.
+      .catch(() => setReceta({ name: user?.name || '', showName: true, displayName: '' }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showSignature]);
+
+  const saveReceta = async () => {
+    setSavingReceta(true);
+    try {
+      const { data } = await api.put('/users/me/prescription-signature', {
+        showName: receta.showName,
+        displayName: receta.displayName,
+      });
+      setReceta(data);
+      toast.success('Guardado. Tus próximas recetas saldrán así.');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo guardar');
+    } finally {
+      setSavingReceta(false);
+    }
+  };
 
   const onPickCert = (e) => {
     const f = e.target.files?.[0];
@@ -320,6 +350,87 @@ export default function Settings() {
               El archivo no sale nunca del servidor y tu contraseña se guarda cifrada. Máx. 5 MB.
             </p>
           </div>
+        </div>
+      )}
+
+      {/**
+        * TU NOMBRE AL PIE DE LA RECETA. Lo decide cada profesional: hay quien
+        * quiere que salga su nombre, quien no lo quiere, y quien prefiere que ahí
+        * aparezca el nombre de la clínica. Va en su propia tarjeta y no dentro de
+        * la firma electrónica porque vale igual sin certificado.
+        */}
+      {showSignature && (
+        <div className="bg-white rounded-2xl border border-emerald-100 p-6">
+          <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2 mb-1">
+            <HiOutlineIdentification className="text-emerald-600" /> Tu nombre en la receta
+          </h2>
+          <p className="text-sm text-slate-500 mb-4">
+            Lo que aparece abajo, donde firma el profesional, en la <b>receta impresa</b>. Las hojas
+            oficiales del MSP no cambian: ahí tu nombre completo va por ley.
+          </p>
+
+          {receta === null ? (
+            <p className="text-sm text-slate-400 m-0">Cargando…</p>
+          ) : (
+            <div className="space-y-3 max-w-lg">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={receta.showName}
+                  onChange={(e) => setReceta((r) => ({ ...r, showName: e.target.checked }))}
+                  className="mt-1 cursor-pointer"
+                />
+                <span className="text-sm text-slate-800">
+                  Que aparezca un nombre al pie de la receta
+                  <span className="block text-xs text-slate-500">
+                    Si lo desmarcas, la receta sale sin ningún nombre abajo.
+                  </span>
+                </span>
+              </label>
+
+              {receta.showName && (
+                <label className="block text-sm">
+                  ¿Qué quieres que aparezca?
+                  <input
+                    type="text"
+                    value={receta.displayName}
+                    onChange={(e) => setReceta((r) => ({ ...r, displayName: e.target.value }))}
+                    placeholder={receta.name || 'Tu nombre'}
+                    maxLength={80}
+                    className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
+                  />
+                  <span className="block text-[11px] text-slate-500 mt-1">
+                    Déjalo vacío para que salga tu nombre. Puedes escribir otra cosa —por ejemplo el
+                    nombre de la clínica— y será eso lo que se imprima.
+                  </span>
+                </label>
+              )}
+
+              {/* Lo que va a salir, dicho tal cual: es la única forma de que nadie
+                  tenga que imprimir una receta para saber qué eligió. */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+                <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-1">
+                  Así saldrá en la receta
+                </div>
+                {receta.showName ? (
+                  <div className="text-sm font-semibold text-slate-800">
+                    {(receta.displayName || '').trim() || receta.name || '—'}
+                  </div>
+                ) : (
+                  <div className="text-sm text-slate-500 italic">Sin nombre</div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={saveReceta}
+                disabled={savingReceta}
+                className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700 cursor-pointer border-none disabled:opacity-50"
+              >
+                {savingReceta ? 'Guardando…' : 'Guardar'}
+              </button>
+            </div>
+          )}
         </div>
       )}
 

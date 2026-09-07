@@ -253,3 +253,59 @@ test('una ficha sin hábitos no imprime la sección vacía', async () => {
   assert.doesNotMatch(htmlCapturado, /class="bar">HÁBITOS/, 'sin datos no se imprime una rejilla en blanco');
   assert.doesNotMatch(htmlCapturado, /Quirúrgicos:/);
 });
+
+// ───────── qué nombre va al pie de la receta (elección del profesional) ─────────
+//
+// Reclamo real (7-sep-2026): hay médicos que quieren su nombre en la receta
+// impresa y otros que no, y los hay que prefieren que ahí salga el nombre de la
+// clínica. Lo eligen en Configuración de cuenta (`User.prescriptionSignature`) y
+// SOLO cambia la receta: la hoja oficial del MSP lleva su nombre por ley.
+
+test('por defecto la receta sale con el nombre del profesional', async () => {
+  const { clinicId, userId, patient, doctor } = await seed();
+  const followUpId = await fichaCompleta(clinicId, userId, patient, doctor);
+
+  await imprimir(ctrl.printFollowUp, clinicId, doctor, patient, followUpId);
+  assert.match(htmlCapturado, /firma-e__nombre">Dra\. Salas/);
+});
+
+test('con alias, en la receta sale el alias en lugar del nombre', async () => {
+  const { clinicId, userId, patient, doctor } = await seed();
+  const followUpId = await fichaCompleta(clinicId, userId, patient, doctor);
+  await User.updateOne(
+    { _id: doctor._id },
+    { prescriptionSignature: { showName: true, displayName: 'Shiluv' } },
+  );
+
+  await imprimir(ctrl.printFollowUp, clinicId, doctor, patient, followUpId);
+  assert.match(htmlCapturado, /firma-e__nombre">Shiluv/);
+  assert.doesNotMatch(htmlCapturado, /Dra\. Salas/, 'su nombre ya no aparece por ningún lado');
+});
+
+test('si no quiere que aparezca su nombre, al pie no va nada', async () => {
+  const { clinicId, userId, patient, doctor } = await seed();
+  const followUpId = await fichaCompleta(clinicId, userId, patient, doctor);
+  await User.updateOne(
+    { _id: doctor._id },
+    { prescriptionSignature: { showName: false, displayName: '' } },
+  );
+
+  await imprimir(ctrl.printFollowUp, clinicId, doctor, patient, followUpId);
+  assert.doesNotMatch(htmlCapturado, /Dra\. Salas/);
+  // Sin certificado tampoco queda un recuadro vacío: se deja el hueco para
+  // firmar a mano.
+  assert.doesNotMatch(htmlCapturado, /class="firma-e/);
+});
+
+test('la hoja oficial del MSP lleva su nombre pase lo que pase', async () => {
+  const { clinicId, userId, patient, doctor } = await seed();
+  const followUpId = await fichaCompleta(clinicId, userId, patient, doctor);
+  await User.updateOne(
+    { _id: doctor._id },
+    { prescriptionSignature: { showName: false, displayName: 'Shiluv' } },
+  );
+
+  await imprimir(ctrl.printMspForm, clinicId, doctor, patient, followUpId);
+  assert.match(htmlCapturado, /Dra\. Salas/, 'el profesional responsable va por ley');
+  assert.doesNotMatch(htmlCapturado, /Shiluv<\/div>/, 'y sin alias que valga');
+});

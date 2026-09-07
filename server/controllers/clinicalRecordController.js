@@ -2322,7 +2322,10 @@ exports.printFollowUp = async (req, res) => {
     const { patientId, followUpId } = req.params;
     const record = await ClinicalRecord.findOne({
       patient: patientId,
-    }).populate('followUps.createdBy', 'name specialty email signatureCert');
+      // `prescriptionSignature`: qué quiere el profesional que salga al pie de
+      // SU receta (su nombre, un alias o nada). Sin traerlo, la preferencia se
+      // leería siempre como «lo de siempre» y el ajuste no haría nada.
+    }).populate('followUps.createdBy', 'name specialty email signatureCert prescriptionSignature');
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
 
     const fu = record.followUps.id(followUpId);
@@ -2487,8 +2490,14 @@ exports.printFollowUp = async (req, res) => {
   <!-- La RX óptica sí: para el óptico, la graduación ES la receta. -->
   ${opticaHtml}
 
+  <!--
+    AL PIE VA LO QUE EL PROFESIONAL HAYA ELEGIDO: su nombre, un alias («Shiluv»)
+    o nada. Es una preferencia suya, de Configuración de cuenta, y SOLO vale
+    aquí: la hoja MSP lleva su nombre completo por ley. Ver identidadEnReceta en
+    utils/pdfSignature.
+  -->
   <div class="sign">
-    ${bloqueFirmaHtml(autor, { esc: escHtml })}
+    ${bloqueFirmaHtml(autor, { esc: escHtml, paraReceta: true })}
   </div>
 
   <div class="footer">Documento generado el ${new Date().toLocaleString('es-EC')}</div>

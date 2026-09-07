@@ -106,19 +106,55 @@ async function firmarPdfConUsuario(pdfBuffer, user, { reason, location, contactI
 }
 
 /**
+ * QUÉ NOMBRE VA AL PIE DE LA RECETA, según lo que haya elegido el profesional en
+ * Configuración de cuenta (`User.prescriptionSignature`).
+ *
+ * Tres respuestas posibles, y las tres las decide él:
+ *   · nada        — no quiere que aparezca su nombre;
+ *   · un alias    — «Shiluv» en lugar de «Rosi»;
+ *   · su nombre   — lo de siempre, que es el valor por defecto.
+ *
+ * La ESPECIALIDAD acompaña al nombre de verdad y solo a él: en una clínica
+ * pequeña «Ginecología» al pie identifica exactamente igual que el nombre, así
+ * que esconder uno y dejar la otra no escondería nada.
+ *
+ * Devuelve `{ nombre, especialidad, oculto }`. Fuera de la receta (las hojas
+ * oficiales del MSP) NO se aplica: ahí el nombre del profesional responsable va
+ * por ley, completo y sin alias.
+ */
+function identidadEnReceta(user, paraReceta) {
+  const nombreReal = user?.name || '';
+  const especialidad = user?.specialty || '';
+  if (!paraReceta) return { nombre: nombreReal, especialidad, oculto: false };
+
+  const pref = user?.prescriptionSignature || {};
+  if (pref.showName === false) return { nombre: '', especialidad: '', oculto: true };
+
+  const alias = String(pref.displayName || '').trim();
+  if (alias) return { nombre: alias, especialidad: '', oculto: false };
+  return { nombre: nombreReal, especialidad, oculto: false };
+}
+
+/**
  * El recuadro VISIBLE de la firma, para meterlo en el HTML antes de generar el
  * PDF. Es lo único que se ve al imprimir en papel.
  *
  * Si el profesional no tiene certificado se enseña su nombre a secas, sin
  * prometer una firma que no existe: decir «firmado electrónicamente» sin firma
  * sería exactamente el problema que este cambio viene a arreglar.
+ *
+ * `paraReceta` activa la preferencia del profesional (ver `identidadEnReceta`).
+ * Lo pide SOLO la receta; la hoja MSP la llama sin esa opción, y ahí sale su
+ * nombre completo pase lo que pase.
  */
-function bloqueFirmaHtml(user, { esc = (s) => String(s ?? '') } = {}) {
-  const nombre = user?.name || '';
-  const especialidad = user?.specialty || '';
+function bloqueFirmaHtml(user, { esc = (s) => String(s ?? ''), paraReceta = false } = {}) {
+  const { nombre, especialidad, oculto } = identidadEnReceta(user, paraReceta);
   const estado = user ? estadoFirma(user) : { ok: false };
 
   if (!estado.ok) {
+    // Sin certificado y sin nombre no queda nada que enseñar: antes que un
+    // recuadro vacío, ninguno — la receta deja el hueco para firmar a mano.
+    if (oculto) return '';
     return `<div class="firma-e firma-e--sin">
       <div class="firma-e__nombre">${esc(nombre)}</div>
       ${especialidad ? `<div class="firma-e__sub">${esc(especialidad)}</div>` : ''}
@@ -126,8 +162,24 @@ function bloqueFirmaHtml(user, { esc = (s) => String(s ?? '') } = {}) {
   }
 
   const info = user.signatureCert.info || {};
-  const cn = info.commonName || nombre;
   const emisor = (info.issuer || '').split(',')[0].replace(/^\w+=/, '');
+  /**
+   * SIN NOMBRE, el recuadro sigue existiendo —el PDF está firmado de verdad y hay
+   * que poder decirlo— pero se queda en lo imprescindible: el número de
+   * certificado y el emisor son datos que solo tienen sentido al lado de un
+   * nombre, y enseñarlos aquí sería devolver por la ventana lo que se acaba de
+   * esconder por la puerta. Quien necesite comprobar quién firmó abre el PDF: la
+   * firma criptográfica es suya y no la toca nada de esto.
+   */
+  if (oculto) {
+    return `<div class="firma-e">
+      <div class="firma-e__tit">FIRMADO ELECTRÓNICAMENTE</div>
+      <div class="firma-e__meta">Validez de la firma comprobable en el propio archivo PDF.</div>
+    </div>`;
+  }
+
+  // Con alias manda el alias; si no, el nombre del certificado (que es el legal).
+  const cn = paraReceta && nombre !== (user?.name || '') ? nombre : (info.commonName || nombre);
   return `<div class="firma-e">
     <div class="firma-e__tit">FIRMADO ELECTRÓNICAMENTE POR</div>
     <div class="firma-e__nombre">${esc(cn)}</div>
@@ -158,6 +210,7 @@ module.exports = {
   estadoFirma,
   firmarPdfConUsuario,
   bloqueFirmaHtml,
+  identidadEnReceta,
   FIRMA_CSS,
   loadP12,
 };

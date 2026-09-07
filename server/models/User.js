@@ -111,6 +111,28 @@ const userSchema = new mongoose.Schema(
       },
       uploadedAt: { type: Date, default: null },
     },
+    /**
+     * CÓMO FIRMA ESTE PROFESIONAL LA RECETA IMPRESA.
+     *
+     * Lo decide cada uno, en Configuración de cuenta (sep-2026, a petición de la
+     * clínica): hay médicos que quieren su nombre al pie de la receta y otros que
+     * no, y los hay que prefieren que salga el nombre de la clínica —«Shiluv»— en
+     * lugar del suyo.
+     *
+     *   · `showName: false` → al pie no va NINGÚN nombre (ni el alias, ni la
+     *     especialidad: en una clínica pequeña la especialidad identifica igual).
+     *   · `displayName: 'Shiluv'` → sale ese texto EN LUGAR de su nombre.
+     *
+     * SOLO afecta a la RECETA. Las hojas oficiales del MSP (HCU-form.002 y 005)
+     * llevan el nombre y la cédula del profesional responsable por ley: ahí no se
+     * oculta ni se cambia nada. Y la firma criptográfica del PDF tampoco se toca
+     * —sigue siendo la suya, comprobable dentro del archivo—: esto es el recuadro
+     * que se ve al imprimir en papel.
+     */
+    prescriptionSignature: {
+      showName: { type: Boolean, default: true },
+      displayName: { type: String, trim: true, default: '', maxlength: 80 },
+    },
     // Turnos del asesor. Si está activo, Supervisión descuenta del tiempo de
     // primera respuesta las horas en las que esa persona no debía estar trabajando.
     callCenterSchedule: { type: callCenterScheduleSchema, default: () => ({}) },

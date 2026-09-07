@@ -352,6 +352,57 @@ const certPublico = (user) => {
   };
 };
 
+/**
+ * CÓMO FIRMA CADA PROFESIONAL SU RECETA (Configuración de cuenta).
+ *
+ * Lo pidió la clínica: hay médicos que quieren su nombre al pie de la receta
+ * impresa y otros que no, y los hay que prefieren que ahí salga el nombre de la
+ * clínica en lugar del suyo. Es un ajuste de SU cuenta —como el certificado de
+ * firma—, así que no lleva `requireRole`: cada quien decide sobre lo suyo.
+ *
+ * Solo cambia la RECETA. Las hojas oficiales del MSP llevan su nombre completo
+ * por ley y no las toca (ver identidadEnReceta en utils/pdfSignature).
+ */
+exports.getMyPrescriptionSignature = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('name prescriptionSignature');
+    const pref = user?.prescriptionSignature || {};
+    res.json({
+      // El nombre real, para poder enseñar en pantalla lo que saldría.
+      name: user?.name || '',
+      showName: pref.showName !== false,
+      displayName: pref.displayName || '',
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener la firma de la receta', error: error.message });
+  }
+};
+
+exports.updateMyPrescriptionSignature = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    const alias = String(req.body.displayName ?? '').trim();
+    if (alias.length > 80) {
+      return res.status(400).json({ message: 'Lo que aparece al pie de la receta no puede pasar de 80 caracteres.' });
+    }
+    user.prescriptionSignature = {
+      showName: req.body.showName !== false,
+      // Sin nombre no hay alias que guardar: dejarlo escrito y apagado es la
+      // forma segura de que un día reaparezca sin que nadie lo entienda.
+      displayName: req.body.showName === false ? '' : alias,
+    };
+    await user.save();
+    res.json({
+      name: user.name || '',
+      showName: user.prescriptionSignature.showName,
+      displayName: user.prescriptionSignature.displayName,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al guardar la firma de la receta', error: error.message });
+  }
+};
+
 exports.getMySignatureCert = async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select('name email signatureCert');
