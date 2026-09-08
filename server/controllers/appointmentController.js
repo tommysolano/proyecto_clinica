@@ -3027,16 +3027,31 @@ exports.exportAppointments = async (req, res) => {
     // está enseñando («8 de septiembre», «bandeja: en atención»). Se sanean por
     // longitud —van a una celda, no a una consulta— y se cae a algo genérico.
     const texto = (v, max) => String(v || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, max);
+    /**
+     * SIN ENFERMERÍA EN «QUIÉN ATIENDE». No quita citas: cambia cómo se ROTULA
+     * esa columna. Con enfermería dentro, el autofiltro de Excel lista una
+     * entrada por cada COMBINACIÓN («Dr. A → Dr. B» y «Dr. A → Dr. B → Enf. C»
+     * son dos distintas), y buscar las citas de un médico obliga a marcar diez
+     * casillas casi iguales.
+     *
+     * Se DEJA ESCRITO en la cabecera del archivo, y lo escribe el servidor —no
+     * la pantalla—: quien reciba el Excel tiene que poder ver por qué no
+     * aparece la enfermera que sí atendió.
+     */
+    const sinEnfermeria = req.body?.sinEnfermeria === true || req.body?.sinEnfermeria === 'true';
     const wb = construirLibroDeAgenda(citas, {
       titulo: 'AGENDA DE CITAS',
       subtitulo: texto(req.body?.subtitulo, 120) || 'Vikingo',
       periodo: texto(req.body?.periodo, 120) || 'Citas seleccionadas',
-      filtros: texto(req.body?.filtros, 300),
+      filtros: [
+        texto(req.body?.filtros, 300),
+        sinEnfermeria && '«Quién atiende» sin enfermería',
+      ].filter(Boolean).join(' · '),
       resumen:
         `${citas.length} ${citas.length === 1 ? 'cita' : 'citas'} · ` +
         `Generado por ${texto(req.user?.name, 60) || 'el sistema'} · ` +
         new Date().toLocaleString('es-EC', { timeZone: 'America/Guayaquil' }),
-    });
+    }, { sinEnfermeria });
 
     const nombre = `citas-${new Date().toISOString().slice(0, 10)}.xlsx`;
     res.setHeader(

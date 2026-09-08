@@ -240,3 +240,55 @@ test('E8) pasarse del tope se dice, no se recorta el archivo en silencio', async
   assert.match(res.payload.message, /5001 citas/);
   assert.match(res.payload.message, /Acota el rango/);
 });
+
+/**
+ * E9) «QUIÉN ATIENDE» SIN ENFERMERÍA.
+ *
+ * El autofiltro de Excel agrupa por el texto ENTERO de la celda, así que
+ * «Dr. A» y «Dr. A → Enf. B» son dos entradas distintas y la lista del filtro
+ * se llena de combinaciones que solo se diferencian en quién puso el suero.
+ * La opción NO quita citas —sigue habiendo tres filas—: cambia el rótulo.
+ */
+test('E9) sin enfermería, las citas del mismo médico caen bajo un solo rótulo', async () => {
+  const { clinicId, userId, paciente, doctora } = await seed();
+  const enfermera = await User.create({
+    name: 'Emmily', email: 'enf@t.com', password: 'secreto123',
+    clinics: [{ clinic: clinicId, role: 'enfermero' }],
+  });
+  const base = { clinic: clinicId, patient: paciente._id, date: manana(), status: 'completada' };
+  const creadas = await Appointment.create([
+    { ...base, startTime: '14:00', turns: [{ kind: 'doctor', user: doctora._id }, { kind: 'enfermeria', user: enfermera._id }] },
+    { ...base, startTime: '15:00', turns: [{ kind: 'doctor', user: doctora._id }] },
+    { ...base, startTime: '16:00', turns: [{ kind: 'enfermeria', user: enfermera._id }] },
+  ]);
+  const ids = creadas.map((a) => String(a._id));
+  const columna = (ws) => ws.getRow(6).values.findIndex((v) => v === 'Quién atiende');
+
+  // Como siempre: la cadena entera, tres rótulos distintos.
+  const { wb: conEnf } = await pedirExcel(clinicId, userId, { ids });
+  const wsA = conEnf.getWorksheet('Citas');
+  const colA = columna(wsA);
+  assert.equal(wsA.getRow(7).getCell(colA).value, 'Dr. Solano → Enf. Emmily');
+  assert.equal(wsA.getRow(9).getCell(colA).value, 'Enf. Emmily');
+
+  // Con la opción: las dos del médico dicen LO MISMO, que es de lo que se trata.
+  const { wb } = await pedirExcel(clinicId, userId, { ids, sinEnfermeria: true });
+  const ws = wb.getWorksheet('Citas');
+  const col = columna(ws);
+  assert.equal(ws.getRow(7).getCell(col).value, 'Dr. Solano');
+  assert.equal(ws.getRow(8).getCell(col).value, 'Dr. Solano');
+  // La de solo enfermería NO se queda en blanco: un blanco se lee como que el
+  // dato falta, no como «no atendió ningún médico».
+  assert.equal(ws.getRow(9).getCell(col).value, 'Solo enfermería');
+  // Y siguen estando las TRES citas: esto no es un filtro, es un rótulo.
+  const colHora = ws.getRow(6).values.findIndex((v) => v === 'Hora');
+  assert.deepEqual(
+    [7, 8, 9].map((n) => ws.getRow(n).getCell(colHora).value),
+    ['14:00', '15:00', '16:00']
+  );
+  // El archivo dice por qué no aparece la enfermera que sí atendió.
+  assert.match(textoDe(ws), /sin enfermería/);
+  // El resumen rotula igual, o los totales por profesional no cuadrarían.
+  const resumen = textoDe(wb.getWorksheet('Resumen'));
+  assert.doesNotMatch(resumen, /Enf\. Emmily/);
+});

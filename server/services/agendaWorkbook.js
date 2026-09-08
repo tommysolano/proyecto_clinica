@@ -88,11 +88,26 @@ const nombreDePersona = (u) => (u?.name || '').trim();
  * `doctor` y `attendedByNurse` solo cuentan la mitad de una cita con varios
  * pasos). El «Dr.» va por el TIPO del turno, no por el rol actual de la
  * persona: los de enfermería llevan «Enf.» y nadie más lleva título.
+ *
+ * SIN ENFERMERÍA (`opciones.sinEnfermeria`, lo elige quien descarga). El
+ * autofiltro de Excel agrupa por el texto ENTERO de la celda, así que
+ * «Dr. A → Dr. B» y «Dr. A → Dr. B → Enf. C» son DOS entradas distintas: la
+ * lista del filtro se llena de combinaciones que solo se diferencian en quién
+ * puso el suero, y buscar «las citas de la Dra. B» deja de ser un clic. Con la
+ * opción puesta, los turnos de enfermería no se escriben y esas dos citas caen
+ * bajo el mismo «Dr. A → Dr. B».
+ *
+ * No se quita ninguna cita —esto es cómo se ROTULA la columna, no un filtro—,
+ * así que las que solo tuvieron enfermería siguen ahí, rotuladas «Solo
+ * enfermería»: una sola entrada en el filtro, y no un blanco, que no se lee
+ * como «nadie» sino como que el dato falta.
  */
-function quienAtiende(a) {
+function quienAtiende(a, { sinEnfermeria = false } = {}) {
   const turnos = (a.turns || []).filter((t) => t.user || t.kind === 'enfermeria');
   if (!turnos.length) return a.doctor?.name ? `Dr. ${a.doctor.name}` : '';
+  if (sinEnfermeria && !turnos.some((t) => t.kind !== 'enfermeria')) return 'Solo enfermería';
   return turnos
+    .filter((t) => !(sinEnfermeria && t.kind === 'enfermeria'))
     .map((t) => {
       const nombre = nombreDePersona(t.user);
       if (t.kind === 'enfermeria') return nombre ? `Enf. ${nombre}` : 'Enfermería (sin asignar)';
@@ -178,7 +193,7 @@ function cabeceraDelInforme(ws, { titulo, subtitulo, periodo, filtros, resumen }
   ws.getRow(4).height = 16;
 }
 
-function hojaDeCitas(wb, citas, meta) {
+function hojaDeCitas(wb, citas, meta, opciones) {
   const ws = wb.addWorksheet('Citas', {
     views: [{ state: 'frozen', ySplit: 6 }],
     pageSetup: {
@@ -220,7 +235,7 @@ function hojaDeCitas(wb, citas, meta) {
       nuevo: a.isFirstVisit ? 'Nuevo' : 'Recurrente',
       sucursal: nombreDeSede(a.clinic),
       servicio: servicioDeLaCita(a),
-      atiende: quienAtiende(a),
+      atiende: quienAtiende(a, opciones),
       estado: estado.texto,
       motivo: a.reason || '',
       valor: a.isCanje ? 0 : Number(a.agreedValue ?? 0),
@@ -348,7 +363,7 @@ function contarPor(citas, clave) {
   return [...mapa.entries()].sort((a, b) => b[1] - a[1]);
 }
 
-function hojaDeResumen(wb, citas, meta) {
+function hojaDeResumen(wb, citas, meta, opciones) {
   const ws = wb.addWorksheet('Resumen', {
     pageSetup: { orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
   });
@@ -390,7 +405,7 @@ function hojaDeResumen(wb, citas, meta) {
     (() => {
       const mapa = new Map();
       citas.forEach((a) => {
-        const k = quienAtiende(a) || 'Sin asignar';
+        const k = quienAtiende(a, opciones) || 'Sin asignar';
         const cur = mapa.get(k) || { n: 0, nuevos: 0 };
         cur.n += 1;
         if (a.isFirstVisit) cur.nuevos += 1;
@@ -464,16 +479,19 @@ function hojaDeResumen(wb, citas, meta) {
 /**
  * Arma el libro entero.
  *
- * @param {Array}  citas  las citas ya pobladas (paciente, sucursal, turnos…)
- * @param {object} meta   { titulo, subtitulo, periodo, filtros, resumen }
+ * @param {Array}  citas     las citas ya pobladas (paciente, sucursal, turnos…)
+ * @param {object} meta      { titulo, subtitulo, periodo, filtros, resumen }
+ * @param {object} opciones  { sinEnfermeria } — cómo se rotula «Quién atiende»
  * @returns {ExcelJS.Workbook}
  */
-function construirLibroDeAgenda(citas, meta) {
+function construirLibroDeAgenda(citas, meta, opciones = {}) {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Vikingo';
   wb.created = new Date();
-  hojaDeCitas(wb, citas, meta);
-  hojaDeResumen(wb, citas, meta);
+  // Las DOS hojas con las mismas opciones: si el detalle y el resumen rotularan
+  // distinto, los totales por profesional no cuadrarían con las filas.
+  hojaDeCitas(wb, citas, meta, opciones);
+  hojaDeResumen(wb, citas, meta, opciones);
   return wb;
 }
 

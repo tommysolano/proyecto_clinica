@@ -443,6 +443,19 @@ export default function Appointments() {
   const [excelModal, setExcelModal] = useState(false);
   const [rangoExcel, setRangoExcel] = useState(null);
   const [bajandoExcel, setBajandoExcel] = useState(false);
+  /**
+   * «QUIÉN ATIENDE» SIN ENFERMERÍA. En una cita con varios turnos esa columna
+   * es la cadena entera («Dr. A → Dr. B → Enf. C»), y el autofiltro de Excel
+   * hace una entrada por cada COMBINACIÓN: quien quiere ver las citas de un
+   * médico acaba marcando diez casillas que solo se diferencian en quién puso
+   * el suero. Dejando fuera a enfermería, esas diez son una.
+   *
+   * Se RECUERDA entre descargas: quien lo quiere así lo quiere siempre, y es
+   * una casilla que, si no, habría que volver a marcar cada vez.
+   */
+  const [sinEnfermeriaExcel, setSinEnfermeriaExcel] = useState(
+    () => localStorage.getItem('agenda.excel.sinEnfermeria') === '1'
+  );
   // Modal de finalización de enfermería (cita reclamada por el enfermero)
   const [filter, setFilter] = useState({
     startDate: '',
@@ -1145,6 +1158,9 @@ export default function Appointments() {
           subtitulo: activeClinic?.nombreComercial || activeClinic?.name || 'Vikingo',
           periodo,
           filtros,
+          // Cómo se rotula «Quién atiende»; el servidor lo deja escrito en la
+          // cabecera del archivo para que se sepa por qué falta la enfermera.
+          sinEnfermeria: sinEnfermeriaExcel,
         },
         filename: rangoExcel
           ? `citas-${rangoExcel.desde}_a_${rangoExcel.hasta}.xlsx`
@@ -3129,6 +3145,33 @@ export default function Appointments() {
               </div>
             </div>
           )}
+
+          {/**
+            * NO ES UN FILTRO: no quita ninguna cita, cambia lo que dice la
+            * columna. Se aclara aquí porque «sin enfermería» se lee como «sin
+            * las citas de enfermería», que es justo lo contrario.
+            */}
+          <label className="flex items-start gap-2 p-3 rounded-xl border border-slate-200 bg-white cursor-pointer hover:bg-slate-50 transition-colors">
+            <input
+              type="checkbox"
+              checked={sinEnfermeriaExcel}
+              onChange={(e) => {
+                setSinEnfermeriaExcel(e.target.checked);
+                localStorage.setItem('agenda.excel.sinEnfermeria', e.target.checked ? '1' : '0');
+              }}
+              className="mt-0.5 cursor-pointer"
+            />
+            <span>
+              <span className="block text-sm font-medium text-slate-800">
+                En «Quién atiende», solo los médicos
+              </span>
+              <span className="block text-xs text-slate-500 mt-0.5">
+                Deja a enfermería fuera de esa columna para que el filtro de Excel no repita
+                una opción por cada combinación. Las citas siguen todas: las que solo tuvo
+                enfermería dicen «Solo enfermería».
+              </span>
+            </span>
+          </label>
 
           {filtrosActivos > 0 && (
             <p className="text-xs text-sky-900 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2 m-0">
