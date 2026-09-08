@@ -2926,6 +2926,20 @@ function MultiValue({ picked = [], options = [], allowCustom = false, onToggle }
 // de un desplegable cuando el campo tiene valores conocidos (etapas, etiquetas en
 // uso, sucursales, fuentes): escribirlo a mano se presta a erratas que hacen que
 // la condición no se cumpla nunca.
+/**
+ * Opciones del desplegable de sucursales. Si la condición ya tenía guardada una
+ * sede que no está en la lista (se desactivó después), se añade igualmente: sin
+ * esto el select se pintaba vacío y al guardar el flujo la rama perdía su sede.
+ */
+function clinicOptions(clinics = [], selected = []) {
+  const opts = clinics.map((c) => ({ value: String(c._id), label: c.nombreComercial || c.name }));
+  for (const sel of Array.isArray(selected) ? selected : [selected]) {
+    const v = String(sel || '');
+    if (v && !opts.some((o) => o.value === v)) opts.push({ value: v, label: 'Sucursal no disponible' });
+  }
+  return opts;
+}
+
 function ConditionRow({ cond, onChange, onRemove, canRemove, clinics = [], tagOptions = {} }) {
   const ops = opsFor(cond.field);
   const multi = cond.op === 'in' || cond.op === 'nin';
@@ -2937,7 +2951,7 @@ function ConditionRow({ cond, onChange, onRemove, canRemove, clinics = [], tagOp
       : cond.field === 'source'
         ? SOURCES
         : cond.field === 'clinic'
-          ? clinics.map((c) => ({ value: String(c._id), label: c.nombreComercial || c.name }))
+          ? clinicOptions(clinics, cond.values?.length ? cond.values : cond.value)
           : tagList
             ? tagList.map((t) => ({ value: t, label: t }))
             : null;

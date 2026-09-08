@@ -66,7 +66,21 @@ export default function WorkflowEditor() {
           api.get('/workflows/folders').catch(() => ({ data: [] })),
           api.get('/workflows').catch(() => ({ data: [] })),
           api.get('/products').catch(() => ({ data: [] })),
-          api.get('/clinics').catch(() => ({ data: [] })),
+          /**
+           * SUCURSALES: LA LISTA DE TODA LA ORGANIZACIÓN, NO LAS DEL USUARIO.
+           *
+           * `/clinics` a secas devuelve solo las sedes ASIGNADAS a quien mira, y
+           * quien monta las automatizaciones (marketing, call center) suele estar
+           * asignado únicamente a Central. Resultado: el desplegable de la
+           * condición "Sucursal de la cita / evento" —y el filtro de sucursal del
+           * activador— enseñaban Central y nada más, así que era imposible
+           * bifurcar el mensaje por sede aunque el motor sí sepa distinguirlas.
+           *
+           * Se pide `scope=names` (id + nombre, sin datos reservados), igual que
+           * hacen la agenda y el chat. Si esa ruta fallara, se cae a la de antes.
+           */
+          api.get('/clinics', { params: { scope: 'names' } })
+            .catch(() => api.get('/clinics').catch(() => ({ data: [] }))),
           api.get('/workflows/meta/custom-audiences').catch((e) => ({ data: { ok: false, error: e?.response?.data?.error || 'error', audiences: [] } })),
           api.get('/workflows/meta/ads').catch((e) => ({ data: { ok: false, error: e?.response?.data?.error || 'error', ads: [] } })),
           api.get('/workflows/tags').catch(() => ({ data: { patient: [], contact: [], chat: [], opportunity: [] } })),
@@ -81,7 +95,10 @@ export default function WorkflowEditor() {
         setTemplates((tpls.data || []).filter((t) => t.status === 'approved'));
         setAgents(ags.data || []);
         setProducts(Array.isArray(prods.data) ? prods.data : prods.data?.items || []);
-        setClinics(Array.isArray(clins.data) ? clins.data : clins.data?.clinics || []);
+        const sedes = Array.isArray(clins.data) ? clins.data : clins.data?.clinics || [];
+        // Una sede cerrada no debe ofrecerse como rama nueva (si un flujo viejo
+        // ya apuntaba a ella, la condición la sigue enseñando; ver ConditionRow).
+        setClinics(sedes.filter((c) => c.active !== false));
         const ad = auds.data || {};
         setAudiences(ad.audiences || []);
         setAudiencesNotice(
