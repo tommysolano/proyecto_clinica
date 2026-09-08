@@ -100,6 +100,20 @@ export const ROLES_VEN_TELEFONO = ['admin', 'cajero'];
  */
 export const ROLES_TODA_LA_ORG = ['admin', 'cajero', 'call_center'];
 
+/**
+ * Quién LEE la historia clínica sin poder escribir nada: el call center y
+ * marketing (sep-2026).
+ *
+ * Los dos atienden la misma bandeja de WhatsApp y agendan desde ella. El
+ * paciente pregunta qué le recetaron, cuándo fue su última consulta o si tiene
+ * que volver, y eso está escrito: interrumpir a un doctor para leerlo era el
+ * trámite que se quitó.
+ *
+ * Espejo de `rolesQueLeen` en server/routes/clinicalRecords.js, que es quien
+ * manda: esto solo evita enseñar formularios que darían 403 al guardar.
+ */
+export const ROLES_SOLO_LEEN_HISTORIA = ['call_center', 'marketing'];
+
 // ─────────────── Tipo de doctor ───────────────
 //
 // El TIPO de doctor sale de su ROL en la sucursal, no de un campo aparte: quien
@@ -144,4 +158,52 @@ export function doctorOptionLabel(doctor) {
   const specialty = (doctor.specialty || '').trim();
   const extra = specialty && specialty.toLowerCase() !== type.toLowerCase() ? ` (${specialty})` : '';
   return `Dr. ${doctor.name}${type ? ` — ${type}` : ''}${extra}`;
+}
+
+// ─────────────── Cómo se llama a cada quien ───────────────
+//
+// «Dr.» ES UN TÍTULO, NO UN ADORNO DE LA FILA.
+//
+// Los seguimientos los firma quien los escribió, y no siempre es un médico: el
+// suero que manda mostrador desde caja se guarda como una consulta más, con el
+// cajero de autor, y la ficha lo anunciaba como «Dr. <nombre del cajero>». Los
+// médicos lo pidieron por escrito (sep-2026): el título es de ellos y de sus
+// especialidades, y ponérselo a recepción no es un detalle cosmético —quien lee
+// una historia clínica después cree que eso lo indicó un médico—.
+//
+// El rol de quien firma viaja en el propio seguimiento (`createdByRole`), que es
+// el sombrero con el que se escribió: un enfermero que mañana pase a doctor no
+// reescribe la firma de lo que ya redactó.
+const TRATAMIENTOS = {
+  enfermero: 'Enf.',
+  // Mostrador, call center, marketing y contabilidad no llevan tratamiento: el
+  // nombre a secas ya dice quién fue.
+};
+
+/**
+ * El tratamiento que le corresponde a un rol: 'Dr.', 'Enf.' o '' (ninguno).
+ *
+ * 'optica' va enumerada a mano por lo de siempre: en el cliente NO expande desde
+ * 'doctor' (ver DOCTOR_SPECIALTY_ROLES arriba).
+ */
+export function tratamientoDeRol(role) {
+  const r = String(role || '');
+  if (!r) return '';
+  if (r === 'doctor' || r === 'optica' || DOCTOR_SPECIALTY_ROLES.includes(r)) return 'Dr.';
+  return TRATAMIENTOS[r] || '';
+}
+
+/**
+ * Nombre de una persona con su tratamiento delante, si le toca alguno.
+ *
+ * Sin rol conocido devuelve el nombre a secas: los seguimientos anteriores a
+ * `createdByRole` no lo traen, y preferimos quedarnos cortos —un nombre sin
+ * título— antes que llamar doctor a quien no lo es, que es justo lo que se está
+ * arreglando.
+ */
+export function nombreConTratamiento(name, role) {
+  const nombre = String(name || '').trim();
+  if (!nombre) return '';
+  const tratamiento = tratamientoDeRol(role);
+  return tratamiento ? `${tratamiento} ${nombre}` : nombre;
 }

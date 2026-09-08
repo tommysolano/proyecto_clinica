@@ -688,3 +688,71 @@ test('T14) asignar sin mandar el servicio NO se lo borra a la cita', async () =>
   assert.equal(String(guardada.serviceItem), String(consulta._id), 'sigue teniendo su servicio');
   assert.equal(guardada.serviceName, 'Consulta general');
 });
+
+/**
+ * DOS PASOS DE ENFERMERÍA, LOS DOS «SUMAR A LA BOLSA DEL SERVICIO».
+ *
+ * Fundir es REESCRIBIR la composición de una receta que ya existe. Con dos pasos
+ * marcados así —un detox en dos tandas, cada una con sus ampollas— el segundo
+ * borraba lo que había escrito el primero y esas ampollas desaparecían de la
+ * ficha sin que nadie lo notara: peor que duplicar, porque no se ve.
+ */
+test('T20) solo el PRIMER paso funde con la bolsa del servicio; el segundo escribe la suya', async () => {
+  const { clinicId, userId, patient, enfermera } = await seed();
+  const detox = await AppointmentServiceItem.create({
+    clinic: clinicId, name: 'Detox Plus', slug: 'detox plus',
+    autoSerum: {
+      enabled: true,
+      base: { name: 'Cloruro', volumeMl: 250 },
+      components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }],
+    },
+  });
+  const cita = ok(await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '09:00', serviceItem: detox._id,
+  }));
+
+  const OTRA = { code: 'VITC01', name: 'VITAMINA C 5ML AMP', grupo: 'ampolla', quantity: 1 };
+  ok(await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [
+        {
+          kind: 'enfermeria',
+          user: String(enfermera._id),
+          serum: {
+            base: { name: 'Cloruro', volumeMl: 250 },
+            components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }, { ...BERBERIS }],
+          },
+          serumMergeIntoService: true,
+        },
+        {
+          kind: 'enfermeria',
+          user: null,
+          serum: { base: { name: 'Cloruro', volumeMl: 250 }, components: [{ ...OTRA }] },
+          serumMergeIntoService: true,
+        },
+      ],
+    }, { role: 'cajero', params: { id: String(cita._id) } })
+  ));
+
+  const { items } = await sueroDeLaFicha(patient._id);
+  assert.equal(items.length, 2, 'la del servicio (fundida) y la del segundo paso, aparte');
+
+  const guardada = await Appointment.findById(cita._id).lean();
+  const fundida = items.find((i) => i.serumComponents.some((c) => c.name === 'BERBERIS 2ML AMP'));
+  assert.deepEqual(
+    fundida.serumComponents.map((c) => c.name).sort(),
+    ['BERBERIS 2ML AMP', 'SUEROTERAPIA DETOX PLUS'],
+    'lo del primer paso sigue ahí: nadie se lo pisó'
+  );
+  assert.ok(
+    items.some((i) => i.serumComponents.some((c) => c.name === 'VITAMINA C 5ML AMP')),
+    'y lo del segundo paso tampoco se perdió'
+  );
+
+  // Cada paso apunta a SU receta, así que volver a guardar no escribe nada más.
+  const pasos = guardada.turns.filter((t) => t.kind === 'enfermeria');
+  assert.equal(pasos.length, 2);
+  assert.ok(pasos.every((t) => t.serumFollowUp), 'los dos quedan sellados');
+  assert.notEqual(String(pasos[0].serumFollowUp), String(pasos[1].serumFollowUp));
+});

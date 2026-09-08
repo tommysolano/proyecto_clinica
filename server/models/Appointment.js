@@ -243,6 +243,29 @@ const appointmentSchema = new mongoose.Schema(
       default: 'pendiente',
     },
     /**
+     * A QUÉ HORA LLEGÓ EL PACIENTE DE VERDAD.
+     *
+     * Lo pide la consulta (sep-2026): la cita era a las 9 y el paciente entra a
+     * las 9:40, pero mostrador la marca «asistida» y en la agenda queda igual
+     * que la de quien llegó puntual. El doctor no tiene manera de distinguirlas,
+     * y esa diferencia es justo la que explica por qué la mañana se corrió.
+     *
+     * Se sella la PRIMERA vez que la cita pasa a 'asistida' —por cualquiera de
+     * las cuatro puertas: «Asistió», asignar la atención, el reclamo de
+     * enfermería o el estado desde el formulario— y NO se vuelve a tocar:
+     * re-marcar asistencia para añadir un doctor no puede correr la hora de
+     * llegada a media mañana.
+     *
+     * `arrivalDelayMinutes` es el retraso YA CALCULADO contra la hora agendada,
+     * en minutos (negativo = llegó antes). Se congela en vez de recalcularse al
+     * pintar por el mismo motivo que `isFirstVisit`: la cita se puede reagendar
+     * después, y entonces la resta contra el nuevo horario diría que llegó
+     * puntual quien llegó con una hora de retraso. `null` = no se pudo saber
+     * (cita sin hora válida) o es anterior a este campo.
+     */
+    arrivedAt: { type: Date, default: null },
+    arrivalDelayMinutes: { type: Number, default: null },
+    /**
      * PAGO POR ADELANTADO, tal como lo cuenta quien agenda por teléfono.
      *
      * El call center cierra la cita y el paciente paga en el momento: a veces

@@ -38,7 +38,7 @@ import SearchableSelect from '../components/SearchableSelect';
 // «Quién atiende» + enfermería + el suero, en un solo bloque compartido con el
 // alta de paciente (Pacientes → «Agendar cita para este paciente»).
 import QuienAtiende, { CAMPOS_QUIEN_ATIENDE, pasosDeAtencion } from '../components/QuienAtiende';
-import { doctorOptionLabel, roleSatisfies, ROLE_LABELS, ROLES_TODA_LA_ORG } from '../utils/roles';
+import { doctorOptionLabel, roleSatisfies, ROLE_LABELS, ROLES_TODA_LA_ORG, ROLES_VEN_CORREO } from '../utils/roles';
 
 // 6 estados soportados por el backend.
 const statusColors = {
@@ -202,6 +202,45 @@ function horaAtencion(apt) {
   return { inicio, fin };
 }
 
+/**
+ * ¿LLEGÓ TARDE? La cita era a las 9 y entró a las 9:40.
+ *
+ * Lo pidieron los médicos: mostrador marca «asistida» y a partir de ahí las dos
+ * citas —la del puntual y la del que llegó con cuarenta minutos de retraso— se
+ * ven exactamente igual, cuando esa diferencia es justo la que explica por qué la
+ * mañana se corrió.
+ *
+ * El retraso lo calcula y lo CONGELA el servidor al marcar la asistencia
+ * (`arrivalDelayMinutes`, ver utils/appointmentArrival.js). Aquí no se resta
+ * nada: si la cita se reagenda después, restar contra el horario nuevo diría que
+ * llegó puntual quien llegó tarde.
+ *
+ * Devuelve null cuando no se sabe —citas anteriores a este dato, o marcadas sin
+ * hora válida—: callarse es mejor que decir «a tiempo» sin fundamento.
+ */
+const TOLERANCIA_LLEGADA = 10; // minutos de cortesía (espejo del servidor)
+
+function llegada(apt) {
+  const min = apt?.arrivalDelayMinutes;
+  if (typeof min !== 'number' || !apt?.arrivedAt) return null;
+  const hora = fmtTimeEc(apt.arrivedAt);
+  if (min > TOLERANCIA_LLEGADA) {
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    const cuanto = h ? `${h} h ${m} min` : `${m} min`;
+    return {
+      tarde: true,
+      texto: `Tarde +${cuanto}`,
+      detalle: `Llegó a las ${hora}, ${cuanto} después de su hora`,
+    };
+  }
+  return {
+    tarde: false,
+    texto: 'A tiempo',
+    detalle: min < 0 ? `Llegó a las ${hora}, antes de su hora` : `Llegó a las ${hora}, a su hora`,
+  };
+}
+
 /** Texto corto de la atención para la columna de la hora, o null si no la hubo. */
 function textoAtencion(apt) {
   const a = horaAtencion(apt);
@@ -278,6 +317,9 @@ export default function Appointments() {
    * `canCharge` se quedaba con las sedes de su usuario (casi siempre una).
    */
   const veTodaLaOrg = hasRole(...ROLES_TODA_LA_ORG);
+  // El correo del paciente: admin, mostrador y quien atiende (espejo de la
+  // capacidad `patients.email`, que es la que manda desde el servidor).
+  const veCorreo = hasRole(...ROLES_VEN_CORREO);
 
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);
@@ -1714,6 +1756,9 @@ export default function Appointments() {
                   const dayKey = formatLocalDate(apt.date);
                   const showDayHeader = !prev || formatLocalDate(prev.date) !== dayKey;
                   const atencion = textoAtencion(apt);
+                  // Solo interesa señalar al que llegó tarde: ver `llegada`.
+                  const llegadaDelPaciente = llegada(apt);
+                  const llegadaTarde = llegadaDelPaciente?.tarde ? llegadaDelPaciente : null;
                   const extras = serviciosExtra(apt);
                   return (
                     <Fragment key={apt._id}>
@@ -1732,6 +1777,19 @@ export default function Appointments() {
                       </td>
                       <td data-cell="hora" className="md:px-6 md:py-3.5 text-sm text-slate-800 font-medium">
                         {apt.startTime}{apt.endTime ? ` - ${apt.endTime}` : ''}
+                        {/* Puntualidad del PACIENTE (a qué hora entró por la
+                            puerta), que es distinto de la atención de abajo (a
+                            qué hora se le atendió). Solo se pinta el retraso: un
+                            «a tiempo» en cada fila sería ruido, y quien mira
+                            busca justamente las que no lo están. */}
+                        {llegadaTarde && (
+                          <div
+                            className="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase bg-rose-100 text-rose-700 whitespace-nowrap"
+                            title={llegadaTarde.detalle}
+                          >
+                            {llegadaTarde.texto}
+                          </div>
+                        )}
                         {atencion && (
                           <div
                             className="text-[11px] font-normal text-emerald-700 mt-0.5 whitespace-nowrap"
@@ -2433,7 +2491,9 @@ export default function Appointments() {
               <div className="bg-emerald-50/50 rounded-xl p-3">
                 <p className="text-xs text-emerald-600 font-medium">Doctor</p>
                 <p className="text-sm font-medium text-slate-800 mt-0.5">
-                  Dr. {detailModal.doctor?.name}
+                  {/* Sin doctor asignado ponía «Dr. » a secas, como si hubiera
+                      uno y se le hubiera perdido el nombre. */}
+                  {detailModal.doctor?.name ? `Dr. ${detailModal.doctor.name}` : '—'}
                 </p>
               </div>
               <div className="bg-emerald-50/50 rounded-xl p-3">
@@ -2453,6 +2513,18 @@ export default function Appointments() {
                 <p className="text-sm text-slate-800 mt-0.5">
                   {detailModal.startTime} - {detailModal.endTime}
                 </p>
+                {/* A qué hora LLEGÓ el paciente. Aquí sí se dice siempre —tarde
+                    y a tiempo—: en el detalle se viene a mirar esta cita, no a
+                    barrer la lista buscando las que se torcieron. */}
+                {llegada(detailModal) && (
+                  <p
+                    className={`text-xs mt-1 font-medium ${
+                      llegada(detailModal).tarde ? 'text-rose-700' : 'text-emerald-700'
+                    }`}
+                  >
+                    {llegada(detailModal).detalle}
+                  </p>
+                )}
                 {/* La agendada de arriba y la real, juntas: es la comparación
                     que interesa (cuánto esperó el paciente). */}
                 {textoAtencion(detailModal) && (
@@ -2477,6 +2549,22 @@ export default function Appointments() {
                   {detailModal.patient?.phone || '—'}
                 </p>
               </div>
+              {/* CORREO DEL PACIENTE (pedido de mostrador, sep-2026).
+                  Lo tenían delante en la ficha del paciente y no aquí, que es
+                  donde de verdad se trabaja el día: al recibir a alguien hay que
+                  poder confirmarle a qué dirección le va a llegar la factura sin
+                  salir de la agenda y buscarlo en Clientes.
+                  Va con el mismo criterio que el resto del sistema: lo ve quien
+                  puede verlo (ver ROLES_VEN_CORREO y la capacidad
+                  `patients.email` del servidor), no todo el que abre la cita. */}
+              {veCorreo && (
+                <div className="bg-emerald-50/50 rounded-xl p-3">
+                  <p className="text-xs text-emerald-600 font-medium">Correo</p>
+                  <p className="text-sm text-slate-800 mt-0.5 break-all">
+                    {detailModal.patient?.email || '—'}
+                  </p>
+                </div>
+              )}
             </div>
             {detailModal.reason && (
               <div className="bg-emerald-50/50 rounded-xl p-3">

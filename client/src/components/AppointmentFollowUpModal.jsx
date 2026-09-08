@@ -3,6 +3,7 @@ import api from '../api/axios';
 import Modal from './Modal';
 import Spinner from './Spinner';
 import { fmtDate } from '../utils/date';
+import { nombreConTratamiento } from '../utils/roles';
 import {
   HiOutlineClipboardDocumentList,
   HiOutlineExclamationTriangle,
@@ -107,7 +108,9 @@ export default function AppointmentFollowUpModal({ appointment, onClose }) {
 }
 
 function Seguimiento({ fu }) {
-  const autor = fu.createdBy?.name || 'Profesional';
+  // El «Dr.» es de los médicos: el suero que manda mostrador se guarda como
+  // una consulta más y su autor es un cajero (ver nombreConTratamiento).
+  const autor = nombreConTratamiento(fu.createdBy?.name, fu.createdByRole) || 'Profesional';
   const receta = fu.recetaItems || [];
 
   // Consulta del terapeuta vista por quien no le corresponde: el servidor manda

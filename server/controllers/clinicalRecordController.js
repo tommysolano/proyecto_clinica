@@ -156,17 +156,38 @@ exports.uploadAttachmentMiddleware = multer({
 
 /**
  * La cabecera de la hoja MSP guarda su PROPIA copia de la cédula, la dirección y
- * el celular del paciente. Son los mismos datos de contacto que solo ve el
- * administrador (ver CONTACT_FIELDS en patientController): esconderlos ahí y
- * dejarlos aquí sería no esconderlos.
+ * el celular del paciente. Son los mismos datos de contacto que se censuran en
+ * la ficha del paciente (ver CONTACT_FIELDS en patientController): esconderlos
+ * allí y dejarlos aquí sería no esconderlos.
+ *
+ * Y POR CAMPO, con las mismas excepciones que allá — es lo que faltaba
+ * (sep-2026). A quien atiende se le abrió la CÉDULA en la ficha del paciente
+ * porque es lo que distingue a dos homónimos antes de escribir en una historia
+ * clínica, pero aquí seguía siendo del administrador: el médico veía el número
+ * en la cabecera de la pantalla y el campo «Cédula» de su propia hoja MSP le
+ * salía en blanco. Dos respuestas distintas al mismo dato, en la misma página.
+ *
+ * La correspondencia campo → capacidad es la de `canSeeContactField`: si allí se
+ * mueve una, aquí hay que moverla también.
  */
 const RECORD_CONTACT_FIELDS = ['cedula', 'direccion', 'celular'];
+
+const RECORD_CONTACT_CAP = {
+  cedula: 'patients.cedula',
+  direccion: 'patients.address',
+  // La cabecera lo llama «celular»; la capacidad, `phone`. Es el mismo número.
+  celular: 'patients.phone',
+};
+
+/** ¿Puede esta petición ver ESTE campo de la cabecera? */
+const puedeVerDatoDeCabecera = (req, campo) =>
+  canReq(req, 'patients.contactData') || canReq(req, RECORD_CONTACT_CAP[campo]);
 
 const hideContactData = (record, req) => {
   if (!record || canReq(req, 'patients.contactData')) return record;
   const obj = record.toObject ? record.toObject() : { ...record };
   RECORD_CONTACT_FIELDS.forEach((f) => {
-    obj[f] = undefined;
+    if (!puedeVerDatoDeCabecera(req, f)) obj[f] = undefined;
   });
   return obj;
 };
@@ -601,10 +622,12 @@ exports.updateByPatient = async (req, res) => {
         .filter((c) => c.marked || c.detail);
     }
     // Quien no ve cédula/dirección/celular tampoco los guarda: su formulario los
-    // recibe vacíos y un guardado cualquiera los borraría de la hoja MSP.
-    if (!canReq(req, 'patients.contactData')) {
-      RECORD_CONTACT_FIELDS.forEach((f) => delete update[f]);
-    }
+    // recibe vacíos y un guardado cualquiera los borraría de la hoja MSP. Va
+    // campo a campo, igual que el censor de la lectura: el médico ve la cédula
+    // (y por tanto la conserva al guardar) pero no la dirección.
+    RECORD_CONTACT_FIELDS.forEach((f) => {
+      if (!puedeVerDatoDeCabecera(req, f)) delete update[f];
+    });
 
     /**
      * LA FICHA DEL TERAPEUTA, que va aparte.

@@ -265,6 +265,24 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────────────
 
 
+# Vigente: quitar el «PACIENTE NUEVO» a quien no lo era (sep-2026).
+#
+# `isFirstVisit` se congela al agendar y hasta el 4-sep-2026 se calculaba mirando solo si
+# el paciente tenia CITAS previas. Los que se atendian EN PAPEL —fichas escaneadas, e
+# historias subidas con la importacion— nunca habian pasado por la agenda, asi que la
+# primera cita que se les agendo los estreno como pacientes nuevos. El calculo ya esta
+# arreglado (utils/firstVisit.js), pero la foto vieja sigue en esas citas: salen con el
+# distintivo "Nuevo", cuentan en los reportes de pacientes nuevos y pagarian una comision
+# de captacion que no existio.
+#
+# Solo QUITA marcas de mas; nunca marca como nueva una cita que no lo estaba.
+# Para ver que corregiria sin tocar nada:
+#   sudo -iu clinica bash -lc 'cd /var/www/clinica/server && node scripts/fixFirstVisitOnce.js'
+if ! ( cd "$APP_DIR/server" && node scripts/fixFirstVisitOnce.js --commit ); then
+  echo "ADVERTENCIA: la correccion de 'paciente nuevo' fallo. Reintentala a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/fixFirstVisitOnce.js --commit'"
+fi
+
 # Vigente: reencolar las inscripciones que quedaron programadas para dispararse en pleno
 # horario de silencio (ago-2026, al invertir el significado de las ventanas horarias).
 if ! ( cd "$APP_DIR/server" && node scripts/rescheduleQuietWindowsOnce.js --commit ); then

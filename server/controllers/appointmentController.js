@@ -46,6 +46,7 @@ const {
   validarSucursalDestino,
 } = require('../utils/clinicScope');
 const { esPrimeraVisita } = require('../utils/firstVisit');
+const { registrarLlegada } = require('../utils/appointmentArrival');
 const { resolverAgendadoPor } = require('../utils/appointmentBooker');
 
 /**
@@ -485,6 +486,25 @@ async function sembrarSuerosDeLosTurnos(apt, req) {
   const { lineaDeRecetaDeSuero } = require('../utils/suero');
   const sembrados = [];
 
+  /**
+   * LA BOLSA DEL SERVICIO SOLO LA REESCRIBE UN PASO.
+   *
+   * «Sumar a la bolsa del servicio» (`serumMergeIntoService`) reescribe la
+   * composición de una receta que ya existe. Con DOS pasos de enfermería
+   * marcados así —un detox en dos tandas, cada una con sus ampollas— el segundo
+   * pisaba lo que había escrito el primero y esas ampollas desaparecían de la
+   * ficha sin que nadie lo notara: peor que duplicar, porque no se ve.
+   *
+   * Así que se funde UNO —el primero, que es el que de verdad continúa el suero
+   * del servicio— y los siguientes escriben su propia receta, que es lo que son:
+   * otra preparación.
+   */
+  const yaFundidoEnElServicio = (apt.turns || []).some(
+    (t) => t.kind === 'enfermeria' && t.serumFollowUp &&
+      String(t.serumFollowUp) === String(apt.autoSerumFollowUp || '')
+  );
+  let fundidoEnEstaPasada = false;
+
   for (const turno of apt.turns || []) {
     if (turno.kind !== 'enfermeria' || turno.serumFollowUp) continue;
     const componentes = turno.serum?.components || [];
@@ -504,7 +524,12 @@ async function sembrarSuerosDeLosTurnos(apt, req) {
      * sueros. La pantalla marca el paso y aquí se reescribe AQUELLA composición.
      * Un paso que arma su bolsa desde cero no lleva la marca y sigue su camino.
      */
-    if (turno.serumMergeIntoService && apt.autoSerumFollowUp) {
+    if (
+      turno.serumMergeIntoService &&
+      apt.autoSerumFollowUp &&
+      !yaFundidoEnElServicio &&
+      !fundidoEnEstaPasada
+    ) {
       // eslint-disable-next-line no-await-in-loop
       const sumado = await sumarSueroAlSeguimiento({
         patientId: apt.patient,
@@ -514,6 +539,7 @@ async function sembrarSuerosDeLosTurnos(apt, req) {
       if (sumado) {
         // Apunta a la MISMA receta: volver a guardar no vuelve a tocarla.
         turno.serumFollowUp = apt.autoSerumFollowUp;
+        fundidoEnEstaPasada = true;
         sembrados.push(linea.name);
         continue;
       }
@@ -751,6 +777,9 @@ exports.createAppointment = async (req, res) => {
      * reparte más abajo, por la misma puerta que usa el mostrador.
      */
     for (const k of ['turns', 'steps', 'serum', 'currentTurnKind', 'currentTurnUser']) delete cleanBody[k];
+    // Una cita recién agendada no tiene hora de llegada: eso lo sella el gesto
+    // de marcar asistencia y no puede llegar por el cuerpo de la petición.
+    for (const k of ['arrivedAt', 'arrivalDelayMinutes']) delete cleanBody[k];
     const valorCita = {};
     aplicarValorDeCita(valorCita, req.body, req);
     if (cleanBody.doctor === '') delete cleanBody.doctor;
@@ -968,6 +997,11 @@ exports.updateAppointment = async (req, res) => {
     }
     // No permitir alterar isFirstVisit ni createdBy en updates
     delete update.isFirstVisit;
+    // Ni la hora de llegada: es un sello del sistema —lo pone el gesto de marcar
+    // asistencia— y toda la gracia que tiene es que nadie pueda escribirla a
+    // mano. Se calcula más abajo, cuando el estado pasa a 'asistida'.
+    delete update.arrivedAt;
+    delete update.arrivalDelayMinutes;
     delete update.createdBy;
     delete update.createdByRole;
     delete update.registeredBy;
@@ -1210,6 +1244,23 @@ exports.updateAppointment = async (req, res) => {
       if (!update.status && ['cancelada', 'no_asistio'].includes(existing.status)) {
         update.status = 'pendiente';
       }
+    }
+
+    /**
+     * MARCAR «asistida» A MANO TAMBIÉN SELLA LA LLEGADA.
+     *
+     * Es la cuarta puerta por la que una cita llega a ese estado (las otras tres
+     * son «Asistió», asignar la atención y el reclamo de enfermería), y sin esto
+     * la cita recibida desde el formulario de edición se quedaba sin hora de
+     * llegada: en la agenda no habría manera de saber si el paciente llegó
+     * puntual. Se calcula sobre `existing`, que es la cita ANTES del guardado, y
+     * solo si todavía no la tenía. Ver utils/appointmentArrival.js.
+     */
+    if (update.status === 'asistida' && !existing.arrivedAt) {
+      const sello = { date: existing.date, startTime: update.startTime || existing.startTime };
+      registrarLlegada(sello);
+      update.arrivedAt = sello.arrivedAt;
+      update.arrivalDelayMinutes = sello.arrivalDelayMinutes;
     }
 
     const appointment = await Appointment.findOneAndUpdate(
@@ -1782,6 +1833,10 @@ exports.markAttended = async (req, res) => {
     // Valor acordado / canje, si recepción los anotó al recibir al paciente.
     aplicarValorDeCita(apt, req.body, req);
     apt.status = 'asistida';
+    // Y a qué hora llegó de verdad, para poder distinguir después al que entró a
+    // su hora del que entró cuarenta minutos tarde. Solo la primera vez: ver
+    // utils/appointmentArrival.js.
+    registrarLlegada(apt);
     await apt.save();
     if (apt.referral) {
       try {
@@ -2177,6 +2232,10 @@ exports.assignDoctor = async (req, res) => {
       (apt.status === 'pendiente' || apt.status === 'confirmada' || estabaAusente)
     ) {
       apt.status = 'asistida';
+      // Repartir la atención ES recibir al paciente: queda sellada su hora de
+      // llegada, igual que si se hubiera pulsado «Asistió». Solo la primera vez
+      // (reabrir este modal para añadir un doctor no la corre).
+      registrarLlegada(apt);
     }
     await apt.save();
 
@@ -2574,6 +2633,10 @@ exports.nurseClaim = async (req, res) => {
     // El espejo `attendedByNurse` lo pone `sincronizarEspejo` a partir del turno
     // que se acaba de reclamar: aquí ya no se escribe a mano.
     sincronizarEspejo(apt);
+    // Reclamar el turno deja la cita en 'asistida' (el paciente está delante),
+    // así que también sella su llegada — salvo que mostrador ya la hubiera
+    // sellado antes, que es lo normal.
+    registrarLlegada(apt);
     if (!apt.consultationStartedAt) apt.consultationStartedAt = new Date();
     await apt.save();
 

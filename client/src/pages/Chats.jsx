@@ -8,6 +8,7 @@ import { nombreSucursal } from '../utils/clinicName';
 import AppointmentValueFields from '../components/AppointmentValueFields';
 import AgendadoPorSelect from '../components/AgendadoPorSelect';
 import { partirNombreCompleto } from '../utils/fullName';
+import { nombreConTratamiento } from '../utils/roles';
 import {
   HiOutlineStar,
   HiStar,
@@ -52,6 +53,7 @@ import {
   HiOutlineChartBar,
   HiOutlineBolt,
   HiOutlineArrowDownTray,
+  HiOutlineHeart,
 } from 'react-icons/hi2';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
@@ -4335,6 +4337,180 @@ function CollapsibleSection({ icon: Icon, iconClass = '', title, count = 0, badg
 }
 
 /**
+ * LOS SEGUIMIENTOS DEL PACIENTE, DENTRO DEL CHAT (sep-2026).
+ *
+ * El caso que lo pidió es el de todos los días: el paciente escribe «¿qué me
+ * mandó el doctor?», «¿cuándo tengo que volver?», «¿me tocaba el segundo suero
+ * ya?». La respuesta está escrita en su historia, pero el asesor tenía que
+ * abrir otra pestaña, buscar al paciente en Clientes y volver — con el chat
+ * esperando y, muchas veces, sin volver: se le preguntaba a un doctor.
+ *
+ * Va en el panel de la derecha, junto a sus citas y sus oportunidades, porque es
+ * lo mismo: lo que hay que saber de esta persona sin salir de su conversación.
+ *
+ * ES SOLO LECTURA, y no por prudencia sino porque el servidor no acepta otra
+ * cosa: el call center y marketing entran en `rolesQueLeen` y en ninguna de las
+ * rutas que escriben (ver routes/clinicalRecords.js). Lo reservado —los datos de
+ * contacto y la consulta del terapeuta— lo recorta el servidor antes de mandarlo.
+ *
+ * Se carga al ABRIR la sección, no al abrir el chat: la ficha entera de un
+ * paciente de años son bastantes kilobytes y la mayoría de las conversaciones no
+ * preguntan por ella.
+ */
+function HistoriaClinicaSection({ conv }) {
+  const [abierto, setAbierto] = useState(false);
+  const patientId = conv.patient?._id || conv.patient;
+
+  if (!patientId) return null;
+
+  return (
+    <>
+      <CollapsibleSection icon={HiOutlineHeart} iconClass="text-rose-500" title="Historia clínica">
+        <div className="space-y-1.5">
+          <p className="text-[11px] text-slate-500 m-0">
+            Lo que le recetaron, cuándo fue su última consulta y qué se le aplicó.
+          </p>
+          <button
+            type="button"
+            onClick={() => setAbierto(true)}
+            className="w-full text-xs px-2 py-1.5 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 cursor-pointer"
+          >
+            Ver seguimientos
+          </button>
+        </div>
+      </CollapsibleSection>
+      {abierto && (
+        <SeguimientosPacienteModal
+          patientId={patientId}
+          nombre={conv.patient?.firstName ? `${conv.patient.firstName} ${conv.patient.lastName || ''}`.trim() : conv.contactName}
+          onClose={() => setAbierto(false)}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * La historia del paciente en una ventana, para leerla sin salir del chat.
+ *
+ * Enseña de cada consulta lo que sirve para CONTESTAR por WhatsApp —cuándo fue,
+ * quién la atendió, por qué vino, qué le recetaron y qué se le aplicó— y nada
+ * más. No es la ficha: la exploración, la revisión por sistemas y la hoja del
+ * MSP se quedan en /patients, que es donde se trabaja la consulta. Quien
+ * necesite eso tiene el enlace al final.
+ */
+function SeguimientosPacienteModal({ patientId, nombre, onClose }) {
+  const [record, setRecord] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  // Sin `setLoading(true)` aquí: el estado ya nace en `true` y la ventana se
+  // monta de nuevo por cada paciente, así que no hay nada que reiniciar.
+  useEffect(() => {
+    let vivo = true;
+    api.get(`/clinical-records/${patientId}`)
+      .then((r) => { if (vivo) { setRecord(r.data); setError(''); } })
+      .catch((err) => {
+        if (vivo) setError(err.response?.data?.message || 'No se pudo cargar la historia clínica');
+      })
+      .finally(() => { if (vivo) setLoading(false); });
+    return () => { vivo = false; };
+  }, [patientId]);
+
+  // Lo más reciente arriba: al contestar un chat se pregunta por lo último.
+  const seguimientos = useMemo(
+    () => [...(record?.followUps || [])].sort((a, b) => new Date(b.fecha || b.createdAt) - new Date(a.fecha || a.createdAt)),
+    [record]
+  );
+
+  return (
+    <ModalShell title={`Seguimientos · ${nombre || 'Paciente'}`} onClose={onClose} size="lg">
+      {loading && <p className="text-sm text-slate-500 m-0">Cargando…</p>}
+      {!loading && error && <p className="text-sm text-rose-600 m-0">{error}</p>}
+      {!loading && !error && seguimientos.length === 0 && (
+        <p className="text-sm text-slate-500 m-0">Este paciente todavía no tiene consultas registradas.</p>
+      )}
+      {!loading && !error && seguimientos.length > 0 && (
+        <div className="space-y-3">
+          {seguimientos.map((fu) => {
+            const receta = (fu.recetaItems || []).filter((it) => !it.isService);
+            const derivaciones = (fu.recetaItems || []).filter((it) => it.isService);
+            return (
+              <div key={fu._id} className="border border-slate-200 rounded-xl overflow-hidden">
+                <div className="bg-slate-50 px-3 py-1.5 border-b border-slate-200 flex items-center justify-between gap-2 flex-wrap">
+                  <span className="text-xs font-semibold text-slate-700">{fmtDate(fu.fecha)}</span>
+                  <span className="text-[11px] text-slate-500">
+                    {nombreConTratamiento(fu.createdBy?.name, fu.createdByRole) || 'Profesional'}
+                  </span>
+                </div>
+                <div className="px-3 py-2 space-y-2 text-xs text-slate-700">
+                  <div className="font-medium text-slate-800">
+                    {fu.descripcion || fu.motivoConsulta || 'Consulta'}
+                  </div>
+                  {(fu.diagnosticos || []).length > 0 && (
+                    <div>
+                      <span className="text-slate-400">Diagnóstico: </span>
+                      {fu.diagnosticos.map((d) => d.descripcion || d.cieDescripcion || d.cie).filter(Boolean).join(' · ')}
+                    </div>
+                  )}
+                  {receta.length > 0 && (
+                    <div>
+                      <p className="text-[10px] font-semibold text-slate-500 uppercase m-0 mb-0.5">Receta</p>
+                      <ul className="m-0 pl-4 space-y-0.5">
+                        {receta.map((it, i) => (
+                          <li key={it._id || i}>
+                            <b>{it.name}</b>
+                            {it.dose ? ` · ${it.dose}` : ''}
+                            {it.frequency ? ` · ${it.frequency}` : ''}
+                            {it.duration ? ` · ${it.duration}` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {derivaciones.length > 0 && (
+                    <div>
+                      <p className="text-[10px] font-semibold text-indigo-500 uppercase m-0 mb-0.5">Derivaciones</p>
+                      <ul className="m-0 pl-4 space-y-0.5">
+                        {derivaciones.map((it, i) => <li key={it._id || i}>{it.name}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {(fu.aplicaciones || []).length > 0 && (
+                    <div className="text-sky-700">
+                      <span className="text-slate-400">Aplicado: </span>
+                      {fu.aplicaciones.map((a) => a.itemName).filter(Boolean).join(' · ')}
+                    </div>
+                  )}
+                  {fu.indicaciones && (
+                    <div className="whitespace-pre-wrap">
+                      <span className="text-slate-400">Indicaciones: </span>{fu.indicaciones}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {/* La ficha completa, para quien además pueda abrirla. Va en pestaña nueva
+          a propósito: salir de /chats con una conversación a medias es perder el
+          hilo, literalmente. */}
+      <div className="pt-3 mt-1 border-t border-slate-100 text-right">
+        <a
+          href={`/patients/${patientId}?tab=seguimientos`}
+          target="_blank"
+          rel="noreferrer"
+          className="text-xs text-emerald-700 hover:underline"
+        >
+          Abrir la ficha completa ↗
+        </a>
+      </div>
+    </ModalShell>
+  );
+}
+
+/**
  * Automatizaciones que se han ACTIVADO en este chat (inscripciones del contacto).
  *
  * Va justo debajo de los datos del contacto porque es seguimiento puro: el agente
@@ -4657,6 +4833,10 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
           )}
         </div>
       )}
+
+      {/* La historia clínica, justo encima de sus citas: las dos contestan a lo
+          mismo —qué ha pasado con este paciente— y se consultan seguidas. */}
+      <HistoriaClinicaSection conv={conv} />
 
       {conv.patient && (
         <div>
@@ -6241,9 +6421,184 @@ function TransferChatModal({ conv, meId, canAutoAssign, onClose, onTransfer }) {
  * Si el contacto YA es paciente no hay nada que dar de alta: el modal se abre
  * directamente en la cita.
  */
+/**
+ * BUSCAR (Y, SI HACE FALTA, REGISTRAR) A LA PERSONA PARA LA QUE ES LA CITA.
+ *
+ * Solo aparece cuando la cita NO es para quien escribe. Es un buscador y no un
+ * desplegable porque el padrón son miles de personas, y busca por nombre, cédula
+ * o teléfono —los tres, que es como el contacto identifica a su marido por
+ * WhatsApp: «es Juan Pérez», «la cédula es 09…», «el número es el 099…»—.
+ *
+ * El alta va aquí dentro a propósito: mandar al asesor a Clientes con el chat
+ * abierto es perder la conversación, y el caso normal es que el familiar NO esté
+ * registrado. Quien no pueda dar altas (marketing) solo ve el buscador.
+ */
+function SelectorOtroPaciente({ valor, onChange }) {
+  const { hasRole } = useAuth();
+  // Espejo del `requireRole` de POST /patients (con 'optica' enumerada aparte,
+  // que en el cliente no expande desde 'doctor').
+  const puedeRegistrar = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica');
+  const [q, setQ] = useState('');
+  const busqueda = useDebounce(q, 350);
+  const [resultados, setResultados] = useState([]);
+  const [buscando, setBuscando] = useState(false);
+  const [alta, setAlta] = useState(null); // { fullName, cedula, phone } o null
+  const [guardando, setGuardando] = useState(false);
+
+  useEffect(() => {
+    const texto = busqueda.trim();
+    if (texto.length < 3) { setResultados([]); return undefined; }
+    let vivo = true;
+    setBuscando(true);
+    api.get('/patients', { params: { search: texto, limit: 8 } })
+      .then((r) => { if (vivo) setResultados(r.data?.patients || []); })
+      .catch(() => { if (vivo) setResultados([]); })
+      .finally(() => { if (vivo) setBuscando(false); });
+    return () => { vivo = false; };
+  }, [busqueda]);
+
+  const registrar = async () => {
+    const { firstName, lastName } = partirNombreCompleto(alta?.fullName || '');
+    if (!firstName && !lastName) return toast.error('Escribe el nombre de la persona');
+    setGuardando(true);
+    try {
+      const { data } = await api.post('/patients', {
+        firstName,
+        lastName,
+        cedula: (alta.cedula || '').trim(),
+        phone: (alta.phone || '').trim(),
+      });
+      onChange(data);
+      setAlta(null);
+      toast.success('Paciente agregado al sistema');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo registrar a la persona');
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  if (valor) {
+    return (
+      <div className="flex items-center justify-between gap-2 bg-white border border-emerald-200 rounded-lg px-2 py-1.5">
+        <span className="text-xs text-slate-800 truncate">
+          <strong>{valor.firstName} {valor.lastName}</strong>
+          {valor.cedula ? <span className="text-slate-500"> · {valor.cedula}</span> : null}
+        </span>
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          className="shrink-0 text-[11px] text-slate-500 hover:text-rose-600 bg-transparent border-none cursor-pointer"
+        >
+          Cambiar
+        </button>
+      </div>
+    );
+  }
+
+  if (alta) {
+    return (
+      <div className="space-y-2 bg-white border border-slate-200 rounded-lg p-2">
+        <input
+          autoFocus
+          value={alta.fullName}
+          onChange={(e) => setAlta({ ...alta, fullName: e.target.value })}
+          placeholder="Nombre completo"
+          className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+        />
+        <div className="flex gap-2">
+          <input
+            value={alta.cedula}
+            onChange={(e) => setAlta({ ...alta, cedula: e.target.value })}
+            placeholder="Cédula (opcional)"
+            className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+          />
+          <input
+            value={alta.phone}
+            onChange={(e) => setAlta({ ...alta, phone: e.target.value })}
+            placeholder="Teléfono (opcional)"
+            className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+          />
+        </div>
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setAlta(null)}
+            className="text-[11px] px-2 py-1 rounded-lg border border-slate-200 bg-white text-slate-600 cursor-pointer"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            disabled={guardando}
+            onClick={registrar}
+            className="text-[11px] px-2 py-1 rounded-lg bg-emerald-600 text-white border-none cursor-pointer disabled:opacity-50"
+          >
+            {guardando ? 'Guardando…' : 'Registrar y usar'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Busca por nombre, cédula o teléfono"
+        className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+      />
+      {buscando && <p className="text-[11px] text-slate-400 m-0">Buscando…</p>}
+      {!buscando && q.trim().length >= 3 && resultados.length === 0 && (
+        <p className="text-[11px] text-slate-400 m-0">No se encontró a nadie con esos datos.</p>
+      )}
+      {resultados.length > 0 && (
+        <ul className="m-0 p-0 list-none max-h-40 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100 bg-white">
+          {resultados.map((p) => (
+            <li key={p._id}>
+              <button
+                type="button"
+                onClick={() => onChange(p)}
+                className="w-full text-left text-xs px-2 py-1.5 bg-transparent border-none cursor-pointer hover:bg-emerald-50"
+              >
+                {p.firstName} {p.lastName}
+                {p.cedula ? <span className="text-slate-400"> · {p.cedula}</span> : null}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {puedeRegistrar && (
+        <button
+          type="button"
+          onClick={() => setAlta({ fullName: q.trim(), cedula: '', phone: '' })}
+          className="text-[11px] text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0"
+        >
+          + No está en el sistema: registrarla
+        </button>
+      )}
+    </div>
+  );
+}
+
 function AgregarYAgendarModal({ conv, onClose, onDone }) {
   const { clinics, activeClinic, hasRole } = useAuth();
   const yaEsPaciente = !!conv.patient;
+  /**
+   * LA CITA NO SIEMPRE ES PARA QUIEN ESCRIBE (sep-2026).
+   *
+   * Pasa a diario: la paciente de siempre pide hora «para mi esposo», o una hija
+   * llama por su madre. Hasta ahora solo se podía agendar a nombre del contacto,
+   * así que esas citas quedaban a nombre de quien llamó — y quien llegaba a la
+   * clínica no era el de la agenda: la consulta se escribía en la ficha
+   * equivocada, que es un error que no se deshace.
+   *
+   * El chat sigue siendo el origen de la cita (se guarda `conversation`, y por
+   * eso el panel de Supervisión la cuenta igual): lo que cambia es el paciente.
+   */
+  const [paraOtro, setParaOtro] = useState(false);
+  const [otroPaciente, setOtroPaciente] = useState(null);
   /**
    * El VALOR y el pago adelantado son de quien VENDE la cita: administración,
    * caja y el call center (espejo de `puedeFijarValor` en el servidor). A
@@ -6361,6 +6716,48 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
    * asesor pensando que no se guardó nada y volver a intentarlo (creando dos).
    */
   const submit = async () => {
+    /**
+     * CITA PARA OTRA PERSONA: se salta el alta del contacto entera.
+     *
+     * Quien escribe no tiene por qué acabar dado de alta como paciente solo
+     * porque haya pedido hora para su marido: eso llenaba el padrón de fichas
+     * vacías. Se agenda a nombre del otro y el chat se queda como estaba.
+     */
+    if (paraOtro) {
+      if (!otroPaciente?._id) return toast.error('Escoge para quién es la cita');
+      for (let i = 0; i < items.length; i++) {
+        if (!items[i].date || !items[i].startTime) {
+          return toast.error(`La cita #${i + 1} requiere fecha y hora`);
+        }
+      }
+      if (!unaSolaSede && !clinicId) return toast.error('Escoge la sucursal de la cita');
+      setSaving(true);
+      try {
+        const r = await api.post(`/chats/${conv._id}/appointment`, {
+          patientId: otroPaciente._id,
+          bookedBy: agendadoPor || undefined,
+          appointments: items.map((it) => ({
+            date: it.date,
+            startTime: it.startTime,
+            reason: it.reason,
+            clinic: clinicId || undefined,
+            serviceItem: it.serviceItem?._id || null,
+            agreedValue: it.isCanje ? 0 : (it.agreedValue ?? ''),
+            isCanje: !!it.isCanje,
+            advancePayment: it.advancePayment || '',
+            advanceAmount: it.advanceAmount ?? '',
+            advanceMethod: it.advanceMethod || '',
+          })),
+        });
+        onDone(r.data.conversation, (r.data.appointments || []).length || 1);
+      } catch (err) {
+        toast.error(err.response?.data?.message || 'Error al crear cita(s)');
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
     if (!yaEsPaciente) {
       // Nombre y correo NO se exigen (misma regla que el alta desde Clientes):
       // se registra con lo que se sepa y se completa después. El teléfono real
@@ -6445,7 +6842,7 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
 
   return (
     <ModalShell
-      title={yaEsPaciente ? 'Agendar cita(s) desde chat' : 'Agregar al sistema y agendar'}
+      title={yaEsPaciente || paraOtro ? 'Agendar cita(s) desde chat' : 'Agregar al sistema y agendar'}
       onClose={onClose}
       size="lg"
     >
@@ -6456,8 +6853,50 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
           {isWhatsapp && conv.contactName && <span className="text-emerald-700/70"> · {conv.phone}</span>}
         </div>
 
+        {/* ─────────── ¿PARA QUIÉN ES LA CITA? ───────────
+            Primero de todo, porque de la respuesta depende el resto del
+            formulario: si es para otra persona no hay que dar de alta a quien
+            escribe. Va desmarcado: lo normal sigue siendo agendar para el
+            contacto. */}
+        <div className="border border-slate-200 rounded-xl p-2.5 space-y-2">
+          <p className="text-xs font-medium text-slate-600 m-0">¿Para quién es la cita?</p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => { setParaOtro(false); setOtroPaciente(null); }}
+              className={`text-xs px-2.5 py-1.5 rounded-lg border cursor-pointer ${
+                paraOtro
+                  ? 'bg-white border-slate-200 text-slate-600'
+                  : 'bg-emerald-600 border-emerald-600 text-white'
+              }`}
+            >
+              Para {conv.contactName || 'el contacto'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setParaOtro(true); setAgendar(true); }}
+              className={`text-xs px-2.5 py-1.5 rounded-lg border cursor-pointer ${
+                paraOtro
+                  ? 'bg-emerald-600 border-emerald-600 text-white'
+                  : 'bg-white border-slate-200 text-slate-600'
+              }`}
+            >
+              Para otra persona
+            </button>
+          </div>
+          {paraOtro && (
+            <>
+              <SelectorOtroPaciente valor={otroPaciente} onChange={setOtroPaciente} />
+              <p className="text-[11px] text-slate-400 m-0">
+                La cita queda a nombre de esta persona; el chat sigue siendo de{' '}
+                {conv.contactName || conv.phone}.
+              </p>
+            </>
+          )}
+        </div>
+
         {/* ─────────── Alta del contacto (solo si aún no es paciente) ─────────── */}
-        {!yaEsPaciente && (
+        {!yaEsPaciente && !paraOtro && (
           <div className="border border-slate-200 rounded-xl p-3 space-y-2">
             <div>
               <label className="text-xs font-medium text-slate-600">Nombre completo</label>
@@ -6499,8 +6938,10 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
           </div>
         )}
 
-        {/* La casilla: registrar y agendar en el mismo paso, como en /patients. */}
-        {!yaEsPaciente && (
+        {/* La casilla: registrar y agendar en el mismo paso, como en /patients.
+            No sale cuando la cita es para otra persona: ahí no se registra a
+            nadie y agendar es lo único que se está haciendo. */}
+        {!yaEsPaciente && !paraOtro && (
           <label className="flex items-start gap-2 cursor-pointer">
             <input
               type="checkbox"
@@ -6628,13 +7069,15 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
             disabled={saving}
             className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 border-none cursor-pointer"
           >
+            {/* Para otra persona no se agrega a nadie: el botón no puede
+                prometer un alta que no va a ocurrir. */}
             {saving
               ? 'Guardando…'
               : !agendar
                 ? 'Agregar paciente'
                 : items.length > 1
-                  ? `${yaEsPaciente ? '' : 'Agregar y '}crear ${items.length} citas`
-                  : `${yaEsPaciente ? 'Crear cita' : 'Agregar y crear cita'}`}
+                  ? `${yaEsPaciente || paraOtro ? '' : 'Agregar y '}crear ${items.length} citas`
+                  : `${yaEsPaciente || paraOtro ? 'Crear cita' : 'Agregar y crear cita'}`}
           </button>
         </div>
       </div>

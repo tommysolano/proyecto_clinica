@@ -281,7 +281,15 @@ test('P5) guardar desde un rol sin acceso NO borra la cédula ni el teléfono', 
   assert.equal((await Patient.findById(patient._id)).phone, '0987654321');
 });
 
-test('P6) la cabecera de la hoja MSP guarda su propia copia: también va censurada', async () => {
+/**
+ * La cabecera de la hoja MSP guarda su PROPIA copia de la cédula, la dirección y
+ * el celular, y va censurada con las MISMAS reglas que la ficha del paciente —por
+ * campo, no en bloque—. Esconderlos en /patients y dejarlos aquí sería no
+ * esconderlos; censurarlos aquí en bloque era la incoherencia contraria: desde
+ * sep-2026 quien atiende ve la cédula del paciente, y en su propia hoja MSP le
+ * seguía saliendo en blanco.
+ */
+test('P6) la cabecera de la hoja MSP se censura con las mismas reglas, campo a campo', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const patient = await seedPaciente(clinicId);
   await ClinicalRecord.create({
@@ -297,17 +305,26 @@ test('P6) la cabecera de la hoja MSP guarda su propia copia: también va censura
   const comoDoctor = ok(await H.runController(
     clinicalRecords.getOrCreateByPatient, H.mockReq(clinicId, userId, {}, { role: 'doctor', params })
   ));
-  assert.equal(comoDoctor.cedula, undefined);
-  assert.equal(comoDoctor.direccion, undefined);
-  assert.equal(comoDoctor.celular, undefined);
+  assert.equal(comoDoctor.cedula, '0102030405', 'la cédula sí: identifica al paciente que va a atender');
+  assert.equal(comoDoctor.direccion, undefined, 'la dirección no');
+  assert.equal(comoDoctor.celular, undefined, 'el celular tampoco');
 
-  // Y guardar desde ese rol no los borra de la ficha.
+  // Enfermería lee la historia entera y aun así no ve ninguno de los tres.
+  const comoEnfermero = ok(await H.runController(
+    clinicalRecords.getOrCreateByPatient, H.mockReq(clinicId, userId, {}, { role: 'enfermero', params })
+  ));
+  assert.equal(comoEnfermero.cedula, undefined);
+  assert.equal(comoEnfermero.celular, undefined);
+
+  // Y guardar desde ese rol no borra lo que NO ve (la dirección y el celular).
+  // La cédula sí la manda su formulario, porque la tiene delante.
   ok(await H.runController(
     clinicalRecords.updateByPatient,
-    H.mockReq(clinicId, userId, { cedula: '', direccion: '', celular: '', nombre: 'ANA PEREZ' }, { role: 'doctor', params })
+    H.mockReq(clinicId, userId, { cedula: '0102030405', direccion: '', celular: '', nombre: 'ANA PEREZ' }, { role: 'doctor', params })
   ));
   const ficha = await ClinicalRecord.findOne({ clinic: clinicId, patient: patient._id });
   assert.equal(ficha.cedula, '0102030405');
+  assert.equal(ficha.direccion, 'Av. Siempre Viva 123', 'lo que no ve, no lo borra');
   assert.equal(ficha.celular, '0991112233');
   assert.equal(ficha.nombre, 'ANA PEREZ');
 });

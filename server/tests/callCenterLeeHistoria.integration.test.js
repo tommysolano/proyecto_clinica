@@ -6,12 +6,19 @@
  * interrumpir a un doctor para contestarlo. Ahora entra por «Ver ficha clínica»
  * y ve la historia entera.
  *
+ * MARKETING entró con él en sep-2026: comparten la bandeja de /chats y contestan
+ * a los mismos pacientes, así que leen lo mismo y escriben lo mismo (nada).
+ *
  * Lo que fijan estos tests:
  *   1. lee la ficha y sus seguimientos;
  *   2. mirar una ficha que no existe NO la crea (consultar no abre historias);
  *   3. no puede escribir, ni corregir, ni administrar nada;
  *   4. y sigue sin ver lo reservado: ni datos de contacto ni la consulta del
  *      terapeuta.
+ *
+ * Y de paso el reverso, que es de la misma pieza: QUÉ SÍ ve cada rol de la
+ * cabecera de la hoja MSP. La cédula la ve quien atiende (sep-2026); la
+ * dirección y el celular siguen siendo de administración y mostrador.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -77,6 +84,31 @@ test('consultar una ficha que no existe NO la crea', async () => {
   assert.equal(await ClinicalRecord.countDocuments({}), 1);
 });
 
+test('marketing también lee la historia, y con el mismo recorte', async () => {
+  const { clinicId, userId, patient } = await seed();
+  await ClinicalRecord.create({
+    clinic: clinicId,
+    patient: patient._id,
+    createdBy: userId,
+    cedula: '0102030405',
+    followUps: [{
+      fecha: new Date(),
+      motivoConsulta: 'Control',
+      descripcion: 'Control',
+      createdBy: userId,
+      createdByRole: 'doctor',
+      recetaItems: [{ name: 'Losartán 50mg', quantity: 1 }],
+    }],
+  });
+
+  const r = await H.runController(
+    records.getOrCreateByPatient, req(clinicId, userId, {}, patient._id, 'marketing')
+  );
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+  assert.equal(r.payload.followUps[0].recetaItems[0].name, 'Losartán 50mg', 've la receta');
+  assert.equal(r.payload.cedula, undefined, 'pero la cédula sigue siendo del administrador');
+});
+
 test('no ve los datos de contacto ni la consulta del terapeuta', async () => {
   const { clinicId, userId, patient } = await seed();
   await ClinicalRecord.create({
@@ -133,6 +165,15 @@ test('no escribe: la ficha y los seguimientos siguen siendo de quien atiende', a
 
   assert.equal(dejaPasar(ruta('/:patientId', 'get'), 'call_center'), true, 'lee la ficha');
   assert.equal(dejaPasar(ruta('/:patientId', 'put'), 'call_center'), false, 'no edita la ficha');
+  // MARKETING entró con el call center (sep-2026): comparten la bandeja de
+  // /chats y contestan a los mismos pacientes, así que leen lo mismo — y
+  // escriben lo mismo, o sea nada.
+  assert.equal(dejaPasar(ruta('/:patientId', 'get'), 'marketing'), true, 'marketing lee la ficha');
+  assert.equal(dejaPasar(ruta('/:patientId', 'put'), 'marketing'), false, 'marketing no la edita');
+  assert.equal(
+    dejaPasar(ruta('/:patientId/follow-ups', 'post'), 'marketing'), false,
+    'marketing no escribe seguimientos'
+  );
   assert.equal(
     dejaPasar(ruta('/:patientId/follow-ups', 'post'), 'call_center'), false,
     'no escribe seguimientos'
@@ -148,4 +189,61 @@ test('no escribe: la ficha y los seguimientos siguen siendo de quien atiende', a
   );
   // Y quien atiende sigue entrando por donde siempre.
   assert.equal(dejaPasar(ruta('/:patientId/follow-ups', 'post'), 'doctor'), true);
+});
+
+/**
+ * LA CÉDULA EN LA CABECERA DE LA HOJA MSP (sep-2026).
+ *
+ * A quien atiende se le abrió la cédula del paciente porque es lo que distingue
+ * a dos homónimos antes de escribir en una historia clínica. Pero la hoja MSP
+ * guarda su PROPIA copia y ahí seguía censurada para todos menos el admin: el
+ * médico veía el número en la cabecera de la pantalla y el campo «Cédula» de su
+ * hoja le salía en blanco. Dos respuestas al mismo dato en la misma página.
+ */
+test('el médico ve la cédula de la hoja MSP; la dirección y el celular siguen sin ser suyos', async () => {
+  const { clinicId, userId, patient } = await seed();
+  await ClinicalRecord.create({
+    clinic: clinicId, patient: patient._id, createdBy: userId,
+    cedula: '0102030405', direccion: 'Calle Larga 123', celular: '0991234567',
+  });
+
+  const doc = await H.runController(
+    records.getOrCreateByPatient, req(clinicId, userId, {}, patient._id, 'doctor')
+  );
+  assert.equal(doc.payload.cedula, '0102030405', 'la cédula sí');
+  assert.equal(doc.payload.direccion, undefined, 'la dirección no');
+  assert.equal(doc.payload.celular, undefined, 'el celular tampoco');
+
+  // Mostrador ve los tres (factura con ellos y llama al paciente).
+  const caja = await H.runController(
+    records.getOrCreateByPatient, req(clinicId, userId, {}, patient._id, 'cajero')
+  );
+  assert.equal(caja.payload.cedula, '0102030405');
+  assert.equal(caja.payload.direccion, 'Calle Larga 123');
+
+  // Y enfermería, que lee la historia entera, sigue sin ver ninguno.
+  const enf = await H.runController(
+    records.getOrCreateByPatient, req(clinicId, userId, {}, patient._id, 'enfermero')
+  );
+  assert.equal(enf.payload.cedula, undefined);
+});
+
+test('guardar la ficha no borra lo que no se ve, ni lo que sí', async () => {
+  const { clinicId, userId, patient } = await seed();
+  await ClinicalRecord.create({
+    clinic: clinicId, patient: patient._id, createdBy: userId,
+    cedula: '0102030405', direccion: 'Calle Larga 123', celular: '0991234567',
+  });
+
+  // El formulario del médico manda la cédula (la ve) y el resto vacío (no lo ve).
+  const r = await H.runController(records.updateByPatient, H.mockReq(clinicId, userId, {
+    cedula: '0102030405', direccion: '', celular: '', alergias: 'Penicilina',
+  }, { role: 'doctor', params: { patientId: String(patient._id) } }));
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const guardada = await ClinicalRecord.findOne({ patient: patient._id }).lean();
+  assert.equal(guardada.cedula, '0102030405');
+  assert.equal(guardada.direccion, 'Calle Larga 123', 'lo que no ve, no lo borra');
+  assert.equal(guardada.celular, '0991234567');
+  assert.equal(guardada.alergias, 'Penicilina', 'y lo suyo sí lo guarda');
 });

@@ -11,7 +11,14 @@ import NumericInput from '../components/NumericInput';
 import Cie10Select from '../components/Cie10Select';
 import Odontograma from '../components/Odontograma';
 import CincoElementos from '../components/CincoElementos';
-import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO, ROLES_VEN_DIRECCION, ROLES_VEN_TELEFONO } from '../utils/roles';
+import {
+  ROLES_VEN_CEDULA,
+  ROLES_VEN_CORREO,
+  ROLES_VEN_DIRECCION,
+  ROLES_VEN_TELEFONO,
+  ROLES_SOLO_LEEN_HISTORIA,
+  nombreConTratamiento,
+} from '../utils/roles';
 import {
   ANTECEDENTES_CATEGORIAS,
   HABITOS_CATEGORIAS,
@@ -113,23 +120,28 @@ import {
 const CurvaPesoGestacional = lazy(() => cargarPagina(() => import('../components/CurvaPesoGestacional')));
 
 /**
- * EL CALL CENTER LEE LA HISTORIA CLÍNICA, PERO NO LA TOCA (sep-2026).
+ * EL CALL CENTER Y MARKETING LEEN LA HISTORIA CLÍNICA, PERO NO LA TOCAN (sep-2026).
  *
- * El paciente llama y pregunta qué le recetaron, cuándo fue su última consulta o
- * si tiene que volver: eso está escrito, y hasta ahora había que interrumpir a un
- * doctor para leerlo. Ahora la asesora lo ve — la ficha, los seguimientos, las
- * recetas y sus archivos— y no puede escribir NADA: ni redactar, ni corregir, ni
- * subir, ni guardar la ficha. El servidor aplica la misma regla (ver
- * `rolesQueLeen` en routes/clinicalRecords.js), que es quien manda; esto solo
- * evita enseñar campos que darían un 403 al guardar.
+ * El paciente escribe o llama y pregunta qué le recetaron, cuándo fue su última
+ * consulta o si tiene que volver: eso está escrito, y hasta ahora había que
+ * interrumpir a un doctor para leerlo. Ahora quien atiende la bandeja lo ve —la
+ * ficha, los seguimientos, las recetas y sus archivos— y no puede escribir NADA:
+ * ni redactar, ni corregir, ni subir, ni guardar la ficha. El servidor aplica la
+ * misma regla (ver `rolesQueLeen` en routes/clinicalRecords.js), que es quien
+ * manda; esto solo evita enseñar campos que darían un 403 al guardar.
  *
- * Sigue sin ver lo reservado: los datos de contacto (`hideContactData`) y la
+ * MARKETING entró con el call center porque hacen lo mismo en el mismo sitio:
+ * comparten /chats, contestan a los mismos pacientes y agendan desde ahí. Que
+ * uno pudiera responder «esto es lo que le recetaron» y el otro no dependía de
+ * por cuál de las dos bandejas hubiera entrado el mensaje.
+ *
+ * Siguen sin ver lo reservado: los datos de contacto (`hideContactData`) y la
  * consulta del terapeuta (`hideTherapyNotes`) los recorta el servidor.
  */
 function useSoloLeeHistoria() {
   const { hasRole, user } = useAuth();
   const esAdmin = hasRole('admin') || user?.isSuperAdmin;
-  return hasRole('call_center') && !esAdmin;
+  return hasRole(...ROLES_SOLO_LEEN_HISTORIA) && !esAdmin;
 }
 
 const TABS = [
@@ -1095,9 +1107,15 @@ function FichaTab({ patientId }) {
             className="input"
           />
         </Field>
-        {/* Copia de los datos de contacto en la cabecera de la hoja MSP: solo el
-            admin (al resto el servidor tampoco se los manda). */}
-        {hasRole('admin') && (
+        {/* Copia de los datos de contacto en la cabecera de la hoja MSP. Va
+            campo a campo y con las MISMAS listas que la pestaña «Datos»: quien
+            atiende ve la cédula —la pidieron los médicos: es lo que separa a dos
+            homónimos antes de escribir en una historia clínica, y aquí les salía
+            en blanco mientras la cabecera de la página se la enseñaba—, y la
+            dirección y el celular siguen siendo de administración y mostrador.
+            El servidor manda lo mismo (ver `hideContactData`); esto solo decide
+            si se pinta el hueco. */}
+        {hasRole(...ROLES_VEN_CEDULA) && (
           <Field label="Cédula">
             <input
               type="text"
@@ -1107,7 +1125,7 @@ function FichaTab({ patientId }) {
             />
           </Field>
         )}
-        {hasRole('admin') && (
+        {hasRole(...ROLES_VEN_DIRECCION) && (
           <Field label="Dirección">
             <input
               type="text"
@@ -1117,7 +1135,7 @@ function FichaTab({ patientId }) {
             />
           </Field>
         )}
-        {hasRole('admin') && (
+        {hasRole(...ROLES_VEN_TELEFONO) && (
           <Field label="Celular">
             <input
               type="text"
@@ -1780,6 +1798,23 @@ function SeguimientosTab({ patientId, appointmentId }) {
    */
   const soloLectura = useSoloLeeHistoria();
   const puedeEscribir = !esEnfermero && !soloLectura;
+  /**
+   * ENFERMERÍA VE LA RECETA, NO LA CONSULTA ENTERA (sep-2026, a petición suya).
+   *
+   * En ago-2026 se le abrió la historia completa por un motivo bueno —quien mete
+   * tres ampollas necesita saber a qué es alérgico el paciente— y el efecto en el
+   * día a día fue el contrario del buscado: para poner un suero hay que bajar por
+   * la revisión por sistemas, el examen físico, los diagnósticos CIE-10 y la
+   * evolución hasta encontrar las dos líneas que se aplican. Lo dijeron tal cual:
+   * los marea.
+   *
+   * Así que por defecto se enseña LO QUE SE APLICA —la receta, las derivaciones y
+   * lo ya aplicado— y el resto se pliega. No se QUITA: aquel motivo sigue siendo
+   * cierto, así que la consulta completa está a un clic (`verConsultaCompleta`) y
+   * el servidor sigue mandándola entera. Es un recorte de PANTALLA, no un permiso.
+   */
+  const [verConsultaCompleta, setVerConsultaCompleta] = useState(false);
+  const soloReceta = esEnfermero && !verConsultaCompleta;
   /**
    * ¿El formulario es una CONSULTA médica completa? Enfermería no: se le
    * esconden las secciones que no le tocan en vez de enseñarle veinte campos
@@ -3296,6 +3331,27 @@ function SeguimientosTab({ patientId, appointmentId }) {
                 : 'No hay seguimientos.'}
             </p>
           )}
+          {/* ENFERMERÍA: el interruptor de «solo la receta».
+              Va arriba y a la vista, no escondido en un menú: el recorte se puso
+              porque la consulta entera los marea, pero antes de poner un suero
+              hay que poder mirar una alergia. Las dos cosas a la vez solo se
+              consiguen dejando la puerta abierta y señalada. */}
+          {esEnfermero && followUps.length > 0 && (
+            <div className="px-4 py-2 bg-sky-50 text-xs text-sky-800 flex flex-wrap items-center justify-between gap-2">
+              <span>
+                {verConsultaCompleta
+                  ? 'Viendo la consulta completa del médico.'
+                  : 'Viendo solo lo que hay que aplicar: la receta y lo ya administrado.'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setVerConsultaCompleta((v) => !v)}
+                className="text-sky-700 hover:underline bg-transparent border-none cursor-pointer p-0 font-medium"
+              >
+                {verConsultaCompleta ? 'Ver solo la receta' : 'Ver la consulta completa'}
+              </button>
+            </div>
+          )}
           {/* Aviso del recorte. Antes de una extracción hay que poder mirar
               alergias o anticoagulantes, y eso está en las consultas de otras
               especialidades: se puede pedir, pero no se enseña por defecto. */}
@@ -3340,9 +3396,13 @@ function SeguimientosTab({ patientId, appointmentId }) {
                 >
                   <div className="md:w-40 md:shrink-0 md:px-4 md:py-2.5 text-slate-600 whitespace-nowrap font-medium md:font-normal">
                     {fmtDate(fu.fecha)}
+                    {/* El TÍTULO sale del rol con el que se escribió, no de
+                        que esto sea una historia clínica: el suero que manda
+                        mostrador se guarda igual que una consulta y firmaba
+                        «Dr. <el cajero>». Ver nombreConTratamiento. */}
                     {fu.createdBy?.name && (
                       <span className="text-[11px] text-emerald-700 font-medium ml-2 md:ml-0 md:mt-0.5 md:block">
-                        Dr. {fu.createdBy.name}
+                        {nombreConTratamiento(fu.createdBy.name, fu.createdByRole)}
                       </span>
                     )}
                     {/* Un seguimiento corregido tiene que decirlo: es historia
@@ -3382,6 +3442,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       <span className="inline-block mb-1 ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 capitalize">{fu.tipoConsulta}</span>
                     )}
                     <div className="font-medium">{fu.descripcion || fu.motivoConsulta}</div>
+                    {!soloReceta && (<>
                     {hasOpticaData && <OpticaRxSummary rx={fu.opticaRx} />}
                     {hasGinecoData && <GinecologiaSummary g={fu.ginecologia} fecha={fu.fecha} />}
                     {hasPodoData && <PodologiaSummary p={fu.podologia} />}
@@ -3389,12 +3450,14 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     {hasCosmeData && <CosmetologiaSummary c={fu.cosmetologia} />}
                     {hasCardioData && <CardiologiaSummary value={fu.cardiologia} />}
                     {hasTerapiaData && <TerapiaSummary value={fu.terapia} />}
+                    </>)}
                     {/* LO QUE ENFERMERÍA APLICÓ DE VERDAD. Antes aquí solo ponía
                         «Servicio aplicado por enfermería»: la aplicación vive
                         dentro de la receta del doctor que la mandó, que es otra
                         tarjeta y otro día, así que quien leía el parte no sabía
                         ni qué suero ni qué ampollas se pusieron. */}
                     <AplicacionesEnfermeria lista={fu.aplicaciones} />
+                    {!soloReceta && (<>
                     {fu.enfermedadActual && (
                       <div className="mt-1 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Enfermedad actual:</b> {fu.enfermedadActual}
@@ -3435,6 +3498,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         </ul>
                       </div>
                     )}
+                    </>)}
                     {Array.isArray(fu.recetaItems) && fu.recetaItems.length > 0 && (() => {
                       // Los ítems se guardan juntos; se separan por `isService`
                       // (servicios/programas = Derivaciones, el resto = Receta).
@@ -3499,7 +3563,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         </>
                       );
                     })()}
-                    {hasVitals && (
+                    {!soloReceta && hasVitals && (
                       <div className="mt-2 text-[11px] text-slate-600 bg-emerald-50 border border-emerald-100 rounded p-2 flex flex-wrap gap-x-3 gap-y-0.5">
                         {vs.hora && <span>Hora: {vs.hora}</span>}
                         {vs.bloodPressure && <span>TA: {vs.bloodPressure}</span>}
@@ -3521,6 +3585,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         <b>Receta:</b> {fu.receta}
                       </div>
                     )}
+                    {!soloReceta && (<>
                     {fu.planTratamiento && (
                       <div className="mt-2 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Plan de tratamiento:</b> {fu.planTratamiento}
@@ -3553,8 +3618,22 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         <b>Observaciones:</b> {fu.observaciones}
                       </div>
                     )}
-                    {/* Adjuntos (PDF o imágenes) */}
-                    <div className="mt-2 space-y-1">
+                    </>)}
+                    {/* Una consulta sin nada que aplicar no puede quedarse en un
+                        motivo suelto: en la vista recortada parecería que le
+                        falta algo por cargar. */}
+                    {soloReceta
+                      && !(fu.recetaItems || []).length
+                      && !fu.receta
+                      && !(fu.aplicaciones || []).length && (
+                      <div className="mt-1 text-[11px] text-slate-400 italic">
+                        Esta consulta no dejó nada que aplicar.
+                      </div>
+                    )}
+                    {/* Adjuntos (PDF o imágenes). Se pliegan con el resto de la
+                        consulta para enfermería: son el examen que pidió el
+                        médico, no lo que hay que aplicar. */}
+                    <div className={`mt-2 space-y-1${soloReceta ? ' hidden' : ''}`}>
                       {(fu.attachments || []).map((att) => (
                         <div key={att._id} className="flex items-center gap-2 text-xs text-slate-600">
                           <span>{String(att.mimeType || '').startsWith('image/') ? '🖼️' : '📎'}</span>
@@ -4063,7 +4142,7 @@ function ArchivosTab({ patientId, appointmentId }) {
                 {fmtDate(fu.fecha)}
                 {fu.createdBy?.name && (
                   <span className="text-[11px] text-emerald-700 font-medium ml-2 md:ml-0 md:mt-0.5 md:block">
-                    Dr. {fu.createdBy.name}
+                    {nombreConTratamiento(fu.createdBy.name, fu.createdByRole)}
                   </span>
                 )}
                 {fu.editedAt && (

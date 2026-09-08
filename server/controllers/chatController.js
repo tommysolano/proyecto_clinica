@@ -5129,11 +5129,48 @@ exports.createAppointmentFromChat = async (req, res) => {
       clinic: req.clinicId,
     }).populate('patient');
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
-    if (!conv.patient) {
+
+    /**
+     * LA CITA NO SIEMPRE ES PARA QUIEN ESCRIBE.
+     *
+     * El caso es diario en el call center: la señora que ya es paciente llama
+     * para pedir hora «para mi esposo», o una hija agenda por su madre. Hasta
+     * ahora la cita se creaba a nombre del contacto —el único paciente que este
+     * endpoint conocía— y quien llegaba a la clínica no era el de la agenda: la
+     * historia clínica se escribía en la ficha equivocada.
+     *
+     * Con `patientId` la tanda entera se agenda a nombre de OTRO paciente ya
+     * registrado (el asesor lo busca, o lo da de alta antes por la vía normal).
+     * El chat sigue siendo el origen —`conversation` se guarda igual, y por eso
+     * el panel de Supervisión sigue contando estas citas como suyas— pero el
+     * paciente es el de verdad.
+     *
+     * Sin `patientId` todo funciona como siempre, y entonces sí hace falta que
+     * el chat esté vinculado: no hay a quién agendar.
+     */
+    const tercero = String(req.body.patientId || req.body.patient || '').trim();
+    let paciente = conv.patient;
+    if (tercero) {
+      if (!mongoose.Types.ObjectId.isValid(tercero)) {
+        return res.status(400).json({ message: 'El paciente de la cita no es válido.' });
+      }
+      paciente = await Patient.findOne({ _id: tercero, active: { $ne: false } })
+        .select('firstName lastName')
+        .lean();
+      if (!paciente) {
+        return res.status(404).json({ message: 'No se encontró al paciente de la cita.' });
+      }
+    }
+    if (!paciente) {
       return res.status(400).json({
         message: 'La conversación no está vinculada a un paciente. Vincula primero al paciente.',
       });
     }
+    const patientId = paciente._id;
+    // ¿La cita es de otra persona? De ahí cuelgan dos cosas: la oportunidad del
+    // chat y el enlace de la primera cita, que solo tienen sentido cuando quien
+    // escribe es quien viene.
+    const esParaOtro = String(patientId) !== String(conv.patient?._id || '');
 
     // Acepta dos formatos:
     //  - { appointments: [{ date, startTime, reason?, services?, clinic? }, ...] }  → múltiples citas
@@ -5178,7 +5215,7 @@ exports.createAppointmentFromChat = async (req, res) => {
     const { revisarTandaDeCitas } = require('../utils/citaRepetida');
     const tanda = await revisarTandaDeCitas({
       Appointment,
-      patient: conv.patient._id,
+      patient: patientId,
       filas: requested,
     });
     if (!tanda.ok) return res.status(tanda.status).json({ message: tanda.message });
@@ -5213,7 +5250,7 @@ exports.createAppointmentFromChat = async (req, res) => {
     const created = [];
     // Nuevo es quien no tiene NINGÚN rastro previo, no solo quien no tiene citas:
     // los que se atendían en papel llevan años viniendo (ver utils/firstVisit.js).
-    let first = await esPrimeraVisita(conv.patient._id);
+    let first = await esPrimeraVisita(patientId);
     for (const a of requested) {
       const localDate = parseLocalDate(a.date);
       const serviceItems = (a.services || [])
@@ -5265,11 +5302,22 @@ exports.createAppointmentFromChat = async (req, res) => {
       aplicarValorDeCita(valorCita, a, req);
       const appointment = await Appointment.create({
         clinic: targetClinic,
-        patient: conv.patient._id,
+        patient: patientId,
         date: localDate,
         startTime: a.startTime,
         ...valorCita,
-        reason: a.reason || conv.opportunity?.notes || `Cita desde chat ${conv.phone}`,
+        /**
+         * Si la cita es PARA OTRA PERSONA y no se escribió motivo, el motivo por
+         * defecto dice quién la pidió. Sin eso, mostrador recibe a alguien que no
+         * ha hablado nunca con la clínica y en la cita solo pone «Cita desde chat
+         * 0999…», que es el número de OTRA persona: el rastro se pierde justo
+         * cuando más falta hace.
+         */
+        reason:
+          a.reason ||
+          (esParaOtro
+            ? `Cita pedida desde el chat de ${conv.contactName || conv.phone}`
+            : conv.opportunity?.notes || `Cita desde chat ${conv.phone}`),
         services: serviceItems,
         serviceItem: servicioAgenda?._id || null,
         serviceName: servicioAgenda?.name || '',
@@ -5291,7 +5339,7 @@ exports.createAppointmentFromChat = async (req, res) => {
       const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
       emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CREATED, {
         clinicId: String(targetClinic),
-        patientId: String(conv.patient._id),
+        patientId: String(patientId),
         appointmentId: String(appointment._id),
         appointmentDate: require('../utils/appointmentDate').appointmentDateTime(appointment.date, appointment.startTime),
         isFirstVisit: !!appointment.isFirstVisit,
@@ -5304,6 +5352,11 @@ exports.createAppointmentFromChat = async (req, res) => {
     // página de Oportunidades seguían mostrando la etapa vieja, y la siguiente
     // edición manual borraba el "agendado" y el enlace a la cita al recalcular el
     // espejo desde el array. Ver utils/opportunities.js.
+    //
+    // Vale IGUAL cuando la cita es para otra persona (`esParaOtro`): la
+    // oportunidad mide lo que este chat produjo, y agendar para el esposo es
+    // exactamente el resultado que se estaba buscando. Lo que cambia es el
+    // paciente de la cita, no de quién es la conversación.
     const movida = opportunities.applyStage(conv, 'agendado', { appointment: created[0]?._id });
     await conv.save();
     emitToCallCenter('chat:updated', { id: conv._id });

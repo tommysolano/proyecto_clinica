@@ -35,10 +35,16 @@ const allRoles = requireRole('admin', 'cajero', 'doctor', 'enfermero');
  * cualquier otro rol no administrativo: sin datos de contacto (`hideContactData`)
  * y sin lo que escribió el terapeuta, que es reservado (`hideTherapyNotes`).
  *
+ * MARKETING entra por lo mismo (sep-2026): atiende el WhatsApp de la clínica
+ * codo con codo con el call center —comparten la bandeja de /chats y las dos
+ * agendan desde ahí—, y quien contesta a un paciente que pregunta por su
+ * tratamiento necesita leer lo que está escrito, venga la pregunta por donde
+ * venga. Con el MISMO recorte y sin poder escribir nada.
+ *
  * Escribir, corregir, administrar sueros o borrar sigue siendo de quien atiende:
  * eso lo defienden las rutas de abajo, que NO llevan este grupo.
  */
-const rolesQueLeen = requireRole('admin', 'cajero', 'doctor', 'enfermero', 'call_center');
+const rolesQueLeen = requireRole('admin', 'cajero', 'doctor', 'enfermero', 'call_center', 'marketing');
 // Quien ATIENDE al paciente: doctores, especialidades y enfermería. Es quien
 // redacta lo que hizo. Mostrador (cajero) no: documenta por otro.
 const rolesQueAtienden = requireRole('admin', 'doctor', 'enfermero');
@@ -61,11 +67,11 @@ router.get('/:patientId/hcu005', requireRole('admin', 'cajero', 'doctor'), print
  * Va antes de '/:patientId' por claridad, aunque Express no las confunda: esta
  * tiene dos segmentos y aquella uno.
  *
- * Con los roles de la FICHA, y no con los de la agenda, que son más: esto es
- * historia clínica. Marketing entra a /appointments pero no a los seguimientos
- * en ninguna otra pantalla, y darle una receta por esta puerta sería abrirle la
- * historia por la ventana. (El call center sí la lee desde sep-2026, pero por la
- * ficha del paciente —ver `rolesQueLeen`—, no desde la agenda.)
+ * Con los roles de QUIEN ATIENDE, y no con los de la agenda, que son más: este
+ * atajo es el «ver la receta» de la fila de la cita. El call center y marketing
+ * leen la historia desde sep-2026 (ver `rolesQueLeen`), pero por la FICHA DEL
+ * PACIENTE —o por el chat, que abre esa misma ficha—, no por la agenda: ahí su
+ * trabajo es la cita, no la consulta.
  */
 router.get('/by-appointment/:appointmentId', allRoles, getFollowUpsByAppointment);
 
