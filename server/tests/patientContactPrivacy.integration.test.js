@@ -422,3 +422,46 @@ test('P9) quien atiende corrige el correo y la cédula, y sigue sin tocar el res
   assert.equal(enBase.whatsapp, '0991112233', 'ni el WhatsApp');
   assert.equal(enBase.address, 'Av. Siempre Viva 123', 'ni la dirección');
 });
+
+/**
+ * MARKETING REGISTRA Y CORRIGE PACIENTES (sep-2026), y eso NO le abre ningún dato
+ * nuevo: no tiene ninguna capacidad de contacto, así que sigue leyéndolo todo
+ * censurado y —lo importante— tampoco puede pisarlo, porque su formulario recibe
+ * esos campos vacíos y los devolvería vacíos. Es el mismo filtro que protege al
+ * call center (P5), aplicado a un rol que hasta ahora solo miraba.
+ */
+test('P10) marketing registra y corrige, sin ver ni borrar los datos de contacto', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId);
+
+  // Lo que ve: nada de contacto.
+  const ficha = ok(await H.runController(
+    patients.getPatient,
+    H.mockReq(clinicId, userId, {}, { role: 'marketing', params: { id: String(patient._id) } })
+  ));
+  CONTACT_FIELDS.forEach((f) => assert.equal(ficha[f], undefined, `marketing no ve ${f}`));
+
+  // Lo que corrige: lo que sí ve.
+  ok(await H.runController(
+    patients.updatePatient,
+    H.mockReq(clinicId, userId, {
+      firstName: 'ANA MARIA', cedula: '', phone: '', whatsapp: '', email: '', address: '',
+    }, { role: 'marketing', params: { id: String(patient._id) } })
+  ));
+  const enBase = await Patient.findById(patient._id);
+  assert.equal(enBase.firstName, 'ANA MARIA', 'el nombre sí lo corrige');
+  assert.equal(enBase.cedula, '0102030405', 'la cédula sigue ahí');
+  assert.equal(enBase.phone, '0991112233', 'el teléfono sigue ahí');
+  assert.equal(enBase.whatsapp, '0991112233');
+  assert.equal(enBase.email, 'ana@example.com');
+  assert.equal(enBase.address, 'Av. Siempre Viva 123');
+
+  // Y da de alta: el contacto de una campaña que pide hora ya no hay que
+  // dictárselo a un cajero.
+  const nuevo = ok(await H.runController(
+    patients.createPatient,
+    H.mockReq(clinicId, userId, { firstName: 'LUIS', lastName: 'TORRES' }, { role: 'marketing' })
+  ));
+  assert.equal(nuevo.firstName, 'LUIS');
+  assert.ok(await Patient.findById(nuevo._id), 'quedó registrado');
+});

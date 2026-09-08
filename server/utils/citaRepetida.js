@@ -117,31 +117,41 @@ function mensajeDeCitaRepetida(cita, { fila = null } = {}) {
  * dentro del bucle, una tanda de tres con la última repetida dejaría las dos
  * primeras creadas y devolvería un error, que es el peor de los dos mundos.
  *
+ * El paciente puede venir POR FILA (`filas[i].patient`) o suelto para toda la
+ * tanda (`patient`), que es como se llamaba antes. Lo primero manda: desde el
+ * chat una tanda puede repartirse entre varias personas.
+ *
  * @returns {Promise<{ ok: true } | { ok: false, status: number, message: string }>}
  */
 async function revisarTandaDeCitas({ Appointment, patient, filas }) {
-  const vistas = new Map(); // clave de hueco → nº de fila que lo pidió primero
+  const vistas = new Map(); // clave paciente+hueco → nº de fila que lo pidió primero
   for (let i = 0; i < filas.length; i++) {
     const fila = filas[i];
+    const suyo = fila.patient || patient;
     const clave = claveDeHueco(fila.date, fila.startTime);
-    if (!clave) continue;
-    if (vistas.has(clave)) {
+    if (!clave || !suyo) continue;
+    // LA CLAVE LLEVA AL PACIENTE porque desde el chat una misma tanda puede
+    // repartirse entre varias personas (la madre pide hora para ella y para el
+    // niño). Dos filas a la misma hora son un error si son de la MISMA persona
+    // —no puede estar en dos sitios a la vez— y perfectamente normales si no.
+    const clavePorPaciente = `${suyo}|${clave}`;
+    if (vistas.has(clavePorPaciente)) {
       return {
         ok: false,
         status: 400,
         message:
-          `Las citas #${vistas.get(clave)} y #${i + 1} son la misma: ${diaLegible(fila.date)} ` +
+          `Las citas #${vistas.get(clavePorPaciente)} y #${i + 1} son la misma: ${diaLegible(fila.date)} ` +
           `a las ${fila.startTime}. Quita una de las dos.`,
       };
     }
-    vistas.set(clave, i + 1);
+    vistas.set(clavePorPaciente, i + 1);
   }
 
   for (let i = 0; i < filas.length; i++) {
     // eslint-disable-next-line no-await-in-loop
     const yaExiste = await buscarCitaRepetida({
       Appointment,
-      patient,
+      patient: filas[i].patient || patient,
       date: filas[i].date,
       startTime: filas[i].startTime,
     });

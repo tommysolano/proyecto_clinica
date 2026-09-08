@@ -131,3 +131,133 @@ test('se puede agendar para otra persona aunque el chat no esté vinculado a nad
   }));
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
 });
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * UNA TANDA, VARIAS PERSONAS (sep-2026)
+ *
+ * El destinatario dejó de ser de la tanda y pasó a ser de CADA CITA: la madre
+ * que llama pide hora para ella y para el niño en la misma llamada. Y con él la
+ * sucursal, que se preguntaba una sola vez para todas —la segunda cita se iba a
+ * la sede de la primera sin que nadie lo viera—.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+test('una tanda puede repartirse entre el contacto y otra persona', async () => {
+  const { clinicId, userId, contacto, esposo, conv } = await seed();
+
+  ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
+    appointments: [
+      // Sin `patientId`: para quien escribe.
+      { date: manana(), startTime: '09:00' },
+      // Con `patientId`: para el marido, en la misma llamada.
+      { date: manana(), startTime: '09:30', patientId: String(esposo._id) },
+    ],
+  })));
+
+  const citas = await Appointment.find({}).sort({ startTime: 1 }).lean();
+  assert.equal(citas.length, 2);
+  assert.equal(String(citas[0].patient), String(contacto._id), 'la de las 9 es de ella');
+  assert.equal(String(citas[1].patient), String(esposo._id), 'la de las 9:30 es de él');
+  // El chat es el origen de las dos: Supervisión las cuenta igual.
+  citas.forEach((c) => assert.equal(String(c.conversation), String(conv._id)));
+  // Y solo la del tercero lleva el motivo que dice de qué chat salió.
+  assert.match(citas[1].reason, /Maria/);
+  assert.doesNotMatch(citas[0].reason, /Cita pedida desde el chat/);
+});
+
+test('«paciente nuevo» se resuelve por persona, no una vez para la tanda', async () => {
+  const { clinicId, userId, contacto, esposo, conv } = await seed();
+  // Ella lleva años viniendo; el marido no ha pisado la clínica.
+  await ClinicalRecord.create({
+    clinic: clinicId,
+    patient: contacto._id,
+    createdBy: userId,
+    followUps: [{ fecha: new Date(), motivoConsulta: 'control', createdBy: userId }],
+  });
+
+  ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
+    appointments: [
+      { date: manana(), startTime: '09:00' },
+      { date: manana(), startTime: '09:30', patientId: String(esposo._id) },
+    ],
+  })));
+
+  const citas = await Appointment.find({}).sort({ startTime: 1 }).lean();
+  assert.equal(citas[0].isFirstVisit, false, 'ella ya tiene historia');
+  assert.equal(citas[1].isFirstVisit, true, 'él sí es nuevo: no hereda la respuesta de ella');
+});
+
+test('la primera de cada persona es la única «nueva» de esa persona', async () => {
+  const { clinicId, userId, contacto, esposo, conv } = await seed();
+
+  ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
+    appointments: [
+      { date: manana(), startTime: '09:00' },
+      { date: manana(), startTime: '09:30', patientId: String(esposo._id) },
+      { date: manana(), startTime: '10:00' },
+      { date: manana(), startTime: '10:30', patientId: String(esposo._id) },
+    ],
+  })));
+
+  const porPaciente = (id) => Appointment.find({ patient: id }).sort({ startTime: 1 }).lean();
+  for (const id of [contacto._id, esposo._id]) {
+    const suyas = await porPaciente(id);
+    assert.equal(suyas.length, 2);
+    assert.equal(suyas[0].isFirstVisit, true);
+    assert.equal(suyas[1].isFirstVisit, false, 'la segunda de esa persona ya no es la primera');
+  }
+});
+
+test('cada cita va a SU sucursal', async () => {
+  const { clinicId, userId, esposo, conv } = await seed();
+  const otraSede = await Clinic.create({ name: 'Sucursal Norte' });
+
+  ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
+    appointments: [
+      { date: manana(), startTime: '09:00', clinic: String(clinicId) },
+      { date: manana(), startTime: '09:30', patientId: String(esposo._id), clinic: String(otraSede._id) },
+    ],
+  })));
+
+  const citas = await Appointment.find({}).sort({ startTime: 1 }).lean();
+  assert.equal(String(citas[0].clinic), String(clinicId));
+  assert.equal(String(citas[1].clinic), String(otraSede._id), 'la segunda NO hereda la sede de la primera');
+});
+
+test('dos personas distintas SÍ caben en la misma hora; la misma persona no', async () => {
+  const { clinicId, userId, esposo, conv } = await seed();
+
+  // Madre e hijo a la misma hora: son dos personas, es normal.
+  ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
+    appointments: [
+      { date: manana(), startTime: '09:00' },
+      { date: manana(), startTime: '09:00', patientId: String(esposo._id) },
+    ],
+  })));
+  assert.equal(await Appointment.countDocuments({}), 2);
+
+  // La MISMA persona dos veces en el mismo hueco sigue bloqueada.
+  const r = await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
+    appointments: [
+      { date: manana(), startTime: '15:00', patientId: String(esposo._id) },
+      { date: manana(), startTime: '15:00', patientId: String(esposo._id) },
+    ],
+  }));
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /son la misma/);
+  assert.equal(await Appointment.countDocuments({}), 2, 'no se creó ninguna de las dos');
+});
+
+test('un id inventado en UNA fila tumba la tanda entera, sin crear nada', async () => {
+  const { clinicId, userId, conv } = await seed();
+  const inventado = new H.mongoose.Types.ObjectId();
+
+  const r = await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
+    appointments: [
+      { date: manana(), startTime: '09:00' },
+      { date: manana(), startTime: '09:30', patientId: String(inventado) },
+    ],
+  }));
+
+  assert.equal(r.statusCode, 404, JSON.stringify(r.payload));
+  assert.equal(await Appointment.countDocuments({}), 0, 'ni siquiera la primera, que era válida');
+});

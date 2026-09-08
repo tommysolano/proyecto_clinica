@@ -44,9 +44,21 @@ async function seed() {
   return { clinicId, userId, patient, sofia, jaime, doc };
 }
 
+/**
+ * MAÑANA, no hoy: agendar HOY a las 10:00 lo rechaza la validación de hora
+ * pasada en cuanto son las 10:01 en Ecuador, así que estos seis tests solo
+ * pasaban si la suite se corría a primera hora de la mañana. Lo que se está
+ * probando es a nombre de quién queda la cita, no qué día es.
+ */
+const manana = () => {
+  const d = H.docDate();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+};
+
 const cuerpoCita = (patient, extra = {}) => ({
   patient: String(patient._id),
-  date: H.docDate().toISOString().slice(0, 10),
+  date: manana(),
   startTime: '10:00',
   ...extra,
 });

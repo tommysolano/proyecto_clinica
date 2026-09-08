@@ -6442,7 +6442,7 @@ function SelectorOtroPaciente({ valor, onChange }) {
   const busqueda = useDebounce(q, 350);
   const [resultados, setResultados] = useState([]);
   const [buscando, setBuscando] = useState(false);
-  const [alta, setAlta] = useState(null); // { fullName, cedula, phone } o null
+  const [alta, setAlta] = useState(null); // { fullName, email } o null
   const [guardando, setGuardando] = useState(false);
 
   useEffect(() => {
@@ -6457,6 +6457,15 @@ function SelectorOtroPaciente({ valor, onChange }) {
     return () => { vivo = false; };
   }, [busqueda]);
 
+  /**
+   * EL ALTA PIDE LO MISMO QUE LA DEL CONTACTO: nombre y correo.
+   *
+   * Pedía además cédula y teléfono, y era pedirle al agente un dato que él no
+   * puede ver: ni el call center ni marketing tienen las capacidades de
+   * contacto, así que el número que acababa de teclear desaparecía de su
+   * pantalla en cuanto se guardaba. Lo que falte lo completa mostrador cuando
+   * la persona llega —que es quien lo va a necesitar, para facturar—.
+   */
   const registrar = async () => {
     const { firstName, lastName } = partirNombreCompleto(alta?.fullName || '');
     if (!firstName && !lastName) return toast.error('Escribe el nombre de la persona');
@@ -6465,8 +6474,7 @@ function SelectorOtroPaciente({ valor, onChange }) {
       const { data } = await api.post('/patients', {
         firstName,
         lastName,
-        cedula: (alta.cedula || '').trim(),
-        phone: (alta.phone || '').trim(),
+        email: (alta.email || '').trim(),
       });
       onChange(data);
       setAlta(null);
@@ -6506,20 +6514,12 @@ function SelectorOtroPaciente({ valor, onChange }) {
           placeholder="Nombre completo"
           className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
         />
-        <div className="flex gap-2">
-          <input
-            value={alta.cedula}
-            onChange={(e) => setAlta({ ...alta, cedula: e.target.value })}
-            placeholder="Cédula (opcional)"
-            className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
-          />
-          <input
-            value={alta.phone}
-            onChange={(e) => setAlta({ ...alta, phone: e.target.value })}
-            placeholder="Teléfono (opcional)"
-            className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
-          />
-        </div>
+        <input
+          value={alta.email}
+          onChange={(e) => setAlta({ ...alta, email: e.target.value })}
+          placeholder="Correo electrónico (opcional)"
+          className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+        />
         <div className="flex justify-end gap-2">
           <button
             type="button"
@@ -6572,7 +6572,7 @@ function SelectorOtroPaciente({ valor, onChange }) {
       {puedeRegistrar && (
         <button
           type="button"
-          onClick={() => setAlta({ fullName: q.trim(), cedula: '', phone: '' })}
+          onClick={() => setAlta({ fullName: q.trim(), email: '' })}
           className="text-[11px] text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0"
         >
           + No está en el sistema: registrarla
@@ -6585,20 +6585,6 @@ function SelectorOtroPaciente({ valor, onChange }) {
 function AgregarYAgendarModal({ conv, onClose, onDone }) {
   const { clinics, activeClinic, hasRole } = useAuth();
   const yaEsPaciente = !!conv.patient;
-  /**
-   * LA CITA NO SIEMPRE ES PARA QUIEN ESCRIBE (sep-2026).
-   *
-   * Pasa a diario: la paciente de siempre pide hora «para mi esposo», o una hija
-   * llama por su madre. Hasta ahora solo se podía agendar a nombre del contacto,
-   * así que esas citas quedaban a nombre de quien llamó — y quien llegaba a la
-   * clínica no era el de la agenda: la consulta se escribía en la ficha
-   * equivocada, que es un error que no se deshace.
-   *
-   * El chat sigue siendo el origen de la cita (se guarda `conversation`, y por
-   * eso el panel de Supervisión la cuenta igual): lo que cambia es el paciente.
-   */
-  const [paraOtro, setParaOtro] = useState(false);
-  const [otroPaciente, setOtroPaciente] = useState(null);
   /**
    * El VALOR y el pago adelantado son de quien VENDE la cita: administración,
    * caja y el call center (espejo de `puedeFijarValor` en el servidor). A
@@ -6633,10 +6619,34 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
   const [agendar, setAgendar] = useState(yaEsPaciente);
   // Soporte para agendar múltiples citas en una sola operación.
   // Importante: arrancamos SIN servicios pre-seleccionados (el usuario los elige cada vez).
+  /**
+   * CADA CITA DICE DE QUIÉN ES Y EN QUÉ SEDE (sep-2026).
+   *
+   * LA CITA NO SIEMPRE ES PARA QUIEN ESCRIBE: pasa a diario que la paciente de
+   * siempre pide hora «para mi esposo», o que una hija llame por su madre. Si la
+   * cita quedaba a nombre de quien llamó, quien llegaba a la clínica no era el
+   * de la agenda y la consulta se escribía en la ficha equivocada, que es un
+   * error que no se deshace.
+   *
+   * Eso ya se arregló una vez, pero con UN destinatario para la tanda entera, y
+   * se quedó corto por el mismo motivo: la madre que llama pide hora para ella Y
+   * para el niño en la misma llamada. Peor todavía, al añadir la segunda cita no
+   * había forma de saber a nombre de quién estaba quedando —ni de cambiarlo—, y
+   * la sucursal se preguntaba UNA vez para todas: la segunda cita se iba a la
+   * sede de la primera sin que nadie lo viera.
+   *
+   * Por eso el destinatario y la sucursal viven en la fila, como la fecha o la
+   * hora. `paraOtro: false` = para el contacto del chat, que es lo normal.
+   */
   const emptyAppt = () => ({
     date: today,
     startTime: '09:00',
     reason: '',
+    // De quién es ESTA cita. Con `paraOtro` el servidor recibe `patientId`.
+    paraOtro: false,
+    otroPaciente: null,
+    // La sucursal se ESCOGE (ver más abajo): en blanco a propósito.
+    clinicId: '',
     // Servicio del catálogo propio de la agenda: { _id, name } o null.
     serviceItem: null,
     /**
@@ -6685,98 +6695,79 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
   }, []);
 
   const unaSolaSede = (sedes?.length || 0) <= 1;
-  const [clinicId, setClinicId] = useState('');
-  // Con una sola sucursal no hay nada que escoger: se manda esa y el selector ni
-  // se enseña. Va en efecto porque la lista puede llegar después.
+  // Con una sola sucursal no hay nada que escoger: se rellena sola en cada fila
+  // y el selector ni se enseña. Va en efecto porque la lista puede llegar
+  // después, y también alcanza a las citas que se añadan más tarde.
   useEffect(() => {
-    if (unaSolaSede) setClinicId(sedes[0]?._id || activeClinic?._id || conv.clinic || '');
+    if (!unaSolaSede) return;
+    const sede = sedes[0]?._id || activeClinic?._id || conv.clinic || '';
+    setItems((prev) => (prev.every((it) => it.clinicId)
+      ? prev
+      : prev.map((it) => (it.clinicId ? it : { ...it, clinicId: sede }))));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unaSolaSede, sedes]);
+  }, [unaSolaSede, sedes, items.length]);
   const [saving, setSaving] = useState(false);
-  // Espacios de la agenda de la sucursal ELEGIDA en este formulario: el asesor
-  // agenda en la sede que le pida el paciente, no siempre en la suya.
+  // Espacios de la agenda de la sucursal ELEGIDA en CADA cita: el asesor agenda
+  // en la sede que le pida el paciente, no siempre en la suya, y una tanda puede
+  // repartirse entre dos sedes.
   // Sale de `sedes` (la lista de la organización): con las del usuario, agendar
   // en otra sucursal usaba la rejilla equivocada y el servidor devolvía
   // SLOT_INVALID sobre una hora que el formulario había ofrecido como válida.
-  const slotMinutesDeSede =
+  const slotMinutesDe = (id) =>
     Number(
-      (sedes || []).find((c) => String(c._id) === String(clinicId))?.appointmentSlotMinutes
-        ?? (String(activeClinic?._id) === String(clinicId) ? activeClinic?.appointmentSlotMinutes : 0),
+      (sedes || []).find((c) => String(c._id) === String(id))?.appointmentSlotMinutes
+        ?? (String(activeClinic?._id) === String(id) ? activeClinic?.appointmentSlotMinutes : 0),
     ) || 0;
+
+  /**
+   * ¿HAY QUE DAR DE ALTA AL CONTACTO? Solo si aún no es paciente Y algo de lo
+   * que se está haciendo es suyo: alguna de las citas, o el propio registro
+   * cuando no se agenda nada. Si todas las citas son para otras personas, quien
+   * escribe no acaba de paciente solo por haber pedido hora para su marido —eso
+   * llenaba el padrón de fichas vacías—.
+   */
+  const necesitaAlta = !yaEsPaciente && (!agendar || items.some((it) => !it.paraOtro));
+  /** De quién es una cita, para poder decirlo en su cabecera. */
+  const deQuienEs = (it) => {
+    if (!it.paraOtro) return conv.contactName || 'el contacto';
+    if (!it.otroPaciente) return 'sin escoger a quién';
+    return `${it.otroPaciente.firstName || ''} ${it.otroPaciente.lastName || ''}`.trim() || 'otra persona';
+  };
 
   const updateItem = (idx, patch) => {
     setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
   };
 
   /**
-   * Da de alta al contacto (si hace falta) y agenda (si se marcó).
+   * Da de alta al contacto (si hace falta) y agenda las citas de la tanda, cada
+   * una a nombre de quien diga su fila.
    *
    * El orden importa y el corte también: si el alta sale bien y la cita falla,
    * el paciente YA está creado y se dice exactamente eso, en vez de dejar al
    * asesor pensando que no se guardó nada y volver a intentarlo (creando dos).
    */
   const submit = async () => {
-    /**
-     * CITA PARA OTRA PERSONA: se salta el alta del contacto entera.
-     *
-     * Quien escribe no tiene por qué acabar dado de alta como paciente solo
-     * porque haya pedido hora para su marido: eso llenaba el padrón de fichas
-     * vacías. Se agenda a nombre del otro y el chat se queda como estaba.
-     */
-    if (paraOtro) {
-      if (!otroPaciente?._id) return toast.error('Escoge para quién es la cita');
-      for (let i = 0; i < items.length; i++) {
-        if (!items[i].date || !items[i].startTime) {
-          return toast.error(`La cita #${i + 1} requiere fecha y hora`);
-        }
-      }
-      if (!unaSolaSede && !clinicId) return toast.error('Escoge la sucursal de la cita');
-      setSaving(true);
-      try {
-        const r = await api.post(`/chats/${conv._id}/appointment`, {
-          patientId: otroPaciente._id,
-          bookedBy: agendadoPor || undefined,
-          appointments: items.map((it) => ({
-            date: it.date,
-            startTime: it.startTime,
-            reason: it.reason,
-            clinic: clinicId || undefined,
-            serviceItem: it.serviceItem?._id || null,
-            agreedValue: it.isCanje ? 0 : (it.agreedValue ?? ''),
-            isCanje: !!it.isCanje,
-            advancePayment: it.advancePayment || '',
-            advanceAmount: it.advanceAmount ?? '',
-            advanceMethod: it.advanceMethod || '',
-          })),
-        });
-        onDone(r.data.conversation, (r.data.appointments || []).length || 1);
-      } catch (err) {
-        toast.error(err.response?.data?.message || 'Error al crear cita(s)');
-      } finally {
-        setSaving(false);
-      }
-      return;
-    }
-
-    if (!yaEsPaciente) {
+    if (necesitaAlta && !isWhatsapp && !datos.phone.trim()) {
       // Nombre y correo NO se exigen (misma regla que el alta desde Clientes):
       // se registra con lo que se sepa y se completa después. El teléfono real
       // sigue siendo obligatorio fuera de WhatsApp, que es otra cosa: sin él
       // este chat no se puede vincular con nada.
-      if (!isWhatsapp && !datos.phone.trim()) {
-        return toast.error(`Este chat es de ${CHANNEL_TAB_LABELS[conv.channel] || conv.channel}: escribe el teléfono real del contacto.`);
-      }
+      return toast.error(`Este chat es de ${CHANNEL_TAB_LABELS[conv.channel] || conv.channel}: escribe el teléfono real del contacto.`);
     }
     if (agendar) {
-      // Con varias sedes la sucursal es obligatoria: sin esto el servidor caería
-      // en la del asesor, que es justo el error que se quiere impedir.
-      if (!unaSolaSede && !clinicId) {
-        return toast.error('Escoge la sucursal de la cita');
-      }
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
+        if (it.paraOtro && !it.otroPaciente?._id) {
+          return toast.error(`La cita #${i + 1}: escoge para quién es.`);
+        }
         if (!it.date || !it.startTime) {
           return toast.error(`La cita #${i + 1} requiere fecha y hora`);
+        }
+        // Con varias sedes la sucursal es obligatoria EN CADA CITA: sin esto el
+        // servidor caería en la del asesor, que es justo el error que se quiere
+        // impedir — y antes se preguntaba una sola vez para toda la tanda.
+        if (!unaSolaSede && !it.clinicId) {
+          return toast.error(`La cita #${i + 1}: escoge la sucursal.`);
         }
         // El servicio ya no bloquea: se puede agendar y decidir después a qué viene.
       }
@@ -6785,7 +6776,7 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
     setSaving(true);
     let conversacion = conv;
     try {
-      if (!yaEsPaciente) {
+      if (necesitaAlta) {
         const { firstName, lastName } = partirNombreCompleto(datos.fullName);
         const r = await api.post(`/chats/${conv._id}/register-patient`, {
           firstName,
@@ -6811,10 +6802,12 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
         // A quién se le acredita la tanda entera ('' = a quien la escribe).
         bookedBy: agendadoPor || undefined,
         appointments: items.map((it) => ({
+          // Sin `patientId` la cita es del paciente del chat, como siempre.
+          patientId: it.paraOtro ? it.otroPaciente._id : undefined,
           date: it.date,
           startTime: it.startTime,
           reason: it.reason,
-          clinic: clinicId || undefined,
+          clinic: it.clinicId || undefined,
           serviceItem: it.serviceItem?._id || null,
           // El servidor decide si este rol puede fijarlos (aplicarValorDeCita).
           agreedValue: it.isCanje ? 0 : (it.agreedValue ?? ''),
@@ -6830,11 +6823,11 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
       // vuelva a intentar el alta entera y acaben dos fichas del mismo contacto.
       toast.error(
         `${err.response?.data?.message || 'Error al crear cita(s)'}${
-          yaEsPaciente ? '' : '. El paciente sí quedó agregado al sistema.'
+          necesitaAlta ? '. El paciente sí quedó agregado al sistema.' : ''
         }`,
         { duration: 7000 }
       );
-      if (!yaEsPaciente) onDone(conversacion, 0);
+      if (necesitaAlta) onDone(conversacion, 0);
     } finally {
       setSaving(false);
     }
@@ -6842,7 +6835,7 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
 
   return (
     <ModalShell
-      title={yaEsPaciente || paraOtro ? 'Agendar cita(s) desde chat' : 'Agregar al sistema y agendar'}
+      title={necesitaAlta ? 'Agregar al sistema y agendar' : 'Agendar cita(s) desde chat'}
       onClose={onClose}
       size="lg"
     >
@@ -6853,50 +6846,12 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
           {isWhatsapp && conv.contactName && <span className="text-emerald-700/70"> · {conv.phone}</span>}
         </div>
 
-        {/* ─────────── ¿PARA QUIÉN ES LA CITA? ───────────
-            Primero de todo, porque de la respuesta depende el resto del
-            formulario: si es para otra persona no hay que dar de alta a quien
-            escribe. Va desmarcado: lo normal sigue siendo agendar para el
-            contacto. */}
-        <div className="border border-slate-200 rounded-xl p-2.5 space-y-2">
-          <p className="text-xs font-medium text-slate-600 m-0">¿Para quién es la cita?</p>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => { setParaOtro(false); setOtroPaciente(null); }}
-              className={`text-xs px-2.5 py-1.5 rounded-lg border cursor-pointer ${
-                paraOtro
-                  ? 'bg-white border-slate-200 text-slate-600'
-                  : 'bg-emerald-600 border-emerald-600 text-white'
-              }`}
-            >
-              Para {conv.contactName || 'el contacto'}
-            </button>
-            <button
-              type="button"
-              onClick={() => { setParaOtro(true); setAgendar(true); }}
-              className={`text-xs px-2.5 py-1.5 rounded-lg border cursor-pointer ${
-                paraOtro
-                  ? 'bg-emerald-600 border-emerald-600 text-white'
-                  : 'bg-white border-slate-200 text-slate-600'
-              }`}
-            >
-              Para otra persona
-            </button>
-          </div>
-          {paraOtro && (
-            <>
-              <SelectorOtroPaciente valor={otroPaciente} onChange={setOtroPaciente} />
-              <p className="text-[11px] text-slate-400 m-0">
-                La cita queda a nombre de esta persona; el chat sigue siendo de{' '}
-                {conv.contactName || conv.phone}.
-              </p>
-            </>
-          )}
-        </div>
-
-        {/* ─────────── Alta del contacto (solo si aún no es paciente) ─────────── */}
-        {!yaEsPaciente && !paraOtro && (
+        {/* ─────────── Alta del contacto ───────────
+            Solo si aún no es paciente Y algo de esto es suyo: ver `necesitaAlta`.
+            Cuando todas las citas son para otras personas, quien escribe no se
+            da de alta —no tiene por qué acabar de paciente por haber pedido hora
+            para su marido—. */}
+        {necesitaAlta && (
           <div className="border border-slate-200 rounded-xl p-3 space-y-2">
             <div>
               <label className="text-xs font-medium text-slate-600">Nombre completo</label>
@@ -6938,10 +6893,8 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
           </div>
         )}
 
-        {/* La casilla: registrar y agendar en el mismo paso, como en /patients.
-            No sale cuando la cita es para otra persona: ahí no se registra a
-            nadie y agendar es lo único que se está haciendo. */}
-        {!yaEsPaciente && !paraOtro && (
+        {/* La casilla: registrar y agendar en el mismo paso, como en /patients. */}
+        {!yaEsPaciente && (
           <label className="flex items-start gap-2 cursor-pointer">
             <input
               type="checkbox"
@@ -6950,9 +6903,10 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
               className="mt-0.5 cursor-pointer"
             />
             <span className="text-sm text-slate-800">
-              Agendar cita para este paciente
+              Agendar cita(s)
               <span className="block text-xs text-slate-500">
-                Se crea junto con el alta, sin abrir otra ventana.
+                Se crean junto con el alta, sin abrir otra ventana. Cada una puede
+                ser para el contacto o para otra persona.
               </span>
             </span>
           </label>
@@ -6960,31 +6914,25 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
 
         {agendar && (
           <>
-            {!unaSolaSede && (
-              <div>
-                <label className="text-xs font-medium text-slate-600">Sucursal *</label>
-                <select
-                  value={clinicId}
-                  onChange={(e) => setClinicId(e.target.value)}
-                  className={`w-full border rounded-xl px-2 py-1.5 mt-1 ${
-                    clinicId ? 'border-slate-200' : 'border-amber-300 bg-amber-50'
-                  }`}
-                >
-                  <option value="">Seleccionar sucursal…</option>
-                  {sedes.map((c) => (
-                    <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-
+            {/* La sucursal ya NO se pregunta aquí: va dentro de cada cita (una
+                tanda puede repartirse entre dos sedes, y preguntándola una sola
+                vez la segunda cita se iba a la sede de la primera sin que nadie
+                lo viera). Aquí solo queda lo que sí es de la tanda entera. */}
             <AgendadoPorSelect value={agendadoPor} onChange={setAgendadoPor} />
 
             <div className="space-y-3">
               {items.map((it, idx) => (
                 <div key={idx} className="border border-slate-200 rounded-xl p-3 bg-slate-50/40 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-emerald-700">Cita #{idx + 1}</span>
+                  <div className="flex items-center justify-between gap-2">
+                    {/* El nombre va EN LA CABECERA, no solo dentro del selector:
+                        con la ventana llena de citas iguales, saber de quién es
+                        cada una tenía que costar cero. */}
+                    <span className="text-xs font-bold text-emerald-700 truncate">
+                      Cita #{idx + 1}
+                      <span className={`font-normal ${it.paraOtro && !it.otroPaciente ? 'text-amber-600' : 'text-slate-500'}`}>
+                        {' · '}{deQuienEs(it)}
+                      </span>
+                    </span>
                     {items.length > 1 && (
                       <button
                         type="button"
@@ -6995,6 +6943,73 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
                       </button>
                     )}
                   </div>
+                  {/* ─── ¿DE QUIÉN ES ESTA CITA? ───
+                      Lo primero de la fila, porque de eso depende todo lo demás.
+                      Va por cita y no una vez para la tanda: la madre que llama
+                      pide hora para ella Y para el niño en la misma llamada. */}
+                  <div className="rounded-lg bg-white border border-slate-200 p-2 space-y-2">
+                    <p className="text-[11px] font-medium text-slate-500 m-0">¿Para quién es esta cita?</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => updateItem(idx, { paraOtro: false, otroPaciente: null })}
+                        className={`text-xs px-2.5 py-1.5 rounded-lg border cursor-pointer ${
+                          it.paraOtro
+                            ? 'bg-white border-slate-200 text-slate-600'
+                            : 'bg-emerald-600 border-emerald-600 text-white'
+                        }`}
+                      >
+                        Para {conv.contactName || 'el contacto'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updateItem(idx, { paraOtro: true })}
+                        className={`text-xs px-2.5 py-1.5 rounded-lg border cursor-pointer ${
+                          it.paraOtro
+                            ? 'bg-emerald-600 border-emerald-600 text-white'
+                            : 'bg-white border-slate-200 text-slate-600'
+                        }`}
+                      >
+                        Para otra persona
+                      </button>
+                    </div>
+                    {it.paraOtro && (
+                      <>
+                        <SelectorOtroPaciente
+                          valor={it.otroPaciente}
+                          onChange={(pac) => updateItem(idx, { otroPaciente: pac })}
+                        />
+                        <p className="text-[11px] text-slate-400 m-0">
+                          Queda a nombre de esta persona; el chat sigue siendo de{' '}
+                          {conv.contactName || conv.phone}.
+                        </p>
+                      </>
+                    )}
+                  </div>
+
+                  {/* LA SUCURSAL SE ESCOGE, NO SE HEREDA, y se escoge EN CADA CITA.
+                      Venía puesta la sede activa del asesor: el campo ya decía algo
+                      razonable, nadie lo tocaba, y la cita quedaba en la sucursal
+                      equivocada — eso no se descubre hasta que el paciente llega a
+                      la otra puerta. Por lo mismo no se copia de la cita anterior. */}
+                  {!unaSolaSede && (
+                    <div>
+                      <label className="text-xs font-medium text-slate-600">Sucursal *</label>
+                      <select
+                        value={it.clinicId}
+                        onChange={(e) => updateItem(idx, { clinicId: e.target.value })}
+                        className={`w-full border rounded-xl px-2 py-1.5 mt-1 ${
+                          it.clinicId ? 'border-slate-200 bg-white' : 'border-amber-300 bg-amber-50'
+                        }`}
+                      >
+                        <option value="">Seleccionar sucursal…</option>
+                        {sedes.map((c) => (
+                          <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="text-xs font-medium text-slate-600">Fecha</label>
@@ -7002,9 +7017,9 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
                     </div>
                     <div>
                       <label className="text-xs font-medium text-slate-600">Hora</label>
-                      {/* Los espacios son los de la SUCURSAL elegida arriba, no los
+                      {/* Los espacios son los de la SUCURSAL de ESTA cita, no los
                           de la sede del asesor: desde el chat se agenda en cualquiera. */}
-                      <TimeSlotInput value={it.startTime} slotMinutes={slotMinutesDeSede} min={it.date === today ? nowEcHHMM() : undefined} onChange={(e) => updateItem(idx, { startTime: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
+                      <TimeSlotInput value={it.startTime} slotMinutes={slotMinutesDe(it.clinicId)} min={it.date === today ? nowEcHHMM() : undefined} onChange={(e) => updateItem(idx, { startTime: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
                     </div>
                   </div>
                   <div>
@@ -7037,7 +7052,7 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
                   <SameSlotPanel
                     date={it.date}
                     startTime={it.startTime}
-                    clinicId={clinicId}
+                    clinicId={it.clinicId}
                     // Con el servicio elegido, el panel también avisa de las citas
                     // que empiezan DENTRO de lo que va a durar esta.
                     serviceItemId={it.serviceItem?._id || null}
@@ -7069,15 +7084,15 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
             disabled={saving}
             className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 border-none cursor-pointer"
           >
-            {/* Para otra persona no se agrega a nadie: el botón no puede
-                prometer un alta que no va a ocurrir. */}
+            {/* Si todas las citas son para otras personas no se agrega a nadie:
+                el botón no puede prometer un alta que no va a ocurrir. */}
             {saving
               ? 'Guardando…'
               : !agendar
                 ? 'Agregar paciente'
                 : items.length > 1
-                  ? `${yaEsPaciente || paraOtro ? '' : 'Agregar y '}crear ${items.length} citas`
-                  : `${yaEsPaciente || paraOtro ? 'Crear cita' : 'Agregar y crear cita'}`}
+                  ? `${necesitaAlta ? 'Agregar y ' : ''}crear ${items.length} citas`
+                  : `${necesitaAlta ? 'Agregar y crear cita' : 'Crear cita'}`}
           </button>
         </div>
       </div>

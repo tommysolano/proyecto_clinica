@@ -5130,51 +5130,9 @@ exports.createAppointmentFromChat = async (req, res) => {
     }).populate('patient');
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
 
-    /**
-     * LA CITA NO SIEMPRE ES PARA QUIEN ESCRIBE.
-     *
-     * El caso es diario en el call center: la señora que ya es paciente llama
-     * para pedir hora «para mi esposo», o una hija agenda por su madre. Hasta
-     * ahora la cita se creaba a nombre del contacto —el único paciente que este
-     * endpoint conocía— y quien llegaba a la clínica no era el de la agenda: la
-     * historia clínica se escribía en la ficha equivocada.
-     *
-     * Con `patientId` la tanda entera se agenda a nombre de OTRO paciente ya
-     * registrado (el asesor lo busca, o lo da de alta antes por la vía normal).
-     * El chat sigue siendo el origen —`conversation` se guarda igual, y por eso
-     * el panel de Supervisión sigue contando estas citas como suyas— pero el
-     * paciente es el de verdad.
-     *
-     * Sin `patientId` todo funciona como siempre, y entonces sí hace falta que
-     * el chat esté vinculado: no hay a quién agendar.
-     */
-    const tercero = String(req.body.patientId || req.body.patient || '').trim();
-    let paciente = conv.patient;
-    if (tercero) {
-      if (!mongoose.Types.ObjectId.isValid(tercero)) {
-        return res.status(400).json({ message: 'El paciente de la cita no es válido.' });
-      }
-      paciente = await Patient.findOne({ _id: tercero, active: { $ne: false } })
-        .select('firstName lastName')
-        .lean();
-      if (!paciente) {
-        return res.status(404).json({ message: 'No se encontró al paciente de la cita.' });
-      }
-    }
-    if (!paciente) {
-      return res.status(400).json({
-        message: 'La conversación no está vinculada a un paciente. Vincula primero al paciente.',
-      });
-    }
-    const patientId = paciente._id;
-    // ¿La cita es de otra persona? De ahí cuelgan dos cosas: la oportunidad del
-    // chat y el enlace de la primera cita, que solo tienen sentido cuando quien
-    // escribe es quien viene.
-    const esParaOtro = String(patientId) !== String(conv.patient?._id || '');
-
     // Acepta dos formatos:
-    //  - { appointments: [{ date, startTime, reason?, services?, clinic? }, ...] }  → múltiples citas
-    //  - { date, startTime, reason?, services?, clinic? }                            → una sola cita (legacy)
+    //  - { appointments: [{ date, startTime, reason?, services?, clinic?, patientId? }, ...] }
+    //  - { date, startTime, reason?, services?, clinic? }   → una sola cita (legacy)
     const requested = Array.isArray(req.body.appointments) && req.body.appointments.length
       ? req.body.appointments
       : [{
@@ -5185,9 +5143,67 @@ exports.createAppointmentFromChat = async (req, res) => {
           clinic: req.body.clinic,
         }];
 
-    const { isPastLocalDate, isPastLocalDateTime, PAST_DATE_MESSAGE, PAST_TIME_MESSAGE } = require('../utils/appointmentDate');
+    /**
+     * LA CITA NO SIEMPRE ES PARA QUIEN ESCRIBE, Y NO TODAS LAS DE LA TANDA SON
+     * PARA LA MISMA PERSONA.
+     *
+     * El caso es diario en el call center: la señora que ya es paciente llama
+     * para pedir hora «para mi esposo», o una hija agenda por su madre. Al
+     * principio esto no existía y la cita se creaba a nombre del contacto —el
+     * único paciente que este endpoint conocía—, así que quien llegaba a la
+     * clínica no era el de la agenda: la historia clínica se escribía en la
+     * ficha equivocada.
+     *
+     * Después se admitió un `patientId` para la TANDA ENTERA, y se quedó corto
+     * por la misma razón: la madre que llama pide hora para ella Y para el
+     * niño en la misma llamada, y eso obligaba a abrir la ventana dos veces.
+     * Ahora el destinatario va POR FILA (`appointments[].patientId`), igual que
+     * la sucursal o la hora, y una sola tanda puede repartirse entre varias
+     * personas.
+     *
+     * Compatibilidad: el `patientId` de primer nivel sigue valiendo como valor
+     * por defecto de todas las filas, y sin ninguno de los dos se agenda al
+     * paciente del chat — que entonces sí tiene que existir.
+     *
+     * El chat sigue siendo el ORIGEN de todas ellas (`conversation` se guarda
+     * igual, y por eso el panel de Supervisión las cuenta como suyas): lo que
+     * cambia es de quién es cada cita.
+     */
+    const idPedido = (a) => String(a?.patientId || a?.patient || '').trim();
+    const idPorDefecto = idPedido(req.body);
+    const idsTerceros = [...new Set(requested.map((a) => idPedido(a) || idPorDefecto).filter(Boolean))];
+    if (idsTerceros.some((id) => !mongoose.Types.ObjectId.isValid(id))) {
+      return res.status(400).json({ message: 'El paciente de la cita no es válido.' });
+    }
+    const terceros = idsTerceros.length
+      ? await Patient.find({ _id: { $in: idsTerceros }, active: { $ne: false } })
+          .select('firstName lastName')
+          .lean()
+      : [];
+    const pacientePorId = new Map(terceros.map((p) => [String(p._id), p]));
+    if (pacientePorId.size !== idsTerceros.length) {
+      return res.status(404).json({ message: 'No se encontró al paciente de la cita.' });
+    }
+
+    /**
+     * Las filas, ya con SU paciente resuelto. A partir de aquí no se vuelve a
+     * mirar `conv.patient`: cada cita sabe de quién es.
+     */
+    const filas = [];
     for (let i = 0; i < requested.length; i++) {
-      const a = requested[i];
+      const id = idPedido(requested[i]) || idPorDefecto;
+      const suyo = id ? pacientePorId.get(id) : conv.patient;
+      if (!suyo) {
+        return res.status(400).json({
+          message: 'La conversación no está vinculada a un paciente. Vincula primero al paciente.',
+        });
+      }
+      filas.push({ ...requested[i], patient: suyo._id });
+    }
+
+    const { isPastLocalDate, isPastLocalDateTime, PAST_DATE_MESSAGE, PAST_TIME_MESSAGE } = require('../utils/appointmentDate');
+    for (let i = 0; i < filas.length; i++) {
+      const a = filas[i];
       if (!a.date || !a.startTime) {
         return res.status(400).json({ message: `La cita #${i + 1} requiere fecha y hora de inicio.` });
       }
@@ -5215,8 +5231,10 @@ exports.createAppointmentFromChat = async (req, res) => {
     const { revisarTandaDeCitas } = require('../utils/citaRepetida');
     const tanda = await revisarTandaDeCitas({
       Appointment,
-      patient: patientId,
-      filas: requested,
+      // Sin `patient` de tanda: cada fila trae el suyo. Importa que sea por
+      // paciente y no por hueco, porque la madre y el niño SÍ pueden estar
+      // citados a la misma hora — son dos personas.
+      filas,
     });
     if (!tanda.ok) return res.status(tanda.status).json({ message: tanda.message });
 
@@ -5231,7 +5249,7 @@ exports.createAppointmentFromChat = async (req, res) => {
 
     // Recoge todos los IDs de servicios para snapshot en una sola consulta
     const allIds = new Set();
-    requested.forEach((a) => (a.services || []).forEach((s) => s.product && allIds.add(String(s.product))));
+    filas.forEach((a) => (a.services || []).forEach((s) => s.product && allIds.add(String(s.product))));
     const productsMap = new Map();
     if (allIds.size) {
       const products = await Product.find({ _id: { $in: [...allIds] } });
@@ -5248,10 +5266,26 @@ exports.createAppointmentFromChat = async (req, res) => {
     if (!atribucion.ok) return res.status(atribucion.status).json({ message: atribucion.message });
 
     const created = [];
-    // Nuevo es quien no tiene NINGÚN rastro previo, no solo quien no tiene citas:
-    // los que se atendían en papel llevan años viniendo (ver utils/firstVisit.js).
-    let first = await esPrimeraVisita(patientId);
-    for (const a of requested) {
+    /**
+     * "PACIENTE NUEVO" ES DE CADA PACIENTE, NO DE LA TANDA.
+     *
+     * Nuevo es quien no tiene NINGÚN rastro previo, no solo quien no tiene citas:
+     * los que se atendían en papel llevan años viniendo (ver utils/firstVisit.js).
+     *
+     * Se resuelve una vez POR PERSONA y se apaga en cuanto se le crea la primera
+     * cita: en una tanda mixta —una para la madre, otra para el niño— la madre
+     * puede ser antigua y el niño nuevo, y con una sola bandera compartida el
+     * segundo heredaba la respuesta del primero.
+     */
+    const primerasVisitas = new Map();
+    for (const id of new Set(filas.map((f) => String(f.patient)))) {
+      primerasVisitas.set(id, await esPrimeraVisita(id));
+    }
+    for (const a of filas) {
+      const patientId = a.patient;
+      // ¿ESTA cita es de otra persona? De ahí cuelga el motivo por defecto: quien
+      // la recibe en mostrador tiene que saber de qué chat salió.
+      const esParaOtro = String(patientId) !== String(conv.patient?._id || '');
       const localDate = parseLocalDate(a.date);
       const serviceItems = (a.services || [])
         .filter((s) => s.product)
@@ -5322,7 +5356,7 @@ exports.createAppointmentFromChat = async (req, res) => {
         serviceItem: servicioAgenda?._id || null,
         serviceName: servicioAgenda?.name || '',
         status: 'pendiente',
-        isFirstVisit: first,
+        isFirstVisit: primerasVisitas.get(String(patientId)) || false,
         // A nombre de quién queda (normalmente quien la escribe; el call center
         // puede acreditarla a la compañera que la cerró por teléfono).
         ...atribucion.fields,
@@ -5330,7 +5364,8 @@ exports.createAppointmentFromChat = async (req, res) => {
         // las citas que produjo el call center.
         conversation: conv._id,
       });
-      first = false; // solo la primera puede ser "primera visita"
+      // Solo la primera de cada persona puede ser "primera visita".
+      primerasVisitas.set(String(patientId), false);
       created.push(appointment);
       emitToClinic(targetClinic, 'appointment:created', { id: appointment._id });
       // Evento de DOMINIO: sin esto, las citas creadas desde el chat jamás
