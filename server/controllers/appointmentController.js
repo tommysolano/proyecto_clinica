@@ -2983,10 +2983,22 @@ exports.exportAppointments = async (req, res) => {
   try {
     const mongoose = require('mongoose');
     const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
-    const validos = ids.filter((id) => mongoose.Types.ObjectId.isValid(id)).slice(0, MAX_CITAS_EXCEL);
+    const validos = ids.filter((id) => mongoose.Types.ObjectId.isValid(id));
     if (!validos.length) {
       return res.status(400).json({
         message: 'No hay ninguna cita que exportar con los filtros aplicados.',
+      });
+    }
+    /**
+     * Se DICE que son demasiadas en vez de recortar en silencio. Un Excel al que
+     * le faltan citas sin avisar es peor que no tenerlo: se usa para cuadrar el
+     * día y nadie va a contar las filas para descubrir que están a medias.
+     */
+    if (validos.length > MAX_CITAS_EXCEL) {
+      return res.status(400).json({
+        message:
+          `Son ${validos.length} citas y el máximo por archivo son ${MAX_CITAS_EXCEL}. ` +
+          'Acota el rango de fechas o afina los filtros.',
       });
     }
 

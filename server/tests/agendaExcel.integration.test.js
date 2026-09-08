@@ -213,3 +213,30 @@ test('E6) el retraso va como NÚMERO, para poder ordenarlo y promediarlo', async
   assert.equal(ws.getRow(7).getCell(col).value, 23);
   assert.equal(typeof ws.getRow(7).getCell(col).value, 'number');
 });
+
+test('E7) la columna de paciente nuevo SIEMPRE dice una de las dos cosas', async () => {
+  const { clinicId, userId, citas } = await seed();
+
+  // La primera es de paciente nuevo; la segunda, no.
+  const { wb } = await pedirExcel(clinicId, userId, {
+    ids: [String(citas[0]._id), String(citas[1]._id)],
+  });
+
+  const ws = wb.getWorksheet('Citas');
+  const col = ws.getRow(6).values.findIndex((v) => v === '¿Paciente nuevo?');
+  assert.ok(col > 0, 'la columna existe y se llama por su pregunta');
+  assert.equal(ws.getRow(7).getCell(col).value, 'Nuevo');
+  // Dejarla EN BLANCO era el fallo: una columna medio vacía no se lee como «no»,
+  // se lee como que el dato no está.
+  assert.equal(ws.getRow(8).getCell(col).value, 'Recurrente');
+});
+
+test('E8) pasarse del tope se dice, no se recorta el archivo en silencio', async () => {
+  const { clinicId, userId } = await seed();
+  const demasiados = Array.from({ length: 5001 }, () => String(new H.mongoose.Types.ObjectId()));
+
+  const { res } = await pedirExcel(clinicId, userId, { ids: demasiados });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.payload.message, /5001 citas/);
+  assert.match(res.payload.message, /Acota el rango/);
+});

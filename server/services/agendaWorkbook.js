@@ -128,7 +128,7 @@ const COLUMNAS = [
   { header: 'Llegó', key: 'llego', width: 8, align: 'center' },
   { header: 'Retraso', key: 'retraso', width: 9, align: 'center', numFmt: '0" min"' },
   { header: 'Paciente', key: 'paciente', width: 30 },
-  { header: 'Nuevo', key: 'nuevo', width: 8, align: 'center' },
+  { header: '¿Paciente nuevo?', key: 'nuevo', width: 16, align: 'center' },
   { header: 'Sucursal', key: 'sucursal', width: 18 },
   { header: 'Servicio', key: 'servicio', width: 26, wrap: true },
   { header: 'Quién atiende', key: 'atiende', width: 26, wrap: true },
@@ -214,7 +214,10 @@ function hojaDeCitas(wb, citas, meta) {
       // hoja: como texto («12 min») el Excel no lo suma.
       retraso: retraso === null ? '' : retraso,
       paciente: `${a.patient?.firstName || ''} ${a.patient?.lastName || ''}`.trim(),
-      nuevo: a.isFirstVisit ? 'Sí' : '',
+      // SIEMPRE dice una de las dos cosas. Dejaba en blanco al recurrente y
+      // una columna medio vacía no se lee como «no»: se lee como que el dato no
+      // está, que es justo lo contrario de lo que quiere saber quien la mira.
+      nuevo: a.isFirstVisit ? 'Nuevo' : 'Recurrente',
       sucursal: nombreDeSede(a.clinic),
       servicio: servicioDeLaCita(a),
       atiende: quienAtiende(a),
@@ -249,6 +252,16 @@ function hojaDeCitas(wb, citas, meta) {
     const cEstado = fila.getCell(COLUMNAS.findIndex((c) => c.key === 'estado') + 1);
     cEstado.fill = relleno(estado.fondo);
     cEstado.font = { size: 10, bold: true, color: { argb: estado.letra } };
+
+    // El paciente NUEVO, resaltado: es lo que se busca de un vistazo (y lo que
+    // mueve las comisiones), así que no puede costar lo mismo leerlo que al resto.
+    const cNuevo = fila.getCell(COLUMNAS.findIndex((c) => c.key === 'nuevo') + 1);
+    if (a.isFirstVisit) {
+      cNuevo.fill = relleno(VERDE_SUAVE);
+      cNuevo.font = { size: 10, bold: true, color: { argb: 'FF065F46' } };
+    } else {
+      cNuevo.font = { size: 10, color: { argb: 'FF94A3B8' } };
+    }
 
     // Y el retraso, en rojo solo cuando de verdad llegó tarde.
     if (retraso !== null && retraso > TOLERANCIA_MINUTOS) {

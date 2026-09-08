@@ -56,6 +56,43 @@ const statusColors = {
 };
 
 /**
+ * LOS FILTROS QUE LA AGENDA APLICA EN EL NAVEGADOR.
+ *
+ * Sucursal, servicio y franja horaria NO viajan al servidor: se aplican aquí,
+ * sobre lo que ya llegó. Está fuera del componente y en una función pura porque
+ * la usan DOS: la lista que se ve y el Excel de un rango de fechas, que pide sus
+ * citas aparte. Copiarla en el segundo sitio es garantizar que un día el archivo
+ * diga algo distinto de la pantalla, que es justo lo que se venía arreglando.
+ *
+ * Ordena cronológicamente para verlas como un HORARIO, no en el orden en que se
+ * agendaron.
+ */
+function filtrarEnCliente(lista, filter) {
+  return (lista || [])
+    .filter((apt) => {
+      if (filter.service) {
+        const has = (apt.services || []).some(
+          (s) => String(s.product?._id || s.product) === String(filter.service)
+        );
+        if (!has) return false;
+      }
+      if (filter.clinic) {
+        const c = apt.clinic?._id || apt.clinic;
+        if (String(c) !== String(filter.clinic)) return false;
+      }
+      if (filter.timeFrom && apt.startTime && apt.startTime < filter.timeFrom) return false;
+      if (filter.timeTo && apt.startTime && apt.startTime > filter.timeTo) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const da = new Date(a.date).getTime();
+      const db = new Date(b.date).getTime();
+      if (da !== db) return da - db;
+      return String(a.startTime || '').localeCompare(String(b.startTime || ''));
+    });
+}
+
+/**
  * LAS BANDEJAS DE LA LISTA, en un solo sitio: las pinta la fila de botones y
  * las nombra la cabecera del Excel (que dice con qué filtros se sacó).
  */
@@ -391,6 +428,17 @@ export default function Appointments() {
    * en cada visita: el buscador y el día.
    */
   const [filtrosAbiertos, setFiltrosAbiertos] = useState(false);
+  /**
+   * EL EXCEL: qué se descarga.
+   *
+   * `excelModal` abre el selector; `rangoExcel` es null cuando se exporta lo que
+   * hay en pantalla y { desde, hasta } cuando se pide un rango. Nació de que el
+   * botón bajaba SOLO el día que se estaba viendo, y lo que se necesita para
+   * cuadrar el mes —o la quincena— es un rango.
+   */
+  const [excelModal, setExcelModal] = useState(false);
+  const [rangoExcel, setRangoExcel] = useState(null);
+  const [bajandoExcel, setBajandoExcel] = useState(false);
   // Modal de finalización de enfermería (cita reclamada por el enfermero)
   const [filter, setFilter] = useState({
     startDate: '',
@@ -1000,19 +1048,67 @@ export default function Appointments() {
    * «Total filtrado: 6 citas» y el archivo traía 31. Se mandan los ids de las
    * citas que hay en pantalla y así no hay forma de que discrepen.
    */
+  /**
+   * LAS CITAS QUE VAN AL EXCEL.
+   *
+   * Por defecto, las que están en pantalla. Con un RANGO se piden al servidor
+   * —la agenda solo tiene en memoria el día o el mes que se está viendo— y se
+   * les pasan LOS MISMOS filtros del navegador, con la misma función que usa la
+   * lista: si se copiara aquí, el archivo y la pantalla dirían cosas distintas
+   * en cuanto una de las dos cambiara.
+   */
+  const citasParaElExcel = async () => {
+    if (!rangoExcel) return view === 'calendar' ? citasFiltradas : filteredAppointments;
+
+    const params = { startDate: rangoExcel.desde, endDate: rangoExcel.hasta, clinic: 'all' };
+    if (filter.status) params.status = filter.status;
+    if (filter.isFirstVisit) params.isFirstVisit = filter.isFirstVisit;
+    if (filter.patientQuery?.trim()) params.q = filter.patientQuery.trim();
+    const res = await api.get('/appointments', { params });
+    const lista = filtrarEnCliente(
+      (res.data || []).map((a) => ({ ...a, status: normalizeStatus(a.status) })),
+      filter
+    );
+    // La bandeja también cuenta: si estás mirando «Pendientes», el archivo de un
+    // rango tiene que traer pendientes, no todo.
+    return bandeja === 'todas' ? lista : lista.filter((a) => bandejaDe(a) === bandeja);
+  };
+
   const exportExcel = async () => {
-    const citas = view === 'calendar' ? citasFiltradas : filteredAppointments;
+    if (rangoExcel && rangoExcel.hasta < rangoExcel.desde) {
+      toast.error('La fecha «hasta» no puede ser anterior a la de «desde».');
+      return;
+    }
+    setBajandoExcel(true);
+    const citas = await citasParaElExcel().catch(() => null);
+    if (!citas) {
+      setBajandoExcel(false);
+      toast.error('No se pudieron leer las citas de ese rango.');
+      return;
+    }
     if (!citas.length) {
-      toast.error('No hay citas que exportar con los filtros aplicados.');
+      setBajandoExcel(false);
+      toast.error(
+        rangoExcel
+          ? 'No hay ninguna cita en ese rango con los filtros que tienes puestos.'
+          : 'No hay citas que exportar con los filtros aplicados.'
+      );
       return;
     }
     // Lo que dirá la cabecera del archivo: sin esto, un Excel de 6 citas no dice
     // de qué día es ni por qué son solo 6.
-    const periodo = view === 'calendar'
-      ? `Mes de ${calMonth.toLocaleDateString('es-EC', { month: 'long', year: 'numeric' })}`
-      : `Día ${new Date(`${listDay}T12:00:00`).toLocaleDateString('es-EC', {
-          weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
-        })}`;
+    const dia = (ymd, opciones) =>
+      new Date(`${ymd}T12:00:00`).toLocaleDateString('es-EC', opciones || {
+        weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+      });
+    const periodo = rangoExcel
+      ? (rangoExcel.desde === rangoExcel.hasta
+          ? `Día ${dia(rangoExcel.desde)}`
+          : `Del ${dia(rangoExcel.desde, { day: 'numeric', month: 'long', year: 'numeric' })} `
+            + `al ${dia(rangoExcel.hasta, { day: 'numeric', month: 'long', year: 'numeric' })}`)
+      : view === 'calendar'
+        ? `Mes de ${calMonth.toLocaleDateString('es-EC', { month: 'long', year: 'numeric' })}`
+        : `Día ${dia(listDay)}`;
     const sede = clinicasFiltro.find((c) => String(c._id) === String(filter.clinic));
     const servicio = services.find((p) => String(p._id) === String(filter.service));
     const filtros = [
@@ -1037,11 +1133,18 @@ export default function Appointments() {
           periodo,
           filtros,
         },
-        filename: `citas-${view === 'calendar' ? toYmd(calMonth).slice(0, 7) : listDay}.xlsx`,
+        filename: rangoExcel
+          ? `citas-${rangoExcel.desde}_a_${rangoExcel.hasta}.xlsx`
+          : `citas-${view === 'calendar' ? toYmd(calMonth).slice(0, 7) : listDay}.xlsx`,
       });
       toast.success(`${citas.length} ${citas.length === 1 ? 'cita exportada' : 'citas exportadas'}`, { id });
+      setExcelModal(false);
     } catch (err) {
-      toast.error(err.message || 'Error al exportar', { id });
+      // La ventana se queda ABIERTA si falla: casi siempre es un rango
+      // demasiado grande, y lo que hay que hacer es acotarlo ahí mismo.
+      toast.error(err.message || 'Error al exportar', { id, duration: 7000 });
+    } finally {
+      setBajandoExcel(false);
     }
   };
 
@@ -1159,30 +1262,14 @@ export default function Appointments() {
   // contadores de las pestañas tienen que salir de esta lista —la de «todo lo
   // demás ya filtrado»— o cada pestaña se contaría a sí misma y siempre diría
   // lo mismo que se está viendo.
-  const citasFiltradas = useMemo(() => {
-    return appointments
-      .filter((apt) => {
-        if (filter.service) {
-          const has = (apt.services || []).some(
-            (s) => String(s.product?._id || s.product) === String(filter.service)
-          );
-          if (!has) return false;
-        }
-        if (filter.clinic) {
-          const c = apt.clinic?._id || apt.clinic;
-          if (String(c) !== String(filter.clinic)) return false;
-        }
-        if (filter.timeFrom && apt.startTime && apt.startTime < filter.timeFrom) return false;
-        if (filter.timeTo && apt.startTime && apt.startTime > filter.timeTo) return false;
-        return true;
-      })
-      .sort((a, b) => {
-        const da = new Date(a.date).getTime();
-        const db = new Date(b.date).getTime();
-        if (da !== db) return da - db;
-        return String(a.startTime || '').localeCompare(String(b.startTime || ''));
-      });
-  }, [appointments, filter.service, filter.clinic, filter.timeFrom, filter.timeTo]);
+  // Las dependencias van CAMPO A CAMPO y no `filter` entero a propósito: ese
+  // objeto se recrea con cada tecla del buscador de paciente, y con él se
+  // recalcularían la lista, las bandejas y sus contadores en cada pulsación.
+  const citasFiltradas = useMemo(
+    () => filtrarEnCliente(appointments, filter),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [appointments, filter.service, filter.clinic, filter.timeFrom, filter.timeTo]
+  );
 
   /**
    * A qué bandeja pertenece cada cita. «Atendida» es literalmente lo que dice el
@@ -1355,8 +1442,8 @@ export default function Appointments() {
               el archivo a un administrador cada vez. */}
           {(isAdmin || canCharge) && (
             <button
-              onClick={exportExcel}
-              title="Descargar en Excel las citas que se están viendo, con los filtros aplicados"
+              onClick={() => setExcelModal(true)}
+              title="Descargar en Excel las citas que se están viendo, o un rango de fechas"
               className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
             >
               <HiOutlineArrowDownTray className="w-4 h-4" /> Excel
@@ -2946,6 +3033,115 @@ export default function Appointments() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/**
+        * DESCARGAR LA AGENDA EN EXCEL.
+        *
+        * El botón bajaba a ciegas el día (o el mes) que se estuviera viendo, y
+        * lo que hace falta para cuadrar la quincena es un RANGO. Se pregunta
+        * antes en vez de añadir un segundo botón: son la misma acción con
+        * distinto alcance, y el archivo sale igual en los dos casos.
+        *
+        * Los filtros de la pantalla se respetan siempre —también en el rango—,
+        * y se dicen aquí para que nadie se lleve un archivo «incompleto» sin
+        * entender por qué.
+        */}
+      <Modal
+        isOpen={excelModal}
+        onClose={() => setExcelModal(false)}
+        title="Descargar la agenda en Excel"
+        size="md"
+      >
+        <div className="space-y-3">
+          <button
+            type="button"
+            onClick={() => setRangoExcel(null)}
+            className={`w-full text-left p-3 rounded-xl border cursor-pointer transition-colors ${
+              rangoExcel
+                ? 'bg-white border-slate-200 hover:bg-slate-50'
+                : 'bg-emerald-50 border-emerald-300'
+            }`}
+          >
+            <span className="block text-sm font-medium text-slate-800">Lo que estoy viendo</span>
+            <span className="block text-xs text-slate-500 mt-0.5">
+              {view === 'calendar'
+                ? `${calMonth.toLocaleDateString('es-EC', { month: 'long', year: 'numeric' })} · ${citasFiltradas.length} citas`
+                : `${new Date(`${listDay}T12:00:00`).toLocaleDateString('es-EC', {
+                    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+                  })} · ${filteredAppointments.length} citas`}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() =>
+              setRangoExcel((r) => r || {
+                // Por defecto, el mes en curso hasta hoy: es lo que se pide para
+                // cuadrar, y deja las dos fechas a la vista para cambiarlas.
+                desde: toYmd(new Date(new Date().getFullYear(), new Date().getMonth(), 1)),
+                hasta: todayEc(),
+              })
+            }
+            className={`w-full text-left p-3 rounded-xl border cursor-pointer transition-colors ${
+              rangoExcel
+                ? 'bg-emerald-50 border-emerald-300'
+                : 'bg-white border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            <span className="block text-sm font-medium text-slate-800">Un rango de fechas</span>
+            <span className="block text-xs text-slate-500 mt-0.5">
+              Varios días, una quincena o un mes entero.
+            </span>
+          </button>
+
+          {rangoExcel && (
+            <div className="grid grid-cols-2 gap-2 pl-3 border-l-2 border-emerald-200">
+              <div>
+                <label className="text-xs font-medium text-slate-600">Desde</label>
+                <DateInput
+                  value={rangoExcel.desde}
+                  onChange={(e) => setRangoExcel((r) => ({ ...r, desde: e.target.value }))}
+                  className="input"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-600">Hasta</label>
+                <DateInput
+                  value={rangoExcel.hasta}
+                  min={rangoExcel.desde}
+                  onChange={(e) => setRangoExcel((r) => ({ ...r, hasta: e.target.value }))}
+                  className="input"
+                />
+              </div>
+            </div>
+          )}
+
+          {filtrosActivos > 0 && (
+            <p className="text-xs text-sky-900 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2 m-0">
+              Tienes <b>{filtrosActivos} {filtrosActivos === 1 ? 'filtro puesto' : 'filtros puestos'}</b>:
+              el archivo los respeta y los deja escritos en su cabecera.
+            </p>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={() => setExcelModal(false)}
+              className="px-4 py-2 rounded-xl border border-slate-200 bg-white text-sm text-slate-600 cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              disabled={bajandoExcel || (rangoExcel && (!rangoExcel.desde || !rangoExcel.hasta))}
+              onClick={exportExcel}
+              className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-medium border-none cursor-pointer disabled:opacity-50"
+            >
+              {bajandoExcel ? 'Preparando…' : 'Descargar'}
+            </button>
+          </div>
+        </div>
       </Modal>
 
       {/* Recepción: a quién pasa el paciente (uno o varios doctores, o enfermería) */}
