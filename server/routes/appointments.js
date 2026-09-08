@@ -45,7 +45,23 @@ router.get(
  */
 router.post('/export.xlsx', requireRole('admin', 'cajero'), exportAppointments);
 
-router.post('/', requireRole('admin', 'cajero', 'call_center'), createAppointment);
+/**
+ * ODONTOLOGÍA AGENDA (sep-2026, a petición del usuario).
+ *
+ * Va ENUMERADA, no por 'doctor': ese se expande a TODAS las especialidades
+ * (ver constants/roles.js) y agendar no se le abre a quien no lo ha pedido.
+ *
+ * El motivo es el de su consulta: el paciente sale del sillón con el control a
+ * quince días y quien lo sabe es quien acaba de atenderlo. Hasta ahora tenía que
+ * bajar al mostrador a que se lo agendaran — y desde «Clientes», al registrar un
+ * paciente y marcar «agendar cita», se llevaba un 403 con el paciente ya creado.
+ *
+ * Lo que NO se le abre es editar la cita después (`PUT /:id`): eso sigue siendo
+ * de mostrador, por lo mismo que se le quitó al doctor en su día — el formulario
+ * entero incluye fecha, hora, paciente y precio de una visita que suele ser
+ * suya.
+ */
+router.post('/', requireRole('admin', 'cajero', 'call_center', 'odontologia'), createAppointment);
 // ATENCIÓN INMEDIATA: crea la cita ya asignada a quien la pide. 'doctor' expande
 // a las especialidades — nace para óptica, donde el paciente entra sin cita y lo
 // registra el propio optómetra.

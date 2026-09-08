@@ -349,7 +349,11 @@ const hhmmToMin = (s) => {
 export default function Appointments() {
   const navigate = useNavigate();
   const { user, role, hasRole, activeClinic, clinics } = useAuth();
-  const canWrite = hasRole('admin', 'cajero', 'call_center');
+  // 'odontologia' va enumerada y no por 'doctor', que expande a todas las
+  // especialidades: agendar se le abrió a ella, no al resto. Es espejo de la
+  // ruta `POST /appointments` — si se cambia una, la otra también, o el botón
+  // sale y lleva a un 403.
+  const canWrite = hasRole('admin', 'cajero', 'call_center', 'odontologia');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
   // 'optica' no se expande desde 'doctor' en el cliente, por eso va aparte.
   const isDoctor = roleSatisfies(role, ['doctor']) || role === 'optica';
@@ -817,7 +821,16 @@ export default function Appointments() {
      * ubicada no se ve hasta que el paciente llega a la otra puerta y allí no
      * hay nadie esperándolo. Se abre en blanco y es obligatoria.
      */
-    setForm({ ...emptyForm });
+    /**
+     * QUIEN ATIENDE SE AGENDA A SÍ MISMO por defecto.
+     *
+     * Odontología agenda para poner el control de SU paciente a quince días, y
+     * si el campo sale vacío la cita nace sin dueño: no aparece en su bandeja y
+     * hay que repartirla otra vez en el mostrador, que es justo el paso que se
+     * quería ahorrar. Mostrador y call center siguen empezando en blanco —ellos
+     * no atienden a nadie— y el campo se puede cambiar igual.
+     */
+    setForm({ ...emptyForm, ...(isDoctor ? { attendant: miId } : {}) });
     setPatients([]);
     setPatientSearch('');
     setPatientSearchError(false);
