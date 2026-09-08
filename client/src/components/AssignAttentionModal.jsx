@@ -264,9 +264,19 @@ export default function AssignAttentionModal({
                 serviceName: (p.serviceName || '').trim(),
                 // Sin ampollas no se manda nada: una bolsa vacía no es un suero.
                 serum: p.serum?.components?.some((c) => c.name?.trim()) ? p.serum : null,
-                // La marca de "ya está escrito" solo vale si el suero NO se ha
-                // tocado: si se cambió, es otro y hay que escribirlo de nuevo.
-                serumFollowUp: p.serumTocado ? null : p.serumFollowUp || null,
+                /**
+                 * DÓNDE está escrito ese suero — SIEMPRE, aunque se haya
+                 * corregido. Antes, al tocarlo, esto se mandaba en null para que
+                 * el servidor lo escribiera «de nuevo»… y lo que hacía era abrir
+                 * una SEGUNDA bolsa dejando la equivocada en la ficha, que se lee
+                 * como que al paciente le recetaron dos sueros.
+                 *
+                 * Ahora viaja la referencia y, con `serumTocado`, el servidor
+                 * reescribe AQUELLA receta. Sin suero también viaja: es como sabe
+                 * cuál tiene que borrar de la ficha.
+                 */
+                serumFollowUp: p.serumFollowUp || null,
+                serumTocado: !!p.serumTocado,
                 // Lo escogido aquí se SUMA a la bolsa que ya escribió el servicio
                 // (no abre una segunda receta con el mismo nombre).
                 serumMergeIntoService: !!p.serumMergeIntoService,
@@ -309,6 +319,9 @@ export default function AssignAttentionModal({
        * a mano en el seguimiento — que es justo el trabajo que esto viene a
        * quitar, y de paso quedaría duplicado.
        */
+      // Lo que NO se pudo tocar porque el paciente ya lo tenía puesto. Va aparte
+      // y dura más: es lo único que el usuario tiene que leer entero.
+      (data?.autoSerum?.avisos || []).forEach((a) => toast(a, { duration: 9000, icon: '⚠️' }));
       if (data?.autoSerum?.items?.length) {
         toast.success(
           `Suero anotado en los seguimientos: ${data.autoSerum.items.join(', ')}`,
@@ -499,11 +512,41 @@ export default function AssignAttentionModal({
                   {esEnf && (
                     <div className="mt-2 pl-8">
                       {paso.serumFollowUp && !paso.serumTocado ? (
-                        <p className="m-0 text-[11px] text-emerald-700">
-                          <HiOutlineCheck className="inline w-3.5 h-3.5 -mt-px" /> Suero ya escrito
-                          en los seguimientos:{' '}
-                          {(paso.serum?.components || []).map((c) => `${c.name} ×${c.quantity || 1}`).join(', ')}
-                        </p>
+                        /* YA ESTÁ ESCRITO, PERO SE PUEDE CORREGIR.
+                           Esto solo decía «ya está en los seguimientos» y ahí se
+                           acababa: quien se equivocaba de ampolla no tenía vuelta
+                           atrás desde la cita —había que abrir la ficha del
+                           paciente y arreglarlo a mano, o dejarlo mal—. Se
+                           reescribe AQUELLA receta, no se abre otra. */
+                        <div className="text-[11px] text-emerald-700">
+                          <p className="m-0">
+                            <HiOutlineCheck className="inline w-3.5 h-3.5 -mt-px" /> Suero ya escrito
+                            en los seguimientos:{' '}
+                            {(paso.serum?.components || []).map((c) => `${c.name} ×${c.quantity || 1}`).join(', ')}
+                          </p>
+                          <div className="flex items-center gap-3 mt-1">
+                            <button
+                              type="button"
+                              onClick={() => editarPaso(idx, { serumTocado: true })}
+                              className="text-[11px] font-medium text-sky-700 bg-transparent border-none cursor-pointer p-0"
+                            >
+                              Cambiar el suero
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                editarPaso(idx, { serum: null, serumTocado: true, serumMergeIntoService: false })
+                              }
+                              className="text-[11px] text-red-500 bg-transparent border-none cursor-pointer p-0"
+                            >
+                              Quitarlo
+                            </button>
+                          </div>
+                          <p className="m-0 mt-1 text-[11px] text-slate-400">
+                            Se corrige la receta que ya está en la ficha; no se crea otra. Si el
+                            paciente ya lo tiene puesto, no se toca.
+                          </p>
+                        </div>
                       ) : !paso.serum ? (
                         <>
                           {/* El servicio YA escribe su bolsa: lo que se escoja aquí
@@ -540,6 +583,15 @@ export default function AssignAttentionModal({
                             <p className="m-0 mb-1 text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5">
                               Estás editando el suero de <b>«{sueroDelServicio?.name || servicio?.name}»</b>,
                               el que ya está escrito en la ficha. Se guarda como <b>una sola receta</b>.
+                            </p>
+                          )}
+                          {/* Corrigiendo uno que YA está en la ficha: conviene
+                              decirlo, porque lo que se guarda no es un suero
+                              nuevo sino la reescritura de aquella receta. */}
+                          {paso.serumFollowUp && !paso.serumMergeIntoService && (
+                            <p className="m-0 mb-1 text-[11px] text-sky-900 bg-sky-50 border border-sky-200 rounded-lg px-2 py-1.5">
+                              Estás corrigiendo el suero que <b>ya está escrito en la ficha</b>: se
+                              reescribe esa misma receta, no se crea otra.
                             </p>
                           )}
                           <SueroComposicionEditor

@@ -100,6 +100,41 @@ function faltaElSueroDelServicio(apt, serviceItem) {
 }
 
 /**
+ * REESCRIBE EL SUERO QUE YA ESTABA ESCRITO EN LA FICHA.
+ *
+ * Es la vuelta atrás que faltaba. Quien agenda escoge las ampollas y al guardar
+ * se escriben como receta en la ficha; si se equivocó —la ampolla que no era, el
+ * volumen que no era— la cita ya solo decía «suero ya escrito en los
+ * seguimientos» y no había forma de corregirlo desde ahí: había que abrir la
+ * ficha del paciente y arreglarlo a mano, o dejarlo mal.
+ *
+ * NO SE TOCA LO QUE YA SE PUSO. Con una aplicación registrada, ese suero movió
+ * inventario y es lo que de verdad le entró al paciente por la vena: reescribirlo
+ * sería falsear la historia clínica. Se dice que no y se explica por qué.
+ *
+ * @returns {'reescrito'|'aplicado'|'sin-receta'}
+ */
+async function reescribirSueroDelSeguimiento({ patientId, followUpId, linea, conservarNombre = false }) {
+  if (!patientId || !followUpId || !linea) return 'sin-receta';
+  const record = await ClinicalRecord.findOne({ patient: patientId });
+  const fu = record?.followUps?.id(followUpId);
+  if (!fu) return 'sin-receta';
+
+  const item = (fu.recetaItems || []).find((i) => i.isSerum);
+  if (!item) return 'sin-receta';
+  if ((item.administrations || []).length) return 'aplicado';
+
+  item.serumBase = linea.serumBase;
+  item.serumComponents = linea.serumComponents;
+  // El nombre SÍ cambia cuando el suero es del paso (lo puede haber renombrado
+  // el rótulo). El de la bolsa del SERVICIO no: sigue siendo su suero, y es como
+  // lo reconocen la ficha, los PDF y la hoja del MSP.
+  if (!conservarNombre && linea.name) item.name = linea.name;
+  await record.save();
+  return 'reescrito';
+}
+
+/**
  * SUMA AMPOLLAS A LA BOLSA QUE YA ESCRIBIÓ EL SERVICIO, en vez de abrir otra.
  *
  * El servicio con suero de serie («Detox Plus») escribe su receta al agendar. Si
@@ -109,29 +144,75 @@ function faltaElSueroDelServicio(apt, serviceItem) {
  * distintas y parecía que se le habían recetado dos sueros. Es lo que pasó de
  * verdad (Andrés Ramos, 7-sep-2026): una bolsa con DETOX PLUS y otra con BERBERIS.
  *
- * Es UNA bolsa: la del servicio, con lo que mostrador le añada. Aquí se reescribe
- * su composición.
- *
- * NO se toca si ya tiene una aplicación registrada: eso movió inventario y es lo
- * que de verdad se le puso al paciente; reescribirlo sería falsear la historia.
- * Devuelve true si se pudo sumar.
+ * Es UNA bolsa: la del servicio, con lo que mostrador le añada.
  */
 async function sumarSueroAlSeguimiento({ patientId, followUpId, linea }) {
-  if (!patientId || !followUpId || !linea) return false;
+  const r = await reescribirSueroDelSeguimiento({
+    patientId, followUpId, linea, conservarNombre: true,
+  });
+  return r === 'reescrito';
+}
+
+/**
+ * Campos que trae de fábrica un seguimiento SEMBRADO por el suero. Cualquier
+ * otra cosa escrita ahí la puso una persona, y entonces el seguimiento ya no es
+ * solo del suero.
+ */
+const CAMPOS_DEL_SEMBRADO = new Set([
+  '_id', 'fecha', 'kind', 'descripcion', 'motivoConsulta', 'recetaItems',
+  'createdBy', 'createdByRole', 'createdAt', 'updatedAt', 'tipoConsulta',
+]);
+
+/**
+ * ¿Está en blanco? RECURSIVO, y esa es la gracia: los subdocumentos de
+ * especialidad (ginecología, odontología, podología…) vienen de fábrica llenos
+ * de sub-objetos y arrays vacíos, así que mirando un solo nivel TODOS parecían
+ * escritos y no se borraba nunca un seguimiento. El 0 cuenta como blanco: es el
+ * valor por defecto de los numéricos, no algo que alguien haya escrito.
+ */
+function enBlanco(v) {
+  if (v === null || v === undefined || v === '' || v === false || v === 0) return true;
+  if (v instanceof Date) return false;
+  if (Array.isArray(v)) return v.every(enBlanco);
+  if (typeof v === 'object') return Object.values(v).every(enBlanco);
+  return false;
+}
+
+/** ¿Este seguimiento no tenía nada más que el suero que se sembró? */
+function soloTraiaElSuero(fu) {
+  const obj = fu.toObject ? fu.toObject() : fu;
+  return Object.entries(obj).every(([k, v]) => CAMPOS_DEL_SEMBRADO.has(k) || enBlanco(v));
+}
+
+/**
+ * QUITA DE LA FICHA EL SUERO QUE SE HABÍA ESCRITO.
+ *
+ * Para cuando el suero sobraba entero: se escogió por error, o el paso de
+ * enfermería que lo llevaba se quitó de la cita. Sin esto la receta se quedaba
+ * huérfana en la historia del paciente y enfermería la veía como algo pendiente
+ * de poner.
+ *
+ * Se lleva el SEGUIMIENTO entero si no tenía nada más —los que siembra
+ * sembrarSueroEnFicha son solo eso, la bolsa—; si alguien le escribió algo
+ * después, se quita únicamente la línea del suero y el seguimiento se queda.
+ * Y lo ya aplicado no se toca, por lo mismo de siempre.
+ *
+ * @returns {'quitado'|'aplicado'|'sin-receta'}
+ */
+async function quitarSueroDelSeguimiento({ patientId, followUpId }) {
+  if (!patientId || !followUpId) return 'sin-receta';
   const record = await ClinicalRecord.findOne({ patient: patientId });
   const fu = record?.followUps?.id(followUpId);
-  if (!fu) return false;
+  if (!fu) return 'sin-receta';
 
   const item = (fu.recetaItems || []).find((i) => i.isSerum);
-  if (!item) return false;
-  if ((item.administrations || []).length) return false; // ya aplicado: no se reescribe
+  if (!item) return 'sin-receta';
+  if ((item.administrations || []).length) return 'aplicado';
 
-  // Solo la COMPOSICIÓN. El nombre se conserva: sigue siendo el suero del
-  // servicio, y es como lo reconocen la ficha, los PDF y la hoja del MSP.
-  item.serumBase = linea.serumBase;
-  item.serumComponents = linea.serumComponents;
+  fu.recetaItems.pull(item._id);
+  if (!fu.recetaItems.length && soloTraiaElSuero(fu)) record.followUps.pull(fu._id);
   await record.save();
-  return true;
+  return 'quitado';
 }
 
 module.exports = {
@@ -139,4 +220,6 @@ module.exports = {
   sembrarSueroEnFicha,
   faltaElSueroDelServicio,
   sumarSueroAlSeguimiento,
+  reescribirSueroDelSeguimiento,
+  quitarSueroDelSeguimiento,
 };

@@ -35,6 +35,7 @@ import {
   HiOutlineChevronDown,
   HiOutlineBeaker,
   HiOutlinePaperAirplane,
+  HiOutlineArrowDownTray,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import TimeSlotInput from '../components/TimeSlotInput';
@@ -53,6 +54,17 @@ const statusColors = {
   cancelada: 'bg-amber-100 text-amber-700',
   completada: 'bg-teal-100 text-teal-700',
 };
+
+/**
+ * LAS BANDEJAS DE LA LISTA, en un solo sitio: las pinta la fila de botones y
+ * las nombra la cabecera del Excel (que dice con qué filtros se sacó).
+ */
+const BANDEJAS = [
+  ['pendiente', 'Pendientes'],
+  ['atendido', 'Atendidas'],
+  ['finalizado', 'Finalizadas'],
+  ['todas', 'Todas'],
+];
 
 const statusLabels = {
   pendiente: 'Pendiente',
@@ -979,23 +991,57 @@ export default function Appointments() {
     }
   };
 
+  /**
+   * EL EXCEL BAJA LO QUE SE ESTÁ VIENDO, no «las citas del día».
+   *
+   * Antes mandaba al servidor solo el rango y el estado, y el resto de los
+   * filtros —sucursal, servicio, franja horaria, la bandeja abierta, el buscador
+   * de paciente— se aplican AQUÍ, en el navegador. Resultado: la pantalla decía
+   * «Total filtrado: 6 citas» y el archivo traía 31. Se mandan los ids de las
+   * citas que hay en pantalla y así no hay forma de que discrepen.
+   */
   const exportExcel = async () => {
+    const citas = view === 'calendar' ? citasFiltradas : filteredAppointments;
+    if (!citas.length) {
+      toast.error('No hay citas que exportar con los filtros aplicados.');
+      return;
+    }
+    // Lo que dirá la cabecera del archivo: sin esto, un Excel de 6 citas no dice
+    // de qué día es ni por qué son solo 6.
+    const periodo = view === 'calendar'
+      ? `Mes de ${calMonth.toLocaleDateString('es-EC', { month: 'long', year: 'numeric' })}`
+      : `Día ${new Date(`${listDay}T12:00:00`).toLocaleDateString('es-EC', {
+          weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+        })}`;
+    const sede = clinicasFiltro.find((c) => String(c._id) === String(filter.clinic));
+    const servicio = services.find((p) => String(p._id) === String(filter.service));
+    const filtros = [
+      filter.status && `Estado: ${statusLabels[filter.status] || filter.status}`,
+      filter.isFirstVisit && (filter.isFirstVisit === 'true' ? 'Solo pacientes nuevos' : 'Solo recurrentes'),
+      sede && `Sucursal: ${sede.nombreComercial || sede.name}`,
+      servicio && `Servicio: ${servicio.name}`,
+      filter.timeFrom && `Desde las ${filter.timeFrom}`,
+      filter.timeTo && `Hasta las ${filter.timeTo}`,
+      filter.patientQuery?.trim() && `Paciente: «${filter.patientQuery.trim()}»`,
+      view === 'list' && bandeja !== 'todas'
+        && `Bandeja: ${(BANDEJAS.find(([id]) => id === bandeja) || [])[1] || bandeja}`,
+    ].filter(Boolean).join(' · ');
+
+    const id = toast.loading('Preparando el Excel…');
     try {
-      const params = {};
-      if (view === 'calendar') {
-        const first = new Date(calMonth.getFullYear(), calMonth.getMonth(), 1);
-        const last = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0);
-        params.startDate = toYmd(first);
-        params.endDate = toYmd(last);
-        if (filter.status) params.status = filter.status;
-      } else {
-        params.startDate = listDay;
-        params.endDate = listDay;
-        if (filter.status) params.status = filter.status;
-      }
-      await downloadFile('/reports/appointments.xlsx', { params, filename: `citas_${Date.now()}.xlsx` });
+      await downloadFile('/appointments/export.xlsx', {
+        method: 'post',
+        data: {
+          ids: citas.map((a) => a._id),
+          subtitulo: activeClinic?.nombreComercial || activeClinic?.name || 'Vikingo',
+          periodo,
+          filtros,
+        },
+        filename: `citas-${view === 'calendar' ? toYmd(calMonth).slice(0, 7) : listDay}.xlsx`,
+      });
+      toast.success(`${citas.length} ${citas.length === 1 ? 'cita exportada' : 'citas exportadas'}`, { id });
     } catch (err) {
-      toast.error(err.message || 'Error al exportar');
+      toast.error(err.message || 'Error al exportar', { id });
     }
   };
 
@@ -1305,12 +1351,15 @@ export default function Appointments() {
               ))}
             </div>
           )}
-          {isAdmin && (
+          {/* Mostrador también: es quien cuadra el día y quien tenía que pedirle
+              el archivo a un administrador cada vez. */}
+          {(isAdmin || canCharge) && (
             <button
               onClick={exportExcel}
-              className="px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
+              title="Descargar en Excel las citas que se están viendo, con los filtros aplicados"
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
             >
-              Excel
+              <HiOutlineArrowDownTray className="w-4 h-4" /> Excel
             </button>
           )}
           {canWrite && (
@@ -1610,12 +1659,7 @@ export default function Appointments() {
         */}
       {view !== 'calendar' && (
         <div className="flex gap-1.5 overflow-x-auto mb-2 md:mb-3 pb-0.5">
-          {[
-            ['pendiente', 'Pendientes'],
-            ['atendido', 'Atendidas'],
-            ['finalizado', 'Finalizadas'],
-            ['todas', 'Todas'],
-          ].map(([id, label]) => (
+          {BANDEJAS.map(([id, label]) => (
             <button
               key={id}
               onClick={() => {

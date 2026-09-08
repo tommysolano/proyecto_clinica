@@ -756,3 +756,149 @@ test('T20) solo el PRIMER paso funde con la bolsa del servicio; el segundo escri
   assert.ok(pasos.every((t) => t.serumFollowUp), 'los dos quedan sellados');
   assert.notEqual(String(pasos[0].serumFollowUp), String(pasos[1].serumFollowUp));
 });
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * CORREGIR EL SUERO YA ESCRITO (sep-2026)
+ *
+ * Quien agenda escoge las ampollas y al guardar se escriben en la ficha. Si se
+ * equivocó, la cita solo decía «suero ya escrito en los seguimientos» y ahí se
+ * acababa: no había vuelta atrás desde la agenda. Ahora se puede CAMBIAR (se
+ * reescribe aquella receta, no se abre otra) y QUITAR (se va de la ficha). Lo
+ * que ya se le puso al paciente no se toca: eso movió inventario.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/** Manda la cola de atención de una cita, como hace «Asignar atención». */
+const asignar = (clinicId, userId, citaId, steps) =>
+  H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, { steps }, { role: 'cajero', params: { id: String(citaId) } })
+  );
+
+const VITC = { code: 'VITC01', name: 'VITAMINA C 5ML AMP', grupo: 'ampolla', quantity: 1 };
+
+/** Una cita con un paso de enfermería y su suero ya escrito en la ficha. */
+async function citaConSueroEscrito() {
+  const s = await seed();
+  const cita = ok(await agendar(s.clinicId, s.userId, {
+    patient: s.patient._id, date: manana(), startTime: '09:00',
+  }));
+  ok(await asignar(s.clinicId, s.userId, cita._id, [{
+    kind: 'enfermeria',
+    user: String(s.enfermera._id),
+    serum: { base: { name: 'Cloruro', volumeMl: 250 }, components: [{ ...BERBERIS }] },
+  }]));
+  const guardada = await Appointment.findById(cita._id).lean();
+  const paso = guardada.turns.find((t) => t.kind === 'enfermeria');
+  assert.ok(paso.serumFollowUp, 'quedó sellado');
+  return { ...s, cita, followUpId: String(paso.serumFollowUp) };
+}
+
+test('T21) cambiar el suero REESCRIBE la receta que ya estaba, sin abrir otra', async () => {
+  const { clinicId, userId, patient, enfermera, cita, followUpId } = await citaConSueroEscrito();
+
+  ok(await asignar(clinicId, userId, cita._id, [{
+    kind: 'enfermeria',
+    user: String(enfermera._id),
+    // La pantalla devuelve DÓNDE está escrito y avisa de que se corrigió.
+    serumFollowUp: followUpId,
+    serumTocado: true,
+    serum: { base: { name: 'Cloruro', volumeMl: 500 }, components: [{ ...VITC }] },
+  }]));
+
+  const { items } = await sueroDeLaFicha(patient._id);
+  assert.equal(items.length, 1, 'sigue habiendo UNA sola bolsa, no dos');
+  assert.deepEqual(items[0].serumComponents.map((c) => c.name), ['VITAMINA C 5ML AMP']);
+  assert.equal(items[0].serumBase.volumeMl, 500, 'y el volumen también se corrigió');
+
+  const guardada = await Appointment.findById(cita._id).lean();
+  const paso = guardada.turns.find((t) => t.kind === 'enfermeria');
+  assert.equal(String(paso.serumFollowUp), followUpId, 'apunta a la MISMA receta');
+});
+
+test('T22) el suero YA APLICADO no se cambia, y se dice por qué', async () => {
+  const { clinicId, userId, patient, enfermera, cita, followUpId } = await citaConSueroEscrito();
+
+  // Enfermería lo pone: eso movió inventario y es lo que de verdad le entró.
+  const rec = await ClinicalRecord.findOne({ patient: patient._id });
+  const fu = rec.followUps.id(followUpId);
+  fu.recetaItems[0].administrations.push({ at: new Date(), by: userId, byName: 'Enf' });
+  await rec.save();
+
+  const r = await asignar(clinicId, userId, cita._id, [{
+    kind: 'enfermeria',
+    user: String(enfermera._id),
+    serumFollowUp: followUpId,
+    serumTocado: true,
+    serum: { base: { name: 'Cloruro', volumeMl: 250 }, components: [{ ...VITC }] },
+  }]);
+  ok(r);
+
+  const { items } = await sueroDeLaFicha(patient._id);
+  assert.equal(items.length, 1);
+  assert.deepEqual(
+    items[0].serumComponents.map((c) => c.name), ['BERBERIS 2ML AMP'],
+    'lo aplicado se queda como estaba'
+  );
+  assert.ok(
+    (r.payload.autoSerum?.avisos || []).some((a) => /ya se le aplicó/.test(a)),
+    'y la pantalla lo dice en vez de callárselo'
+  );
+});
+
+test('T23) quitar el suero lo borra de la ficha, con su seguimiento vacío', async () => {
+  const { clinicId, userId, patient, enfermera, cita } = await citaConSueroEscrito();
+  const antes = await ClinicalRecord.findOne({ patient: patient._id }).lean();
+  assert.equal(antes.followUps.length, 1);
+
+  ok(await asignar(clinicId, userId, cita._id, [{
+    kind: 'enfermeria',
+    user: String(enfermera._id),
+    serum: null, // se quitó
+  }]));
+
+  const { items, rec } = await sueroDeLaFicha(patient._id);
+  assert.equal(items.length, 0, 'la receta ya no está');
+  assert.equal(rec.followUps.length, 0, 'y el seguimiento que solo la llevaba, tampoco');
+});
+
+test('T24) quitar el PASO entero también se lleva su suero de la ficha', async () => {
+  const { clinicId, userId, patient, doctora, cita } = await citaConSueroEscrito();
+
+  // La cola se rehace sin enfermería: solo la doctora.
+  ok(await asignar(clinicId, userId, cita._id, [{ kind: 'doctor', user: String(doctora._id) }]));
+
+  const { items } = await sueroDeLaFicha(patient._id);
+  assert.equal(items.length, 0, 'no se queda huérfana en la historia del paciente');
+});
+
+test('T25) quitar el suero NO se lleva la bolsa que escribió el SERVICIO', async () => {
+  const { clinicId, userId, patient, enfermera } = await seed();
+  const detox = await AppointmentServiceItem.create({
+    clinic: clinicId, name: 'Detox Plus', slug: 'detox plus',
+    autoSerum: {
+      enabled: true,
+      base: { name: 'Cloruro', volumeMl: 250 },
+      components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }],
+    },
+  });
+  const cita = ok(await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '09:00', serviceItem: detox._id,
+  }));
+  // Mostrador le añade una ampolla: se funde con la bolsa del servicio.
+  ok(await asignar(clinicId, userId, cita._id, [{
+    kind: 'enfermeria',
+    user: String(enfermera._id),
+    serum: {
+      base: { name: 'Cloruro', volumeMl: 250 },
+      components: [{ ...DETOX, grupo: 'ampolla', quantity: 1 }, { ...BERBERIS }],
+    },
+    serumMergeIntoService: true,
+  }]));
+  assert.equal((await sueroDeLaFicha(patient._id)).items.length, 1);
+
+  // Y ahora se quita el paso de enfermería entero.
+  ok(await asignar(clinicId, userId, cita._id, []));
+
+  const { items } = await sueroDeLaFicha(patient._id);
+  assert.equal(items.length, 1, 'el suero del SERVICIO sigue ahí: no lo puso el paso');
+});

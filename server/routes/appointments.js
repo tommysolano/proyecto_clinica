@@ -3,6 +3,7 @@ const {
   getAppointments,
   getAppointment,
   createAppointment,
+  exportAppointments,
   createWalkIn,
   updateAppointment,
   deleteAppointment,
@@ -32,6 +33,18 @@ router.get(
   requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero'),
   getAppointmentPdf
 );
+/**
+ * EL EXCEL DE LA AGENDA. Va por POST porque lleva los ids de las citas que la
+ * pantalla está enseñando (un mes son cientos y no caben en una URL), y así el
+ * archivo dice EXACTAMENTE lo que el usuario tiene delante: la agenda filtra en
+ * el navegador y rehacer aquí ese filtrado se desincroniza a la primera.
+ *
+ * Mostrador entra con administración: es quien cuadra el día y quien tenía que
+ * pedirle el archivo a un administrador cada vez. No lleva datos de contacto
+ * (ver services/agendaWorkbook.js), así que no abre nada que no vea ya.
+ */
+router.post('/export.xlsx', requireRole('admin', 'cajero'), exportAppointments);
+
 router.post('/', requireRole('admin', 'cajero', 'call_center'), createAppointment);
 // ATENCIÓN INMEDIATA: crea la cita ya asignada a quien la pide. 'doctor' expande
 // a las especialidades — nace para óptica, donde el paciente entra sin cita y lo

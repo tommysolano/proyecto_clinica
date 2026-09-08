@@ -90,6 +90,13 @@ const consultationDone = (apt) => apt.status === 'completada' || !!apt.consultat
 const DOCTOR_LOCKED_MESSAGE =
   'La consulta ya fue atendida: no se puede reasignar el doctor. Si hubo un error, corrige el registro con un administrador.';
 
+/**
+ * Tope de citas por Excel. Un mes de agenda de tres sedes no pasa de unos
+ * cientos; el límite está para que una lista de ids manipulada no pida medio
+ * millón de documentos y tumbe el proceso.
+ */
+const MAX_CITAS_EXCEL = 5000;
+
 const POPULATE_PATIENT = 'firstName lastName cedula phone whatsapp email birthDate age gender';
 const POPULATE_DOCTOR = 'name specialty';
 const POPULATE_CREATOR = 'name email';
@@ -466,25 +473,44 @@ function normalizarPasos(steps) {
         // Y si lo que escogió mostrador se SUMA a la bolsa del servicio en vez
         // de abrir una receta nueva (ver el campo en models/Appointment.js).
         serumMergeIntoService: !!(suero && p.serumMergeIntoService),
+        /**
+         * SEÑAL DE LA PANTALLA, no un campo del turno: `asignarTurnos` copia
+         * campos concretos y este no está, así que no se guarda en la cita.
+         *
+         * Dice que ese suero se CORRIGIÓ a mano y que hay que reescribir la
+         * receta que ya estaba, en vez de dejarla como está. Antes la pantalla
+         * resolvía esto mandando `serumFollowUp: null`, y eso escribía una
+         * SEGUNDA bolsa dejando la equivocada en la ficha.
+         */
+        serumTocado: !!(suero && p.serumFollowUp && p.serumTocado),
       };
     })
     .filter(Boolean);
 }
 
 /**
- * ESCRIBE EN LA FICHA LOS SUEROS QUE TODAVÍA NO ESTÁN.
+ * ESCRIBE EN LA FICHA LOS SUEROS DE LOS TURNOS, Y CORRIGE LOS QUE CAMBIARON.
  *
- * Recorre los turnos de enfermería con suero indicado y sin `serumFollowUp`, los
- * escribe como una línea de receta más —la que enfermería puede dar por
- * aplicada— y anota en el turno dónde quedaron. Volver a guardar la asignación
- * ya no escribe nada: es la marca la que lo impide, no la suerte.
+ * Recorre los turnos de enfermería con suero indicado:
+ *   · sin escribir todavía  → lo escribe como una línea de receta más —la que
+ *     enfermería puede dar por aplicada— y anota en el turno dónde quedó;
+ *   · ya escrito y sin tocar → no hace nada. Volver a guardar la asignación no
+ *     duplica: es la marca la que lo impide, no la suerte;
+ *   · ya escrito y CORREGIDO (viene en `tocados`) → reescribe AQUELLA receta.
+ *     Sin esto, quien se equivocaba de ampolla no tenía vuelta atrás desde la
+ *     cita: la pantalla solo decía «ya está en los seguimientos».
  *
- * Devuelve los nombres sembrados, para que la pantalla lo diga.
+ * Devuelve qué se escribió, qué se corrigió y qué no se pudo tocar porque el
+ * paciente ya lo tenía puesto, para que la pantalla lo diga.
  */
-async function sembrarSuerosDeLosTurnos(apt, req) {
-  const { sembrarSueroEnFicha, sumarSueroAlSeguimiento } = require('../utils/sueroDeCita');
+async function sembrarSuerosDeLosTurnos(apt, req, { tocados = new Set() } = {}) {
+  const {
+    sembrarSueroEnFicha, sumarSueroAlSeguimiento, reescribirSueroDelSeguimiento,
+  } = require('../utils/sueroDeCita');
   const { lineaDeRecetaDeSuero } = require('../utils/suero');
   const sembrados = [];
+  const corregidos = [];
+  const avisos = [];
 
   /**
    * LA BOLSA DEL SERVICIO SOLO LA REESCRIBE UN PASO.
@@ -506,7 +532,7 @@ async function sembrarSuerosDeLosTurnos(apt, req) {
   let fundidoEnEstaPasada = false;
 
   for (const turno of apt.turns || []) {
-    if (turno.kind !== 'enfermeria' || turno.serumFollowUp) continue;
+    if (turno.kind !== 'enfermeria') continue;
     const componentes = turno.serum?.components || [];
     if (!componentes.length) continue;
 
@@ -514,6 +540,37 @@ async function sembrarSuerosDeLosTurnos(apt, req) {
       { serumBase: turno.serum.base, serumComponents: componentes.map((c) => c.toObject?.() || c) },
       turno.serviceName || apt.serviceName
     );
+
+    /**
+     * YA ESTÁ ESCRITO: o se deja como está, o se corrige.
+     *
+     * La corrección es la puerta que faltaba —se escogió la ampolla equivocada
+     * y la cita no dejaba arreglarlo—. Se reescribe AQUELLA receta y no se abre
+     * otra: dos bolsas en la ficha se leen como dos sueros recetados.
+     */
+    if (turno.serumFollowUp) {
+      if (!tocados.has(String(turno.serumFollowUp))) continue;
+      // La del SERVICIO conserva su nombre (ver reescribirSueroDelSeguimiento).
+      const esLaDelServicio = String(turno.serumFollowUp) === String(apt.autoSerumFollowUp || '');
+      // eslint-disable-next-line no-await-in-loop
+      const r = await reescribirSueroDelSeguimiento({
+        patientId: apt.patient,
+        followUpId: turno.serumFollowUp,
+        linea,
+        conservarNombre: esLaDelServicio,
+      });
+      if (r === 'reescrito') { corregidos.push(linea.name); continue; }
+      if (r === 'aplicado') {
+        avisos.push(
+          `«${linea.name}» ya se le aplicó al paciente, así que no se cambió: ` +
+          'eso movió inventario y es lo que de verdad se le puso. Para corregirlo, ' +
+          'anúlalo desde la ficha del paciente.'
+        );
+        continue;
+      }
+      // 'sin-receta': la borraron de la ficha. Se escribe de nuevo, abajo.
+      turno.serumFollowUp = null;
+    }
 
     /**
      * SE SUMA A LA BOLSA DEL SERVICIO en vez de abrir una receta nueva.
@@ -547,6 +604,7 @@ async function sembrarSuerosDeLosTurnos(apt, req) {
       // que escogió mostrador: cae al camino normal y se escribe aparte.
     }
 
+    // eslint-disable-next-line no-await-in-loop
     const fu = await sembrarSueroEnFicha({
       clinicId: apt.clinic,
       patientId: apt.patient,
@@ -562,7 +620,42 @@ async function sembrarSuerosDeLosTurnos(apt, req) {
       sembrados.push(linea.name);
     }
   }
-  return sembrados;
+  return { sembrados, corregidos, avisos };
+}
+
+/**
+ * BORRA DE LA FICHA LOS SUEROS QUE SE QUEDARON SIN DUEÑO.
+ *
+ * Se quitó el suero de un paso, o el paso entero, y su receta seguía en la
+ * historia del paciente: enfermería la veía como algo pendiente de poner y nadie
+ * sabía de dónde salía. Se comparan los sueros que la cita tenía escritos ANTES
+ * con los que le quedan.
+ *
+ * La bolsa del SERVICIO (`autoSerumFollowUp`) se queda: la escribió el servicio
+ * y tiene su propio ciclo — quitar un paso de enfermería no deshace el suero que
+ * ese servicio lleva de serie.
+ */
+async function limpiarSuerosHuerfanos(apt, antes) {
+  const { quitarSueroDelSeguimiento } = require('../utils/sueroDeCita');
+  const avisos = [];
+  const vivos = new Set(
+    (apt.turns || [])
+      .filter((t) => t.kind === 'enfermeria' && t.serumFollowUp)
+      .map((t) => String(t.serumFollowUp))
+  );
+  for (const id of new Set(antes || [])) {
+    if (vivos.has(id)) continue;
+    if (String(id) === String(apt.autoSerumFollowUp || '')) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const r = await quitarSueroDelSeguimiento({ patientId: apt.patient, followUpId: id });
+    if (r === 'aplicado') {
+      avisos.push(
+        'El suero que quitaste ya se le había aplicado al paciente, así que sigue ' +
+        'en su ficha: eso movió inventario y es lo que de verdad se le puso.'
+      );
+    }
+  }
+  return avisos;
 }
 
 exports.createAppointment = async (req, res) => {
@@ -889,7 +982,7 @@ exports.createAppointment = async (req, res) => {
       }
 
       // 2) Los que se escogieron en los pasos de enfermería.
-      items.push(...(await sembrarSuerosDeLosTurnos(appointment, req)));
+      items.push(...(await sembrarSuerosDeLosTurnos(appointment, req)).sembrados);
 
       if (items.length) {
         await appointment.save();
@@ -2187,6 +2280,25 @@ exports.assignDoctor = async (req, res) => {
       apt.serviceName = svc?.name || '';
     }
 
+    /**
+     * QUÉ SUEROS TENÍA ESCRITOS LA CITA ANTES DE TOCARLA.
+     *
+     * `asignarTurnos` rehace la cola entera, así que después ya no hay forma de
+     * saber qué había. Se guarda aquí para poder limpiar de la ficha los que se
+     * queden sin dueño: quitar el suero de un paso —o el paso entero— dejaba su
+     * receta huérfana en la historia del paciente, y enfermería la veía como
+     * algo pendiente de ponerle.
+     */
+    const suerosAntes = (apt.turns || [])
+      .filter((t) => t.kind === 'enfermeria' && t.serumFollowUp)
+      .map((t) => String(t.serumFollowUp));
+    /** Los que la pantalla marcó como CORREGIDOS (ver `serumTocado`). */
+    const suerosTocados = new Set(
+      pasos
+        .filter((x) => x.kind === 'enfermeria' && x.serumTocado && x.serumFollowUp)
+        .map((x) => String(x.serumFollowUp))
+    );
+
     asignarTurnos(apt, { pasos, por: req.user._id });
 
     // El valor de la cita se anota AQUÍ, en el mismo gesto de recibir al
@@ -2254,6 +2366,7 @@ exports.assignDoctor = async (req, res) => {
      * reintente sin duplicar lo ya escrito.
      */
     let suerosSembrados = [];
+    let suerosAvisos = [];
     try {
       /**
        * El de serie del SERVICIO, si la cita todavía no lo tiene. Cubre a las
@@ -2286,8 +2399,12 @@ exports.assignDoctor = async (req, res) => {
         }
       }
 
-      suerosSembrados.push(...(await sembrarSuerosDeLosTurnos(apt, req)));
-      if (suerosSembrados.length) {
+      const r = await sembrarSuerosDeLosTurnos(apt, req, { tocados: suerosTocados });
+      suerosSembrados.push(...r.sembrados, ...r.corregidos);
+      suerosAvisos.push(...r.avisos);
+      // Y los que se quedaron sin dueño se van de la ficha.
+      suerosAvisos.push(...(await limpiarSuerosHuerfanos(apt, suerosAntes)));
+      if (suerosSembrados.length || r.corregidos.length || suerosAntes.length) {
         await apt.save();
         emitToClinic(apt.clinic, 'clinicalRecord:updated', { patient: apt.patient });
       }
@@ -2346,8 +2463,8 @@ exports.assignDoctor = async (req, res) => {
     // `autoSerum` lo lee la pantalla para decir que el suero ya quedó escrito en
     // los seguimientos. Va aparte del documento: no es un campo de la cita.
     res.json(
-      suerosSembrados.length
-        ? { ...populated.toObject(), autoSerum: { items: suerosSembrados } }
+      suerosSembrados.length || suerosAvisos.length
+        ? { ...populated.toObject(), autoSerum: { items: suerosSembrados, avisos: suerosAvisos } }
         : populated
     );
   } catch (error) {
@@ -2841,5 +2958,83 @@ exports.nurseComplete = async (req, res) => {
     res.json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al finalizar la cita', error: error.message });
+  }
+};
+/**
+ * EL EXCEL DE LA AGENDA — POST /api/appointments/export.xlsx
+ *
+ * Lo pide mostrador desde la propia agenda, y lo que baja es EXACTAMENTE lo que
+ * tiene delante: la pantalla manda los ids de las citas que está enseñando.
+ *
+ * ¿Por qué los ids y no los filtros? Porque la agenda filtra en el NAVEGADOR
+ * —sucursal, servicio, franja horaria y bandeja no llegan a viajar al
+ * servidor—, así que rehacer aquí ese filtrado sería copiar una lógica que se
+ * desincroniza a la primera pantalla que se toque, y entonces el Excel diría
+ * algo distinto de lo que el usuario está viendo. Que coincida no es un detalle:
+ * el archivo se manda por WhatsApp y se usa para cuadrar el día.
+ *
+ * VA POR POST porque un mes de agenda son cientos de ids y no caben en una URL.
+ *
+ * Y NO SE FÍA DE LA LISTA: los ids llegan del cliente, así que se filtran por el
+ * alcance real de quien pide (`sucursalesVisibles`). Pedir el id de una cita de
+ * una sede a la que no llegas no la trae.
+ */
+exports.exportAppointments = async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const validos = ids.filter((id) => mongoose.Types.ObjectId.isValid(id)).slice(0, MAX_CITAS_EXCEL);
+    if (!validos.length) {
+      return res.status(400).json({
+        message: 'No hay ninguna cita que exportar con los filtros aplicados.',
+      });
+    }
+
+    const filtro = { _id: { $in: validos } };
+    const visibles = sucursalesVisibles(req);
+    if (visibles !== null) filtro.clinic = { $in: visibles };
+
+    const citas = await Appointment.find(filtro)
+      .populate('patient', 'firstName lastName')
+      .populate('clinic', 'name nombreComercial')
+      .populate('doctor', 'name')
+      .populate('turns.user', 'name')
+      .populate('serviceItem', 'name')
+      //  es a QUIEN SE ACREDITA la cita y  quien la
+      // escribió, cuando no son la misma persona (el call center trabaja en
+      // pareja: una la cierra por teléfono y otra la teclea).
+      .populate('createdBy', 'name')
+      .sort({ date: 1, startTime: 1 });
+
+    if (!citas.length) {
+      return res.status(404).json({ message: 'No se encontraron esas citas.' });
+    }
+
+    const { construirLibroDeAgenda } = require('../services/agendaWorkbook');
+    // El título y los filtros los escribe la PANTALLA: es la única que sabe qué
+    // está enseñando («8 de septiembre», «bandeja: en atención»). Se sanean por
+    // longitud —van a una celda, no a una consulta— y se cae a algo genérico.
+    const texto = (v, max) => String(v || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, max);
+    const wb = construirLibroDeAgenda(citas, {
+      titulo: 'AGENDA DE CITAS',
+      subtitulo: texto(req.body?.subtitulo, 120) || 'Vikingo',
+      periodo: texto(req.body?.periodo, 120) || 'Citas seleccionadas',
+      filtros: texto(req.body?.filtros, 300),
+      resumen:
+        `${citas.length} ${citas.length === 1 ? 'cita' : 'citas'} · ` +
+        `Generado por ${texto(req.user?.name, 60) || 'el sistema'} · ` +
+        new Date().toLocaleString('es-EC', { timeZone: 'America/Guayaquil' }),
+    });
+
+    const nombre = `citas-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    res.status(500).json({ message: 'No se pudo generar el Excel', error: error.message });
   }
 };
