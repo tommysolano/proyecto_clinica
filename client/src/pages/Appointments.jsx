@@ -330,7 +330,7 @@ export default function Appointments() {
    * cliente no expande desde 'doctor' (ver utils/roles.js). Los campos que ve
    * cada uno los decide el propio formulario, campo a campo.
    */
-  const puedeEditarPaciente = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica');
+  const puedeEditarPaciente = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica', 'marketing');
 
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);

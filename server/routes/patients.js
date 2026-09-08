@@ -47,8 +47,16 @@ router.get('/:id/purchases', requireRole('admin', 'contabilidad'), getPatientPur
 // Crear / editar: incluye doctor (con restricción de campos sensibles en el controller)
 // 'doctor' EXPANDE a las especialidades (óptica incluida): en óptica el paciente
 // llega sin cita previa y quien lo registra es el propio optómetra.
-router.post('/', requireRole('admin', 'cajero', 'call_center', 'doctor'), createPatient);
-router.put('/:id', requireRole('admin', 'cajero', 'call_center', 'doctor'), updatePatient);
+//
+// MARKETING TAMBIÉN REGISTRA Y CORRIGE (sep-2026). Ya entraba a la ficha y al
+// listado, pero solo de lectura: el contacto de una campaña que pedía hora
+// acababa dictado por chat a un cajero para que lo diera de alta. No abre
+// ningún dato nuevo —marketing no tiene NINGUNA capacidad de contacto, así que
+// cédula, teléfono, dirección y correo le siguen llegando censurados— y por eso
+// mismo tampoco los puede pisar: 'updatePatient' descarta, campo a campo, todo
+// lo que el rol no ve (si no, guardar el formulario los habría borrado).
+router.post('/', requireRole('admin', 'cajero', 'call_center', 'doctor', 'marketing'), createPatient);
+router.put('/:id', requireRole('admin', 'cajero', 'call_center', 'doctor', 'marketing'), updatePatient);
 router.delete('/:id', requireRole('admin'), deletePatient);
 
 // ─── Observaciones (bitácora libre del paciente) ────────────────────────────

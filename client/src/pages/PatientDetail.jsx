@@ -671,7 +671,7 @@ function DatosTab({ patient, onSaved }) {
    * servidor sí le deja (`PUT /patients/:id`). Es el mismo formulario que
    * abre la agenda desde la cita.
    */
-  const puedeEditar = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica');
+  const puedeEditar = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica', 'marketing');
   const [editando, setEditando] = useState(false);
   // Teléfono y WhatsApp: admin y mostrador (es quien llama). Para los demás el
   // servidor los omite, así que ni se pintan.

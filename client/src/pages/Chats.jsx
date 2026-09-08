@@ -6437,7 +6437,7 @@ function SelectorOtroPaciente({ valor, onChange }) {
   const { hasRole } = useAuth();
   // Espejo del `requireRole` de POST /patients (con 'optica' enumerada aparte,
   // que en el cliente no expande desde 'doctor').
-  const puedeRegistrar = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica');
+  const puedeRegistrar = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica', 'marketing');
   const [q, setQ] = useState('');
   const busqueda = useDebounce(q, 350);
   const [resultados, setResultados] = useState([]);

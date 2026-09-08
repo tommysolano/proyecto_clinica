@@ -32,6 +32,12 @@ import {
 import BulkUploadModal from '../components/BulkUploadModal';
 import ServiceItemPicker from '../components/ServiceItemPicker';
 import TimeSlotInput from '../components/TimeSlotInput';
+// La FECHA DE LA CITA (el bloque de agendar, más abajo). Ojo: no es el único
+// DateInput que hubo aquí —el de la fecha de nacimiento se fue a PatientFields—
+// y al llevarse aquel se borró también este import, con el componente todavía
+// en uso. Ni eslint ni el build lo ven (ver abajo), y la pantalla reventaba al
+// marcar «Agendar cita para este paciente».
+import DateInput from '../components/DateInput';
 import AppointmentValueFields from '../components/AppointmentValueFields';
 import AgendadoPorSelect from '../components/AgendadoPorSelect';
 import QuienAtiende, {
@@ -97,7 +103,12 @@ export default function Patients() {
   // que no expande desde 'doctor' (ver utils/roles.js, donde se dejó fuera a
   // propósito), así que el `hasRole('doctor')` de arriba la dejaba sin ninguna
   // de las dos cosas — justo al rol para el que se escribió el comentario.
-  const canWrite = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica');
+  // 'marketing' (sep-2026): ya entraba a la ficha y al listado, pero de solo
+  // lectura, y el contacto de una campaña que pedía hora acababa dictado por
+  // chat a un cajero. Registra y corrige lo que VE (nombre, género, fecha de
+  // nacimiento, etiquetas, origen): los datos de contacto le llegan censurados
+  // y el servidor los descarta al guardar, así que no puede borrarlos.
+  const canWrite = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica', 'marketing');
   // Quien atiende puede además abrir la consulta en el momento de registrarlo.
   const puedeAtenderYa = hasRole('doctor', 'optica');
   /**
