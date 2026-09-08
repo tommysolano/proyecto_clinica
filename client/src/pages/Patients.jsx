@@ -3,19 +3,20 @@ import { Link, useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import useDebounce from '../hooks/useDebounce';
 import { downloadFile } from '../utils/download';
-import { todayEc, nowEcHHMM, edadDesdeFecha } from '../utils/date';
+import { todayEc, nowEcHHMM } from '../utils/date';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
-import NumericInput from '../components/NumericInput';
-import Spinner from '../components/Spinner';
-import SriStatus from '../components/SriStatus';
-import useSriLookup, { fillField } from '../hooks/useSriLookup';
-import EmailStatus from '../components/EmailStatus';
-import useEmailValidation from '../hooks/useEmailValidation';
-import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO, ROLES_VEN_DIRECCION, ROLES_VEN_TELEFONO } from '../utils/roles';
-import { unirTelefonos, partirTelefonos } from '../utils/phone';
+import { ROLES_VEN_CEDULA, ROLES_VEN_CORREO, ROLES_VEN_TELEFONO } from '../utils/roles';
+// Los campos del paciente (y sus reglas por rol) se comparten con la agenda,
+// donde mostrador los corrige desde la propia cita.
+import PatientFields, {
+  emptyPatientForm,
+  formDesdePaciente,
+  payloadDePaciente,
+  Field,
+} from '../components/PatientFields';
 import { nombreSucursal } from '../utils/clinicName';
 import {
   HiOutlinePlus,
@@ -29,7 +30,6 @@ import {
   HiOutlineDocumentMagnifyingGlass,
 } from 'react-icons/hi2';
 import BulkUploadModal from '../components/BulkUploadModal';
-import DateInput from '../components/DateInput';
 import ServiceItemPicker from '../components/ServiceItemPicker';
 import TimeSlotInput from '../components/TimeSlotInput';
 import AppointmentValueFields from '../components/AppointmentValueFields';
@@ -39,23 +39,6 @@ import QuienAtiende, {
   pasosDeAtencion,
   usePersonalDeLaSede,
 } from '../components/QuienAtiende';
-
-const emptyForm = {
-  cedula: '',
-  firstName: '',
-  lastName: '',
-  email: '',
-  phone: '',
-  whatsapp: '',
-  birthDate: '',
-  age: '',
-  gender: '',
-  address: '',
-  source: '',
-  referredByName: '',
-  referredById: '',
-  referredByType: '',
-};
 
 const emptyApt = {
   enabled: false,
@@ -130,9 +113,10 @@ export default function Patients() {
   // descubre que están mal al facturar. El correo lo ve además quien atiende.
   // Capacidades `patients.cedula` / `patients.address` / `patients.email` en el
   // servidor, que es quien manda.
+  // (Qué campos se enseñan DENTRO del formulario lo decide PatientFields, que
+  // usa estas mismas listas; aquí solo quedan los de las columnas de la tabla.)
   const showCedula = hasRole(...ROLES_VEN_CEDULA);
   const showEmail = hasRole(...ROLES_VEN_CORREO);
-  const showDireccion = hasRole(...ROLES_VEN_DIRECCION);
   // Nombre + Edad + Acciones siempre; las demás según quién mire. El número
   // tiene que cuadrar con las columnas de verdad: es el colSpan del "no se
   // encontraron pacientes" y el ancho del esqueleto.
@@ -147,30 +131,15 @@ export default function Patients() {
   const [modalOpen, setModalOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState(emptyForm);
-  // Los dos números en un solo campo (ver unirTelefonos/partirTelefonos). Se
-  // guarda como texto suelto para que escribir el separador no se deshaga solo.
+  const [form, setForm] = useState(emptyPatientForm);
+  // Los dos números en un solo campo (los junta y reparte PatientFields, ver
+  // unirTelefonos/partirTelefonos). Va como texto suelto para que escribir el
+  // separador no se deshaga solo.
   const [telefonos, setTelefonos] = useState('');
   const [saving, setSaving] = useState(false);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
 
-  // Autocompletado por cédula/RUC desde el SRI (nombres/apellidos + dirección).
-  // La fecha de nacimiento y el género no están en fuentes públicas gratuitas en
-  // Ecuador, así que esos se ingresan a mano.
-  const cedulaLookup = useSriLookup(form.cedula, {
-    enabled: modalOpen && !editing,
-    existingIsError: true,
-    onData: (d, prev) => {
-      setForm((f) => ({
-        ...f,
-        firstName: fillField(f.firstName, d.found ? (d.firstName || '').toUpperCase() : '', (prev?.firstName || '').toUpperCase()),
-        lastName: fillField(f.lastName, d.found ? (d.lastName || '').toUpperCase() : '', (prev?.lastName || '').toUpperCase()),
-        address: fillField(f.address, d.found ? d.address || '' : '', prev?.address),
-      }));
-    },
-  });
-  const emailCheck = useEmailValidation(form.email, { enabled: modalOpen });
 
   // Para crear cita junto al paciente
   const [aptForm, setAptForm] = useState(emptyApt);
@@ -239,7 +208,7 @@ export default function Patients() {
 
   const openNew = () => {
     setEditing(null);
-    setForm(emptyForm);
+    setForm(emptyPatientForm);
     setTelefonos('');
     /**
      * QUIEN ATIENDE ENTRA A LA CONSULTA, no agenda.
@@ -257,31 +226,24 @@ export default function Patients() {
 
   const openEdit = (patient) => {
     setEditing(patient._id);
-    // El paciente llega censurado para quien no ve los datos de contacto: si esos
-    // `undefined` entran al formulario, sus inputs dejan de estar controlados.
-    const visible = Object.fromEntries(
-      Object.entries(patient).filter(([, v]) => v !== undefined && v !== null)
-    );
-    const nacimiento = patient.birthDate ? patient.birthDate.split('T')[0] : '';
-    setForm({
-      ...emptyForm,
-      ...visible,
-      birthDate: nacimiento,
-      // Con fecha de nacimiento la edad se recalcula al abrir: la guardada puede
-      // ser de hace tres años y el campo ya no se puede corregir a mano.
-      age: nacimiento ? edadDesdeFecha(nacimiento) : (patient.age ?? ''),
-    });
-    setTelefonos(unirTelefonos(patient.phone, patient.whatsapp));
+    const { form: f, telefonos: t } = formDesdePaciente(patient);
+    setForm(f);
+    setTelefonos(t);
     setAptForm(emptyApt);
     setModalOpen(true);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.gender) {
-      toast.error('El género es obligatorio');
-      return;
-    }
+    /**
+     * NADA DEL PACIENTE ES OBLIGATORIO, tampoco el género.
+     *
+     * Aquí quedaba una guardia que lo exigía, de antes de que se retirara la
+     * obligatoriedad (ago-2026): el formulario decía en su propio comentario
+     * que no hacía falta y luego se negaba a guardar. Se registra a mucha
+     * gente con lo que se tiene a mano —a veces solo el teléfono— y exigirlo
+     * empujaba a inventárselo, que es peor dato que ninguno.
+     */
     // Validaciones de cita inline si está habilitada
     // Con 'atender ahora' no hay fecha ni hora que pedir: es esta.
     if (aptForm.enabled && !editing && !aptForm.ahora) {
@@ -299,17 +261,7 @@ export default function Patients() {
     }
     setSaving(true);
     try {
-      // Los campos vacíos se envían como undefined: Mongoose no sabe convertir
-      // '' a ObjectId/número/enum y el guardado fallaba con un error opaco.
-      const payload = {
-        ...form,
-        // El campo único vuelve a ser `phone` + `whatsapp`, que es lo que
-        // entiende el resto del sistema.
-        ...partirTelefonos(telefonos),
-        age: form.age === '' ? undefined : Number(form.age),
-        birthDate: form.birthDate || undefined,
-        referredById: form.referredById || undefined,
-      };
+      const payload = payloadDePaciente(form, telefonos);
       let createdId = editing;
       if (editing) {
         await api.put(`/patients/${editing}`, payload);
@@ -391,25 +343,6 @@ export default function Patients() {
     }
   };
 
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    /**
-     * LA EDAD SE CALCULA SOLA en cuanto hay fecha de nacimiento.
-     *
-     * Los dos campos decían lo mismo y se tecleaban por separado, así que se
-     * contradecían: la ficha de un paciente de 1990 podía decir «28 años» porque
-     * la edad se escribió una vez y ahí se quedó. Con la fecha puesta, la edad
-     * es un dato derivado y se comporta como tal (el campo queda de solo
-     * lectura); borrando la fecha se vuelve a poder escribir a mano, que es como
-     * se registra a quien no se acuerda del día en que nació.
-     */
-    if (name === 'birthDate') {
-      const edad = edadDesdeFecha(value);
-      setForm({ ...form, birthDate: value, age: value ? edad : form.age });
-      return;
-    }
-    setForm({ ...form, [name]: (name === 'firstName' || name === 'lastName') ? value.toUpperCase() : value });
-  };
 
   return (
     <div className="space-y-6">
@@ -632,155 +565,17 @@ export default function Patients() {
           }}
           className="space-y-4"
         >
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Al REGISTRAR se piden siempre (la persona los está dando en el
-                mostrador); al EDITAR ya son datos guardados: solo el admin —y la
-                cédula, además, mostrador. */}
-            {(showCedula || !editing) && (
-            <Field label="Cédula / RUC / Pasaporte">
-              <div className="relative">
-                <input
-                  name="cedula"
-                  value={form.cedula}
-                  onChange={handleChange}
-                  className="input pr-9"
-                  placeholder="Cédula, RUC o pasaporte"
-                  maxLength={20}
-                />
-                {cedulaLookup.loading && (
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500 pointer-events-none">
-                    <Spinner />
-                  </span>
-                )}
-              </div>
-              <SriStatus status={cedulaLookup} />
-            </Field>
-            )}
-            {/* Ni género, ni nombres, ni apellidos son obligatorios: el paciente
-                se registra muchas veces con lo que se tiene a mano (a veces solo
-                el teléfono, o solo la cédula) y se completa después. Exigirlos
-                obligaba a inventarse datos para poder guardar. */}
-            <Field label="Género">
-              <select
-                name="gender"
-                value={form.gender}
-                onChange={handleChange}
-                className="input"
-              >
-                <option value="">Seleccionar</option>
-                <option value="masculino">Masculino</option>
-                <option value="femenino">Femenino</option>
-                <option value="otro">Otro</option>
-              </select>
-            </Field>
-            <Field label="Nombres">
-              <input
-                name="firstName"
-                value={form.firstName}
-                onChange={handleChange}
-                className="input"
-              />
-            </Field>
-            <Field label="Apellidos">
-              <input
-                name="lastName"
-                value={form.lastName}
-                onChange={handleChange}
-                className="input"
-              />
-            </Field>
-            {/* Al EDITAR, un campo de contacto solo se enseña a quien lo ve: el
-                resto lo recibiría vacío y guardaría un borrado sin querer (el
-                servidor lo descarta igual, ver CONTACT_FIELDS). El correo lo ve
-                también quien atiende, así que también lo corrige. */}
-            {(showEmail || !editing) && (
-            <Field label="Email">
-              <input
-                name="email"
-                type="email"
-                value={form.email}
-                onChange={handleChange}
-                className="input"
-              />
-              <EmailStatus status={emailCheck} onApplySuggestion={(s) => setForm((f) => ({ ...f, email: s }))} />
-            </Field>
-            )}
-            {(showContact || !editing) && (
-            <Field label="Teléfono">
-              <input
-                name="telefonos"
-                value={telefonos}
-                onChange={(e) => setTelefonos(e.target.value)}
-                placeholder="0991234567"
-                className="input"
-              />
-              <p className="text-[11px] text-slate-400 mt-1">
-                ¿Tiene dos números? Escríbelos separados por «/». El segundo es el que se usa
-                para WhatsApp.
-              </p>
-            </Field>
-            )}
-            <Field label="Fecha de nacimiento">
-              <DateInput
-                name="birthDate"
-                value={form.birthDate}
-                onChange={handleChange}
-                className="input"
-              />
-            </Field>
-            {/* Con fecha de nacimiento la edad es un dato derivado: se enseña,
-                pero no se teclea (así no puede contradecir a la fecha). */}
-            <Field label={form.birthDate ? 'Edad (calculada)' : 'Edad (si no tiene fecha)'}>
-              <NumericInput
-                name="age"
-                min="0"
-                max="150"
-                value={form.age}
-                onChange={handleChange}
-                readOnly={!!form.birthDate}
-                className={`input ${form.birthDate ? 'bg-slate-50 text-slate-500' : ''}`}
-                placeholder="Ej: 35"
-                title={form.birthDate ? 'Se calcula con la fecha de nacimiento' : ''}
-              />
-            </Field>
-          </div>
-          {(showDireccion || !editing) && (
-            <Field label="Dirección">
-              <input name="address" value={form.address} onChange={handleChange} className="input" />
-            </Field>
-          )}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field label="¿Cómo nos conoció?">
-              <select
-                name="source"
-                value={form.source}
-                onChange={handleChange}
-                className="input"
-              >
-                <option value="">Sin especificar</option>
-                <option value="anuncio">Anuncio</option>
-                <option value="referido">Referido</option>
-                <option value="recepcion">Recepción</option>
-                <option value="organico">Orgánico</option>
-              </select>
-            </Field>
-            {form.source === 'referido' && (
-              <ReferralPicker
-                value={form.referredByName}
-                onSelect={(sel) =>
-                  setForm((f) => ({
-                    ...f,
-                    referredByName: sel.name,
-                    referredById: sel.id || '',
-                    referredByType: sel.type || '',
-                  }))
-                }
-                onClear={() =>
-                  setForm((f) => ({ ...f, referredByName: '', referredById: '', referredByType: '' }))
-                }
-              />
-            )}
-          </div>
+          {/* Los campos del paciente son los MISMOS aquí y en la agenda, donde
+              mostrador los corrige con el paciente delante: viven en
+              components/PatientFields.jsx para que las reglas por rol y el
+              cálculo de la edad no se dupliquen. */}
+          <PatientFields
+            form={form}
+            setForm={setForm}
+            telefonos={telefonos}
+            setTelefonos={setTelefonos}
+            editing={!!editing}
+          />
           {!editing && (
             <div className="border-t border-emerald-100 pt-4">
               {/**
@@ -1028,91 +823,6 @@ export default function Patients() {
         .input:focus { border-color: #10b981; background: white; }
       `}</style>
     </div>
-  );
-}
-
-function Field({ label, required, children }) {
-  return (
-    <div>
-      <label className="block text-sm font-medium text-slate-700 mb-1.5">
-        {label} {required && <span className="text-red-500">*</span>}
-      </label>
-      {children}
-    </div>
-  );
-}
-
-// Buscador de "¿Quién lo refirió?" — pacientes y personal registrados.
-function ReferralPicker({ value, onSelect, onClear }) {
-  const [query, setQuery] = useState(value || '');
-  const [results, setResults] = useState([]);
-  const [open, setOpen] = useState(false);
-  const [selected, setSelected] = useState(!!value);
-
-  useEffect(() => {
-    if (selected || query.trim().length < 2) {
-      setResults([]);
-      return;
-    }
-    const t = setTimeout(async () => {
-      try {
-        const res = await api.get('/patients/referral-options', { params: { q: query } });
-        setResults(res.data || []);
-        setOpen(true);
-      } catch {
-        setResults([]);
-      }
-    }, 250);
-    return () => clearTimeout(t);
-  }, [query, selected]);
-
-  return (
-    <Field label="¿Quién lo refirió?">
-      <div className="relative">
-        <input
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setSelected(false);
-          }}
-          className="input"
-          placeholder="Buscar paciente o personal..."
-        />
-        {selected && query && (
-          <button
-            type="button"
-            onClick={() => {
-              setQuery('');
-              setSelected(false);
-              onClear();
-            }}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-red-500 bg-transparent border-none cursor-pointer"
-          >
-            ✕
-          </button>
-        )}
-        {open && !selected && results.length > 0 && (
-          <div className="absolute z-10 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-            {results.map((r) => (
-              <button
-                key={`${r.type}-${r.id}`}
-                type="button"
-                onClick={() => {
-                  onSelect(r);
-                  setQuery(r.name);
-                  setSelected(true);
-                  setOpen(false);
-                }}
-                className="w-full text-left px-3 py-2 text-sm hover:bg-emerald-50 bg-transparent border-none cursor-pointer flex justify-between gap-2"
-              >
-                <span>{r.name}</span>
-                <span className="text-xs text-slate-400">{r.type === 'user' ? 'Personal' : r.detail}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </Field>
   );
 }
 

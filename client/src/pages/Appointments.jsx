@@ -10,6 +10,9 @@ import SameSlotPanel from '../components/SameSlotPanel';
 import AssignAttentionModal from '../components/AssignAttentionModal';
 import AppointmentServiceValueModal from '../components/AppointmentServiceValueModal';
 import AppointmentFollowUpModal from '../components/AppointmentFollowUpModal';
+// Los datos del paciente se corrigen desde la propia cita: es el MISMO
+// formulario que el de la página de Pacientes (ver components/PatientFields).
+import PatientEditModal from '../components/PatientEditModal';
 import AppointmentValueFields from '../components/AppointmentValueFields';
 import AgendadoPorSelect from '../components/AgendadoPorSelect';
 import toast from 'react-hot-toast';
@@ -27,6 +30,7 @@ import {
   HiOutlineStop,
   HiOutlineMagnifyingGlass,
   HiOutlineUserPlus,
+  HiOutlinePencilSquare,
   HiOutlineAdjustmentsHorizontal,
   HiOutlineChevronDown,
   HiOutlineBeaker,
@@ -320,6 +324,13 @@ export default function Appointments() {
   // El correo del paciente: admin, mostrador y quien atiende (espejo de la
   // capacidad `patients.email`, que es la que manda desde el servidor).
   const veCorreo = hasRole(...ROLES_VEN_CORREO);
+  /**
+   * Quién CORRIGE los datos del paciente desde la cita. Espejo del
+   * `requireRole` de `PUT /patients/:id`; 'optica' va enumerada porque en el
+   * cliente no expande desde 'doctor' (ver utils/roles.js). Los campos que ve
+   * cada uno los decide el propio formulario, campo a campo.
+   */
+  const puedeEditarPaciente = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica');
 
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);
@@ -359,6 +370,8 @@ export default function Appointments() {
   const [serviceValueModal, setServiceValueModal] = useState(null); // cita
   // Ver (solo leer) lo que se escribió en una cita ya atendida.
   const [consultaModal, setConsultaModal] = useState(null); // cita
+  // Corregir los datos del PACIENTE desde su propia cita, sin ir a Clientes.
+  const [patientModal, setPatientModal] = useState(null); // id del paciente
   /**
    * Filtros secundarios plegados EN EL MÓVIL (en pantalla grande siempre se ven).
    * Desplegados ocupaban media pantalla y empujaban las citas —que es a lo que
@@ -2477,7 +2490,28 @@ export default function Appointments() {
             )}
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-emerald-50/50 rounded-xl p-3">
-                <p className="text-xs text-emerald-600 font-medium">Paciente</p>
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-xs text-emerald-600 font-medium">Paciente</p>
+                  {/* CORREGIR SUS DATOS SIN SALIR DE LA CITA (sep-2026).
+                      Mostrador tiene al paciente delante y descubre aquí que la
+                      cédula está mal o que cambió de número: hasta ahora eso
+                      obligaba a abandonar la agenda, buscarlo en Clientes,
+                      corregirlo y volver a buscar la cita — con la cola
+                      esperando, o sea, a no corregirlo.
+                      Solo a quien el servidor deja guardar (`PUT /patients/:id`);
+                      'optica' va enumerada porque en el cliente no expande. */}
+                  {puedeEditarPaciente && detailModal.patient?._id && (
+                    <button
+                      type="button"
+                      onClick={() => setPatientModal(detailModal.patient._id)}
+                      title="Editar los datos del paciente"
+                      className="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 hover:text-emerald-800 bg-transparent border-none cursor-pointer p-0"
+                    >
+                      <HiOutlinePencilSquare className="w-3.5 h-3.5" />
+                      Editar
+                    </button>
+                  )}
+                </div>
                 <p className="text-sm font-medium text-slate-800 mt-0.5">
                   {detailModal.patient?.firstName} {detailModal.patient?.lastName}
                 </p>
@@ -2893,6 +2927,19 @@ export default function Appointments() {
         <AppointmentFollowUpModal
           appointment={consultaModal}
           onClose={() => setConsultaModal(null)}
+        />
+      )}
+
+      {/* Al guardar se recarga la agenda: el nombre y la cédula del paciente
+          se leen de la cita, y sin recargar la fila seguiría diciendo lo de
+          antes hasta la siguiente vuelta. El detalle abierto se cierra por lo
+          mismo: enseña una copia vieja del paciente. */}
+      {patientModal && (
+        <PatientEditModal
+          patientId={patientModal}
+          isOpen
+          onClose={() => setPatientModal(null)}
+          onSaved={() => { setDetailModal(null); fetchAppointments(); }}
         />
       )}
 

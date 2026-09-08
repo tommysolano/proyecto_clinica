@@ -11,6 +11,9 @@ import NumericInput from '../components/NumericInput';
 import Cie10Select from '../components/Cie10Select';
 import Odontograma from '../components/Odontograma';
 import CincoElementos from '../components/CincoElementos';
+// Corregir los datos del paciente sin salir de aquí: el MISMO formulario que
+// el de la página de Pacientes y el de la agenda (ver components/PatientFields).
+import PatientEditModal from '../components/PatientEditModal';
 import {
   ROLES_VEN_CEDULA,
   ROLES_VEN_CORREO,
@@ -626,7 +629,7 @@ export default function PatientDetail() {
         </div>
 
         <div className="p-3 sm:p-6">
-          {tabActiva === 'datos' && <DatosTab patient={patient} />}
+          {tabActiva === 'datos' && <DatosTab patient={patient} onSaved={setPatient} />}
           {/**
             * El terapeuta no llena la hoja MSP: la suya es otra (y privada). El
             * ADMINISTRADOR ve las dos — el servidor se la manda y le deja
@@ -657,8 +660,19 @@ export default function PatientDetail() {
 }
 
 // ───────────────────────── Datos ─────────────────────────
-function DatosTab({ patient }) {
+function DatosTab({ patient, onSaved }) {
   const { hasRole } = useAuth();
+  /**
+   * CORREGIR AQUÍ MISMO, sin ir a Clientes.
+   *
+   * Quien atiende llega a esta pantalla desde su cita y ve el dato mal —una
+   * cédula con un dígito de más, un correo que rebota—, pero el rol 'doctor'
+   * ni siquiera entra a /patients: no tenía dónde arreglarlo aunque el
+   * servidor sí le deja (`PUT /patients/:id`). Es el mismo formulario que
+   * abre la agenda desde la cita.
+   */
+  const puedeEditar = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica');
+  const [editando, setEditando] = useState(false);
   // Teléfono y WhatsApp: admin y mostrador (es quien llama). Para los demás el
   // servidor los omite, así que ni se pintan.
   const showContact = hasRole(...ROLES_VEN_TELEFONO);
@@ -684,6 +698,24 @@ function DatosTab({ patient }) {
     (patient.scanImport?.alternos || []).filter((a) => a.campo === campo);
   return (
     <div className="space-y-6">
+      {puedeEditar && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setEditando(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 cursor-pointer"
+          >
+            <HiOutlinePencilSquare className="w-4 h-4" />
+            Editar datos
+          </button>
+        </div>
+      )}
+      <PatientEditModal
+        patientId={patient._id}
+        isOpen={editando}
+        onClose={() => setEditando(false)}
+        onSaved={(actualizado) => onSaved?.(actualizado)}
+      />
       <dl className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
         {showCedula && <Item label="Cédula" value={patient.cedula} otros={otros('cedula')} />}
         <Item label="Nombre completo" value={`${patient.firstName} ${patient.lastName}`} />
