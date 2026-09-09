@@ -87,6 +87,18 @@ router.post('/:id/assign-doctor', requireRole('admin', 'cajero', 'enfermero'), a
 router.post('/:id/no-show', requireRole('admin', 'cajero', 'enfermero'), markNoShow);
 router.post('/:id/nurse-claim', requireRole('admin', 'enfermero'), nurseClaim);
 router.post('/:id/nurse-complete', requireRole('admin', 'enfermero'), nurseComplete);
-router.delete('/:id', requireRole('admin', 'cajero', 'call_center'), deleteAppointment);
+/**
+ * ELIMINAR UNA CITA: ADMINISTRACIÓN Y MARKETING (sep-2026, a petición de los
+ * usuarios).
+ *
+ * Se le quitó a mostrador y al call center, que la tenían. El motivo es que
+ * eliminar dejó de ser reversible: antes la cita se quedaba en 'cancelada' y
+ * cualquier error se veía y se arreglaba; ahora se borra de verdad y no hay
+ * dónde ir a buscarla. Quien agenda todo el día tiene el reagendamiento y los
+ * estados para lo suyo; borrar es una decisión de quien responde por la agenda.
+ *
+ * El controlador repite la regla: la ruta protege la pantalla, no a la API.
+ */
+router.delete('/:id', requireRole('admin', 'marketing'), deleteAppointment);
 
 module.exports = router;

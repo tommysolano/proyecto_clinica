@@ -1031,21 +1031,32 @@ export default function Appointments() {
   };
 
   /**
-   * BORRAR NO ES EDITAR. Una cita completada solo la cancela un administrador:
-   * detrás hay una atención que ocurrió —seguimiento escrito, comisión
-   * devengada, turno cerrado— y cancelarla la borraría de los reportes dejando
-   * la historia clínica donde está. Antes las dos reglas coincidían porque el
-   * lápiz tampoco se enseñaba; ahora que mostrador corrige el cobro, no.
-   * El servidor aplica lo mismo (ver `deleteAppointment`).
+   * BORRAR ES BORRAR: ADMINISTRACIÓN Y MARKETING.
+   *
+   * La papelera ya no marca la cita como «cancelada» —que era lo que confundía:
+   * se eliminaba y ahí seguía—: la borra del sistema y no hay dónde ir a
+   * recuperarla. Por eso se le quitó a mostrador y al call center, que agendan
+   * todo el día y la usaban para quitarse citas de la vista; lo suyo es
+   * reagendar o marcar el estado que toque.
+   *
+   * Ya no depende de la cita (quién la creó, si estaba completada): depende de
+   * quién eres. Espejo de la ruta `DELETE /appointments/:id`; si cambia una,
+   * cambia la otra, o el botón sale y lleva a un 403.
    */
-  const puedeBorrar = (apt) => (apt.status === 'completada' ? isAdmin : canEdit(apt));
+  const puedeBorrar = isAdmin || hasRole('marketing');
 
   const handleDelete = async (apt) => {
-    if (!puedeBorrar(apt)) {
-      toast.error('Solo el creador o un administrador puede eliminar esta cita.');
+    if (!puedeBorrar) {
+      toast.error('Solo administración y marketing pueden eliminar una cita.');
       return;
     }
-    if (!window.confirm('¿Eliminar esta cita?')) return;
+    // El aviso DICE QUÉ PASA. «¿Eliminar esta cita?» se contestaba que sí
+    // pensando que quedaba cancelada en algún sitio, que es lo que hacía antes.
+    const quien = [apt.patient?.firstName, apt.patient?.lastName].filter(Boolean).join(' ');
+    const aviso =
+      `¿Eliminar la cita${quien ? ` de ${quien}` : ''}? ` +
+      'Se borra del sistema: no queda como «cancelada» ni se puede recuperar.';
+    if (!window.confirm(aviso)) return;
     try {
       await api.delete(`/appointments/${apt._id}`);
       toast.success('Cita eliminada');
@@ -2227,7 +2238,7 @@ export default function Appointments() {
                             <HiOutlinePencil className="w-4 h-4" />
                           </button>
                         )}
-                        {puedeBorrar(apt) && canWrite && (
+                        {puedeBorrar && (
                           <button
                             onClick={() => handleDelete(apt)}
                             className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer transition-colors"
@@ -3007,14 +3018,37 @@ export default function Appointments() {
                 </div>
               </div>
             )}
-            {!isCallCenter && (
-              <div className="flex justify-end pt-2">
-                <button
-                  onClick={() => downloadPdf(detailModal._id)}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm bg-emerald-600 hover:bg-emerald-700 text-white border-none cursor-pointer"
-                >
-                  <HiOutlineDocumentArrowDown className="w-4 h-4" /> Descargar PDF
-                </button>
+            {(puedeBorrar || !isCallCenter) && (
+              <div className="flex justify-between items-center gap-2 pt-2">
+                {/**
+                  * ELIMINAR TAMBIÉN DESDE AQUÍ. La papelera vivía solo en la
+                  * fila de la lista, y la agenda se mira en el CALENDARIO: para
+                  * borrar una cita había que saber que existe otra vista.
+                  * Cierra el detalle antes de preguntar, para no dejar delante
+                  * la ficha de una cita que se acaba de ir.
+                  */}
+                {puedeBorrar ? (
+                  <button
+                    onClick={() => {
+                      const apt = detailModal;
+                      setDetailModal(null);
+                      handleDelete(apt);
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm bg-white text-red-600 border border-red-200 hover:bg-red-50 cursor-pointer"
+                  >
+                    <HiOutlineTrash className="w-4 h-4" /> Eliminar cita
+                  </button>
+                ) : (
+                  <span />
+                )}
+                {!isCallCenter && (
+                  <button
+                    onClick={() => downloadPdf(detailModal._id)}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm bg-emerald-600 hover:bg-emerald-700 text-white border-none cursor-pointer"
+                  >
+                    <HiOutlineDocumentArrowDown className="w-4 h-4" /> Descargar PDF
+                  </button>
+                )}
               </div>
             )}
           </div>

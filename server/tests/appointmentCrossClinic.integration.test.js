@@ -194,12 +194,19 @@ test('el resto de botones de la cita también dejan de dar 404', async () => {
   );
   assert.equal(editar.statusCode, 200, JSON.stringify(editar.payload));
 
-  const cancelar = await H.runController(
+  /**
+   * La papelera ya no es de mostrador (sep-2026): eliminar borra la cita de
+   * verdad y es de administración y marketing. Lo que se comprueba aquí sigue
+   * siendo lo mismo —que la cita de OTRA sede se encuentra— pero con quien hoy
+   * puede borrarla. Las reglas de quién elimina viven en
+   * eliminarCita.integration.test.js.
+   */
+  const borrar = await H.runController(
     appt.deleteAppointment,
-    reqCajero(sedeCajero, userId, {}, { params: { id: String(cita._id) } })
+    H.mockReq(sedeCajero, userId, {}, { params: { id: String(cita._id) } })
   );
-  assert.equal(cancelar.statusCode, 200, JSON.stringify(cancelar.payload));
-  assert.equal((await Appointment.findById(cita._id)).status, 'cancelada');
+  assert.equal(borrar.statusCode, 200, JSON.stringify(borrar.payload));
+  assert.equal(await Appointment.findById(cita._id), null, 'eliminar la borra, no la cancela');
 });
 
 test('quien NO ve toda la organización sigue sin poder tocar la cita de otra sede', async () => {

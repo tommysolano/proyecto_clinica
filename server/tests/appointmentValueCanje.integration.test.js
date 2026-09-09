@@ -412,7 +412,15 @@ test('una cita completada NO se reescribe por el PUT: para eso está service-val
   assert.equal(enBase.status, 'completada', 'la atención que ya ocurrió no se mueve');
 });
 
-test('una cita completada tampoco se cancela: la atención ocurrió', async () => {
+/**
+ * Y TAMPOCO LA BORRA (sep-2026). Antes esto se leía «una cita completada no la
+ * cancela mostrador»; hoy mostrador no elimina ninguna cita, completada o no —
+ * eliminar borra de verdad y es de administración y marketing (ver
+ * eliminarCita.integration.test.js). Detrás de una cita completada hay además
+ * una atención que ocurrió: seguimiento escrito, comisión devengada y turno
+ * cerrado.
+ */
+test('la cita completada tampoco la borra mostrador', async () => {
   const { clinicId, userId, make } = await seedCase();
   const apt = await make({ status: 'completada', consultationEndedAt: new Date() });
 

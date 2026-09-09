@@ -1464,6 +1464,61 @@ exports.updateAppointment = async (req, res) => {
   }
 };
 
+/**
+ * LO QUE APUNTABA A UNA CITA BORRADA.
+ *
+ * Una cita eliminada no puede seguir asomando de refilón: la oportunidad del
+ * chat enseñaba «agendado el 12 a las 10:00» de una cita que ya no existe, y la
+ * derivación se quedaba en «agendada» sin cita, así que nadie volvía a
+ * agendarla — vuelve a «pendiente», que es de donde salió.
+ *
+ * Los recordatorios pendientes NO se tocan aquí: de eso se encarga el evento de
+ * dominio (ver `cancelWaitingEnrollmentsForAppointment` en el motor de
+ * automatizaciones), que es el mismo camino de una cita cancelada.
+ */
+async function limpiarRastrosDeLaCita(appointment) {
+  const Conversation = require('../models/Conversation');
+  const Referral = require('../models/Referral');
+  const id = appointment._id;
+  await Promise.all([
+    // Oportunidades del chat: la canónica (`opportunities[]`) y la antigua.
+    Conversation.updateMany(
+      { 'opportunities.appointment': id },
+      { $set: { 'opportunities.$[o].appointment': null } },
+      { arrayFilters: [{ 'o.appointment': id }] }
+    ),
+    Conversation.updateMany(
+      { 'opportunity.appointment': id },
+      { $set: { 'opportunity.appointment': null } }
+    ),
+    appointment.referral
+      ? Referral.findOneAndUpdate(
+          { _id: appointment.referral, clinic: appointment.clinic, status: 'agendada' },
+          { $set: { status: 'pendiente' }, $unset: { appointment: '' } }
+        )
+      : null,
+  ]);
+}
+
+/**
+ * ELIMINAR UNA CITA ES BORRARLA (sep-2026, a petición de los usuarios).
+ *
+ * Antes la papelera la dejaba en estado 'cancelada' y ahí seguía: en el filtro
+ * «Todas», en la ficha del paciente y en los listados. Quien la borraba volvía
+ * al rato a preguntar por qué su cita seguía viéndose. La cita CANCELADA tiene
+ * su sitio —la cancela el paciente, o una automatización, y entonces interesa
+ * que quede constancia—, pero no es lo que pide quien le da a la papelera: esa
+ * cita se agendó mal y no tiene que existir.
+ *
+ * Y por eso mismo la papelera es de ADMINISTRACIÓN Y MARKETING: borrar ya no se
+ * deshace. Mostrador y call center, que son quienes agendan todo el día, la
+ * tenían y la usaban para «quitarla de la vista»; lo suyo es reagendar o marcar
+ * el estado que corresponda. La ruta aplica la misma regla; esto es lo que la
+ * hace valer también para el que llame a la API a mano.
+ *
+ * Queda constancia en el registro de auditoría: si la cita ya no está, lo único
+ * que puede contestar «¿quién la borró?» es ese apunte.
+ */
 exports.deleteAppointment = async (req, res) => {
   try {
     const appointment = await Appointment.findOne({
@@ -1473,40 +1528,112 @@ exports.deleteAppointment = async (req, res) => {
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
 
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
-    const isCreator = String(appointment.createdBy || '') === String(req.user._id);
-    if (!isAdmin && !isCreator) {
+    if (!isAdmin && req.role !== 'marketing') {
       return res.status(403).json({
-        message:
-          'Solo los administradores o el creador de la cita pueden eliminarla.',
+        message: 'Solo administración y marketing pueden eliminar una cita.',
       });
     }
 
     /**
-     * UNA CITA COMPLETADA NO SE CANCELA (salvo administrador).
+     * UNA CITA COBRADA NO SE BORRA.
      *
-     * Detrás hay una atención que ocurrió: su seguimiento escrito, su comisión
-     * devengada y su turno cerrado. Marcarla 'cancelada' la borraría de los
-     * reportes dejando la historia clínica donde está, y nadie volvería a
-     * cuadrarlo. Antes no hacía falta decirlo porque la pantalla escondía el
-     * botón; desde que mostrador puede corregirle el servicio y el valor, el
-     * botón está a la vista y la regla tiene que vivir aquí.
+     * Detrás hay una venta con su asiento contable, su comisión y puede que su
+     * factura al SRI. Borrar la cita dejaría a esa venta apuntando a algo que ya
+     * no existe y nadie volvería a cuadrarlo. El orden es el otro: primero se
+     * anula la venta —que sí sabe deshacer lo suyo— y después se borra la cita.
      */
-    if (appointment.status === 'completada' && !isAdmin) {
-      return res.status(403).json({
-        message: 'Una cita completada no se puede cancelar. Contacta a un administrador.',
+    const Sale = require('../models/Sale');
+    const venta = await Sale.findOne({
+      appointment: appointment._id,
+      status: { $ne: 'anulada' },
+    })
+      .select('saleNumber')
+      .lean();
+    if (venta) {
+      const cual = venta.saleNumber ? ` (venta ${venta.saleNumber})` : '';
+      return res.status(409).json({
+        message:
+          `Esta cita ya está cobrada${cual}: anula primero la venta y vuelve a eliminarla. ` +
+          'Borrarla ahora dejaría la venta y su asiento apuntando a una cita que no existe.',
       });
     }
 
-    // Cancelar = marcar como 'cancelada' (preserva historial para reportes de marketing).
-    // Solo el admin puede borrarla físicamente (con ?hard=true).
-    if (req.query.hard === 'true' && (req.user.isSuperAdmin || req.role === 'admin')) {
-      await Appointment.deleteOne({ _id: appointment._id });
-      return res.json({ message: 'Cita eliminada' });
+    /**
+     * EL SUERO QUE ESTA CITA DEJÓ ESCRITO SE VA CON ELLA.
+     *
+     * La cita escribe la bolsa en la ficha del paciente al agendarla (el suero
+     * de serie del servicio y el que indica mostrador). Si se borra la cita y la
+     * receta se queda, enfermería la ve como trabajo pendiente de una visita que
+     * ya no está en la agenda y no hay forma de saber de dónde salió.
+     *
+     * Lo YA APLICADO no se toca: `quitarSueroDelSeguimiento` lo respeta —eso
+     * movió inventario y es lo que de verdad se le puso al paciente.
+     */
+    const { quitarSueroDelSeguimiento } = require('../utils/sueroDeCita');
+    const sueros = new Set(
+      [appointment.autoSerumFollowUp, ...(appointment.turns || []).map((t) => t.serumFollowUp)]
+        .filter(Boolean)
+        .map(String)
+    );
+    for (const followUpId of sueros) {
+      // eslint-disable-next-line no-await-in-loop
+      await quitarSueroDelSeguimiento({ patientId: appointment.patient, followUpId }).catch(
+        (e) => console.warn('No se pudo quitar el suero de la cita borrada:', e.message)
+      );
     }
-    appointment.status = 'cancelada';
-    await appointment.save();
-    emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CANCELLED, appointmentEventPayload(appointment));
-    res.json({ message: 'Cita cancelada', appointment });
+
+    // El payload del evento se arma ANTES: después del borrado ya no hay cita de
+    // dónde sacar la fecha ni el paciente.
+    const payload = appointmentEventPayload(appointment);
+    await Appointment.deleteOne({ _id: appointment._id });
+    await limpiarRastrosDeLaCita(appointment).catch((e) =>
+      console.warn('No se pudieron limpiar los rastros de la cita borrada:', e.message)
+    );
+
+    /**
+     * Se avisa como CANCELACIÓN, igual que antes. Es lo que anula los
+     * recordatorios que estaban en cola —el paciente recibía a las 6 el aviso de
+     * una cita borrada a las 5— y lo que dispara los flujos de «cita cancelada»,
+     * que para el paciente es exactamente lo que ha pasado.
+     */
+    emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CANCELLED, payload);
+    // La agenda de los demás tiene que enterarse sola: el borrado no emitía nada
+    // y la cita seguía en pantalla hasta recargar. El cliente ya escuchaba esto.
+    emitToClinic(appointment.clinic, 'appointment:deleted', { _id: appointment._id });
+
+    try {
+      const AuditLog = require('../models/AuditLog');
+      const paciente = await Patient.findById(appointment.patient)
+        .select('firstName lastName')
+        .lean()
+        .catch(() => null);
+      const quien = [paciente?.firstName, paciente?.lastName].filter(Boolean).join(' ');
+      // La fecha, en hora de Ecuador: `toISOString` habría escrito el día
+      // siguiente en las citas de la tarde que llevan la hora dentro de `date`.
+      const cuando = appointment.date
+        ? new Date(appointment.date).toLocaleDateString('es-EC', { timeZone: 'America/Guayaquil' })
+        : '';
+      await AuditLog.create({
+        clinic: appointment.clinic,
+        user: req.user._id,
+        userName: req.user.name || req.user.email,
+        role: req.role,
+        action: 'DELETE',
+        entity: 'appointments',
+        entityId: String(appointment._id),
+        description:
+          `Eliminó la cita de ${quien || 'un paciente sin nombre'} ` +
+          `del ${cuando} ${appointment.startTime || ''}`.trim(),
+        method: req.method,
+        path: req.originalUrl,
+        ip: req.ip,
+        before: appointment.toObject(),
+      });
+    } catch (e) {
+      console.warn('No se pudo registrar en auditoría la cita borrada:', e.message);
+    }
+
+    res.json({ message: 'Cita eliminada' });
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar cita' });
   }
