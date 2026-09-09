@@ -29,7 +29,9 @@ const STEPS = ['Qué citas', 'Automatización y envío', 'Confirmar'];
 const HHMM_RE = /^\d{1,2}:\d{2}$/;
 
 const STATUS_OPTIONS = [
-  { value: 'pendiente', label: 'Agendada (por confirmar)' },
+  // «Pendiente» primero y con su nombre de la agenda: era el estado que la gente
+  // buscaba y no encontraba porque la etiqueta solo decía «Agendada».
+  { value: 'pendiente', label: 'Pendiente (agendada)' },
   { value: 'confirmada', label: 'Confirmada' },
   { value: 'asistida', label: 'Asistida' },
   { value: 'no_asistio', label: 'No asistió' },
@@ -60,6 +62,10 @@ export default function AppointmentBlastWizard({ initialDate = '', onClose, onDo
     return {
       startDate: day,
       endDate: day,
+      // Horario DENTRO de cada día (opcional): para el recordatorio que solo va
+      // a las citas de la mañana, por ejemplo. Vacío = todo el día.
+      startTimeFrom: '',
+      startTimeTo: '',
       clinics: [],
       statuses: ['pendiente', 'confirmada'],
       doctor: '',
@@ -343,6 +349,38 @@ function StepAudience({
           <Chip onClick={() => atajo(hoy)}>Hoy</Chip>
           <Chip onClick={() => atajo(hoy, addDays(hoy, 6))}>Próximos 7 días</Chip>
         </div>
+      </div>
+
+      {/* HORARIO dentro de cada día (opcional). El rango de fechas dice QUÉ días;
+          este dice a cuáles horas de esos días: sin él, "mandar el recordatorio
+          solo a las citas de la mañana" obligaba a lanzar el envío y desmarcar a
+          mano a las de la tarde. Vacío = todo el día. */}
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className="text-xs font-semibold text-slate-600 block mb-1">
+            Desde la hora <span className="font-normal text-slate-400">(opcional)</span>
+          </label>
+          <input
+            type="time"
+            value={filters.startTimeFrom}
+            onChange={(e) => setF({ startTimeFrom: e.target.value })}
+            className="w-32 border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-600 block mb-1">
+            Hasta la hora <span className="font-normal text-slate-400">(opcional)</span>
+          </label>
+          <input
+            type="time"
+            value={filters.startTimeTo}
+            onChange={(e) => setF({ startTimeTo: e.target.value })}
+            className="w-32 border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white"
+          />
+        </div>
+        <p className="text-[11px] text-slate-400 pb-1">
+          Filtra las citas por la hora a la que empiezan, dentro de los días elegidos.
+        </p>
       </div>
 
       <div>
@@ -641,6 +679,11 @@ function StepConfirm({ filters, opts, workflows, accounts, clinics, seleccionada
 
       <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 text-sm">
         <Row label="Sucursales">{sedes}</Row>
+        <Row label="Horario">
+          {filters.startTimeFrom || filters.startTimeTo
+            ? `Citas entre ${filters.startTimeFrom || '00:00'} y ${filters.startTimeTo || '23:59'}`
+            : 'Todo el día'}
+        </Row>
         <Row label="Estados">
           {filters.statuses.length
             ? filters.statuses.map((s) => STATUS_OPTIONS.find((o) => o.value === s)?.label || s).join(', ')

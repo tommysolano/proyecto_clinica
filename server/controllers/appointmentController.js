@@ -1059,9 +1059,10 @@ exports.updateAppointment = async (req, res) => {
     const clinicScope = existing.clinic;
 
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
-    // Recepción (cajero/call_center) puede reagendar/editar cualquier cita.
+    // Recepción (cajero/call_center) y marketing —que agenda y cierra desde el
+    // chat del CRM— pueden reagendar/editar cualquier cita.
     // La comisión NO cambia: queda con el creador original (createdBy se preserva).
-    const isFrontDesk = ['cajero', 'call_center'].includes(req.role);
+    const isFrontDesk = ['cajero', 'call_center', 'marketing'].includes(req.role);
     if (!isAdmin && !isFrontDesk) {
       return res.status(403).json({
         message: 'La cita la edita mostrador o un administrador.',

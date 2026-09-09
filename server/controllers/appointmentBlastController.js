@@ -69,6 +69,15 @@ function buildAppointmentQuery(req, filters = {}) {
   const statuses = (Array.isArray(filters.statuses) ? filters.statuses : []).filter((s) => ALL_STATUSES.includes(s));
   query.status = { $in: statuses.length ? statuses : DEFAULT_STATUSES };
 
+  // HORARIO DENTRO de cada día elegido (opcional). `startTime` se guarda como
+  // 'HH:MM' con ceros a la izquierda, así que el orden alfabético es también el
+  // cronológico y alcanza con comparar la cadena. Sin rango, no se filtra.
+  const pad = (s) => String(s).padStart(5, '0');
+  const timeRange = {};
+  if (HHMM_RE.test(String(filters.startTimeFrom || ''))) timeRange.$gte = pad(filters.startTimeFrom);
+  if (HHMM_RE.test(String(filters.startTimeTo || ''))) timeRange.$lte = pad(filters.startTimeTo);
+  if (timeRange.$gte || timeRange.$lte) query.startTime = timeRange;
+
   if (mongoose.isValidObjectId(filters.doctor)) query.doctor = filters.doctor;
   if (mongoose.isValidObjectId(filters.serviceItem)) query.serviceItem = filters.serviceItem;
   if (filters.isFirstVisit === 'true') query.isFirstVisit = true;
@@ -79,9 +88,15 @@ function buildAppointmentQuery(req, filters = {}) {
 
 /** Filtros saneados tal como se van a guardar en el lote. */
 function cleanFilters(filters = {}) {
+  const startTimeFrom = HHMM_RE.test(String(filters.startTimeFrom || '')) ? String(filters.startTimeFrom) : '';
+  const startTimeTo = HHMM_RE.test(String(filters.startTimeTo || '')) ? String(filters.startTimeTo) : '';
   return {
     startDate: String(filters.startDate || ''),
     endDate: String(filters.endDate || filters.startDate || ''),
+    // Horario dentro del día (opcional): si "hasta" es menor que "desde", el
+    // filtro no devuelve nada y la pantalla lo muestra; no se corrige a ciegas.
+    startTimeFrom,
+    startTimeTo,
     clinics: (Array.isArray(filters.clinics) ? filters.clinics : []).filter((c) => mongoose.isValidObjectId(c)),
     statuses: (Array.isArray(filters.statuses) ? filters.statuses : []).filter((s) => ALL_STATUSES.includes(s)),
     doctor: mongoose.isValidObjectId(filters.doctor) ? filters.doctor : null,
@@ -250,10 +265,13 @@ exports.create = async (req, res) => {
     const etiquetaFecha = filters.endDate && filters.endDate !== filters.startDate
       ? `${filters.startDate} a ${filters.endDate}`
       : filters.startDate;
+    const etiquetaHorario = filters.startTimeFrom || filters.startTimeTo
+      ? ` ${filters.startTimeFrom || '00:00'}-${filters.startTimeTo || '23:59'}`
+      : '';
 
     const blast = await AppointmentBlast.create({
       clinic: anchorClinic,
-      name: `Citas del ${etiquetaFecha} — ${ids.length} cita(s)`,
+      name: `Citas del ${etiquetaFecha}${etiquetaHorario} — ${ids.length} cita(s)`,
       filters,
       appointments: ids,
       workflows: workflowIds,

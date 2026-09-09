@@ -27,12 +27,17 @@ const FORMAS_DE_PAGO = ['efectivo', 'transferencia', 'tarjeta_credito', 'tarjeta
  * sabe cuánto se acordó y si el paciente abonó o pagó entero. Sin esto lo
  * apuntaba en el motivo de la cita, donde no lo lee ningún reporte.
  *
+ * MARKETING TAMBIÉN (sep-2026): cierra y cobra la cita desde el chat del CRM
+ * igual que el call center —es supervisor de la bandeja—, y al editarla desde
+ * ahí necesita tocar el valor, el canje y el abono con las mismas reglas. Sin
+ * esto el servidor le descartaba en silencio lo que tecleara.
+ *
  * Quien ATIENDE sigue fuera, que era el motivo original de esta guardia: el
  * valor es lo que se le va a cobrar al paciente y un doctor no lo negocia desde
  * su seguimiento.
  */
 const puedeFijarValor = (req) =>
-  !!req.user?.isSuperAdmin || ['admin', 'cajero', 'call_center'].includes(req.role);
+  !!req.user?.isSuperAdmin || ['admin', 'cajero', 'call_center', 'marketing'].includes(req.role);
 
 /**
  * Aplica sobre la cita el valor acordado y/o el canje que venga en el cuerpo de

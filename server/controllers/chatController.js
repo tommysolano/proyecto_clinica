@@ -5086,11 +5086,21 @@ exports.registerPatientFromChat = async (req, res) => {
       }
     }
     conv.patient = patient._id;
-    // `|| undefined` para no dejar el nombre del chat en un espacio en blanco
-    // cuando el paciente se registró sin nombre.
-    if (!conv.contactName) {
-      conv.contactName = `${patient.firstName || ''} ${patient.lastName || ''}`.trim() || undefined;
-    }
+    /**
+     * EL NOMBRE DEL CHAT PASA A SER EL DEL PACIENTE.
+     *
+     * El que trae WhatsApp es el del PERFIL del contacto —apodos, emojis, «amor
+     * a mis hijos»—; el agente acaba de escribir el nombre real en el alta y la
+     * bandeja tiene que mostrar el de la ficha. Va por `applyContactName` con
+     * rango 'contact' (el mismo del Excel importado): pisa al del perfil, queda
+     * por debajo de lo escrito a mano en el panel y no toca nada si el paciente
+     * se registró sin nombre.
+     */
+    messaging.applyContactName(
+      conv,
+      `${patient.firstName || ''} ${patient.lastName || ''}`.trim(),
+      { source: 'contact' }
+    );
     // Atribución: traspasa el origen del anuncio (click-to-WhatsApp) al paciente.
     if (conv.attribution?.adId && !patient.attribution?.adId) {
       patient.attribution = {
@@ -5113,6 +5123,24 @@ exports.registerPatientFromChat = async (req, res) => {
         { clinic: req.clinicId, phone: { $regex: phone.slice(-9) + '$' }, patient: null, _id: { $ne: conv._id } },
         { $set: { patient: patient._id } }
       );
+      // El nombre real también alcanza a los OTROS chats del mismo contacto
+      // (Messenger/Instagram, un WhatsApp viejo): si siguieran con el apodo del
+      // perfil, la pestaña de canal diría un nombre y la bandeja otro. Mismo
+      // orden de prioridad que en el chat de arriba: pisa al del perfil, nunca a
+      // lo escrito a mano.
+      const nombrePaciente = `${patient.firstName || ''} ${patient.lastName || ''}`.trim();
+      if (nombrePaciente) {
+        await Conversation.updateMany(
+          {
+            clinic: req.clinicId,
+            phone: { $regex: phone.slice(-9) + '$' },
+            _id: { $ne: conv._id },
+            contactNameEditedAt: null,
+            contactNameSource: { $in: ['', 'profile', 'chat'] },
+          },
+          { $set: { contactName: nombrePaciente, contactNameSource: 'contact' } }
+        );
+      }
     }
     emitToClinic(req.clinicId, 'patient:created', { id: patient._id });
     emitToCallCenter('chat:updated', { id: conv._id });

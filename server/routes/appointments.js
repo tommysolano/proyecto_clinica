@@ -73,8 +73,13 @@ router.post('/walk-in', requireRole('admin', 'doctor'), createWalkIn);
  * se atendía; hoy la consulta va por `/start` y `/end` y lo que se escribe va a
  * la ficha clínica. Lo único que les quedaba abierto era el formulario de la
  * cita, que no es trabajo clínico. El controlador aplica la misma regla.
+ *
+ * MARKETING se sumó (sep-2026): agenda y cierra citas desde el chat del CRM —
+ * donde es supervisor de la bandeja— y también las elimina; si no puede
+ * editarlas, no puede corregir lo que él mismo agendó. El controlador repite
+ * la regla.
  */
-router.put('/:id', requireRole('admin', 'cajero', 'call_center'), updateAppointment);
+router.put('/:id', requireRole('admin', 'cajero', 'call_center', 'marketing'), updateAppointment);
 router.post('/:id/start', requireRole('admin', 'doctor'), startConsultation);
 router.post('/:id/end', requireRole('admin', 'doctor'), endConsultation);
 router.post('/:id/confirm', requireRole('admin', 'cajero', 'call_center', 'enfermero'), markConfirmed);

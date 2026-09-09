@@ -27,9 +27,15 @@
  * Va con el paquete completo —ver, agendar y encontrar después lo agendado—
  * porque media capacidad es peor que ninguna: agendar en Extensión y no volver a
  * ver esa cita en su propia agenda no hay forma de explicárselo a nadie.
+ *
+ * MARKETING TAMBIÉN (sep-2026). Su bandeja de chat es global y ya elimina citas
+ * de cualquier sede; con el alcance a medias editaba la cita que veía en el
+ * chat y el servidor le contestaba «Cita no encontrada» porque la escritura se
+ * buscaba solo en sus sucursales. Leer y escribir tienen que responder igual.
  */
 const veTodaLaOrganizacion = (req) =>
-  !!req.user?.isSuperAdmin || ['admin', 'cajero', 'call_center'].includes(req.role);
+  !!req.user?.isSuperAdmin
+  || ['admin', 'cajero', 'call_center', 'marketing'].includes(req.role);
 
 /**
  * LAS SUCURSALES CUYOS DATOS ALCANZA ESTA PERSONA. `null` = TODAS (sin filtro).
