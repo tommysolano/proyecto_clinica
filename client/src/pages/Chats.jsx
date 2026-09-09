@@ -438,16 +438,16 @@ export default function Chats() {
   //
   // Antes se pedían los 300 chats de golpe y la lista no pintaba NADA hasta que
   // llegaban todos: con miles de conversaciones, abrir /chats eran varios segundos
-  // de pantalla en blanco. Ahora entran los primeros 25 y el agente pide más solo
+  // de pantalla en blanco. Ahora entran los primeros 15 y el agente pide más solo
   // si baja hasta el final. Los números de las pestañas NO dependen de esto: se
   // cuentan en la base (ver /chats/unread-counts), así que siguen siendo los reales
   // aunque no se haya cargado ni una página más.
-  const CHATS_PAGE = 25;
+  const CHATS_PAGE = 15;
   const [convTotal, setConvTotal] = useState(0);
   const [convHasMore, setConvHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   // Cuántos chats hay pedidos ahora mismo. Una recarga (evento en vivo, volver a
-  // la pestaña) tiene que traer LOS MISMOS que había, no volver a 25: si no, la
+  // la pestaña) tiene que traer LOS MISMOS que había, no volver a 15: si no, la
   // lista se encogía sola en cuanto llegaba un mensaje.
   const convLoadedRef = useRef(CHATS_PAGE);
 

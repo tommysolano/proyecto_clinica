@@ -156,14 +156,14 @@ function skipMessage(reason, channel = 'whatsapp') {
 
 // Chats por página en la bandeja. Es lo que se pinta de entrada; el resto llega
 // con "Cargar más". Ver el comentario de paginación en listConversations.
-const DEFAULT_CHAT_PAGE = 25;
+const DEFAULT_CHAT_PAGE = 15;
 
 exports.listConversations = async (req, res) => {
   try {
     const { status, featured, opportunity, assigned, q, stage, agent, unread, excludeFeatured, account } = req.query;
     const filter = buildVisibilityFilter(req);
     // PAGINACIÓN. Con 8.000 chats, la bandeja no pintaba NADA hasta que llegaban
-    // los 300 de golpe (y con ellos su medio megabyte). Ahora entran de 25 en 25 y
+    // los 300 de golpe (y con ellos su medio megabyte). Ahora entran de 15 en 15 y
     // el agente pide más si le hace falta; los contadores de las pestañas siguen
     // siendo el número REAL (ver unreadCounts), no lo que se ha llegado a cargar.
     const limit = Math.min(300, Math.max(1, Number(req.query.limit) || DEFAULT_CHAT_PAGE));
