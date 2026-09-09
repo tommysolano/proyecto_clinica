@@ -276,6 +276,10 @@ exports.listConversations = async (req, res) => {
     // toda la página, en vez de uno por conversación.
     const accounts = await loadSendingAccounts();
     const items = conversations.map((c) => decorateConversation(c, accounts));
+    // Los chats con paciente vinculado cuyo nombre sigue siendo el apodo del
+    // perfil de WhatsApp salen corregidos en esta misma respuesta (ver el
+    // comentario de `sincronizarNombreDePaciente`).
+    await sincronizarNombreDePaciente(items);
 
     // `total` es el número REAL de chats que cumplen el filtro, no los que se han
     // llegado a cargar: es lo que hace que "Cargar más" sepa si queda algo y que
@@ -528,6 +532,63 @@ async function populateConversation(conv) {
   ]);
 }
 
+/**
+ * EL NOMBRE DEL CHAT ES EL DE LA FICHA DEL PACIENTE.
+ *
+ * El contacto queda vinculado a su paciente por más caminos que el alta del
+ * chat: lo enlaza el teléfono cuando escribe de nuevo, lo registraron desde
+ * Clientes, o el alta es anterior a que esto existiera. En todos esos casos el
+ * chat seguía mostrando el apodo del perfil de WhatsApp («amor a mis hijos»,
+ * «Ruth ❤️») aunque la ficha ya diga el nombre real — la queja es siempre la
+ * misma: la bandeja no dice con quién se habla.
+ *
+ * Esto es el ARREGLO DE LO EXISTENTE, leído en el momento: para la página de
+ * chats que se pide (o para el detalle), busca los nombres de ficha en UNA
+ * consulta y corrige los chats cuyo nombre difiere y no fue escrito a mano
+ * (`contactNameEditedAt` / fuente 'manual' son intocables, igual que en
+ * `messaging.applyContactName`). El cambio se persiste (bulkWrite) Y se aplica
+ * sobre los objetos que se van a responder, así que la pantalla lo muestra sin
+ * esperar a recargar; si la escritura falla, la siguiente lectura lo reintenta.
+ *
+ * Es un backfill perezoso a propósito: se corrige lo que se muestra, no la
+ * colección entera de golpe.
+ */
+async function sincronizarNombreDePaciente(convs) {
+  const lista = Array.isArray(convs) ? convs : convs ? [convs] : [];
+  if (!lista.length) return;
+  const ids = [
+    ...new Set(
+      lista
+        .map((c) => c.patient?._id || c.patient)
+        .filter(Boolean)
+        .map(String)
+    ),
+  ];
+  if (!ids.length) return;
+  const pacientes = await Patient.find({ _id: { $in: ids } })
+    .select('firstName lastName')
+    .lean();
+  const nombrePorId = new Map(
+    pacientes.map((p) => [String(p._id), `${p.firstName || ''} ${p.lastName || ''}`.trim()])
+  );
+  const ops = [];
+  for (const c of lista) {
+    if (!c.patient) continue;
+    if (c.contactNameEditedAt || c.contactNameSource === 'manual') continue;
+    const nombre = nombrePorId.get(String(c.patient._id || c.patient));
+    if (!nombre || c.contactName === nombre) continue;
+    ops.push({
+      updateOne: {
+        filter: { _id: c._id },
+        update: { $set: { contactName: nombre, contactNameSource: 'contact' } },
+      },
+    });
+    c.contactName = nombre;
+    c.contactNameSource = 'contact';
+  }
+  if (ops.length) Conversation.bulkWrite(ops).catch(() => {});
+}
+
 exports.getConversation = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, ...buildVisibilityFilter(req) })
@@ -540,6 +601,7 @@ exports.getConversation = async (req, res) => {
       .populate('opportunities.interestedIn.product', 'name salePrice');
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
     const out = decorateConversation(conv.toObject(), await loadSendingAccounts());
+    await sincronizarNombreDePaciente(out);
     out.detectedEmail = await findEmailInConversation(conv._id);
     // Otros chats (whatsapp/messenger/instagram) del MISMO contacto: alimenta la
     // pestaña de canal del compositor, para responder por cualquiera de ellos sin
@@ -5021,7 +5083,21 @@ exports.registerPatientFromChat = async (req, res) => {
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
     if (conv.patient) {
       const existing = await Patient.findById(conv.patient);
-      if (existing) return res.json({ patient: existing, conversation: await conversationPayload(conv) });
+      if (existing) {
+        // Volver a pasar por el alta de un chat YA vinculado tampoco puede
+        // dejar el apodo del perfil de WhatsApp: si la ficha tiene nombre real
+        // y el chat no lo muestra, se corrige aquí.
+        if (
+          messaging.applyContactName(
+            conv,
+            `${existing.firstName || ''} ${existing.lastName || ''}`.trim(),
+            { source: 'contact' }
+          )
+        ) {
+          await conv.save();
+        }
+        return res.json({ patient: existing, conversation: await conversationPayload(conv) });
+      }
     }
 
     const { firstName, lastName, cedula, gender, email, address } = req.body;

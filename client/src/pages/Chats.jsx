@@ -4652,11 +4652,15 @@ function ChatAutomationsSection({ conv, version = 0 }) {
 }
 
 function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onScheduleAppointment, onCreateQuotation, automationsVersion = 0, waAccounts = [] }) {
+  const { hasRole } = useAuth();
   const op = conv.opportunity || {};
   const meta = op.isOpportunity ? stageMeta(op.stage) : null;
   const [appts, setAppts] = useState([]);
-  const [resched, setResched] = useState(null); // cita a reagendar
-  const [apptsVersion, setApptsVersion] = useState(0); // fuerza recarga tras reagendar
+  const [editAppt, setEditAppt] = useState(null); // cita a editar
+  const [apptsVersion, setApptsVersion] = useState(0); // fuerza recarga tras editar
+  // Espejo de la ruta PUT /appointments/:id (admin/cajero/call_center/marketing).
+  // Antes el botón lo veía todo el mundo y los demás roles se topaban con un 403.
+  const puedeEditarCita = hasRole('admin', 'cajero', 'call_center', 'marketing');
 
   // Cargar citas del paciente vinculado para mostrar cuántas tiene y sus fechas.
   // clinic=all: el chat es global, la cita puede ser de cualquier sucursal.
@@ -4857,8 +4861,10 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
                   const dt = new Date(a.date);
                   const dd = String(dt.getDate()).padStart(2, '0');
                   const mm = String(dt.getMonth() + 1).padStart(2, '0');
-                  // Una cita ya atendida/cobrada no se reagenda desde el chat.
-                  const canResched = !['completada', 'asistida'].includes(a.status);
+                  // Una cita ya atendida/cobrada no se edita desde el chat: lo
+                  // que se puede corregir de ella (servicio y valor) tiene su
+                  // propio modal en la agenda.
+                  const canEdit = puedeEditarCita && !['completada', 'asistida'].includes(a.status);
                   return (
                     <li key={a._id} className="text-xs text-slate-600 flex items-center justify-between gap-1 bg-slate-50 rounded px-2 py-1">
                       <span>
@@ -4868,14 +4874,14 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
                         <span className="text-[10px] uppercase tracking-wide text-slate-400">
                           {a.status}
                         </span>
-                        {canResched && (
+                        {canEdit && (
                           <button
                             type="button"
-                            title="Reagendar esta cita"
-                            onClick={() => setResched(a)}
+                            title="Editar esta cita"
+                            onClick={() => setEditAppt(a)}
                             className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200 border-none cursor-pointer"
                           >
-                            Reagendar
+                            Editar
                           </button>
                         )}
                       </span>
@@ -4887,12 +4893,12 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
         </div>
       )}
 
-      {resched && (
-        <RescheduleApptModal
-          appt={resched}
-          onClose={() => setResched(null)}
+      {editAppt && (
+        <EditApptModal
+          appt={editAppt}
+          onClose={() => setEditAppt(null)}
           onSaved={() => {
-            setResched(null);
+            setEditAppt(null);
             setApptsVersion((v) => v + 1);
           }}
         />
@@ -6169,23 +6175,84 @@ function KPICard({ label, value, color }) {
 }
 
 /**
- * Reagendar una cita del paciente desde el chat. Envía PUT /appointments/:id
- * con ?clinic=<sucursal de la cita> (el chat es global: la cita puede ser de
- * otra sede). El backend valida no-pasado, registra el reagendamiento en el
- * historial y re-sincroniza los recordatorios de workflows pendientes.
+ * EDITAR UNA CITA DEL PACIENTE DESDE EL CHAT.
+ *
+ * Antes este modal solo movía fecha y hora («Reagendar») y se quedaba corto:
+ * la misma corrección que se hace mostrador —cambiar el servicio, la sucursal,
+ * el motivo, el valor acordado o el abono— obligaba a abandonar el chat e ir a
+ * la agenda. Ahora trae el formulario completo y envía PUT /appointments/:id.
+ *
+ * El backend valida no-pasado, los espacios de la sucursal, registra el
+ * reagendamiento en el historial cuando se mueve fecha/hora y re-sincroniza los
+ * recordatorios de workflows pendientes. El bloque de valor/abonos solo se
+ * enseña a quien el servidor acepta (puedeFijarValor); para el resto el
+ * servidor descartaría esos campos y sería teclear en balde.
+ *
+ * El chat es global y la cita puede ser de cualquier sede: la lista de
+ * sucursales es la de la ORGANIZACIÓN (`?scope=names`, igual que al agendar)
+ * y los espacios horarios son los de la sucursal ELEGIDA.
  */
-function RescheduleApptModal({ appt, onClose, onSaved }) {
+function EditApptModal({ appt, onClose, onSaved }) {
+  const { hasRole, clinics, activeClinic } = useAuth();
+  // Espejo de `puedeFijarValor` en el servidor (utils/appointmentValue.js):
+  // administración, caja, call center y marketing.
+  const puedeFijarValor = hasRole('admin', 'cajero', 'call_center', 'marketing');
   const toYmd = (v) => {
     const d = new Date(v);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   };
   const [date, setDate] = useState(() => toYmd(appt.date));
   const [startTime, setStartTime] = useState(appt.startTime || '09:00');
+  const [reason, setReason] = useState(appt.reason || '');
+  const [clinicId, setClinicId] = useState(() => appt.clinic?._id || appt.clinic || '');
+  const [serviceItem, setServiceItem] = useState(() =>
+    appt.serviceItem?._id ? { _id: appt.serviceItem._id, name: appt.serviceItem.name } : null
+  );
+  const [agreedValue, setAgreedValue] = useState(appt.isCanje ? '' : (appt.agreedValue ?? ''));
+  const [isCanje, setIsCanje] = useState(!!appt.isCanje);
+  const [advancePayment, setAdvancePayment] = useState(appt.advancePayment || '');
+  const [advanceAmount, setAdvanceAmount] = useState(
+    appt.advancePayment === 'abono' ? (appt.advanceAmount ?? '') : ''
+  );
+  const [advanceMethod, setAdvanceMethod] = useState(appt.advanceMethod || '');
   const [saving, setSaving] = useState(false);
   const today = todayEc();
 
+  // La lista de sedes es la de la organización, no la del usuario: quien atiende
+  // el chat (casi siempre con UNA sucursal asignada) mueve la cita a la sede que
+  // le pida el paciente. Si no llega (rol sin permiso o fallo), se cae a las suyas.
+  const [sedes, setSedes] = useState(clinics || []);
+  useEffect(() => {
+    let vivo = true;
+    api
+      .get('/clinics', { params: { scope: 'names' } })
+      .then((r) => {
+        const lista = (r.data || []).filter((c) => c.active !== false);
+        if (vivo && lista.length) setSedes(lista);
+      })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, []);
+  const unaSolaSede = (sedes?.length || 0) <= 1;
+  // Con una sola sede no hay nada que escoger; se rellena si la cita no trae.
+  useEffect(() => {
+    if (!unaSolaSede) return;
+    setClinicId((prev) => prev || sedes[0]?._id || activeClinic?._id || '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unaSolaSede, sedes]);
+
+  // Los espacios horarios son los de la SUCURSAL DE ESTA CITA (la elegida), no
+  // los de la sede de quien edita: moverla a otra sede con la rejilla equivocada
+  // devolvía SLOT_INVALID sobre una hora que el formulario ofreció como válida.
+  const slotMinutesDe = (id) =>
+    Number(
+      (sedes || []).find((c) => String(c._id) === String(id))?.appointmentSlotMinutes
+        ?? (String(activeClinic?._id) === String(id) ? activeClinic?.appointmentSlotMinutes : 0),
+    ) || 0;
+
   const save = async () => {
     if (!date || !startTime) return toast.error('Fecha y hora requeridas');
+    if (!clinicId) return toast.error('Escoge la sucursal');
     setSaving(true);
     try {
       // Mantener la duración original: si la cita tenía hora de fin, se desplaza.
@@ -6196,34 +6263,62 @@ function RescheduleApptModal({ appt, onClose, onSaved }) {
       const s0 = toMin(appt.startTime);
       const e0 = toMin(appt.endTime);
       const s1 = toMin(startTime);
-      const payload = { date, startTime };
+      const payload = {
+        date,
+        startTime,
+        clinic: clinicId,
+        reason,
+        serviceItem: serviceItem?._id || null,
+        // El servidor decide si este rol puede fijarlos (aplicarValorDeCita).
+        agreedValue: isCanje ? 0 : agreedValue,
+        isCanje,
+        advancePayment: advancePayment || '',
+        advanceAmount: advanceAmount ?? '',
+        advanceMethod: advanceMethod || '',
+      };
       if (s0 != null && e0 != null && s1 != null && e0 > s0) {
         const e1 = Math.min(23 * 60 + 59, s1 + (e0 - s0));
         payload.endTime = `${String(Math.floor(e1 / 60)).padStart(2, '0')}:${String(e1 % 60).padStart(2, '0')}`;
       }
-      // El chat es global y la cita puede ser de cualquier sede. Ya no se manda
-      // `?clinic=`: el alcance lo pone el rol en el servidor (filtroSucursalCita),
-      // y la sucursal con la que trabaja es la DE LA CITA.
+      // El alcance lo pone el rol en el servidor (filtroSucursalCita) y la
+      // sucursal con la que trabaja es la DE LA CITA.
       await api.put(`/appointments/${appt._id}`, payload);
-      toast.success('Cita reagendada');
+      toast.success('Cita actualizada');
       onSaved();
     } catch (e) {
-      toast.error(e.response?.data?.message || 'Error al reagendar');
+      toast.error(e.response?.data?.message || 'Error al guardar la cita');
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <ModalShell title="Reagendar cita" onClose={onClose} size="sm">
+    <ModalShell title="Editar cita" onClose={onClose} size="lg">
       <div className="p-4 space-y-3">
         <p className="text-xs text-slate-500">
           Cita actual: <b className="text-slate-700">{toYmd(appt.date).split('-').reverse().join('/')} · {appt.startTime}</b>
           <span className="ml-1 uppercase text-[10px] tracking-wide text-slate-400">({appt.status})</span>
         </p>
+
+        {!unaSolaSede && (
+          <div>
+            <label className="text-xs font-medium text-slate-600">Sucursal</label>
+            <select
+              value={clinicId}
+              onChange={(e) => setClinicId(e.target.value)}
+              className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white text-sm"
+            >
+              <option value="">Seleccionar sucursal…</option>
+              {sedes.map((c) => (
+                <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <div className="grid grid-cols-2 gap-2">
           <div>
-            <label className="text-xs font-medium text-slate-600">Nueva fecha</label>
+            <label className="text-xs font-medium text-slate-600">Fecha</label>
             <DateInput
               value={date}
               min={today}
@@ -6232,19 +6327,58 @@ function RescheduleApptModal({ appt, onClose, onSaved }) {
             />
           </div>
           <div>
-            <label className="text-xs font-medium text-slate-600">Nueva hora</label>
-            <input
-              type="time"
+            <label className="text-xs font-medium text-slate-600">Hora</label>
+            <TimeSlotInput
               value={startTime}
+              slotMinutes={slotMinutesDe(clinicId)}
               min={date === today ? nowEcHHMM() : undefined}
               onChange={(e) => setStartTime(e.target.value)}
               className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white text-sm"
             />
           </div>
         </div>
+
+        <div>
+          <label className="text-xs font-medium text-slate-600">Motivo</label>
+          <input
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white text-sm"
+          />
+        </div>
+
+        <div>
+          <label className="text-xs font-medium text-slate-600">Servicio</label>
+          <ServiceItemPicker value={serviceItem} onChange={setServiceItem} />
+        </div>
+
+        {puedeFijarValor && (
+          <AppointmentValueFields
+            value={agreedValue ?? ''}
+            onValueChange={setAgreedValue}
+            isCanje={isCanje}
+            onCanjeChange={setIsCanje}
+            advancePayment={advancePayment || ''}
+            onAdvancePaymentChange={setAdvancePayment}
+            advanceAmount={advanceAmount ?? ''}
+            onAdvanceAmountChange={setAdvanceAmount}
+            advanceMethod={advanceMethod || ''}
+            onAdvanceMethodChange={setAdvanceMethod}
+          />
+        )}
+
+        {/* Disponibilidad del nuevo hueco en la sucursal elegida */}
+        <SameSlotPanel
+          date={date}
+          startTime={startTime}
+          clinicId={clinicId}
+          serviceItemId={serviceItem?._id || null}
+          compact
+        />
+
         {['cancelada', 'no_asistio'].includes(appt.status) && (
           <p className="text-[11px] text-slate-400">
-            Al reagendar, la cita vuelve a estado <b>pendiente</b>.
+            Esta cita estaba <b>cancelada</b> o <b>no asistió</b>: al guardar vuelve a estado <b>pendiente</b>.
           </p>
         )}
         <div className="flex justify-end gap-2 pt-1">
@@ -6254,7 +6388,7 @@ function RescheduleApptModal({ appt, onClose, onSaved }) {
             disabled={saving}
             className="px-4 py-1.5 rounded-lg text-sm bg-emerald-600 text-white border-none cursor-pointer disabled:opacity-60"
           >
-            {saving ? 'Guardando…' : 'Reagendar'}
+            {saving ? 'Guardando…' : 'Guardar cambios'}
           </button>
         </div>
       </div>
@@ -6587,11 +6721,11 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
   const yaEsPaciente = !!conv.patient;
   /**
    * El VALOR y el pago adelantado son de quien VENDE la cita: administración,
-   * caja y el call center (espejo de `puedeFijarValor` en el servidor). A
-   * marketing —que también agenda desde el chat— ni se le enseñan: el servidor
-   * los descartaría y habría tecleado un precio que se pierde en silencio.
+   * caja, el call center y marketing (espejo de `puedeFijarValor` en el
+   * servidor). A quien no le toca ni se le enseñan: el servidor los descartaría
+   * y habría tecleado un precio que se pierde en silencio.
    */
-  const puedeFijarValor = hasRole('admin', 'cajero', 'call_center');
+  const puedeFijarValor = hasRole('admin', 'cajero', 'call_center', 'marketing');
   const today = todayEc();
   /**
    * `conv.phone` solo es un teléfono real en WhatsApp: en Messenger/Instagram es

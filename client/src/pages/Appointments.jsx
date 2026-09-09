@@ -36,6 +36,7 @@ import {
   HiOutlineBeaker,
   HiOutlinePaperAirplane,
   HiOutlineArrowDownTray,
+  HiOutlineChatBubbleLeftRight,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import TimeSlotInput from '../components/TimeSlotInput';
@@ -437,6 +438,14 @@ export default function Appointments() {
    * cada uno los decide el propio formulario, campo a campo.
    */
   const puedeEditarPaciente = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica', 'marketing');
+  /**
+   * QUIÉN PUEDE SALTAR DE LA CITA AL CHAT. Los roles con acceso a la bandeja
+   * (espejo de la ruta /chats en App.jsx y Layout.jsx): el botón solo aparece
+   * en citas agendadas DESDE EL CHAT (`apt.conversation`), y a donde lleva es
+   * al deep link `/chats?chat=<id>` — si el chat ya no existe o es de otra
+   * persona, la bandeja avisa con un toast y no se rompe nada.
+   */
+  const puedeVerChats = hasRole('admin', 'call_center', 'marketing');
 
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);
@@ -2142,6 +2151,18 @@ export default function Appointments() {
                         </span>
                       </td>
                       <td data-cell="acciones" className="md:px-6 md:py-3.5 text-right">
+                        {/* Ir al chat de origen: solo citas agendadas desde el
+                            CRM (guardan `conversation`), y solo a quien la
+                            bandeja le corresponde. */}
+                        {puedeVerChats && apt.conversation && (
+                          <button
+                            onClick={() => navigate(`/chats?chat=${apt.conversation}`)}
+                            className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
+                            title="Abrir el chat de este paciente"
+                          >
+                            <HiOutlineChatBubbleLeftRight className="w-4 h-4" />
+                          </button>
+                        )}
                         {/* Recepción: a quién pasa el paciente. También en las ya
                             asistidas, para poder añadir un doctor o mandarla a
                             enfermería cuando la consulta ya empezó, y en las
@@ -2745,6 +2766,19 @@ export default function Appointments() {
                     >
                       <HiOutlinePencilSquare className="w-3.5 h-3.5" />
                       Editar
+                    </button>
+                  )}
+                  {/* AGENDADA DESDE EL CHAT: volver a la conversación en un
+                      clic. Mismo acceso que la bandeja (ver `puedeVerChats`). */}
+                  {puedeVerChats && detailModal.conversation && (
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/chats?chat=${detailModal.conversation}`)}
+                      title="Abrir el chat de este paciente"
+                      className="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 hover:text-emerald-800 bg-transparent border-none cursor-pointer p-0"
+                    >
+                      <HiOutlineChatBubbleLeftRight className="w-3.5 h-3.5" />
+                      Ir al chat
                     </button>
                   )}
                 </div>
