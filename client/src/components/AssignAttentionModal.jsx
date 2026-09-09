@@ -117,6 +117,23 @@ export default function AssignAttentionModal({
     [apt]
   );
 
+  /**
+   * LOS DOCTORES QUE YA ESTABAN EN LA COLA al abrir el modal. Es la red de
+   * seguridad de la reasignación: guardar la cola REEMPLAZA los turnos
+   * pendientes, así que quitar a alguien de la lista y guardar lo saca de la
+   * cita — y ha pasado que recepción reabre el modal solo para añadir a
+   * enfermería, guarda, y el doctor que estaba quedó fuera sin darse cuenta
+   * (la cita se cerraba «solo enfermería» y el doctor desaparecía de la
+   * agenda). Si al guardar falta alguien que estaba, se avisa antes.
+   */
+  const doctoresIniciales = useMemo(() => {
+    const pendientes = (apt?.turns || [])
+      .filter((t) => t.kind === 'doctor' && t.status === 'pendiente')
+      .map((t) => String(t.user?._id || t.user));
+    if (pendientes.length) return pendientes;
+    return apt?.doctor ? [String(apt.doctor._id || apt.doctor)] : [];
+  }, [apt]);
+
   // Cola de pasos:
   //   { kind: 'doctor', user }
   //   { kind: 'enfermeria', user: id|'' , serviceName }   ('' = cualquier enfermero)
@@ -253,6 +270,23 @@ export default function AssignAttentionModal({
      * deja hacer.
      */
     if (!cola.length && !confirm('Vas a dejar la cita sin nadie asignado. ¿Continuar?')) return;
+    /**
+     * Y si al guardar FALTA un doctor que ya estaba en la cola, se pregunta
+     * antes: reabrir el modal para añadir a enfermería no puede llevarse por
+     * delante al doctor que ya estaba anotado. La intención de quitarlo existe
+     * y se respeta —confirmar es el gesto—, pero ya no pasa de manera silenciosa.
+     */
+    const quitados = doctoresIniciales.filter(
+      (id) => !cola.some((p) => p.kind === 'doctor' && p.user === id)
+    );
+    if (quitados.length) {
+      const nombres = quitados
+        .map((id) => porId.get(id)?.name || 'un doctor')
+        .join(', ');
+      if (!confirm(`Vas a quitar de la cita a ${nombres}. El doctor dejará de aparecer en la agenda de esta cita. ¿Continuar?`)) {
+        return;
+      }
+    }
     setBusy(true);
     try {
       const { data } = await api.post(`/appointments/${apt._id}/assign-doctor`, {

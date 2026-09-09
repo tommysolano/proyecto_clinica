@@ -1,9 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from './Modal';
 import ServiceItemPicker from './ServiceItemPicker';
 import AppointmentValueFields from './AppointmentValueFields';
+import SearchableSelect from './SearchableSelect';
+import { useAuth } from '../context/AuthContext';
+import { doctorOptionLabel } from '../utils/roles';
 import { HiOutlineCheck, HiOutlineLockClosed, HiOutlineXMark, HiOutlinePlus } from 'react-icons/hi2';
 
 /**
@@ -15,13 +18,51 @@ import { HiOutlineCheck, HiOutlineLockClosed, HiOutlineXMark, HiOutlinePlus } fr
  * completada estaba cerrada para todo el mundo.
  *
  * Va contra `PATCH /appointments/:id/service-value`, una puerta que SOLO deja
- * cambiar estas tres cosas. Quién atendió no se toca: los turnos, el doctor y el
- * enfermero se quedan como están, pase lo que pase.
+ * cambiar servicio, valor y —cuando la cita ya terminó— QUIÉN LO ATENDIÓ. Es la
+ * puerta por la que mostrador arregla una cita que se cerró mal: asignaron solo
+ * a enfermería y el doctor que la vio quedó fuera, o quedó otro. Lo que no se
+ * toca nunca: el enfermero que atendió y lo que hizo cada uno en su turno.
  *
- * Props: appointment, onClose, onDone(citaActualizada)
+ * Props: appointment, doctors (de la sucursal activa), onClose, onDone(citaActualizada)
  */
-export default function AppointmentServiceValueModal({ appointment, onClose, onDone }) {
+export default function AppointmentServiceValueModal({
+  appointment,
+  doctors: doctorsDeLaSedeActiva = [],
+  onClose,
+  onDone,
+}) {
   const apt = appointment;
+  const { activeClinic } = useAuth();
+
+  /**
+   * EL PERSONAL ES EL DE LA SUCURSAL DE LA CITA, igual que en «Asignar
+   * atención»: caja agenda para cualquier sede y el doctor que atiende debe ser
+   * de la de la cita — el servidor lo rechaza si no (ver validarPersonalDeLaSede).
+   */
+  const sedeDeLaCita = String(apt?.clinic?._id || apt?.clinic || '');
+  const esOtraSede = !!sedeDeLaCita && String(activeClinic?._id || '') !== sedeDeLaCita;
+  const [personalDeLaSede, setPersonalDeLaSede] = useState(null);
+
+  useEffect(() => {
+    if (!esOtraSede) {
+      setPersonalDeLaSede(null);
+      return undefined;
+    }
+    let vivo = true;
+    api
+      .get('/users/doctors', { params: { clinic: sedeDeLaCita } })
+      .then((d) => {
+        if (vivo) setPersonalDeLaSede(d.data || []);
+      })
+      .catch(() => {
+        if (vivo) setPersonalDeLaSede([]);
+      });
+    return () => {
+      vivo = false;
+    };
+  }, [esOtraSede, sedeDeLaCita]);
+
+  const doctors = personalDeLaSede || doctorsDeLaSedeActiva;
 
   const [servicio, setServicio] = useState(
     apt?.serviceItem
@@ -42,6 +83,16 @@ export default function AppointmentServiceValueModal({ appointment, onClose, onD
   const [abonado, setAbonado] = useState(apt?.advanceAmount ? String(apt.advanceAmount) : '');
   const [formaPago, setFormaPago] = useState(apt?.advanceMethod || '');
   const [busy, setBusy] = useState(false);
+
+  /**
+   * QUIÉN LO ATENDIÓ, editable SOLO cuando la cita ya terminó. Antes de eso la
+   * cola manda: se corrige por «Asignar atención», no desde aquí.
+   */
+  const sePuedeCorregirAtendido = apt?.status === 'completada' || !!apt?.consultationEndedAt;
+  const doctorAtendidoInicial = apt?.doctor
+    ? String(apt.doctor._id || apt.doctor)
+    : '';
+  const [atendido, setAtendido] = useState(doctorAtendidoInicial);
 
   // Los OTROS servicios de la visita, como {_id, name}. El nombre guardado es el
   // que manda: si alguien renombró el ítem del catálogo, aquí sigue diciendo lo
@@ -93,6 +144,11 @@ export default function AppointmentServiceValueModal({ appointment, onClose, onD
         advancePayment: adelanto || '',
         advanceAmount: abonado === '' ? 0 : Number(abonado),
         advanceMethod: formaPago || '',
+        // Quién lo atendió, SOLO si se cambió: mandarlo igual sería pedirle al
+        // servidor una corrección que no lo es.
+        ...(sePuedeCorregirAtendido && atendido && atendido !== doctorAtendidoInicial
+          ? { attendedDoctor: atendido }
+          : {}),
       });
       toast.success('Servicio y valor actualizados');
       onDone?.(data);
@@ -177,13 +233,44 @@ export default function AppointmentServiceValueModal({ appointment, onClose, onD
           onAdvanceAmountChange={setAbonado}
         />
 
-        <p className="flex items-start gap-2 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-          <HiOutlineLockClosed className="w-4 h-4 shrink-0 mt-px text-slate-400" />
-          <span>
-            Quién atendió al paciente no se cambia desde aquí: su seguimiento ya está
-            escrito a su nombre.
-          </span>
-        </p>
+        {sePuedeCorregirAtendido ? (
+          /**
+           * QUIÉN LO ATENDIÓ, corregible en una cita que ya terminó. Es el caso
+           * de la cita que se cerró mal —se asignó solo a enfermería y el doctor
+           * que la vio quedó fuera, o quedó otro—: se corrige aquí y la agenda,
+           * los reportes y las comisiones pasan a decir quién estuvo de verdad.
+           */
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              Quién lo atendió
+            </label>
+            <SearchableSelect
+              options={doctors}
+              value={atendido}
+              onChange={setAtendido}
+              getLabel={doctorOptionLabel}
+              getSearchText={(d) => `${d.name || ''} ${d.specialty || ''} ${doctorOptionLabel(d)}`}
+              placeholder="Sin doctor anotado — escoge al doctor que atendió"
+              searchPlaceholder="Buscar por nombre o especialidad…"
+              size="sm"
+            />
+            <p className="flex items-start gap-1 text-[11px] text-slate-400 mt-1">
+              <HiOutlineLockClosed className="w-3.5 h-3.5 shrink-0 mt-px" />
+              <span>
+                Cambia quién figura como el doctor que atendió la cita (en el
+                enfermero no se toca). El seguimiento ya escrito no se mueve.
+              </span>
+            </p>
+          </div>
+        ) : (
+          <p className="flex items-start gap-2 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+            <HiOutlineLockClosed className="w-4 h-4 shrink-0 mt-px text-slate-400" />
+            <span>
+              Quién atendió al paciente se corrige desde «Asignar atención» hasta
+              que la cita se completa.
+            </span>
+          </p>
+        )}
 
         <div className="flex justify-end gap-2 pt-1">
           <button

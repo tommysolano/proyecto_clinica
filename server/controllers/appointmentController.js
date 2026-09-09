@@ -2097,12 +2097,16 @@ exports.markAttended = async (req, res) => {
  * por una consulta y salió con un procedimiento—, y hasta ahora eso obligaba a
  * pedírselo a un administrador.
  *
- * Lo que NO se toca nunca, y por eso ni se lee del cuerpo: QUIÉN atendió. Los
- * turnos, el doctor y el enfermero quedan como están; una cita no cambia de
- * manos después de que alguien ya escribió su seguimiento.
+ * El ENFERMERO y los turnos de enfermería sí quedan como están. Y el servicio de
+ * CADA turno (`turns[].serviceName`) tampoco se reescribe: eso es lo que hizo
+ * cada profesional en su turno, no lo que se le factura al paciente.
  *
- * `turns[].serviceName` tampoco se reescribe: eso es lo que hizo CADA
- * profesional en su turno, no lo que se le factura al paciente.
+ * EXCEPCIÓN (y la única): QUIÉN LO ATENDIÓ, corregible vía `attendedDoctor`
+ * cuando la cita ya terminó. Es la puerta por la que mostrador arregla lo que
+ * llegó mal a la cita: asignaron solo a enfermería y el doctor que vio al
+ * paciente quedó fuera (o quedó otro). Se cambia el turno COMPLETADO del doctor
+ * —no se añade uno nuevo ni se toca el historial— para que la agenda, los
+ * reportes y las comisiones digan quién estuvo de verdad.
  */
 exports.updateServiceAndValue = async (req, res) => {
   try {
@@ -2197,6 +2201,85 @@ exports.updateServiceAndValue = async (req, res) => {
     }
 
     if (aplicarValorDeCita(apt, req.body, req)) cambio = true;
+
+    /**
+     * CORREGIR QUIÉN ATENDIÓ, en una cita que ya está cerrada.
+     *
+     * Llega `attendedDoctor` con el id del doctor que de verdad vio al paciente.
+     * Solo tiene sentido cuando la atención terminó (una cita en curso se
+     * corrige por «Asignar atención», que es quien manda la cola), y se pide
+     * nombre y apellidos: sin doctor no hay corrección que valga.
+     *
+     * Se REESCRIBE el turno completado del doctor en vez de apilar uno nuevo:
+     * la cola de una cita cerrada no puede volver a tener pasos pendientes, y el
+     * espejo `doctor` —que leen agenda, comisiones y reportes— se vuelve a
+     * llenar desde los turnos con `sincronizarEspejo`.
+     */
+    if (req.body.attendedDoctor !== undefined) {
+      const nuevo = String(req.body.attendedDoctor || '');
+      if (!nuevo) {
+        return res.status(400).json({ message: 'Indica quién atendió la cita' });
+      }
+      if (!consultationDone(apt)) {
+        return res.status(400).json({
+          message: 'Solo se puede corregir quién atendió cuando la cita ya está completada',
+        });
+      }
+      const hayDoctorPendiente = (apt.turns || []).some(
+        (t) => t.kind === 'doctor' && t.status === 'pendiente'
+      );
+      if (hayDoctorPendiente) {
+        return res.status(400).json({
+          message:
+            'La cita todavía tiene un doctor pendiente: corrígelo desde «Asignar atención»',
+        });
+      }
+
+      const errorPersonal = await validarPersonalDeLaSede([nuevo], apt.clinic);
+      if (errorPersonal) return res.status(400).json({ message: errorPersonal });
+
+      const turnoAtendido = [...(apt.turns || [])]
+        .sort((a, b) => (a.order || 0) - (b.order || 0))
+        .reverse()
+        .find((t) => t.kind === 'doctor' && t.status === 'completado');
+
+      if (turnoAtendido) {
+        // Ya había doctor anotado: se cambia y queda la huella de quién corrigió.
+        if (String(turnoAtendido.user) !== nuevo) {
+          turnoAtendido.user = nuevo;
+          turnoAtendido.assignedAt = new Date();
+          turnoAtendido.assignedBy = req.user._id;
+          cambio = true;
+        }
+      } else {
+        /**
+         * No hubo NUNCA un turno de doctor completado —la cita se atendió y se
+         * cerró solo con enfermería, o viene de antes de las colas—. Se añade
+         * su turno YA COMPLETADO al final: no reabre nada, pero la cita deja de
+         * decir que nadie la atendió.
+         */
+        const ordenMax = (apt.turns || []).reduce((m, t) => Math.max(m, t.order || 0), -1);
+        apt.turns = [
+          ...(apt.turns || []),
+          {
+            kind: 'doctor',
+            user: nuevo,
+            status: 'completado',
+            order: ordenMax + 1,
+            assignedAt: new Date(),
+            assignedBy: req.user._id,
+            completedAt: new Date(),
+          },
+        ];
+        cambio = true;
+      }
+
+      if (cambio) {
+        // El espejo `doctor` es la única versión de la cita que leen media
+        // aplicación: agenda, historial, comisiones, recordatorios.
+        sincronizarEspejo(apt);
+      }
+    }
 
     if (!cambio) return res.status(400).json({ message: 'No hay nada que cambiar' });
 

@@ -304,10 +304,63 @@ function textoAtencion(apt) {
     return {
       texto: `Atendida ${desde}`,
       detalle: hasta ? `Atendida de ${desde} a ${hasta}` : `Atendida a las ${desde}`,
+
     };
   }
   const hasta = fmtTimeEc(a.fin);
   return { texto: `Terminó ${hasta}`, detalle: `Se terminó de atender a las ${hasta}` };
+}
+
+/**
+ * LA COLA COMPLETA de profesionales, en el orden en que atienden.
+ *
+ * La tarjeta (y el detalle) solo decían el ESPEJO (`doctor`/`attendedByNurse`):
+ * con una cola «Rosi → Ester» la agenda enseñaba únicamente a Rosi —el espejo
+ * apunta al turno vigente— y la segunda doctora parecía borrada de la cita,
+ * aunque siguiera guardada. Con dos enfermeras nombradas pasaba igual: solo se
+ * veía la que tenía la pelota o la última que atendió.
+ *
+ * La verdad está en `turns[]`: cada paso, con su nombre y su estado. Marcas:
+ * «✓» ya atendió, «—» se omitió, «▸» le toca ahora. Si la cita no tiene turnos
+ * (anteriores al cambio), devuelve null y quien pinta usa los espejos de siempre.
+ */
+function ColaProfesionales({ apt }) {
+  const turnos = [...(apt?.turns || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+  if (!turnos.length) return null;
+  const vigente = turnos.find((t) => t.status === 'pendiente');
+  return turnos.map((t) => {
+    const esEnf = t.kind === 'enfermeria';
+    const nombre = t.user?.name || (esEnf ? 'Enfermería (por tomar)' : 'Profesional');
+    const cerrado = t.status === 'completado' || t.status === 'omitido';
+    const marca = t.status === 'completado' ? '✓ ' : t.status === 'omitido' ? '— ' : t === vigente ? '▸ ' : '';
+    return (
+      <div
+        key={t._id || `${t.kind}-${t.order}`}
+        className={`text-[11px] mt-0.5 ${esEnf ? 'text-sky-700' : 'text-emerald-700'} ${
+          cerrado ? 'opacity-60' : ''
+        } ${t === vigente ? 'font-semibold' : ''}`}
+      >
+        {marca}
+        {esEnf ? 'Enf. ' : 'Dr. '}
+        {nombre}
+      </div>
+    );
+  });
+}
+
+/** La cola, en una línea: «Dr. Rosi → Dr. Ester». Para el detalle de la cita. */
+function colaProfesionalesTexto(apt) {
+  const turnos = [...(apt?.turns || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+  if (!turnos.length) return null;
+  return turnos
+    .map((t) =>
+      t.user?.name
+        ? `${t.kind === 'enfermeria' ? 'Enf.' : 'Dr.'} ${t.user.name}`
+        : t.kind === 'enfermeria'
+          ? 'Enfermería (por tomar)'
+          : 'Profesional'
+    )
+    .join(' → ');
 }
 
 // Formatea una fecha ISO usando los componentes de fecha (sin convertir a UTC).
@@ -2056,15 +2109,27 @@ export default function Appointments() {
                             )}
                           </div>
                         )}
-                        {apt.doctor?.name && (
-                          <div className="text-[11px] text-emerald-700 mt-0.5">
-                            Dr. {apt.doctor.name}
-                          </div>
-                        )}
-                        {apt.attendedByNurse?.name && (
-                          <div className="text-[11px] text-sky-700 mt-0.5">
-                            Enf. {apt.attendedByNurse.name}
-                          </div>
+                        {/**
+                          * LA COLA COMPLETA, no solo el espejo. Con «Rosi → Ester»
+                          * la tarjeta decía solo «Dr. Rosi» —el espejo apunta al
+                          * turno vigente— y la segunda doctora parecía borrada de
+                          * la cita. Con turnos se pinta paso a paso; sin turnos
+                          * (citas anteriores al cambio), los espejos de siempre.
+                          */}
+                        <ColaProfesionales apt={apt} />
+                        {!(apt.turns || []).length && (
+                          <>
+                            {apt.doctor?.name && (
+                              <div className="text-[11px] text-emerald-700 mt-0.5">
+                                Dr. {apt.doctor.name}
+                              </div>
+                            )}
+                            {apt.attendedByNurse?.name && (
+                              <div className="text-[11px] text-sky-700 mt-0.5">
+                                Enf. {apt.attendedByNurse.name}
+                              </div>
+                            )}
+                          </>
                         )}
                       </td>
                       <td data-cell="estado" className="md:px-6 md:py-3.5">
@@ -2694,11 +2759,13 @@ export default function Appointments() {
                 </p>
               </div>
               <div className="bg-emerald-50/50 rounded-xl p-3">
-                <p className="text-xs text-emerald-600 font-medium">Doctor</p>
+                <p className="text-xs text-emerald-600 font-medium">Quién atiende</p>
                 <p className="text-sm font-medium text-slate-800 mt-0.5">
-                  {/* Sin doctor asignado ponía «Dr. » a secas, como si hubiera
-                      uno y se le hubiera perdido el nombre. */}
-                  {detailModal.doctor?.name ? `Dr. ${detailModal.doctor.name}` : '—'}
+                  {/* La cola completa en una línea: con dos doctores la caja
+                      decía solo el primero y el segundo parecía borrado. Sin
+                      turnos (citas anteriores), el espejo de siempre. */}
+                  {colaProfesionalesTexto(detailModal) ||
+                    (detailModal.doctor?.name ? `Dr. ${detailModal.doctor.name}` : '—')}
                 </p>
               </div>
               <div className="bg-emerald-50/50 rounded-xl p-3">
@@ -3248,6 +3315,7 @@ export default function Appointments() {
       {serviceValueModal && (
         <AppointmentServiceValueModal
           appointment={serviceValueModal}
+          doctors={doctors}
           onClose={() => setServiceValueModal(null)}
           onDone={fetchAppointments}
         />
