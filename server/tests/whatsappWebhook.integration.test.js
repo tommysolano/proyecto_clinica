@@ -10,11 +10,13 @@ const crypto = require('crypto');
 const H = require('./_integrationHelpers');
 
 const chat = require('../controllers/chatController');
+const callCenterConfig = require('../controllers/callCenterConfigController');
 const CallCenterWhatsappConfig = require('../models/CallCenterWhatsappConfig');
 const WhatsappAccount = require('../models/WhatsappAccount');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Notification = require('../models/Notification');
+const Patient = require('../models/Patient');
 const capi = require('../utils/metaConversions');
 const { clearCache } = require('../utils/callCenterClinic');
 
@@ -173,7 +175,7 @@ test('webhook de calidad: FLAGGED marca el número en ROJO y crea alerta', async
   assert.equal(alert.severity, 'error');
 });
 
-test('CAPI: envía Lead con teléfono hasheado, action_source business_messaging y event_id', async () => {
+test('CAPI: convierte Lead legacy a LeadSubmitted y exige el par CTWA/WABA', async () => {
   await seedWhatsapp();
   const cfg = await CallCenterWhatsappConfig.getSingleton();
   cfg.conversionsApi = { enabled: true, datasetId: 'DS123', accessToken: 'capi-token', testEventCode: '' };
@@ -182,7 +184,7 @@ test('CAPI: envía Lead con teléfono hasheado, action_source business_messaging
   const calls = [];
   const originalFetch = global.fetch;
   global.fetch = async (url, opts) => {
-    calls.push({ url: String(url), body: JSON.parse(opts.body) });
+    calls.push({ url: String(url), headers: opts.headers, body: JSON.parse(opts.body) });
     return { ok: true, json: async () => ({ events_received: 1 }) };
   };
   try {
@@ -200,7 +202,7 @@ test('CAPI: envía Lead con teléfono hasheado, action_source business_messaging
   assert.equal(calls.length, 1);
   assert.ok(calls[0].url.includes('/DS123/events'), 'postea al dataset configurado');
   const ev = calls[0].body.data[0];
-  assert.equal(ev.event_name, 'Lead');
+  assert.equal(ev.event_name, 'LeadSubmitted');
   assert.equal(ev.event_id, 'lead_conv1');
   // Formato oficial de CTWA/business messaging (no 'chat'): así Meta atribuye la
   // conversión al anuncio click-to-WhatsApp.
@@ -209,6 +211,203 @@ test('CAPI: envía Lead con teléfono hasheado, action_source business_messaging
   const expectedPh = crypto.createHash('sha256').update('593999000111').digest('hex');
   assert.deepEqual(ev.user_data.ph, [expectedPh]);
   assert.equal(ev.user_data.ctwa_clid, 'CLID-abc');
+  assert.equal(ev.user_data.whatsapp_business_account_id, 'waba1');
+  assert.equal(calls[0].headers.Authorization, 'Bearer capi-token');
+  assert.equal(calls[0].url.includes('access_token='), false, 'el token no viaja en la URL');
+});
+
+test('CAPI reintenta fallos transitorios sin cambiar el event_id de deduplicación', async () => {
+  await seedWhatsapp();
+  const cfg = await CallCenterWhatsappConfig.getSingleton();
+  cfg.conversionsApi = { enabled: true, datasetId: 'DS123', accessToken: 'capi-token' };
+  await cfg.save();
+
+  const bodies = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (_url, opts) => {
+    bodies.push(JSON.parse(opts.body));
+    if (bodies.length === 1) {
+      return { ok: false, status: 503, json: async () => ({ error: { message: 'Meta temporalmente no disponible' } }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ events_received: 1 }) };
+  };
+  try {
+    const result = await capi.sendConversionEvent({
+      eventName: 'LeadSubmitted',
+      eventId: 'lead-retry-stable',
+      user: { ctwaClid: 'CLID-retry', wabaId: 'waba1' },
+    });
+    assert.equal(result.ok, true);
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0].data[0].event_id, 'lead-retry-stable');
+  assert.equal(bodies[1].data[0].event_id, 'lead-retry-stable');
+});
+
+test('CAPI no envía chats orgánicos sin ctwa_clid ni clics de otra WABA', async () => {
+  await seedWhatsapp();
+  const cfg = await CallCenterWhatsappConfig.getSingleton();
+  cfg.conversionsApi = {
+    enabled: true,
+    datasetId: 'DS123',
+    accessToken: 'capi-token',
+    whatsappBusinessAccountId: 'waba1',
+  };
+  await cfg.save();
+
+  let called = false;
+  const originalFetch = global.fetch;
+  global.fetch = async () => { called = true; return { ok: true, json: async () => ({ events_received: 1 }) }; };
+  try {
+    const organic = await capi.sendConversionEvent({
+      eventName: 'LeadSubmitted',
+      eventId: 'organic',
+      user: { phone: '593999000111', wabaId: 'waba1' },
+    });
+    assert.equal(organic.reason, 'missing_ctwa_clid');
+
+    const otherWaba = await capi.sendConversionEvent({
+      eventName: 'LeadSubmitted',
+      eventId: 'other-waba',
+      user: { ctwaClid: 'CLID-other', wabaId: 'waba2' },
+    });
+    assert.equal(otherWaba.reason, 'waba_mismatch');
+  } finally {
+    global.fetch = originalFetch;
+  }
+  assert.equal(called, false);
+});
+
+test('CAPI valida que el Dataset ID pertenezca a la WABA configurada', async () => {
+  await seedWhatsapp();
+  const cfg = await CallCenterWhatsappConfig.getSingleton();
+  cfg.conversionsApi = {
+    enabled: true,
+    datasetId: '123456789012',
+    accessToken: 'capi-token',
+    whatsappBusinessAccountId: 'waba1',
+  };
+  await cfg.save();
+
+  const calls = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    calls.push({ url: String(url), headers: opts.headers });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ id: '123456789012' }] }),
+    };
+  };
+  try {
+    const valid = await capi.validateCapiConfiguration();
+    assert.equal(valid.ok, true);
+
+    global.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ id: '999999999999' }] }),
+    });
+    const mismatch = await capi.validateCapiConfiguration();
+    assert.equal(mismatch.ok, false);
+    assert.equal(mismatch.reason, 'dataset_waba_mismatch');
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.endsWith('/waba1/dataset'));
+  assert.equal(calls[0].headers.Authorization, 'Bearer capi-token');
+});
+
+test('CAPI recupera el ctwa_clid del chat exacto y no lo filtra a otro paciente', async () => {
+  const { clinicId } = await seedWhatsapp();
+  await postWebhook(messagePayload({
+    from: '593999000333',
+    id: 'wamid.attr1',
+    type: 'text',
+    text: { body: 'Vengo del anuncio' },
+    referral: { source_id: 'ad_attr', ctwa_clid: 'CLID-paciente-1' },
+  }));
+  const conversation = await Conversation.findOne({ clinic: clinicId, phone: '593999000333' });
+  const patient = await Patient.create({
+    clinic: clinicId,
+    firstName: 'Ana',
+    lastName: 'Atribuida',
+    whatsapp: '593999000333',
+  });
+  const unrelated = await Patient.create({
+    clinic: clinicId,
+    firstName: 'Otro',
+    lastName: 'Paciente',
+    whatsapp: '593999000444',
+  });
+  conversation.patient = patient._id;
+  await conversation.save();
+
+  const cfg = await CallCenterWhatsappConfig.getSingleton();
+  cfg.conversionsApi = {
+    enabled: true,
+    datasetId: '123456789012',
+    accessToken: 'capi-token',
+    whatsappBusinessAccountId: 'waba1',
+  };
+  await cfg.save();
+
+  const attributed = await capi.conversionUserData({ patient });
+  assert.equal(attributed.ctwaClid, 'CLID-paciente-1');
+  assert.equal(attributed.wabaId, 'waba1');
+
+  const isolated = await capi.conversionUserData({ patient: unrelated });
+  assert.equal(isolated.ctwaClid, undefined, 'nunca reutiliza el clic de otro paciente');
+  assert.equal(isolated.wabaId, undefined);
+});
+
+test('botón Probar CAPI valida credenciales y usa una atribución CTWA real', async () => {
+  await seedWhatsapp();
+  await postWebhook(messagePayload({
+    from: '593999000555',
+    id: 'wamid.test-capi',
+    type: 'text',
+    text: { body: 'Prueba desde anuncio' },
+    referral: { source_id: 'ad_test', ctwa_clid: 'CLID-real-test' },
+  }));
+  const cfg = await CallCenterWhatsappConfig.getSingleton();
+  cfg.conversionsApi = {
+    enabled: true,
+    datasetId: '123456789012',
+    accessToken: 'capi-token',
+    testEventCode: 'TEST12345',
+    whatsappBusinessAccountId: 'waba1',
+  };
+  await cfg.save();
+
+  const calls = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (url, opts = {}) => {
+    calls.push({ url: String(url), method: opts.method || 'GET', body: opts.body ? JSON.parse(opts.body) : null });
+    if (!opts.method) {
+      return { ok: true, status: 200, json: async () => ({ data: [{ id: '123456789012' }] }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ events_received: 1, fbtrace_id: 'trace-1' }) };
+  };
+  try {
+    const result = await H.runController(callCenterConfig.testConversionsApi, { body: {} });
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.payload.eventsReceived, 1);
+    assert.equal(result.payload.fbtraceId, 'trace-1');
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 2, 'primero valida Dataset/WABA y luego envía el evento');
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(calls[1].method, 'POST');
+  assert.equal(calls[1].body.test_event_code, 'TEST12345');
+  assert.equal(calls[1].body.data[0].user_data.ctwa_clid, 'CLID-real-test');
 });
 
 test('CAPI deshabilitada: no llama a Meta y devuelve skipped', async () => {
@@ -225,7 +424,7 @@ test('CAPI deshabilitada: no llama a Meta y devuelve skipped', async () => {
   assert.equal(called, false);
 });
 
-test('el webhook con Lead configurado reporta a Meta al crear la conversación', async () => {
+test('el webhook con anuncio reporta LeadSubmitted al crear la conversación', async () => {
   await seedWhatsapp();
   const cfg = await CallCenterWhatsappConfig.getSingleton();
   cfg.conversionsApi = { enabled: true, datasetId: 'DS123', accessToken: 'capi-token', testEventCode: '' };
@@ -235,7 +434,7 @@ test('el webhook con Lead configurado reporta a Meta al crear la conversación',
   const originalFetch = global.fetch;
   global.fetch = async (url, opts) => {
     if (String(url).includes('/DS123/events')) capiCalls.push(JSON.parse(opts.body));
-    return { ok: true, json: async () => ({}) };
+    return { ok: true, json: async () => ({ events_received: 1 }) };
   };
   try {
     await postWebhook(messagePayload({
@@ -251,9 +450,9 @@ test('el webhook con Lead configurado reporta a Meta al crear la conversación',
     global.fetch = originalFetch;
   }
 
-  assert.equal(capiCalls.length, 1, 'debe enviar exactamente un Lead');
+  assert.equal(capiCalls.length, 1, 'debe enviar exactamente un LeadSubmitted');
   const ev = capiCalls[0].data[0];
-  assert.equal(ev.event_name, 'Lead');
+  assert.equal(ev.event_name, 'LeadSubmitted');
   assert.equal(ev.user_data.ctwa_clid, 'CLID-lead');
   assert.ok(ev.event_id.startsWith('lead_'), 'event_id determinístico por conversación');
 });

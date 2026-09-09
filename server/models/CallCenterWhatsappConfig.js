@@ -20,15 +20,14 @@ const callCenterWhatsappConfigSchema = new mongoose.Schema(
       appSecret: { type: String, default: '' }, // cifrado — valida firma X-Hub-Signature-256
       verifyToken: { type: String, default: '' }, // handshake del webhook GET
     },
-    // Meta Conversions API (CAPI): reporta conversiones del chat (Lead/Schedule/
-    // Purchase) al Administrador de Eventos para optimizar campañas (CRO).
+    // Meta Conversions API (CAPI): reporta conversiones atribuibles del chat
+    // (LeadSubmitted/QualifiedLead/Purchase) para optimizar campañas.
     conversionsApi: {
       enabled: { type: Boolean, default: false },
-      datasetId: { type: String, default: '' }, // Pixel ID / Dataset ID del Administrador de Eventos
+      datasetId: { type: String, default: '' }, // Dataset ID asociado a la WABA
       accessToken: { type: String, default: '' }, // cifrado — token de la Conversions API
       testEventCode: { type: String, default: '' }, // código "Probar eventos" (solo pruebas)
-      // WABA id para user_data (business messaging). Opcional: si se deja vacío se
-      // toma del número Cloud API por defecto (WhatsappAccount.businessAccountId).
+      // WABA id para user_data. Solo se autocompleta si hay una única WABA Cloud API.
       whatsappBusinessAccountId: { type: String, default: '' },
     },
     // Meta Marketing API: para añadir/quitar contactos de Públicos Personalizados

@@ -46,3 +46,12 @@ test('includes WABA id in user_data (business messaging) sin hashear', () => {
   assert.equal(ud.whatsapp_business_account_id, '123456789012345');
   assert.equal(ud.ctwa_clid, 'CLID1');
 });
+
+test('normalizes legacy web event names to supported business messaging events', () => {
+  assert.equal(capi.normalizeEventName('Lead'), 'LeadSubmitted');
+  assert.equal(capi.normalizeEventName('Schedule'), 'QualifiedLead');
+  assert.equal(capi.normalizeEventName('Purchase'), 'Purchase');
+  assert.ok(capi.BUSINESS_MESSAGING_EVENTS.has('LeadSubmitted'));
+  assert.ok(capi.BUSINESS_MESSAGING_EVENTS.has('QualifiedLead'));
+  assert.equal(capi.BUSINESS_MESSAGING_EVENTS.has('Schedule'), false);
+});

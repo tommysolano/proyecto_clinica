@@ -184,7 +184,7 @@ const workflowStepSchema = new mongoose.Schema(
     // 'new' añade otra (dos intereses distintos en el mismo chat).
     ifExists: { type: String, enum: ['update', 'new', ''], default: 'update' },
     // meta_capi: evento estándar de conversión de Meta + valor opcional (Purchase).
-    metaEventName: { type: String, trim: true, default: 'Lead' },
+    metaEventName: { type: String, trim: true, default: 'LeadSubmitted' },
     metaValue: { type: Number, default: 0 },
     metaCurrency: { type: String, trim: true, default: 'USD' },
     // fb_audience_add / fb_audience_remove: ID del Público Personalizado destino.

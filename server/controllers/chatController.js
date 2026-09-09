@@ -3997,15 +3997,17 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
       }
       if (!conv) throw e;
     }
-    // CAPI: primera conversación de WhatsApp = Lead para Meta (fire-and-forget).
-    if (channel === 'whatsapp') {
+    // CAPI: solo una conversación nacida de un anuncio CTWA es una conversión
+    // atribuible. Los chats orgánicos no se reportan como leads publicitarios.
+    if (channel === 'whatsapp' && referral?.ctwaClid && account?.businessAccountId) {
       require('../utils/metaConversions')
         .reportLead({
           conversationId: conv._id,
           phone: conv.phone,
           contactName: conv.contactName,
-          ctwaClid: referral?.ctwaClid || '',
+          ctwaClid: referral.ctwaClid,
           adId: referral?.adId || '',
+          wabaId: account.businessAccountId,
         })
         .catch(() => {});
     }
@@ -5480,6 +5482,7 @@ exports.createAppointmentFromChat = async (req, res) => {
         clinicId: String(targetClinic),
         patientId: String(patientId),
         appointmentId: String(appointment._id),
+        conversationId: String(conv._id),
         appointmentDate: require('../utils/appointmentDate').appointmentDateTime(appointment.date, appointment.startTime),
         isFirstVisit: !!appointment.isFirstVisit,
         services: serviceItems.map((s) => String(s.product)).filter(Boolean),

@@ -387,7 +387,7 @@ export const newNodeData = (type) => ({
   opportunityTags: [], opportunityNotes: '', ifExists: 'update',
   assignMode: 'roundrobin', assignUser: null, taskTitle: '', taskDueOffsetMinutes: 1440,
   webhookUrl: '', webhookMethod: 'POST',
-  metaEventName: 'Lead', metaValue: 0, metaCurrency: 'USD', audienceId: '', audienceName: '',
+  metaEventName: 'LeadSubmitted', metaValue: 0, metaCurrency: 'USD', audienceId: '', audienceName: '',
   // Dividir (split): dos rutas 50/50 por defecto (A/B). Cada ruta es una salida
   // con su propio handle = route.id; el motor reparte por % (Random Split).
   ...(type === 'split'
@@ -552,7 +552,7 @@ function summarize(n, ctx = {}) {
       ? `Por sucursal · ${(d.routes || []).map((r) => (r.isFallback ? 'Otras' : r.name || '—')).join(' / ')}`
       : `Aleatorio · ${(d.routes || []).map((r) => `${r.name} ${Number(r.percent) || 0}%`).join(' / ')}`;
     case 'assign_agent': return d.assignMode === 'user' ? 'Agente fijo · exclusivo' : 'Round-robin · compartido';
-    case 'meta_capi': return `Evento ${d.metaEventName || 'Lead'}${Number(d.metaValue) > 0 ? ` · ${d.metaValue} ${d.metaCurrency || 'USD'}` : ''}`;
+    case 'meta_capi': return `Evento ${d.metaEventName || 'LeadSubmitted'}${Number(d.metaValue) > 0 ? ` · ${d.metaValue} ${d.metaCurrency || 'USD'}` : ''}`;
     case 'fb_audience_add': case 'fb_audience_remove': return d.audienceName || d.audienceId || 'Sin público';
     default: return '';
   }
@@ -3782,12 +3782,20 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
     <p className="text-xs text-slate-500">La IA redacta y envía una respuesta usando el contexto de la conversación.</p>
   );
   if (t === 'meta_capi') {
-    const META_EVENTS = ['Lead', 'Schedule', 'Contact', 'CompleteRegistration', 'SubmitApplication', 'Purchase'];
+    const META_EVENTS = ['LeadSubmitted', 'QualifiedLead', 'Purchase', 'AddToCart', 'InitiateCheckout', 'ViewContent'];
+    const legacyEvent = {
+      Lead: 'LeadSubmitted',
+      Schedule: 'QualifiedLead',
+      Contact: 'LeadSubmitted',
+      CompleteRegistration: 'LeadSubmitted',
+      SubmitApplication: 'QualifiedLead',
+    }[d.metaEventName];
+    const selectedEvent = legacyEvent || d.metaEventName || 'LeadSubmitted';
     return (
       <div className="grid gap-2 text-sm">
         <label className="grid gap-1">
           <span className="text-slate-600">Evento de conversión</span>
-          <select value={d.metaEventName || 'Lead'} onChange={(e) => set({ metaEventName: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+          <select value={selectedEvent} onChange={(e) => set({ metaEventName: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
             {META_EVENTS.map((ev) => <option key={ev} value={ev}>{ev}</option>)}
           </select>
         </label>
@@ -3799,9 +3807,9 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
           </div>
         </label>
         <p className="text-[11px] text-slate-400">
-          Reporta el evento a Meta con el teléfono/email del paciente (hasheado en SHA-256) para que
-          el algoritmo optimice tus anuncios por resultados reales. Requiere la <b>Conversions API</b>
-          activada en Ajustes → WhatsApp (Meta).
+          Solo se envía cuando el contacto conserva un <code>ctwa_clid</code> real de la WABA configurada.
+          El teléfono/email viajan hasheados en SHA-256. Requiere la <b>Conversions API</b> activada
+          en Ajustes → WhatsApp (Meta).
         </p>
       </div>
     );

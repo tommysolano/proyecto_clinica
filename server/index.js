@@ -227,6 +227,11 @@ connectDB().then(() => {
   // Idempotente y de un par de documentos: puede correrlo cualquier instancia.
   require('./utils/whatsappIdentity').backfillPhoneKeys().catch(() => {});
 
+  // Estos listeners reaccionan a acciones atendidas por ESTE proceso HTTP, por
+  // eso deben existir en todas las instancias y no únicamente en el líder de
+  // jobs. El propio módulo evita una doble suscripción dentro del proceso.
+  require('./utils/metaConversions').subscribeDomainEvents();
+
   const registry = require('./utils/instanceRegistry');
   // Al GANAR el liderazgo: cablear los jobs (una sola vez) + arrancar las sesiones
   // QR. Al PERDERLO: APAGAR las sesiones QR para que el nuevo líder pueda tomarlas
@@ -285,8 +290,6 @@ connectDB().then(() => {
       .catch((err) => console.error('[workflowChatRestriction] sync:', err.message));
     setTimeout(only(syncWorkflowQueues), 0);
     setInterval(only(syncWorkflowQueues), 15 * 1000);
-    // Meta Conversions API (CAPI): reporta Lead/Schedule/Purchase a Meta si está configurada.
-    require('./utils/metaConversions').subscribeDomainEvents();
     // Agendar una cita mueve la oportunidad del chat a "agendado", venga la cita
     // del chat, del calendario o de la reserva online (antes solo desde el chat).
     require('./utils/opportunityAutoStage').subscribeDomainEvents();

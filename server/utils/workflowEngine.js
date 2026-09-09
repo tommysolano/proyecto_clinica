@@ -1267,11 +1267,18 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef, con
       // Reporta un evento de conversión a Meta (Conversions API) con los datos
       // del paciente. Optimiza las campañas por resultados reales del CRM.
       const mc = require('./metaConversions');
-      const eventName = step.metaEventName || 'Lead';
-      const user = patient ? mc.patientUserData(patient) : {};
-      if (!user.phone && phone) user.phone = phone;
+      const eventName = step.metaEventName || 'LeadSubmitted';
+      const conversation = await loadConv();
+      const user = await mc.conversionUserData({
+        patient,
+        conversationId: conversation?._id,
+        phone,
+      });
       const customData = { chat_funnel_stage: 'automatizacion' };
-      if (Number(step.metaValue) > 0) { customData.value = Number(step.metaValue); customData.currency = step.metaCurrency || 'USD'; }
+      if (mc.normalizeEventName(eventName) === 'Purchase' || Number(step.metaValue) > 0) {
+        customData.value = Number(step.metaValue || 0);
+        customData.currency = step.metaCurrency || 'USD';
+      }
       const r = await mc.sendConversionEvent({
         eventName,
         eventId: `${eventName.toLowerCase()}_wf_${patient?._id || phone || 'anon'}_${ctx.appointmentId || Date.now()}`,
@@ -1279,9 +1286,16 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef, con
         customData,
       });
       if (r.skipped) {
-        return r.reason === 'capi_not_configured'
-          ? 'La API de conversión de Meta (CAPI) no está configurada en Ajustes → WhatsApp.'
-          : 'El paciente no tiene teléfono/email para el matching con Meta.';
+        if (r.reason === 'capi_not_configured') {
+          return 'La API de conversión de Meta (CAPI) no está configurada en Ajustes → WhatsApp.';
+        }
+        if (r.reason === 'missing_ctwa_clid') {
+          return 'No se envió a Meta: este contacto no tiene un clic de anuncio Click-to-WhatsApp atribuible.';
+        }
+        if (r.reason === 'waba_mismatch') {
+          return 'No se envió a Meta: el anuncio pertenece a una WABA distinta de la configurada.';
+        }
+        return r.error || `No se envió a Meta (${r.reason || 'datos incompletos'}).`;
       }
       if (!r.ok) return `Meta rechazó el evento de conversión: ${r.error}`;
       break;

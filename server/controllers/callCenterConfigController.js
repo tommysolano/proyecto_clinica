@@ -1085,29 +1085,63 @@ exports.refreshWhatsappAccountQuality = async (req, res) => {
 };
 
 /**
- * POST /whatsapp/capi/test — envía un evento de prueba 'Lead' a la Conversions
- * API para verificar credenciales. Con testEventCode configurado, el evento
- * aparece en "Probar eventos" del Administrador de Eventos de Meta.
+ * POST /whatsapp/capi/test — valida token/dataset/WABA y envía LeadSubmitted
+ * usando un ctwa_clid real de esa WABA. Nunca prueba con datos inventados.
  */
 exports.testConversionsApi = async (req, res) => {
   try {
     const capi = require('../utils/metaConversions');
+    const validation = await capi.validateCapiConfiguration();
+    if (!validation.ok) {
+      const messages = {
+        capi_not_configured: 'CAPI no está habilitada o falta Dataset ID / Access Token',
+        missing_waba_id: 'Falta el WABA ID y no se pudo deducir una única cuenta Cloud API',
+        dataset_waba_mismatch: validation.error,
+      };
+      return res.status(400).json({
+        message: messages[validation.reason] || validation.error || 'No se pudo validar la configuración con Meta',
+        detail: validation.data,
+      });
+    }
+    if (!validation.cfg.testEventCode) {
+      return res.status(400).json({
+        message: 'Agrega primero el Código de prueba de Meta; la prueba no debe contaminar los eventos de producción',
+      });
+    }
+
+    const source = await capi.findLatestCtwaAttribution({ wabaId: validation.cfg.wabaId });
+    if (!source?.referral?.ctwaClid) {
+      return res.status(400).json({
+        message: 'No existe todavía una conversación real proveniente de un anuncio Click-to-WhatsApp para esta WABA',
+      });
+    }
+    const conversation = source.conversation || {};
     const r = await capi.sendConversionEvent({
-      eventName: 'Lead',
+      eventName: 'LeadSubmitted',
       eventId: `test_${Date.now()}`,
-      user: { phone: req.body.phone || '593999999999' },
+      user: {
+        phone: conversation.phone || '',
+        firstName: conversation.contactName || '',
+        ctwaClid: source.referral.ctwaClid,
+        wabaId: source.whatsappAccount?.businessAccountId || validation.cfg.wabaId,
+      },
       customData: { chat_funnel_stage: 'prueba_conexion' },
     });
     if (r.skipped) {
       return res.status(400).json({
         message:
-          r.reason === 'capi_not_configured'
-            ? 'CAPI no está habilitada o falta Dataset ID / Access Token'
-            : 'No hay identificadores de usuario para el evento',
+          r.reason === 'waba_mismatch'
+            ? 'El clic del anuncio pertenece a otra WABA'
+            : r.error || 'Falta el ctwa_clid o la WABA de la conversación publicitaria',
       });
     }
     if (!r.ok) return res.status(400).json({ message: r.error || 'Meta rechazó el evento', detail: r.data });
-    res.json({ ok: true, result: r.data });
+    res.json({
+      ok: true,
+      eventName: r.eventName,
+      eventsReceived: Number(r.data?.events_received || 0),
+      fbtraceId: r.data?.fbtrace_id || '',
+    });
   } catch (err) {
     res.status(500).json({ message: 'Error de prueba CAPI', error: err.message });
   }
@@ -1144,6 +1178,22 @@ exports.updateWhatsappAppConfig = async (req, res) => {
     }
     if (typeof req.body.capiTestEventCode === 'string') capi.testEventCode = req.body.capiTestEventCode.trim();
     if (typeof req.body.capiWabaId === 'string') capi.whatsappBusinessAccountId = req.body.capiWabaId.trim();
+    if (capi.enabled) {
+      if (!/^\d{5,25}$/.test(capi.datasetId || '')) {
+        return res.status(400).json({ message: 'Dataset ID inválido: debe ser el ID numérico del dataset de la WABA' });
+      }
+      if (!capi.accessToken) {
+        return res.status(400).json({ message: 'Falta el Access Token de Conversions API' });
+      }
+      if (!capi.whatsappBusinessAccountId) {
+        capi.whatsappBusinessAccountId = await require('../utils/metaConversions').resolveWabaId();
+      }
+      if (!/^\d{5,25}$/.test(capi.whatsappBusinessAccountId || '')) {
+        return res.status(400).json({
+          message: 'WABA ID inválido o ambiguo: escribe el ID numérico de la cuenta de WhatsApp Business',
+        });
+      }
+    }
     cfg.conversionsApi = capi;
     // Marketing API: token (cifrado) de Usuario del Sistema con ads_management.
     const mkt = cfg.marketingApi || {};

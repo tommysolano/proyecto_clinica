@@ -71,6 +71,7 @@ function appointmentEventPayload(appt) {
     clinicId: String(appt.clinic),
     patientId: patientId ? String(patientId) : null,
     appointmentId: String(appt._id),
+    conversationId: appt.conversation ? String(appt.conversation?._id || appt.conversation) : null,
     appointmentDate: appointmentDateTime(appt.date, appt.startTime),
     isFirstVisit: !!appt.isFirstVisit,
     services: (appt.services || []).map((s) => String(s.product?._id || s.product)).filter(Boolean),

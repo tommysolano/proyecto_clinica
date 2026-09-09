@@ -1194,7 +1194,15 @@ exports.collectSale = async (req, res) => {
         sale.paid = sale.balance <= 0.01;
         if (sale.paid) sale.balance = 0;
         await sale.save({ session });
-        return { ok: true, balance: sale.balance, paid: sale.paid, patientId: sale.patient, amount, entryId: entry._id };
+        return {
+          ok: true,
+          balance: sale.balance,
+          paid: sale.paid,
+          patientId: sale.patient,
+          saleId: sale._id,
+          amount,
+          entryId: entry._id,
+        };
       });
       // Evento de dominio: cobro registrado a un paciente (dispara CAPI Purchase).
       if (result.patientId && result.amount > 0) {
@@ -1202,6 +1210,7 @@ exports.collectSale = async (req, res) => {
         emitDomainEvent(DOMAIN_EVENTS.PAYMENT_RECEIVED, {
           clinicId: String(req.clinicId),
           patientId: String(result.patientId),
+          saleId: String(result.saleId),
           paymentId: String(result.entryId),
           total: Number(result.amount),
         });

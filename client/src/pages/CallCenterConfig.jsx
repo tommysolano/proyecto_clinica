@@ -950,7 +950,24 @@ function WhatsappNumbersManager() {
     });
   });
 
-  const saveApp = async () => {
+  const applySavedAppConfig = (data) => {
+    setAppCfg(data);
+    setAppDraft({ appSecret: '', verifyToken: '' });
+    setCapiDraft({
+      enabled: Boolean(data?.conversionsApi?.enabled),
+      datasetId: data?.conversionsApi?.datasetId || '',
+      accessToken: '',
+      testEventCode: data?.conversionsApi?.testEventCode || '',
+      wabaId: data?.conversionsApi?.whatsappBusinessAccountId || '',
+    });
+    setMarketingDraft({
+      enabled: Boolean(data?.marketingApi?.enabled),
+      accessToken: '',
+      adAccountId: data?.marketingApi?.adAccountId || '',
+    });
+  };
+
+  const persistAppConfig = async ({ notify = true } = {}) => {
     setSavingApp(true);
     try {
       const payload = {
@@ -966,33 +983,30 @@ function WhatsappNumbersManager() {
       if (marketingDraft.accessToken) payload.marketingAccessToken = marketingDraft.accessToken;
       payload.marketingAdAccountId = marketingDraft.adAccountId;
       const r = await api.put('/call-center-config/whatsapp/app-config', payload);
-      setAppCfg(r.data);
-      setAppDraft({ appSecret: '', verifyToken: '' });
-      setCapiDraft({
-        enabled: Boolean(r.data?.conversionsApi?.enabled),
-        datasetId: r.data?.conversionsApi?.datasetId || '',
-        accessToken: '',
-        testEventCode: r.data?.conversionsApi?.testEventCode || '',
-        wabaId: r.data?.conversionsApi?.whatsappBusinessAccountId || '',
-      });
-      setMarketingDraft({
-        enabled: Boolean(r.data?.marketingApi?.enabled),
-        accessToken: '',
-        adAccountId: r.data?.marketingApi?.adAccountId || '',
-      });
-      toast.success('Configuración de WhatsApp guardada');
+      applySavedAppConfig(r.data);
+      if (notify) toast.success('Configuración de WhatsApp guardada');
+      return true;
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al guardar');
+      return false;
     } finally {
       setSavingApp(false);
     }
   };
 
+  const saveApp = () => persistAppConfig();
+
   const testCapi = async () => {
     setTestingCapi(true);
     try {
-      await api.post('/call-center-config/whatsapp/capi/test');
-      toast.success('Evento de prueba enviado. Revísalo en "Probar eventos" del Administrador de Eventos de Meta.');
+      // La prueba siempre usa exactamente lo que está en pantalla; no obliga al
+      // usuario a recordar que debía guardar antes de pulsar el botón.
+      const saved = await persistAppConfig({ notify: false });
+      if (!saved) return;
+      const r = await api.post('/call-center-config/whatsapp/capi/test');
+      toast.success(
+        `${r.data?.eventName || 'LeadSubmitted'} aceptado por Meta. Revísalo en “Probar eventos” y luego borra el código de prueba.`
+      );
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al probar la Conversions API');
     } finally {
@@ -1219,7 +1233,7 @@ function WhatsappNumbersManager() {
             <span className="text-[11px] text-slate-400">El mismo que pongas en Meta.</span>
           </label>
         </div>
-        {/* Conversions API (CAPI): reporta Lead/Cita/Compra a Meta para optimizar anuncios */}
+        {/* CAPI: reporta LeadSubmitted/QualifiedLead/Purchase atribuibles a Meta */}
         <div className="border-t border-slate-100 pt-3 space-y-3">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div>
@@ -1241,14 +1255,14 @@ function WhatsappNumbersManager() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <label className="block text-sm">
-              <span className="text-slate-700 font-medium">Dataset ID (Pixel ID)</span>
+              <span className="text-slate-700 font-medium">Dataset ID de WhatsApp</span>
               <input
                 value={capiDraft.datasetId}
                 onChange={(e) => setCapiDraft({ ...capiDraft, datasetId: e.target.value })}
                 placeholder="1234567890"
                 className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono"
               />
-              <span className="text-[11px] text-slate-400">Del Administrador de Eventos de Meta.</span>
+              <span className="text-[11px] text-slate-400">Dataset asociado a esta WABA; no uses un Pixel web distinto.</span>
             </label>
             <label className="block text-sm">
               <span className="text-slate-700 font-medium">Access Token (CAPI)</span>
@@ -1260,7 +1274,9 @@ function WhatsappNumbersManager() {
                 autoComplete="off"
                 className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono"
               />
-              <span className="text-[11px] text-slate-400">Se genera en Configuración del dataset.</span>
+              <span className="text-[11px] text-slate-400">
+                Token de Usuario del sistema con <code>whatsapp_business_manage_events</code>.
+              </span>
             </label>
             <label className="block text-sm">
               <span className="text-slate-700 font-medium">Código de prueba (opcional)</span>
@@ -1275,15 +1291,15 @@ function WhatsappNumbersManager() {
               </span>
             </label>
             <label className="block text-sm">
-              <span className="text-slate-700 font-medium">WABA ID (opcional)</span>
+              <span className="text-slate-700 font-medium">WABA ID</span>
               <input
                 value={capiDraft.wabaId}
                 onChange={(e) => setCapiDraft({ ...capiDraft, wabaId: e.target.value })}
-                placeholder="Auto (número Cloud API)"
+                placeholder="123456789012345"
                 className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono"
               />
               <span className="text-[11px] text-slate-400">
-                Cuenta de WhatsApp Business. Si lo dejas vacío se toma del número Cloud API por defecto.
+                Debe ser la misma WABA a la que pertenece el Dataset ID y el anuncio.
               </span>
             </label>
           </div>
@@ -1344,7 +1360,8 @@ function WhatsappNumbersManager() {
           <button
             type="button"
             onClick={testCapi}
-            disabled={testingCapi}
+            disabled={testingCapi || savingApp || !capiDraft.enabled || !capiDraft.testEventCode.trim()}
+            title={!capiDraft.testEventCode.trim() ? 'Agrega el código de “Probar eventos” de Meta' : ''}
             className="px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-700 text-sm cursor-pointer disabled:opacity-50"
           >
             {testingCapi ? 'Probando…' : 'Probar Conversions API'}
@@ -1352,7 +1369,7 @@ function WhatsappNumbersManager() {
           <button
             type="button"
             onClick={saveApp}
-            disabled={savingApp}
+            disabled={savingApp || testingCapi}
             className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium border-none cursor-pointer disabled:opacity-50"
           >
             {savingApp ? 'Guardando…' : 'Guardar ajustes'}
