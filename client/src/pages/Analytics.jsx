@@ -88,6 +88,7 @@ const EMPTY = {
   totals: {
     chats: 0, oportunidades: 0, agendadas: 0, ganadas: 0, perdidas: 0, enCurso: 0, anuncios: 0,
     valorTotal: 0, valorGanado: 0, valorAgendado: 0, tasaAgendamiento: 0, tasaCierre: 0,
+    valorPagado: 0, citasCreadas: 0, citasConPago: 0,
   },
   embudo: [], serie: [], porOportunidad: [], porAnuncio: [], porCanal: [], porAgente: [], servicios: [], motivosPerdida: [],
 };
@@ -269,7 +270,7 @@ export default function Analytics() {
 
       {/* Al recargar se atenúa lo ya pintado en vez de vaciarlo: sin parpadeo ni salto de la página. */}
       <div className={`space-y-4 transition-opacity ${loading ? 'opacity-60' : 'opacity-100'}`}>
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
           {/* El chat y la oportunidad NO son lo mismo: un chat puede tener varias
               (cada anuncio en el que hace clic la persona crea la suya) y una
               oportunidad de hoy puede caer en un chat de hace meses. Por eso la
@@ -293,6 +294,21 @@ export default function Analytics() {
             value={moneyShort(t.valorAgendado)}
             hint={`de las ${nf.format(t.agendadas)} agendadas`}
             color={STAGE_COLOR.agendado}
+          />
+          {/* LO QUE ENTRÓ POR CITAS (sep-2026): al crear la cita, mostrador y call
+              center pueden dejar anotado lo que el paciente pagó al reservarla
+              (adelanto o el total, ver AppointmentValueFields). Es dinero real
+              que la agenda generó dentro del rango, distinto del valor "en
+              juego" de las oportunidades: ese se prometió, este se cobró. */}
+          <Tile
+            label="Cobrado al agendar"
+            value={moneyShort(t.valorPagado)}
+            hint={
+              t.citasConPago
+                ? `${nf.format(t.citasConPago)} de ${nf.format(t.citasCreadas)} citas con pago al crear`
+                : `${nf.format(t.citasCreadas)} citas creadas en el rango`
+            }
+            color={STAGE_COLOR.ganado}
           />
           <Tile
             label="Chats nuevos"
@@ -428,6 +444,14 @@ export default function Analytics() {
               ))}
             </BarChart>
           </ResponsiveContainer>
+          {/* Si el rango trae más nombres de los que caben en la respuesta, SE
+              DICE: un recorte callado se lee como "estas son todas". */}
+          {t.nombresDeOportunidad > data.porOportunidad.length && (
+            <p className="mt-1 text-center text-[11px] text-slate-400">
+              En este rango hay {nf.format(t.nombresDeOportunidad)} nombres de oportunidad distintos; se listan los
+              {' '}{nf.format(data.porOportunidad.length)} con más oportunidades. Acota las fechas para verlos todos.
+            </p>
+          )}
         </ChartCard>
 
         <ChartCard

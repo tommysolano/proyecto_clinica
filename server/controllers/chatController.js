@@ -2525,18 +2525,38 @@ exports.opportunityAnalytics = async (req, res) => {
         },
       },
       { $addFields: { _stageAt: { $ifNull: ['$_opps.stageChangedAt', '$_created'] } } },
-      ...(range ? [{ $match: { _created: range } }] : []),
+      /**
+       * CADA FACET PONE SU PROPIA FECHA (sep-2026, a petición de la clínica).
+       *
+       * El rango estaba ANTES del facet y filtraba TODO por la fecha de CREACIÓN
+       * de la oportunidad: una oportunidad nacida hace cuarenta días que hoy se
+       * marcó 'agendado' quedaba fuera de la cápsula «Agendadas» y de la serie
+       * del día — el usuario contaba 10 agendados en la mañana y la página
+       * mostraba 3. Ahora:
+       *   · lo que se pregunta POR NACIMIENTO (embudo, tabla, serie de creadas)
+       *     sigue filtrando por `_created`;
+       *   · lo que se pregunta POR ENTRADA A UNA ETAPA (agendadas, ganadas,
+       *     serie de etapas, motivos de pérdida) filtra por `_stageAt`.
+       */
       {
         $facet: {
-          porEtapa: [{ $group: { _id: '$_stage', count: { $sum: 1 }, value: { $sum: '$_value' } } }],
+          porEtapa: [
+            ...(range ? [{ $match: { _created: range } }] : []),
+            { $group: { _id: '$_stage', count: { $sum: 1 }, value: { $sum: '$_value' } } },
+          ],
           // En cuántos CHATS distintos están esas oportunidades. Es la respuesta a
           // «¿por qué hay más oportunidades que chats nuevos?»: un mismo chat puede
           // tener varias (cada anuncio en el que hace clic la persona crea la suya)
           // y una oportunidad de hoy puede estar en un chat de hace un mes.
-          chatsConOportunidad: [{ $group: { _id: '$_id' } }, { $count: 'n' }],
+          chatsConOportunidad: [
+            ...(range ? [{ $match: { _created: range } }] : []),
+            { $group: { _id: '$_id' } },
+            { $count: 'n' },
+          ],
           // Clasificación POR OPORTUNIDAD: qué son esas oportunidades y cómo va
           // cada una por el embudo.
           porOportunidad: [
+            ...(range ? [{ $match: { _created: range } }] : []),
             {
               $group: {
                 _id: OPP_LABEL,
@@ -2554,15 +2574,46 @@ exports.opportunityAnalytics = async (req, res) => {
               },
             },
             { $sort: { total: -1 } },
-            { $limit: 15 },
+            // El tope es un freno contra un rango enorme, no un recorte: la
+            // página avisa cuando hay más nombres de los que dibuja. Antes eran
+            // 15 y el usuario contaba cuarenta filas de más — grave.
+            { $limit: 100 },
           ],
-          creadasPorDia: [{ $group: { _id: dayKey('$_created'), count: { $sum: 1 } } }],
+          // CUÁNTOS nombres de oportunidad distintos hay (con y sin recorte), para
+          // que la página diga «mostrando N de M» en vez de callar lo que falta.
+          nombresTotales: [
+            ...(range ? [{ $match: { _created: range } }] : []),
+            { $group: { _id: OPP_LABEL } },
+            { $count: 'n' },
+          ],
+          creadasPorDia: [
+            ...(range ? [{ $match: { _created: range } }] : []),
+            { $group: { _id: dayKey('$_created'), count: { $sum: 1 } } },
+          ],
           etapaPorDia: [
             { $match: { _stage: { $in: ['agendado', 'ganado'] } } },
+            // Por el DÍA EN QUE ENTRARON en la etapa: una oportunidad de hace
+            // dos meses que hoy se agendó es un agendado de HOY.
+            ...(range ? [{ $match: { _stageAt: range } }] : []),
             { $group: { _id: { day: dayKey('$_stageAt'), stage: '$_stage' }, count: { $sum: 1 } } },
           ],
-          porCanal: [{ $group: { _id: { $ifNull: ['$channel', 'whatsapp'] }, count: { $sum: 1 } } }],
+          // ENTRADAS a la etapa dentro del rango, sin importar cuándo nació la
+          // oportunidad: es la cifra que contesta «cuántas se agendaron / se
+          // ganaron EN ESTE RANGO» (las cápsulas de arriba).
+          entradasAgendado: [
+            { $match: { _stage: 'agendado', ...(range ? { _stageAt: range } : {}) } },
+            { $group: { _id: null, count: { $sum: 1 }, value: { $sum: '$_value' } } },
+          ],
+          entradasGanado: [
+            { $match: { _stage: 'ganado', ...(range ? { _stageAt: range } : {}) } },
+            { $group: { _id: null, count: { $sum: 1 }, value: { $sum: '$_value' } } },
+          ],
+          porCanal: [
+            ...(range ? [{ $match: { _created: range } }] : []),
+            { $group: { _id: { $ifNull: ['$channel', 'whatsapp'] }, count: { $sum: 1 } } },
+          ],
           porAgente: [
+            ...(range ? [{ $match: { _created: range } }] : []),
             {
               $group: {
                 _id: { $ifNull: ['$assignedToName', ''] },
@@ -2578,6 +2629,7 @@ exports.opportunityAnalytics = async (req, res) => {
           // Servicios: solo se cuentan oportunidades, NO se suma el valor — una
           // oportunidad con tres servicios repartiría su importe tres veces.
           servicios: [
+            ...(range ? [{ $match: { _created: range } }] : []),
             { $unwind: '$_opps.interestedIn' },
             { $group: { _id: { $ifNull: ['$_opps.interestedIn.name', 'Sin nombre'] }, count: { $sum: 1 } } },
             { $sort: { count: -1 } },
@@ -2585,6 +2637,8 @@ exports.opportunityAnalytics = async (req, res) => {
           ],
           motivosPerdida: [
             { $match: { _stage: 'perdido' } },
+            // Por cuándo se PERDIERON, no por cuándo nacieron.
+            ...(range ? [{ $match: { _stageAt: range } }] : []),
             { $group: { _id: { $ifNull: ['$_opps.lostReason', ''] }, count: { $sum: 1 } } },
             { $sort: { count: -1 } },
             { $limit: 8 },
@@ -2679,10 +2733,49 @@ exports.opportunityAnalytics = async (req, res) => {
     const topAnuncios = anunciosAgg.slice(0, 200);
     const tituloDe = (r) => String(r.titular || '').trim() || `Anuncio ${r._id}`;
     const repetidos = topAnuncios.reduce((m, r) => ({ ...m, [tituloDe(r)]: (m[tituloDe(r)] || 0) + 1 }), {});
-    const agendadas = de('agendado').count;
-    const ganadas = de('ganado').count;
+    /**
+     * AGENDADAS/GANADAS VAN POR ENTRADA A LA ETAPA (sep-2026): cuántas
+     * oportunidades ENTRARON a 'agendado' / 'ganado' dentro del rango, aunque la
+     * oportunidad haya nacido hace meses. El conteo por etapa ACTUAL del rango de
+     * creación hacía que la cápsula dijera 3 cuando en la mañana se habían
+     * agendado 10 — la fecha que manda es `stageChangedAt`.
+     */
+    const agendadas = facets.entradasAgendado?.[0]?.count || 0;
+    const ganadas = facets.entradasGanado?.[0]?.count || 0;
+    const valorAgendadas = Math.round((facets.entradasAgendado?.[0]?.value || 0) * 100) / 100;
+    const valorGanadas = Math.round((facets.entradasGanado?.[0]?.value || 0) * 100) / 100;
     const perdidas = de('perdido').count;
     const valorTotal = embudo.reduce((a, e) => a + e.value, 0);
+
+    /**
+     * LO QUE ENTRÓ POR CITAS (sep-2026): al crear una cita, mostrador y call
+     * center pueden dejar anotado lo que el paciente pagó al reservarla
+     * (adelanto o el total). Es dinero que la agenda ya generó dentro del
+     * rango, y la cápsula nueva lo muestra. Es dato operativo (ver
+     * utils/appointmentValue.js): no factura, no mueve contabilidad.
+     */
+    let valorPagado = 0;
+    let citasCreadas = 0;
+    let citasConPago = 0;
+    try {
+      const Appointment = require('../models/Appointment');
+      const [valorCitasAgg] = await Appointment.aggregate([
+        { $match: { clinic: clinicOid, ...(range ? { createdAt: range } : {}) } },
+        {
+          $group: {
+            _id: null,
+            monto: { $sum: { $ifNull: ['$advanceAmount', 0] } },
+            citas: { $sum: 1 },
+            conPago: { $sum: { $cond: [{ $gt: [{ $ifNull: ['$advanceAmount', 0] }, 0] }, 1, 0] } },
+          },
+        },
+      ]);
+      valorPagado = Math.round((valorCitasAgg?.monto || 0) * 100) / 100;
+      citasCreadas = valorCitasAgg?.citas || 0;
+      citasConPago = valorCitasAgg?.conPago || 0;
+    } catch (err) {
+      console.warn('[analytics] no se pudo sumar el valor de las citas:', err.message);
+    }
 
     res.json({
       range: { from: req.query.from || '', to: req.query.to || '' },
@@ -2699,14 +2792,22 @@ exports.opportunityAnalytics = async (req, res) => {
         agendadas,
         ganadas,
         perdidas,
-        enCurso: total - agendadas - ganadas - perdidas,
+        // En curso = del total del rango, las que HOY no están cerradas ni
+        // agendadas ni perdidas (cuenta por etapa actual, como el embudo).
+        enCurso: total - de('agendado').count - de('ganado').count - de('perdido').count,
         valorTotal: Math.round(valorTotal * 100) / 100,
-        valorGanado: de('ganado').value,
-        valorAgendado: de('agendado').value,
+        valorGanado: valorGanadas,
+        valorAgendado: valorAgendadas,
         // "Agendamiento" incluye las ganadas: una oportunidad que ya se cerró pasó
         // por agendarse, y dejarla fuera hacía bajar la tasa al cerrar ventas.
-        tasaAgendamiento: total ? (agendadas + ganadas) / total : 0,
-        tasaCierre: total ? ganadas / total : 0,
+        // La tasa va sobre el EMBUDO del rango (nacidas en él), coherente con la
+        // cápsula «Oportunidades»; las cápsulas de arriba cuentan ENTRADAS.
+        tasaAgendamiento: total ? (de('agendado').count + de('ganado').count) / total : 0,
+        tasaCierre: total ? de('ganado').count / total : 0,
+        // Dinero que entró con las citas del rango (pagado al crearlas).
+        valorPagado,
+        citasCreadas,
+        citasConPago,
       },
       embudo,
       serie,
@@ -2741,6 +2842,9 @@ exports.opportunityAnalytics = async (req, res) => {
         ganado: r.ganado,
         perdido: r.perdido,
       })),
+      // Cuántos nombres distintos hay en el rango: la página muestra
+      // «mostrando N de M» cuando su tope recorta la tabla.
+      nombresDeOportunidad: facets.nombresTotales?.[0]?.n || 0,
       servicios: (facets.servicios || []).map((r) => ({ servicio: r._id, count: r.count })),
       motivosPerdida: (facets.motivosPerdida || []).map((r) => ({
         motivo: r._id || 'Sin motivo',
@@ -2857,7 +2961,11 @@ exports.opportunityAnalyticsDetail = async (req, res) => {
           _motivo: { $ifNull: ['$_opps.lostReason', ''] },
         },
       },
-      ...(range ? [{ $match: { _created: range } }] : []),
+      { $addFields: { _stageAt: { $ifNull: ['$_opps.stageChangedAt', '$_created'] } } },
+      // El detalle de una barra por ETAPA va por cuándo ENTRARON en ella (igual
+      // que la cápsula que se abrió); el del total de una oportunidad, por
+      // cuándo nació.
+      ...(range ? [{ $match: stage ? { _stageAt: range } : { _created: range } }] : []),
       { $match: filtro },
       { $sort: { _created: -1 } },
       { $limit: 500 },

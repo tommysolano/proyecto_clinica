@@ -485,3 +485,72 @@ test('catálogo: nombres y etiquetas que ya existen, lo más usado primero', asy
   assert.deepEqual(payload.chatTags, ['vip']);
   assert.equal(payload.names.some((n) => n.name === 'De otra sede'), false);
 });
+
+// ─────────── sep-2026: la cápsula miente menos que el lead ───────────
+//
+// Lo reportó la clínica: el usuario tenía 10 oportunidades marcadas 'agendado'
+// en la mañana y la página contaba 3. El rango filtraba por la fecha de
+// CREACIÓN de la oportunidad, así que los leads viejos que HOY se agendaron
+// quedaban fuera de la cápsula aunque su `stageChangedAt` fuera de hoy.
+
+test('«Agendadas» cuenta por ENTRADA a la etapa: un lead viejo agendado HOY cuenta hoy', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000401',
+    opportunities: [{
+      isOpportunity: true, stage: 'agendado', expectedValue: 250,
+      createdAt: hace(40),       // nació FUERA del rango de 30 días…
+      stageChangedAt: hace(0),   // …pero hoy entró a 'agendado'
+    }],
+  });
+
+  const { payload } = await pedir(clinic._id, rango);
+  // La cápsula manda el hecho del día; el embudo sigue contando nacimientos.
+  assert.equal(payload.totals.agendadas, 1, 'la cápsula cuenta la entrada de hoy');
+  assert.equal(payload.totals.oportunidades, 0, 'el embudo cuenta lo nacido en el rango');
+  assert.equal(payload.serie.find((s) => s.date === iso(hace(0))).agendadas, 1);
+  // Y su valor también viaja con la entrada, no se pierde.
+  assert.equal(payload.totals.valorAgendado, 250);
+});
+
+test('«Cobrado al agendar» suma lo que el paciente pagó al crear sus citas del rango', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const Appointment = require('../models/Appointment');
+  const Patient = require('../models/Patient');
+  const patient = await Patient.create({ clinic: clinic._id, firstName: 'Ana', lastName: 'L' });
+  await Appointment.insertMany([
+    { clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '10:00', advancePayment: 'abono', advanceAmount: 50, createdAt: hace(1) },
+    { clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '11:00', advancePayment: 'total', advanceAmount: 90, createdAt: hace(1) },
+    // Canje: no entró dinero.
+    { clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '12:00', isCanje: true, advanceAmount: 0, createdAt: hace(1) },
+    // Sin pago anotado todavía.
+    { clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '13:00', createdAt: hace(1) },
+    // De otra sede: fuera.
+    { clinic: (await Clinic.create({ name: 'Otra' }))._id, patient: patient._id, date: hace(1), startTime: '14:00', advanceAmount: 999, createdAt: hace(1) },
+    // Del rango de las oportunidades pero la cita es de hace 100 días: fuera.
+    { clinic: clinic._id, patient: patient._id, date: hace(100), startTime: '15:00', advanceAmount: 999, createdAt: hace(100) },
+  ]);
+
+  const { payload } = await pedir(clinic._id, rango);
+  assert.equal(payload.totals.valorPagado, 140);
+  assert.equal(payload.totals.citasCreadas, 4, 'las citas del rango de ESTA sede');
+  assert.equal(payload.totals.citasConPago, 2, 'las que dejaron dinero anotado');
+});
+
+test('la tabla de oportunidades avisa y trae hasta 100 nombres, no 15', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const nombres = Array.from({ length: 120 }, (_, i) => `Oportunidad ${i + 1}`);
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000402',
+    opportunities: nombres.map((name, i) => ({
+      isOpportunity: true, name, stage: 'nuevo', createdAt: hace(2), expectedValue: 10,
+    })),
+  });
+
+  const { payload } = await pedir(clinic._id, rango);
+  assert.equal(payload.totals.oportunidades, 120);
+  assert.equal(payload.nombresDeOportunidad, 120, 'el total de nombres va aparte del recorte');
+  assert.equal(payload.porOportunidad.length, 100, 'el tope subió de 15 a 100');
+  // Y el aviso sabe cuántos se quedaron fuera.
+  assert.ok(payload.nombresDeOportunidad > payload.porOportunidad.length);
+});
