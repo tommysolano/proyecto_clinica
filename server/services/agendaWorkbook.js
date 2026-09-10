@@ -97,10 +97,9 @@ const nombreDePersona = (u) => (u?.name || '').trim();
  * opción puesta, los turnos de enfermería no se escriben y esas dos citas caen
  * bajo el mismo «Dr. A → Dr. B».
  *
- * No se quita ninguna cita —esto es cómo se ROTULA la columna, no un filtro—,
- * así que las que solo tuvieron enfermería siguen ahí, rotuladas «Solo
- * enfermería»: una sola entrada en el filtro, y no un blanco, que no se lee
- * como «nadie» sino como que el dato falta.
+ * Con esa opción el llamador TAMBIÉN deja fuera —con `soloEnfermeria`, más
+ * abajo— las citas que no pasó ningún médico: si el rótulo dice «solo los
+ * médicos», una fila atendida solo por enfermería no puede estar.
  */
 function quienAtiende(a, { sinEnfermeria = false } = {}) {
   const turnos = (a.turns || []).filter((t) => t.user || t.kind === 'enfermeria');
@@ -115,6 +114,15 @@ function quienAtiende(a, { sinEnfermeria = false } = {}) {
     })
     .filter(Boolean)
     .join(' → ');
+}
+
+/**
+ * ¿LA CITA LA ATENDIÓ SOLO ENFERMERÍA? (turnos presentes y ninguno de médico).
+ * Las que no tienen turnos NO cuentan: esas se rotulan con el médico espejo.
+ */
+function soloEnfermeria(a) {
+  const turnos = (a.turns || []).filter((t) => t.user || t.kind === 'enfermeria');
+  return turnos.length > 0 && !turnos.some((t) => t.kind !== 'enfermeria');
 }
 
 /**
@@ -481,7 +489,9 @@ function hojaDeResumen(wb, citas, meta, opciones) {
  *
  * @param {Array}  citas     las citas ya pobladas (paciente, sucursal, turnos…)
  * @param {object} meta      { titulo, subtitulo, periodo, filtros, resumen }
- * @param {object} opciones  { sinEnfermeria } — cómo se rotula «Quién atiende»
+ * @param {object} opciones  { sinEnfermeria } — cómo se rotula «Quién atiende».
+ *                           Las citas de solo enfermería las deja fuera el
+ *                           llamador (con `soloEnfermeria`) ANTES de llegar aquí.
  * @returns {ExcelJS.Workbook}
  */
 function construirLibroDeAgenda(citas, meta, opciones = {}) {
@@ -495,4 +505,4 @@ function construirLibroDeAgenda(citas, meta, opciones = {}) {
   return wb;
 }
 
-module.exports = { construirLibroDeAgenda, quienAtiende, servicioDeLaCita };
+module.exports = { construirLibroDeAgenda, quienAtiende, servicioDeLaCita, soloEnfermeria };

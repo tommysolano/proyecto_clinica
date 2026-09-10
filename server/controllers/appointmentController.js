@@ -3234,33 +3234,42 @@ exports.exportAppointments = async (req, res) => {
       return res.status(404).json({ message: 'No se encontraron esas citas.' });
     }
 
-    const { construirLibroDeAgenda } = require('../services/agendaWorkbook');
+    const { construirLibroDeAgenda, soloEnfermeria } = require('../services/agendaWorkbook');
     // El título y los filtros los escribe la PANTALLA: es la única que sabe qué
     // está enseñando («8 de septiembre», «bandeja: en atención»). Se sanean por
     // longitud —van a una celda, no a una consulta— y se cae a algo genérico.
     const texto = (v, max) => String(v || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, max);
     /**
-     * SIN ENFERMERÍA EN «QUIÉN ATIENDE». No quita citas: cambia cómo se ROTULA
-     * esa columna. Con enfermería dentro, el autofiltro de Excel lista una
-     * entrada por cada COMBINACIÓN («Dr. A → Dr. B» y «Dr. A → Dr. B → Enf. C»
-     * son dos distintas), y buscar las citas de un médico obliga a marcar diez
-     * casillas casi iguales.
+     * SIN ENFERMERÍA EN «QUIÉN ATIENDE». Con la opción puesta los turnos de
+     * enfermería no se escriben en esa columna (el autofiltro de Excel lista
+     * una entrada por cada COMBINACIÓN, y buscar las citas de un médico
+     * obligaría a marcar diez casillas casi iguales) y las citas que NO pasó
+     * ningún médico se van del archivo: el rótulo dice «solo los médicos», así
+     * que una fila atendida solo por enfermería no puede estar.
      *
      * Se DEJA ESCRITO en la cabecera del archivo, y lo escribe el servidor —no
      * la pantalla—: quien reciba el Excel tiene que poder ver por qué no
      * aparece la enfermera que sí atendió.
      */
     const sinEnfermeria = req.body?.sinEnfermeria === true || req.body?.sinEnfermeria === 'true';
-    const wb = construirLibroDeAgenda(citas, {
+    const citasFinales = sinEnfermeria ? citas.filter((a) => !soloEnfermeria(a)) : citas;
+    if (!citasFinales.length) {
+      return res.status(404).json({
+        message:
+          'Ninguna de esas citas fue atendida por un médico: con «solo los médicos» ' +
+          'marcado no hay nada que exportar.',
+      });
+    }
+    const wb = construirLibroDeAgenda(citasFinales, {
       titulo: 'AGENDA DE CITAS',
       subtitulo: texto(req.body?.subtitulo, 120) || 'Vikingo',
       periodo: texto(req.body?.periodo, 120) || 'Citas seleccionadas',
       filtros: [
         texto(req.body?.filtros, 300),
-        sinEnfermeria && '«Quién atiende» sin enfermería',
+        sinEnfermeria && '«Quién atiende» solo médicos',
       ].filter(Boolean).join(' · '),
       resumen:
-        `${citas.length} ${citas.length === 1 ? 'cita' : 'citas'} · ` +
+        `${citasFinales.length} ${citasFinales.length === 1 ? 'cita' : 'citas'} · ` +
         `Generado por ${texto(req.user?.name, 60) || 'el sistema'} · ` +
         new Date().toLocaleString('es-EC', { timeZone: 'America/Guayaquil' }),
     }, { sinEnfermeria });

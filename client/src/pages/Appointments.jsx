@@ -13,6 +13,9 @@ import AppointmentFollowUpModal from '../components/AppointmentFollowUpModal';
 // Los datos del paciente se corrigen desde la propia cita: es el MISMO
 // formulario que el de la página de Pacientes (ver components/PatientFields).
 import PatientEditModal from '../components/PatientEditModal';
+// Y al REGISTRAR al paciente nuevo desde la propia cita: los mismos campos,
+// con sus reglas por rol, el SRI y el campo único de teléfonos.
+import PatientFields, { emptyPatientForm, payloadDePaciente } from '../components/PatientFields';
 import AppointmentValueFields from '../components/AppointmentValueFields';
 import AgendadoPorSelect from '../components/AgendadoPorSelect';
 import toast from 'react-hot-toast';
@@ -569,6 +572,19 @@ export default function Appointments() {
   // respuesta del texto que el usuario tiene escrito en este momento.
   const patientRequestRef = useRef(0);
 
+  /**
+   * ALTA DEL PACIENTE DESDE LA PROPIA CITA.
+   *
+   * El paciente que llama por primera vez no está registrado y a mostrador le
+   * tocaba dos viajes: primero Clientes para darlo de alta, luego la agenda
+   * para citarlo. Ahora la casilla «Paciente nuevo» abre en el propio modal el
+   * MISMO formulario de registro (PatientFields, con sus reglas por rol y el
+   * SRI) y al guardar se crean las dos cosas en un solo paso.
+   */
+  const [pacienteNuevo, setPacienteNuevo] = useState(false);
+  const [patientForm, setPatientForm] = useState(emptyPatientForm);
+  const [patientTelefonos, setPatientTelefonos] = useState('');
+
   const [now, setNow] = useState(Date.now());
   const [timeUpModal, setTimeUpModal] = useState(null);
   const notifiedRef = useRef(new Set());
@@ -743,7 +759,7 @@ export default function Appointments() {
    */
   useEffect(() => {
     const miTurno = ++patientRequestRef.current;
-    if (!modalOpen || form.patient) {
+    if (!modalOpen || form.patient || pacienteNuevo) {
       setPatientSearchLoading(false);
       return undefined;
     }
@@ -774,7 +790,7 @@ export default function Appointments() {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [modalOpen, patientSearch, form.patient]);
+  }, [modalOpen, patientSearch, form.patient, pacienteNuevo]);
 
   useEffect(() => {
     fetchAppointments();
@@ -909,6 +925,9 @@ export default function Appointments() {
     setPatients([]);
     setPatientSearch('');
     setPatientSearchError(false);
+    setPacienteNuevo(false);
+    setPatientForm(emptyPatientForm);
+    setPatientTelefonos('');
     setModalOpen(true);
   };
 
@@ -970,14 +989,31 @@ export default function Appointments() {
         ? [`${apt.patient.firstName} ${apt.patient.lastName}`, apt.patient.cedula].filter(Boolean).join(' - ')
         : ''
     );
+    // Editar nunca abre el alta: la casilla es del flujo de creación.
+    setPacienteNuevo(false);
     setModalOpen(true);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.patient) {
+    /**
+     * PACIENTE NUEVO: no hay nada seleccionado y no se le pide. Lo que se pide
+     * es que el registro no quede del todo en blanco —nombre, cédula o
+     * teléfono, con uno basta—, igual que en la página de Pacientes: se registra
+     * a mucha gente con lo que se tiene a mano y se completa después.
+     */
+    const altaNuevo = pacienteNuevo && !editing;
+    if (!altaNuevo && !form.patient) {
       toast.error('Selecciona un paciente');
       return;
+    }
+    if (altaNuevo) {
+      const algo = [patientForm.firstName, patientForm.lastName, patientForm.cedula, patientTelefonos]
+        .some((v) => (v || '').trim());
+      if (!algo) {
+        toast.error('Escribe al menos el nombre, la cédula o el teléfono del paciente nuevo.');
+        return;
+      }
     }
     // El servicio dejó de ser obligatorio para poder agendar: se puede citar a
     // alguien y decidir después a qué viene.
@@ -1009,6 +1045,18 @@ export default function Appointments() {
     setSaving(true);
     try {
       /**
+       * PRIMERO EL PACIENTE. Si la cita fallara después, el paciente ya quedó
+       * registrado — es lo mismo que pasa en la página de Pacientes, y es el
+       * orden bueno: media operacion hecha es el alta, que es lo que más
+       * cuesta teclear en el mostrador.
+       */
+      let pacienteId = form.patient;
+      if (altaNuevo) {
+        const { data: nuevo } = await api.post('/patients', payloadDePaciente(patientForm, patientTelefonos));
+        pacienteId = nuevo?._id || '';
+        toast.success('Paciente registrado');
+      }
+      /**
        * QUIÉN ATIENDE viaja como la MISMA cola que manda el mostrador
        * (`steps`), no como un campo nuevo: así el servidor la reparte por la
        * única puerta que escribe los turnos y sus espejos, y no hay dos formas
@@ -1020,6 +1068,7 @@ export default function Appointments() {
        */
       const basePayload = {
         ...form,
+        patient: pacienteId,
         serviceItem: form.serviceItem?._id || null,
         // La cola, por la misma función que el alta de paciente.
         steps: pasosDeAtencion(form, { doctors, nurses }),
@@ -2353,6 +2402,40 @@ export default function Appointments() {
       >
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-5">
           <form onSubmit={handleSubmit} className="space-y-4 min-w-0">
+          {/* PACIENTE NUEVO. Va primero porque decide lo que se ve después: con
+              la casilla puesta no se busca (no hay nada que buscar) y se abre el
+              registro, con los MISMOS campos y reglas que la página de
+              Pacientes. Solo al crear: una cita ya existe para su paciente. */}
+          {!editing && (
+            <label className="flex items-start gap-2 p-3 rounded-xl border border-emerald-200 bg-emerald-50/60 cursor-pointer hover:bg-emerald-50 transition-colors">
+              <input
+                type="checkbox"
+                checked={pacienteNuevo}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setPacienteNuevo(checked);
+                  if (checked) {
+                    // Dejar de mirar al buscador: la persona todavía no existe.
+                    setForm((f) => ({ ...f, patient: '' }));
+                    setPatients([]);
+                    setPatientSearch('');
+                    setShowPatientList(false);
+                  }
+                }}
+                className="mt-0.5 cursor-pointer"
+              />
+              <span>
+                <span className="block text-sm font-medium text-slate-800">
+                  Paciente nuevo (no está registrado)
+                </span>
+                <span className="block text-xs text-slate-500 mt-0.5">
+                  Se despliega su registro aquí mismo. Al crear la cita se registra el
+                  paciente y queda citado en un solo paso.
+                </span>
+              </span>
+            </label>
+          )}
+
           {/* Caja y administración pueden escoger cualquier sucursal operativa de
               la organización, aunque su usuario esté asignado a una sola. */}
           {showClinicSelector && (
@@ -2377,6 +2460,8 @@ export default function Appointments() {
             </div>
           )}
 
+          {!(pacienteNuevo && !editing) && (
+          <>
           {/* Buscador de pacientes */}
           <div className="relative">
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -2435,12 +2520,34 @@ export default function Appointments() {
                       {p.phone && (
                         <span className="text-slate-400 ml-2">• {p.phone}</span>
                       )}
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
+                     </button>
+                   ))
+                 )}
+               </div>
+             )}
+           </div>
+          </>
+          )}
+
+          {/* EL REGISTRO DEL PACIENTE NUEVO, dentro de la cita. Es el mismo
+              bloque que la página de Pacientes: las reglas por rol (qué datos de
+              contacto ve cada quién), la edad derivada de la fecha de
+              nacimiento y el autocompletado del SRI ya viven en PatientFields,
+              y aquí no se repiten. */}
+          {pacienteNuevo && !editing && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-4 space-y-4">
+              <p className="text-xs font-semibold text-emerald-800 uppercase tracking-wide m-0">
+                Datos del nuevo paciente
+              </p>
+              <PatientFields
+                form={patientForm}
+                setForm={setPatientForm}
+                telefonos={patientTelefonos}
+                setTelefonos={setPatientTelefonos}
+                editing={false}
+              />
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Doctor: visible al EDITAR para admin y para quienes asignan doctores
@@ -3282,9 +3389,8 @@ export default function Appointments() {
           )}
 
           {/**
-            * NO ES UN FILTRO: no quita ninguna cita, cambia lo que dice la
-            * columna. Se aclara aquí porque «sin enfermería» se lee como «sin
-            * las citas de enfermería», que es justo lo contrario.
+            * SÍ QUITA CITAS: con la opción puesta, las que solo pasó
+            * enfermería no entran en el archivo y la columna dice solo médicos.
             */}
           <label className="flex items-start gap-2 p-3 rounded-xl border border-slate-200 bg-white cursor-pointer hover:bg-slate-50 transition-colors">
             <input
@@ -3302,8 +3408,8 @@ export default function Appointments() {
               </span>
               <span className="block text-xs text-slate-500 mt-0.5">
                 Deja a enfermería fuera de esa columna para que el filtro de Excel no repita
-                una opción por cada combinación. Las citas siguen todas: las que solo tuvo
-                enfermería dicen «Solo enfermería».
+                una opción por cada combinación. Las citas que solo pasó enfermería
+                <b> no aparecen</b> en el archivo.
               </span>
             </span>
           </label>

@@ -247,9 +247,11 @@ test('E8) pasarse del tope se dice, no se recorta el archivo en silencio', async
  * El autofiltro de Excel agrupa por el texto ENTERO de la celda, así que
  * «Dr. A» y «Dr. A → Enf. B» son dos entradas distintas y la lista del filtro
  * se llena de combinaciones que solo se diferencian en quién puso el suero.
- * La opción NO quita citas —sigue habiendo tres filas—: cambia el rótulo.
+ * Con la opción, además, las citas que no pasó NINGÚN médico no entran: el
+ * rótulo dice «solo los médicos», así que una fila de solo enfermería no
+ * puede estar.
  */
-test('E9) sin enfermería, las citas del mismo médico caen bajo un solo rótulo', async () => {
+test('E9) sin enfermería: un solo rótulo para el médico y fuera las de solo enfermería', async () => {
   const { clinicId, userId, paciente, doctora } = await seed();
   const enfermera = await User.create({
     name: 'Emmily', email: 'enf@t.com', password: 'secreto123',
@@ -277,17 +279,16 @@ test('E9) sin enfermería, las citas del mismo médico caen bajo un solo rótulo
   const col = columna(ws);
   assert.equal(ws.getRow(7).getCell(col).value, 'Dr. Solano');
   assert.equal(ws.getRow(8).getCell(col).value, 'Dr. Solano');
-  // La de solo enfermería NO se queda en blanco: un blanco se lee como que el
-  // dato falta, no como «no atendió ningún médico».
-  assert.equal(ws.getRow(9).getCell(col).value, 'Solo enfermería');
-  // Y siguen estando las TRES citas: esto no es un filtro, es un rótulo.
-  const colHora = ws.getRow(6).values.findIndex((v) => v === 'Hora');
-  assert.deepEqual(
-    [7, 8, 9].map((n) => ws.getRow(n).getCell(colHora).value),
-    ['14:00', '15:00', '16:00']
-  );
+  // La de solo enfermería (16:00) NO está: la opción deja fuera las citas
+  // que no pasó ningún médico.
+  const textoCitas = textoDe(ws);
+  assert.doesNotMatch(textoCitas, /16:00/);
+  assert.doesNotMatch(textoCitas, /Solo enfermería/);
+  // Y quedan exactamente DOS citas + la fila de totales.
+  assert.equal(ws.lastRow.number, 6 + 2 + 1);
+  assert.match(String(ws.lastRow.getCell(5).value), /2 citas/);
   // El archivo dice por qué no aparece la enfermera que sí atendió.
-  assert.match(textoDe(ws), /sin enfermería/);
+  assert.match(textoCitas, /solo médicos/);
   // El resumen rotula igual, o los totales por profesional no cuadrarían.
   const resumen = textoDe(wb.getWorksheet('Resumen'));
   assert.doesNotMatch(resumen, /Enf\. Emmily/);
