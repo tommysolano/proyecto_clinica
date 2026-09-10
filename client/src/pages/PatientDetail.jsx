@@ -389,7 +389,11 @@ export default function PatientDetail() {
         (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) === miId
       )
     : null;
-  const reclameMiTurno = (aptData.turns || []).length ? (!miTurnoVigente || !!miTurnoVigente.startedAt) : true;
+  // Con la guardia de `enTramite`: la ficha se abre ANTES de que llegue la cita
+  // (aptData null), y un `aptData.turns` ahí tumba la pantalla entera.
+  const reclameMiTurno = enTramite && (aptData.turns || []).length
+    ? (!miTurnoVigente || !!miTurnoVigente.startedAt)
+    : true;
   const [reclamando, setReclamando] = useState(false);
   const [cerrandoTurno, setCerrandoTurno] = useState(false);
   /**

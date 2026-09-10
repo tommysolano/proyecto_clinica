@@ -2245,13 +2245,22 @@ export default function Appointments() {
                         )}
                       </td>
                       <td data-cell="estado" className="md:px-6 md:py-3.5">
-                        <span
-                          className={`inline-block px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
-                            statusColors[apt.status] || statusColors.pendiente
-                          }`}
-                        >
-                          {statusLabels[apt.status] || 'Pendiente'}
-                        </span>
+                        {/**
+                          * EL ESTADO DE LA CITA NO ES DEL ENFERMERO (sep-2026).
+                          * Casi todas sus citas están «asistida» desde que el
+                          * paciente entró por la puerta, y el texto solo decía
+                          * lo que las bandejas de arriba ya dicen mejor: nada
+                          * la ha tomado / la está atendiendo / su parte cerró.
+                          */}
+                        {!isNurse && (
+                          <span
+                            className={`inline-block px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
+                              statusColors[apt.status] || statusColors.pendiente
+                            }`}
+                          >
+                            {statusLabels[apt.status] || 'Pendiente'}
+                          </span>
+                        )}
                       </td>
                       <td data-cell="acciones" className="md:px-6 md:py-3.5 text-right">
                         {/* Ir al chat de origen: solo citas agendadas desde el
@@ -3003,14 +3012,22 @@ export default function Appointments() {
                 )}
               </div>
               <div className="bg-emerald-50/50 rounded-xl p-3">
+                {/* Para el enfermero no dice nada: casi todas sus citas están
+                    «asistida» (ver la fila de la lista). */}
                 <p className="text-xs text-emerald-600 font-medium">Estado</p>
-                <span
-                  className={`px-2.5 py-1 rounded-full text-xs font-medium ${
-                    statusColors[detailModal.status] || statusColors.pendiente
-                  }`}
-                >
-                  {statusLabels[detailModal.status] || 'Pendiente'}
-                </span>
+                {isNurse ? (
+                  <p className="text-sm text-slate-400 mt-1">
+                    Se ve en las bandejas: pendiente, atendida o finalizada.
+                  </p>
+                ) : (
+                  <span
+                    className={`px-2.5 py-1 rounded-full text-xs font-medium ${
+                      statusColors[detailModal.status] || statusColors.pendiente
+                    }`}
+                  >
+                    {statusLabels[detailModal.status] || 'Pendiente'}
+                  </span>
+                )}
               </div>
               <div className="bg-emerald-50/50 rounded-xl p-3">
                 <p className="text-xs text-emerald-600 font-medium">Teléfono</p>
