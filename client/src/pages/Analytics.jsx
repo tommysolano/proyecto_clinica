@@ -297,18 +297,27 @@ export default function Analytics() {
           />
           {/* LO QUE ENTRÓ POR CITAS (sep-2026): al crear la cita, mostrador y call
               center pueden dejar anotado lo que el paciente pagó al reservarla
-              (adelanto o el total, ver AppointmentValueFields). Es dinero real
-              que la agenda generó dentro del rango, distinto del valor "en
-              juego" de las oportunidades: ese se prometió, este se cobró. */}
+              (adelanto o el total, ver AppointmentValueFields). NO es "todos los
+              pagos": es SOLO el dinero que entró al momento de crear la cita —
+              lo que se cobra después, cuando el paciente llega, va por
+              Ventas/Caja y aquí no pinta. El tooltip lo dice completo porque el
+              primer rótulo se leyó como si faltaran pagos. */}
           <Tile
             label="Cobrado al agendar"
             value={moneyShort(t.valorPagado)}
             hint={
-              t.citasConPago
-                ? `${nf.format(t.citasConPago)} de ${nf.format(t.citasCreadas)} citas con pago al crear`
-                : `${nf.format(t.citasCreadas)} citas creadas en el rango`
+              !t.citasCreadas
+                ? 'sin citas creadas en el rango'
+                : t.citasConPago === t.citasCreadas
+                  ? `las ${nf.format(t.citasCreadas)} citas pagaron al reservarse`
+                  : `${nf.format(t.citasConPago)} pagaron al reservarse · las demás se cobran cuando llegan`
             }
             color={STAGE_COLOR.ganado}
+            title={
+              'Dinero que entró AL CREARSE la cita (adelanto o total anotado al agendar). '
+              + 'No incluye lo que se cobra después en mostrador —eso va en Ventas— ni las '
+              + 'citas «pagó todo» cuyo valor quedó sin anotar (en esas no hay importe que sumar).'
+            }
           />
           <Tile
             label="Chats nuevos"
@@ -888,9 +897,9 @@ function Preset({ children, onClick, active }) {
   );
 }
 
-function Tile({ label, value, hint, color }) {
+function Tile({ label, value, hint, color, title }) {
   return (
-    <div className="bg-white border border-slate-200 rounded-2xl p-4">
+    <div className="bg-white border border-slate-200 rounded-2xl p-4" title={title}>
       <div className="flex items-center gap-1.5">
         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
         <p className="text-[11px] text-slate-500 uppercase font-semibold tracking-wide">{label}</p>
