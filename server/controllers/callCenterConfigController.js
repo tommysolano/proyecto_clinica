@@ -1085,6 +1085,85 @@ exports.refreshWhatsappAccountQuality = async (req, res) => {
 };
 
 /**
+ * POST /whatsapp/capi/reveal-token
+ *
+ * Recuperación excepcional del token de Conversions API. La configuración
+ * normal continúa devolviéndolo enmascarado: solo un administrador que confirme
+ * su contraseña actual puede descifrarlo. El secreto nunca se escribe en la
+ * auditoría y la respuesta queda marcada para que navegador/proxies no la guarden.
+ */
+exports.revealConversionsApiToken = async (req, res) => {
+  let config = null;
+  let user = null;
+
+  const auditReveal = async (success, errorMessage = '') => {
+    try {
+      await AuditLog.create({
+        clinic: req.clinicId,
+        user: req.user?._id,
+        userName: user?.name || req.user?.name || req.user?.email || '',
+        role: req.user?.isSuperAdmin ? 'super_admin' : req.role,
+        action: 'REVEAL_SECRET',
+        entity: 'CallCenterWhatsappConfig',
+        entityId: String(config?._id || ''),
+        description: 'Consulta protegida del token de Meta Conversions API',
+        method: 'POST',
+        path: req.originalUrl || '/api/call-center-config/whatsapp/capi/reveal-token',
+        ip: req.ip,
+        success,
+        errorMessage: errorMessage || undefined,
+      });
+    } catch {
+      // Una incidencia del log no debe impedir recuperar una credencial válida.
+    }
+  };
+
+  try {
+    // Defensa adicional a requireRole('admin') de la ruta.
+    if (!req.user?.isSuperAdmin && req.role !== 'admin') {
+      return res.status(403).json({ message: 'Solo un administrador puede mostrar el token' });
+    }
+
+    const currentPassword = String(req.body?.currentPassword || '');
+    if (!currentPassword) {
+      return res.status(400).json({ message: 'Ingresa tu contraseña actual para mostrar el token' });
+    }
+
+    [config, user] = await Promise.all([
+      CallCenterWhatsappConfig.getSingleton(),
+      User.findById(req.user._id).select('name email password isSuperAdmin'),
+    ]);
+
+    if (!user || !(await bcrypt.compare(currentPassword, user.password))) {
+      await auditReveal(false, 'Contraseña actual incorrecta');
+      return res.status(403).json({ message: 'La contraseña actual es incorrecta' });
+    }
+
+    const storedToken = config.conversionsApi?.accessToken || '';
+    if (!storedToken) {
+      await auditReveal(false, 'Conversions API no tiene un token guardado');
+      return res.status(404).json({ message: 'Conversions API no tiene un token guardado' });
+    }
+
+    const accessToken = decryptSecret(storedToken);
+    if (!accessToken || isEncrypted(accessToken)) {
+      await auditReveal(false, 'No fue posible descifrar el token guardado');
+      return res.status(409).json({
+        message: 'No se pudo descifrar el token guardado. Debes generar y guardar uno nuevo.',
+      });
+    }
+
+    await auditReveal(true);
+    res.setHeader('Cache-Control', 'no-store, private');
+    res.setHeader('Pragma', 'no-cache');
+    return res.json({ accessToken });
+  } catch (err) {
+    await auditReveal(false, err.message);
+    return res.status(500).json({ message: 'Error al mostrar el token CAPI', error: err.message });
+  }
+};
+
+/**
  * POST /whatsapp/capi/test — valida token/dataset/WABA y envía LeadSubmitted
  * usando un ctwa_clid real de esa WABA. Nunca prueba con datos inventados.
  */

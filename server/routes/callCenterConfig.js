@@ -33,6 +33,7 @@ router.post('/whatsapp/accounts/:id/quality', ctrl.refreshWhatsappAccountQuality
 // Diagnóstico de salud del canal (backends vivos, tokens, sesiones QR, fallidos).
 router.get('/whatsapp/diagnostics', ctrl.whatsappDiagnostics);
 router.post('/whatsapp/diagnostics/heal', ctrl.healWhatsappLinks);
+router.post('/whatsapp/capi/reveal-token', requireRole('admin'), ctrl.revealConversionsApiToken);
 router.post('/whatsapp/capi/test', ctrl.testConversionsApi);
 
 router.post('/:channel/test', ctrl.testConnection);
