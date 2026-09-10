@@ -19,8 +19,14 @@
  */
 const User = require('../models/User');
 
-/** Roles que agendan (y a los que, por tanto, se le puede acreditar una cita). */
-const ROLES_QUE_AGENDAN = ['call_center', 'admin', 'cajero'];
+/**
+ * Roles que agendan (y a los que, por tanto, se le puede acreditar una cita).
+ * MARKETING se sumó (sep-2026): agenda y cierra citas desde el chat del CRM
+ * igual que el call center —y entre ellos también se pasan la cita a mitad de
+ * conversación—, así que debe poder elegir a nombre de quién queda y aparecer
+ * en la lista para que se la acrediten a él.
+ */
+const ROLES_QUE_AGENDAN = ['call_center', 'admin', 'cajero', 'marketing'];
 
 /**
  * Resuelve la atribución de la cita.
@@ -54,7 +60,7 @@ async function resolverAgendadoPor(req, bookedById) {
   // asignación — el dato es «quién agendó», no «dónde atiende».
   const rol = otro.getRoleForClinic(req.clinicId) || otro.clinics?.[0]?.role || null;
   if (!otro.isSuperAdmin && !ROLES_QUE_AGENDAN.includes(rol)) {
-    return { ok: false, status: 400, message: 'Esa persona no agenda citas: elige a alguien de call center, caja o administración.' };
+    return { ok: false, status: 400, message: 'Esa persona no agenda citas: elige a alguien de call center, marketing, caja o administración.' };
   }
 
   return {

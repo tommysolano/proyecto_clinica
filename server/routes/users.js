@@ -27,7 +27,10 @@ router.get('/doctors', getDoctors);
  * Lo consulta quien agenda, que es exactamente quien puede acreditar la cita a
  * otra persona (ver utils/appointmentBooker.js).
  */
-router.get('/schedulers', requireRole('admin', 'cajero', 'call_center'), getSchedulers);
+// La lista de quien agenda ('ROLES_QUE_AGENDAN', ver utils/appointmentBooker.js)
+// la consumen el selector «Agendada por» y la agenda: marketing también elige a
+// nombre de quién queda su cita, así que debe poder leer la lista.
+router.get('/schedulers', requireRole('admin', 'cajero', 'call_center', 'marketing'), getSchedulers);
 // Para nombrar el turno de enfermería al asignar la atención. Lo consulta
 // recepción/caja, no solo el admin.
 router.get('/nurses', requireRole('admin', 'cajero', 'doctor', 'enfermero'), getNurses);

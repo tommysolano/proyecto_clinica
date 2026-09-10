@@ -25,8 +25,9 @@ export default function AgendadoPorSelect({ value, onChange, className = '', lab
   const { user, hasRole } = useAuth();
   const miId = String(user?.id || user?._id || '');
   // Solo quien agenda puede acreditar la cita a otro (espejo de ROLES_QUE_AGENDAN
-  // en el servidor, que devuelve 403 al resto).
-  const puedeElegir = hasRole('admin', 'cajero', 'call_center');
+  // en el servidor, que devuelve 403 al resto). Marketing agenda desde el chat
+  // igual que el call center, así que también elige.
+  const puedeElegir = hasRole('admin', 'cajero', 'call_center', 'marketing');
   const [gente, setGente] = useState([]);
 
   useEffect(() => {
