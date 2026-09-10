@@ -1443,6 +1443,8 @@ exports.addFollowUp = async (req, res) => {
                 motivo: 'El doctor terminó su parte.',
               }),
               url: urlDeAtencion(patientId, apt._id),
+              // La cita va en el aviso: al reclamarla, nurseClaim lo apaga.
+              meta: { appointment: apt._id },
             }).catch(() => {});
           }
         }
@@ -1609,6 +1611,8 @@ exports.addFollowUp = async (req, res) => {
               motivo: 'El paciente está esperando.',
             }),
             url: urlDeAtencion(patientId, apt._id),
+            // La cita va en el aviso: al reclamarla, nurseClaim lo apaga.
+            meta: { appointment: apt._id },
           }).catch(() => {});
         }
       } catch (e) {

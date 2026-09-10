@@ -548,8 +548,13 @@ export default function Appointments() {
    * Quien ATIENDE entra por «Pendientes», que es su cola. Mostrador entra por
    * «Todas»: su trabajo es la agenda entera, y abrirle una vista recortada se
    * leería como que faltan citas.
+   *
+   * LAS BANDEJAS SON DE ENFERMERÍA (sep-2026): son sub-estados de SU trabajo
+   * (nadie la ha tomado / la está atendiendo / su parte ya se cerró) y el resto
+   * de la agenda ni las ve — mostrador y administración ya llevan su propio
+   * control por estado de la cita, y los botones solo les ocupaban sitio.
    */
-  const [bandeja, setBandeja] = useState(isDoctor || isNurse ? 'pendiente' : 'todas');
+  const [bandeja, setBandeja] = useState(isNurse ? 'pendiente' : 'todas');
   // Id del que mira, para decidir su bandeja: lo que para él está pendiente es
   // lo que todavía no ha tomado, no lo que la cita diga de sí misma.
   const miId = String(user?.id || user?._id || '');
@@ -1434,6 +1439,16 @@ export default function Appointments() {
    * hacer estaría amontonado en «Atendidas», que es justo lo que se venía a
    * separar. Lo que de verdad divide su día es si la ha tomado o no.
    *
+   * SUB-ESTADOS DEL ENFERMERO (sep-2026). El estado 'asistida' NO dice si la
+   * está atendiendo — mostrador lo pone al recibirla y también nace así cuando
+   * se la nombran a una enfermera concreta. Lo que divide de verdad:
+   *
+   *   · pendiente  → le toca enfermería y NADIE la ha tomado todavía (aunque la
+   *                  hayan nombrado a ella: hay que pulsar Atender);
+   *   · atendido   → la reclamó (el reclamo sella `startedAt` en el turno) y no
+   *                  ha cerrado su parte;
+   *   · finalizado → cerró su parte (turno 'completado') o la cita terminó.
+   *
    * MOSTRADOR sí mira el estado: no atiende a nadie, lleva la agenda.
    */
   const bandejaDe = (apt) => {
@@ -1442,17 +1457,26 @@ export default function Appointments() {
     const conTurnos = (apt.turns || []).length > 0;
 
     if (isNurse) {
-      // Mismo criterio que los botones de la fila (ver `enfermeriaLibre`).
-      const libre = conTurnos
-        ? apt.currentTurnKind === 'enfermeria' && !apt.currentTurnUser
-        : !apt.attendedByNurse;
-      const mia = conTurnos
-        ? apt.currentTurnKind === 'enfermeria' && idDeCampo(apt.currentTurnUser) === miId
-        : idDeCampo(apt.attendedByNurse) === miId;
-      if (mia) return 'atendido';
-      if (libre) return 'pendiente';
-      // Su turno ya está cerrado y la cita sigue con otro profesional: lo suyo
-      // aquí terminó, aunque la cita no.
+      // Citas viejas, sin turnos: el espejo `attendedByNurse` solo se sella al
+      // reclamar, así que sigue separando bien pendientes de atendidas.
+      if (!conTurnos) {
+        return idDeCampo(apt.attendedByNurse) === miId ? 'atendido' : 'pendiente';
+      }
+      if (apt.currentTurnKind === 'enfermeria') {
+        // Es su turno: reclamado (startedAt) está en atención; nombrado sin
+        // reclamar todavía es trabajo pendiente, aunque el estado diga asistida.
+        if (idDeCampo(apt.currentTurnUser) === miId) {
+          const turno = (apt.turns || []).find(
+            (t) => t.kind === 'enfermeria' && t.status === 'pendiente'
+          );
+          return turno?.startedAt ? 'atendido' : 'pendiente';
+        }
+        // Abierta: pendiente de todos. Nombrada a OTRA: no es suya; como su
+        // bandeja no tiene dónde enseñarla, no la cuenta como pendiente.
+        return !apt.currentTurnUser ? 'pendiente' : 'finalizado';
+      }
+      // Su turno ya se cerró y la cita siguió con otro profesional (o terminó):
+      // lo suyo aquí terminó, aunque la cita no.
       return 'finalizado';
     }
 
@@ -1482,7 +1506,10 @@ export default function Appointments() {
   }, [citasFiltradas, isNurse, isDoctor, miId]);
 
   const filteredAppointments = useMemo(
-    () => (bandeja === 'todas' ? citasFiltradas : citasFiltradas.filter((a) => bandejaDe(a) === bandeja)),
+    () =>
+      (!isNurse || bandeja === 'todas')
+        ? citasFiltradas
+        : citasFiltradas.filter((a) => bandejaDe(a) === bandeja),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [citasFiltradas, bandeja, isNurse, isDoctor, miId]
   );
@@ -1695,6 +1722,11 @@ export default function Appointments() {
           {/* Los filtros de abajo se usan de vez en cuando; las citas, siempre.
               En el móvil van plegados, con el número de los que estén puestos
               para que no se queden activos sin que se vea. */}
+          {/* LOS FILTROS NO SON DEL ENFERMERO (sep-2026): su bandeja ya decide
+              qué ve, y los desplegables —que no usaba— le empujaban la lista de
+              trabajo fuera de la pantalla. Quedan el buscador y la navegación
+              del día. */}
+          {!isNurse && (
           <button
             type="button"
             onClick={() => setFiltrosAbiertos((v) => !v)}
@@ -1713,7 +1745,9 @@ export default function Appointments() {
               className={`w-4 h-4 transition-transform ${filtrosAbiertos ? 'rotate-180' : ''}`}
             />
           </button>
+          )}
 
+          {!isNurse && (
           <div
             className={`${filtrosAbiertos ? 'grid' : 'hidden'} md:grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2`}
           >
@@ -1785,10 +1819,12 @@ export default function Appointments() {
                     onChange={(e) => setFilter({ ...filter, timeTo: e.target.value })}
                     className="flex-1 min-w-0 bg-transparent border-none outline-none text-sm"
                   />
-                </label>
-              </>
-            )}
+                 </label>
+               </>
+             )}
           </div>
+          )}
+
           <div className="flex items-center justify-between text-[11px] text-slate-500">
             {/* En la lista cuenta lo que se está viendo (la bandeja abierta); en
                 el calendario, el mes entero, que es lo que se pinta. */}
@@ -1894,8 +1930,13 @@ export default function Appointments() {
         * que se decide antes de mirar las citas: primero QUÉ día y qué filtros,
         * después EN QUÉ punto están. Cada pestaña lleva su cuenta para que se
         * vea lo que hay detrás sin tener que entrar a mirar.
+        *
+        * SOLO PARA EL ENFERMERO (sep-2026): son sub-estados de SU atención
+        * («nadie la ha tomado» / «la estoy atendiendo» / «terminé mi parte») y
+        * al resto de la agenda solo le llenaban la pantalla — mostrador y
+        * administración ya llevan la agenda por el estado de la cita.
         */}
-      {view !== 'calendar' && (
+      {view !== 'calendar' && isNurse && (
         <div className="flex gap-1.5 overflow-x-auto mb-2 md:mb-3 pb-0.5">
           {BANDEJAS.map(([id, label]) => (
             <button
@@ -1998,6 +2039,19 @@ export default function Appointments() {
                   const enfermeriaMia = conTurnos
                     ? apt.currentTurnKind === 'enfermeria' && esMiTurno
                     : idDe(apt.attendedByNurse) === String(user?.id);
+                  /**
+                   * Y si su turno está RECLAMADO. El nombramiento de recepción
+                   * pone el turno a su nombre sin que ella haya tocado nada, así
+                   * que no basta con ser la dueña: mientras no haya sellado el
+                   * reclamo (`startedAt`) la cita sigue pendiente y lo que toca
+                   * pulsar es Atender, igual que las citas abiertas a todos.
+                   */
+                  const miTurnoVigente = conTurnos
+                    ? (apt.turns || []).find(
+                        (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) === String(user?.id)
+                      )
+                    : null;
+                  const reclameMiTurno = conTurnos ? (!miTurnoVigente || !!miTurnoVigente.startedAt) : true;
                   /**
                    * ¿PUEDO VOLVER A ENTRAR A CORREGIR LO QUE ESCRIBÍ?
                    *
@@ -2249,8 +2303,10 @@ export default function Appointments() {
                               Atender
                             </button>
                           )}
-                        {/* Enfermero: reclamar una cita de enfermería libre */}
-                        {isNurse && apt.status === 'asistida' && enfermeriaLibre && (
+                        {/* Enfermero: reclamar una cita libre —o nombrada a ella
+                            y que todavía no ha tomado— */}
+                        {isNurse && apt.status === 'asistida'
+                          && (enfermeriaLibre || (enfermeriaMia && !reclameMiTurno)) && (
                           <button
                             onClick={() => nurseClaim(apt)}
                             className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-700 bg-transparent border border-sky-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
@@ -2260,7 +2316,7 @@ export default function Appointments() {
                           </button>
                         )}
                         {/* Enfermero: ver la receta del paciente que ya tomó */}
-                        {isNurse && apt.status === 'asistida' && enfermeriaMia && (
+                        {isNurse && apt.status === 'asistida' && enfermeriaMia && reclameMiTurno && (
                           <button
                             onClick={() => abrirAtencion(apt)}
                             className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-700 bg-transparent border border-sky-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
@@ -2270,7 +2326,7 @@ export default function Appointments() {
                           </button>
                         )}
                         {/* Enfermero: cerrar su turno (no escribe seguimiento) */}
-                        {isNurse && apt.status === 'asistida' && enfermeriaMia && (
+                        {isNurse && apt.status === 'asistida' && enfermeriaMia && reclameMiTurno && (
                           <button
                             onClick={() => nurseFinish(apt)}
                             className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-700 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"

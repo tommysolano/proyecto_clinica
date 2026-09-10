@@ -1,6 +1,7 @@
 const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
 const Patient = require('../models/Patient');
+const Notification = require('../models/Notification');
 // Se importa aunque no se use directamente aquí: `populate('serviceItem')` falla
 // con "Schema hasn't been registered" si el modelo no se ha cargado nunca.
 require('../models/AppointmentServiceItem');
@@ -208,6 +209,20 @@ exports.getAppointments = async (req, res) => {
     } else if (clinicParam && String(clinicParam) !== String(req.clinicId)) {
       clinicScope = alcanzaSucursal(req, clinicParam) ? clinicParam : req.clinicId;
     } else {
+      clinicScope = req.clinicId;
+    }
+    /**
+     * EL ENFERMERO MIRA LA SEDE QUE ELIGIÓ AL ENTRAR (sep-2026).
+     *
+     * La persona marcada «en todas las sucursales» veía aquí las citas de
+     * enfermería de TODAS las sedes — y una bandeja mezclando Central con
+     * Extensión no se puede cuadrar: no se sabe dónde está el paciente. Ahora
+     * manda la sucursal del token, que es la que seleccionó en el login (y la
+     * que cambia desde el header); las citas de las demás ni aparecen, igual
+     * que sus avisos (ver notificarRol). Al enfermero de una sola sede no le
+     * cambia nada: ya era su sede.
+     */
+    if (req.role === 'enfermero' && req.clinicId) {
       clinicScope = req.clinicId;
     }
     const query = {};
@@ -2752,6 +2767,12 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
         // A los seguimientos del paciente, no a la agenda: el aviso ya sabe a
         // quién hay que atender y dejarlo dicho a medias obligaba a buscarlo.
         url: urlDeAtencion(apt.patient, apt._id),
+        /**
+         * DE QUÉ CITA HABLA el aviso: es lo que permite apagarlo en el momento
+         * en que un enfermero la reclama (ver nurseClaim), para que la campana
+         * no siga sonando por una cita que ya tiene quien la atienda.
+         */
+        meta: { appointment: apt._id },
       };
       if (enfermeroNombrado) {
         await notificarUsuarios([enfermeroNombrado], { clinicId, ...aviso });
@@ -2980,6 +3001,21 @@ exports.nurseClaim = async (req, res) => {
     // A los demás enfermeros les desaparece de la bandeja en el momento, sin
     // recargar: es lo que evita que dos vayan a por el mismo paciente.
     emitToRole(apt.clinic, 'enfermero', 'appointment:claimed', populated);
+    /**
+     * EL AVISO SE APAGA CUANDO YA HAY QUIEN ATIENDE.
+     *
+     * La campana de enfermería seguía cantando «Cita para enfermería» por una
+     * cita que otro compañero ya estaba atendiendo — y el aviso, que era una
+     * tarea pendiente, ya no lo era. Se quitan TODAS las notificaciones de esa
+     * cita (la de todos los enfermeros a quienes salió): el paciente ya está
+     * en manos de alguien y no hay nada más que avisar.
+     */
+    await Notification.deleteMany({
+      type: 'appointment_nursing',
+      'meta.appointment': apt._id,
+    }).catch((err) => {
+      console.warn('[citas] no se pudieron apagar los avisos de la cita:', err.message);
+    });
     res.json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al reclamar la cita', error: error.message });
@@ -3088,6 +3124,7 @@ exports.nurseComplete = async (req, res) => {
           title: 'Cita para enfermería',
           body: cuerpo,
           url: urlDeAtencion(apt.patient, apt._id),
+          meta: { appointment: apt._id },
         }).catch(() => {});
       }
     }

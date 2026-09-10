@@ -199,12 +199,26 @@ async function citaDeEnfermeria(sede, dueño = null) {
   });
 }
 
-test('T9) la enfermera que rota ve en su agenda la cita de la OTRA sucursal', async () => {
+/**
+ * LA SEDE QUE ELIGIÓ AL ENTRAR MANDA (sep-2026, a petición de la clínica).
+ *
+ * «En todas las sucursales» seguía significando «ve la bandeja de enfermería de
+ * todas» — y una agenda que mezcla Central con Extensión no se puede cuadrar:
+ * no se sabe dónde está el paciente ni a cuál ir. Ahora la agenda del enfermero
+ * va por la sucursal del token, que es la que eligió al entrar (y la que cambia
+ * desde el header). Las de las demás ni aparecen; sus avisos tampoco
+ * (ver pushNotifications.notificarRol).
+ *
+ * Abrir UNA cita de la otra sede sigue valiendo (T12): el aviso viejo y el
+ * botón de terminar su parte viven ahí, y bloquearlos dejaría atención a medias.
+ */
+test('T9) la enfermera que rota ve SOLO las citas de la sede que eligió', async () => {
   const { central, extension, enfRotativa } = await seed();
-  const suya = await citaDeEnfermeria(extension, enfRotativa._id);
+  const enCentral = await citaDeEnfermeria(central, enfRotativa._id);
+  await citaDeEnfermeria(extension, enfRotativa._id); // de la otra sede: fuera
 
   const agenda = await agendaDe(enfRotativa, central);
-  assert.deepEqual(agenda, [String(suya._id)], 'su sede activa es Central y la cita es de Extensión');
+  assert.deepEqual(agenda, [String(enCentral._id)], 'su sede activa es Central y ahí se queda');
 });
 
 test('T10) la enfermera de una sola sede sigue viendo solo la suya', async () => {

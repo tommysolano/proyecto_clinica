@@ -140,3 +140,64 @@ test('mostrador receta un suero: el aviso trae paciente y suero, y abre su ficha
   assertAvisoUtil(aviso, { cita: cita._id, patientId: patient._id });
   assert.match(aviso.body, /Suero vitamina C/, 'dice QUÉ hay que poner');
 });
+
+// ─────────── La sede que eligió, y el aviso que se apaga ───────────
+
+const push = require('../utils/pushNotifications');
+
+test('T-avisos) el aviso dice de QUÉ cita es, y al reclamarla se apaga', async () => {
+  const { clinicId, patient, cajero, enfermera } = await seed();
+
+  const cita = await Appointment.create({
+    clinic: clinicId, patient: patient._id, date: new Date(),
+    startTime: '14:28', status: 'pendiente', serviceName: 'Sueroterapia',
+    createdBy: cajero._id,
+  });
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, cajero._id, { steps: [{ kind: 'enfermeria', serviceName: 'Sueroterapia' }] },
+      { role: 'cajero', params: { id: String(cita._id) } }),
+  );
+  const aviso = await avisoEnfermeria();
+  assert.equal(String(aviso.meta?.appointment || ''), String(cita._id), 'el aviso identifica su cita');
+
+  // Y al reclamarla, TODOS los avisos de esa cita se van de las campanas.
+  const r = await H.runController(appt.nurseClaim, H.mockReq(clinicId, enfermera._id, {},
+    { role: 'enfermero', params: { id: String(cita._id) } }));
+  assert.ok(r.statusCode < 400, JSON.stringify(r.payload));
+  const quedan = await Notification.countDocuments({ type: 'appointment_nursing', 'meta.appointment': cita._id });
+  assert.equal(quedan, 0, 'el paciente ya tiene quien lo atienda: la campana se calla');
+});
+
+test('T-avisos) la enfermera «en todas» solo recibe avisos de la sede que eligió', async () => {
+  const { clinicId: central, userId } = await H.seedClinic();
+  const Clinic = require('../models/Clinic');
+  await Clinic.create({ _id: central, name: 'Central' });
+  const extension = (await Clinic.create({ name: 'Extension' }))._id;
+
+  const rotativa = await User.create({
+    name: 'EnfRota', email: 'rota@t.com', password: 'secreto123',
+    clinics: [{ clinic: central, role: 'enfermero' }],
+    worksInAllClinics: true,
+    // Su sesión está puesta en Central: es donde está trabajando.
+    activeClinicId: central,
+  });
+
+  await push.notificarRol(extension, 'enfermero', {
+    type: 'appointment_nursing', title: 'Cita para enfermería', body: 'x', url: '/x',
+  });
+  assert.equal(
+    await Notification.countDocuments({ user: rotativa._id }),
+    0,
+    'trabaja en Central: el aviso de Extensión no le suena'
+  );
+
+  await push.notificarRol(central, 'enfermero', {
+    type: 'appointment_nursing', title: 'Cita para enfermería', body: 'x', url: '/x',
+  });
+  assert.equal(
+    await Notification.countDocuments({ user: rotativa._id }),
+    1,
+    'de SU sede sí se entera'
+  );
+});

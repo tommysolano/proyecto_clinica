@@ -90,6 +90,16 @@ export default function NotificationBell() {
   // siempre por el early-return, dejando el aviso en vivo muerto.
   useSocketEvent('notification:new', load, [clinicId]);
 
+  /**
+   * CUANDO UN COMPAÑERO RECLAMA UNA CITA, EL AVISO SE APAGA EN EL MOMENTO.
+   *
+   * El servidor borra las notificaciones «Cita para enfermería» de esa cita al
+   * ser reclamada (ver nurseClaim) y avisa por este evento: sin esto, la campana
+   * seguiría sonando por un paciente que ya está en manos de otro hasta el
+   * sondeo de respaldo (3 min).
+   */
+  useSocketEvent('appointment:claimed', load, [clinicId]);
+
   // Cerrar al hacer clic fuera o con Escape (mismo comportamiento que el resto
   // de menús flotantes de la app).
   useEffect(() => {

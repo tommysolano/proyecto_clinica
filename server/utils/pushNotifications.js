@@ -150,9 +150,29 @@ async function notificarRol(clinicId, role, datos) {
     ...User.enSucursal(clinicId, role),
     active: { $ne: false },
   })
-    .select('_id')
+    .select('_id worksInAllClinics activeClinicId')
     .lean();
-  const ids = usuarios.map((u) => u._id);
+  /**
+   * ENFERMERÍA SOLO SE ENTERA DE SU SEDE (sep-2026).
+   *
+   * «Trabaja en todas las sucursales» ya no significa «le suena el móvil de
+   * todas»: significa que atiende HOY en la que eligió al entrar
+   * (`User.activeClinicId`, escrita en /auth/select-clinic). Enviarle avisos de
+   * las demás era la mitad de la campana llena de citas que no podía ver — la
+   * agenda de enfermería está filtrada por su sede activa, y un aviso de una
+   * cita que no sale en su lista solo genera confusión.
+   *
+   * Al resto de roles no le cambia nada: el doctor que rota entre sedes sigue
+   * enterándose de todo, que es lo que ese check prometía.
+   */
+  const ids = usuarios
+    .filter(
+      (u) =>
+        role !== 'enfermero' ||
+        !u.worksInAllClinics ||
+        String(u.activeClinicId || '') === String(clinicId)
+    )
+    .map((u) => u._id);
   emitToRole(clinicId, role, 'notification:new', { ...datos });
   await notificarUsuarios(ids, { ...datos, clinicId });
 }

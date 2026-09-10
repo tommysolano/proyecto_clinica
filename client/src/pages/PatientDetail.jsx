@@ -379,6 +379,17 @@ export default function PatientDetail() {
       ? aptData.currentTurnKind === 'enfermeria' && idDe(aptData.currentTurnUser) === miId
       : idDe(aptData.attendedByNurse) === miId
   );
+  /**
+   * Y si su turno está RECLAMADO (el reclamo sella `startedAt`). Recepción puede
+   * haberle nombrado la cita sin que ella toque nada: mientras no la tome, lo
+   * que toca es el mismo botón de siempre — «La atiendo yo» —, no Terminar.
+   */
+  const miTurnoVigente = enTramite && (aptData.turns || []).length
+    ? (aptData.turns || []).find(
+        (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) === miId
+      )
+    : null;
+  const reclameMiTurno = (aptData.turns || []).length ? (!miTurnoVigente || !!miTurnoVigente.startedAt) : true;
   const [reclamando, setReclamando] = useState(false);
   const [cerrandoTurno, setCerrandoTurno] = useState(false);
   /**
@@ -488,7 +499,7 @@ export default function PatientDetail() {
         <div className="sticky top-0 z-30 mb-2 sm:mb-4">
           <div
             className={`flex flex-wrap items-center justify-between gap-2 border text-xs sm:text-sm rounded-xl px-3 py-2 shadow-md ${
-              enfermeriaLibre
+              enfermeriaLibre || !reclameMiTurno
                 ? 'bg-amber-50 border-amber-200 text-amber-900'
                 : 'bg-sky-50 border-sky-200 text-sky-900'
             }`}
@@ -496,9 +507,11 @@ export default function PatientDetail() {
             <span>
               {enfermeriaLibre
                 ? 'Esta atención todavía no la ha tomado nadie. Tómala para que tus compañeros sepan que vas tú.'
-                : 'Estás atendiendo esta cita. Cuando acabes de aplicar lo indicado, cierra tu parte.'}
+                : !reclameMiTurno
+                  ? 'Esta atención se te asignó, pero todavía no la tomaste. Tómala para que tus compañeros sepan que vas tú.'
+                  : 'Estás atendiendo esta cita. Cuando acabes de aplicar lo indicado, cierra tu parte.'}
             </span>
-            {enfermeriaLibre ? (
+            {enfermeriaLibre || !reclameMiTurno ? (
               <button
                 type="button"
                 onClick={reclamarTurno}

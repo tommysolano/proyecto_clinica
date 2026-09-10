@@ -68,18 +68,19 @@ function init(httpServer) {
     if (role) socket.join(`clinic:${clinicId}:role:${role}`);
 
     /**
-     * QUIEN ROTA ENTRE SEDES ESCUCHA LAS DE TODAS.
+     * QUIEN ROTA ENTRE SEDES ESCUCHA LAS DE TODAS… menos el ENFERMERO.
      *
-     * `worksInAllClinics` ya le da las citas de cualquier sucursal en la agenda
-     * (ver `sucursalesVisibles`) y los avisos al móvil (`User.enSucursal`), pero
-     * el socket solo lo metía en la sala de su sede ACTIVA: la cita que le
-     * asignaban en la otra no aparecía sola en pantalla, solo al recargar. Con la
-     * enfermera que cubre dos sedes eso es la mitad de su día llegando tarde.
+     * `worksInAllClinics` le da las citas de cualquier sucursal en la agenda y
+     * los avisos al móvil (`User.enSucursal`), pero el socket solo lo metía en
+     * la sala de su sede ACTIVA: la cita que le asignaban en la otra no
+     * aparecía sola en pantalla, solo al recargar.
      *
-     * Se une a la sala de cada sucursal activa y a la de su rol en cada una, que
-     * son las dos por las que se emite (`emitToClinic` y `emitToRole`).
+     * El ENFERMERO se sale de esa regla (sep-2026): su agenda está filtrada por
+     * la sede que eligió al entrar (ver getAppointments), así que escuchar las
+     * demás solo le trae eventos —y avisos de campana— de citas que no verá.
+     * Cambia de sede en el header, el socket se reconecta y salta de sala.
      */
-    if (user.worksInAllClinics) {
+    if (user.worksInAllClinics && role !== 'enfermero') {
       require('./models/Clinic')
         .find({ active: { $ne: false } })
         .select('_id')

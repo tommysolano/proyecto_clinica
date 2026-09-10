@@ -77,6 +77,18 @@ const userSchema = new mongoose.Schema(
      * nueva — que es exactamente el trabajo que este check viene a quitar.
      */
     worksInAllClinics: { type: Boolean, default: false },
+    /**
+     * LA ÚLTIMA SEDE QUE ELIGIÓ AL ENTRAR (sep-2026).
+     *
+     * Para el personal «en todas las sucursales» esta es la sede en la que
+     * está trabajando AHORA: la agenda solo le enseña las citas de aquí y los
+     * avisos de las otras sedes no le llegan (ver notificarRol, filtro de
+     * enfermería en getAppointments y el relevo de salas en realtime.js). Se
+     * escribe en /auth/select-clinic, la misma puerta por la que el token lleva
+     * clinicId — el servidor no sabe la sucursal activa de nadie, y esta es su
+     * copia.
+     */
+    activeClinicId: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', default: null },
     specialty: { type: String, trim: true },
     phone: { type: String, trim: true },
     cedula: { type: String, trim: true },

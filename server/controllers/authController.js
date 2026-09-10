@@ -217,6 +217,19 @@ exports.selectClinic = async (req, res) => {
 
     const token = signToken({ id: user._id, clinicId, role });
 
+    /**
+     * LA ÚLTIMA SEDE ELEGIDA QUEDA ESCRITA en el usuario: es lo que permite a
+     * las notificaciones saber en qué sucursal está trabajando cada quien SIN
+     * preguntarle a nadie (ver User.activeClinicId). Se guarda solo si cambió,
+     * que es el caso normal y evita escrituras en cada refresco de página.
+     */
+    if (String(user.activeClinicId || '') !== String(clinicId)) {
+      user.activeClinicId = clinicId;
+      await user.save().catch((err) => {
+        console.warn('[auth] no se pudo guardar la sucursal activa:', err.message);
+      });
+    }
+
     res.json({
       token,
       user: buildPublicUser(user, clinic, role),
