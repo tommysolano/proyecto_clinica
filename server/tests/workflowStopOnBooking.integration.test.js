@@ -19,6 +19,9 @@ const WorkflowEnrollment = require('../models/WorkflowEnrollment');
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
+// Los casos nuevos pasan por el BUS de eventos de dominio (la red de seguridad
+// por APPOINTMENT_CREATED), así que el motor tiene que estar suscrito.
+test.before(() => { engine.subscribeDomainEvents(); });
 
 const TEL = '593999111222';
 
@@ -125,4 +128,95 @@ test('solo toca al contacto que agendó', async () => {
 
   assert.equal((await agenda(data)).cancelled, 1);
   assert.equal((await WorkflowEnrollment.findById(ajena._id)).status, 'waiting');
+});
+
+// ─────────── sep-2026: los que ya agendaron no reciben nada ───────────
+//
+// Lo reportó la clínica: el call center agendó DESDE LA AGENDA y la promoción
+// siguió mandando "¿te gustaría agendar?" a gente que ya tenía cita. La parada
+// dependía del cambio de etapa a 'agendado', que al agendar desde la agenda la
+// escribe un listener asíncrono que puede saltárselo (chat sin oportunidad,
+// etapa ya agendada o cerrada). Ahora el evento de la CITA hace de red de
+// seguridad, y la etapa se escribe en el mismo request.
+
+const appt = require('../controllers/appointmentController');
+const Patient = require('../models/Patient');
+const events = require('../utils/events');
+
+/** Deja pasar los handlers asíncronos del bus (setImmediate + consultas). */
+const dejarPasar = (ms = 250) => new Promise((r) => setTimeout(r, ms));
+
+test('la promoción muere aunque la etapa no se mueva: la cita es la red de seguridad', async () => {
+  // Chat SIN oportunidad (el caso que el listener de etapa se salta a propósito).
+  // El paciente que nace con la cita lleva el teléfono del contacto: es la
+  // identidad por la que la parada encuentra a la promo del chat.
+  const data = await seed();
+  const patient = await Patient.create({
+    clinic: data.clinicId, firstName: 'Rosa', lastName: 'L', phone: TEL,
+  });
+
+  const { emitDomainEvent, DOMAIN_EVENTS } = events;
+  emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CREATED, {
+    clinicId: String(data.clinicId),
+    patientId: String(patient._id),
+    appointmentId: String(new mongoose.Types.ObjectId()),
+  });
+  await dejarPasar();
+
+  const enr = await WorkflowEnrollment.findById(data.enr._id);
+  assert.equal(enr.status, 'cancelled', 'agendó una cita: nada pendiente de la promoción');
+});
+
+test('un recordatorio de OTRA cita sobrevive al nuevo agendamiento', async () => {
+  const data = await seed();
+  // Además de la promo, este contacto tiene el recordatorio 24 h de una cita
+  // que agendó la semana pasada: agendar HOY no tiene por qué matarlo.
+  const recordatorio = await WorkflowEnrollment.create({
+    clinic: data.clinicId,
+    workflow: data.wf._id,
+    conversation: data.conv._id,
+    currentNodeId: 'msg',
+    status: 'waiting',
+    nextRunAt: new Date(Date.now() + 3600e3),
+    context: { phone: TEL, appointmentId: String(new mongoose.Types.ObjectId()), eventType: 'appointment_created' },
+  });
+  await backdate(recordatorio._id, 3600e3);
+
+  // La cita nueva lleva su id: la parada distingue "lo que cuelga de esta cita"
+  // de los recordatorios de las citas anteriores del mismo contacto.
+  const { cancelled } = await engine.cancelEnrollmentsOnBooking({
+    clinicId: String(data.clinicId),
+    conversationId: String(data.conv._id),
+    phone: TEL,
+    stage: 'agendado',
+    appointmentId: String(new mongoose.Types.ObjectId()),
+  });
+  assert.equal(cancelled, 1, 'muere la promo; nada más');
+  assert.equal((await WorkflowEnrollment.findById(recordatorio._id)).status, 'waiting', 'el recordatorio de la otra cita sigue');
+});
+
+test('la etapa "agendado" queda escrita ANTES de que corran los flujos del evento', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const Clinic = require('../models/Clinic');
+  await Clinic.create({ _id: clinicId, name: 'Central' });
+  const patient = await Patient.create({ clinic: clinicId, firstName: 'Leo', lastName: 'M', phone: '0995554444' });
+  const conv = await Conversation.create({
+    clinic: clinicId, phone: '593995554444', channel: 'whatsapp', patient: patient._id,
+    opportunities: [{ isOpportunity: true, stage: 'interesado' }],
+  });
+
+  const d = new Date(); d.setDate(d.getDate() + 1);
+  const req = H.mockReq(clinicId, userId, {
+    patient: String(patient._id), date: d.toISOString().slice(0, 10), startTime: '10:00',
+  }, { role: 'call_center' });
+  req.user.name = 'Call';
+  const r = await H.runController(appt.createAppointment, req);
+  assert.ok(r.statusCode < 400, JSON.stringify(r.payload));
+
+  // SIN esperar nada: el guardado del controlador ya movió la etapa. Un flujo
+  // con condición "de acuerdo a la etapa" inscrito por este mismo evento lee
+  // 'agendado', no la etapa en la que estaba el lead.
+  const trasGuardar = await Conversation.findById(conv._id).lean();
+  const etapas = (trasGuardar.opportunities || []).map((o) => o.stage);
+  assert.ok(etapas.includes('agendado'), `la etapa ya está escrita: ${etapas}`);
 });

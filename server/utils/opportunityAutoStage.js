@@ -62,7 +62,9 @@ async function markScheduled(payload = {}) {
     /* realtime opcional */
   }
   // Mismo evento de dominio que mover la etapa a mano: los flujos "cuando entra a
-  // la etapa agendado" se disparan igual venga la cita de donde venga.
+  // la etapa agendado" se disparan igual venga la cita de donde venga. La cita va
+  // en el payload para que la parada de promociones distinga los recordatorios de
+  // esta cita de los de las que el paciente ya tenía.
   try {
     require('./events').emitDomainEvent(DOMAIN_EVENTS.OPPORTUNITY_STAGE_CHANGED, {
       clinicId: String(conv.clinic),
@@ -70,6 +72,7 @@ async function markScheduled(payload = {}) {
       patientId: String(patientId),
       phone: conv.phone || '',
       stage: 'agendado',
+      appointmentId: appointmentId ? String(appointmentId) : null,
     });
   } catch {
     /* la emisión nunca debe romper el guardado */

@@ -1037,6 +1037,27 @@ exports.createAppointment = async (req, res) => {
     if (populated.doctor?._id) {
       emitToUser(populated.doctor._id, 'appointment:created', populated);
     }
+    /**
+     * LA ETAPA "AGENDADO" SE ESCRIBE AQUÍ, ANTES del evento de la cita (sep-2026).
+     *
+     * Antes iba en un listener asíncrono, y los workflows que este mismo evento
+     * inscribe arrancaban ANTES de que la etapa estuviera guardada: un flujo con
+     * condición "de acuerdo a la etapa" leía 'interesado' y mandaba el mensaje
+     * de la etapa vieja a alguien que ya tenía la cita en la agenda. La lógica y
+     * sus reglas conservadoras viven en `opportunityAutoStage` — y el listener
+     * sigue existiendo para las demás puertas (reserva online, atención sin
+     * cita), donde aquí ya no hace nada porque la etapa ya coincide.
+     */
+    try {
+      const { markScheduled } = require('../utils/opportunityAutoStage');
+      await markScheduled({
+        patientId: String(populated.patient?._id || appointment.patient),
+        clinicId: String(targetClinicId),
+        appointmentId: String(appointment._id),
+      });
+    } catch (e) {
+      console.warn('No se pudo mover la oportunidad a agendado al crear la cita:', e.message);
+    }
     emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CREATED, appointmentEventPayload(populated));
 
     // `autoSerum` lo lee la pantalla para avisar de que el suero ya quedó

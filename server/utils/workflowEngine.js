@@ -2892,7 +2892,19 @@ const JUST_ENROLLED_MS = 60 * 1000;
 async function cancelEnrollmentsOnBooking(payload = {}) {
   const stage = String(payload.stage || '').trim();
   if (!BOOKED_STAGES.has(stage)) return { cancelled: 0 };
-  const phone = payload.phone ? messaging.normalizePhone(payload.phone) : '';
+  /**
+   * EL TELÉFONO SE RESUELVE DEL PACIENTE si el evento no lo trae: al agendar
+   * desde la agenda el payload lleva patientId pero no phone, y las promociones
+   * de un contacto sin paciente enlazado solo se identifican por su teléfono.
+   */
+  let phone = payload.phone ? messaging.normalizePhone(payload.phone) : '';
+  if (!phone && payload.patientId) {
+    const p = await Patient.findById(payload.patientId)
+      .select('phone whatsapp')
+      .lean()
+      .catch(() => null);
+    if (p) phone = messaging.normalizePhone(p.whatsapp || p.phone || '');
+  }
   const identity = [
     payload.conversationId ? { conversation: payload.conversationId } : null,
     payload.patientId ? { patient: payload.patientId } : null,
@@ -2914,12 +2926,22 @@ async function cancelEnrollmentsOnBooking(payload = {}) {
       .lean()
     ).map((w) => String(w._id))
   );
+  // Y los que cuelgan de OTRA cita (sep-2026): los recordatorios de la cita que
+  // el paciente ya tenía no se tocan porque agende una segunda. Son flujos de
+  // cita, no promociones — su muerte lo maneja la cancelación/reagendación de
+  // SU cita (ver cancelWaitingEnrollmentsForAppointment).
+  const citaDelEvento = payload.appointmentId ? String(payload.appointmentId) : null;
 
   let cancelled = 0;
   for (const enrollment of enrollments) {
     if (excluidos.has(String(enrollment.workflow))) continue;
     // La inscripción que nació de ESTA etapa (flujo "cuando agenda → …") se queda.
     if (String(enrollment.context?.stage || '') === stage) continue;
+    if (
+      citaDelEvento
+      && enrollment.context?.appointmentId
+      && String(enrollment.context.appointmentId) !== citaDelEvento
+    ) continue;
     enrollment.status = 'cancelled';
     enrollment.waitingForReply = false;
     pushLog(enrollment, {
@@ -2985,6 +3007,18 @@ function subscribeDomainEvents() {
   // con la fecha vieja ni deje esperas huérfanas.
   onDomainEvent(DOMAIN_EVENTS.APPOINTMENT_RESCHEDULED, (payload) => syncEnrollmentsForAppointment(payload));
   onDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CANCELLED, (payload) => cancelWaitingEnrollmentsForAppointment(payload));
+  /**
+   * EL AGENDAMIENTO DETIENE LAS PROMOCIONES VIVAS, venga la cita de donde venga
+   * (sep-2026, a petición de la clínica). Hasta ahora la parada dependía del
+   * cambio de etapa a 'agendado', que al agendar desde la AGENDA la escribe un
+   * listener asíncrono que puede saltárselo (chat sin oportunidad, oportunidad
+   * ya agendada o cerrada): la promoción quedaba viva y el paciente —que ya
+   * tiene cita— seguía recibiendo el "¿te gustaría agendar?". El evento de la
+   * cita SIEMPRE se emite, y aquí hace de red de seguridad; el caso del chat
+   * queda duplicado pero la segunda pasada ya no encuentra nada vivo.
+   */
+  onDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CREATED, (payload) =>
+    cancelEnrollmentsOnBooking({ ...payload, stage: 'agendado' }));
   const map = {
     [DOMAIN_EVENTS.APPOINTMENT_CREATED]: 'appointment_created',
     [DOMAIN_EVENTS.APPOINTMENT_ATTENDED]: 'appointment_attended',
