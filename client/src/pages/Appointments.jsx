@@ -39,6 +39,7 @@ import {
   HiOutlineBeaker,
   HiOutlinePaperAirplane,
   HiOutlineArrowDownTray,
+  HiOutlineBanknotes,
   HiOutlineChatBubbleLeftRight,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
@@ -2312,6 +2313,20 @@ export default function Appointments() {
                               Atender
                             </button>
                           )}
+                        {/* Cobrar la cita en VENTAS (sep-2026): la venta nace
+                            ya enlazada a la cita (Sale.appointment), que es lo
+                            que permite a Analíticas sumar TODO lo que el
+                            paciente pagó — el abono al reservar y lo cobrado
+                            aquí en mostrador. */}
+                        {canCharge && ['asistida', 'completada'].includes(apt.status) && (
+                          <button
+                            onClick={() => navigate(`/sales?cita=${apt._id}`)}
+                            className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-700 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
+                            title="Cobrar esta cita en Ventas: la venta queda enlazada a la cita"
+                          >
+                            <HiOutlineBanknotes className="w-4 h-4" />
+                          </button>
+                        )}
                         {/* Enfermero: reclamar una cita libre —o nombrada a ella
                             y que todavía no ha tomado— */}
                         {isNurse && apt.status === 'asistida'

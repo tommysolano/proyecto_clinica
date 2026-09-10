@@ -513,28 +513,60 @@ test('«Agendadas» cuenta por ENTRADA a la etapa: un lead viejo agendado HOY cu
   assert.equal(payload.totals.valorAgendado, 250);
 });
 
-test('«Cobrado al agendar» suma lo que el paciente pagó al crear sus citas del rango', async () => {
+test('«Pagado por pacientes» suma el abono, la venta ligada a la cita y sus cobros posteriores', async () => {
   const clinic = await Clinic.create({ name: 'Principal' });
   const Appointment = require('../models/Appointment');
   const Patient = require('../models/Patient');
+  const Sale = require('../models/Sale');
+  const Payment = require('../models/Payment');
   const patient = await Patient.create({ clinic: clinic._id, firstName: 'Ana', lastName: 'L' });
-  await Appointment.insertMany([
-    { clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '10:00', advancePayment: 'abono', advanceAmount: 50, createdAt: hace(1) },
-    { clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '11:00', advancePayment: 'total', advanceAmount: 90, createdAt: hace(1) },
-    // Canje: no entró dinero.
-    { clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '12:00', isCanje: true, advanceAmount: 0, createdAt: hace(1) },
-    // Sin pago anotado todavía.
-    { clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '13:00', createdAt: hace(1) },
-    // De otra sede: fuera.
-    { clinic: (await Clinic.create({ name: 'Otra' }))._id, patient: patient._id, date: hace(1), startTime: '14:00', advanceAmount: 999, createdAt: hace(1) },
-    // Del rango de las oportunidades pero la cita es de hace 100 días: fuera.
-    { clinic: clinic._id, patient: patient._id, date: hace(100), startTime: '15:00', advanceAmount: 999, createdAt: hace(100) },
-  ]);
+
+  const citaHoy = await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '10:00',
+    // La cita va por SU fecha: nació hace 10 días pero es una cita del rango.
+    createdAt: hace(10), advancePayment: 'abono', advanceAmount: 20, agreedValue: 45,
+  });
+  const citaOtra = await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '11:00', createdAt: hace(1),
+  });
+  // El mostrador cobra el restante en una venta ENLAZADA a la cita.
+  const venta = await Sale.create({
+    clinic: clinic._id, patient: patient._id, appointment: citaHoy._id,
+    items: [], subtotal: 25, taxAmount: 0, total: 25, status: 'completada',
+    payments: [{ method: 'efectivo', amount: 25 }],
+  });
+  // Y una parte a crédito la saldó después: cobro aplicado sobre ESA venta.
+  await Payment.create({
+    clinic: clinic._id, type: 'COBRO', number: 'C-1', date: new Date(),
+    partyModel: 'Patient', partyRef: patient._id, method: 'EFECTIVO',
+    total: 10, appliedAmount: 10,
+    applications: [{ docModel: 'Sale', docRef: venta._id, amount: 10 }],
+  });
+  // La cita de hace 100 días NO entra (la cuenta va por la fecha de la cita,
+  // aunque se haya creado dentro del rango).
+  await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: hace(100), startTime: '09:00',
+    advanceAmount: 999, createdAt: hace(1),
+  });
+  // Venta ANULADA de otra cita: no cuenta.
+  await Sale.create({
+    clinic: clinic._id, patient: patient._id, appointment: citaOtra._id,
+    items: [], subtotal: 999, taxAmount: 0, total: 999, status: 'anulada',
+    payments: [{ method: 'efectivo', amount: 999 }],
+  });
+  // Venta ligada a una cita de OTRA sede: fuera.
+  await Sale.create({
+    clinic: (await Clinic.create({ name: 'Otra' }))._id, patient: patient._id,
+    appointment: citaHoy._id, items: [], subtotal: 999, taxAmount: 0, total: 999,
+    status: 'completada', payments: [{ method: 'efectivo', amount: 999 }],
+  });
 
   const { payload } = await pedir(clinic._id, rango);
-  assert.equal(payload.totals.valorPagado, 140);
-  assert.equal(payload.totals.citasCreadas, 4, 'las citas del rango de ESTA sede');
-  assert.equal(payload.totals.citasConPago, 2, 'las que dejaron dinero anotado');
+  assert.equal(payload.totals.citasCreadas, 2, 'las citas del rango de esta sede');
+  assert.equal(payload.totals.valorPagadoAlCrear, 20, 'lo abonado al reservar');
+  assert.equal(payload.totals.valorPagadoMostrador, 35, 'lo cobrado en mostrador: 25 de la venta + 10 del cobro posterior');
+  assert.equal(payload.totals.valorPagado, 55);
+  assert.equal(payload.totals.citasConPago, 1, 'solo la de 10:00: la venta ligada a la de 11:00 está ANULADA y no cuenta');
 });
 
 test('la tabla de oportunidades avisa y trae hasta 100 nombres, no 15', async () => {

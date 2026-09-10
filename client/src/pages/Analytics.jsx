@@ -88,7 +88,7 @@ const EMPTY = {
   totals: {
     chats: 0, oportunidades: 0, agendadas: 0, ganadas: 0, perdidas: 0, enCurso: 0, anuncios: 0,
     valorTotal: 0, valorGanado: 0, valorAgendado: 0, tasaAgendamiento: 0, tasaCierre: 0,
-    valorPagado: 0, citasCreadas: 0, citasConPago: 0,
+    valorPagado: 0, valorPagadoAlCrear: 0, valorPagadoMostrador: 0, citasCreadas: 0, citasConPago: 0,
   },
   embudo: [], serie: [], porOportunidad: [], porAnuncio: [], porCanal: [], porAgente: [], servicios: [], motivosPerdida: [],
 };
@@ -295,28 +295,25 @@ export default function Analytics() {
             hint={`de las ${nf.format(t.agendadas)} agendadas`}
             color={STAGE_COLOR.agendado}
           />
-          {/* LO QUE ENTRÓ POR CITAS (sep-2026): al crear la cita, mostrador y call
-              center pueden dejar anotado lo que el paciente pagó al reservarla
-              (adelanto o el total, ver AppointmentValueFields). NO es "todos los
-              pagos": es SOLO el dinero que entró al momento de crear la cita —
-              lo que se cobra después, cuando el paciente llega, va por
-              Ventas/Caja y aquí no pinta. El tooltip lo dice completo porque el
-              primer rótulo se leyó como si faltaran pagos. */}
+          {/* TODO LO QUE PAGARON LOS PACIENTES DE LAS CITAS DEL RANGO (sep-2026).
+              Suma dos lados: lo anotado al crear la cita (abono o total al
+              reservar) y lo cobrado en mostrador EN VENTAS LIGADAS A LA CITA
+              (el botón «Cobrar cita» de la agenda — sin ese enlace, un cobro de
+              mostrador no se puede atribuir a ninguna cita). Las citas van por
+              SU FECHA: es lo mismo que se ve en la agenda del rango. */}
           <Tile
-            label="Cobrado al agendar"
+            label="Pagado por pacientes"
             value={moneyShort(t.valorPagado)}
             hint={
               !t.citasCreadas
-                ? 'sin citas creadas en el rango'
-                : t.citasConPago === t.citasCreadas
-                  ? `las ${nf.format(t.citasCreadas)} citas pagaron al reservarse`
-                  : `${nf.format(t.citasConPago)} pagaron al reservarse · las demás se cobran cuando llegan`
+                ? 'sin citas en el rango'
+                : `${nf.format(t.citasConPago)} de ${nf.format(t.citasCreadas)} citas con pago`
             }
             color={STAGE_COLOR.ganado}
             title={
-              'Dinero que entró AL CREARSE la cita (adelanto o total anotado al agendar). '
-              + 'No incluye lo que se cobra después en mostrador —eso va en Ventas— ni las '
-              + 'citas «pagó todo» cuyo valor quedó sin anotar (en esas no hay importe que sumar).'
+              `Total pagado por los pacientes de las citas del rango: $${Number(t.valorPagado || 0).toFixed(2)}. `
+              + `Al reservar la cita: $${Number(t.valorPagadoAlCrear || 0).toFixed(2)}. `
+              + `Cobrado en mostrador (ventas enlazadas a la cita): $${Number(t.valorPagadoMostrador || 0).toFixed(2)}.`
             }
           />
           <Tile

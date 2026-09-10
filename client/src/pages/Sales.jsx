@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../api/axios';
 import Modal from '../components/Modal';
 import { downloadFile } from '../utils/download';
@@ -164,6 +165,10 @@ export default function Sales() {
     dueDate: '',
     recommendedBy: '',
     notes: '',
+    // CITA que se está cobrando (deep-link desde la agenda, «Cobrar cita»).
+    // Va en el cuerpo de la venta y queda en `Sale.appointment`: es lo que
+    // permite a Analíticas sumar lo cobrado en mostrador por cada cita.
+    appointment: null,
     // Bodega de la que sale la mercadería y centro de costo con el que se registra la venta.
     // El centro lo PROPONE la bodega; se puede cambiar confirmando la diferencia.
     warehouse: '',
@@ -324,6 +329,7 @@ export default function Sales() {
       dueDate: '',
       recommendedBy: '',
       notes: '',
+      appointment: null,
       warehouse: '',
       costCenter: '',
       items: [],
@@ -472,6 +478,46 @@ export default function Sales() {
         setClientResults(r.data || []);
       } catch { setClientResults([]); }
     }, 250);
+  };
+
+  /**
+   * COBRAR UNA CITA (deep-link desde la agenda, «Cobrar cita», sep-2026).
+   *
+   * La agenda abre esta página con `?cita=<id>`: se precarga la cita, se
+   * escoge su paciente y la venta nace ya ENLAZADA a la cita
+   * (`Sale.appointment`). Sin ese enlace, Analíticas solo puede sumar el
+   * abono del agendamiento y lo cobrado en mostrador quedaba invisible.
+   */
+  const [citaPorCobrar, setCitaPorCobrar] = useState(null);
+  const citaCargadaRef = useRef(null);
+  const [searchParams] = useSearchParams();
+  const citaParam = searchParams.get('cita');
+  useEffect(() => {
+    if (!canCreate || !citaParam || citaCargadaRef.current === citaParam) return undefined;
+    citaCargadaRef.current = citaParam;
+    api.get(`/appointments/${citaParam}`)
+      .then(({ data: apt }) => {
+        setCitaPorCobrar(apt);
+        openNew();
+        const pid = apt.patient?._id || apt.patient;
+        const enLista = patients.find((p) => String(p._id) === String(pid));
+        if (pid && enLista) handlePatientSelect(String(pid));
+        else if (pid) setForm((f) => ({ ...f, patient: pid }));
+        setForm((f) => ({
+          ...f,
+          appointment: String(apt._id),
+          notes: `Cobro de la cita del ${String(apt.date || '').slice(0, 10)} ${apt.startTime || ''}${apt.serviceItem?.name ? ` · ${apt.serviceItem.name}` : ''}`,
+        }));
+      })
+      .catch(() => toast.error('No se pudo leer la cita a cobrar'));
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [citaParam, patients]);
+
+  /** Suelta el enlace con la cita (el cajero decide registrarla suelta). */
+  const soltarCita = () => {
+    setForm((f) => ({ ...f, appointment: null }));
+    setCitaPorCobrar(null);
   };
 
   /** Factura a una persona del maestro de Personas (rol CLIENTE): no es un paciente, no lleva ficha. */
@@ -626,9 +672,13 @@ export default function Sales() {
         })),
         ...extra,
       });
-      toast.success(extra.costCenterConfirmed
-        ? 'Venta registrada con el centro de costo elegido (diferencia auditada)'
-        : 'Venta registrada');
+      toast.success(
+        extra.costCenterConfirmed
+          ? 'Venta registrada con el centro de costo elegido (diferencia auditada)'
+          : form.appointment
+            ? 'Venta registrada y enlazada a la cita'
+            : 'Venta registrada'
+      );
       // Avisos no bloqueantes (p.ej. servicios sin categoría: su ingreso fue a la cuenta genérica).
       for (const w of (res.data?.warnings || [])) toast(w, { icon: '⚠️', duration: 7000 });
       setCcMismatch(null);
@@ -985,6 +1035,25 @@ export default function Sales() {
         {/* El modal está ordenado por SECCIONES, en el orden en que se cobra: quién es el
             cliente → de dónde sale la mercadería → qué se lleva → cómo paga. El aviso de
             consumidor final va arriba del todo porque condiciona la factura entera. */}
+        {citaPorCobrar && (
+          <div className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 p-3">
+            <p className="text-xs text-emerald-900 m-0">
+              Cobrando la cita del <b>{String(citaPorCobrar.date || '').slice(0, 10)} {citaPorCobrar.startTime || ''}</b>
+              {citaPorCobrar.serviceItem?.name ? ` · ${citaPorCobrar.serviceItem.name}` : ''}.
+              {' '}Abonado al reservar: <b>${Number(citaPorCobrar.advanceAmount || 0).toFixed(2)}</b>
+              {citaPorCobrar.agreedValue != null
+                ? <> de <b>${Number(citaPorCobrar.agreedValue).toFixed(2)}</b> acordados</>
+                : ''}. La venta queda <b>enlazada a la cita</b> — si el paciente ya abonó, cobra aquí el resto.
+            </p>
+            <button
+              type="button"
+              onClick={soltarCita}
+              className="shrink-0 text-xs text-slate-500 underline bg-transparent border-none cursor-pointer hover:text-rose-600"
+            >
+              Quitar
+            </button>
+          </div>
+        )}
         <form onSubmit={handleSubmit} className="space-y-4">
           <ConsumidorFinalAlert cedula={form.clientCedula} />
 

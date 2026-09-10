@@ -2748,31 +2748,91 @@ exports.opportunityAnalytics = async (req, res) => {
     const valorTotal = embudo.reduce((a, e) => a + e.value, 0);
 
     /**
-     * LO QUE ENTRÓ POR CITAS (sep-2026): al crear una cita, mostrador y call
-     * center pueden dejar anotado lo que el paciente pagó al reservarla
-     * (adelanto o el total). Es dinero que la agenda ya generó dentro del
-     * rango, y la cápsula nueva lo muestra. Es dato operativo (ver
-     * utils/appointmentValue.js): no factura, no mueve contabilidad.
+     * LO QUE LOS PACIENTES HAN PAGADO EN LAS CITAS (sep-2026).
+     *
+     * Va POR LA FECHA DE LA CITA, no por cuándo se creó en el sistema: la
+     * pregunta que contesta la cápsula es «cuánto han pagado los pacientes de
+     * las citas del rango», y esas son las MISMAS citas que se ven en la agenda
+     * del rango (una cita de hoy creada hace dos semanas se ve hoy). Contando
+     * por `createdAt` la cápsula decía 54 donde la agenda mostraba 118 — el
+     * desfase era la base de fechas, no citas perdidas.
+     *
+     * EL TOTAL TIENE TRES PARTES:
+     *   1. Lo anotado en la cita al crearla (`advanceAmount`: abono o total).
+     *   2. Lo cobrado en mostrador EN VENTAS LIGADAS A LA CITA
+     *      (`Sale.appointment` — la venta nace desde «Cobrar cita» en la agenda
+     *      y sus `payments[]` son el dinero que entró ahí mismo).
+     *   3. Los cobros POSTERIORES de la cartera de esas ventas (la parte a
+     *      crédito que el paciente saldó después: `Payment` tipo COBRO con
+     *      aplicación sobre la venta).
+     *
+     * Las ventas NO ligadas a una cita no entran: no se sabe de qué cita son y
+     * sumarlas inflaría el dato (además ya viven en Ventas). Es dato operativo
+     * (ver utils/appointmentValue.js): no factura, no mueve contabilidad.
      */
     let valorPagado = 0;
+    let valorPagadoAlCrear = 0;
+    let valorPagadoMostrador = 0;
     let citasCreadas = 0;
     let citasConPago = 0;
     try {
       const Appointment = require('../models/Appointment');
-      const [valorCitasAgg] = await Appointment.aggregate([
-        { $match: { clinic: clinicOid, ...(range ? { createdAt: range } : {}) } },
-        {
-          $group: {
-            _id: null,
-            monto: { $sum: { $ifNull: ['$advanceAmount', 0] } },
-            citas: { $sum: 1 },
-            conPago: { $sum: { $cond: [{ $gt: [{ $ifNull: ['$advanceAmount', 0] }, 0] }, 1, 0] } },
-          },
-        },
+      const Sale = require('../models/Sale');
+      const Payment = require('../models/Payment');
+      const citasDelRango = await Appointment.aggregate([
+        { $match: { clinic: clinicOid, ...(range ? { date: range } : {}) } },
+        { $project: { advanceAmount: 1 } },
       ]);
-      valorPagado = Math.round((valorCitasAgg?.monto || 0) * 100) / 100;
-      citasCreadas = valorCitasAgg?.citas || 0;
-      citasConPago = valorCitasAgg?.conPago || 0;
+      citasCreadas = citasDelRango.length;
+      valorPagadoAlCrear = citasDelRango.reduce((s, c) => s + (Number(c.advanceAmount) || 0), 0);
+      const citaIds = citasDelRango.map((c) => c._id);
+
+      // Dinero que entró EN MOSTRADOR por las ventas de estas citas.
+      let ventaIds = []; // ids de las VENTAS (es lo que matchean los cobros)
+      const citasConVenta = new Set(); // ids de las CITAS con venta ligada
+      if (citaIds.length) {
+        const ventasAgg = await Sale.aggregate([
+          { $match: { clinic: clinicOid, appointment: { $in: citaIds }, status: { $ne: 'anulada' } } },
+          {
+            $addFields: {
+              _pagos: { $sum: { $map: { input: { $ifNull: ['$payments', []] }, as: 'p', in: '$$p.amount' } } },
+            },
+          },
+          {
+            $group: {
+              _id: '$appointment',
+              cobrado: { $sum: '$_pagos' },
+              ventas: { $addToSet: '$_id' },
+            },
+          },
+        ]);
+        ventaIds = ventasAgg.flatMap((v) => v.ventas || []);
+        for (const v of ventasAgg) citasConVenta.add(String(v._id));
+        valorPagadoMostrador = ventasAgg.reduce((s, v) => s + (v.cobrado || 0), 0);
+      }
+      // Y los cobros POSTERIORES: la parte a crédito de esas ventas que el
+      // paciente saldó después (documentos de Cobro aplicados sobre la venta).
+      if (ventaIds.length) {
+        const cobrosAgg = await Payment.aggregate([
+          {
+            $match: {
+              clinic: clinicOid,
+              type: 'COBRO',
+              status: { $ne: 'ANULADO' },
+              applications: { $elemMatch: { docModel: 'Sale', docRef: { $in: ventaIds } } },
+            },
+          },
+          { $unwind: '$applications' },
+          { $match: { 'applications.docModel': 'Sale', 'applications.docRef': { $in: ventaIds } } },
+          { $group: { _id: null, monto: { $sum: '$applications.amount' } } },
+        ]);
+        valorPagadoMostrador += cobrosAgg.reduce((s, c) => s + (c.monto || 0), 0);
+      }
+
+      citasConPago = citasDelRango.filter(
+        (c) => (Number(c.advanceAmount) || 0) > 0 || citasConVenta.has(String(c._id))
+      ).length;
+      valorPagado = valorPagadoAlCrear + valorPagadoMostrador;
     } catch (err) {
       console.warn('[analytics] no se pudo sumar el valor de las citas:', err.message);
     }
@@ -2805,7 +2865,9 @@ exports.opportunityAnalytics = async (req, res) => {
         tasaAgendamiento: total ? (de('agendado').count + de('ganado').count) / total : 0,
         tasaCierre: total ? de('ganado').count / total : 0,
         // Dinero que entró con las citas del rango (pagado al crearlas).
-        valorPagado,
+        valorPagado: Math.round(valorPagado * 100) / 100,
+        valorPagadoAlCrear: Math.round(valorPagadoAlCrear * 100) / 100,
+        valorPagadoMostrador: Math.round(valorPagadoMostrador * 100) / 100,
         citasCreadas,
         citasConPago,
       },
