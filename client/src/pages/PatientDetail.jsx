@@ -242,8 +242,9 @@ const isAllowedAttachment = (file) =>
 const OBSERVATION_MAX_FILES = 10;
 
 /**
- * Un archivo demasiado grande lo corta nginx ANTES de llegar al servidor: la
- * respuesta es un 413 sin cuerpo JSON, y el aviso salía vacío.
+ * El 413 ya no debería aparecer por tamaño (el servidor ya no corta y nginx
+ * admite hasta 1 GB), pero si llega —nginx sin actualizar, o un disco lleno—
+ * el aviso sigue siendo claro en vez de un error vacío.
  */
 const observationUploadError = (err, fallback) => {
   if (err?.response?.status === 413) return 'El archivo es demasiado grande para subirlo';

@@ -56,7 +56,8 @@ const MAX_FILES = 10;
 
 exports.uploadMiddleware = multer({
   storage: observationStorage,
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB por archivo
+  // SIN TOPE DE TAMAÑO (a petición de la clínica): el techo real lo pone nginx
+  // (`client_max_body_size`) y el disco; multer no vuelve a cortar.
   fileFilter: (req, file, cb) => {
     if (OK_ATTACHMENT_TYPES.includes(file.mimetype)) cb(null, true);
     else cb(new Error(`No se admite este tipo de archivo (${file.mimetype || 'desconocido'})`));
@@ -295,12 +296,15 @@ exports.validateIds = (req, res, next) => {
 /**
  * Traduce los errores de multer (tamaño, tipo, exceso de archivos) a un mensaje
  * accionable. Sin esto, un archivo de 30 MB devuelve un 500 mudo.
+ *
+ * El caso LIMIT_FILE_SIZE ya no se da por nuestro multer (sin tope de tamaño),
+ * pero sigue traducido por si nginx corta antes con el suyo.
  */
 exports.handleUploadErrors = (handler) => (req, res, next) => {
   handler(req, res, (err) => {
     if (!err) return next();
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ message: 'Cada archivo puede pesar como máximo 20 MB' });
+      return res.status(400).json({ message: 'El archivo es demasiado grande para subirlo' });
     }
     if (err.code === 'LIMIT_UNEXPECTED_FILE') {
       return res.status(400).json({ message: `Puedes adjuntar hasta ${MAX_FILES} archivos a la vez` });

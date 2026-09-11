@@ -147,7 +147,10 @@ const OK_ATTACHMENT_TYPES = [
 
 exports.uploadAttachmentMiddleware = multer({
   storage: followupStorage,
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
+  // SIN TOPE DE TAMAÑO (a petición de la clínica): los documentos que suben —
+  // ecografías en alta resolución, exámenes completos escaneados— pasaban de
+  // 20 MB y el 413 llegaba sin explicación. El techo real lo pone nginx
+  // (`client_max_body_size`) y el disco; multer no vuelve a cortar.
   fileFilter: (req, file, cb) => {
     if (OK_ATTACHMENT_TYPES.includes(file.mimetype)) cb(null, true);
     else cb(new Error('Solo se aceptan archivos PDF o imágenes'));
