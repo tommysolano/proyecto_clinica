@@ -701,25 +701,20 @@ export default function Appointments() {
   };
 
   /**
-   * LA VISTA POR DEFECTO NO CAMBIA: SU SUCURSAL.
+   * LA SUCURSAL ACTIVA MANDA EL FILTRO INICIAL.
    *
-   * El servidor ahora le devuelve a mostrador la agenda de TODA la organización,
-   * y sin esto la cajera de Norte abriría la lista del día y se encontraría
-   * mezcladas las citas de Sur y Centro — «Total filtrado: 37» donde antes veía
-   * 9. Ver las demás sucursales es algo que se PIDE con el desplegable, no algo
-   * que aparezca solo.
-   *
-   * Se preselecciona a quien AHORA VE MÁS de lo que veía antes, tenga una
-   * sucursal asignada o cinco: la comparación es contra las suyas, no contra el
-   * número uno. Quien ya veía todas las de la organización no nota nada.
+   * El selector del menú lateral cambia `activeClinic`. La agenda carga la
+   * información visible de la organización, pero debe abrirse mostrando la
+   * sucursal que el usuario acaba de escoger, no una mezcla de sedes. Se
+   * sincroniza solo cuando cambia la sede activa: así el usuario todavía puede
+   * elegir manualmente «Todas las sucursales» sin que cada render le pise esa
+   * selección.
    */
   useEffect(() => {
-    if (!veTodaLaOrg) return;
     const propia = activeClinic?._id;
     if (!propia) return;
-    if (clinicasFiltro.length <= (clinics?.length || 0)) return;
-    setFilter((f) => (f.clinic ? f : { ...f, clinic: propia }));
-  }, [veTodaLaOrg, clinics?.length, activeClinic?._id, clinicasFiltro.length]);
+    setFilter((f) => (String(f.clinic) === String(propia) ? f : { ...f, clinic: propia }));
+  }, [activeClinic?._id]);
 
   const fetchNurses = async () => {
     try {
