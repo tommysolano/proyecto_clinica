@@ -2402,7 +2402,11 @@ exports.createWalkIn = async (req, res) => {
 async function filtroEnfermeria(req) {
   const nursingProductIds = await Product.find({ nursingService: true }).distinct('_id');
   const nursingItemIds = await require('../models/AppointmentServiceItem')
-    .find({ nursingService: true })
+    // Un servicio con suero automático no es una asignación a enfermería por sí
+    // solo: primero debe pasar por «Asignar atención», donde recepción escoge el
+    // enfermero y el suero/seguimiento concreto. La ruta legacy solo conserva los
+    // servicios antiguos que no tienen ese mecanismo.
+    .find({ nursingService: true, 'autoSerum.enabled': { $ne: true } })
     .distinct('_id');
 
   const legado = {
