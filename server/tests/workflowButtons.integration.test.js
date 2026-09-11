@@ -327,6 +327,30 @@ test('una inscripción SIN paciente (importación) también retoma: va por telé
   assert.ok(enr.log.some((l) => l.type === 'add_tag' || l.nodeId === 'clicked'), 'siguió por el paso del botón');
 });
 
+test('el clic llega desde un chat de OTRA clínica (QR en sucursal) y AUN así retoma', async () => {
+  const data = await seed(
+    [{ id: 'tb_msg_1', type: 'quick_reply', text: 'Si asistire', url: '' }],
+    { withDefaultExit: false }
+  );
+  messaging.send = async () => ({ ok: true, deliveryStatus: 'sent' });
+  await engine.executeEnrollment(await WorkflowEnrollment.findById(data.enrollment._id));
+  // La ingesta QR usa la clínica DEL NÚMERO; la inscripción de la campaña vive
+  // en la del asistente. Buscando por la del chat, el clic de estos contactos
+  // jamás encontraba su flujo — era el "unos chats sí, otros no".
+  const otraSede = await Clinic.create({ name: 'Sucursal del QR' });
+  const r = await engine.resumeOnReply({
+    clinicId: otraSede._id,
+    patientId: data.patient._id,
+    phone: '593991234567',
+    text: 'Si asistire',
+  });
+  assert.equal(r.resumed, 1, 'la inscripción se busca por identidad, no por la sala del mensaje');
+  const enr = await WorkflowEnrollment.findById(data.enrollment._id);
+  assert.equal(enr.status, 'done');
+  const patient = await Patient.findById(data.patient._id).lean();
+  assert.ok(patient.tags.includes('boton-pulsado'));
+});
+
 test('botón de enlace: registra el clic, ejecuta su rama y devuelve el destino', async () => {
   const data = await seed([{ id: 'ver_web', type: 'url', text: 'Ver sitio', url: 'https://shiluv.example/promo' }]);
   let sentButtons = [];

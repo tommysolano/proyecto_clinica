@@ -945,14 +945,39 @@ function evaluateSingleCondition(cond = {}, { patient, conversation, context, co
       return matchList(conversation?.tags, cond);
     case 'opportunityTag':
       return matchList(opp?.tags, cond);
-    case 'stage':
-      // Etapa del embudo. Se comparan las etapas de TODAS las oportunidades del
-      // chat (más la del evento que inscribió el flujo). Antes se miraba solo la
-      // ÚLTIMA del array, con la del evento como mero respaldo: en un chat con
-      // varias oportunidades —o cuando la etapa se había movido en otra— la
-      // condición "etapa = agendado" daba falso y el flujo moría ahí, aunque el
-      // chat SÍ estuviera en esa etapa. Era el "las etapas no funcionan".
-      return matchScalarAny(opportunities.stageCandidates(conversation, context), cond);
+    case 'stage': {
+      /**
+       * LA ETAPA DEL CONTACTO ES LA MÁS AVANZADA DE SUS OPORTUNIDADES (sep-2026,
+       * "el nodo de condición no funciona: le manda a gente que ya agendó").
+       *
+       * Antes se comparaba la respuesta contra las etapas de TODAS las
+       * oportunidades del chat y bastaba con que UNA cualquiera estuviera en la
+       * etapa pedida: una oportunidad vieja que se quedó en 'interesado' hacía
+       * que la rama "es interesado" ganara aunque el contacto ya tuviera OTRA
+       * agendada — y la promoción salía a quien ya tenía cita.
+       *
+       *   · Se evalúa contra la etapa más avanzada (nuevo → … → ganado);
+       *   · llegar a 'agendado' cubre también 'ganado' (y al revés): es el
+       *     mismo hecho de negocio — el contacto YA tiene su cita;
+       *   · si no hay etapa conocida NINGUNA (chat sin oportunidades y sin
+       *     evento de etapa), la condición NO se cumple, ni siquiera en su
+       *     forma negativa: "no se sabe" no es "no está agendado" — enviarle la
+       *     promoción a quien no se puede leer la etapa era exactamente el
+       *     mensaje que no debía salir.
+       */
+      const candidatos = opportunities.stageCandidates(conversation, context);
+      if (!candidatos.length) return false;
+      const ORDEN = { nuevo: 0, contactado: 1, interesado: 2, agendado: 3, ganado: 4 };
+      const enOrden = candidatos.filter((s) => ORDEN[s] !== undefined);
+      // Solo hay 'perdido' (o etapas desconocidas): se compara tal cual —
+      // "es perdido" y "no es agendado" siguen siendo ciertos ahí.
+      if (!enOrden.length) return matchScalarAny(candidatos, cond);
+      // La etapa del contacto es EXACTAMENTE la más avanzada: cada rama del
+      // if/else-if captura a su etapa y solo a ella («ganado» no se come a los
+      // agendados — cada etapa toma SU salida, como en el resto del sistema).
+      const masAvanzada = [...enOrden].sort((a, b) => ORDEN[b] - ORDEN[a])[0];
+      return matchScalarAny([masAvanzada], cond);
+    }
     case 'opportunityValue':
       return matchNumber(opp?.expectedValue, cond);
     case 'opportunityName':
@@ -2715,12 +2740,17 @@ function normalizaTextoBoton(s) {
  */
 async function resumeOnReply({ clinicId, patientId, phone, text, interactiveReply = null }) {
   /**
-   * Identidad por PACIENTE O POR TELÉFONO, no por una sola (sep-2026, caso real:
-   * unos chats retomaban y otros no). Una inscripción nacida de una importación
-   * de contactos puede tener `patient: null` y solo `context.phone`, mientras la
-   * conversación sí quedó enlazada a un paciente: buscando solo por `patient`
-   * esa inscripción era invisible al clic y el flujo se quedaba esperando para
-   * siempre. Con $or alcanza a las dos formas de estar marcada.
+   * La búsqueda va POR IDENTIDAD (paciente o teléfono), SIN filtrar por la
+   * clínica del chat (sep-2026, caso "unos chats retoman y otros no").
+   *
+   * La clínica que trae el mensaje entrante depende de POR DÓNDE entró: el
+   * webhook de Cloud usa la clínica ancla del CRM, pero la ingesta QR usa la
+   * sucursal del número. Las inscripciones de una campaña masiva viven en la
+   * clínica del asistente — filtrando por la del chat, el clic de un chat QR
+   * NO ENCONTRABA nunca su inscripción y el flujo no se reanudaba, mientras
+   * que el mismo flujo en un chat Cloud sí. La inscripción pertenece al
+   * contacto (asi lo dice su paciente o su teléfono), no a la sala por la que
+   * llegó el mensaje: se la busca por identidad, en todas las clínicas.
    */
   const identity = [];
   if (patientId) identity.push({ patient: patientId });
@@ -2733,7 +2763,7 @@ async function resumeOnReply({ clinicId, patientId, phone, text, interactiveRepl
     identity.push({ 'context.phone': { $regex: new RegExp(`${cola}$`) } });
   }
   if (!identity.length) return { resumed: 0 };
-  const q = { clinic: clinicId, status: 'waiting', waitingForReply: true, $or: identity };
+  const q = { status: 'waiting', waitingForReply: true, $or: identity };
 
   const enrollments = await WorkflowEnrollment.find(q);
   if (!enrollments.length) return { resumed: 0 };

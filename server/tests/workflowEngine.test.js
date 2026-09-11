@@ -308,6 +308,41 @@ test('condiciones de etiquetas del chat, de la oportunidad y valor esperado', ()
   assert.equal(evaluateSingleCondition({ field: 'opportunityValue', op: 'lt', value: '500' }, { conversation }), false);
 });
 
+// ─── Sep-2026: "el nodo de condición manda mensajes a quien ya agendó" ───
+
+test('la etapa del contacto es la MÁS AVANZADA: una vieja en interesado no revive su rama', () => {
+  // El chat tiene la oportunidad vieja ('interesado') y la REAL ya agendada:
+  // la rama "es interesado" no puede ganar por una etapa que el contacto ya
+  // pasó — era justo el mensaje que no debía salir.
+  const conversation = { opportunities: [{ stage: 'interesado' }, { stage: 'agendado' }] };
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'eq', value: 'interesado' }, { conversation }), false);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'in', values: ['nuevo', 'interesado'] }, { conversation }), false);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'eq', value: 'agendado' }, { conversation }), true);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'nin', values: ['agendado'] }, { conversation }), false);
+
+  // Y al revés: con la avanzada en 'ganado', "es agendado" ya no sale — cada
+  // rama captura a SU etapa y solo a ella (if / else-if).
+  const cerrada = { opportunities: [{ stage: 'nuevo' }, { stage: 'ganado' }] };
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'eq', value: 'ganado' }, { conversation: cerrada }), true);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'eq', value: 'agendado' }, { conversation: cerrada }), false);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'eq', value: 'nuevo' }, { conversation: cerrada }), false);
+});
+
+test('sin etapa conocida ninguna, la condición de etapa NO se cumple (ni la negativa)', () => {
+  // Chat sin oportunidades y sin evento de etapa: "no se sabe" no es "no está
+  // agendado". Mandar la promoción por esa rama era el mensaje que no debía salir.
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'eq', value: 'agendado' }, {}), false);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'in', values: ['interesado'] }, {}), false);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'nin', values: ['agendado'] }, {}), false);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'neq', value: 'agendado' }, {}), false);
+});
+
+test('solo perdido: "es perdido" vale y "no es agendado" también', () => {
+  const conversation = { opportunities: [{ stage: 'perdido' }] };
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'eq', value: 'perdido' }, { conversation }), true);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'nin', values: ['agendado'] }, { conversation }), true);
+});
+
 test('matchBranch devuelve la PRIMERA rama que se cumple (if / else-if)', () => {
   const step = {
     branches: [
