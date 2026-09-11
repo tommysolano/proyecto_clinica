@@ -489,6 +489,16 @@ export default function Appointments() {
   const [serviceValueModal, setServiceValueModal] = useState(null); // cita
   // Ver (solo leer) lo que se escribió en una cita ya atendida.
   const [consultaModal, setConsultaModal] = useState(null); // cita
+  /**
+   * MODAL DE ACCIONES DEL ENFERMERO.
+   *
+   * En móvil los botones pequeños de la fila eran un blanco difícil (un iPhone
+   * los pierde y el tap se va a la card, que no hacía nada). Ahora la CARD
+   * entera abre este modal y las acciones viven dentro, con título grande y una
+   * descripción de lo que hace cada una.
+   */
+  const [nurseActionModal, setNurseActionModal] = useState(null); // cita
+  const [nurseWorking, setNurseWorking] = useState(false);
   // Corregir los datos del PACIENTE desde su propia cita, sin ir a Clientes.
   const [patientModal, setPatientModal] = useState(null); // id del paciente
   /**
@@ -1341,14 +1351,19 @@ export default function Appointments() {
    * turno y, si detrás hay alguien, le pasa la cita.
    */
   const nurseClaim = async (apt) => {
-    if (!window.confirm(`¿Confirmas que vas a atender a ${apt.patient?.firstName || ''} ${apt.patient?.lastName || ''}?`)) return;
+    setNurseWorking(true);
     try {
       await api.post(`/appointments/${apt._id}/nurse-claim`);
+      // iOS/Safari a veces no procesa la navegación inmediata tras el POST:
+      // ceder un tick le da tiempo a asentar la respuesta antes de navegar.
+      await new Promise((r) => setTimeout(r, 0));
       abrirAtencion(apt);
     } catch (err) {
       toast.error(err.response?.data?.message || 'No se pudo reclamar la cita');
       // Si otro se le adelantó (409), la lista tiene que reflejarlo ya.
       fetchAppointments();
+    } finally {
+      setNurseWorking(false);
     }
   };
 
@@ -1360,13 +1375,17 @@ export default function Appointments() {
    * hay un doctor, la cita pasa a sus manos en ese momento.
    */
   const nurseFinish = async (apt) => {
-    if (!window.confirm(`¿Terminaste con ${apt.patient?.firstName || 'el paciente'}?`)) return;
+    setNurseWorking(true);
     try {
       await api.post(`/appointments/${apt._id}/nurse-complete`, {});
       toast.success('Atención registrada');
+      // Que la fila cambie de bandeja AL MOMENTO, sin esperar al socket: en iOS
+      // el evento a veces llega tarde y la cita parecía seguir pendiente.
       fetchAppointments();
     } catch (err) {
       toast.error(err.response?.data?.message || 'No se pudo finalizar');
+    } finally {
+      setNurseWorking(false);
     }
   };
 
@@ -2036,19 +2055,6 @@ export default function Appointments() {
                     ? apt.currentTurnKind === 'enfermeria' && esMiTurno
                     : idDe(apt.attendedByNurse) === String(user?.id);
                   /**
-                   * Y si su turno está RECLAMADO. El nombramiento de recepción
-                   * pone el turno a su nombre sin que ella haya tocado nada, así
-                   * que no basta con ser la dueña: mientras no haya sellado el
-                   * reclamo (`startedAt`) la cita sigue pendiente y lo que toca
-                   * pulsar es Atender, igual que las citas abiertas a todos.
-                   */
-                  const miTurnoVigente = conTurnos
-                    ? (apt.turns || []).find(
-                        (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) === String(user?.id)
-                      )
-                    : null;
-                  const reclameMiTurno = conTurnos ? (!miTurnoVigente || !!miTurnoVigente.startedAt) : true;
-                  /**
                    * ¿PUEDO VOLVER A ENTRAR A CORREGIR LO QUE ESCRIBÍ?
                    *
                    * Sí, en cuanto hice lo mío en esta cita — esté completada o
@@ -2105,7 +2111,25 @@ export default function Appointments() {
                   const llegadaDelPaciente = llegada(apt);
                   const llegadaTarde = llegadaDelPaciente?.tarde ? llegadaDelPaciente : null;
                   const extras = serviciosExtra(apt);
-                  return (
+                    /**
+                     * LA CARD ES EL BOTÓN DEL ENFERMERO.
+                     *
+                     * Enfermería trabaja desde el móvil: un tap en cualquiera
+                     * parte de la fila abre el modal de acciones (Atender /
+                     * Continuar / Terminar), en vez de luchar con botones
+                     * pequeños que en iOS no siempre respondían. Solo en los
+                     * estados donde hay algo por hacer: lo ya cerrado o
+                     * cancelado no ofrece nada. Una cita en la bandeja
+                     * «finalizado» tampoco (no hay acción que toque).
+                     */
+                    const enJuegoParaEnfermeria =
+                      isNurse
+                      && ['pendiente', 'confirmada', 'asistida'].includes(apt.status)
+                      && (enfermeriaLibre || enfermeriaMia);
+                    const handleCardClick = enJuegoParaEnfermeria
+                      ? () => setNurseActionModal(apt)
+                      : undefined;
+                    return (
                     <Fragment key={apt._id}>
                     {showDayHeader && (
                       <tr className="bg-emerald-50/70">
@@ -2115,7 +2139,8 @@ export default function Appointments() {
                       </tr>
                     )}
                     <tr
-                      className="md:border-b md:border-emerald-50 hover:bg-emerald-50/30 transition-colors"
+                      onClick={handleCardClick}
+                      className={`md:border-b md:border-emerald-50 transition-colors ${enJuegoParaEnfermeria ? 'cursor-pointer hover:bg-sky-50/60 active:bg-sky-100' : 'hover:bg-emerald-50/30'}`}
                     >
                       <td data-cell="fecha" className="md:px-6 md:py-3.5 text-sm text-slate-600">
                         {formatLocalDate(apt.date)}
@@ -2258,7 +2283,7 @@ export default function Appointments() {
                           </span>
                         )}
                       </td>
-                      <td data-cell="acciones" className="md:px-6 md:py-3.5 text-right">
+                      <td data-cell="acciones" onClick={(e) => { if (enJuegoParaEnfermeria) e.stopPropagation(); }} className="md:px-6 md:py-3.5 text-right">
                         {/* Ir al chat de origen: solo citas agendadas desde el
                             CRM (guardan `conversation`), y solo a quien la
                             bandeja le corresponde. */}
@@ -2322,38 +2347,13 @@ export default function Appointments() {
                             <HiOutlineBanknotes className="w-4 h-4" />
                           </button>
                         )}
-                        {/* Enfermero: reclamar una cita libre —o nombrada a ella
-                            y que todavía no ha tomado— */}
-                        {isNurse && ['pendiente', 'confirmada', 'asistida'].includes(apt.status)
-                          && (enfermeriaLibre || (enfermeriaMia && !reclameMiTurno)) && (
-                          <button
-                            onClick={() => nurseClaim(apt)}
-                            className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-700 bg-transparent border border-sky-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
-                            title="Atender: marcar que la estoy atendiendo"
-                          >
-                            Atender
-                          </button>
-                        )}
-                        {/* Enfermero: ver la receta del paciente que ya tomó */}
-                        {isNurse && ['pendiente', 'confirmada', 'asistida'].includes(apt.status) && enfermeriaMia && reclameMiTurno && (
-                          <button
-                            onClick={() => abrirAtencion(apt)}
-                            className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-700 bg-transparent border border-sky-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
-                            title="Ver la receta y anotar los sueros"
-                          >
-                            Receta
-                          </button>
-                        )}
-                        {/* Enfermero: cerrar su turno (no escribe seguimiento) */}
-                        {isNurse && ['pendiente', 'confirmada', 'asistida'].includes(apt.status) && enfermeriaMia && reclameMiTurno && (
-                          <button
-                            onClick={() => nurseFinish(apt)}
-                            className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-700 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
-                            title="Terminar mi parte"
-                          >
-                            Terminar
-                          </button>
-                        )}
+                        {/**
+                          * ENFERMERO: sin botones en la fila. La card entera es
+                          * el botón (ver onClick del <tr>): en el móvil estos
+                          * botones pequeños eran un blanco difícil y el tap
+                          * se perdía. Las acciones viven ahora en el modal de
+                          * acciones, con descripción de cada una.
+                          */}
                         {showDoctorTimer && !inProgress && apt.status !== 'completada' && (
                           <button
                             onClick={() => startConsultation(apt)}
@@ -3551,6 +3551,24 @@ export default function Appointments() {
         />
       )}
 
+      {/* EL MODAL DE "ATENDER" DEL ENFERMERO: tap en cualquier parte de la
+          card y aquí están las acciones, grandes y explicadas. */}
+      {nurseActionModal && (
+        <NurseActionModal
+          appointment={{ ...nurseActionModal, miId }}
+          working={nurseWorking}
+          onClose={() => setNurseActionModal(null)}
+          onAtender={async (apt) => {
+            await nurseClaim(apt);
+            setNurseActionModal(null);
+          }}
+          onTerminar={async (apt) => {
+            await nurseFinish(apt);
+            setNurseActionModal(null);
+          }}
+        />
+      )}
+
       {/* Al guardar se recarga la agenda: el nombre y la cédula del paciente
           se leen de la cita, y sin recargar la fila seguiría diciendo lo de
           antes hasta la siguiente vuelta. El detalle abierto se cierra por lo
@@ -3657,3 +3675,97 @@ function ServiceAutocomplete({ services, selectedIds, onAdd, onRemove }) {
 
 // SameSlotPanel ahora vive en components/SameSlotPanel.jsx y se reutiliza también
 // desde el modal de citas del chat.
+
+/**
+ * MODAL DE ACCIONES DE ENFERMERÍA.
+ *
+ * Enfermería trabaja desde el móvil y los botones pequeños de la fila no le
+ * servían: se los perdían (el tap caía en la card y no pasaba nada) y en iOS el
+ * click a veces no llegaba. Ahora la card entera abre ESTE modal, con las
+ * acciones grandes y una línea que explica qué hace cada una — porque «Terminar»
+ * no dice que deja registrado lo que se aplicó.
+ */
+function NurseActionModal({ appointment, working = false, onClose, onAtender, onTerminar }) {
+  const apt = appointment;
+  const conTurnos = (apt.turns || []).length > 0;
+  const miId = String(apt.miId || '');
+  const idDe = (v) => String(v?._id || v || '');
+  /**
+   * MISMAS REGLAS que la agenda (ver el bloque de flags de la fila): el turno
+   * libre o nombrado a una sin reclamar se ATIENDE; el ya reclamado se TERMINA.
+   * Con los nombres de recepción esto importa: el turno nombrado a otra persona
+   * no ofrece nada, ni aunque la pantalla traiga la cita vieja.
+   */
+  const vigenteEnfermeria = conTurnos && apt.currentTurnKind === 'enfermeria';
+  const esMio = vigenteEnfermeria && idDe(apt.currentTurnUser) === miId;
+  const miTurnoPendiente = vigenteEnfermeria
+    ? (apt.turns || []).find(
+        (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) === miId
+      )
+    : null;
+  const libre = vigenteEnfermeria && !apt.currentTurnUser;
+  const puedeAtender = conTurnos
+    ? libre || (esMio && miTurnoPendiente && !miTurnoPendiente.startedAt)
+    : !apt.attendedByNurse;
+  const puedeTerminar = conTurnos
+    ? esMio && (!miTurnoPendiente || miTurnoPendiente.startedAt)
+    : idDe(apt.attendedByNurse) === miId;
+  const nombre = `${apt.patient?.firstName || ''} ${apt.patient?.lastName || ''}`.trim() || 'el paciente';
+  const servicio = apt.serviceName || (apt.turns || []).map((t) => t.serviceName).filter(Boolean)[0] || '';
+
+  return (
+    <Modal isOpen onClose={onClose} title="Atención de enfermería" size="sm">
+      <div className="space-y-4">
+        <div>
+          <p className="text-base font-semibold text-slate-800">{nombre}</p>
+          {servicio && <p className="text-sm text-slate-500">{servicio}</p>}
+          <p className="text-xs text-slate-400 mt-0.5">
+            {apt.startTime} · {apt.status === 'asistida' ? 'Paciente en espera' : 'Pendiente'}
+          </p>
+        </div>
+
+        {puedeAtender && (
+          <button
+            type="button"
+            disabled={working}
+            onClick={() => onAtender(apt)}
+            className="w-full px-4 py-4 rounded-xl bg-sky-600 text-white text-base font-bold hover:bg-sky-700 active:bg-sky-800 disabled:opacity-60 cursor-pointer border-none text-left"
+          >
+            <span className="block">Atender</span>
+            <span className="block text-xs font-normal text-sky-100 mt-1">
+              Marca que te haces cargo de esta cita y abre la receta para ver qué debes aplicar.
+            </span>
+          </button>
+        )}
+
+        {puedeTerminar && (
+          <button
+            type="button"
+            disabled={working}
+            onClick={() => onTerminar(apt)}
+            className="w-full px-4 py-4 rounded-xl bg-emerald-600 text-white text-base font-bold hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-60 cursor-pointer border-none text-left"
+          >
+            <span className="block">Terminar</span>
+            <span className="block text-xs font-normal text-emerald-100 mt-1">
+              Cierra tu parte y deja registrado en la ficha del paciente lo que aplicaste.
+            </span>
+          </button>
+        )}
+
+        {!puedeAtender && !puedeTerminar && (
+          <p className="text-sm text-slate-500">
+            No hay acciones pendientes para ti en esta cita.
+          </p>
+        )}
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="w-full px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 cursor-pointer border-none"
+        >
+          Cerrar
+        </button>
+      </div>
+    </Modal>
+  );
+}

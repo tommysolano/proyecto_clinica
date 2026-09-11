@@ -70,13 +70,77 @@ async function baseFilter(req) {
   };
 }
 
+/**
+ * LOS AVISOS DE ENFERMERÍA SOLO SUENAN MIENTRAS LA CITA ESPERA.
+ *
+ * La campana acumulaba avisos de citas de días pasados —atendidas, canceladas,
+ * marcadas no-show— porque casi nada en el sistema los apagaba: el único
+ * deleteMany vivía en `nurseClaim`, y media clínica no pasa por ahí. El
+ * resultado: decenas de notificaciones muertas que aturden a quien las recibe.
+ *
+ * La regla es la de la propia agenda (ver `bandejaDe` en el cliente): el aviso
+ * vive SOLO mientras su cita sigue esperando a enfermería —
+ *   · la cita está pendiente/confirmada/asistida (no completada, cancelada ni
+ *     ausente);
+ *   · el turno vigente es de ENFERMERÍA (si le toca al doctor, el aviso aún no
+ *     va);
+ *   · el turno está ABIERTO (para todos) o nombrado a quien mira, y todavía
+ *     sin reclamar (startedAt): en cuanto alguien lo toma, ya no es noticia.
+ *
+ * Se aplica EN LECTURA, no solo al crear: así las notificaciones huérfanas que
+ * ya están en Mongo dejan de sonar sin necesidad de migración, y el contador
+ * de no leídas coincide con lo que la bandeja enseña.
+ */
+async function filtroDeAvisosVivos(req, filter) {
+  const citaIds = await Notification.distinct('meta.appointment', {
+    ...filter,
+    type: 'appointment_nursing',
+    'meta.appointment': { $ne: null },
+  });
+  if (!citaIds.length) return filter;
+
+  const citas = await require('../models/Appointment')
+    .find({ _id: { $in: citaIds } })
+    .select('status currentTurnKind currentTurnUser turns')
+    .lean();
+  const miId = String(req.user._id);
+  const vivas = [];
+  for (const a of citas) {
+    if (!['pendiente', 'confirmada', 'asistida'].includes(a.status)) continue;
+    if (a.currentTurnKind !== 'enfermeria') continue;
+    const dueño = a.currentTurnUser ? String(a.currentTurnUser) : null;
+    // Nombrada a OTRO: no es noticia para quien mira.
+    if (dueño && dueño !== miId) continue;
+    if (dueño) {
+      // Reclamada (ya hay quien la atiende): el aviso ya cumplió su trabajo.
+      const turno = (a.turns || []).find((t) => t.kind === 'enfermeria' && t.status === 'pendiente');
+      if (turno?.startedAt) continue;
+    }
+    vivas.push(a._id);
+  }
+
+  return {
+    ...filter,
+    $and: [
+      ...(filter.$and || []),
+      {
+        $or: [
+          { type: { $ne: 'appointment_nursing' } },
+          { type: 'appointment_nursing', 'meta.appointment': { $in: vivas } },
+        ],
+      },
+    ],
+  };
+}
+
 // GET /notifications?unread=true&limit=30 → { items, unread }
 // Devuelve la lista Y el contador de no leídas en una sola petición: la campana
 // necesita las dos cosas y así no se piden por separado en cada sondeo.
 exports.list = async (req, res) => {
   try {
-    const filter = await baseFilter(req);
-    if (!filter) return res.json({ items: [], unread: 0 });
+    const base = await baseFilter(req);
+    if (!base) return res.json({ items: [], unread: 0 });
+    const filter = await filtroDeAvisosVivos(req, base);
     const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 100);
     const [items, unread] = await Promise.all([
       Notification.find(req.query.unread === 'true' ? { ...filter, read: false } : filter)
@@ -94,8 +158,9 @@ exports.list = async (req, res) => {
 // GET /notifications/unread-count → { unread }
 exports.unreadCount = async (req, res) => {
   try {
-    const filter = await baseFilter(req);
-    if (!filter) return res.json({ unread: 0 });
+    const base = await baseFilter(req);
+    if (!base) return res.json({ unread: 0 });
+    const filter = await filtroDeAvisosVivos(req, base);
     res.json({ unread: await Notification.countDocuments({ ...filter, read: false }) });
   } catch (err) {
     res.status(500).json({ message: 'Error al contar notificaciones', error: err.message });

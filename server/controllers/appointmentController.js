@@ -1489,17 +1489,20 @@ exports.updateAppointment = async (req, res) => {
     }
     // Cambios MANUALES de estado desde el formulario de edición: antes solo se
     // emitía "confirmada"; cancelar/no-show/asistió desde aquí no disparaba nada.
-    if (update.status && update.status !== existing.status) {
-      if (update.status === 'confirmada') {
-        emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CONFIRMED, appointmentEventPayload(appointment));
-      } else if (update.status === 'cancelada') {
-        emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CANCELLED, appointmentEventPayload(appointment));
-      } else if (update.status === 'no_asistio') {
-        emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_NO_SHOW, appointmentEventPayload(appointment));
-      } else if (update.status === 'asistida' || update.status === 'completada') {
-        emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(appointment));
+      if (update.status && update.status !== existing.status) {
+        if (update.status === 'confirmada') {
+          emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CONFIRMED, appointmentEventPayload(appointment));
+        } else if (update.status === 'cancelada') {
+          // Ya nadie la atiende: el aviso de enfermería se apaga.
+          await require('../utils/appointmentNotice').apagarAvisosDeCita(appointment._id);
+          emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CANCELLED, appointmentEventPayload(appointment));
+        } else if (update.status === 'no_asistio') {
+          await require('../utils/appointmentNotice').apagarAvisosDeCita(appointment._id);
+          emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_NO_SHOW, appointmentEventPayload(appointment));
+        } else if (update.status === 'asistida' || update.status === 'completada') {
+          emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(appointment));
+        }
       }
-    }
     res.json(sueroSembrado ? { ...appointment.toObject(), autoSerum: sueroSembrado } : appointment);
   } catch (error) {
     res.status(500).json({ message: 'Error al actualizar cita', error: error.message });
@@ -1539,6 +1542,8 @@ async function limpiarRastrosDeLaCita(appointment) {
           { $set: { status: 'pendiente' }, $unset: { appointment: '' } }
         )
       : null,
+    // La cita borrada no avisa a nadie: sus avisos de campana se van con ella.
+    require('../utils/appointmentNotice').apagarAvisosDeCita(id),
   ]);
 }
 
@@ -2775,49 +2780,52 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
   for (const id of [...new Set([...anteriores, ...doctores])]) {
     if (id !== enTurno) emitToUser(id, 'appointment:updated', apt);
   }
-  if (leTocaEnfermeria) {
-    if (enfermeroNombrado) emitToUser(enfermeroNombrado, 'appointment:assigned', apt);
-    else emitToRole(clinicId, 'enfermero', 'appointment:assigned', apt);
-  }
-
-  try {
-    const { notificarUsuarios, notificarRol } = require('../utils/pushNotifications');
-    if (enTurno) {
-      await notificarUsuarios([enTurno], {
-        clinicId,
-        type: 'appointment_assigned',
-        title: 'Cita asignada',
-        body: cuerpo,
-        url: urlDeAtencion(apt.patient, apt._id),
-      });
-    }
     if (leTocaEnfermeria) {
-      const aviso = {
-        type: 'appointment_nursing',
-        title: 'Cita para enfermería',
-        body: cuerpo,
-        // A los seguimientos del paciente, no a la agenda: el aviso ya sabe a
-        // quién hay que atender y dejarlo dicho a medias obligaba a buscarlo.
-        url: urlDeAtencion(apt.patient, apt._id),
-        /**
-         * DE QUÉ CITA HABLA el aviso: es lo que permite apagarlo en el momento
-         * en que un enfermero la reclama (ver nurseClaim), para que la campana
-         * no siga sonando por una cita que ya tiene quien la atienda.
-         */
-        meta: { appointment: apt._id },
-      };
-      if (enfermeroNombrado) {
-        await notificarUsuarios([enfermeroNombrado], { clinicId, ...aviso });
-      } else {
-        await notificarRol(clinicId, 'enfermero', aviso);
-      }
+      if (enfermeroNombrado) emitToUser(enfermeroNombrado, 'appointment:assigned', apt);
+      else emitToRole(clinicId, 'enfermero', 'appointment:assigned', apt);
     }
-  } catch (err) {
-    // Que falle un aviso NUNCA puede tumbar la asignación: la cita ya está
-    // asignada y el profesional la ve igual al entrar a su agenda.
-    console.warn('[citas] no se pudo notificar la asignación:', err.message);
+
+    try {
+      const { notificarUsuarios: pushUsuarios, notificarRol: pushRol } = require('../utils/pushNotifications');
+      const { laCitaMereceAviso } = require('../utils/appointmentNotice');
+      if (enTurno) {
+        await pushUsuarios([enTurno], {
+          clinicId,
+          type: 'appointment_assigned',
+          title: 'Cita asignada',
+          body: cuerpo,
+          url: urlDeAtencion(apt.patient, apt._id),
+        });
+      }
+      // Cita de días pasados: el trabajo ya está en la bandeja de la agenda.
+      // Avisar otra vez por el móvil llenaba la campana de citas vencidas.
+      if (leTocaEnfermeria && laCitaMereceAviso(apt)) {
+        const aviso = {
+          type: 'appointment_nursing',
+          title: 'Cita para enfermería',
+          body: cuerpo,
+          // A los seguimientos del paciente, no a la agenda: el aviso ya sabe a
+          // quién hay que atender y dejarlo dicho a medias obligaba a buscarlo.
+          url: urlDeAtencion(apt.patient, apt._id),
+          /**
+           * DE QUÉ CITA HABLA el aviso: es lo que permite apagarlo en el momento
+           * en que un enfermero la reclama (ver nurseClaim), para que la campana
+           * no siga sonando por una cita que ya tiene quien la atienda.
+           */
+          meta: { appointment: apt._id },
+        };
+        if (enfermeroNombrado) {
+          await pushUsuarios([enfermeroNombrado], { clinicId, ...aviso });
+        } else {
+          await pushRol(clinicId, 'enfermero', aviso);
+        }
+      }
+    } catch (err) {
+      // Que falle un aviso NUNCA puede tumbar la asignación: la cita ya está
+      // asignada y el profesional la ve igual al entrar a su agenda.
+      console.warn('[citas] no se pudo notificar la asignación:', err.message);
+    }
   }
-}
 
 /**
  * Marca no asistencia.
@@ -2831,6 +2839,9 @@ exports.markNoShow = async (req, res) => {
     if (apt.status === 'no_asistio') return res.json(apt);
     apt.status = 'no_asistio';
     await apt.save();
+    // Nadie va a atenderla: su aviso de enfermería se apaga (era uno de los
+    // que quedaban sonando para siempre en la campana).
+    await require('../utils/appointmentNotice').apagarAvisosDeCita(apt._id);
     emitToClinic(apt.clinic, 'appointment:updated', apt);
     // Sin este evento, el botón "No asistió" jamás disparaba los workflows de
     // no-show (solo el job nocturno de citas vencidas lo hacía).
@@ -3042,12 +3053,7 @@ exports.nurseClaim = async (req, res) => {
      * cita (la de todos los enfermeros a quienes salió): el paciente ya está
      * en manos de alguien y no hay nada más que avisar.
      */
-    await Notification.deleteMany({
-      type: 'appointment_nursing',
-      'meta.appointment': apt._id,
-    }).catch((err) => {
-      console.warn('[citas] no se pudieron apagar los avisos de la cita:', err.message);
-    });
+    await require('../utils/appointmentNotice').apagarAvisosDeCita(apt._id);
     res.json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al reclamar la cita', error: error.message });
@@ -3107,7 +3113,7 @@ exports.nurseComplete = async (req, res) => {
      * tarde), sin esta ventana el segundo parte repetiría el primero.
      */
     const inicioDelTurno = miTurno?.startedAt || apt.nurseClaimedAt || apt.consultationStartedAt || null;
-    const { siguiente, terminado } = completarTurno(apt, { userId: req.user._id });
+    const { cerrado: turnoCerrado, siguiente, terminado } = completarTurno(apt, { userId: req.user._id });
 
     apt.nurseAttendedAt = new Date();
     if (!apt.consultationStartedAt) apt.consultationStartedAt = new Date();
@@ -3125,7 +3131,7 @@ exports.nurseComplete = async (req, res) => {
      *  · no hay siguiente → no se avisa a nadie, la cita terminó.
      */
     if (siguiente) {
-      const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion } = require('../utils/appointmentNotice');
+      const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion, laCitaMereceAviso } = require('../utils/appointmentNotice');
       // El nombre del paciente encabeza el aviso: «Enfermería terminó su parte»
       // a secas no dice a por quién hay que ir (ver utils/appointmentNotice).
       const paciente = await pacienteDeCita(apt);
@@ -3149,16 +3155,27 @@ exports.nurseComplete = async (req, res) => {
           url: urlDeAtencion(apt.patient, apt._id, siguiente.kind === 'enfermeria' ? 'seguimientos' : 'ficha'),
         }).catch(() => {});
       } else {
+        // El socket SIEMPRE (refresca la agenda de todos); la campana solo si
+        // la cita es de hoy en adelante: lo de días pasados ya está en la
+        // bandeja de la agenda y avisar otra vez por el móvil es ruido.
         emitToRole(apt.clinic, 'enfermero', 'appointment:assigned', apt);
-        const { notificarRol } = require('../utils/pushNotifications');
-        await notificarRol(apt.clinic, 'enfermero', {
-          type: 'appointment_nursing',
-          title: 'Cita para enfermería',
-          body: cuerpo,
-          url: urlDeAtencion(apt.patient, apt._id),
-          meta: { appointment: apt._id },
-        }).catch(() => {});
+        if (laCitaMereceAviso(apt)) {
+          const { notificarRol } = require('../utils/pushNotifications');
+          await notificarRol(apt.clinic, 'enfermero', {
+            type: 'appointment_nursing',
+            title: 'Cita para enfermería',
+            body: cuerpo,
+            url: urlDeAtencion(apt.patient, apt._id),
+            meta: { appointment: apt._id },
+          }).catch(() => {});
+        }
       }
+    }
+
+    // Si la cita quedó COMPLETADA, sus avisos de enfermería sobran: ya no
+    // espera a nadie. (En los demás casos el reclamo ya los apagó.)
+    if (apt.status === 'completada') {
+      await require('../utils/appointmentNotice').apagarAvisosDeCita(apt._id);
     }
 
     await advanceTreatmentsForAppointment(apt.clinic, apt);
@@ -3226,6 +3243,25 @@ exports.nurseComplete = async (req, res) => {
       });
       record.updatedBy = req.user._id;
       await record.save();
+      /**
+       * SELLAR el parte en el turno que lo generó.
+       *
+       * Enfermería lee la ficha por la puerta `by-appointment`, que SOLO devuelve
+       * los seguimientos cuyo id está en `turns[].followUp` / `serumFollowUp` —
+       * es lo que evita enseñarle partes de otras citas. Sin este sello, el parte
+       * automático de «Terminar» quedaba huérfano: existía en la ficha, pero la
+       * pestaña de seguimientos se mostraba vacía y el enfermero (o quien volviera
+       * a entrar por la cita) no veía nada de lo registrado.
+       */
+      if (turnoCerrado && turnoCerrado.followUp == null) {
+        turnoCerrado.followUp = record.followUps[record.followUps.length - 1]._id;
+        await Appointment.updateOne(
+          { _id: apt._id, 'turns._id': turnoCerrado._id },
+          { $set: { 'turns.$.followUp': turnoCerrado.followUp } }
+        ).catch((e) => {
+          console.warn('No se pudo sellar el seguimiento en el turno:', e.message);
+        });
+      }
     } catch (e) {
       console.warn('No se pudo registrar el seguimiento automático de enfermería:', e.message);
     }

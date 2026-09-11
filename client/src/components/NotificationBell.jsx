@@ -100,6 +100,16 @@ export default function NotificationBell() {
    */
   useSocketEvent('appointment:claimed', load, [clinicId]);
 
+  /**
+   * CUANDO UNA CITA YA NO ESPERA A NADIE, SU AVISO SE APAGA EN EL MOMENTO.
+   *
+   * El servidor ahora borra (o deja de enseñar) los avisos de las citas que se
+   * completan, se marcan no-show o se cancelan — no solo al reclamarlas —, y
+   * avisa por este evento. Sin escucharlo, el contador bajaría solo en el
+   * sondeo de respaldo (3 min) y la campana seguiría "aturdiendo" ese rato.
+   */
+  useSocketEvent('appointment:updated', load, [clinicId]);
+
   // Cerrar al hacer clic fuera o con Escape (mismo comportamiento que el resto
   // de menús flotantes de la app).
   useEffect(() => {

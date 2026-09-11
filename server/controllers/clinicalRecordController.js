@@ -1394,6 +1394,11 @@ exports.addFollowUp = async (req, res) => {
             apt.consultationEndedAt = new Date();
           }
           await apt.save();
+          // Si la cita quedó COMPLETADA, ya no espera a nadie: sus avisos de
+          // campana se apagan aquí también (el reclamo es solo un camino).
+          if (apt.status === 'completada') {
+            await require('../utils/appointmentNotice').apagarAvisosDeCita(apt._id);
+          }
           emitToClinic(req.clinicId, 'appointment:updated', apt);
 
           /**
@@ -1432,20 +1437,25 @@ exports.addFollowUp = async (req, res) => {
             // directa — hasta ahora solo se enteraban con la pestaña abierta.
             siguienteTurno = { kind: 'enfermeria', user: null };
             emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
-            const { notificarRol } = require('../utils/pushNotifications');
-            await notificarRol(req.clinicId, 'enfermero', {
-              type: 'appointment_nursing',
-              title: 'Cita para enfermería',
-              body: cuerpoDeAviso({
-                paciente,
-                servicio: servicioDeCita(apt, siguiente),
-                hora: apt.startTime,
-                motivo: 'El doctor terminó su parte.',
-              }),
-              url: urlDeAtencion(patientId, apt._id),
-              // La cita va en el aviso: al reclamarla, nurseClaim lo apaga.
-              meta: { appointment: apt._id },
-            }).catch(() => {});
+            // Cita de días pasados: el trabajo ya está en la bandeja de la
+            // agenda; avisar otra vez por el móvil solo llena la campana.
+            const { laCitaMereceAviso } = require('../utils/appointmentNotice');
+            if (laCitaMereceAviso(apt)) {
+              const { notificarRol } = require('../utils/pushNotifications');
+              await notificarRol(req.clinicId, 'enfermero', {
+                type: 'appointment_nursing',
+                title: 'Cita para enfermería',
+                body: cuerpoDeAviso({
+                  paciente,
+                  servicio: servicioDeCita(apt, siguiente),
+                  hora: apt.startTime,
+                  motivo: 'El doctor terminó su parte.',
+                }),
+                url: urlDeAtencion(patientId, apt._id),
+                // La cita va en el aviso: al reclamarla, nurseClaim lo apaga.
+                meta: { appointment: apt._id },
+              }).catch(() => {});
+            }
           }
         }
       } catch (e) {
@@ -2313,21 +2323,37 @@ exports.getFollowUpsByAppointment = async (req, res) => {
     let followUps = todos.filter((f) => sellados.has(String(f._id)));
     let aproximado = false;
 
-    // Enfermería debe ver únicamente la receta/suero asociado a ESTA cita. El
-    // respaldo por día es útil para historia clínica antigua, pero mostraría
-    // seguimientos de otras citas y vuelve a marear al enfermero.
-    if (!followUps.length && req.role !== 'enfermero') {
+    /**
+     * Enfermería también cae al respaldo, pero con la regla MÁS ESTRICTA: solo
+     * seguimientos del MISMO día y escritos por alguien de ESTA cita (su turno,
+     * el doctor o el espejo `attendedByNurse`). El caso que la motivó: kike
+     * reclamó una cita que quedó SIN turnos ni suero —la receta se sembró en la
+     * OTRA cita duplicada del mismo día— y su pestaña de seguimientos se mostraba
+     * en blanco, sin nada que lo explicara. Con el respaldo, al menos ve lo que
+     * se le recetó ese día; lo de otras citas sigue sin colarse porque el filtro
+     * de autor lo impide.
+     */
+    if (!followUps.length) {
       const idDe = (v) => String(v?._id || v || '');
       const atendieron = new Set(
         [...(apt.turns || []).map((t) => t.user), apt.doctor, apt.attendedByNurse]
           .filter(Boolean)
           .map(idDe)
       );
+      // Para enfermería, un suero PENDIENTE de aplicar escrito ese día también
+      // cuenta: es justo lo que tiene que poner, venga la cita que venga (el
+      // caso Danny: la receta se sembró en la otra cita duplicada del día y la
+      // suya no tenía ni turnos ni sello — ver el test de regresión).
+      const sueroPendiente = (f) => (f.recetaItems || []).some(
+        (i) => i.isSerum && !(i.administrations || []).length
+      );
+      const esEnfermero = req.role === 'enfermero';
       followUps = todos.filter((f) => {
         if (!isSameLocalDay(f.fecha, apt.date)) return false;
         // Sin nadie identificado (cita vieja sin turnos ni espejo) manda el día:
         // es lo único que hay, y es mejor que no enseñar nada.
-        return atendieron.size === 0 || atendieron.has(idDe(f.createdBy));
+        if (atendieron.size === 0 || atendieron.has(idDe(f.createdBy))) return true;
+        return esEnfermero && sueroPendiente(f);
       });
       aproximado = followUps.length > 0;
     }

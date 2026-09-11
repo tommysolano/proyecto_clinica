@@ -40,6 +40,17 @@ async function markNoShows(appointments) {
     { _id: { $in: appointments.map((a) => a._id) } },
     { $set: { status: 'no_asistio' } }
   );
+  // Nadie va a atenderlas: sus avisos de campana se apagan aquí también. Sin
+  // esto, la campana de enfermería quedaba llena de citas de días pasados.
+  try {
+    const Notification = require('../models/Notification');
+    await Notification.deleteMany({
+      type: { $in: ['appointment_nursing', 'appointment_assigned'] },
+      'meta.appointment': { $in: appointments.map((a) => a._id) },
+    });
+  } catch (e) {
+    console.warn('No se pudieron apagar los avisos de las citas vencidas:', e.message);
+  }
   for (const appt of appointments) {
     emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_NO_SHOW, {
       clinicId: String(appt.clinic),

@@ -81,10 +81,57 @@ function urlDeAtencion(patient, appointment, tab = 'seguimientos') {
   return `/patients/${pid}?tab=${tab}${aid ? `&appointment=${aid}` : ''}`;
 }
 
+/**
+ * APAGA LOS AVISOS DE UNA CITA en todas las campanas.
+ *
+ * La campana de enfermería se llenaba de avisos de citas de días pasados: el
+ * único sitio que borraba algo era `nurseClaim`, y media clínica no pasa por
+ * ahí — la cita se completa sin reclamar, se marca no-show, se cancela, o el
+ * barrido de fin de día la da por perdida — y su aviso quedaba sonando para
+ * siempre. Muchas notificaciones aturden: si la cita ya no espera a nadie, el
+ * aviso sobra.
+ *
+ * Se borra por `meta.appointment`, que es el sello que llevan TODOS los avisos
+ * de atención (ver cada `notificarRol`/`notificarUsuarios`). Nunca lanza: un
+ * aviso que no se apagó no puede tumbar lo que lo disparó.
+ */
+async function apagarAvisosDeCita(appointmentId) {
+  const aid = idDe(appointmentId);
+  if (!aid) return;
+  try {
+    const Notification = require('../models/Notification');
+    // `meta.appointment` se guarda como ObjectId: Mongo NO casaría un string
+    // contra él (no hay coerción de tipos en las queries). Se aceptan los dos.
+    const mongoose = require('mongoose');
+    const clave = mongoose.isValidObjectId(aid) ? new mongoose.Types.ObjectId(aid) : aid;
+    await Notification.deleteMany({
+      type: { $in: ['appointment_nursing', 'appointment_assigned'] },
+      'meta.appointment': clave,
+    });
+  } catch (e) {
+    console.warn('No se pudieron apagar los avisos de la cita:', e.message);
+  }
+}
+
+/**
+ * ¿MERECE AVISO ESTA CITA? Solo las de HOY o el futuro suenan en la campana.
+ *
+ * Reasignar una cita de días pasados —corregir un no-show, colgarle a alguien
+ * lo que quedó pendiente— no es noticia nueva: el trabajo ya está en la bandeja
+ * de la agenda, donde vive de verdad. Avisar otra vez por el móvil era parte de
+ * lo que llenaba la campana de citas vencidas.
+ */
+function laCitaMereceAviso(apt) {
+  const { isPastLocalDate } = require('./appointmentDate');
+  return !isPastLocalDate(apt?.date);
+}
+
 module.exports = {
   nombreDePaciente,
   pacienteDeCita,
   servicioDeCita,
   cuerpoDeAviso,
   urlDeAtencion,
+  apagarAvisosDeCita,
+  laCitaMereceAviso,
 };
