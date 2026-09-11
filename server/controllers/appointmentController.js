@@ -485,7 +485,11 @@ function normalizarPasos(steps) {
         serum: suero ? { base: suero.serumBase, components: suero.serumComponents } : undefined,
         // Lo devuelve la pantalla tal cual lo recibió: es la marca de que ese
         // suero YA está escrito en la ficha y no hay que volver a escribirlo.
-        serumFollowUp: suero && p.serumFollowUp ? p.serumFollowUp : null,
+        // Puede ser un suero YA EXISTENTE escogido desde la ficha, sin mandar
+        // una composición nueva. No lo borres por exigir `suero`: esta
+        // referencia es precisamente la que permite mostrar solo ese
+        // seguimiento al enfermero.
+        serumFollowUp: p.serumFollowUp ? String(p.serumFollowUp) : null,
         // Y si lo que escogió mostrador se SUMA a la bolsa del servicio en vez
         // de abrir una receta nueva (ver el campo en models/Appointment.js).
         serumMergeIntoService: !!(suero && p.serumMergeIntoService),

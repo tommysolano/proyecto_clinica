@@ -378,7 +378,15 @@ export default function PatientDetail() {
   // turno era del doctor —o de otra compañera— solo devolvía un 403.
   const enfermeriaMia = enTramite && (
     (aptData.turns || []).length
-      ? aptData.currentTurnKind === 'enfermeria' && idDe(aptData.currentTurnUser) === miId
+      ? (
+          aptData.currentTurnKind === 'enfermeria' && idDe(aptData.currentTurnUser) === miId
+          || (aptData.turns || []).some(
+            (t) => t.kind === 'enfermeria'
+              && t.status === 'pendiente'
+              && idDe(t.user) === miId
+              && !!t.startedAt
+          )
+        )
       : idDe(aptData.attendedByNurse) === miId
   );
   /**
@@ -393,8 +401,10 @@ export default function PatientDetail() {
     : null;
   // Con la guardia de `enTramite`: la ficha se abre ANTES de que llegue la cita
   // (aptData null), y un `aptData.turns` ahí tumba la pantalla entera.
+  const miTurnoYaReclamado = !!miTurnoVigente?.startedAt
+    || idDe(aptData?.attendedByNurse) === miId && !!aptData?.nurseClaimedAt;
   const reclameMiTurno = enTramite && (aptData.turns || []).length
-    ? (!miTurnoVigente || !!miTurnoVigente.startedAt)
+    ? (!miTurnoVigente || miTurnoYaReclamado)
     : true;
   const [reclamando, setReclamando] = useState(false);
   const [cerrandoTurno, setCerrandoTurno] = useState(false);
