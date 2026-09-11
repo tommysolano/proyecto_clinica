@@ -133,14 +133,25 @@ export default function ProductAutocomplete({
                 idx === highlight ? 'bg-emerald-50 text-emerald-700' : 'hover:bg-slate-50'
               }`}
             >
-              <div className="min-w-0">
-                <div className="font-medium text-slate-800 truncate">{p.name}</div>
-                {(p.code || p.category) && (
-                  <div className="text-xs text-slate-400 truncate">
-                    {p.code ? `${p.code} · ` : ''}
-                    {p.category || ''}
-                  </div>
+              <div className="min-w-0 flex items-center gap-2">
+                {/* Los servicios de la agenda llevan color propio (ver
+                    AppointmentServiceItem.color); el inventario no lo trae y
+                    aquí no se pinta nada. */}
+                {p.color && (
+                  <span
+                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                    style={{ backgroundColor: p.color }}
+                  />
                 )}
+                <div className="min-w-0">
+                  <div className="font-medium text-slate-800 truncate">{p.name}</div>
+                  {(p.code || p.category) && (
+                    <div className="text-xs text-slate-400 truncate">
+                      {p.code ? `${p.code} · ` : ''}
+                      {p.category || ''}
+                    </div>
+                  )}
+                </div>
               </div>
               {p.salePrice != null && (
                 <div className="text-xs font-semibold text-emerald-700 ml-3 whitespace-nowrap">

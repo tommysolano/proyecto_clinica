@@ -5,6 +5,7 @@ const Notification = require('../models/Notification');
 // Se importa aunque no se use directamente aquí: `populate('serviceItem')` falla
 // con "Schema hasn't been registered" si el modelo no se ha cargado nunca.
 require('../models/AppointmentServiceItem');
+const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 // Igual con el consultorio (ya no se pide al agendar, pero las citas viejas lo
 // tienen y el listado lo sigue poblando) y con la sucursal.
 require('../models/Room');
@@ -249,7 +250,25 @@ exports.getAppointments = async (req, res) => {
     if (createdBy) query.createdBy = createdBy;
     if (isFirstVisit === 'true') query.isFirstVisit = true;
     else if (isFirstVisit === 'false') query.isFirstVisit = { $ne: true };
-    if (service) query['services.product'] = service;
+    if (service) {
+      /**
+       * EL FILTRO DE SERVICIO MIRA EL CATÁLOGO DE LA AGENDA, no el inventario.
+       *
+       * El listado que el usuario elige al agendar una cita es
+       * `appointment-service-items`; el inventario ni se usa para esto. Filtrar
+       * por `services.product` —el arreglo legado— dejaba la agenda sin ninguna
+       * cita aunque el servicio estuviera delante en cada tarjeta: la cita de
+       * hoy guarda su servicio en `serviceItem`, no en el inventario.
+       *
+       * Se mantiene el filtro legado como $or para no perder las citas viejas
+       * que solo tienen el producto del inventario.
+       */
+      query.$or = [
+        { serviceItem: service },
+        { serviceName: (await AppointmentServiceItem.findById(service).select('name').lean())?.name },
+        { 'services.product': service },
+      ];
+    }
     if (room) query.room = room;
     if (patient) query.patient = patient;
     if (origin) query.origin = origin;
@@ -262,14 +281,26 @@ exports.getAppointments = async (req, res) => {
       query.startTime = { $lte: toTime };
     }
 
+    /**
+     * LOS FILTROS EXTRA NO SE PISAN ENTRE ELLOS.
+     *
+     * El filtro de doctor y el de servicio traen cada uno su `$or`: con
+     * `Object.assign` el segundo pisaba al primero y «Filtrar por servicio»
+     * devolvía citas del doctor sin respetar el servicio (o al revés, según el
+     * orden). Ambos van dentro de un `$and` para que se acumulen.
+     */
+    const extras = [];
     if (isDoctorRole(req.role)) {
       // Su turno VIGENTE o uno que ya atendió: al doctor que va segundo la cita
       // no le aparece hasta que el primero termine (ver filtroCitasDelDoctor).
-      Object.assign(query, filtroCitasDelDoctor(req.user._id));
+      extras.push(filtroCitasDelDoctor(req.user._id));
     }
     // El call center puede ver TODAS las citas agendadas (no solo las suyas).
     if (req.role === 'enfermero') {
-      Object.assign(query, await filtroEnfermeria(req));
+      extras.push(await filtroEnfermeria(req));
+    }
+    if (extras.length) {
+      Object.assign(query, extras.length === 1 ? extras[0] : { $and: extras });
     }
 
     /**

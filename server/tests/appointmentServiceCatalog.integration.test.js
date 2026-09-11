@@ -151,3 +151,63 @@ test('editar una cita sin mandar el servicio NO se lo borra', async () => {
   const guardada = await Appointment.findById(creada.payload._id).lean();
   assert.equal(guardada.serviceName, 'Consulta Cardio', 'el servicio sigue ahí');
 });
+
+// ─────────── EL FILTRO «POR SERVICIO» DE LA AGENDA ───────────
+//
+// El filtro enseñaba los productos del INVENTARIO y filtraba por
+// `services.product`, pero la clínica ya no usa el inventario para esto: lo que
+// se elige al agendar es un `appointment-service-item`. Con el listado viejo la
+// agenda no encontraba ni una cita aunque el servicio estuviera en cada tarjeta.
+
+test('el filtro de la agenda encuentra las citas por su servicio de agenda', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const p = await paciente(clinicId);
+  const svc = await crear(clinicId, userId, { name: 'Sueroterapia' });
+
+  await H.runController(
+    appt.createAppointment,
+    H.mockReq(clinicId, userId, {
+      patient: String(p._id), date: H.docDate(), startTime: '23:30',
+      serviceItem: String(svc.payload._id),
+    }, { role: 'cajero' }),
+  );
+  // Otra cita, con OTRO servicio: no tiene que salir con el filtro.
+  const otro = await crear(clinicId, userId, { name: 'Valoración' });
+  await H.runController(
+    appt.createAppointment,
+    H.mockReq(clinicId, userId, {
+      patient: String(p._id), date: H.docDate(), startTime: '23:40',
+      serviceItem: String(otro.payload._id),
+    }, { role: 'cajero' }),
+  );
+
+  const r = await H.runController(
+    appt.getAppointments,
+    H.mockReq(clinicId, userId, {}, { role: 'cajero', query: { service: String(svc.payload._id) } }),
+  );
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  const citas = Array.isArray(r.payload) ? r.payload : [];
+  assert.equal(citas.length, 1, 'solo la cita de Sueroterapia');
+  assert.equal(citas[0].serviceName, 'Sueroterapia');
+});
+
+test('el filtro sigue encontrando las citas viejas que solo tienen producto del inventario', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const p = await paciente(clinicId);
+  const Product = require('../models/Product');
+  const prod = await Product.create({
+    clinic: clinicId, name: 'Masaje antiguo', code: 'MAS1', salePrice: 10,
+    category: 'servicio', createdBy: userId,
+  });
+  await Appointment.create({
+    clinic: clinicId, patient: p._id, date: H.docDate(), startTime: '09:00',
+    status: 'pendiente', services: [{ product: prod._id, name: 'Masaje antiguo' }],
+  });
+
+  const r = await H.runController(
+    appt.getAppointments,
+    H.mockReq(clinicId, userId, {}, { role: 'cajero', query: { service: String(prod._id) } }),
+  );
+  const citas = Array.isArray(r.payload) ? r.payload : [];
+  assert.equal(citas.length, 1, 'la cita vieja no se pierde');
+});

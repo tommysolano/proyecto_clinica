@@ -76,10 +76,16 @@ function filtrarEnCliente(lista, filter) {
   return (lista || [])
     .filter((apt) => {
       if (filter.service) {
-        const has = (apt.services || []).some(
-          (s) => String(s.product?._id || s.product) === String(filter.service)
-        );
-        if (!has) return false;
+        /**
+         * Por el SERVICIO DE LA CITA (el del catálogo de la agenda), no por el
+         * producto del inventario: `serviceItem` es lo que se escoge al agendar
+         * y lo que la tarjeta muestra. El legado `services[].product` queda
+         * como respaldo para las citas viejas.
+         */
+        const idDe = (v) => String(v?._id || v || '');
+        const tiene = idDe(apt.serviceItem) === String(filter.service)
+          || (apt.services || []).some((s) => idDe(s.product) === String(filter.service));
+        if (!tiene) return false;
       }
       if (filter.clinic) {
         const c = apt.clinic?._id || apt.clinic;
@@ -737,12 +743,17 @@ export default function Appointments() {
 
   const fetchServices = async () => {
     try {
-      const res = await api.get('/products', { params: { limit: 500 } });
-      // Incluir también los programas (paquetes de varios servicios) al agendar.
-      const list = (res.data || []).filter(
-        (p) => p.active !== false && (p.category === 'servicio' || p.category === 'programa' || p.unlimited === true)
-      );
-      setServices(list);
+      /**
+       * EL CATÁLOGO DE LA AGENDA, no el inventario.
+       *
+       * El filtro «por servicio» enseñaba los productos del inventario, que la
+       * clínica ya no usa para esto: lo que se elige al agendar una cita es un
+       * `appointment-service-item`, y por ese campo se filtra de verdad. Con el
+       * listado viejo el usuario veía «Dermatitis» en el filtro y la agenda no
+       * encontraba ni una cita.
+       */
+      const res = await api.get('/appointment-service-items');
+      setServices(Array.isArray(res.data) ? res.data : []);
     } catch {
       // silent
     }
