@@ -295,7 +295,9 @@ export default function PatientDetail() {
     if (!appointmentId) return;
     api.get(`/appointments/${appointmentId}`)
       .then((r) => setAptData(r.data))
-      .catch(() => {});
+      .catch((err) => {
+        toast.error(err.response?.data?.message || 'No se pudo cargar la cita para enfermería');
+      });
   }, [appointmentId]);
 
   /**
@@ -2238,9 +2240,18 @@ function SeguimientosTab({ patientId, appointmentId }) {
   const load = async () => {
     setLoading(true);
     try {
-      const res = await api.get(`/clinical-records/${patientId}`);
-      setRecord(res.data);
-      loadPurchases();
+      if (esEnfermero && appointmentId) {
+        const res = await api.get(`/clinical-records/by-appointment/${appointmentId}`);
+        setRecord((previous) => ({
+          ...(previous || {}),
+          appointment: res.data?.appointment || null,
+          followUps: res.data?.followUps || [],
+        }));
+      } else {
+        const res = await api.get(`/clinical-records/${patientId}`);
+        setRecord(res.data);
+        loadPurchases();
+      }
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error');
     } finally {
@@ -2251,7 +2262,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [patientId]);
+  }, [patientId, appointmentId, esEnfermero]);
 
   // Los handlers reciben `listKey` porque el formulario tiene DOS listas:
   // 'recetaItems' (medicamentos/insumos) y 'derivacionItems' (servicios/programas).

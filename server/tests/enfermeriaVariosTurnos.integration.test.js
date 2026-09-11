@@ -114,6 +114,28 @@ test('un detox con dos pasos de enfermería: los atiende uno y luego el otro', a
   assert.equal(fin.status, 'completada', 'ya no queda nadie pendiente');
 });
 
+test('una cita pendiente con turno de enfermería aparece antes de que alguien la reclame', async () => {
+  const { clinicId, enf1, cita } = await seed();
+  await Appointment.updateOne(
+    { _id: cita._id },
+    {
+      $set: {
+        status: 'pendiente',
+        turns: [{ kind: 'enfermeria', user: enf1._id, status: 'pendiente', order: 0 }],
+        currentTurnKind: 'enfermeria',
+        currentTurnUser: enf1._id,
+      },
+    }
+  );
+
+  const r = await H.runController(
+    appt.getAppointments,
+    H.mockReq(clinicId, enf1._id, {}, { role: 'enfermero', query: {} }),
+  );
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  assert.ok(r.payload.some((a) => String(a._id) === String(cita._id)));
+});
+
 test('al segundo enfermero la cita SÍ le aparece en su bandeja cuando le toca', async () => {
   const { clinicId, userId, enf1, enf2, cita } = await seed();
   await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {

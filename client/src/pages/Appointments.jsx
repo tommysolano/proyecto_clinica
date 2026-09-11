@@ -2324,7 +2324,7 @@ export default function Appointments() {
                         )}
                         {/* Enfermero: reclamar una cita libre —o nombrada a ella
                             y que todavía no ha tomado— */}
-                        {isNurse && apt.status === 'asistida'
+                        {isNurse && ['pendiente', 'confirmada', 'asistida'].includes(apt.status)
                           && (enfermeriaLibre || (enfermeriaMia && !reclameMiTurno)) && (
                           <button
                             onClick={() => nurseClaim(apt)}
@@ -2335,7 +2335,7 @@ export default function Appointments() {
                           </button>
                         )}
                         {/* Enfermero: ver la receta del paciente que ya tomó */}
-                        {isNurse && apt.status === 'asistida' && enfermeriaMia && reclameMiTurno && (
+                        {isNurse && ['pendiente', 'confirmada', 'asistida'].includes(apt.status) && enfermeriaMia && reclameMiTurno && (
                           <button
                             onClick={() => abrirAtencion(apt)}
                             className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-700 bg-transparent border border-sky-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
@@ -2345,7 +2345,7 @@ export default function Appointments() {
                           </button>
                         )}
                         {/* Enfermero: cerrar su turno (no escribe seguimiento) */}
-                        {isNurse && apt.status === 'asistida' && enfermeriaMia && reclameMiTurno && (
+                        {isNurse && ['pendiente', 'confirmada', 'asistida'].includes(apt.status) && enfermeriaMia && reclameMiTurno && (
                           <button
                             onClick={() => nurseFinish(apt)}
                             className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-700 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"

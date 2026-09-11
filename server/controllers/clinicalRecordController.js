@@ -2292,7 +2292,7 @@ exports.getFollowUpsByAppointment = async (req, res) => {
     const { isSameLocalDay } = require('../utils/appointmentDate');
 
     const apt = await Appointment.findOne({ _id: req.params.appointmentId })
-      .select('clinic patient date startTime status turns doctor attendedByNurse serviceName')
+      .select('clinic patient date startTime status turns doctor attendedByNurse serviceName autoSerumFollowUp')
       .lean();
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
 
@@ -2305,13 +2305,18 @@ exports.getFollowUpsByAppointment = async (req, res) => {
     // también por esta puerta, y aquí se devolvería entera.
     const todos = hideTherapyNotes(record, req).followUps || [];
 
-    const sellados = new Set(
-      (apt.turns || []).map((t) => t.followUp).filter(Boolean).map(String)
-    );
+    const sellados = new Set([
+      ...(apt.turns || []).map((t) => t.followUp),
+      ...(apt.turns || []).map((t) => t.serumFollowUp),
+      apt.autoSerumFollowUp,
+    ].filter(Boolean).map(String));
     let followUps = todos.filter((f) => sellados.has(String(f._id)));
     let aproximado = false;
 
-    if (!followUps.length) {
+    // Enfermería debe ver únicamente la receta/suero asociado a ESTA cita. El
+    // respaldo por día es útil para historia clínica antigua, pero mostraría
+    // seguimientos de otras citas y vuelve a marear al enfermero.
+    if (!followUps.length && req.role !== 'enfermero') {
       const idDe = (v) => String(v?._id || v || '');
       const atendieron = new Set(
         [...(apt.turns || []).map((t) => t.user), apt.doctor, apt.attendedByNurse]

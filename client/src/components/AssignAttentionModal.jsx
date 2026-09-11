@@ -208,6 +208,31 @@ export default function AssignAttentionModal({
   // bitácora de Observaciones del paciente, junto a las demás.
   const [observacion, setObservacion] = useState('');
   const contador = useRef(0);
+  const [suerosDeFicha, setSuerosDeFicha] = useState([]);
+
+  // Solo se trae el catálogo de sueros de la ficha para ofrecerlo al momento
+  // de asignar enfermería. No se muestra la historia completa en este modal.
+  useEffect(() => {
+    const patientId = apt?.patient?._id || apt?.patient;
+    if (!patientId) return undefined;
+    let vivo = true;
+    api.get(`/clinical-records/${patientId}`)
+      .then(({ data }) => {
+        const sueros = (data?.followUps || []).filter((fu) =>
+          (fu.recetaItems || []).some((item) => item.isSerum)
+        );
+        if (vivo) setSuerosDeFicha(sueros);
+      })
+      .catch(() => { if (vivo) setSuerosDeFicha([]); });
+    return () => { vivo = false; };
+  }, [apt?.patient?._id, apt?.patient]);
+
+  const nombreDelSuero = (fu) => {
+    const linea = (fu?.recetaItems || []).find((item) => item.isSerum);
+    return [fu?.fecha ? String(fu.fecha).slice(0, 10) : '', linea?.name || linea?.productName || 'Suero']
+      .filter(Boolean)
+      .join(' · ');
+  };
 
   /**
    * El VALOR de la cita lo pone mostrador, en el momento en que recibe al
@@ -545,6 +570,32 @@ export default function AssignAttentionModal({
                     */}
                   {esEnf && (
                     <div className="mt-2 pl-8">
+                      {suerosDeFicha.length > 0 && (
+                        <div className="mb-2 rounded-lg border border-violet-200 bg-violet-50/60 p-2">
+                          <label className="block text-[11px] font-medium text-violet-900 mb-1">
+                            Suero de la ficha que se aplicará en esta cita
+                          </label>
+                          <select
+                            value={paso.serumFollowUp || (paso.serum ? '__nuevo__' : '')}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              editarPaso(idx, value === '__nuevo__'
+                                ? { serumFollowUp: null, serum: sueroVacio(), serumTocado: true }
+                                : { serumFollowUp: value || null, serum: null, serumTocado: false, serumMergeIntoService: false });
+                            }}
+                            className="w-full rounded-lg border border-violet-200 bg-white px-2 py-1.5 text-xs text-slate-700"
+                          >
+                            <option value="">Crear/escoger un suero nuevo</option>
+                            {suerosDeFicha.map((fu) => (
+                              <option key={fu._id} value={fu._id}>{nombreDelSuero(fu)}</option>
+                            ))}
+                            <option value="__nuevo__">Crear un suero nuevo desde cero</option>
+                          </select>
+                          <p className="m-0 mt-1 text-[10px] text-violet-700">
+                            El enfermero verá únicamente este seguimiento al abrir la cita.
+                          </p>
+                        </div>
+                      )}
                       {paso.serumFollowUp && !paso.serumTocado ? (
                         /* YA ESTÁ ESCRITO, PERO SE PUEDE CORREGIR.
                            Esto solo decía «ya está en los seguimientos» y ahí se

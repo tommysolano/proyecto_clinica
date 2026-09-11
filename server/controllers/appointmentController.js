@@ -2422,7 +2422,10 @@ async function filtroEnfermeria(req) {
 
   return {
     ...filtroCitasDeEnfermeria(req.user._id, legado),
-    status: { $in: ['asistida', 'completada'] },
+    // Un turno de enfermeria puede quedar preparado desde que se agenda la
+    // cita. Todavia no es una atencion, pero debe aparecer en la bandeja
+    // pendiente para que enfermeria la vea y la reclame.
+    status: { $in: ['pendiente', 'confirmada', 'asistida', 'completada'] },
   };
 }
 
