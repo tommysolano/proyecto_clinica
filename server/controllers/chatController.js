@@ -1529,14 +1529,19 @@ exports.uploadSavedReplyMedia = async (req, res) => {
     // demás (PDF, Word, Excel, ZIP…) se manda como DOCUMENTO adjunto.
     const kind = mediaKindOf(parsed.mimeType);
     // Topes en CARACTERES de data URL base64 (~1.33× el tamaño real del archivo).
-    // El documento se guarda como base64 en Mongo (tope real de BSON 16MB), por eso
-    // ~10MB de archivo — cubre PDFs/Office normales sin reventar el documento.
-    const MAX_LEN = { video: 43_000_000, audio: 21_000_000, image: 8_000_000, document: 14_000_000 };
+    //
+    // Los bytes van AL DISCO (ver utils/chatMedia → mediaStore), no a Mongo, así
+    // que el techo de BSON ya no manda. El techo de verdad es el de WhatsApp:
+    // los DOCUMENTOS admiten hasta 100 MB (Cloud API y WhatsApp Web), y por eso
+    // el tope del documento subió de ~10 MB a ~100 MB (sep-2026): los exámenes
+    // escaneados y los PDFs de laboratorio no cabían en el tope viejo. El resto
+    // de la cadena aguanta: express.json admite 150 MB de cuerpo y nginx 1 GB.
+    const MAX_LEN = { video: 43_000_000, audio: 21_000_000, image: 8_000_000, document: 134_000_000 };
     const TOO_BIG = {
       video: 'Video demasiado grande (máx ~32MB)',
       audio: 'Audio demasiado grande (máx ~15MB)',
       image: 'Imagen demasiado grande (máx ~6MB)',
-      document: 'Archivo demasiado grande (máx ~10MB)',
+      document: 'El archivo supera los 100 MB que admite WhatsApp',
     };
     if (dataUrl.length > MAX_LEN[kind]) {
       return res.status(400).json({ message: TOO_BIG[kind] });

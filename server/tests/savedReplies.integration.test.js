@@ -128,9 +128,15 @@ test('upload: acepta imagen, video y DOCUMENTOS; rechaza tamaños excesivos', as
   // Imagen por encima del tope (~6MB → 8M chars base64) → rechazada.
   const hugeImg = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { dataUrl: 'data:image/png;base64,' + 'A'.repeat(8_100_000) }));
   assert.equal(hugeImg.statusCode, 400);
-  // Documento demasiado grande (tope ~10MB por el límite de BSON de Mongo).
-  const hugeDoc = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { name: 'x.pdf', dataUrl: 'data:application/pdf;base64,' + 'A'.repeat(15_000_000) }));
+  // Documento por encima del tope de WhatsApp (~100 MB → 134M chars base64).
+  // El tope viejo era ~10 MB por el BSON de Mongo; desde que la media vive en
+  // disco, el techo de verdad es el del proveedor.
+  const hugeDoc = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { name: 'x.pdf', dataUrl: 'data:application/pdf;base64,' + 'A'.repeat(135_000_000) }));
   assert.equal(hugeDoc.statusCode, 400);
+  // Y un documento GRANDE pero dentro del tope (p. ej. 60 MB) ahora SÍ entra:
+  // es el caso que motivó el cambio (exámenes escaneados que no cabían).
+  const bigDoc = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { name: 'examen.pdf', dataUrl: 'data:application/pdf;base64,' + 'A'.repeat(80_000_000) }));
+  assert.equal(bigDoc.statusCode, 201, JSON.stringify(bigDoc.payload));
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

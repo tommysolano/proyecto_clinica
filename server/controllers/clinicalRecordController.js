@@ -257,6 +257,9 @@ const hideTherapyNotes = (record, req) => {
   if (!record || canReadTherapy(req)) return record;
   const obj = record.toObject ? record.toObject() : { ...record };
   obj.fichaTerapia = undefined;
+  // Las terapias complementarias son de la misma familia: solo terapeuta y
+  // administración las ven.
+  obj.terapiasComplementarias = undefined;
   obj.followUps = (obj.followUps || []).map((fu) => {
     if (fu?.createdByRole !== THERAPIST_ROLE) return fu;
     return {
@@ -648,6 +651,17 @@ exports.updateByPatient = async (req, res) => {
       }
     }
 
+    /**
+     * LAS TERAPIAS COMPLEMENTARIAS, igual que la ficha del terapeuta: solo las
+     * escribe él (o administración), y quien no las ve tampoco las guarda.
+     */
+    if (req.body.terapiasComplementarias !== undefined && canReadTherapy(req)) {
+      const tcs = sanitizeTerapiasComplementarias(req.body.terapiasComplementarias);
+      if (tcs !== undefined) {
+        update.terapiasComplementarias = { ...tcs, updatedBy: req.user._id, updatedAt: new Date() };
+      }
+    }
+
     const record = await ClinicalRecord.findOneAndUpdate(
       { patient: patientId },
       // `clinic` va en el $setOnInsert porque ya no está en el filtro y el
@@ -862,18 +876,46 @@ const sanitizeTerapia = (t) => {
   const foda = t.foda || {};
   const cuadrantes = {};
   for (const key of TERAPIA_FODA_KEYS) cuadrantes[key] = txt(foda[key]);
-  /**
-   * TERAPIAS COMPLEMENTARIAS (sep-2026).
-   *
-   *  · Biomagnetismo: cuatro textos.
-   *  · Terapia floral: el Mapa Floral valida su fila contra el CATÁLOGO — una
-   *    fila entra si su nombre corresponde a una flor de Bach (sin tildes ni
-   *    mayúsculas) o si trae un número del sistema (1–39). El nombre que se
-   *    guarda es el OFICIAL del catálogo, no el que tecleó: «sausaje» no entra
-   *    y «SAUCE» se guarda «Willow / Sauce». Máximo 39 filas (una por flor).
-   *  · Masaje terapéutico: la hoja de sesión, con la presión dentro de las tres
-   *    que pide la hoja (suave / moderada / profunda).
-   */
+  return {
+    // Solo los elementos del catálogo, y solo los que tienen algo escrito: un
+    // elemento en blanco no es un hallazgo, es un hueco.
+    elementos: (Array.isArray(t.elementos) ? t.elementos : [])
+      .filter((e) => e && TERAPIA_ELEMENTOS_KEYS.includes(e.key) && txt(e.texto))
+      .map((e) => ({ key: e.key, texto: txt(e.texto) })),
+    // Las flechas que dibujó él sobre el esquema. Coordenadas del lienzo
+    // (141 × 100): se aceptan con holgura porque un trazo puede salirse un
+    // poco del borde, pero no cualquier número — esto se vuelve a pintar.
+    flechas: (Array.isArray(t.flechas) ? t.flechas : [])
+      .map((f) => ({
+        x1: num(f?.x1), y1: num(f?.y1), x2: num(f?.x2), y2: num(f?.y2),
+        tipo: f?.tipo === 'apoyo' ? 'apoyo' : 'control',
+      }))
+      .filter((f) => [f.x1, f.y1, f.x2, f.y2].every((n) => n !== null && n >= -50 && n <= 200))
+      .slice(0, 60),
+    foda: cuadrantes,
+    plan: txt(t.plan),
+  };
+};
+
+/**
+ * LAS TERAPIAS COMPLEMENTARIAS, a nivel de FICHA del paciente (su propia
+ * pestaña, no dentro de un seguimiento): es un plan que se mantiene y evoluciona
+ * entre sesiones.
+ *
+ *  · Biomagnetismo: cuatro textos.
+ *  · Terapia floral: el Mapa Floral valida su fila contra el CATÁLOGO — una
+ *    fila entra si su nombre corresponde a una flor de Bach (sin tildes ni
+ *    mayúsculas) o si trae un número del sistema (1–39). El nombre que se
+ *    guarda es el OFICIAL del catálogo, no el que tecleó: «sausaje» no entra
+ *    y «SAUCE» se guarda «Willow – Sauce». Máximo 39 filas (una por flor).
+ *  · Masaje terapéutico: la hoja de sesión, con la presión dentro de las tres
+ *    que pide la hoja (suave / moderada / profunda).
+ *
+ * Devuelve `undefined` si no viene: un guardado de la ficha que no toque esta
+ * pestaña no la borra.
+ */
+const sanitizeTerapiasComplementarias = (t) => {
+  if (!t || typeof t !== 'object') return undefined;
   const florPlana = (s) => String(s || '')
     .toLowerCase()
     .normalize('NFD')
@@ -907,23 +949,6 @@ const sanitizeTerapia = (t) => {
   const bm = t.biomagnetismo || {};
   const mj = t.masajeTerapeutico || {};
   return {
-    // Solo los elementos del catálogo, y solo los que tienen algo escrito: un
-    // elemento en blanco no es un hallazgo, es un hueco.
-    elementos: (Array.isArray(t.elementos) ? t.elementos : [])
-      .filter((e) => e && TERAPIA_ELEMENTOS_KEYS.includes(e.key) && txt(e.texto))
-      .map((e) => ({ key: e.key, texto: txt(e.texto) })),
-    // Las flechas que dibujó él sobre el esquema. Coordenadas del lienzo
-    // (141 × 100): se aceptan con holgura porque un trazo puede salirse un
-    // poco del borde, pero no cualquier número — esto se vuelve a pintar.
-    flechas: (Array.isArray(t.flechas) ? t.flechas : [])
-      .map((f) => ({
-        x1: num(f?.x1), y1: num(f?.y1), x2: num(f?.x2), y2: num(f?.y2),
-        tipo: f?.tipo === 'apoyo' ? 'apoyo' : 'control',
-      }))
-      .filter((f) => [f.x1, f.y1, f.x2, f.y2].every((n) => n !== null && n >= -50 && n <= 200))
-      .slice(0, 60),
-    foda: cuadrantes,
-    plan: txt(t.plan),
     biomagnetismo: {
       objetivo: txt(bm.objetivo),
       protocoloSeleccionado: txt(bm.protocoloSeleccionado),
