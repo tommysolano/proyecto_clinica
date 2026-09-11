@@ -3408,10 +3408,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
               consiguen dejando la puerta abierta y señalada. */}
           {esEnfermero && followUps.length > 0 && (
             <div className="px-4 py-2 bg-sky-50 text-xs text-sky-800 flex flex-wrap items-center justify-between gap-2">
-              <span>
+                  <span>
                 {verConsultaCompleta
                   ? 'Viendo la consulta completa del médico.'
-                  : 'Viendo solo lo que hay que aplicar: la receta y lo ya administrado.'}
+                  : 'Viendo solo el suero que se va a aplicar.'}
               </span>
               <button
                 type="button"
@@ -3574,6 +3574,23 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       // (servicios/programas = Derivaciones, el resto = Receta).
                       const recetaOnly = fu.recetaItems.filter((it) => !it.isService);
                       const derivOnly = fu.recetaItems.filter((it) => it.isService);
+                      /**
+                       * EL ENFERMERO SOLO VE EL SUERO (sep-2026).
+                       *
+                       * La vista recortada le enseñaba la receta ENTERA —
+                       * medicamentos, derivaciones y todo— y era información que
+                       * no le toca: su trabajo aquí es el suero que se va a
+                       * poner, nada más. Con el recorte activo se cuelan solo
+                       * las líneas `isSerum` (con su `SueroLinea`, que es donde
+                       * anota las dosis) y lo que enfermería ya aplicó; los
+                       * medicamentos, las derivaciones y la receta antigua como
+                       * texto libre quedan fuera. La consulta completa sigue
+                       * estando a un clic (ver `verConsultaCompleta`), que es
+                       * por donde se mira una alergia antes de pinchar.
+                       */
+                      const recetaVisible = soloReceta
+                        ? recetaOnly.filter((it) => it.isSerum)
+                        : recetaOnly;
                       const renderItem = (it, i) => {
                         // Un suero no es una línea de texto: es una cuenta abierta.
                         // Enfermería va poniendo dosis y aquí se ve cuántas
@@ -3614,15 +3631,15 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       };
                       return (
                         <>
-                          {recetaOnly.length > 0 && (
+                          {recetaVisible.length > 0 && (
                             <div className="mt-2 bg-slate-50 border border-slate-200 rounded p-2">
-                              <p className="text-[11px] font-semibold text-slate-600 uppercase mb-1">Receta</p>
+                              <p className="text-[11px] font-semibold text-slate-600 uppercase mb-1">{soloReceta ? 'Suero' : 'Receta'}</p>
                               <ul className="text-xs text-slate-700 space-y-1.5">
-                                {recetaOnly.map(renderItem)}
+                                {recetaVisible.map(renderItem)}
                               </ul>
                             </div>
                           )}
-                          {derivOnly.length > 0 && (
+                          {!soloReceta && derivOnly.length > 0 && (
                             <div className="mt-2 bg-indigo-50 border border-indigo-200 rounded p-2">
                               <p className="text-[11px] font-semibold text-indigo-600 uppercase mb-1">Derivaciones</p>
                               <ul className="text-xs text-slate-700 space-y-1.5">
@@ -3649,8 +3666,9 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         {vs.glucose && <span>Glu: {vs.glucose}mg/dL</span>}
                       </div>
                     )}
-                    {/* Legacy: receta como texto libre (antes de los ítems de inventario). */}
-                    {fu.receta && (
+                    {/* Legacy: receta como texto libre (antes de los ítems de inventario).
+                        Para enfermería (vista recortada) tampoco: no es un suero. */}
+                    {!soloReceta && fu.receta && (
                       <div className="mt-2 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Receta:</b> {fu.receta}
                       </div>
@@ -3691,13 +3709,13 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     </>)}
                     {/* Una consulta sin nada que aplicar no puede quedarse en un
                         motivo suelto: en la vista recortada parecería que le
-                        falta algo por cargar. */}
+                        falta algo por cargar. La cuenta sale de lo que de verdad
+                        se muestra: SOLO los sueros, no la receta entera. */}
                     {soloReceta
-                      && !(fu.recetaItems || []).length
-                      && !fu.receta
+                      && !((fu.recetaItems || []).some((it) => !it.isService && it.isSerum))
                       && !(fu.aplicaciones || []).length && (
                       <div className="mt-1 text-[11px] text-slate-400 italic">
-                        Esta consulta no dejó nada que aplicar.
+                        Esta consulta no dejó suero por aplicar.
                       </div>
                     )}
                     {/* Adjuntos (PDF o imágenes). Se pliegan con el resto de la
