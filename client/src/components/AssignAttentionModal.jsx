@@ -10,6 +10,7 @@ import SueroComposicionEditor from './SueroComposicionEditor';
 import { SUERO_CLORURO_NOMBRE } from '../constants/sueroterapia';
 import { useAuth } from '../context/AuthContext';
 import { doctorOptionLabel, doctorTypeLabel } from '../utils/roles';
+import { pendingSerums, serumProgress } from '../utils/serumProgress';
 import {
   HiOutlineBeaker,
   HiOutlineHeart,
@@ -210,8 +211,9 @@ export default function AssignAttentionModal({
   const contador = useRef(0);
   const [suerosDeFicha, setSuerosDeFicha] = useState([]);
 
-  // Solo se trae el catálogo de sueros de la ficha para ofrecerlo al momento
-  // de asignar enfermería. No se muestra la historia completa en este modal.
+  // Solo se trae el catálogo de sueros PENDIENTES de la ficha para ofrecerlo al
+  // asignar enfermería. Los que ya llegaron a su cantidad recetada no deben
+  // volver a proponerse para otra cita.
   useEffect(() => {
     const patientId = apt?.patient?._id || apt?.patient;
     if (!patientId) return undefined;
@@ -219,7 +221,7 @@ export default function AssignAttentionModal({
     api.get(`/clinical-records/${patientId}`)
       .then(({ data }) => {
         const sueros = (data?.followUps || []).filter((fu) =>
-          (fu.recetaItems || []).some((item) => item.isSerum)
+          pendingSerums(fu).length > 0
         );
         if (vivo) setSuerosDeFicha(sueros);
       })
@@ -228,18 +230,31 @@ export default function AssignAttentionModal({
   }, [apt?.patient?._id, apt?.patient]);
 
   const nombreDelSuero = (fu) => {
-    const linea = (fu?.recetaItems || []).find((item) => item.isSerum);
-    const base = linea?.serumBase?.name
-      ? `${linea.serumBase.name}${linea.serumBase.volumeMl ? ` ${linea.serumBase.volumeMl} ml` : ''}`
-      : '';
-    const componentes = (linea?.serumComponents || [])
-      .map((c) => `${c.name || c.code || 'Componente'} ×${c.quantity || 1}`)
-      .join(', ');
+    const lineas = pendingSerums(fu).map((linea) => {
+      const base = linea?.serumBase?.name
+        ? `${linea.serumBase.name}${linea.serumBase.volumeMl ? ` ${linea.serumBase.volumeMl} ml` : ''}`
+        : '';
+      const componentes = (linea?.serumComponents || [])
+        .map((c) => `${c.name || c.code || 'Componente'} ×${c.quantity || 1}`)
+        .join(', ');
+      const { applied, prescribed, remaining } = serumProgress(linea);
+      const faltante = `${remaining === 1 ? 'falta' : 'faltan'} ${remaining}`;
+      const aplicado = applied === 1 ? 'aplicado' : 'aplicados';
+
+      return [
+        linea?.name || linea?.productName || 'Suero',
+        base,
+        componentes ? `[${componentes}]` : '',
+        `${applied} de ${prescribed} ${aplicado}`,
+        faltante,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+    });
+
     return [
       fu?.fecha ? String(fu.fecha).slice(0, 10) : '',
-      linea?.name || linea?.productName || 'Suero',
-      base,
-      componentes ? `[${componentes}]` : '',
+      lineas.join(' / '),
     ]
       .filter(Boolean)
       .join(' · ');
