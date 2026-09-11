@@ -2276,11 +2276,11 @@ export default function Appointments() {
                             enfermería cuando la consulta ya empezó, y en las
                             marcadas como ausentes: si el paciente aparece, hay
                             que poder recibirlo sin pelearse con el estado. */}
-                        {canCharge && ['pendiente', 'confirmada', 'asistida', 'no_asistio'].includes(apt.status) && (
+                        {canCharge && ['pendiente', 'confirmada', 'asistida', 'no_asistio', 'completada'].includes(apt.status) && (
                           <button
                             onClick={() => setAssignModal({ appointment: apt })}
                             className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
-                            title="Asignar atención (doctores o enfermería)"
+                            title="Asignar doctor, enfermero o suero"
                           >
                             <HiOutlineUserPlus className="w-4 h-4" />
                           </button>

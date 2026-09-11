@@ -229,7 +229,18 @@ export default function AssignAttentionModal({
 
   const nombreDelSuero = (fu) => {
     const linea = (fu?.recetaItems || []).find((item) => item.isSerum);
-    return [fu?.fecha ? String(fu.fecha).slice(0, 10) : '', linea?.name || linea?.productName || 'Suero']
+    const base = linea?.serumBase?.name
+      ? `${linea.serumBase.name}${linea.serumBase.volumeMl ? ` ${linea.serumBase.volumeMl} ml` : ''}`
+      : '';
+    const componentes = (linea?.serumComponents || [])
+      .map((c) => `${c.name || c.code || 'Componente'} ×${c.quantity || 1}`)
+      .join(', ');
+    return [
+      fu?.fecha ? String(fu.fecha).slice(0, 10) : '',
+      linea?.name || linea?.productName || 'Suero',
+      base,
+      componentes ? `[${componentes}]` : '',
+    ]
       .filter(Boolean)
       .join(' · ');
   };
