@@ -40,6 +40,8 @@ const {
   TERAPIA_FODA_KEYS,
   TERAPIA_HABITOS_FILAS_KEYS,
   TERAPIA_HABITOS_NIVELES,
+  TERAPIA_FLORES,
+  TERAPIA_MASAJE_PRESIONES,
   ODONTOGRAMA_ESTADOS_CARA_KEYS,
   ODONTOGRAMA_GRADOS,
   marcaValida,
@@ -860,6 +862,50 @@ const sanitizeTerapia = (t) => {
   const foda = t.foda || {};
   const cuadrantes = {};
   for (const key of TERAPIA_FODA_KEYS) cuadrantes[key] = txt(foda[key]);
+  /**
+   * TERAPIAS COMPLEMENTARIAS (sep-2026).
+   *
+   *  · Biomagnetismo: cuatro textos.
+   *  · Terapia floral: el Mapa Floral valida su fila contra el CATÁLOGO — una
+   *    fila entra si su nombre corresponde a una flor de Bach (sin tildes ni
+   *    mayúsculas) o si trae un número del sistema (1–39). El nombre que se
+   *    guarda es el OFICIAL del catálogo, no el que tecleó: «sausaje» no entra
+   *    y «SAUCE» se guarda «Willow / Sauce». Máximo 39 filas (una por flor).
+   *  · Masaje terapéutico: la hoja de sesión, con la presión dentro de las tres
+   *    que pide la hoja (suave / moderada / profunda).
+   */
+  const florPlana = (s) => String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    // El nombre que manda la pantalla lleva el guion largo del catálogo
+    // («Willow – Sauce»): se normaliza a guion corto para casar siempre.
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const floresPorNombre = new Map(
+    TERAPIA_FLORES.flatMap((f) => [
+      [florPlana(f.en), f],
+      [florPlana(f.es), f],
+      // El nombre completo tal como lo escribe la tabla (ver MapaFloralTabla).
+      [florPlana(`${f.en} - ${f.es}`), f],
+    ])
+  );
+  const floresPorNumero = new Map(TERAPIA_FLORES.map((f) => [String(f.n), f]));
+  const mapaFloral = (Array.isArray(t.terapiaFloral?.mapaFloral) ? t.terapiaFloral.mapaFloral : [])
+    .map((fila) => {
+      const numeroTxt = txt(fila?.numero);
+      const nombreTxt = txt(fila?.nombre);
+      // El NÚMERO manda si resuelve: es el identificador del sistema de Bach.
+      const flor = floresPorNumero.get(numeroTxt.replace(/[^\d]/g, '')) || floresPorNombre.get(florPlana(nombreTxt));
+      if (!flor) return null;
+      return { numero: String(flor.n), nombre: `${flor.en} – ${flor.es}` };
+    })
+    .filter(Boolean)
+    .slice(0, 39);
+  const tf = t.terapiaFloral || {};
+  const bm = t.biomagnetismo || {};
+  const mj = t.masajeTerapeutico || {};
   return {
     // Solo los elementos del catálogo, y solo los que tienen algo escrito: un
     // elemento en blanco no es un hallazgo, es un hueco.
@@ -878,6 +924,33 @@ const sanitizeTerapia = (t) => {
       .slice(0, 60),
     foda: cuadrantes,
     plan: txt(t.plan),
+    biomagnetismo: {
+      objetivo: txt(bm.objetivo),
+      protocoloSeleccionado: txt(bm.protocoloSeleccionado),
+      sesionesEstimadas: txt(bm.sesionesEstimadas),
+      protocoloParSeleccionado: txt(bm.protocoloParSeleccionado),
+    },
+    terapiaFloral: {
+      mapaFloral,
+      objetivoFormula: txt(tf.objetivoFormula),
+      afirmacionTerapeutica: txt(tf.afirmacionTerapeutica),
+      tareasTerapia: txt(tf.tareasTerapia),
+    },
+    masajeTerapeutico: {
+      zonaTrabajada: txt(mj.zonaTrabajada),
+      tensionInicial: txt(mj.tensionInicial),
+      tecnicaUtilizada: txt(mj.tecnicaUtilizada),
+      presion: pick(String(mj.presion ?? '').toLowerCase(), TERAPIA_MASAJE_PRESIONES),
+      aceiteUtilizado: txt(mj.aceiteUtilizado),
+      aromaterapia: txt(mj.aromaterapia),
+      floresApoyo: txt(mj.floresApoyo),
+      tiempo: txt(mj.tiempo),
+      respuestaInmediata: txt(mj.respuestaInmediata),
+      tensionFinal: txt(mj.tensionFinal),
+      observaciones: txt(mj.observaciones),
+      recomendaciones: txt(mj.recomendaciones),
+      proximaSesion: txt(mj.proximaSesion),
+    },
   };
 };
 

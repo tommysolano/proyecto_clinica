@@ -129,7 +129,115 @@ test('una flecha con basura dentro no entra, y el resto del esquema sí', async 
   const fu = rec.followUps.find((f) => f.createdByRole === 'terapeuta');
   assert.equal(fu.terapia.flechas.length, 1, 'solo sobrevive la que se puede volver a pintar');
   assert.equal(fu.terapia.flechas[0].tipo, 'control', 'un ciclo desconocido cae al de control');
-  assert.equal(fu.terapia.elementos[0].texto, 'Frío de riñón', 'lo escrito no se pierde por una flecha mala');
+  assert.equal(fu.terapia.elementos[0].texto, 'Frío de riñón', 'lo escrito no se pierde por una fila mala');
+});
+
+// ───────────────────── TERAPIAS COMPLEMENTARIAS ─────────────────────
+
+test('biomagnetismo, mapa floral y masaje se guardan con lo que el terapeuta escribió', async () => {
+  const { clinicId, patient, terapeuta } = await seed();
+
+  const r = await crearFu(clinicId, terapeuta, patient, {
+    descripcion: 'Sesión integral',
+    terapia: {
+      biomagnetismo: {
+        objetivo: 'Drenaje linfático',
+        protocoloSeleccionado: 'Protocolo emocional',
+        sesionesEstimadas: '4',
+        protocoloParSeleccionado: 'Riñón – Vejiga',
+      },
+      terapiaFloral: {
+        mapaFloral: [
+          { numero: '25', nombre: 'lo que mandó la pantalla' }, // el número manda
+          { numero: '', nombre: 'Willow – Sauce' },
+        ],
+        objetivoFormula: 'Soltar el resentimiento',
+        afirmacionTerapeutica: 'Perdono y avanzo',
+        tareasTerapia: 'Escribir el diario tres veces por semana',
+      },
+      masajeTerapeutico: {
+        zonaTrabajada: 'Espalda alta',
+        tensionInicial: '8',
+        tecnicaUtilizada: 'Amasamiento profundo',
+        presion: 'moderada',
+        aceiteUtilizado: 'Almendras + lavanda',
+        aromaterapia: 'Lavanda',
+        floresApoyo: 'Rescate',
+        tiempo: '45 min',
+        respuestaInmediata: 'Relajación profunda',
+        tensionFinal: '3',
+        observaciones: 'Zona lumbar sensible',
+        recomendaciones: 'Hidratación y estiramientos',
+        proximaSesion: 'En dos semanas',
+      },
+    },
+  }, 'terapeuta');
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const rec = await ClinicalRecord.findOne({ patient: patient._id }).lean();
+  const fu = rec.followUps.find((f) => f.createdByRole === 'terapeuta');
+  const t = fu.terapia;
+
+  assert.equal(t.biomagnetismo.objetivo, 'Drenaje linfático');
+  assert.equal(t.biomagnetismo.protocoloParSeleccionado, 'Riñón – Vejiga');
+
+  // El número manda: la fila se guarda con el nombre OFICIAL del catálogo.
+  assert.equal(t.terapiaFloral.mapaFloral.length, 2);
+  assert.equal(t.terapiaFloral.mapaFloral[0].numero, '25');
+  assert.equal(t.terapiaFloral.mapaFloral[0].nombre, 'Red Chestnut – Castaño Rojo');
+  assert.equal(t.terapiaFloral.mapaFloral[1].numero, '38');
+  assert.equal(t.terapiaFloral.objetivoFormula, 'Soltar el resentimiento');
+
+  assert.equal(t.masajeTerapeutico.presion, 'moderada');
+  assert.equal(t.masajeTerapeutico.tensionInicial, '8');
+  assert.equal(t.masajeTerapeutico.proximaSesion, 'En dos semanas');
+});
+
+test('una fila del mapa floral que no es ninguna flor de Bach no entra', async () => {
+  const { clinicId, patient, terapeuta } = await seed();
+
+  const r = await crearFu(clinicId, terapeuta, patient, {
+    descripcion: 'Sesión',
+    terapia: {
+      terapiaFloral: {
+        mapaFloral: [
+          { numero: '', nombre: 'sausaje' },          // no existe
+          { numero: '99', nombre: '' },               // número fuera del sistema
+          { numero: '38', nombre: '' },               // válida: solo número
+          { numero: '', nombre: 'SAUCE' },            // válida: mayúsculas y sin resolver
+        ],
+      },
+    },
+  }, 'terapeuta');
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const rec = await ClinicalRecord.findOne({ patient: patient._id }).lean();
+  const fu = rec.followUps.find((f) => f.createdByRole === 'terapeuta');
+  const filas = fu.terapia.terapiaFloral.mapaFloral;
+  assert.equal(filas.length, 2, 'solo las flores de verdad');
+  assert.equal(filas[0].numero, '38');
+  assert.equal(filas[0].nombre, 'Willow – Sauce', 'el nombre se normaliza al oficial');
+  assert.equal(filas[1].nombre, 'Willow – Sauce');
+});
+
+test('una presión que no es de la hoja se descarta, y el resto del masaje queda', async () => {
+  const { clinicId, patient, terapeuta } = await seed();
+
+  const r = await crearFu(clinicId, terapeuta, patient, {
+    descripcion: 'Sesión',
+    terapia: {
+      masajeTerapeutico: {
+        zonaTrabajada: 'Cuello',
+        presion: 'muy fuerte',   // no está en la hoja
+      },
+    },
+  }, 'terapeuta');
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const rec = await ClinicalRecord.findOne({ patient: patient._id }).lean();
+  const fu = rec.followUps.find((f) => f.createdByRole === 'terapeuta');
+  assert.equal(fu.terapia.masajeTerapeutico.presion, '', 'una presión inventada no se guarda');
+  assert.equal(fu.terapia.masajeTerapeutico.zonaTrabajada, 'Cuello');
 });
 
 // ───────────────────── los rótulos de la receta ─────────────────────

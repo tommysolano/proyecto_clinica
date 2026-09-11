@@ -517,6 +517,57 @@ const followUpSchema = new mongoose.Schema(
       // El plan escrito que sale del reparto de arriba. Sustituye al «plan de
       // tratamiento» de la hoja MSP, que al terapeuta no se le pide.
       plan: { type: String, trim: true, default: '' },
+      /**
+       * TERAPIAS COMPLEMENTARIAS (sep-2026, a petición del terapeuta). Tres
+       * bloques que comparten la regla de la sección: texto libre donde toca y
+       * catálogo donde hace falta.
+       *
+       *  · BIOMAGNETISMO — cuatro textos: el objetivo, el protocolo elegido,
+       *    cuántas sesiones se estiman y el protocolo-par.
+       *  · TERAPIA FLORAL — el Mapa Floral (número + nombre de la flor de Bach,
+       *    el usuario llena uno y el otro se completa en la pantalla) y los tres
+       *    textos de la fórmula. El servidor guarda LOS DOS campos de cada fila:
+       *    si el nombre del catálogo cambiara mañana, lo escrito queda como fue.
+       *  · MASAJE TERAPÉUTICO — la hoja de la sesión, campo a campo.
+       */
+      biomagnetismo: {
+        objetivo: { type: String, trim: true, default: '' },
+        protocoloSeleccionado: { type: String, trim: true, default: '' },
+        sesionesEstimadas: { type: String, trim: true, default: '' },
+        protocoloParSeleccionado: { type: String, trim: true, default: '' },
+      },
+      terapiaFloral: {
+        // Una fila por flor elegida. `numero` es el del sistema de Bach (texto
+        // porque «Rescate» no lleva número de verdad) y `nombre` el de la flor.
+        mapaFloral: {
+          type: [new mongoose.Schema(
+            {
+              numero: { type: String, trim: true, default: '' },
+              nombre: { type: String, trim: true, default: '' },
+            },
+            { _id: false }
+          )],
+          default: [],
+        },
+        objetivoFormula: { type: String, trim: true, default: '' },
+        afirmacionTerapeutica: { type: String, trim: true, default: '' },
+        tareasTerapia: { type: String, trim: true, default: '' },
+      },
+      masajeTerapeutico: {
+        zonaTrabajada: { type: String, trim: true, default: '' },
+        tensionInicial: { type: String, trim: true, default: '' },
+        tecnicaUtilizada: { type: String, trim: true, default: '' },
+        presion: { type: String, trim: true, default: '' },
+        aceiteUtilizado: { type: String, trim: true, default: '' },
+        aromaterapia: { type: String, trim: true, default: '' },
+        floresApoyo: { type: String, trim: true, default: '' },
+        tiempo: { type: String, trim: true, default: '' },
+        respuestaInmediata: { type: String, trim: true, default: '' },
+        tensionFinal: { type: String, trim: true, default: '' },
+        observaciones: { type: String, trim: true, default: '' },
+        recomendaciones: { type: String, trim: true, default: '' },
+        proximaSesion: { type: String, trim: true, default: '' },
+      },
     },
     // Datos podológicos (rol 'podologia'). Hoja «Historia clínica podológica».
     podologia: {

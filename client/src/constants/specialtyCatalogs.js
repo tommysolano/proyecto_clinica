@@ -558,6 +558,96 @@ export const TERAPIA_HABITOS_FILAS_KEYS = TERAPIA_HABITOS_FILAS.map((f) => f.key
 // casillas sueltas.
 export const TERAPIA_HABITOS_NIVELES = ['1', '2', '3'];
 
+/**
+ * LAS 39 FLORES DE BACH del Mapa Floral.
+ *
+ * La tabla del seguimiento pide número y nombre; el usuario escribe UNO de los
+ * dos y el otro se llena solo — escribiendo «25» aparece «Red Chestnut», y
+ * escribiendo «sauce» (o «willow», o «SAUCE») aparece el 38. El número es el
+ * orden clásico del sistema de Bach (1–38 más «Rescate», que es el remedio de
+ * emergencia y no lleva número: se le da el 39 de trabajo interno).
+ *
+ * El casamiento es SIN TILDES y por prefijo en las dos lenguas: «crab»,
+ * «manzano», «ala» (Álamo temblón) y «haya» encuentran su flor. La lista va en
+ * el ORDEN OFICIAL porque la tabla la enseña como referencia.
+ */
+export const TERAPIA_FLORES = [
+  { n: 1,  en: 'Agrimony',           es: 'Agrimonia' },
+  { n: 2,  en: 'Aspen',              es: 'Álamo temblón' },
+  { n: 3,  en: 'Beech',              es: 'Haya' },
+  { n: 4,  en: 'Centaury',           es: 'Centáurea' },
+  { n: 5,  en: 'Cerato',             es: 'Ceratostigma' },
+  { n: 6,  en: 'Cherry Plum',        es: 'Cerasifera' },
+  { n: 7,  en: 'Chestnut Bud',       es: 'Brote de Castaño' },
+  { n: 8,  en: 'Chicory',            es: 'Achicoria' },
+  { n: 9,  en: 'Clematis',           es: 'Clemátide' },
+  { n: 10, en: 'Crab Apple',         es: 'Manzano Silvestre' },
+  { n: 11, en: 'Elm',                es: 'Olmo' },
+  { n: 12, en: 'Gentian',            es: 'Genciana' },
+  { n: 13, en: 'Gorse',              es: 'Aulaga' },
+  { n: 14, en: 'Heather',            es: 'Brezo' },
+  { n: 15, en: 'Holly',              es: 'Acebo' },
+  { n: 16, en: 'Honeysuckle',        es: 'Madreselva' },
+  { n: 17, en: 'Hornbeam',           es: 'Hojarazo' },
+  { n: 18, en: 'Impatiens',          es: 'Impaciencia' },
+  { n: 19, en: 'Larch',              es: 'Alerce' },
+  { n: 20, en: 'Mimulus',            es: 'Mímulo' },
+  { n: 21, en: 'Mustard',            es: 'Mostaza' },
+  { n: 22, en: 'Oak',                es: 'Roble' },
+  { n: 23, en: 'Olive',              es: 'Olivo' },
+  { n: 24, en: 'Pine',               es: 'Pino' },
+  { n: 25, en: 'Red Chestnut',       es: 'Castaño Rojo' },
+  { n: 26, en: 'Rock Rose',          es: 'Heliantemo' },
+  { n: 27, en: 'Rock Water',         es: 'Agua de Roca' },
+  { n: 28, en: 'Scleranthus',        es: 'Scleranthus' },
+  { n: 29, en: 'Star of Bethlehem',  es: 'Estrella de Belén' },
+  { n: 30, en: 'Sweet Chestnut',     es: 'Castaño Dulce' },
+  { n: 31, en: 'Vervain',            es: 'Verbena' },
+  { n: 32, en: 'Vine',               es: 'Vid' },
+  { n: 33, en: 'Walnut',             es: 'Nogal' },
+  { n: 34, en: 'Water Violet',       es: 'Violeta de Agua' },
+  { n: 35, en: 'White Chestnut',     es: 'Castaño Blanco' },
+  { n: 36, en: 'Wild Oat',           es: 'Avena Silvestre' },
+  { n: 37, en: 'Wild Rose',          es: 'Rosa Silvestre' },
+  { n: 38, en: 'Willow',             es: 'Sauce' },
+  { n: 39, en: 'Rescate',            es: 'Rescate' },
+];
+
+/**
+ * Resuelve una flor a partir de lo que el usuario escribió en cualquiera de las
+ * dos columnas.
+ *
+ *  · NÚMERO → la flor cuyo número coincide (texto «25», «25.», «nº 25»).
+ *  · TEXTO  → la primera flor cuyo nombre EN o ES empieza con lo escrito, sin
+ *    tildes ni mayúsculas; si nada empieza con eso, se acepta que lo CONTENGA
+ *    («castaño rojo» casa por prefijo, «rojo» casa por contención).
+ *
+ * Devuelve la flor o null. Es puro: se usa desde el onChange de la tabla.
+ */
+export const resolverFlorBach = (valor) => {
+  const crudo = String(valor ?? '').trim();
+  if (!crudo) return null;
+  const plano = (s) => String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  // ¿Es un número? (acepta «25», «25.», «n.º 25», «#25»)
+  const comoNumero = crudo.replace(/^[^\d]*(\d+)[^\d]*$/, '$1');
+  if (/^\d+$/.test(comoNumero)) {
+    const n = Number(comoNumero);
+    const porNumero = TERAPIA_FLORES.find((f) => f.n === n);
+    if (porNumero) return porNumero;
+  }
+  const q = plano(crudo);
+  if (!q) return null;
+  return (
+    TERAPIA_FLORES.find((f) => plano(f.en).startsWith(q))
+    || TERAPIA_FLORES.find((f) => plano(f.es).startsWith(q))
+    || TERAPIA_FLORES.find((f) => plano(f.en).includes(q) || plano(f.es).includes(q))
+    || null
+  );
+};
+
 
 /**
  * RÓTULOS DE LA RECETA, que no son los mismos para todos.

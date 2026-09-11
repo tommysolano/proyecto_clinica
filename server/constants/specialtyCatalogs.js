@@ -540,6 +540,59 @@ const TERAPIA_HABITOS_FILAS_KEYS = TERAPIA_HABITOS_FILAS.map((f) => f.key);
 const TERAPIA_HABITOS_NIVELES = ['1', '2', '3'];
 
 /**
+ * LAS 39 FLORES DE BACH del Mapa Floral (espejo de client/src/constants).
+ *
+ * El servidor no necesita el catálogo para RESOLVER (eso lo hace la pantalla al
+ * vuelo), pero sí para VALIDAR: una fila del mapa solo se guarda si su nombre
+ * corresponde de verdad a una flor — «Sauce» entra, «sausaje» no. El número
+ * viaja como texto porque «Rescate» no lleva número de verdad.
+ */
+const TERAPIA_FLORES = [
+  { n: 1,  en: 'Agrimony',           es: 'Agrimonia' },
+  { n: 2,  en: 'Aspen',              es: 'Álamo temblón' },
+  { n: 3,  en: 'Beech',              es: 'Haya' },
+  { n: 4,  en: 'Centaury',           es: 'Centáurea' },
+  { n: 5,  en: 'Cerato',             es: 'Ceratostigma' },
+  { n: 6,  en: 'Cherry Plum',        es: 'Cerasifera' },
+  { n: 7,  en: 'Chestnut Bud',       es: 'Brote de Castaño' },
+  { n: 8,  en: 'Chicory',            es: 'Achicoria' },
+  { n: 9,  en: 'Clematis',           es: 'Clemátide' },
+  { n: 10, en: 'Crab Apple',         es: 'Manzano Silvestre' },
+  { n: 11, en: 'Elm',                es: 'Olmo' },
+  { n: 12, en: 'Gentian',            es: 'Genciana' },
+  { n: 13, en: 'Gorse',              es: 'Aulaga' },
+  { n: 14, en: 'Heather',            es: 'Brezo' },
+  { n: 15, en: 'Holly',              es: 'Acebo' },
+  { n: 16, en: 'Honeysuckle',        es: 'Madreselva' },
+  { n: 17, en: 'Hornbeam',           es: 'Hojarazo' },
+  { n: 18, en: 'Impatiens',          es: 'Impaciencia' },
+  { n: 19, en: 'Larch',              es: 'Alerce' },
+  { n: 20, en: 'Mimulus',            es: 'Mímulo' },
+  { n: 21, en: 'Mustard',            es: 'Mostaza' },
+  { n: 22, en: 'Oak',                es: 'Roble' },
+  { n: 23, en: 'Olive',              es: 'Olivo' },
+  { n: 24, en: 'Pine',               es: 'Pino' },
+  { n: 25, en: 'Red Chestnut',       es: 'Castaño Rojo' },
+  { n: 26, en: 'Rock Rose',          es: 'Heliantemo' },
+  { n: 27, en: 'Rock Water',         es: 'Agua de Roca' },
+  { n: 28, en: 'Scleranthus',        es: 'Scleranthus' },
+  { n: 29, en: 'Star of Bethlehem',  es: 'Estrella de Belén' },
+  { n: 30, en: 'Sweet Chestnut',     es: 'Castaño Dulce' },
+  { n: 31, en: 'Vervain',            es: 'Verbena' },
+  { n: 32, en: 'Vine',               es: 'Vid' },
+  { n: 33, en: 'Walnut',             es: 'Nogal' },
+  { n: 34, en: 'Water Violet',       es: 'Violeta de Agua' },
+  { n: 35, en: 'White Chestnut',     es: 'Castaño Blanco' },
+  { n: 36, en: 'Wild Oat',           es: 'Avena Silvestre' },
+  { n: 37, en: 'Wild Rose',          es: 'Rosa Silvestre' },
+  { n: 38, en: 'Willow',             es: 'Sauce' },
+  { n: 39, en: 'Rescate',            es: 'Rescate' },
+];
+
+// Presiones del masaje terapéutico: las tres que pide la hoja de sesión.
+const TERAPIA_MASAJE_PRESIONES = ['suave', 'moderada', 'profunda'];
+
+/**
  * RÓTULOS DE LA RECETA, que no son los mismos para todos.
  *
  * El terapeuta no receta fármacos: manda suplementos, productos naturales y
@@ -632,6 +685,8 @@ module.exports = {
   TERAPIA_HABITOS_FILAS,
   TERAPIA_HABITOS_FILAS_KEYS,
   TERAPIA_HABITOS_NIVELES,
+  TERAPIA_FLORES,
+  TERAPIA_MASAJE_PRESIONES,
   RECETA_ETIQUETAS,
   recetaEtiquetas,
 };

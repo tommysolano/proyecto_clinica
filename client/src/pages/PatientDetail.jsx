@@ -48,6 +48,8 @@ import {
   TERAPIA_FODA_KEYS,
   TERAPIA_HABITOS_FILAS,
   TERAPIA_HABITOS_NIVELES,
+  TERAPIA_FLORES,
+  resolverFlorBach,
   recetaEtiquetas,
   PODOLOGIA_HALLAZGOS,
   PODOLOGIA_EVALUACION,
@@ -1982,6 +1984,22 @@ function SeguimientosTab({ patientId, appointmentId }) {
     flechas: [],
     foda: Object.fromEntries(TERAPIA_FODA_KEYS.map((k) => [k, ''])),
     plan: '',
+    // TERAPIAS COMPLEMENTARIAS (sep-2026): biomagnetismo, mapa floral y masaje.
+    biomagnetismo: { objetivo: '', protocoloSeleccionado: '', sesionesEstimadas: '', protocoloParSeleccionado: '' },
+    terapiaFloral: {
+      // La tabla nace con UNA fila vacía, como la receta: se ve desde el inicio
+      // sin tener que pulsar nada antes de poder escribir.
+      mapaFloral: [{ numero: '', nombre: '' }],
+      objetivoFormula: '',
+      afirmacionTerapeutica: '',
+      tareasTerapia: '',
+    },
+    masajeTerapeutico: {
+      zonaTrabajada: '', tensionInicial: '', tecnicaUtilizada: '', presion: '',
+      aceiteUtilizado: '', aromaterapia: '', floresApoyo: '', tiempo: '',
+      respuestaInmediata: '', tensionFinal: '', observaciones: '', recomendaciones: '',
+      proximaSesion: '',
+    },
   });
   const emptyCardiologia = () => ({
     antecedentes: [],
@@ -5519,6 +5537,9 @@ function CardiologiaSummary({ value }) {
 
 function terapiaHasData(t) {
   if (!t) return false;
+  const bm = t.biomagnetismo || {};
+  const tf = t.terapiaFloral || {};
+  const mj = t.masajeTerapeutico || {};
   return (
     (t.elementos || []).some((e) => String(e?.texto || '').trim())
     // Un esquema con flechas y sin una sola nota SÍ es una consulta: las
@@ -5526,19 +5547,177 @@ function terapiaHasData(t) {
     || (t.flechas || []).length > 0
     || TERAPIA_FODA_KEYS.some((k) => String(t.foda?.[k] || '').trim())
     || String(t.plan || '').trim()
+    // TERAPIAS COMPLEMENTARIAS: hay data si algo de los tres bloques se llenó.
+    || [bm.objetivo, bm.protocoloSeleccionado, bm.sesionesEstimadas, bm.protocoloParSeleccionado].some((v) => String(v || '').trim())
+    || (tf.mapaFloral || []).some((f) => String(f?.numero || '').trim() || String(f?.nombre || '').trim())
+    || [tf.objetivoFormula, tf.afirmacionTerapeutica, tf.tareasTerapia].some((v) => String(v || '').trim())
+    || Object.entries(mj).some(([, v]) => String(v || '').trim())
+  );
+}
+
+/**
+ * UNA SECCIÓN DENTRO DE LAS TERAPIAS COMPLEMENTARIAS, con su título.
+ * Solo el cascarón visual: cada bloque mete sus campos.
+ */
+function TerapiaBloque({ titulo, children }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-semibold text-violet-700">{titulo}</div>
+      <div className="bg-white rounded-lg border border-violet-100 p-3 space-y-2">{children}</div>
+    </div>
+  );
+}
+
+/** Campo de texto corto de una sección, con su título encima. */
+function TerapiaCampo({ titulo, value, onChange, placeholder, type = 'text' }) {
+  return (
+    <label className="block">
+      <span className="text-xs font-medium text-slate-600 block mb-1">{titulo}</span>
+      <input
+        type={type}
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full text-sm border border-slate-200 rounded px-2.5 py-1.5 outline-none focus:border-violet-500"
+      />
+    </label>
+  );
+}
+
+/** Campo largo (textarea) de una sección, con su título encima. */
+function TerapiaArea({ titulo, value, onChange, placeholder, rows = 2 }) {
+  return (
+    <label className="block">
+      <span className="text-xs font-medium text-slate-600 block mb-1">{titulo}</span>
+      <textarea
+        rows={rows}
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full text-sm border border-slate-200 rounded px-2.5 py-1.5 outline-none focus:border-violet-500 resize-none"
+      />
+    </label>
+  );
+}
+
+/**
+ * EL MAPA FLORAL: tabla de dos columnas (número ↔ flor) con autollenado.
+ *
+ * El usuario escribe en UNA de las dos columnas y la otra se llena sola:
+ * «25» trae «Red Chestnut – Castaño Rojo» y «sauce» (o «SAUCE», o «willow»,
+ * o «ala» de Álamo temblón) trae el 38. El casamiento lo hace
+ * `resolverFlorBach` (ver specialtyCatalogs), sin tildes y por prefijo.
+ *
+ * El input de número es de TEXTO con filtro de dígitos y no de number: en el
+ * móvil los spinners estorban y «n.º 25» no se podría ni escribir.
+ */
+function MapaFloralTabla({ filas, onChange }) {
+  const setFila = (idx, campo, valor) => {
+    const nuevas = [...(filas || [])];
+    const fila = { ...(nuevas[idx] || { numero: '', nombre: '' }) };
+    if (campo === 'numero') {
+      // Solo dígitos (el texto libre no cabe aquí): lo que no sea número no
+      // entra, y la resolución corre por cuenta del catálogo.
+      const limpio = String(valor).replace(/[^\d]/g, '').slice(0, 2);
+      fila.numero = limpio;
+      const flor = limpio ? resolverFlorBach(limpio) : null;
+      fila.nombre = flor ? `${flor.en} – ${flor.es}` : (limpio ? fila.nombre : '');
+    } else {
+      fila.nombre = valor;
+      const flor = String(valor).trim() ? resolverFlorBach(valor) : null;
+      fila.numero = flor ? String(flor.n) : (String(valor).trim() ? fila.numero : '');
+    }
+    nuevas[idx] = fila;
+    onChange(nuevas);
+  };
+
+  return (
+    <div className="space-y-1">
+      <div className="text-sm font-semibold text-slate-700">Mapa Floral</div>
+      <div className="text-xs text-slate-500">Flores prioritarias</div>
+      <div className="border border-slate-200 rounded-lg overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-violet-50 text-left text-[11px] uppercase tracking-wide text-violet-700">
+              <th className="px-2 py-1.5 w-24 font-semibold">N.º</th>
+              <th className="px-2 py-1.5 font-semibold">Flor</th>
+              <th className="w-10" aria-label="acciones" />
+            </tr>
+          </thead>
+          <tbody>
+            {(filas || []).map((f, idx) => (
+              <tr key={idx} className="border-t border-slate-100">
+                <td className="px-2 py-1">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={f?.numero || ''}
+                    onChange={(e) => setFila(idx, 'numero', e.target.value)}
+                    placeholder="1–39"
+                    className="w-full text-sm border border-slate-200 rounded px-2 py-1 outline-none focus:border-violet-500"
+                  />
+                </td>
+                <td className="px-2 py-1">
+                  <input
+                    type="text"
+                    list="flores-bach-lista"
+                    value={f?.nombre || ''}
+                    onChange={(e) => setFila(idx, 'nombre', e.target.value)}
+                    placeholder="Escribe el nombre y el número se llena solo"
+                    className="w-full text-sm border border-slate-200 rounded px-2 py-1 outline-none focus:border-violet-500"
+                  />
+                </td>
+                <td className="px-1 py-1 text-center">
+                  <button
+                    type="button"
+                    onClick={() => onChange((filas || []).filter((_, i) => i !== idx))}
+                    className="p-1 text-slate-300 hover:text-rose-600 cursor-pointer bg-transparent border-none"
+                    title="Quitar esta flor"
+                  >
+                    <HiOutlineTrash className="w-4 h-4" />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {/* El datalist da el empujón: al escribir se despliegan las flores que
+            casan, y elegir una llena el número por el mismo camino del onChange. */}
+        <datalist id="flores-bach-lista">
+          {TERAPIA_FLORES.map((f) => (
+            <option key={f.n} value={`${f.en} – ${f.es}`}>{`N.º ${f.n}`}</option>
+          ))}
+        </datalist>
+      </div>
+      <button
+        type="button"
+        onClick={() => onChange([...(filas || []), { numero: '', nombre: '' }])}
+        className="inline-flex items-center gap-1 text-xs text-violet-700 hover:text-violet-900 cursor-pointer bg-transparent border-none font-medium"
+      >
+        <HiOutlinePlus className="w-3.5 h-3.5" /> Agregar flor
+      </button>
+    </div>
   );
 }
 
 /**
  * LA CONSULTA DEL TERAPEUTA.
  *
- * Tres bloques y ninguno más: los cinco elementos, el reparto en cuatro
- * cuadrantes y el plan escrito. La hoja MSP (examen físico, CIE-10, evolución,
- * revisión por sistemas) no se le enseña — ver `isTerapeuta` en SeguimientosTab.
+ * Los cinco elementos, el reparto en cuatro cuadrantes, el plan escrito y —
+ * desde sep-2026— las terapias complementarias en tres secciones:
+ * Biomagnetismo, Terapia floral (Mapa Floral + fórmula) y Masaje terapéutico.
+ * La hoja MSP (examen físico, CIE-10, evolución, revisión por sistemas) no se
+ * le enseña — ver `isTerapeuta` en SeguimientosTab.
  */
 function TerapiaSection({ value, onChange }) {
   const t = value || {};
   const setFoda = (k, v) => onChange({ ...t, foda: { ...(t.foda || {}), [k]: v } });
+  const bm = t.biomagnetismo || {};
+  const tf = t.terapiaFloral || {};
+  const mj = t.masajeTerapeutico || {};
+  const setBm = (k, v) => onChange({ ...t, biomagnetismo: { ...bm, [k]: v } });
+  const setTf = (k, v) => onChange({ ...t, terapiaFloral: { ...tf, [k]: v } });
+  const setMj = (k, v) => onChange({ ...t, masajeTerapeutico: { ...mj, [k]: v } });
 
   return (
     <div className="md:col-span-3 space-y-4">
@@ -5577,6 +5756,134 @@ function TerapiaSection({ value, onChange }) {
           className="input resize-none"
         />
       </div>
+
+      {/* ───────── TERAPIAS COMPLEMENTARIAS ───────── */}
+      <div className="space-y-3 border-t border-violet-100 pt-3">
+        <div className="text-sm font-bold text-violet-800 uppercase tracking-wide">Terapias complementarias</div>
+
+        <TerapiaBloque titulo="Biomagnetismo">
+          <TerapiaCampo
+            titulo="Objetivo"
+            value={bm.objetivo}
+            onChange={(v) => setBm('objetivo', v)}
+          />
+          <TerapiaCampo
+            titulo="Protocolo seleccionado"
+            value={bm.protocoloSeleccionado}
+            onChange={(v) => setBm('protocoloSeleccionado', v)}
+          />
+          <TerapiaCampo
+            titulo="Sesiones estimadas"
+            value={bm.sesionesEstimadas}
+            onChange={(v) => setBm('sesionesEstimadas', v)}
+          />
+          <TerapiaCampo
+            titulo="Protocolo-par seleccionado"
+            value={bm.protocoloParSeleccionado}
+            onChange={(v) => setBm('protocoloParSeleccionado', v)}
+          />
+        </TerapiaBloque>
+
+        <TerapiaBloque titulo="Terapia floral">
+          <MapaFloralTabla
+            filas={tf.mapaFloral}
+            onChange={(filas) => setTf('mapaFloral', filas)}
+          />
+          <TerapiaArea
+            titulo="Objetivo de la fórmula"
+            value={tf.objetivoFormula}
+            onChange={(v) => setTf('objetivoFormula', v)}
+          />
+          <TerapiaArea
+            titulo="Afirmación terapéutica"
+            value={tf.afirmacionTerapeutica}
+            onChange={(v) => setTf('afirmacionTerapeutica', v)}
+          />
+          <TerapiaArea
+            titulo="Tareas de la terapia"
+            value={tf.tareasTerapia}
+            onChange={(v) => setTf('tareasTerapia', v)}
+          />
+        </TerapiaBloque>
+
+        <TerapiaBloque titulo="Masaje terapéutico">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <TerapiaCampo
+              titulo="Zona trabajada"
+              value={mj.zonaTrabajada}
+              onChange={(v) => setMj('zonaTrabajada', v)}
+            />
+            <TerapiaCampo
+              titulo="Tensión inicial 0-10"
+              value={mj.tensionInicial}
+              onChange={(v) => setMj('tensionInicial', v)}
+            />
+            <TerapiaCampo
+              titulo="Técnica utilizada"
+              value={mj.tecnicaUtilizada}
+              onChange={(v) => setMj('tecnicaUtilizada', v)}
+            />
+            <label className="block">
+              <span className="text-xs font-medium text-slate-600 block mb-1">Presión</span>
+              <select
+                value={mj.presion || ''}
+                onChange={(e) => setMj('presion', e.target.value)}
+                className="w-full text-sm border border-slate-200 rounded px-2.5 py-1.5 outline-none focus:border-violet-500 bg-white"
+              >
+                <option value="">—</option>
+                <option value="suave">Suave</option>
+                <option value="moderada">Moderada</option>
+                <option value="profunda">Profunda</option>
+              </select>
+            </label>
+            <TerapiaCampo
+              titulo="Aceite utilizado"
+              value={mj.aceiteUtilizado}
+              onChange={(v) => setMj('aceiteUtilizado', v)}
+            />
+            <TerapiaCampo
+              titulo="Aromaterapia"
+              value={mj.aromaterapia}
+              onChange={(v) => setMj('aromaterapia', v)}
+            />
+            <TerapiaCampo
+              titulo="Flores utilizadas como apoyo"
+              value={mj.floresApoyo}
+              onChange={(v) => setMj('floresApoyo', v)}
+            />
+            <TerapiaCampo
+              titulo="Tiempo"
+              value={mj.tiempo}
+              onChange={(v) => setMj('tiempo', v)}
+            />
+            <TerapiaCampo
+              titulo="Tensión final 0-10"
+              value={mj.tensionFinal}
+              onChange={(v) => setMj('tensionFinal', v)}
+            />
+          </div>
+          <TerapiaArea
+            titulo="Respuesta inmediata"
+            value={mj.respuestaInmediata}
+            onChange={(v) => setMj('respuestaInmediata', v)}
+          />
+          <TerapiaArea
+            titulo="Observaciones"
+            value={mj.observaciones}
+            onChange={(v) => setMj('observaciones', v)}
+          />
+          <TerapiaArea
+            titulo="Recomendaciones"
+            value={mj.recomendaciones}
+            onChange={(v) => setMj('recomendaciones', v)}
+          />
+          <TerapiaCampo
+            titulo="Próxima sesión"
+            value={mj.proximaSesion}
+            onChange={(v) => setMj('proximaSesion', v)}
+          />
+        </TerapiaBloque>
+      </div>
     </div>
   );
 }
@@ -5589,6 +5896,11 @@ function TerapiaSummary({ value }) {
   // El gráfico se pinta si hay algo QUE PINTAR: notas en los elementos o
   // flechas dibujadas. Con solo flechas también, que es media consulta.
   const hayGrafico = conTexto.length > 0 || (t.flechas || []).length > 0;
+  const bm = t.biomagnetismo || {};
+  const tf = t.terapiaFloral || {};
+  const mj = t.masajeTerapeutico || {};
+  const flores = (tf.mapaFloral || []).filter((f) => String(f?.numero || '').trim() || String(f?.nombre || '').trim());
+  const presionLabel = { suave: 'Suave', moderada: 'Moderada', profunda: 'Profunda' };
 
   return (
     <SpecialtySummary title="Terapia" tone="violet">
@@ -5611,6 +5923,48 @@ function TerapiaSummary({ value }) {
           <b>Plan de tratamiento terapéutico:</b> {t.plan}
         </span>
       )}
+      {/* ───────── TERAPIAS COMPLEMENTARIAS ───────── */}
+      {(bm.objetivo || bm.protocoloSeleccionado || bm.sesionesEstimadas || bm.protocoloParSeleccionado) && (
+        <span className="w-full font-semibold text-violet-700 mt-1">Biomagnetismo</span>
+      )}
+      {bm.objetivo && <span className="w-full whitespace-pre-wrap"><b>Objetivo:</b> {bm.objetivo}</span>}
+      {bm.protocoloSeleccionado && <span className="w-full whitespace-pre-wrap"><b>Protocolo seleccionado:</b> {bm.protocoloSeleccionado}</span>}
+      {bm.sesionesEstimadas && <span className="w-full whitespace-pre-wrap"><b>Sesiones estimadas:</b> {bm.sesionesEstimadas}</span>}
+      {bm.protocoloParSeleccionado && <span className="w-full whitespace-pre-wrap"><b>Protocolo-par seleccionado:</b> {bm.protocoloParSeleccionado}</span>}
+      {(flores.length > 0 || tf.objetivoFormula || tf.afirmacionTerapeutica || tf.tareasTerapia) && (
+        <span className="w-full font-semibold text-violet-700 mt-1">Terapia floral</span>
+      )}
+      {flores.length > 0 && (
+        <span className="w-full">
+          <b>Mapa Floral (flores prioritarias):</b>
+          <span className="block mt-0.5">
+            {flores.map((f, i) => (
+              <span key={i} className="inline-block mr-2 whitespace-nowrap">
+                {f.numero ? `${f.numero}.` : ''} {f.nombre || ''}
+              </span>
+            ))}
+          </span>
+        </span>
+      )}
+      {tf.objetivoFormula && <span className="w-full whitespace-pre-wrap"><b>Objetivo de la fórmula:</b> {tf.objetivoFormula}</span>}
+      {tf.afirmacionTerapeutica && <span className="w-full whitespace-pre-wrap"><b>Afirmación terapéutica:</b> {tf.afirmacionTerapeutica}</span>}
+      {tf.tareasTerapia && <span className="w-full whitespace-pre-wrap"><b>Tareas de la terapia:</b> {tf.tareasTerapia}</span>}
+      {Object.entries(mj).some(([, v]) => String(v || '').trim()) && (
+        <span className="w-full font-semibold text-violet-700 mt-1">Masaje terapéutico</span>
+      )}
+      {mj.zonaTrabajada && <span className="w-full"><b>Zona trabajada:</b> {mj.zonaTrabajada}</span>}
+      {mj.tensionInicial && <span className="w-full"><b>Tensión inicial:</b> {mj.tensionInicial}</span>}
+      {mj.tecnicaUtilizada && <span className="w-full"><b>Técnica utilizada:</b> {mj.tecnicaUtilizada}</span>}
+      {mj.presion && <span className="w-full"><b>Presión:</b> {presionLabel[mj.presion] || mj.presion}</span>}
+      {mj.aceiteUtilizado && <span className="w-full"><b>Aceite utilizado:</b> {mj.aceiteUtilizado}</span>}
+      {mj.aromaterapia && <span className="w-full"><b>Aromaterapia:</b> {mj.aromaterapia}</span>}
+      {mj.floresApoyo && <span className="w-full"><b>Flores utilizadas como apoyo:</b> {mj.floresApoyo}</span>}
+      {mj.tiempo && <span className="w-full"><b>Tiempo:</b> {mj.tiempo}</span>}
+      {mj.respuestaInmediata && <span className="w-full whitespace-pre-wrap"><b>Respuesta inmediata:</b> {mj.respuestaInmediata}</span>}
+      {mj.tensionFinal && <span className="w-full"><b>Tensión final:</b> {mj.tensionFinal}</span>}
+      {mj.observaciones && <span className="w-full whitespace-pre-wrap"><b>Observaciones:</b> {mj.observaciones}</span>}
+      {mj.recomendaciones && <span className="w-full whitespace-pre-wrap"><b>Recomendaciones:</b> {mj.recomendaciones}</span>}
+      {mj.proximaSesion && <span className="w-full"><b>Próxima sesión:</b> {mj.proximaSesion}</span>}
     </SpecialtySummary>
   );
 }
