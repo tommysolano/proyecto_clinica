@@ -2689,16 +2689,51 @@ async function processDueEnrollments() {
 }
 
 /**
+ * QUITA ACENTOS, MAYÚSCULAS, SIGNOS Y ESPACIOS DOBLES. Es lo que permite
+ * comparar una respuesta escrita a mano («Sí asistiré 🙌», «1. si asistire»)
+ * contra el botón configurado sin depender de cómo la persona lo tecleó. El
+ * matching de botones lo exigía: solo comparaba en minúsculas EXACTO, y el
+ * mismo flujo funcionaba en unos chats y no en otros porque el título que
+ * vuelve de Meta (o lo que la persona escribió a mano por QR) no era
+ * idéntico al texto del nodo.
+ */
+function normalizaTextoBoton(s) {
+  return String(s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * Reanuda las inscripciones que esperaban respuesta del paciente cuando llega un
  * mensaje entrante. Clasifica la respuesta (yes/no/other) en el contexto para que
  * los pasos `condition` posteriores puedan ramificar.
  * Lo invoca el ingest de mensajes entrantes (chatController).
  */
 async function resumeOnReply({ clinicId, patientId, phone, text, interactiveReply = null }) {
-  const q = { clinic: clinicId, status: 'waiting', waitingForReply: true };
-  if (patientId) q.patient = patientId;
-  else if (phone) q['context.phone'] = messaging.normalizePhone(phone);
-  else return { resumed: 0 };
+  /**
+   * Identidad por PACIENTE O POR TELÉFONO, no por una sola (sep-2026, caso real:
+   * unos chats retomaban y otros no). Una inscripción nacida de una importación
+   * de contactos puede tener `patient: null` y solo `context.phone`, mientras la
+   * conversación sí quedó enlazada a un paciente: buscando solo por `patient`
+   * esa inscripción era invisible al clic y el flujo se quedaba esperando para
+   * siempre. Con $or alcanza a las dos formas de estar marcada.
+   */
+  const identity = [];
+  if (patientId) identity.push({ patient: patientId });
+  const tel = phone ? messaging.normalizePhone(phone) : null;
+  if (tel) {
+    // El teléfono de la inscripción quedó guardado en el formato con el que se
+    // inscribió (nacional «0991234567» o E.164 «593991234567»): iguala por la
+    // COLA de dígitos, que es común a las dos formas.
+    const cola = tel.slice(-9);
+    identity.push({ 'context.phone': { $regex: new RegExp(`${cola}$`) } });
+  }
+  if (!identity.length) return { resumed: 0 };
+  const q = { clinic: clinicId, status: 'waiting', waitingForReply: true, $or: identity };
 
   const enrollments = await WorkflowEnrollment.find(q);
   if (!enrollments.length) return { resumed: 0 };
@@ -2717,11 +2752,44 @@ async function resumeOnReply({ clinicId, patientId, phone, text, interactiveRepl
       // Un payload Cloud identifica también la inscripción. No debe despertar
       // otros workflows del mismo contacto que estén esperando a la vez.
       if (incomingId.startsWith('wf:') && !incomingId.startsWith(`wf:${String(enrollment._id)}:`)) continue;
-      const incomingText = String(interactiveReply?.title || text || '').trim().toLowerCase();
-      clickedButton = pending.buttons.find((button) =>
-        (incomingId && (incomingId === button.providerId || incomingId === button.id))
-        || (incomingText && incomingText === String(button.text || '').trim().toLowerCase())
-      ) || null;
+      /**
+       * El match del botón. Por id (los mensajes interactivos del motor llevan
+       * `wf:<inscripción>:<botón>`) y, si no hay id, por TEXTO NORMALIZADO —
+       * antes era un `.toLowerCase()` a secas: «Sí asistiré» no casaba con
+       * «si asistire», y un clic de verdad se leía como "otra respuesta".
+       * Tres tolerancias más, las tres reales:
+       *  · el título que devuelve Meta va truncado a 20 caracteres;
+       *  · la persona suele contestar la frase del botón con más palabras
+       *    («si asistire 🙌») — la frase dentro de la respuesta cuenta;
+       *  · por QR los botones viajan como texto numerado y la gente responde
+       *    "1": el número del orden es válido si el resto de la respuesta casa.
+       */
+      const incomingText = normalizaTextoBoton(interactiveReply?.title || text);
+      clickedButton = pending.buttons.find((button) => {
+        if (incomingId && (incomingId === button.providerId || incomingId === button.id)) return true;
+        if (!incomingText) return false;
+        const objetivo = normalizaTextoBoton(button.text);
+        if (!objetivo) return false;
+        if (
+          incomingText === objetivo
+          || incomingText === normalizaTextoBoton(String(button.text || '').trim().slice(0, 20))
+        ) return true;
+        return objetivo.length >= 4 && incomingText.includes(objetivo);
+      }) || null;
+      if (!clickedButton) {
+        // "1" o "1. si asistire" → el botón de ese orden.
+        const numerada = String(interactiveReply?.title || text || '').trim().match(/^(\d{1,2})\b[.)]?\s*(.*)$/);
+        if (numerada) {
+          const idx = parseInt(numerada[1], 10) - 1;
+          const resto = normalizaTextoBoton(numerada[2]);
+          if (idx >= 0 && idx < pending.buttons.length) {
+            const objetivo = normalizaTextoBoton(pending.buttons[idx].text);
+            if (!resto || (objetivo && objetivo.includes(resto))) {
+              clickedButton = pending.buttons[idx];
+            }
+          }
+        }
+      }
       const workflow = await Workflow.findById(enrollment.workflow);
       enrollment.currentNodeId = workflow
         ? nextNodeIdExact(workflow, pending.nodeId, clickedButton?.id || 'default')

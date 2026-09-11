@@ -235,6 +235,98 @@ test('botón sin salida "otra respuesta": pulsarlo sí continúa por su rama', a
   assert.ok(patient.tags.includes('boton-pulsado'));
 });
 
+// ── Sep-2026: «unos chats retoman, otros no» (caso Narcisa) ──
+// El matching del botón era un `.toLowerCase()` a secas y la identidad solo
+// por paciente: el mismo flujo funcionaba con unos contactos y con otros no.
+
+test('la respuesta CON ACENTOS y mayúsculas también pulsa el botón', async () => {
+  const data = await seed(
+    [{ id: 'tb_msg_1', type: 'quick_reply', text: 'Si asistire', url: '' }],
+    { withDefaultExit: false }
+  );
+  messaging.send = async () => ({ ok: true, deliveryStatus: 'sent' });
+  await engine.executeEnrollment(await WorkflowEnrollment.findById(data.enrollment._id));
+
+  // Meta (o el paciente, escribiendo a mano) devuelve "Sí asistiré" con tilde:
+  // antes no casaba y el clic se leía como "otra respuesta".
+  const r = await engine.resumeOnReply({
+    clinicId: data.clinic._id,
+    patientId: data.patient._id,
+    phone: data.patient.phone,
+    text: 'Sí asistiré',
+    interactiveReply: { id: '', title: 'Sí asistiré', type: 'button_reply' },
+  });
+  assert.equal(r.resumed, 1);
+  const enr = await WorkflowEnrollment.findById(data.enrollment._id);
+  assert.equal(enr.status, 'done');
+  const patient = await Patient.findById(data.patient._id).lean();
+  assert.ok(patient.tags.includes('boton-pulsado'), 'salió por la rama del botón, no por la libre');
+});
+
+test('la respuesta con PALABRAS DE MÁS («si asistire 🙌») también pulsa el botón', async () => {
+  const data = await seed(
+    [{ id: 'tb_msg_1', type: 'quick_reply', text: 'Si asistire', url: '' }],
+    { withDefaultExit: false }
+  );
+  messaging.send = async () => ({ ok: true, deliveryStatus: 'sent' });
+  await engine.executeEnrollment(await WorkflowEnrollment.findById(data.enrollment._id));
+
+  const r = await engine.resumeOnReply({
+    clinicId: data.clinic._id,
+    patientId: data.patient._id,
+    phone: data.patient.phone,
+    text: 'Si, asistire 🙌',
+  });
+  assert.equal(r.resumed, 1);
+  const patient = await Patient.findById(data.patient._id).lean();
+  assert.ok(patient.tags.includes('boton-pulsado'));
+});
+
+test('por QR los botones son texto numerado: responder "1" pulsa el primero', async () => {
+  const data = await seed([
+    { id: 'si', type: 'quick_reply', text: 'Si asistire', url: '' },
+    { id: 'no', type: 'quick_reply', text: 'No podre', url: '' },
+  ]);
+  messaging.send = async () => ({ ok: true, deliveryStatus: 'sent' });
+  await engine.executeEnrollment(await WorkflowEnrollment.findById(data.enrollment._id));
+
+  const r = await engine.resumeOnReply({
+    clinicId: data.clinic._id,
+    patientId: data.patient._id,
+    phone: data.patient.phone,
+    text: '1',
+  });
+  assert.equal(r.resumed, 1);
+  const patient = await Patient.findById(data.patient._id).lean();
+  assert.ok(patient.tags.includes('boton-pulsado'));
+});
+
+test('una inscripción SIN paciente (importación) también retoma: va por teléfono', async () => {
+  const data = await seed(
+    [{ id: 'tb_msg_1', type: 'quick_reply', text: 'Si asistire', url: '' }],
+    { withDefaultExit: false }
+  );
+  messaging.send = async () => ({ ok: true, deliveryStatus: 'sent' });
+  await engine.executeEnrollment(await WorkflowEnrollment.findById(data.enrollment._id));
+  // La inscripción nació sin paciente (contacto importado) y SOLO lleva su
+  // teléfono; la conversación, en cambio, ya quedó enlazada a una ficha. La
+  // búsqueda solo por `patient` la ignoraba y el clic se perdía.
+  await WorkflowEnrollment.updateOne({ _id: data.enrollment._id }, { $unset: { patient: 1 } });
+
+  const r = await engine.resumeOnReply({
+    clinicId: data.clinic._id,
+    patientId: data.patient._id,
+    phone: '593991234567',
+    text: 'Si asistire',
+  });
+  assert.equal(r.resumed, 1, 'el clic de la conversación con paciente alcanza a la inscripción por su teléfono');
+  const enr = await WorkflowEnrollment.findById(data.enrollment._id);
+  assert.equal(enr.status, 'done', 'continuó por la rama del botón y terminó');
+  // Sin paciente la etiqueta no tiene a quién irse: el camino del botón quedó
+  // escrito en el registro de ejecución.
+  assert.ok(enr.log.some((l) => l.type === 'add_tag' || l.nodeId === 'clicked'), 'siguió por el paso del botón');
+});
+
 test('botón de enlace: registra el clic, ejecuta su rama y devuelve el destino', async () => {
   const data = await seed([{ id: 'ver_web', type: 'url', text: 'Ver sitio', url: 'https://shiluv.example/promo' }]);
   let sentButtons = [];
