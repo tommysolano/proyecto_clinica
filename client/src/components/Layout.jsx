@@ -68,7 +68,7 @@ const MENU_GROUPS = [
       // «Pacientes», no «Clientes» (sep-2026): es como los llama la clínica
       // entera. En contabilidad siguen siendo clientes —NC/ND y cartera— porque
       // ahí el término es el del comprobante, no el de la consulta.
-      { path: '/patients', label: 'Pacientes', roles: ['admin', 'cajero', 'call_center', 'marketing', 'optica', 'odontologia', 'enfermero', 'terapeuta'] },
+      { path: '/patients', label: 'Pacientes', roles: ['admin', 'cajero', 'call_center', 'marketing', 'optica', 'odontologia', 'odontologia_neurofocal', 'enfermero', 'terapeuta'] },
       { path: '/accounting/suppliers', label: 'Proveedores', roles: ['admin', 'contabilidad'] },
     ],
   },

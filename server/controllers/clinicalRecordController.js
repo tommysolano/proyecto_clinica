@@ -44,6 +44,8 @@ const {
   TERAPIA_MASAJE_PRESIONES,
   ODONTOGRAMA_ESTADOS_CARA_KEYS,
   ODONTOGRAMA_GRADOS,
+  ORGANOS_NEUROFOCAL_KEYS,
+  ODONTO_NEUROFOCAL_FILAS_KEYS,
   marcaValida,
   HIGIENE_ORAL_FILAS,
   HIGIENE_ORAL_FILAS_KEYS,
@@ -671,6 +673,50 @@ exports.updateByPatient = async (req, res) => {
       { new: true, upsert: true, runValidators: true }
     );
 
+    /**
+     * LA CITA SE CIERRA AQUÍ TAMBIÉN (sep-2026, a petición del terapeuta).
+     *
+     * «Guardar terapias complementarias» es el paso final de SU consulta: si la
+     * pestaña se abrió desde una cita (`appointmentId`), el guardado la cierra
+     * con la MISMA lógica que un seguimiento — avanza el turno de quien la
+     * escribió y, si era el último, la da por completada. Antes la cita se
+     * quedaba abierta en la agenda aunque el trabajo ya estaba guardado, y
+     * mostrador tenía que cerrarla a mano.
+     *
+     * Aquí no hay seguimiento nuevo que enlazar: el turno se cierra sin
+     * `followUpId`. Si algo falla, el guardado NO se deshace: el cierre de la
+     * cita no puede tumbar la escritura de la ficha.
+     */
+    if (update.terapiasComplementarias !== undefined && req.body.appointmentId) {
+      try {
+        const Appointment = require('../models/Appointment');
+        const { completarTurno } = require('../utils/appointmentTurns');
+        const apt = await Appointment.findOne({
+          _id: req.body.appointmentId,
+          clinic: req.clinicId,
+        });
+        if (apt && ['asistida', 'pendiente', 'confirmada'].includes(apt.status)) {
+          const { siguiente, terminado } = completarTurno(apt, { userId: req.user._id });
+          if (terminado || !apt.turns?.length) {
+            apt.status = 'completada';
+            apt.consultationEndedAt = new Date();
+          }
+          await apt.save();
+          if (apt.status === 'completada') {
+            await require('../utils/appointmentNotice').apagarAvisosDeCita(apt._id);
+          }
+          emitToClinic(req.clinicId, 'appointment:updated', apt);
+          if (siguiente?.user) {
+            emitToUser(siguiente.user, 'appointment:assigned', apt);
+          } else if (siguiente) {
+            emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
+          }
+        }
+      } catch (cerrito) {
+        console.error('[updateByPatient] no se pudo cerrar la cita:', cerrito?.message || cerrito);
+      }
+    }
+
     res.json(hideContactData(hideTherapyNotes(record, req), req));
   } catch (error) {
     res
@@ -1174,10 +1220,32 @@ const sanitizeCosmetologia = (c) => {
   };
 };
 
+/**
+ * La ficha de ODONTOLOGÍA NEUROFOCAL (rol 'odontologia_neurofocal').
+ *
+ * Es distinta a la de odontología: el examen físico va ÓRGANO POR ÓRGANO y el
+ * odontograma FILA POR FILA (los cuadros de la fila son de muestra y el texto
+ * de al lado es la indicación). Como en el resto de saneadores, una fila sin
+ * texto no es un hallazgo, es un hueco, y lo que no esté en el catálogo no se
+ * guarda. Devuelve `undefined` si no viene la sección.
+ */
+const sanitizeOdontologiaNeurofocal = (o) => {
+  if (!o || typeof o !== 'object') return undefined;
+  return {
+    organos: (Array.isArray(o.organos) ? o.organos : [])
+      .filter((x) => x && ORGANOS_NEUROFOCAL_KEYS.includes(x.organo) && txt(x.texto))
+      .map((x) => ({ organo: String(x.organo), texto: txt(x.texto) })),
+    hallazgos: txt(o.hallazgos),
+    dientes: (Array.isArray(o.dientes) ? o.dientes : [])
+      .filter((x) => x && ODONTO_NEUROFOCAL_FILAS_KEYS.includes(x.fila) && txt(x.texto))
+      .map((x) => ({ fila: String(x.fila), texto: txt(x.texto) })),
+    observaciones: txt(o.observaciones),
+  };
+};
+
 exports.addFollowUp = async (req, res) => {
   try {
-    const { patientId } = req.params;
-    const {
+    const { patientId } = req.params;    const {
       fecha,
       descripcion,
       valor,
@@ -1194,6 +1262,7 @@ exports.addFollowUp = async (req, res) => {
       ginecologia,       // datos ginecológicos (rol ginecologia)
       podologia,         // datos podológicos (rol podologia)
       odontologia,       // odontograma FDI (rol odontologia)
+      odontologiaNeurofocal, // examen por órganos + odontograma por filas (rol odontologia_neurofocal)
       cosmetologia,      // fichas estética facial/capilar (rol cosmetologia)
       cardiologia,       // ficha cardiológica (rol cardiologia)
       terapia,           // consulta del terapeuta (rol terapeuta) — PRIVADA
@@ -1439,6 +1508,7 @@ exports.addFollowUp = async (req, res) => {
             ginecologia: sanitizeGineco(ginecologia),
             podologia: sanitizePodologia(podologia),
             odontologia: sanitizeOdontologia(odontologia),
+            odontologiaNeurofocal: sanitizeOdontologiaNeurofocal(odontologiaNeurofocal),
             cosmetologia: sanitizeCosmetologia(cosmetologia),
             cardiologia: sanitizeCardiologia(cardiologia),
             terapia: sanitizeTerapia(terapia),
@@ -1812,6 +1882,7 @@ exports.updateFollowUp = async (req, res) => {
       ginecologia,
       podologia,
       odontologia,
+      odontologiaNeurofocal,
       cosmetologia,
       cardiologia,
       terapia,
@@ -1997,6 +2068,8 @@ exports.updateFollowUp = async (req, res) => {
     if (podo !== undefined) fu.podologia = podo;
     const odonto = sanitizeOdontologia(odontologia);
     if (odonto !== undefined) fu.odontologia = odonto;
+    const odontoNeuro = sanitizeOdontologiaNeurofocal(odontologiaNeurofocal);
+    if (odontoNeuro !== undefined) fu.odontologiaNeurofocal = odontoNeuro;
     const cosme = sanitizeCosmetologia(cosmetologia);
     if (cosme !== undefined) fu.cosmetologia = cosme;
     const cardio = sanitizeCardiologia(cardiologia);

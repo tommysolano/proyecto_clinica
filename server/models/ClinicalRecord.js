@@ -583,6 +583,38 @@ const followUpSchema = new mongoose.Schema(
       },
       observaciones: { type: String, trim: true, default: '' },
     },
+    // Datos de ODONTOLOGÍA NEUROFOCAL (rol 'odontologia_neurofocal'). Su examen
+    // físico va ORGANO POR ORGANO y su odontograma FILA POR FILA (ver
+    // ORGANOS_NEUROFOCAL y ODONTO_NEUROFOCAL_FILAS en constants/specialtyCatalogs.js).
+    odontologiaNeurofocal: {
+      // Examen físico por órgano: solo las filas con algo escrito, no las 16.
+      organos: {
+        type: [new mongoose.Schema(
+          {
+            organo: { type: String, required: true },
+            texto: { type: String, trim: true, default: '' },
+          },
+          { _id: false }
+        )],
+        default: [],
+      },
+      // El cuadro de texto que va debajo de la tabla, con el MISMO título que
+      // el examen físico de la hoja MSP.
+      hallazgos: { type: String, trim: true, default: '' },
+      // El odontograma por filas: los cuadros de cada fila son de muestra y el
+      // texto de al lado es lo que se debe realizar. Solo las filas con texto.
+      dientes: {
+        type: [new mongoose.Schema(
+          {
+            fila: { type: String, required: true },
+            texto: { type: String, trim: true, default: '' },
+          },
+          { _id: false }
+        )],
+        default: [],
+      },
+      observaciones: { type: String, trim: true, default: '' },
+    },
     // Datos cosmetológicos (rol 'cosmetologia'). Fichas estética facial y capilar.
     cosmetologia: {
       // Datos estéticos.

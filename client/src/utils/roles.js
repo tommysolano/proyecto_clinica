@@ -8,7 +8,7 @@
 // 'optica' NO está en esta lista a propósito: en el cliente siempre se enumeró
 // a mano (Layout.jsx, App.jsx) porque tiene vistas propias, y meterla aquí le
 // cambiaría lo que ve hoy.
-export const DOCTOR_SPECIALTY_ROLES = ['ginecologia', 'podologia', 'odontologia', 'cosmetologia', 'cardiologia', 'terapeuta'];
+export const DOCTOR_SPECIALTY_ROLES = ['ginecologia', 'podologia', 'odontologia', 'odontologia_neurofocal', 'cosmetologia', 'cardiologia', 'terapeuta'];
 
 export function roleSatisfies(userRole, allowedRoles) {
   if (!userRole || !Array.isArray(allowedRoles)) return false;
@@ -28,6 +28,7 @@ export const ROLE_LABELS = {
   ginecologia: 'Ginecología',
   podologia: 'Podología',
   odontologia: 'Odontología',
+  odontologia_neurofocal: 'Odontología Neurofocal',
   cosmetologia: 'Cosmetología',
   cardiologia: 'Cardiología',
   terapeuta: 'Terapeuta',
@@ -126,6 +127,7 @@ export const DOCTOR_TYPE_LABELS = {
   ginecologia: 'Ginecología',
   podologia: 'Podología',
   odontologia: 'Odontología',
+  odontologia_neurofocal: 'Odontología Neurofocal',
   cosmetologia: 'Cosmetología',
   cardiologia: 'Cardiología',
   terapeuta: 'Terapeuta',

@@ -15,12 +15,16 @@
 const DOCTOR_ROLE = 'doctor';
 
 /** Roles que funcionalmente son doctores (incluye el base). */
+/** Roles que funcionalmente son doctores (incluye el base). */
 const DOCTOR_LIKE_ROLES = [
   DOCTOR_ROLE,
   'optica',
   'ginecologia',
   'podologia',
   'odontologia',
+  // Odontología neurofocal (sep-2026): heredero del rol 'odontologia' con SU
+  // propia ficha (organos del examen físico, odontograma por filas).
+  'odontologia_neurofocal',
   'cosmetologia',
   'cardiologia',
   // El terapeuta es doctor a efectos de permisos, pero su consulta y su ficha son

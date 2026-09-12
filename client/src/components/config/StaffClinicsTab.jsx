@@ -41,6 +41,7 @@ const ROLES_OPERATIVOS = [
   'ginecologia',
   'podologia',
   'odontologia',
+  'odontologia_neurofocal',
   'cosmetologia',
   'cardiologia',
   'terapeuta',

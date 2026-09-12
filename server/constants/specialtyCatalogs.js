@@ -88,6 +88,55 @@ const ODONTOGRAMA_FILAS = [
 const ODONTOGRAMA_PIEZAS = ODONTOGRAMA_FILAS.flatMap((f) => [...f.derecha, ...f.izquierda]);
 
 /**
+ * ────────── ODONTOLOGÍA NEUROFOCAL (rol 'odontologia_neurofocal') ──────────
+ *
+ * Su ficha no usa el odontograma dibujado del MSP ni el examen físico general.
+ * Son DOS piezas nuevas y hay que definirlas EN LOS DOS ESPEJOS (server y
+ * client/src/constants/specialtyCatalogs.js), porque el saneo del servidor
+ * valida contra la lista de acá: una clave que no esté se descarta al guardar.
+ *
+ *  · ORGANOS_NEUROFOCAL: el examen físico se llena ORGANO POR ORGANO — una
+ *    fila con el nombre a la izquierda y un cuadro de texto a la derecha.
+ *  · ODONTO_NEUROFOCAL_FILAS: el odontograma se llena FILA POR FILA — los
+ *    cuadros de la fila (solo de muestra, no se pinchan) y al lado el texto de
+ *    lo que se debe realizar en esa fila.
+ */
+const ORGANOS_NEUROFOCAL = [
+  { key: 'cabeza', label: 'Cabeza' },
+  { key: 'ojos', label: 'Ojos' },
+  { key: 'nariz', label: 'Nariz' },
+  { key: 'oido', label: 'Oído' },
+  { key: 'boca', label: 'Boca' },
+  { key: 'tiroides', label: 'Tiroides' },
+  { key: 'corazon', label: 'Corazón' },
+  { key: 'pulmones', label: 'Pulmones' },
+  { key: 'senoIzquierdo', label: 'Seno izquierdo' },
+  { key: 'senoDerecho', label: 'Seno derecho' },
+  { key: 'estomago', label: 'Estómago' },
+  { key: 'higado', label: 'Hígado' },
+  { key: 'pancreas', label: 'Páncreas' },
+  { key: 'colon', label: 'Colon' },
+  { key: 'utero', label: 'Útero' },
+  { key: 'prostata', label: 'Próstata' },
+];
+const ORGANOS_NEUROFOCAL_KEYS = ORGANOS_NEUROFOCAL.map((o) => o.key);
+
+// Las filas del odontograma neurofocal, en el orden en que se llena la hoja:
+// hemiarco derecho (permanentes y temporales superiores/inferiores) y después
+// hemiarco izquierdo. `piezas` es lo que se DIBUJA en los cuadros de muestra.
+const ODONTO_NEUROFOCAL_FILAS = [
+  { key: '18-11', label: 'Permanentes superiores (derecha)', piezas: ['18', '17', '16', '15', '14', '13', '12', '11'] },
+  { key: '55-51', label: 'Temporales superiores (derecha)', piezas: ['55', '54', '53', '52', '51'] },
+  { key: '85-81', label: 'Temporales inferiores (derecha)', piezas: ['85', '84', '83', '82', '81'] },
+  { key: '48-41', label: 'Permanentes inferiores (derecha)', piezas: ['48', '47', '46', '45', '44', '43', '42', '41'] },
+  { key: '21-28', label: 'Permanentes superiores (izquierda)', piezas: ['21', '22', '23', '24', '25', '26', '27', '28'] },
+  { key: '61-65', label: 'Temporales superiores (izquierda)', piezas: ['61', '62', '63', '64', '65'] },
+  { key: '71-75', label: 'Temporales inferiores (izquierda)', piezas: ['71', '72', '73', '74', '75'] },
+  { key: '31-38', label: 'Permanentes inferiores (izquierda)', piezas: ['31', '32', '33', '34', '35', '36', '37', '38'] },
+];
+const ODONTO_NEUROFOCAL_FILAS_KEYS = ODONTO_NEUROFOCAL_FILAS.map((f) => f.key);
+
+/**
  * Simbología del odontograma (sección 9 de la hoja del MSP).
  *
  * La hoja manda pintar en DOS colores y ese color es información clínica, no
@@ -652,6 +701,10 @@ module.exports = {
   INDICE_CPO,
   INDICE_CEO,
   ODONTOGRAMA_COLOR_OPCIONES,
+  ORGANOS_NEUROFOCAL,
+  ORGANOS_NEUROFOCAL_KEYS,
+  ODONTO_NEUROFOCAL_FILAS,
+  ODONTO_NEUROFOCAL_FILAS_KEYS,
   marcaOdonto,
   marcaValida,
   labelOdonto,

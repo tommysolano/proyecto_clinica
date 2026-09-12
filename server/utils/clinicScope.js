@@ -113,10 +113,51 @@ async function validarSucursalDestino(req, pedida) {
   return { ok: true, clinicId: pedida };
 }
 
+/**
+ * LA SUCURSAL DE ODONTOLOGÍA, resuelta por su NOMBRE.
+ *
+ * Odontología es un ROL de especialidad, no una sede: el modelo `Clinic` no
+ * tiene un campo de especialidad. La asociación vive en el dato — la sucursal
+ * se llama "Odontología" — y aquí se busca por nombre o nombre comercial, con
+ * una coincidencia tolerante a variantes ("Odontología", "odontologia",
+ * "Odonto Shiluv"…). Se usa para la regla de la agenda (sep-2026): el usuario
+ * con rol 'odontologia' ve TODAS las citas, como mostrador, pero SOLO las de
+ * esa sucursal.
+ *
+ * Se cachéa unos minutos: se consulta en cada listado de la agenda y es una
+ * tabla minúscula cuyo nombre no cambia de un día para otro.
+ *
+ * Devuelve null si no existe ninguna sucursal activa con ese nombre: en ese
+ * caso quien llama debe conservar el comportamiento anterior en vez de abrir
+ * la agenda completa a ciegas.
+ */
+let sucursalOdontoCache = null;
+let sucursalOdontoCacheAt = 0;
+const SUCURSAL_ODONTO_CACHE_MS = 5 * 60 * 1000;
+
+async function sucursalOdontologia() {
+  if (sucursalOdontoCache && Date.now() - sucursalOdontoCacheAt < SUCURSAL_ODONTO_CACHE_MS) {
+    return sucursalOdontoCache;
+  }
+  const Clinic = require('../models/Clinic');
+  const re = /odontolog/i;
+  const c = await Clinic.findOne({
+    active: { $ne: false },
+    $or: [{ name: re }, { nombreComercial: re }],
+  })
+    .select('_id name nombreComercial')
+    .lean()
+    .catch(() => null);
+  sucursalOdontoCache = c || null;
+  sucursalOdontoCacheAt = Date.now();
+  return sucursalOdontoCache;
+}
+
 module.exports = {
   veTodaLaOrganizacion,
   sucursalesVisibles,
   alcanzaSucursal,
   sucursalPedida,
   validarSucursalDestino,
+  sucursalOdontologia,
 };

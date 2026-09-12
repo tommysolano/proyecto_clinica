@@ -25,6 +25,8 @@ const {
   INDICE_CEO,
   TERAPIA_ELEMENTOS,
   TERAPIA_FODA,
+  ORGANOS_NEUROFOCAL,
+  ODONTO_NEUROFOCAL_FILAS,
   COSMETOLOGIA_BIOTIPOS,
   COSMETOLOGIA_ARRUGAS,
   COSMETOLOGIA_ACNE,
@@ -359,9 +361,43 @@ function specialtyFollowUpHtml(fu) {
     cardiologiaHtml(fu.cardiologia),
     podologiaHtml(fu.podologia),
     odontologiaHtml(fu.odontologia),
+    odontologiaNeurofocalHtml(fu.odontologiaNeurofocal),
     cosmetologiaHtml(fu.cosmetologia),
     terapiaHtml(fu.terapia),
   ].join('');
 }
 
-module.exports = { specialtyFollowUpHtml, cardiologiaHtml, podologiaHtml, odontologiaHtml, cosmetologiaHtml, terapiaHtml };
+// ───────────────── Odontología Neurofocal ─────────────────
+
+/**
+ * La ficha de odontología neurofocal para el PDF: el examen físico en forma de
+ * TABLA (órgano / hallazgo, exactamente como se llena), los hallazgos de abajo,
+ * el odontograma en su forma de tabla por filas y las observaciones.
+ */
+function odontologiaNeurofocalHtml(o) {
+  if (!o) return '';
+  const organos = (o.organos || []).filter((x) => x && String(x.texto || '').trim());
+  const dientes = (o.dientes || []).filter((x) => x && String(x.texto || '').trim());
+  const hallazgos = String(o.hallazgos || '').trim();
+  const observaciones = String(o.observaciones || '').trim();
+  if (!organos.length && !dientes.length && !hallazgos && !observaciones) return '';
+
+  const tablaOrganos = organos.length
+    ? `<div class="label" style="margin-top:8px">Examen físico por órganos</div><table><thead><tr><th>Órgano</th><th>Hallazgo</th></tr></thead><tbody>${organos.map((x) => {
+        const label = ORGANOS_NEUROFOCAL.find((g) => g.key === x.organo)?.label || x.organo;
+        return `<tr>${td(`<b>${esc(label)}</b>`)}${td(esc(x.texto))}</tr>`;
+      }).join('')}</tbody></table>`
+    : '';
+  const tablaDientes = dientes.length
+    ? `<div class="label" style="margin-top:8px">Odontograma</div><table><thead><tr><th>Fila</th><th>Lo que se debe realizar</th></tr></thead><tbody>${dientes.map((x) => {
+        const label = ODONTO_NEUROFOCAL_FILAS.find((f) => f.key === x.fila)?.label || x.fila;
+        return `<tr>${td(`<b>${esc(label)}</b>`)}${td(esc(x.texto))}</tr>`;
+      }).join('')}</tbody></table>`
+    : '';
+
+  return `${tablaOrganos}${tablaDientes}${box('Hallazgos del examen físico', hallazgos ? `<div style="white-space:pre-wrap">${esc(hallazgos)}</div>` : '')}${
+    observaciones ? box('Observaciones del odontograma', `<div style="white-space:pre-wrap">${esc(observaciones)}</div>`) : ''
+  }`;
+}
+
+module.exports = { specialtyFollowUpHtml, cardiologiaHtml, podologiaHtml, odontologiaHtml, odontologiaNeurofocalHtml, cosmetologiaHtml, terapiaHtml };

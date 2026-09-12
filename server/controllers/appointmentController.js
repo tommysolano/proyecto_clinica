@@ -46,6 +46,7 @@ const {
   sucursalesVisibles,
   alcanzaSucursal,
   validarSucursalDestino,
+  sucursalOdontologia,
 } = require('../utils/clinicScope');
 const { esPrimeraVisita } = require('../utils/firstVisit');
 const { registrarLlegada } = require('../utils/appointmentArrival');
@@ -226,6 +227,31 @@ exports.getAppointments = async (req, res) => {
     if (req.role === 'enfermero' && req.clinicId) {
       clinicScope = req.clinicId;
     }
+    /**
+     * ODONTOLOGÍA VE TODA LA AGENDA DE SU SUCURSAL (sep-2026).
+     *
+     * Al odontólogo se le abrió la agenda como a mostrador —ve TODAS las citas
+     * agendadas, no solo las suyas—, pero con UNA condición: únicamente las de
+     * la sucursal de odontología. El filtro por turno (`filtroCitasDelDoctor`,
+     * más abajo) no le aplica: ese recorte es para el doctor de especialidad
+     * que solo mira SU cola, y a odontología se le pidió lo contrario.
+     *
+     * La sucursal se resuelve por su NOMBRE (ver `sucursalOdontologia` en
+     * utils/clinicScope.js, que es un dato, no un campo del modelo). Si no
+     * existe una sede llamada odontología, NO se abre nada: se conserva el
+     * comportamiento de antes —solo sus turnos— en vez de regalar la agenda
+     * completa a ciegas.
+     */
+    let odontoVeTodo = false;
+    // Odontología y odontología neurofocal comparten la sucursal de odontología
+    // y las dos miran la agenda como mostrador (ver el bloque de arriba).
+    if (['odontologia', 'odontologia_neurofocal'].includes(req.role)) {
+      const sedeOdonto = await sucursalOdontologia();
+      if (sedeOdonto) {
+        clinicScope = String(sedeOdonto._id);
+        odontoVeTodo = true;
+      }
+    }
     const query = {};
     if (clinicScope !== null) query.clinic = clinicScope;
 
@@ -290,7 +316,9 @@ exports.getAppointments = async (req, res) => {
      * orden). Ambos van dentro de un `$and` para que se acumulen.
      */
     const extras = [];
-    if (isDoctorRole(req.role)) {
+    // Odontología con su sucursal resuelta ve TODO el día de la sede (ver el
+    // bloque de arriba): el filtro por turno no le aplica.
+    if (isDoctorRole(req.role) && !odontoVeTodo) {
       // Su turno VIGENTE o uno que ya atendió: al doctor que va segundo la cita
       // no le aparece hasta que el primero termine (ver filtroCitasDelDoctor).
       extras.push(filtroCitasDelDoctor(req.user._id));
@@ -384,7 +412,17 @@ exports.getAppointment = async (req, res) => {
      */
     const apptClinicId = String(appointment.clinic?._id || appointment.clinic);
     const visibles = sucursalesVisibles(req);
-    const canAccess = visibles === null || visibles.some((c) => String(c) === apptClinicId);
+    let canAccess = visibles === null || visibles.some((c) => String(c) === apptClinicId);
+    /**
+     * ODONTOLOGÍA, MISMA REGLA que el listado (sep-2026): toda la agenda de la
+     * sucursal de odontología y nada más. Sin este check, la cita de otra sede
+     * le llegaría por id (un enlace, un aviso) aunque la lista nunca se la
+     * enseñe: leer por id y listar tienen que responder igual.
+     */
+    if (['odontologia', 'odontologia_neurofocal'].includes(req.role) && canAccess) {
+      const sedeOdonto = await sucursalOdontologia();
+      if (sedeOdonto && apptClinicId !== String(sedeOdonto._id)) canAccess = false;
+    }
     if (!canAccess) return res.status(404).json({ message: 'Cita no encontrada' });
     res.json(appointment);
   } catch (error) {

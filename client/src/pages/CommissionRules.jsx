@@ -15,6 +15,7 @@ const ROLES = [
   { value: 'ginecologia', label: 'Ginecología' },
   { value: 'podologia', label: 'Podología' },
   { value: 'odontologia', label: 'Odontología' },
+  { value: 'odontologia_neurofocal', label: 'Odontología Neurofocal' },
   { value: 'cosmetologia', label: 'Cosmetología' },
   { value: 'cardiologia', label: 'Cardiología' },
   { value: 'terapeuta', label: 'Terapeuta' },

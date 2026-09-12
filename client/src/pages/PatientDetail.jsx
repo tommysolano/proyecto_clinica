@@ -10,6 +10,9 @@ import TagEditor from '../components/TagEditor';
 import NumericInput from '../components/NumericInput';
 import Cie10Select from '../components/Cie10Select';
 import Odontograma from '../components/Odontograma';
+// La ficha del rol odontología neurofocal usa SU propio odontograma: filas con
+// su cuadro de texto (ver components/OdontogramaNeurofocal).
+import OdontogramaNeurofocal from '../components/OdontogramaNeurofocal';
 import CincoElementos from '../components/CincoElementos';
 // Corregir los datos del paciente sin salir de aquí: el MISMO formulario que
 // el de la página de Pacientes y el de la agenda (ver components/PatientFields).
@@ -35,6 +38,9 @@ import {
   SUERO_CLORURO_VOLUMENES,
 } from '../constants/sueroterapia';
 import SelectorComponentesSuero from '../components/SelectorComponentesSuero';
+// La bitácora de observaciones vive en su propio archivo: la comparte con la
+// agenda, que la abre desde el menú de acciones de la cita.
+import ObservacionesTab from '../components/ObservacionesTab';
 // El editor de la preparación salió de aquí a su propio archivo: lo comparten la
 // receta, el suero de serie del servicio de agenda (Configuración → Servicios) y
 // el que se indica al agendar una cita.
@@ -59,6 +65,8 @@ import {
   PODOLOGIA_REFLEJOS_OPCIONES,
   labelOdonto,
   ODONTOGRAMA_CARAS,
+  ORGANOS_NEUROFOCAL,
+  ODONTO_NEUROFOCAL_FILAS,
   HIGIENE_ORAL_FILAS,
   HIGIENE_ORAL_INDICES,
   ENFERMEDAD_PERIODONTAL,
@@ -100,7 +108,6 @@ import {
   HiOutlineChevronDown,
   HiOutlineChatBubbleLeftRight,
   HiOutlinePaperClip,
-  HiOutlineXMark,
   HiOutlineSparkles,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
@@ -239,27 +246,6 @@ const formTieneAlgo = (f, vacio) => {
 // Adjuntos permitidos en seguimientos: PDFs e imágenes.
 const isAllowedAttachment = (file) =>
   !!file && (file.type === 'application/pdf' || String(file.type || '').startsWith('image/'));
-
-// Observaciones: mismo tope que acepta el servidor (multer .array('files', 10)).
-const OBSERVATION_MAX_FILES = 10;
-
-/**
- * El 413 ya no debería aparecer por tamaño (el servidor ya no corta y nginx
- * admite hasta 1 GB), pero si llega —nginx sin actualizar, o un disco lleno—
- * el aviso sigue siendo claro en vez de un error vacío.
- */
-const observationUploadError = (err, fallback) => {
-  if (err?.response?.status === 413) return 'El archivo es demasiado grande para subirlo';
-  return err?.response?.data?.message || fallback;
-};
-
-/** Tamaño legible de un adjunto: «820 KB», «3.4 MB». */
-const observationFileSize = (bytes) => {
-  const n = Number(bytes) || 0;
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-};
 
 export default function PatientDetail() {
   const { id } = useParams();
@@ -680,7 +666,7 @@ export default function PatientDetail() {
               </>
             ))}
           {tabActiva === 'seguimientos' && <SeguimientosTab patientId={id} appointmentId={appointmentId} />}
-          {tabActiva === 'terapias' && <TerapiasComplementariasTab patientId={id} />}
+          {tabActiva === 'terapias' && <TerapiasComplementariasTab patientId={id} appointmentId={appointmentId} />}
           {tabActiva === 'archivos' && <ArchivosTab patientId={id} appointmentId={appointmentId} />}
           {tabActiva === 'citas' && <CitasTab patientId={id} />}
           {tabActiva === 'observaciones' && <ObservacionesTab patientId={id} />}
@@ -1202,6 +1188,104 @@ const emptyTerapiasComplementarias = () => ({
 });
 
 /**
+ * La tarjeta del plan vigente de terapias complementarias, tal como se muestra
+ * en su pestaña, para el historial: toda la información (biomagnetismo, el mapa
+ * floral en forma de tabla, la hoja del masaje) y quién la guardó con qué fecha.
+ */
+function terapiasComplementariasHasData(t) {
+  if (!t) return false;
+  const conTexto = (v) => String(v || '').trim();
+  const bm = t.biomagnetismo || {};
+  const tf = t.terapiaFloral || {};
+  const mj = t.masajeTerapeutico || {};
+  return (
+    conTexto(bm.objetivo) || conTexto(bm.protocoloSeleccionado) || conTexto(bm.sesionesEstimadas) || conTexto(bm.protocoloParSeleccionado)
+    || (tf.mapaFloral || []).some((f) => f && (conTexto(f.numero) || conTexto(f.nombre)))
+    || conTexto(tf.objetivoFormula) || conTexto(tf.afirmacionTerapeutica) || conTexto(tf.tareasTerapia)
+    || conTexto(mj.zonaTrabajada) || conTexto(mj.tensionInicial) || conTexto(mj.tecnicaUtilizada) || conTexto(mj.presion)
+    || conTexto(mj.aceiteUtilizado) || conTexto(mj.aromaterapia) || conTexto(mj.floresApoyo) || conTexto(mj.tiempo)
+    || conTexto(mj.respuestaInmediata) || conTexto(mj.tensionFinal) || conTexto(mj.observaciones) || conTexto(mj.recomendaciones) || conTexto(mj.proximaSesion)
+  );
+}
+
+function TerapiasComplementariasCard({ t }) {
+  if (!terapiasComplementariasHasData(t)) return null;
+  const bm = t.biomagnetismo || {};
+  const tf = t.terapiaFloral || {};
+  const mj = t.masajeTerapeutico || {};
+  const campo = (label, v) => (String(v || '').trim() ? (
+    <div className="text-xs text-slate-700">
+      <b className="text-slate-500">{label}:</b> {v}
+    </div>
+  ) : null);
+  const flores = (tf.mapaFloral || []).filter((f) => f && (String(f.numero || '').trim() || String(f.nombre || '').trim()));
+  return (
+    <article className="p-4 text-sm">
+      <div className="flex flex-wrap items-center gap-2 mb-1">
+        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700">
+          Terapias complementarias
+        </span>
+        {(t.updatedAt || t.updatedBy?.name) && (
+          <span className="text-[10px] text-slate-400">
+            {t.updatedBy?.name ? `Guardó ${t.updatedBy.name}` : 'Guardado'}
+            {t.updatedAt ? ` · ${fmtDate(t.updatedAt)}` : ''}
+          </span>
+        )}
+      </div>
+      <div className="rounded-xl border border-violet-100 bg-white p-3 space-y-2">
+        <div className="font-semibold text-slate-800 text-xs uppercase tracking-wide">Biomagnetismo</div>
+        {campo('Objetivo', bm.objetivo)}
+        {campo('Protocolo seleccionado', bm.protocoloSeleccionado)}
+        {campo('Sesiones estimadas', bm.sesionesEstimadas)}
+        {campo('Protocolo-par seleccionado', bm.protocoloParSeleccionado)}
+
+        <div className="font-semibold text-slate-800 text-xs uppercase tracking-wide pt-2">Terapia floral</div>
+        {flores.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50">
+                  <th className="border border-slate-200 px-2 py-1 text-left font-semibold">N°</th>
+                  <th className="border border-slate-200 px-2 py-1 text-left font-semibold">Flor de Bach</th>
+                </tr>
+              </thead>
+              <tbody>
+                {flores.map((f, i) => (
+                  <tr key={i}>
+                    <td className="border border-slate-200 px-2 py-1 tabular-nums">{f.numero}</td>
+                    <td className="border border-slate-200 px-2 py-1">{f.nombre}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {campo('Objetivo de la fórmula', tf.objetivoFormula)}
+        {campo('Afirmación terapéutica', tf.afirmacionTerapeutica)}
+        {campo('Tareas de la terapia', tf.tareasTerapia)}
+
+        <div className="font-semibold text-slate-800 text-xs uppercase tracking-wide pt-2">Masaje terapéutico</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5">
+          {campo('Zona trabajada', mj.zonaTrabajada)}
+          {campo('Tensión inicial 0-10', mj.tensionInicial)}
+          {campo('Técnica utilizada', mj.tecnicaUtilizada)}
+          {campo('Presión', mj.presion)}
+          {campo('Aceite utilizado', mj.aceiteUtilizado)}
+          {campo('Aromaterapia', mj.aromaterapia)}
+          {campo('Flores de apoyo', mj.floresApoyo)}
+          {campo('Tiempo', mj.tiempo)}
+          {campo('Tensión final 0-10', mj.tensionFinal)}
+        </div>
+        {campo('Respuesta inmediata', mj.respuestaInmediata)}
+        {campo('Observaciones', mj.observaciones)}
+        {campo('Recomendaciones', mj.recomendaciones)}
+        {campo('Próxima sesión', mj.proximaSesion)}
+      </div>
+    </article>
+  );
+}
+
+/**
  * TERAPIAS COMPLEMENTARIAS (rol terapeuta).
  *
  * SU PROPIA PESTAÑA, junto a Ficha clínica y Datos — no dentro de Seguimientos.
@@ -1209,8 +1293,12 @@ const emptyTerapiasComplementarias = () => ({
  * se lleva al paciente, su fórmula floral, la hoja del masaje), no la nota de
  * una consulta. Se guarda en la FICHA del paciente, como `fichaTerapia`, y es
  * privada: solo terapeuta y administración la ven (ver hideTherapyNotes).
+ *
+ * SE ABRE DESDE LA CITA (sep-2026): cuando viene con `appointmentId`, el
+ * guardado lo manda al servidor y este CIERRA LA CITA con la misma lógica de
+ * un seguimiento — el paso final de la consulta es este botón.
  */
-function TerapiasComplementariasTab({ patientId }) {
+function TerapiasComplementariasTab({ patientId, appointmentId }) {
   const { hasRole } = useAuth();
   const esAdmin = hasRole('admin');
   const [record, setRecord] = useState(null);
@@ -1246,12 +1334,21 @@ function TerapiasComplementariasTab({ patientId }) {
     try {
       // Se manda el bloque completo, limpio de metadatos: el servidor lo sanean
       // (catálogo de flores, presión de la hoja) y sella quién guardó.
+      // Con `appointmentId` (se abrió desde una cita), el guardado TAMBIÉN
+      // cierra la cita, con la misma lógica de un seguimiento.
       const limpio = { ...tcs };
       delete limpio.updatedBy;
       delete limpio.updatedAt;
-      const res = await api.put(`/clinical-records/${patientId}`, { terapiasComplementarias: limpio });
+      const res = await api.put(
+        `/clinical-records/${patientId}`,
+        { terapiasComplementarias: limpio, ...(appointmentId ? { appointmentId } : {}) }
+      );
       setRecord(res.data);
-      toast.success('Terapias complementarias guardadas');
+      toast.success(
+        appointmentId
+          ? 'Terapias complementarias guardadas · la cita quedó completada'
+          : 'Terapias complementarias guardadas'
+      );
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al guardar');
     } finally {
@@ -1272,6 +1369,12 @@ function TerapiasComplementariasTab({ patientId }) {
       {!esAdmin && (
         <p className="text-xs text-slate-400">
           Solo tú y la administración ven esta pestaña: forma parte de la historia reservada del terapeuta.
+        </p>
+      )}
+      {appointmentId && (
+        <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 m-0">
+          Estás en la cita de hoy: al darle a <b>Guardar terapias complementarias</b> se guarda
+          el plan <b>y la cita se cierra</b>, igual que al guardar una consulta.
         </p>
       )}
 
@@ -2075,6 +2178,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
   const isGineco = hasRole('ginecologia');
   const isPodo = hasRole('podologia');
   const isOdonto = hasRole('odontologia');
+  // ODONTOLOGÍA NEUROFOCAL: ficha PROPIA, no comparte secciones con el odontólogo.
+  const isOdontoNeuro = hasRole('odontologia_neurofocal');
   const isCosme = hasRole('cosmetologia');
   const isCardio = hasRole('cardiologia');
   /**
@@ -2251,6 +2356,13 @@ function SeguimientosTab({ patientId, appointmentId }) {
     ceo: { c: '', e: '', o: '' },
     observaciones: '',
   });
+  // Estado vacío de la ficha de odontología neurofocal (espejo del schema).
+  const emptyOdontologiaNeurofocal = () => ({
+    organos: [],
+    hallazgos: '',
+    dientes: [],
+    observaciones: '',
+  });
   const emptyTerapia = () => ({
     elementos: [],
     // Las flechas del esquema las dibuja el terapeuta: el lienzo nace limpio.
@@ -2309,6 +2421,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
     ginecologia: emptyGineco(),
     podologia: emptyPodologia(),
     odontologia: emptyOdontologia(),
+    odontologiaNeurofocal: emptyOdontologiaNeurofocal(),
     cosmetologia: emptyCosmetologia(),
     cardiologia: emptyCardiologia(),
     terapia: emptyTerapia(),
@@ -2446,6 +2559,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
       ginecologia: conBase(emptyGineco(), fu.ginecologia),
       podologia: conBase(emptyPodologia(), fu.podologia),
       odontologia: conBase(emptyOdontologia(), fu.odontologia),
+      odontologiaNeurofocal: conBase(emptyOdontologiaNeurofocal(), fu.odontologiaNeurofocal),
       cosmetologia: conBase(emptyCosmetologia(), fu.cosmetologia),
       cardiologia: conBase(emptyCardiologia(), fu.cardiologia),
       terapia: conBase(emptyTerapia(), fu.terapia),
@@ -2731,7 +2845,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
       // así un seguimiento de medicina general no arrastra secciones vacías.
       if (!isGineco) delete payload.ginecologia;
       if (!isPodo) delete payload.podologia;
-      if (!isOdonto) delete payload.odontologia;
+      if (!isOdonto && !isOdontoNeuro) delete payload.odontologia;
+      if (!isOdontoNeuro) delete payload.odontologiaNeurofocal;
       if (!isCosme) delete payload.cosmetologia;
       if (!isCardio) delete payload.cardiologia;
       if (!isTerapeuta) delete payload.terapia;
@@ -3005,10 +3120,12 @@ function SeguimientosTab({ patientId, appointmentId }) {
    * esos datos están en las consultas de los demás. Está deliberadamente
    * discreto — hay que pedirlo — pero está.
    */
-  const filtraOdonto = isOdonto && !isAdmin;
+  const filtraOdonto = (isOdonto || isOdontoNeuro) && !isAdmin;
   const esDeOdontologia = (fu) =>
     fu.createdByRole === 'odontologia'
+    || fu.createdByRole === 'odontologia_neurofocal'
     || odontologiaHasData(fu.odontologia)
+    || odontologiaNeurofocalHasData(fu.odontologiaNeurofocal)
     || (miId && String(fu.createdBy?._id || fu.createdBy || '') === miId);
   const followUps = filtraOdonto && !verTodo
     ? todosLosSeguimientos.filter(esDeOdontologia)
@@ -3142,13 +3259,15 @@ function SeguimientosTab({ patientId, appointmentId }) {
         {/* INDICACIONES del estudio: lo que se ve en la imagen y lo que se
             recomienda a partir de ello. Va aquí arriba, junto al motivo, porque
             cuando la consulta ES el estudio esto es su cuerpo — no una nota al
-            pie como la evolución lo es para los demás. */}
-        <Field label="Indicaciones" className="md:col-span-3">
+            pie como la evolución lo es para los demás.
+            ODONTOLOGÍA NEUROFOCAL lo llama "Diagnóstico" (sep-2026): mismo
+            campo, otro rótulo. */}
+        <Field label={isOdontoNeuro ? 'Diagnóstico' : 'Indicaciones'} className="md:col-span-3">
           <textarea
             rows={4}
             value={form.indicaciones}
             onChange={(e) => setForm((f) => ({ ...f, indicaciones: e.target.value }))}
-            placeholder="Lo que se observa en el estudio y lo que se recomienda a partir de ello"
+            placeholder={isOdontoNeuro ? '' : 'Lo que se observa en el estudio y lo que se recomienda a partir de ello'}
             className="input resize-none"
           />
         </Field>
@@ -3353,7 +3472,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
         </div>
 
         {esHojaMsp && (<>
-        {/* G. Revisión actual de órganos y sistemas (colapsable) */}
+        {/* G. Revisión actual de órganos y sistemas (colapsable)
+            ODONTOLOGÍA NEUROFOCAL no la usa: su examen va ÓRGANO POR ÓRGANO
+            en su propia ficha (ver OdontoNeurofocalSection). */}
+        {!isOdontoNeuro && (
         <div className="md:col-span-3">
           <Collapsible title="Revisión de órganos y sistemas" hint="marque los que presenten patología">
             <div className="space-y-4">
@@ -3374,8 +3496,15 @@ function SeguimientosTab({ patientId, appointmentId }) {
             </div>
           </Collapsible>
         </div>
+        )}
 
-        {/* H. Examen físico regional + sistémico (colapsable) */}
+        {/* H. Examen físico regional + sistémico (colapsable).
+            ODONTOLOGÍA NEUROFOCAL: NO llena este bloque. Su examen físico es
+            una tabla de órganos con un cuadro de texto por órgano y debajo el
+            cuadro de "Hallazgos del examen físico" — todo dentro de su ficha
+            (ver OdontoNeurofocalSection), que es lo que se guarda con el
+            seguimiento y lo que se vuelve a mostrar tal cual. */}
+        {!isOdontoNeuro && (
         <div className="md:col-span-3">
           <Collapsible title="Examen físico" hint="regional y sistémico">
             <div className="space-y-4">
@@ -3408,6 +3537,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
             </div>
           </Collapsible>
         </div>
+        )}
 
         {/* I. Diagnósticos con CIE-10 (plegable, como el resto de bloques
             largos: se abre cuando el médico lo necesita). */}
@@ -3437,6 +3567,12 @@ function SeguimientosTab({ patientId, appointmentId }) {
         )}
         {isPodo && <PodologiaSection value={form.podologia} onChange={(p) => setForm((f) => ({ ...f, podologia: p }))} />}
         {isOdonto && <OdontologiaSection value={form.odontologia} onChange={(o) => setForm((f) => ({ ...f, odontologia: o }))} />}
+        {isOdontoNeuro && (
+          <OdontoNeurofocalSection
+            value={form.odontologiaNeurofocal}
+            onChange={(o) => setForm((f) => ({ ...f, odontologiaNeurofocal: o }))}
+          />
+        )}
         {isCosme && <CosmetologiaSection value={form.cosmetologia} onChange={(c) => setForm((f) => ({ ...f, cosmetologia: c }))} />}
         {isCardio && <CardiologiaSection value={form.cardiologia} onChange={(c) => setForm((f) => ({ ...f, cardiologia: c }))} />}
         {isTerapeuta && <TerapiaSection value={form.terapia} onChange={(t) => setForm((f) => ({ ...f, terapia: t }))} />}
@@ -3498,7 +3634,9 @@ function SeguimientosTab({ patientId, appointmentId }) {
             medio. Campo aparte del plan a propósito: se le explica y se le
             entrega distinto, y mezclado con los fármacos se perdía.
             En la consulta del terapeuta esto es el «coaching de cambio de
-            hábitos» — mismo campo, otro nombre (ver RECETA_ETIQUETAS). */}
+            hábitos» — mismo campo, otro nombre (ver RECETA_ETIQUETAS).
+            ODONTOLOGÍA NEUROFOCAL no lo usa: va sin él (sep-2026). */}
+        {!isOdontoNeuro && (
         <Field label={etiquetasReceta.consejos} className="md:col-span-3">
           <textarea
             rows={2}
@@ -3508,6 +3646,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
             className="input resize-none"
           />
         </Field>
+        )}
 
         {/* Derivaciones: a dónde se manda al paciente. Va DESPUÉS del plan
             porque es donde encaja en la consulta — primero se decide el
@@ -3725,6 +3864,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
               const hasGinecoData = ginecoHasData(fu.ginecologia);
               const hasPodoData = podologiaHasData(fu.podologia);
               const hasOdontoData = odontologiaHasData(fu.odontologia);
+              const hasNeuroData = odontologiaNeurofocalHasData(fu.odontologiaNeurofocal);
               const hasCosmeData = cosmetologiaHasData(fu.cosmetologia);
               const hasCardioData = cardiologiaHasData(fu.cardiologia);
               const hasTerapiaData = terapiaHasData(fu.terapia);
@@ -3793,6 +3933,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     {hasGinecoData && <GinecologiaSummary g={fu.ginecologia} fecha={fu.fecha} />}
                     {hasPodoData && <PodologiaSummary p={fu.podologia} />}
                     {hasOdontoData && <OdontologiaSummary o={fu.odontologia} />}
+                    {hasNeuroData && <OdontoNeurofocalSummary o={fu.odontologiaNeurofocal} />}
                     {hasCosmeData && <CosmetologiaSummary c={fu.cosmetologia} />}
                     {hasCardioData && <CardiologiaSummary value={fu.cardiologia} />}
                     {hasTerapiaData && <TerapiaSummary value={fu.terapia} />}
@@ -4124,9 +4265,17 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       </>)}
                     </div>
                   </div>
-                </article>
-              );
-            })}
+                 </article>
+               );
+             })}
+        {/* TERAPIAS COMPLEMENTARIAS EN EL HISTORIAL (sep-2026). Su plan vive en
+            la FICHA —no es un seguimiento— y ahí quedaba escondido: ahora
+            aparece aquí también, con toda la información y con quién la guardó
+            y cuándo, igual que cualquier consulta de la historia. Solo lo ven
+            los mismos roles que pueden leer la pestaña (terapeuta y admin). */}
+        {hasRole('terapeuta', 'admin') && (
+          <TerapiasComplementariasCard t={record?.terapiasComplementarias} />
+        )}
         </div>
       </div>
 
@@ -5853,7 +6002,10 @@ function TerapiaSummary({ value }) {
   const t = value || {};
   if (!terapiaHasData(t)) return null;
   const conTexto = (t.elementos || []).filter((e) => String(e.texto || '').trim());
-  const cuadrantes = TERAPIA_FODA.filter((c) => String(t.foda?.[c.key] || '').trim());
+  // El CUADRO se muestra completo —en forma de cuadro, como al llenarlo— con
+  // los cuatro cuadrantes que tengan algo escrito. Antes salían como chips
+  // sueltos y el cuadro del análisis no se reconocía (sep-2026).
+  const cuadrantesConDatos = TERAPIA_FODA.filter((c) => String(t.foda?.[c.key] || '').trim());
   // El gráfico se pinta si hay algo QUE PINTAR: notas en los elementos o
   // flechas dibujadas. Con solo flechas también, que es media consulta.
   const hayGrafico = conTexto.length > 0 || (t.flechas || []).length > 0;
@@ -5869,11 +6021,22 @@ function TerapiaSummary({ value }) {
           </div>
         </span>
       )}
-      {cuadrantes.map((c) => (
-        <span key={c.key} className="w-full whitespace-pre-wrap">
-          <b>{c.label}:</b> {t.foda[c.key]}
+      {cuadrantesConDatos.length > 0 && (
+        <span className="w-full">
+          {/* La MISMA rejilla de la consulta: los cuatro cuadrantes con su
+              rótulo y su contenido tal cual se guardó. */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-violet-200 border border-violet-200 rounded-lg overflow-hidden mt-1">
+            {TERAPIA_FODA.map((c) => (
+              <div key={c.key} className="bg-white p-2 min-h-[2.5rem]">
+                <div className="text-[11px] font-semibold text-slate-600 mb-0.5">{c.label}</div>
+                <div className="text-xs text-slate-800 whitespace-pre-wrap break-words">
+                  {String(t.foda?.[c.key] || '').trim() || <span className="text-slate-300">—</span>}
+                </div>
+              </div>
+            ))}
+          </div>
         </span>
-      ))}
+      )}
       {t.plan && (
         <span className="w-full whitespace-pre-wrap">
           <b>Plan de tratamiento terapéutico:</b> {t.plan}
@@ -6181,6 +6344,151 @@ function OdontologiaSummary({ o }) {
       {hayCeo && (
         <span>
           ceo: {INDICE_CEO.map((c) => `${c.label} ${o.ceo?.[c.key] || 0}`).join(' · ')} — Total {ceoTotal}
+        </span>
+      )}
+      {o.observaciones && <span className="w-full whitespace-pre-wrap">{o.observaciones}</span>}
+    </SpecialtySummary>
+  );
+}
+
+// ──────────────── Odontología Neurofocal (rol odontologia_neurofocal) ────────────────
+
+function odontologiaNeurofocalHasData(o) {
+  return Boolean(
+    (o?.organos || []).some((x) => String(x?.texto || '').trim()) ||
+      String(o?.hallazgos || '').trim() ||
+      (o?.dientes || []).some((x) => String(x?.texto || '').trim()) ||
+      String(o?.observaciones || '').trim()
+  );
+}
+
+/**
+ * LA FICHA del rol odontología neurofocal. Tres piezas:
+ *
+ *  1. Examen físico POR ÓRGANO: tabla con el órgano a la izquierda y un cuadro
+ *     de texto grande a la derecha (16 órganos, ver ORGANOS_NEUROFOCAL).
+ *  2. "Hallazgos del examen físico": el cuadro de texto de abajo, con el MISMO
+ *     título que el examen físico de la hoja MSP.
+ *  3. El odontograma por filas (ver components/OdontogramaNeurofocal) y sus
+ *     observaciones.
+ */
+function OdontoNeurofocalSection({ value, onChange }) {
+  const o = value || {};
+  const organosBy = Object.fromEntries(
+    (Array.isArray(o.organos) ? o.organos : []).map((x) => [x.organo, x])
+  );
+  const setOrgano = (organoKey, texto) => {
+    const cur = organosBy[organoKey] || { organo: organoKey, texto: '' };
+    const next = { ...cur, texto };
+    const resto = (o.organos || []).filter((x) => x.organo !== organoKey);
+    // Una fila sin texto no es un hallazgo, es un hueco (misma regla del server).
+    onChange({
+      ...o,
+      organos: String(texto).trim() ? [...resto, next] : resto,
+    });
+  };
+
+  return (
+    <div className="md:col-span-3 space-y-3">
+      <label className="text-sm font-medium text-slate-700 block">Ficha de odontología neurofocal</label>
+
+      <Collapsible title="Examen físico" hint="órgano por órgano">
+        <div className="space-y-3">
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs border-collapse min-w-[420px]">
+              <tbody>
+                {ORGANOS_NEUROFOCAL.map((g) => (
+                  <tr key={g.key}>
+                    <th className="border border-slate-200 bg-slate-50 px-2 py-1.5 text-left font-semibold text-slate-600 w-32 align-top">
+                      {g.label}
+                    </th>
+                    <td className="border border-slate-200 p-1">
+                      <textarea
+                        rows={3}
+                        value={organosBy[g.key]?.texto || ''}
+                        onChange={(e) => setOrgano(g.key, e.target.value)}
+                        className="w-full border border-slate-200 rounded px-2 py-1 outline-none focus:border-emerald-500 resize-y text-xs"
+                        placeholder={`Hallazgos en ${g.label.toLowerCase()}…`}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {/* El cuadro de texto de abajo, con el MISMO título que tiene en el
+              examen físico de los demás doctores. */}
+          <Field label="Hallazgos del examen físico">
+            <textarea
+              rows={4}
+              value={o.hallazgos || ''}
+              onChange={(e) => onChange({ ...o, hallazgos: e.target.value })}
+              className="input resize-none"
+            />
+          </Field>
+        </div>
+      </Collapsible>
+
+      <Collapsible title="Odontograma" hint="por filas, con lo que se debe realizar">
+        <div className="space-y-3">
+          <OdontogramaNeurofocal value={o} onChange={onChange} />
+          <Field label="Observaciones del odontograma">
+            <textarea
+              rows={2}
+              value={o.observaciones || ''}
+              onChange={(e) => onChange({ ...o, observaciones: e.target.value })}
+              className="input resize-none"
+            />
+          </Field>
+        </div>
+      </Collapsible>
+    </div>
+  );
+}
+
+/** La ficha en el HISTORIAL, dibujada igual que al llenarla (componente memo). */
+const OdontogramaNeurofocalLectura = memo(function OdontogramaNeurofocalLectura({ value }) {
+  const [abierto, setAbierto] = useState(true);
+  return (
+    <div className="w-full bg-white rounded-lg border border-cyan-200 p-2 mb-1">
+      <button
+        type="button"
+        onClick={() => setAbierto((v) => !v)}
+        className="text-[11px] text-cyan-700 font-semibold bg-transparent border-none cursor-pointer p-0 mb-1"
+      >
+        {abierto ? '▾ Ocultar el odontograma' : '▸ Ver el odontograma'}
+      </button>
+      {abierto && <OdontogramaNeurofocal value={value} onChange={() => {}} readOnly />}
+    </div>
+  );
+});
+
+function OdontoNeurofocalSummary({ o }) {
+  if (!o) return null;
+  const organos = (o.organos || []).filter((x) => String(x?.texto || '').trim());
+  const filas = (o.dientes || []).filter((x) => String(x?.texto || '').trim());
+  return (
+    <SpecialtySummary title="Odontología Neurofocal" tone="cyan">
+      <OdontogramaNeurofocalLectura value={o} />
+      {organos.length > 0 && (
+        <span className="w-full">
+          <b>Examen físico:</b>{' '}
+          {organos
+            .map((x) => `${ORGANOS_NEUROFOCAL.find((g) => g.key === x.organo)?.label || x.organo}: ${x.texto}`)
+            .join(' · ')}
+        </span>
+      )}
+      {String(o.hallazgos || '').trim() && (
+        <span className="w-full whitespace-pre-wrap">
+          <b>Hallazgos del examen físico:</b> {o.hallazgos}
+        </span>
+      )}
+      {filas.length > 0 && (
+        <span className="w-full">
+          <b>Odontograma:</b>{' '}
+          {filas
+            .map((x) => `${ODONTO_NEUROFOCAL_FILAS.find((f) => f.key === x.fila)?.label || x.fila}: ${x.texto}`)
+            .join(' · ')}
         </span>
       )}
       {o.observaciones && <span className="w-full whitespace-pre-wrap">{o.observaciones}</span>}
@@ -6551,382 +6859,6 @@ function CitasTab({ patientId }) {
           </tbody>
         </table>
       </div>
-    </div>
-  );
-}
-
-// ─────────────────── Observaciones ───────────────────
-//
-// Bitácora libre del paciente: cualquiera del equipo anota lo que haga falta y
-// adjunta archivos. La más reciente aparece primero, con su fecha y su autor.
-//
-// Quién puede corregir una nota: SOLO quien la escribió… y el administrador. Que
-// el admin pueda no significa que se disimule: la tarjeta muestra siempre "Creado
-// por" y, en cuanto alguien la toca, "Modificado por".
-function ObservacionesTab({ patientId }) {
-  const { user, hasRole } = useAuth();
-  const isAdmin = hasRole('admin');
-  const meId = user?.id || user?._id; // /auth/me devuelve los dos
-
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [text, setText] = useState('');
-  const [pendingFiles, setPendingFiles] = useState([]);
-  const [saving, setSaving] = useState(false);
-  const [busyId, setBusyId] = useState(null);   // observación con una acción en curso
-  const [editing, setEditing] = useState(null); // { id, text }
-  const newFileRef = useRef(null);
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const r = await api.get(`/patients/${patientId}/observations`);
-      setRows(Array.isArray(r.data) ? r.data : []);
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al cargar las observaciones');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [patientId]);
-
-  const canEdit = (obs) =>
-    isAdmin || String(obs.createdBy?._id || obs.createdBy) === String(meId);
-
-  /** Reemplaza una observación en la lista sin recargarlas todas. */
-  const replaceRow = (obs) => setRows((prev) => prev.map((o) => (o._id === obs._id ? obs : o)));
-
-  const addFiles = (fileList) => {
-    const files = Array.from(fileList || []);
-    if (!files.length) return;
-    if (files.length + pendingFiles.length > OBSERVATION_MAX_FILES) {
-      toast.error(`Puedes adjuntar hasta ${OBSERVATION_MAX_FILES} archivos por observación`);
-    }
-    setPendingFiles((prev) => [...prev, ...files].slice(0, OBSERVATION_MAX_FILES));
-  };
-
-  const submit = async (e) => {
-    e.preventDefault();
-    if (!text.trim() && pendingFiles.length === 0) {
-      toast.error('Escribe una observación o adjunta un archivo');
-      return;
-    }
-    setSaving(true);
-    try {
-      // Un archivo por petición: diez de 20 MB juntos se pasan del
-      // `client_max_body_size` de nginx y el 413 llega sin explicación.
-      const fd = new FormData();
-      fd.append('text', text.trim());
-      if (pendingFiles[0]) fd.append('files', pendingFiles[0]);
-      const r = await api.post(`/patients/${patientId}/observations`, fd, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      let saved = r.data;
-      for (const file of pendingFiles.slice(1)) {
-        const one = new FormData();
-        one.append('files', file);
-        // eslint-disable-next-line no-await-in-loop
-        const extra = await api.post(
-          `/patients/${patientId}/observations/${saved._id}/attachments`,
-          one,
-          { headers: { 'Content-Type': 'multipart/form-data' } }
-        );
-        saved = extra.data;
-      }
-      setRows((prev) => [saved, ...prev]); // la más nueva, arriba
-      setText('');
-      setPendingFiles([]);
-      toast.success('Observación agregada');
-    } catch (err) {
-      toast.error(observationUploadError(err, 'No se pudo guardar la observación'));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const saveEdit = async () => {
-    if (!editing) return;
-    setBusyId(editing.id);
-    try {
-      const r = await api.put(`/patients/${patientId}/observations/${editing.id}`, {
-        text: editing.text.trim(),
-      });
-      replaceRow(r.data);
-      setEditing(null);
-      toast.success('Observación modificada');
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'No se pudo modificar');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const removeObservation = async (obs) => {
-    if (!confirm('¿Eliminar esta observación y sus archivos?')) return;
-    setBusyId(obs._id);
-    try {
-      await api.delete(`/patients/${patientId}/observations/${obs._id}`);
-      setRows((prev) => prev.filter((o) => o._id !== obs._id));
-      toast.success('Observación eliminada');
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'No se pudo eliminar');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const uploadTo = async (obs, fileList) => {
-    const files = Array.from(fileList || []);
-    if (!files.length) return;
-    setBusyId(obs._id);
-    try {
-      let saved = obs;
-      for (const file of files.slice(0, OBSERVATION_MAX_FILES)) {
-        const fd = new FormData();
-        fd.append('files', file);
-        // eslint-disable-next-line no-await-in-loop
-        const r = await api.post(
-          `/patients/${patientId}/observations/${obs._id}/attachments`,
-          fd,
-          { headers: { 'Content-Type': 'multipart/form-data' } }
-        );
-        saved = r.data;
-      }
-      replaceRow(saved);
-      toast.success(files.length > 1 ? 'Archivos adjuntados' : 'Archivo adjuntado');
-    } catch (err) {
-      toast.error(observationUploadError(err, 'No se pudo adjuntar'));
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const downloadAttachment = async (obs, att) => {
-    try {
-      await downloadFile(
-        `/patients/${patientId}/observations/${obs._id}/attachments/${att._id}`,
-        { filename: att.originalName || 'archivo' }
-      );
-    } catch (err) {
-      toast.error(err.message || 'Error al descargar');
-    }
-  };
-
-  const removeAttachment = async (obs, att) => {
-    if (!confirm(`¿Eliminar "${att.originalName}"?`)) return;
-    setBusyId(obs._id);
-    try {
-      const r = await api.delete(
-        `/patients/${patientId}/observations/${obs._id}/attachments/${att._id}`
-      );
-      replaceRow(r.data);
-      toast.success('Archivo eliminado');
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'No se pudo eliminar el archivo');
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      {/* Nueva observación */}
-      <form onSubmit={submit} className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3">
-        <textarea
-          rows={3}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Escribe una observación sobre el paciente…"
-          className="input resize-y"
-        />
-        <input
-          ref={newFileRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            addFiles(e.target.files);
-            e.target.value = '';
-          }}
-        />
-        {pendingFiles.length > 0 && (
-          <ul className="space-y-1">
-            {pendingFiles.map((f, i) => (
-              <li key={`${f.name}-${i}`} className="text-xs text-slate-600 flex items-center gap-2">
-                <HiOutlinePaperClip className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                <span className="truncate">{f.name}</span>
-                <span className="text-slate-400 shrink-0">({observationFileSize(f.size)})</span>
-                <button
-                  type="button"
-                  title="Quitar"
-                  onClick={() => setPendingFiles((prev) => prev.filter((_, idx) => idx !== i))}
-                  className="text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer p-0"
-                >
-                  <HiOutlineXMark className="w-3.5 h-3.5" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="flex items-center justify-between gap-2">
-          <button
-            type="button"
-            onClick={() => newFileRef.current?.click()}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-slate-300 bg-white hover:bg-emerald-50 hover:border-emerald-400 text-xs text-slate-600 hover:text-emerald-700 cursor-pointer transition-colors"
-          >
-            <HiOutlinePaperClip className="w-4 h-4" /> Adjuntar archivos
-          </button>
-          <button
-            type="submit"
-            disabled={saving}
-            className="flex items-center gap-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 cursor-pointer border-none"
-          >
-            <HiOutlinePlus className="w-4 h-4" /> {saving ? 'Guardando…' : 'Agregar observación'}
-          </button>
-        </div>
-      </form>
-
-      {/* Historial: la última que se escribió, primera */}
-      {loading ? (
-        <div className="text-sm text-slate-400">Cargando…</div>
-      ) : rows.length === 0 ? (
-        <div className="text-center py-10">
-          <HiOutlineChatBubbleLeftRight className="w-10 h-10 text-slate-300 mx-auto" />
-          <p className="text-sm text-slate-500 mt-2">Todavía no hay observaciones.</p>
-          <p className="text-xs text-slate-400">La primera que escribas aparecerá aquí.</p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {rows.map((obs) => {
-            const mine = canEdit(obs);
-            const busy = busyId === obs._id;
-            const isEditing = editing?.id === obs._id;
-            return (
-              <div key={obs._id} className="border border-slate-200 rounded-xl p-4 space-y-2">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="text-xs text-slate-500">
-                    <div className="font-semibold text-slate-700">
-                      Creado por {obs.createdBy?.name || 'usuario eliminado'}
-                    </div>
-                    <div>{fmtDateTime(obs.createdAt)}</div>
-                    {obs.updatedBy && (
-                      <div className="text-amber-700">
-                        Modificado por {obs.updatedBy.name || 'otro usuario'} ·{' '}
-                        {fmtDateTime(obs.editedAt || obs.updatedAt)}
-                      </div>
-                    )}
-                  </div>
-                  {mine && !isEditing && (
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        type="button"
-                        title="Modificar"
-                        disabled={busy}
-                        onClick={() => setEditing({ id: obs._id, text: obs.text || '' })}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 bg-transparent border-none cursor-pointer disabled:opacity-50"
-                      >
-                        <HiOutlinePencilSquare className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        title="Eliminar"
-                        disabled={busy}
-                        onClick={() => removeObservation(obs)}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 bg-transparent border-none cursor-pointer disabled:opacity-50"
-                      >
-                        <HiOutlineTrash className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {isEditing ? (
-                  <div className="space-y-2">
-                    <textarea
-                      rows={3}
-                      value={editing.text}
-                      onChange={(e) => setEditing((s) => ({ ...s, text: e.target.value }))}
-                      className="input resize-y"
-                    />
-                    <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setEditing(null)}
-                        className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50 cursor-pointer"
-                      >
-                        Cancelar
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={saveEdit}
-                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium border-none cursor-pointer disabled:opacity-50"
-                      >
-                        Guardar cambios
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  obs.text && (
-                    <p className="text-sm text-slate-700 whitespace-pre-wrap break-words">{obs.text}</p>
-                  )
-                )}
-
-                {(obs.attachments || []).length > 0 && (
-                  <div className="space-y-1 pt-1">
-                    {obs.attachments.map((att) => (
-                      <div key={att._id} className="flex items-center gap-2 text-xs text-slate-600">
-                        <span>{String(att.mimeType || '').startsWith('image/') ? '🖼️' : '📎'}</span>
-                        <button
-                          type="button"
-                          onClick={() => downloadAttachment(obs, att)}
-                          className="underline text-emerald-700 hover:text-emerald-800 bg-transparent border-none cursor-pointer p-0 truncate"
-                        >
-                          {att.originalName}
-                        </button>
-                        <span className="text-slate-400 shrink-0">({observationFileSize(att.size)})</span>
-                        {mine && (
-                          <button
-                            type="button"
-                            title="Eliminar archivo"
-                            disabled={busy}
-                            onClick={() => removeAttachment(obs, att)}
-                            className="text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer p-0 disabled:opacity-50"
-                          >
-                            <HiOutlineTrash className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {mine && (
-                  <label className="inline-flex items-center gap-1 text-xs text-emerald-700 cursor-pointer">
-                    <HiOutlinePlus className="w-3.5 h-3.5" />
-                    {busy ? 'Trabajando…' : 'Adjuntar archivos'}
-                    <input
-                      type="file"
-                      multiple
-                      className="hidden"
-                      disabled={busy}
-                      onChange={(e) => {
-                        const files = e.target.files;
-                        e.target.value = '';
-                        uploadTo(obs, files);
-                      }}
-                    />
-                  </label>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }

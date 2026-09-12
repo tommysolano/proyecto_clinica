@@ -17,6 +17,9 @@ import PatientEditModal from '../components/PatientEditModal';
 // con sus reglas por rol, el SRI y el campo único de teléfonos.
 import PatientFields, { emptyPatientForm, payloadDePaciente } from '../components/PatientFields';
 import AppointmentValueFields from '../components/AppointmentValueFields';
+// La bitácora de observaciones del paciente, la misma pestaña de su ficha,
+// abierta desde el menú de acciones de la cita (mostrador, sep-2026).
+import ObservacionesTab from '../components/ObservacionesTab';
 import AgendadoPorSelect from '../components/AgendadoPorSelect';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
@@ -417,10 +420,21 @@ export default function Appointments() {
   // especialidades: agendar se le abrió a ella, no al resto. Es espejo de la
   // ruta `POST /appointments` — si se cambia una, la otra también, o el botón
   // sale y lleva a un 403.
-  const canWrite = hasRole('admin', 'cajero', 'call_center', 'odontologia');
+  const canWrite = hasRole('admin', 'cajero', 'call_center', 'odontologia', 'odontologia_neurofocal');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
   // 'optica' no se expande desde 'doctor' en el cliente, por eso va aparte.
   const isDoctor = roleSatisfies(role, ['doctor']) || role === 'optica';
+  /**
+   * ODONTOLOGÍA MIRA LA AGENDA COMO MOSTRADOR (sep-2026).
+   *
+   * El rol es de doctor (atiende, abre la ficha, guarda el seguimiento), pero
+   * lo que se le pidió de la agenda es lo mismo que ve el cajero: TODAS las
+   * citas agendadas —el servidor ahora le manda la agenda completa de la
+   * sucursal de odontología—, con la vista de calendario, los filtros y el
+   * detalle de cita que un doctor no usaba. `isDoctor` sigue mandando para lo
+   * CLÍNICO (Atender, iniciar consulta, corregir); esto decide lo de AGENDA.
+   */
+  const esOdontologia = role === 'odontologia' || role === 'odontologia_neurofocal';
   const isNurse = role === 'enfermero';
   const isCallCenter = role === 'call_center';
   const isReception = hasRole('admin', 'cajero', 'enfermero');
@@ -456,6 +470,13 @@ export default function Appointments() {
    * persona, la bandeja avisa con un toast y no se rompe nada.
    */
   const puedeVerChats = hasRole('admin', 'call_center', 'marketing');
+  /**
+   * QUIÉN LEE LAS OBSERVACIONES DEL PACIENTE desde la agenda. Espejo de los
+   * roles de lectura de las rutas de observaciones (`GET /patients/:id/observations`
+   * en routes/patients.js): si sale el botón, la API contesta; si cambia una,
+   * cambia la otra, o el menú abriría un 403.
+   */
+  const veObservaciones = hasRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing');
 
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);
@@ -507,6 +528,23 @@ export default function Appointments() {
   const [nurseWorking, setNurseWorking] = useState(false);
   // Corregir los datos del PACIENTE desde su propia cita, sin ir a Clientes.
   const [patientModal, setPatientModal] = useState(null); // id del paciente
+  // LEER LA BITÁCORA DEL PACIENTE desde la cita (mostrador, sep-2026).
+  // { patientId, nombre } | null.
+  const [observacionesDe, setObservacionesDe] = useState(null);
+  /**
+   * EL MENÚ DE ACCIONES DE LA CITA.
+   *
+   * La fila tenía hasta diez botones a la vez y ninguno decía qué hace: uno
+   * equivocado cancelaba, cobraba o borraba. Ahora la fila enseña UN solo
+   * botón y al pulsarlo abre este menú con las acciones que LE CORRESPONDEN a
+   * quien mira y al estado de la cita.
+   *
+   * Va en `position: fixed` (coordenadas del botón) y no dentro de la celda:
+   * la tabla hace scroll en `md:overflow-x-auto` y un menú absoluto se
+   * recorta contra el contenedor. Se cierra al tocar fuera, al hacer scroll y
+   * al elegir una acción.
+   */
+  const [menuCita, setMenuCita] = useState(null);
   /**
    * Filtros secundarios plegados EN EL MÓVIL (en pantalla grande siempre se ven).
    * Desplegados ocupaban media pantalla y empujaban las citas —que es a lo que
@@ -575,7 +613,9 @@ export default function Appointments() {
   // Id del que mira, para decidir su bandeja: lo que para él está pendiente es
   // lo que todavía no ha tomado, no lo que la cita diga de sí misma.
   const miId = String(user?.id || user?._id || '');
-  const [view, setView] = useState(isDoctor || isNurse ? 'list' : 'calendar'); // 'calendar' | 'list'
+  // Odontología mira la agenda como mostrador (calendario disponible); el resto
+  // de quien atiende entra directo a la lista del día.
+  const [view, setView] = useState((isDoctor && !esOdontologia) || isNurse ? 'list' : 'calendar'); // 'calendar' | 'list'
   // Mes visible en la vista calendario
   const [calMonth, setCalMonth] = useState(() => {
     const d = new Date();
@@ -727,9 +767,15 @@ export default function Appointments() {
    * selección.
    */
   useEffect(() => {
+    // ODONTOLOGÍA no arranca filtrando por su sede activa: el servidor ya le
+    // manda SOLO la sucursal de odontología (ver comentarios del rol), y si su
+    // sesión entrara por otra sede el filtro del navegador dejaría la lista en
+    // blanco sin ninguna cita a la vista.
+    if (esOdontologia) return;
     const propia = activeClinic?._id;
     if (!propia) return;
     setFilter((f) => (String(f.clinic) === String(propia) ? f : { ...f, clinic: propia }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeClinic?._id]);
 
   const fetchNurses = async () => {
@@ -1624,8 +1670,9 @@ export default function Appointments() {
       <div className="flex flex-row items-center justify-end gap-2 mb-2 sm:mb-3">
         <div className="flex gap-2">
           {/* Enfermería, como los doctores, solo ve el día que tiene delante:
-              el calendario del mes le llena la pantalla de días que no trabaja. */}
-          {!isDoctor && !isNurse && (
+              el calendario del mes le llena la pantalla de días que no trabaja.
+              ODONTOLOGÍA SÍ: mira la agenda como mostrador (sep-2026). */}
+          {(!isDoctor || esOdontologia) && !isNurse && (
             <div className="inline-flex rounded-xl border border-slate-200 overflow-hidden bg-white">
               {[['calendar', 'Calendario'], ['list', 'Lista']].map(([v, label]) => (
                 <button
@@ -1802,7 +1849,7 @@ export default function Appointments() {
               <option value="true">Solo pacientes nuevos</option>
               <option value="false">Solo pacientes recurrentes</option>
             </select>
-            {!isDoctor && (
+            {(!isDoctor || esOdontologia) && (
               <ProductAutocomplete
                 products={services}
                 value={filter.service}
@@ -1810,7 +1857,7 @@ export default function Appointments() {
                 placeholder="Filtrar por servicio..."
               />
             )}
-            {!isDoctor && clinicasFiltro.length > 1 && (
+            {(!isDoctor || esOdontologia) && clinicasFiltro.length > 1 && (
               <select
                 value={filter.clinic}
                 onChange={(e) => setFilter({ ...filter, clinic: e.target.value })}
@@ -2140,6 +2187,183 @@ export default function Appointments() {
                     const handleCardClick = enJuegoParaEnfermeria
                       ? () => setNurseActionModal(apt)
                       : undefined;
+                    /**
+                     * LAS OPCIONES DE ESTA CITA, para quien mira y su estado.
+                     * Son las mismas reglas que tenía cada botón de la fila,
+                     * una por una; el menú solo cambia CÓMO se enseñan.
+                     */
+                    const opciones = [];
+                    /* Ir al chat de origen: solo citas agendadas desde el
+                        CRM (guardan `conversation`), y solo a quien la
+                        bandeja le corresponde. */
+                    if (puedeVerChats && apt.conversation) {
+                      opciones.push({
+                        id: 'chat',
+                        label: 'Ir al chat',
+                        icon: HiOutlineChatBubbleLeftRight,
+                        fn: () => navigate(`/chats?chat=${apt.conversation}`),
+                      });
+                    }
+                    /* Recepción: a quién pasa el paciente. También en las ya
+                        asistidas, para poder añadir un doctor o mandarla a
+                        enfermería cuando la consulta ya empezó, y en las
+                        marcadas como ausentes: si el paciente aparece, hay
+                        que poder recibirlo sin pelearse con el estado. */
+                    if (canCharge && ['pendiente', 'confirmada', 'asistida', 'no_asistio', 'completada'].includes(apt.status)) {
+                      opciones.push({
+                        id: 'asignar',
+                        label: 'Asignar atención',
+                        icon: HiOutlineUserPlus,
+                        fn: () => setAssignModal({ appointment: apt }),
+                      });
+                    }
+                    /**
+                      * Doctor: abrir la ficha SOLO si le toca AHORA.
+                      *
+                      * Antes se miraba `apt.doctor`, que es el ESPEJO para
+                      * comisiones y reportes: cuando ya no queda ningún turno
+                      * de doctor pendiente, ese espejo se queda apuntando al
+                      * ÚLTIMO que atendió. Con la cola «doctor → enfermería»,
+                      * el doctor que ya había guardado su seguimiento seguía
+                      * viendo «Atender» para un paciente que ya estaba con
+                      * enfermería. `currentTurnUser` es quien tiene la pelota
+                      * ahora, que es justo lo que hay que preguntar.
+                      */
+                    if (isDoctor && apt.status === 'asistida' && esMiTurno) {
+                      opciones.push({
+                        id: 'atender',
+                        label: 'Atender',
+                        icon: HiOutlinePencilSquare,
+                        fn: () => abrirAtencion(apt),
+                      });
+                    }
+                    /* Cobrar la cita en VENTAS (sep-2026): la venta nace
+                        ya enlazada a la cita (Sale.appointment), que es lo
+                        que permite a Analíticas sumar TODO lo que el
+                        paciente pagó — el abono al reservar y lo cobrado
+                        aquí en mostrador. */
+                    if (canCharge && ['asistida', 'completada'].includes(apt.status)) {
+                      opciones.push({
+                        id: 'cobrar',
+                        label: 'Cobrar en Ventas',
+                        icon: HiOutlineBanknotes,
+                        fn: () => navigate(`/sales?cita=${apt._id}`),
+                      });
+                    }
+                    if (showDoctorTimer && !inProgress && apt.status !== 'completada') {
+                      opciones.push({
+                        id: 'iniciar',
+                        label: 'Iniciar consulta',
+                        icon: HiOutlinePlay,
+                        fn: () => startConsultation(apt),
+                      });
+                    }
+                    /**
+                      * FINALIZAR PIDE CONFIRMACIÓN, y no por cortesía.
+                      *
+                      * Comparte EL MISMO SITIO que «Iniciar»: en cuanto
+                      * arranca la consulta, uno se convierte en el otro. Un
+                      * doble clic en «Iniciar» —que es lo que pasó— arrancaba
+                      * y cerraba la consulta con el paciente todavía
+                      * sentándose. Cerrar una atención no puede ser un clic
+                      * de más.
+                      */
+                    if (showDoctorTimer && inProgress) {
+                      opciones.push({
+                        id: 'finalizar',
+                        label: 'Finalizar consulta',
+                        icon: HiOutlineStop,
+                        fn: () => {
+                          if (!window.confirm(`¿Terminaste la consulta de ${apt.patient?.firstName || 'este paciente'}?`)) return;
+                          endConsultation(apt);
+                        },
+                      });
+                    }
+                    /**
+                      * VER LA RECETA de una visita ya atendida, sin salir de
+                      * la agenda. Antes había que abrir la ficha del paciente
+                      * y buscar el seguimiento por fecha entre todos los
+                      * suyos; con dos consultas el mismo día eso es adivinar.
+                      * Es de solo lectura: corregir sigue siendo cosa de su
+                      * autor, por «Ver / corregir».
+                      */
+                    if (puedeVerConsulta(apt)) {
+                      opciones.push({
+                        id: 'consulta',
+                        label: 'Ver consulta y receta',
+                        icon: HiOutlineEye,
+                        fn: () => setConsultaModal(apt),
+                      });
+                    }
+                    /**
+                      * VOLVER A LA CONSULTA que ya escribí (ver `puedoCorregir`).
+                      *
+                      * No reabre la cita ni reinicia el cronómetro (ver
+                      * `abrirAtencion`): entra a la ficha, y desde ahí se
+                      * corrige el seguimiento con su propio botón o se le
+                      * adjunta el archivo que faltaba.
+                      */
+                    if (puedoCorregir) {
+                      opciones.push({
+                        id: 'corregir',
+                        label: 'Ver / corregir consulta',
+                        icon: HiOutlinePencilSquare,
+                        fn: () => abrirAtencion(apt, { soloVolver: true }),
+                      });
+                    }
+                    /**
+                      * LA BITÁCORA DEL PACIENTE (mostrador, sep-2026): lo que
+                      * recepción y el equipo anotaron —vino con la mamá,
+                      * pidió factura a nombre de la empresa—, a la vista sin
+                      * salir de la agenda ni buscarlo en Clientes.
+                      */
+                    if (veObservaciones && apt.patient?._id) {
+                      opciones.push({
+                        id: 'observaciones',
+                        label: 'Observaciones del paciente',
+                        icon: HiOutlineChatBubbleLeftRight,
+                        fn: () => setObservacionesDe({
+                          patientId: apt.patient._id,
+                          nombre: [apt.patient?.firstName, apt.patient?.lastName].filter(Boolean).join(' '),
+                        }),
+                      });
+                    }
+                    /* «Ver» e «imprimir» son de mostrador: quien atiende no
+                        los usa —lo suyo es entrar a la consulta—. EXCEPCIÓN,
+                        odontología: mira la agenda como mostrador (sep-2026). */
+                    if ((!isDoctor || esOdontologia) && !isNurse) {
+                      opciones.push({
+                        id: 'ver',
+                        label: 'Ver la cita',
+                        icon: HiOutlineEye,
+                        fn: () => openDetail(apt._id),
+                      });
+                      opciones.push({
+                        id: 'pdf',
+                        label: 'Descargar PDF',
+                        icon: HiOutlineDocumentArrowDown,
+                        fn: () => downloadPdf(apt._id),
+                      });
+                    }
+                    if (editable) {
+                      opciones.push({
+                        id: 'editar',
+                        label: 'Editar cita',
+                        icon: HiOutlinePencil,
+                        fn: () => openEdit(apt),
+                      });
+                    }
+                    /* BORRAR ES BORRAR: administración y marketing. El aviso
+                        de `handleDelete` dice lo que pasa de verdad. */
+                    if (puedeBorrar) {
+                      opciones.push({
+                        id: 'eliminar',
+                        label: 'Eliminar cita',
+                        icon: HiOutlineTrash,
+                        danger: true,
+                        fn: () => handleDelete(apt),
+                      });
+                    }
                     return (
                     <Fragment key={apt._id}>
                     {showDayHeader && (
@@ -2169,6 +2393,25 @@ export default function Appointments() {
                             title={llegadaTarde.detalle}
                           >
                             {llegadaTarde.texto}
+                          </div>
+                        )}
+                        {/**
+                          * CANJE, a la vista de quien atiende (sep-2026).
+                          * Cuando la cita queda marcada como canje —no se paga
+                          * con dinero, se cambió por otra cosa—, quien la tiene
+                          * asignada lo ve AQUÍ, junto a la hora y con el mismo
+                          * formato del aviso de llegada tarde, sin tener que
+                          * abrir el detalle para descubrir por qué no hay
+                          * importe. Mostrador ya lo veía en la columna de
+                          * servicio (arriba); quien atiende no miraba esa
+                          * columna, y el canje se topaba al cobrar.
+                          */}
+                        {isDoctor && apt.isCanje && (
+                          <div
+                            className="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-100 text-amber-800 whitespace-nowrap"
+                            title="Esta cita quedó como CANJE: el paciente no la paga con dinero"
+                          >
+                            Canje
                           </div>
                         )}
                         {atencion && (
@@ -2295,176 +2538,31 @@ export default function Appointments() {
                         )}
                       </td>
                       <td data-cell="acciones" onClick={(e) => { if (enJuegoParaEnfermeria) e.stopPropagation(); }} className="md:px-6 md:py-3.5 text-right">
-                        {/* Ir al chat de origen: solo citas agendadas desde el
-                            CRM (guardan `conversation`), y solo a quien la
-                            bandeja le corresponde. */}
-                        {puedeVerChats && apt.conversation && (
-                          <button
-                            onClick={() => navigate(`/chats?chat=${apt.conversation}`)}
-                            className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
-                            title="Abrir el chat de este paciente"
-                          >
-                            <HiOutlineChatBubbleLeftRight className="w-4 h-4" />
-                          </button>
-                        )}
-                        {/* Recepción: a quién pasa el paciente. También en las ya
-                            asistidas, para poder añadir un doctor o mandarla a
-                            enfermería cuando la consulta ya empezó, y en las
-                            marcadas como ausentes: si el paciente aparece, hay
-                            que poder recibirlo sin pelearse con el estado. */}
-                        {canCharge && ['pendiente', 'confirmada', 'asistida', 'no_asistio', 'completada'].includes(apt.status) && (
-                          <button
-                            onClick={() => setAssignModal({ appointment: apt })}
-                            className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
-                            title="Asignar doctor, enfermero o suero"
-                          >
-                            <HiOutlineUserPlus className="w-4 h-4" />
-                          </button>
-                        )}
                         {/**
-                          * Doctor: abrir la ficha SOLO si le toca AHORA.
+                          * UN SOLO BOTÓN, y dentro todas las acciones.
                           *
-                          * Antes se miraba `apt.doctor`, que es el ESPEJO para
-                          * comisiones y reportes: cuando ya no queda ningún turno
-                          * de doctor pendiente, ese espejo se queda apuntando al
-                          * ÚLTIMO que atendió. Con la cola «doctor → enfermería»,
-                          * el doctor que ya había guardado su seguimiento seguía
-                          * viendo «Atender» para un paciente que ya estaba con
-                          * enfermería. `currentTurnUser` es quien tiene la pelota
-                          * ahora, que es justo lo que hay que preguntar.
+                          * La fila llegó a tener diez iconos a la vez y ninguno
+                          * decía qué hace: uno equivocado cobraba, reagendaba o
+                          * borraba. Ahora la fila enseña UN botón (solo cuando
+                          * hay algo que ofrecer a quien mira) y al pulsarlo
+                          * abre el menú con las opciones que LE CORRESPONDEN a
+                          * su rol y al estado de la cita, con su etiqueta
+                          * legible (ver `MenuAccionesCita`).
                           */}
-                        {isDoctor &&
-                          apt.status === 'asistida' &&
-                          esMiTurno && (
-                            <button
-                              onClick={() => abrirAtencion(apt)}
-                              className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-600 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
-                              title="Atender ahora"
-                            >
-                              Atender
-                            </button>
-                          )}
-                        {/* Cobrar la cita en VENTAS (sep-2026): la venta nace
-                            ya enlazada a la cita (Sale.appointment), que es lo
-                            que permite a Analíticas sumar TODO lo que el
-                            paciente pagó — el abono al reservar y lo cobrado
-                            aquí en mostrador. */}
-                        {canCharge && ['asistida', 'completada'].includes(apt.status) && (
+                        {opciones.length > 0 && (
                           <button
-                            onClick={() => navigate(`/sales?cita=${apt._id}`)}
-                            className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-700 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
-                            title="Cobrar esta cita en Ventas: la venta queda enlazada a la cita"
-                          >
-                            <HiOutlineBanknotes className="w-4 h-4" />
-                          </button>
-                        )}
-                        {/**
-                          * ENFERMERO: sin botones en la fila. La card entera es
-                          * el botón (ver onClick del <tr>): en el móvil estos
-                          * botones pequeños eran un blanco difícil y el tap
-                          * se perdía. Las acciones viven ahora en el modal de
-                          * acciones, con descripción de cada una.
-                          */}
-                        {showDoctorTimer && !inProgress && apt.status !== 'completada' && (
-                          <button
-                            onClick={() => startConsultation(apt)}
-                            className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
-                            title="Iniciar consulta"
-                          >
-                            <HiOutlinePlay className="w-4 h-4" />
-                          </button>
-                        )}
-                        {/**
-                          * FINALIZAR PIDE CONFIRMACIÓN, y no por cortesía.
-                          *
-                          * Este botón ocupa EL MISMO SITIO que «Iniciar»: en
-                          * cuanto arranca la consulta, uno se convierte en el
-                          * otro. Un doble clic en «Iniciar» —que es lo que pasó—
-                          * arrancaba y cerraba la consulta con el paciente
-                          * todavía sentándose. Cerrar una atención no puede ser
-                          * un clic de más.
-                          */}
-                        {showDoctorTimer && inProgress && (
-                          <button
-                            onClick={() => {
-                              if (!window.confirm(`¿Terminaste la consulta de ${apt.patient?.firstName || 'este paciente'}?`)) return;
-                              endConsultation(apt);
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const r = e.currentTarget.getBoundingClientRect();
+                              setMenuCita({ apt, opciones, bottom: r.bottom, right: r.right });
                             }}
-                            className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer transition-colors"
-                            title="Finalizar consulta"
+                            title="Acciones de la cita"
+                            aria-label="Acciones de la cita"
+                            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50 cursor-pointer transition-colors"
                           >
-                            <HiOutlineStop className="w-4 h-4" />
-                          </button>
-                        )}
-                        {/**
-                          * VOLVER A LA CONSULTA que ya escribí (ver `puedoCorregir`).
-                          *
-                          * No reabre la cita ni reinicia el cronómetro (ver
-                          * `abrirAtencion`): entra a la ficha, y desde ahí se
-                          * corrige el seguimiento con su propio botón o se le
-                          * adjunta el archivo que faltaba.
-                          */}
-                        {/**
-                          * VER LA RECETA de una visita ya atendida, sin salir de
-                          * la agenda. Antes había que abrir la ficha del paciente
-                          * y buscar el seguimiento por fecha entre todos los
-                          * suyos; con dos consultas el mismo día eso es adivinar.
-                          * Es de solo lectura: corregir sigue siendo cosa de su
-                          * autor, por «Ver / corregir».
-                          */}
-                        {puedeVerConsulta(apt) && (
-                          <button
-                            onClick={() => setConsultaModal(apt)}
-                            className="p-1.5 rounded-lg hover:bg-violet-50 text-violet-700 bg-transparent border border-violet-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
-                            title="Ver la receta y lo que se escribió en esta cita"
-                          >
-                            Consulta
-                          </button>
-                        )}
-                        {puedoCorregir && (
-                          <button
-                            onClick={() => abrirAtencion(apt, { soloVolver: true })}
-                            className="p-1.5 rounded-lg hover:bg-indigo-50 text-indigo-600 bg-transparent border border-indigo-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
-                            title="Volver a la consulta para corregirla, ampliarla o adjuntar un archivo"
-                          >
-                            Ver / corregir
-                          </button>
-                        )}
-                        {/* «Ver» e «imprimir» son de mostrador: quien atiende no
-                            los usa —lo suyo es entrar a la consulta— y le
-                            llenaban la fila de botones que no le sirven. */}
-                        {!isDoctor && !isNurse && (
-                          <>
-                            <button
-                              onClick={() => openDetail(apt._id)}
-                              title="Ver la cita"
-                              className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
-                            >
-                              <HiOutlineEye className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => downloadPdf(apt._id)}
-                              className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
-                              title="Descargar PDF"
-                            >
-                              <HiOutlineDocumentArrowDown className="w-4 h-4" />
-                            </button>
-                          </>
-                        )}
-                        {editable && (
-                          <button
-                            onClick={() => openEdit(apt)}
-                            className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
-                          >
-                            <HiOutlinePencil className="w-4 h-4" />
-                          </button>
-                        )}
-                        {puedeBorrar && (
-                          <button
-                            onClick={() => handleDelete(apt)}
-                            className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer transition-colors"
-                          >
-                            <HiOutlineTrash className="w-4 h-4" />
+                            <HiOutlineAdjustmentsHorizontal className="w-4 h-4" />
+                            <HiOutlineChevronDown className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </td>
@@ -3562,6 +3660,31 @@ export default function Appointments() {
         />
       )}
 
+      {/* EL MENÚ DE ACCIONES de la fila: se abre con el botón único de la
+          columna Acciones y vive en position:fixed para no recortarse contra
+          el scroll de la tabla. */}
+      {menuCita && (
+        <MenuAccionesCita
+          opciones={menuCita.opciones}
+          bottom={menuCita.bottom}
+          right={menuCita.right}
+          onClose={() => setMenuCita(null)}
+        />
+      )}
+
+      {/* LA BITÁCORA DEL PACIENTE, abierta desde la cita: el MISMO componente
+          que la pestaña «Observaciones» de su ficha. */}
+      {observacionesDe && observacionesDe.patientId && (
+        <Modal
+          isOpen
+          onClose={() => setObservacionesDe(null)}
+          title={`Observaciones · ${observacionesDe.nombre || 'paciente'}`}
+          size="lg"
+        >
+          <ObservacionesTab patientId={observacionesDe.patientId} />
+        </Modal>
+      )}
+
       {/* EL MODAL DE "ATENDER" DEL ENFERMERO: tap en cualquier parte de la
           card y aquí están las acciones, grandes y explicadas. */}
       {nurseActionModal && (
@@ -3686,6 +3809,69 @@ function ServiceAutocomplete({ services, selectedIds, onAdd, onRemove }) {
 
 // SameSlotPanel ahora vive en components/SameSlotPanel.jsx y se reutiliza también
 // desde el modal de citas del chat.
+
+/**
+ * EL MENÚ DE ACCIONES DE UNA CITA.
+ *
+ * Un solo botón en la fila y aquí adentro, con etiqueta legible, todas las
+ * acciones que le tocan a quien la mira. Vive en `position: fixed` (por eso
+ * recibe las coordenadas del botón): la tabla hace scroll con
+ * `overflow-x-auto` y un menú absoluto dentro de la celda se recorta contra
+ * el contenedor.
+ *
+ * Se cierra: al elegir una acción, al pulsar fuera y al hacer scroll (se
+ * perdería el ancla con el botón). Si el menú no cabe por abajo, se abre
+ * hacia arriba.
+ */
+function MenuAccionesCita({ opciones, bottom, right, onClose }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const fuera = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) onClose();
+    };
+    const cerrar = () => onClose();
+    document.addEventListener('mousedown', fuera);
+    document.addEventListener('touchstart', fuera);
+    window.addEventListener('scroll', cerrar, true);
+    window.addEventListener('resize', cerrar);
+    return () => {
+      document.removeEventListener('mousedown', fuera);
+      document.removeEventListener('touchstart', fuera);
+      window.removeEventListener('scroll', cerrar, true);
+      window.removeEventListener('resize', cerrar);
+    };
+  }, [onClose]);
+
+  const ANCHO = 224; // w-56
+  const ESTIMADO = opciones.length * 36 + 16; // alto aproximado del menú
+  const cabeAbajo = bottom + 8 + ESTIMADO < window.innerHeight;
+  const top = cabeAbajo ? bottom + 8 : Math.max(8, bottom - 8 - ESTIMADO);
+  const left = Math.max(8, right - ANCHO);
+
+  return (
+    <div
+      ref={ref}
+      className="fixed z-50 w-56 max-h-[70vh] overflow-y-auto rounded-xl bg-white border border-slate-200 shadow-xl py-1"
+      style={{ top, left }}
+      role="menu"
+    >
+      {opciones.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          role="menuitem"
+          onClick={() => { onClose(); o.fn(); }}
+          className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left bg-white border-none cursor-pointer hover:bg-slate-50 ${
+            o.danger ? 'text-red-600 hover:bg-red-50' : 'text-slate-700'
+          }`}
+        >
+          {o.icon && <o.icon className="w-4 h-4 shrink-0 opacity-70" />}
+          <span className="truncate">{o.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
 
 /**
  * MODAL DE ACCIONES DE ENFERMERÍA.

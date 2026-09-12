@@ -61,7 +61,7 @@ router.post('/export.xlsx', requireRole('admin', 'cajero'), exportAppointments);
  * entero incluye fecha, hora, paciente y precio de una visita que suele ser
  * suya.
  */
-router.post('/', requireRole('admin', 'cajero', 'call_center', 'odontologia'), createAppointment);
+router.post('/', requireRole('admin', 'cajero', 'call_center', 'odontologia', 'odontologia_neurofocal'), createAppointment);
 // ATENCIÓN INMEDIATA: crea la cita ya asignada a quien la pide. 'doctor' expande
 // a las especialidades — nace para óptica, donde el paciente entra sin cita y lo
 // registra el propio optómetra.
