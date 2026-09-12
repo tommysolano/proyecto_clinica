@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { createPortal } from 'react-dom';
 import api from '../api/axios';
 import Modal from '../components/Modal';
 import { downloadFile } from '../utils/download';
@@ -2555,10 +2556,16 @@ export default function Appointments() {
                             onClick={(e) => {
                               e.stopPropagation();
                               const r = e.currentTarget.getBoundingClientRect();
-                              setMenuCita({ apt, opciones, bottom: r.bottom, right: r.right });
+                              // TOGGLE: el mismo botón abre y cierra (ver el
+                              // `fuera` de MenuAccionesCita, que ignora el
+                              // propio botón para que el toggle funcione).
+                              setMenuCita((cur) => (cur && cur.apt === apt
+                                ? null
+                                : { apt, opciones, bottom: r.bottom, right: r.right, btn: e.currentTarget }));
                             }}
                             title="Acciones de la cita"
                             aria-label="Acciones de la cita"
+                            aria-haspopup="menu"
                             className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50 cursor-pointer transition-colors"
                           >
                             <HiOutlineAdjustmentsHorizontal className="w-4 h-4" />
@@ -3668,6 +3675,7 @@ export default function Appointments() {
           opciones={menuCita.opciones}
           bottom={menuCita.bottom}
           right={menuCita.right}
+          btn={menuCita.btn}
           onClose={() => setMenuCita(null)}
         />
       )}
@@ -3823,10 +3831,12 @@ function ServiceAutocomplete({ services, selectedIds, onAdd, onRemove }) {
  * perdería el ancla con el botón). Si el menú no cabe por abajo, se abre
  * hacia arriba.
  */
-function MenuAccionesCita({ opciones, bottom, right, onClose }) {
+function MenuAccionesCita({ opciones, bottom, right, btn, onClose }) {
   const ref = useRef(null);
   useEffect(() => {
     const fuera = (e) => {
+      // El botón que abrió el menú no lo cierra: con él se TOGGLEA.
+      if (btn?.contains?.(e.target)) return;
       if (ref.current && !ref.current.contains(e.target)) onClose();
     };
     const cerrar = () => onClose();
@@ -3840,7 +3850,7 @@ function MenuAccionesCita({ opciones, bottom, right, onClose }) {
       window.removeEventListener('scroll', cerrar, true);
       window.removeEventListener('resize', cerrar);
     };
-  }, [onClose]);
+  }, [onClose, btn]);
 
   const ANCHO = 224; // w-56
   const ESTIMADO = opciones.length * 36 + 16; // alto aproximado del menú
@@ -3848,7 +3858,17 @@ function MenuAccionesCita({ opciones, bottom, right, onClose }) {
   const top = cabeAbajo ? bottom + 8 : Math.max(8, bottom - 8 - ESTIMADO);
   const left = Math.max(8, right - ANCHO);
 
-  return (
+  /**
+   * VA EN PORTAL, a document.body (igual que `Modal` y `RowMenu`).
+   *
+   * Sin esto el menú abre DESPLAZADO y fuera de la pantalla: el contenedor de
+   * la página lleva una animación de entrada con `transform` (`page-enter`,
+   * ver index.css), y cualquier ancestro con transform se vuelve el BLOQUE
+   * CONTENEDOR de un `position: fixed` — el menú se posiciona contra ese div
+   * (que además se mueve con el scroll) en vez de contra la ventana. Aquí lo
+   * vimos con puppeteer: estilo `left: 999px`, rect real `left: 1301px`.
+   */
+  return createPortal(
     <div
       ref={ref}
       className="fixed z-50 w-56 max-h-[70vh] overflow-y-auto rounded-xl bg-white border border-slate-200 shadow-xl py-1"
@@ -3869,7 +3889,8 @@ function MenuAccionesCita({ opciones, bottom, right, onClose }) {
           <span className="truncate">{o.label}</span>
         </button>
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
