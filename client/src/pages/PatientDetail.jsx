@@ -1046,8 +1046,8 @@ function FichaTerapiaTab({ patientId }) {
 function TerapiaBloque({ titulo, children }) {
   return (
     <div className="space-y-2">
-      <div className="text-sm font-semibold text-violet-700">{titulo}</div>
-      <div className="bg-white rounded-lg border border-violet-100 p-3 space-y-2">{children}</div>
+      <div className="text-sm font-semibold text-emerald-700">{titulo}</div>
+      <div className="bg-white rounded-lg border border-emerald-100 p-3 space-y-2">{children}</div>
     </div>
   );
 }
@@ -1062,7 +1062,7 @@ function TerapiaCampo({ titulo, value, onChange, placeholder, type = 'text' }) {
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full text-sm border border-slate-200 rounded px-2.5 py-1.5 outline-none focus:border-violet-500"
+        className="w-full text-sm border border-slate-200 rounded px-2.5 py-1.5 outline-none focus:border-emerald-500"
       />
     </label>
   );
@@ -1078,7 +1078,7 @@ function TerapiaArea({ titulo, value, onChange, placeholder, rows = 2 }) {
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full text-sm border border-slate-200 rounded px-2.5 py-1.5 outline-none focus:border-violet-500 resize-none"
+        className="w-full text-sm border border-slate-200 rounded px-2.5 py-1.5 outline-none focus:border-emerald-500 resize-none"
       />
     </label>
   );
@@ -1122,7 +1122,7 @@ function MapaFloralTabla({ filas, onChange }) {
       <div className="border border-slate-200 rounded-lg overflow-hidden">
         <table className="w-full text-sm">
           <thead>
-            <tr className="bg-violet-50 text-left text-[11px] uppercase tracking-wide text-violet-700">
+            <tr className="bg-emerald-50 text-left text-[11px] uppercase tracking-wide text-emerald-700">
               <th className="px-2 py-1.5 w-24 font-semibold">N.º</th>
               <th className="px-2 py-1.5 font-semibold">Flor</th>
               <th className="w-10" aria-label="acciones" />
@@ -1138,7 +1138,7 @@ function MapaFloralTabla({ filas, onChange }) {
                     value={f?.numero || ''}
                     onChange={(e) => setFila(idx, 'numero', e.target.value)}
                     placeholder="1–39"
-                    className="w-full text-sm border border-slate-200 rounded px-2 py-1 outline-none focus:border-violet-500"
+                    className="w-full text-sm border border-slate-200 rounded px-2 py-1 outline-none focus:border-emerald-500"
                   />
                 </td>
                 <td className="px-2 py-1">
@@ -1148,7 +1148,7 @@ function MapaFloralTabla({ filas, onChange }) {
                     value={f?.nombre || ''}
                     onChange={(e) => setFila(idx, 'nombre', e.target.value)}
                     placeholder="Escribe el nombre y el número se llena solo"
-                    className="w-full text-sm border border-slate-200 rounded px-2 py-1 outline-none focus:border-violet-500"
+                    className="w-full text-sm border border-slate-200 rounded px-2 py-1 outline-none focus:border-emerald-500"
                   />
                 </td>
                 <td className="px-1 py-1 text-center">
@@ -1176,7 +1176,7 @@ function MapaFloralTabla({ filas, onChange }) {
       <button
         type="button"
         onClick={() => onChange([...(filas || []), { numero: '', nombre: '' }])}
-        className="inline-flex items-center gap-1 text-xs text-violet-700 hover:text-violet-900 cursor-pointer bg-transparent border-none font-medium"
+        className="inline-flex items-center gap-1 text-xs text-emerald-700 hover:text-emerald-900 cursor-pointer bg-transparent border-none font-medium"
       >
         <HiOutlinePlus className="w-3.5 h-3.5" /> Agregar flor
       </button>
@@ -1262,7 +1262,7 @@ function TerapiasComplementariasTab({ patientId }) {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-violet-600"></div>
+        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-600"></div>
       </div>
     );
   }
@@ -1299,7 +1299,7 @@ function TerapiasComplementariasTab({ patientId }) {
             <select
               value={mj.presion || ''}
               onChange={(e) => setMj('presion', e.target.value)}
-              className="w-full text-sm border border-slate-200 rounded px-2.5 py-1.5 outline-none focus:border-violet-500 bg-white"
+              className="w-full text-sm border border-slate-200 rounded px-2.5 py-1.5 outline-none focus:border-emerald-500 bg-white"
             >
               <option value="">—</option>
               <option value="suave">Suave</option>
@@ -1324,7 +1324,7 @@ function TerapiasComplementariasTab({ patientId }) {
           type="button"
           onClick={save}
           disabled={saving}
-          className="px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 cursor-pointer border-none disabled:opacity-50"
+          className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 cursor-pointer border-none disabled:opacity-50"
         >
           {saving ? 'Guardando…' : 'Guardar terapias complementarias'}
         </button>
