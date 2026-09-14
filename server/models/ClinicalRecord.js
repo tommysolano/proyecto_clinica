@@ -239,6 +239,65 @@ const higieneOralFilaSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/**
+ * LAS TERAPIAS COMPLEMENTARIAS, el CONTENIDO (sin la firma de «quién guardó»).
+ *
+ * Se define como función que devuelve una definición FRESCA en cada llamada —
+ * y no como esquema reutilizado— porque el mismo bloque vive en dos sitios: en
+ * la FICHA (el plan vigente que se mantiene entre sesiones) y dentro de cada
+ * seguimiento que el terapeuta guarda (la foto de ESA sesión, sep-2026).
+ * Mongoose no tolera bien reusar la misma instancia de esquema anidado en dos
+ * padres; con la función cada lado compila el suyo.
+ *
+ *  · BIOMAGNETISMO — cuatro textos: el objetivo, el protocolo elegido,
+ *    cuántas sesiones se estiman y el protocolo-par.
+ *  · TERAPIA FLORAL — el Mapa Floral (número + nombre de la flor de Bach,
+ *    el usuario llena uno y el otro se completa en la pantalla) y los tres
+ *    textos de la fórmula. El servidor guarda LOS DOS campos de cada fila:
+ *    si el nombre del catálogo cambiara mañana, lo escrito queda como fue.
+ *  · MASAJE TERAPÉUTICO — la hoja de la sesión, campo a campo.
+ */
+const terapiasComplementariasContenido = () => ({
+  biomagnetismo: {
+    objetivo: { type: String, trim: true, default: '' },
+    protocoloSeleccionado: { type: String, trim: true, default: '' },
+    sesionesEstimadas: { type: String, trim: true, default: '' },
+    protocoloParSeleccionado: { type: String, trim: true, default: '' },
+  },
+  terapiaFloral: {
+    // Una fila por flor elegida. `numero` es el del sistema de Bach (texto
+    // porque «Rescate» no lleva número de verdad) y `nombre` el de la flor.
+    mapaFloral: {
+      type: [new mongoose.Schema(
+        {
+          numero: { type: String, trim: true, default: '' },
+          nombre: { type: String, trim: true, default: '' },
+        },
+        { _id: false }
+      )],
+      default: [],
+    },
+    objetivoFormula: { type: String, trim: true, default: '' },
+    afirmacionTerapeutica: { type: String, trim: true, default: '' },
+    tareasTerapia: { type: String, trim: true, default: '' },
+  },
+  masajeTerapeutico: {
+    zonaTrabajada: { type: String, trim: true, default: '' },
+    tensionInicial: { type: String, trim: true, default: '' },
+    tecnicaUtilizada: { type: String, trim: true, default: '' },
+    presion: { type: String, trim: true, default: '' },
+    aceiteUtilizado: { type: String, trim: true, default: '' },
+    aromaterapia: { type: String, trim: true, default: '' },
+    floresApoyo: { type: String, trim: true, default: '' },
+    tiempo: { type: String, trim: true, default: '' },
+    respuestaInmediata: { type: String, trim: true, default: '' },
+    tensionFinal: { type: String, trim: true, default: '' },
+    observaciones: { type: String, trim: true, default: '' },
+    recomendaciones: { type: String, trim: true, default: '' },
+    proximaSesion: { type: String, trim: true, default: '' },
+  },
+});
+
 const followUpSchema = new mongoose.Schema(
   {
     fecha: { type: Date, required: true, default: Date.now },
@@ -737,6 +796,22 @@ const followUpSchema = new mongoose.Schema(
      * puso sigue diciendo lo que se puso.
      */
     aplicaciones: { type: [aplicacionEnfermeriaSchema], default: [] },
+    /**
+     * TERAPIAS COMPLEMENTARIAS DE ESA SESIÓN (sep-2026).
+     *
+     * Cuando el terapeuta (o administración) guarda la pestaña, el servidor
+     * además de actualizar el plan vigente de la ficha empuja un seguimiento
+     * nuevo con la FOTO de lo que se guardó ese día —fecha, autor y contenido,
+     * igual que cualquier consulta—. Sin esto el historial solo tendría la
+     * última versión del plan, sobrescrito una y otra vez.
+     *
+     * Privada como su origen: ver `hideTherapyNotes` en el controlador, que se
+     * la quita a quien no la puede ver.
+     */
+    terapiasComplementarias: {
+      type: new mongoose.Schema(terapiasComplementariasContenido(), { _id: false }),
+      default: null,
+    },
   },
   { timestamps: true }
 );
@@ -864,57 +939,15 @@ const clinicalRecordSchema = new mongoose.Schema(
     /**
      * TERAPIAS COMPLEMENTARIAS (sep-2026, a petición del terapeuta). Vive en la
      * FICHA del paciente —en su propia pestaña, junto a Ficha clínica y Datos—,
-     * no dentro de un seguimiento: es un plan que se mantiene y evoluciona entre
-     * sesiones, no la nota de una consulta. Privada como `fichaTerapia` (ver
-     * `hideTherapyNotes`).
+     * no dentro de un seguimiento: es el PLAN que se mantiene y evoluciona entre
+     * sesiones. Privada como `fichaTerapia` (ver `hideTherapyNotes`).
      *
-     *  · BIOMAGNETISMO — cuatro textos: el objetivo, el protocolo elegido,
-     *    cuántas sesiones se estiman y el protocolo-par.
-     *  · TERAPIA FLORAL — el Mapa Floral (número + nombre de la flor de Bach,
-     *    el usuario llena uno y el otro se completa en la pantalla) y los tres
-     *    textos de la fórmula. El servidor guarda LOS DOS campos de cada fila:
-     *    si el nombre del catálogo cambiara mañana, lo escrito queda como fue.
-     *  · MASAJE TERAPÉUTICO — la hoja de la sesión, campo a campo.
+     * El contenido es el MISMO bloque que se copia a cada seguimiento que el
+     * terapeuta guarda (ver `terapiasComplementariasContenido`, arriba): la
+     * ficha manda la última versión, el historial conserva las de cada sesión.
      */
     terapiasComplementarias: {
-      biomagnetismo: {
-        objetivo: { type: String, trim: true, default: '' },
-        protocoloSeleccionado: { type: String, trim: true, default: '' },
-        sesionesEstimadas: { type: String, trim: true, default: '' },
-        protocoloParSeleccionado: { type: String, trim: true, default: '' },
-      },
-      terapiaFloral: {
-        // Una fila por flor elegida. `numero` es el del sistema de Bach (texto
-        // porque «Rescate» no lleva número de verdad) y `nombre` el de la flor.
-        mapaFloral: {
-          type: [new mongoose.Schema(
-            {
-              numero: { type: String, trim: true, default: '' },
-              nombre: { type: String, trim: true, default: '' },
-            },
-            { _id: false }
-          )],
-          default: [],
-        },
-        objetivoFormula: { type: String, trim: true, default: '' },
-        afirmacionTerapeutica: { type: String, trim: true, default: '' },
-        tareasTerapia: { type: String, trim: true, default: '' },
-      },
-      masajeTerapeutico: {
-        zonaTrabajada: { type: String, trim: true, default: '' },
-        tensionInicial: { type: String, trim: true, default: '' },
-        tecnicaUtilizada: { type: String, trim: true, default: '' },
-        presion: { type: String, trim: true, default: '' },
-        aceiteUtilizado: { type: String, trim: true, default: '' },
-        aromaterapia: { type: String, trim: true, default: '' },
-        floresApoyo: { type: String, trim: true, default: '' },
-        tiempo: { type: String, trim: true, default: '' },
-        respuestaInmediata: { type: String, trim: true, default: '' },
-        tensionFinal: { type: String, trim: true, default: '' },
-        observaciones: { type: String, trim: true, default: '' },
-        recomendaciones: { type: String, trim: true, default: '' },
-        proximaSesion: { type: String, trim: true, default: '' },
-      },
+      ...terapiasComplementariasContenido(),
       updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
       updatedAt: { type: Date, default: null },
     },

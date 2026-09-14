@@ -201,7 +201,7 @@ exports.getUser = async (req, res) => {
  */
 exports.createUser = async (req, res) => {
   try {
-    const { name, email, password, role, specialty, phone, cedula, clinics } = req.body;
+    const { name, email, password, role, specialty, phone, cedula, clinics, alsoTherapist } = req.body;
     if (!name || !email || !password || !role) {
       return res.status(400).json({ message: 'Faltan campos requeridos' });
     }
@@ -224,6 +224,17 @@ exports.createUser = async (req, res) => {
       clinicAssignments = sanitizeClinics(clinics);
     }
 
+    /**
+     * CREAR OTRO SUPER-ADMIN (sep-2026, a petición del usuario).
+     *
+     * Solo quien ya es super-admin puede sembrar otro: el flag nunca viaja del
+     * cliente sin esta condición, así que un admin de sucursal no puede
+     * escalarse. Nace con la clínica activa asignada como admin (ver arriba):
+     * el rol de la sucursal es lo de menos para él — el middleware le da
+     * 'admin' en cualquier sede aunque no tenga asignación (ver auth).
+     */
+    const esSuperAdmin = req.user.isSuperAdmin && req.body.isSuperAdmin === true;
+
     const user = await User.create({
       name,
       email,
@@ -232,6 +243,9 @@ exports.createUser = async (req, res) => {
       phone,
       cedula,
       clinics: clinicAssignments,
+      // Doctor que también puede atender como terapeuta (ver User.alsoTherapist).
+      alsoTherapist: !!alsoTherapist,
+      isSuperAdmin: esSuperAdmin,
     });
 
     const populated = await User.findById(user._id)
@@ -245,9 +259,22 @@ exports.createUser = async (req, res) => {
 
 exports.updateUser = async (req, res) => {
   try {
-    const { name, email, specialty, phone, cedula, active, clinics, password } = req.body;
+    const { name, email, specialty, phone, cedula, active, clinics, password, alsoTherapist } = req.body;
     const update = { name, email, specialty, phone, cedula, active };
     Object.keys(update).forEach((k) => update[k] === undefined && delete update[k]);
+
+    /**
+     * «TAMBIÉN TERAPEUTA» y «SUPER-ADMIN» (sep-2026).
+     *
+     * `alsoTherapist` es una segunda gorra para un doctor (ver User.alsoTherapist):
+     * la enciende/apaga quien edita el usuario desde Usuarios. `isSuperAdmin` solo
+     * se toca si quien pide ya es super-admin — igual que en createUser, un admin
+     * de sucursal no puede escalar a nadie (ni a sí mismo) a dueño.
+     */
+    if (alsoTherapist !== undefined) update.alsoTherapist = !!alsoTherapist;
+    if (req.user.isSuperAdmin && req.body.isSuperAdmin !== undefined) {
+      update.isSuperAdmin = !!req.body.isSuperAdmin;
+    }
 
     if (password) {
       if (password.length < 6) {

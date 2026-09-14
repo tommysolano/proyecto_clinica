@@ -254,6 +254,17 @@ export default function PatientDetail() {
   const tabParam = searchParams.get('tab') || null;
   const navigate = useNavigate();
   const { hasRole, user } = useAuth();
+  /**
+   * LA GORRA ACTIVA DE ESTA VISITA (sep-2026).
+   *
+   * El doctor marcado «también terapeuta» escogió en el modal de la agenda con
+   * cuál de sus dos gorras atiende; la elección viaja en la URL
+   * (`como=terapeuta`) y de aquí salen TODAS las decisiones de esta pantalla:
+   * qué ficha se abre, qué pestañas se ven y con qué sombrero se sella lo que
+   * guarde (el servidor recibe `comoTerapeuta` en el cuerpo y firma 'terapeuta').
+   * Sin el parámetro —o sin el flag del usuario— es un doctor de toda la vida.
+   */
+  const comoTerapeuta = !!user?.alsoTherapist && searchParams.get('como') === 'terapeuta';
   // Quien entra desde una cita entra a atender: el doctor arranca en la ficha
   // (los antecedentes antes de explorar) y el resto directo a seguimientos.
   const initialTab = tabParam
@@ -470,8 +481,9 @@ export default function PatientDetail() {
   const visibleTabs = TABS.filter((t) => {
     if (t.id === 'facturas') return hasRole('admin', 'cajero', 'contabilidad');
     // Las terapias complementarias son del terapeuta. El administrador también
-    // las ve, como ve su ficha y sus consultas.
-    if (t.id === 'terapias') return hasRole('terapeuta', 'admin');
+    // las ve, como ve su ficha y sus consultas. Y el doctor «también terapeuta»
+    // SIEMPRE las tiene disponibles, con cualquiera de sus dos gorras (sep-2026).
+    if (t.id === 'terapias') return hasRole('terapeuta', 'admin') || !!user?.alsoTherapist;
     if (t.id === 'citas' || t.id === 'observaciones') return !soloAtiende;
     return true;
   });
@@ -653,7 +665,7 @@ export default function PatientDetail() {
             * ADMINISTRADOR ve las dos — el servidor se la manda y le deja
             * guardarla, así que esconderla aquí era tirar el dato en el cliente.
             */}
-          {tabActiva === 'ficha' && (hasRole('terapeuta')
+          {tabActiva === 'ficha' && (hasRole('terapeuta') || comoTerapeuta
             ? <FichaTerapiaTab patientId={id} />
             : (
               <>
@@ -665,7 +677,7 @@ export default function PatientDetail() {
                 )}
               </>
             ))}
-          {tabActiva === 'seguimientos' && <SeguimientosTab patientId={id} appointmentId={appointmentId} />}
+          {tabActiva === 'seguimientos' && <SeguimientosTab patientId={id} appointmentId={appointmentId} comoTerapeuta={comoTerapeuta} />}
           {tabActiva === 'terapias' && <TerapiasComplementariasTab patientId={id} appointmentId={appointmentId} />}
           {tabActiva === 'archivos' && <ArchivosTab patientId={id} appointmentId={appointmentId} />}
           {tabActiva === 'citas' && <CitasTab patientId={id} />}
@@ -1208,7 +1220,12 @@ function terapiasComplementariasHasData(t) {
   );
 }
 
-function TerapiasComplementariasCard({ t }) {
+/**
+ * EL CONTENIDO de las terapias complementarias, sin tarjeta: lo usa la tarjeta
+ * del plan vigente (abajo) y la tarjeta de cada seguimiento que lo guardó, que
+ * es donde vive la foto de esa sesión.
+ */
+function TerapiasComplementariasSummary({ t }) {
   if (!terapiasComplementariasHasData(t)) return null;
   const bm = t.biomagnetismo || {};
   const tf = t.terapiaFloral || {};
@@ -1219,6 +1236,61 @@ function TerapiasComplementariasCard({ t }) {
     </div>
   ) : null);
   const flores = (tf.mapaFloral || []).filter((f) => f && (String(f.numero || '').trim() || String(f.nombre || '').trim()));
+  return (
+    <div className="rounded-xl border border-violet-100 bg-white p-3 space-y-2">
+      <div className="font-semibold text-slate-800 text-xs uppercase tracking-wide">Biomagnetismo</div>
+      {campo('Objetivo', bm.objetivo)}
+      {campo('Protocolo seleccionado', bm.protocoloSeleccionado)}
+      {campo('Sesiones estimadas', bm.sesionesEstimadas)}
+      {campo('Protocolo-par seleccionado', bm.protocoloParSeleccionado)}
+
+      <div className="font-semibold text-slate-800 text-xs uppercase tracking-wide pt-2">Terapia floral</div>
+      {flores.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="bg-slate-50">
+                <th className="border border-slate-200 px-2 py-1 text-left font-semibold">N°</th>
+                <th className="border border-slate-200 px-2 py-1 text-left font-semibold">Flor de Bach</th>
+              </tr>
+            </thead>
+            <tbody>
+              {flores.map((f, i) => (
+                <tr key={i}>
+                  <td className="border border-slate-200 px-2 py-1 tabular-nums">{f.numero}</td>
+                  <td className="border border-slate-200 px-2 py-1">{f.nombre}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {campo('Objetivo de la fórmula', tf.objetivoFormula)}
+      {campo('Afirmación terapéutica', tf.afirmacionTerapeutica)}
+      {campo('Tareas de la terapia', tf.tareasTerapia)}
+
+      <div className="font-semibold text-slate-800 text-xs uppercase tracking-wide pt-2">Masaje terapéutico</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5">
+        {campo('Zona trabajada', mj.zonaTrabajada)}
+        {campo('Tensión inicial 0-10', mj.tensionInicial)}
+        {campo('Técnica utilizada', mj.tecnicaUtilizada)}
+        {campo('Presión', mj.presion)}
+        {campo('Aceite utilizado', mj.aceiteUtilizado)}
+        {campo('Aromaterapia', mj.aromaterapia)}
+        {campo('Flores de apoyo', mj.floresApoyo)}
+        {campo('Tiempo', mj.tiempo)}
+        {campo('Tensión final 0-10', mj.tensionFinal)}
+      </div>
+      {campo('Respuesta inmediata', mj.respuestaInmediata)}
+      {campo('Observaciones', mj.observaciones)}
+      {campo('Recomendaciones', mj.recomendaciones)}
+      {campo('Próxima sesión', mj.proximaSesion)}
+    </div>
+  );
+}
+
+function TerapiasComplementariasCard({ t }) {
+  if (!terapiasComplementariasHasData(t)) return null;
   return (
     <article className="p-4 text-sm">
       <div className="flex flex-wrap items-center gap-2 mb-1">
@@ -1232,55 +1304,7 @@ function TerapiasComplementariasCard({ t }) {
           </span>
         )}
       </div>
-      <div className="rounded-xl border border-violet-100 bg-white p-3 space-y-2">
-        <div className="font-semibold text-slate-800 text-xs uppercase tracking-wide">Biomagnetismo</div>
-        {campo('Objetivo', bm.objetivo)}
-        {campo('Protocolo seleccionado', bm.protocoloSeleccionado)}
-        {campo('Sesiones estimadas', bm.sesionesEstimadas)}
-        {campo('Protocolo-par seleccionado', bm.protocoloParSeleccionado)}
-
-        <div className="font-semibold text-slate-800 text-xs uppercase tracking-wide pt-2">Terapia floral</div>
-        {flores.length > 0 && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs border-collapse">
-              <thead>
-                <tr className="bg-slate-50">
-                  <th className="border border-slate-200 px-2 py-1 text-left font-semibold">N°</th>
-                  <th className="border border-slate-200 px-2 py-1 text-left font-semibold">Flor de Bach</th>
-                </tr>
-              </thead>
-              <tbody>
-                {flores.map((f, i) => (
-                  <tr key={i}>
-                    <td className="border border-slate-200 px-2 py-1 tabular-nums">{f.numero}</td>
-                    <td className="border border-slate-200 px-2 py-1">{f.nombre}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {campo('Objetivo de la fórmula', tf.objetivoFormula)}
-        {campo('Afirmación terapéutica', tf.afirmacionTerapeutica)}
-        {campo('Tareas de la terapia', tf.tareasTerapia)}
-
-        <div className="font-semibold text-slate-800 text-xs uppercase tracking-wide pt-2">Masaje terapéutico</div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5">
-          {campo('Zona trabajada', mj.zonaTrabajada)}
-          {campo('Tensión inicial 0-10', mj.tensionInicial)}
-          {campo('Técnica utilizada', mj.tecnicaUtilizada)}
-          {campo('Presión', mj.presion)}
-          {campo('Aceite utilizado', mj.aceiteUtilizado)}
-          {campo('Aromaterapia', mj.aromaterapia)}
-          {campo('Flores de apoyo', mj.floresApoyo)}
-          {campo('Tiempo', mj.tiempo)}
-          {campo('Tensión final 0-10', mj.tensionFinal)}
-        </div>
-        {campo('Respuesta inmediata', mj.respuestaInmediata)}
-        {campo('Observaciones', mj.observaciones)}
-        {campo('Recomendaciones', mj.recomendaciones)}
-        {campo('Próxima sesión', mj.proximaSesion)}
-      </div>
+      <TerapiasComplementariasSummary t={t} />
     </article>
   );
 }
@@ -1299,7 +1323,8 @@ function TerapiasComplementariasCard({ t }) {
  * un seguimiento — el paso final de la consulta es este botón.
  */
 function TerapiasComplementariasTab({ patientId, appointmentId }) {
-  const { hasRole } = useAuth();
+  const { hasRole, user } = useAuth();
+  const navigate = useNavigate();
   const esAdmin = hasRole('admin');
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1341,14 +1366,31 @@ function TerapiasComplementariasTab({ patientId, appointmentId }) {
       delete limpio.updatedAt;
       const res = await api.put(
         `/clinical-records/${patientId}`,
-        { terapiasComplementarias: limpio, ...(appointmentId ? { appointmentId } : {}) }
+        {
+          terapiasComplementarias: limpio,
+          ...(appointmentId ? { appointmentId } : {}),
+          // El doctor «también terapeuta» firma esto con su gorra de terapeuta:
+          // son terapias, y quedan reservadas para él y administración.
+          ...(user?.alsoTherapist ? { comoTerapeuta: true } : {}),
+        }
       );
       setRecord(res.data);
+
+      /**
+       * GUARDAR DESDE UNA CITA DEVUELVE A LA AGENDA, igual que los seguimientos.
+       * El servidor responde `nextTurn` cuando detrás quedó otro profesional:
+       * si no lo dice, el aviso de «cita finalizada» sería mentira.
+       */
+      const siguiente = res.data?.nextTurn;
+      const quien = siguiente?.user?.name || (siguiente?.kind === 'enfermeria' ? 'enfermería' : null);
       toast.success(
         appointmentId
-          ? 'Terapias complementarias guardadas · la cita quedó completada'
+          ? siguiente
+            ? `Terapias complementarias guardadas. Pasa a ${quien || 'el siguiente profesional'}.`
+            : 'Terapias complementarias guardadas. Cita finalizada.'
           : 'Terapias complementarias guardadas'
       );
+      if (appointmentId) navigate('/appointments');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al guardar');
     } finally {
@@ -2169,7 +2211,7 @@ function SueroResumen({ item, className = '' }) {
   );
 }
 
-function SeguimientosTab({ patientId, appointmentId }) {
+function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
   const navigate = useNavigate();
   const { hasRole, user } = useAuth();
   const isOptica = hasRole('optica');
@@ -2189,8 +2231,13 @@ function SeguimientosTab({ patientId, appointmentId }) {
    * su consulta son los cinco elementos, el reparto en cuadrantes y el plan. Se
    * le podan las secciones que no le tocan en vez de enseñarle veinte campos
    * para llegar a los tres suyos — la misma decisión que se tomó con enfermería.
+   *
+   * El doctor «también terapeuta» entra aquí CON LA GORRA DE TERAPEUTA cuando
+   * así lo escogió en el modal de la agenda: mismo formulario podado y, al
+   * guardar, `comoTerapeuta` viaja al servidor para que el seguimiento quede
+   * sellado y reservado (sep-2026).
    */
-  const isTerapeuta = hasRole('terapeuta');
+  const isTerapeuta = hasRole('terapeuta') || comoTerapeuta;
   // Cómo se llaman la receta y las recomendaciones en ESTA consulta.
   const etiquetasReceta = recetaEtiquetas(isTerapeuta);
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
@@ -2849,7 +2896,16 @@ function SeguimientosTab({ patientId, appointmentId }) {
       if (!isOdontoNeuro) delete payload.odontologiaNeurofocal;
       if (!isCosme) delete payload.cosmetologia;
       if (!isCardio) delete payload.cardiologia;
+      /**
+       * LA GORRA VIAJA AL SERVIDOR (sep-2026).
+       *
+       * `terapia` (la consulta privada) solo se manda desde la consulta del
+       * terapeuta; el doctor «también terapeuta» que guardó con esa gorra avisa
+       * con `comoTerapeuta` para que el servidor firme el seguimiento como
+       * terapeuta — y con ello sea suyo para siempre y reservado para el resto.
+       */
       if (!isTerapeuta) delete payload.terapia;
+      else if (comoTerapeuta) payload.comoTerapeuta = true;
 
       /**
        * CORREGIR un seguimiento ya guardado.
@@ -3868,6 +3924,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
               const hasCosmeData = cosmetologiaHasData(fu.cosmetologia);
               const hasCardioData = cardiologiaHasData(fu.cardiologia);
               const hasTerapiaData = terapiaHasData(fu.terapia);
+              // La FOTO de terapias complementarias que este seguimiento guardó.
+              const hasTcsData = terapiasComplementariasHasData(fu.terapiasComplementarias);
               const vs = fu.vitalSigns || {};
               const hasVitals = ['hora', 'temperature', 'bloodPressure', 'heartRate', 'respiratoryRate', 'oxygenSaturation', 'weight', 'height', 'abdominalPerimeter', 'capillaryHemoglobin', 'glucose']
                 .some((k) => vs[k] != null && vs[k] !== '');
@@ -3918,6 +3976,9 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     {fu.createdByRole === 'terapeuta' && !fu.redacted && (
                       <span className="inline-block mb-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700">Terapia</span>
                     )}
+                    {hasTcsData && (
+                      <span className="inline-block mb-1 ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700">Terapias complementarias</span>
+                    )}
                     {hasOpticaData && (
                       <span className="inline-block mb-1 ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700">Óptica</span>
                     )}
@@ -3937,6 +3998,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     {hasCosmeData && <CosmetologiaSummary c={fu.cosmetologia} />}
                     {hasCardioData && <CardiologiaSummary value={fu.cardiologia} />}
                     {hasTerapiaData && <TerapiaSummary value={fu.terapia} />}
+                    {hasTcsData && <TerapiasComplementariasSummary t={fu.terapiasComplementarias} />}
                     </>)}
                     {/* LO QUE ENFERMERÍA APLICÓ DE VERDAD. Antes aquí solo ponía
                         «Servicio aplicado por enfermería»: la aplicación vive

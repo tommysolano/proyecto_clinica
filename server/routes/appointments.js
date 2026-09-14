@@ -19,6 +19,7 @@ const {
   assignDoctor,
   nurseClaim,
   nurseComplete,
+  appointmentsByService,
 } = require('../controllers/appointmentController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
@@ -26,6 +27,12 @@ router.use(auth, requireClinic);
 
 router.get('/today', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getTodayAppointments);
 router.get('/stats', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getStats);
+/**
+ * ANALÍTICAS: citas agendadas por servicio. Va por delante del `/:id` de abajo
+ * (y con dos segmentos, así ni siquiera llega a rozarlo): administra y marketing
+ * leen el informe, que es el mismo alcance con el que ven la agenda.
+ */
+router.get('/analytics/by-service', requireRole('admin', 'marketing'), appointmentsByService);
 router.get('/', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getAppointments);
 router.get('/:id', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getAppointment);
 router.get(

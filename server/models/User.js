@@ -56,6 +56,20 @@ const userSchema = new mongoose.Schema(
     },
     // Indica si es super-admin (dueño): puede crear/gestionar clínicas globalmente
     isSuperAdmin: { type: Boolean, default: false },
+    /**
+     * DOCTOR QUE TAMBIÉN ATIENDE COMO TERAPEUTA (sep-2026).
+     *
+     * No cambia su rol en ninguna sucursal (sigue siendo 'doctor' o el que sea):
+     * es una SEGUNDA gorra que se le permite ponerse. Al atender una cita, la
+     * pantalla le pregunta con cuál gorra va —doctor o terapeuta—, y lo que
+     * escriba con la de terapeuta queda sellado con `createdByRole: 'terapeuta'`
+     * en el seguimiento: privado para él y administración, y para los demás
+     * doctores solo el tocón «Atendido por terapeuta» (ver hideTherapyNotes en
+     * clinicalRecordController). El flag lo enciende administración desde
+     * Usuarios (PUT /users/:id) y viaja en el usuario público para que la
+     * pantalla sepa que tiene que preguntar.
+     */
+    alsoTherapist: { type: Boolean, default: false },
     // Asignaciones de clínicas con su rol en cada una
     clinics: { type: [userClinicSchema], default: [] },
     /**

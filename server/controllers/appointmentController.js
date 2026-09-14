@@ -3460,3 +3460,100 @@ exports.exportAppointments = async (req, res) => {
     res.status(500).json({ message: 'No se pudo generar el Excel', error: error.message });
   }
 };
+
+/**
+ * ANALÍTICAS: CITAS AGENDADAS POR SERVICIO (sep-2026).
+ *
+ * Agrupa las citas del rango por el servicio del CATÁLOGO DE LA AGENDA
+ * (`AppointmentServiceItem`, el mismo que llena el selector al agendar) — NO el
+ * del inventario, que es un catálogo viejo que la agenda ya no usa. De cada
+ * servicio reporta el total agendado y en qué estado están: pendiente, asistida
+ * y completada, que es lo que la clínica pregunta; confirmada, no asistió y
+ * cancelada se suman en `otras` para que el total cuadre con las columnas.
+ *
+ * El alcance de sucursales es EL MISMO que la agenda (`sucursalesVisibles`):
+ * administración y marketing ven toda la organización; el resto, sus sedes.
+ * Las citas antiguas sin catálogo (legacy `serviceName` a secas) salen
+ * agrupadas bajo su nombre de texto, para que no se pierdan del total.
+ */
+exports.appointmentsByService = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const match = {};
+    if (from || to) {
+      match.date = {};
+      const ini = parseLocalDate(from);
+      const fin = parseLocalDate(to);
+      // El día es ENTERO por las dos puntas (mismo criterio que la agenda):
+      // `date` se guarda a mediodía, pero un rango abierto a mediodía pierde lo
+      // registrado con hora dentro del campo del día.
+      if (ini) { ini.setHours(0, 0, 0, 0); match.date.$gte = ini; }
+      if (fin) { fin.setHours(23, 59, 59, 999); match.date.$lte = fin; }
+    }
+    const sedes = sucursalesVisibles(req);
+    if (sedes !== null) match.clinic = { $in: sedes };
+
+    const fila = (estado) => ({
+      $sum: { $cond: [{ $eq: ['$status', estado] }, 1, 0] },
+    });
+
+    const rows = await Appointment.aggregate([
+      { $match: match },
+      {
+        $group: {
+          // Con catálogo manda el ID (el nombre puede haberse corregido en una
+          // cita vieja); sin él —citas de antes del catálogo— manda el nombre.
+          _id: { $ifNull: ['$serviceItem', { serviceName: '$serviceName' }] },
+          total: { $sum: 1 },
+          pendiente: fila('pendiente'),
+          asistida: fila('asistida'),
+          completada: fila('completada'),
+          otras: {
+            $sum: {
+              $cond: [
+                { $in: ['$status', ['pendiente', 'asistida', 'completada']] },
+                0,
+                1,
+              ],
+            },
+          },
+        },
+      },
+      { $sort: { total: -1 } },
+    ]);
+
+    // Nombres del catálogo para los grupos que salieron por id. Se incluyen los
+    // desactivados: una cita del mes pasado de un servicio que hoy se bajó del
+    // catálogo sigue siendo una cita agendada.
+    const idsCatalogo = rows
+      .filter((r) => r._id && typeof r._id === 'object' && r._id.serviceName === undefined)
+      .map((r) => r._id)
+      .filter(Boolean);
+    const catalogo = idsCatalogo.length
+      ? await AppointmentServiceItem.find({ _id: { $in: idsCatalogo } })
+          .select('name')
+          .lean()
+      : [];
+    const nombrePorId = new Map(catalogo.map((s) => [String(s._id), s.name]));
+
+    res.json(
+      rows.map((r) => {
+        const esLegacy = r._id && r._id.serviceName !== undefined;
+        const nombre = esLegacy
+          ? (r._id.serviceName || 'Sin servicio')
+          : (nombrePorId.get(String(r._id)) || 'Servicio eliminado');
+        return {
+          servicio: nombre,
+          serviceItem: esLegacy ? null : r._id,
+          total: r.total,
+          pendiente: r.pendiente,
+          asistida: r.asistida,
+          completada: r.completada,
+          otras: r.otras,
+        };
+      })
+    );
+  } catch (error) {
+    res.status(500).json({ message: 'Error al calcular citas por servicio', error: error.message });
+  }
+};

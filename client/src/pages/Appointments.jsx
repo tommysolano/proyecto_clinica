@@ -43,7 +43,6 @@ import {
   HiOutlineBeaker,
   HiOutlinePaperAirplane,
   HiOutlineArrowDownTray,
-  HiOutlineBanknotes,
   HiOutlineChatBubbleLeftRight,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
@@ -564,6 +563,15 @@ export default function Appointments() {
   const [excelModal, setExcelModal] = useState(false);
   const [rangoExcel, setRangoExcel] = useState(null);
   const [bajandoExcel, setBajandoExcel] = useState(false);
+  /**
+   * «¿DOCTOR O TERAPEUTA?» (sep-2026).
+   *
+   * El modal del doctor «también terapeuta»: guarda la cita que va a atender
+   * hasta que escoja con cuál gorra. La elección no cambia su turno (sigue
+   * siendo el mismo profesional): cambia QUÉ PANTALLAS se abren y con qué
+   * sombrero queda sellado lo que escriba.
+   */
+  const [elegirGorra, setElegirGorra] = useState(null);
   /**
    * «QUIÉN ATIENDE» SIN ENFERMERÍA. En una cita con varios turnos esa columna
    * es la cadena entera («Dr. A → Dr. B → Enf. C»), y el autofiltro de Excel
@@ -1474,7 +1482,17 @@ export default function Appointments() {
     // Al VOLVER, en cambio, se entra directo a seguimientos: a lo que se vuelve
     // es a lo que se escribió, no a los antecedentes.
     const destino = opciones.tab || (isNurse || soloVolver ? 'seguimientos' : 'ficha');
-    navigate(`/patients/${apt.patient?._id}?appointment=${apt._id}&tab=${destino}`);
+    /**
+     * LA GORRA CON LA QUE ATIENDE (sep-2026).
+     *
+     * El doctor marcado «también terapeuta» escogió en el modal; la elección viaja
+     * en la URL (`como=terapeuta`) y la ficha del paciente abre con ella sus
+     * pantallas de terapeuta — y al guardar sella el seguimiento como terapeuta,
+     * que es lo que lo vuelve reservado para los demás. En modo doctor la URL
+     * queda limpia, como la de cualquier doctor.
+     */
+    const conGorra = opciones.como ? `&como=${opciones.como}` : '';
+    navigate(`/patients/${apt.patient?._id}?appointment=${apt._id}&tab=${destino}${conGorra}`);
   };
 
   const handlePatientSelect = (p) => {
@@ -2235,20 +2253,15 @@ export default function Appointments() {
                         id: 'atender',
                         label: 'Atender',
                         icon: HiOutlinePencilSquare,
-                        fn: () => abrirAtencion(apt),
-                      });
-                    }
-                    /* Cobrar la cita en VENTAS (sep-2026): la venta nace
-                        ya enlazada a la cita (Sale.appointment), que es lo
-                        que permite a Analíticas sumar TODO lo que el
-                        paciente pagó — el abono al reservar y lo cobrado
-                        aquí en mostrador. */
-                    if (canCharge && ['asistida', 'completada'].includes(apt.status)) {
-                      opciones.push({
-                        id: 'cobrar',
-                        label: 'Cobrar en Ventas',
-                        icon: HiOutlineBanknotes,
-                        fn: () => navigate(`/sales?cita=${apt._id}`),
+                        /**
+                         * DOS GORRAS, UNA PREGUNTA (sep-2026).
+                         *
+                         * El doctor marcado «también terapeuta» escoge aquí con
+                         * cuál de las dos atiende — el modal manda a la ficha con
+                         * `como=doctor|terapeuta` y de ahí salen las pantallas y
+                         * el sellado de lo que escriba. Los demás entran directo.
+                         */
+                        fn: () => (user?.alsoTherapist ? setElegirGorra(apt) : abrirAtencion(apt)),
                       });
                     }
                     if (showDoctorTimer && !inProgress && apt.status !== 'completada') {
@@ -3650,6 +3663,44 @@ export default function Appointments() {
           onDone={fetchAppointments}
         />
       )}
+
+      {/**
+        * EL MODAL DEL DOCTOR «TAMBIÉN TERAPEUTA»: con cuál gorra atiende.
+        *
+        * Dos caminos, mismas pantallas que ya existen: como DOCTOR abre la ficha
+        * clínica de siempre (hoja MSP, receta); como TERAPEUTA abre su ficha
+        * propia y las terapias complementarias, y lo que guarde queda sellado y
+        * reservado. El cronómetro y el cierre de turno son iguales en los dos.
+        */}
+      <Modal
+        isOpen={!!elegirGorra}
+        onClose={() => setElegirGorra(null)}
+        title="¿Cómo vas a atender?"
+        size="sm"
+      >
+        <p className="text-sm text-slate-600 mt-0">
+          Atiendes a <b>{[elegirGorra?.patient?.firstName, elegirGorra?.patient?.lastName].filter(Boolean).join(' ') || 'este paciente'}</b>.
+          Escoge con qué rol continuaras la consulta — el sistema abrirá lo que corresponde.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+          <button
+            type="button"
+            onClick={() => { const apt = elegirGorra; setElegirGorra(null); abrirAtencion(apt, { como: 'doctor' }); }}
+            className="px-4 py-3 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm font-semibold hover:bg-emerald-100 cursor-pointer text-left"
+          >
+            Doctor
+            <span className="block text-xs font-normal text-emerald-700 mt-0.5">Hoja MSP, receta y diagnóstico</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => { const apt = elegirGorra; setElegirGorra(null); abrirAtencion(apt, { como: 'terapeuta' }); }}
+            className="px-4 py-3 rounded-xl border border-violet-200 bg-violet-50 text-violet-800 text-sm font-semibold hover:bg-violet-100 cursor-pointer text-left"
+          >
+            Terapeuta
+            <span className="block text-xs font-normal text-violet-700 mt-0.5">Ficha de terapia y terapias complementarias</span>
+          </button>
+        </div>
+      </Modal>
 
       {serviceValueModal && (
         <AppointmentServiceValueModal

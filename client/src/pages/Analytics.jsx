@@ -66,6 +66,11 @@ const STAGE_LABEL = {
 // "Creadas" / "Total" no es una etapa: color propio, fuera de la escala.
 const C_TOTAL = '#eb6834';
 const C_CHATS = '#2a78d6';
+// Estados de las citas de la sección "Citas agendadas por servicio".
+const C_PENDIENTE = '#94a3b8';
+const C_ASISTIDA = '#34d399';
+const C_COMPLETADA = '#0f766e';
+const C_OTRAS = '#e2e8f0';
 const INK = { text: '#334155', muted: '#94a3b8', grid: '#e2e8f0' };
 
 const nf = new Intl.NumberFormat('es-EC');
@@ -91,6 +96,9 @@ const EMPTY = {
     valorPagado: 0, valorPagadoAlCrear: 0, valorPagadoMostrador: 0, citasCreadas: 0, citasConPago: 0,
   },
   embudo: [], serie: [], porOportunidad: [], porAnuncio: [], porCanal: [], porAgente: [], servicios: [], motivosPerdida: [],
+  // CITAS AGENDADAS POR SERVICIO (sep-2026): vive aparte del informe del CRM —
+  // viene del catálogo de la agenda, no de las oportunidades.
+  citasPorServicio: [],
 };
 
 /**
@@ -170,8 +178,21 @@ export default function Analytics() {
   const load = async (from = start, to = end) => {
     setLoading(true);
     try {
-      const r = await api.get('/chats/opportunities/analytics', { params: { from, to } });
-      setData({ ...EMPTY, ...r.data });
+      /**
+       * DOS INFORMES, UN MISMO RANGO (sep-2026).
+       *
+       * Además del embudo del CRM, la página trae «Citas agendadas por
+       * servicio»: se pide aparte (es de la agenda, no de las oportunidades) y
+       * con el MISMO rango, para que los atajos y las fechas de arriba manden
+       * sobre todas las gráficas por igual. Si ese segundo informe falla, la
+       * página no se cae: la sección nace vacía y el resto sigue.
+       */
+      const [r, citasR] = await Promise.all([
+        api.get('/chats/opportunities/analytics', { params: { from, to } }),
+        api.get('/appointments/analytics/by-service', { params: { from, to } })
+          .catch(() => ({ data: [] })),
+      ]);
+      setData({ ...EMPTY, ...r.data, citasPorServicio: citasR.data || [] });
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar analíticas');
     } finally {
@@ -234,6 +255,7 @@ export default function Analytics() {
     });
   };
   const conAgentes = (data.porAgente || []).length > 0;
+  const citasPorServicio = data.citasPorServicio || [];
 
   return (
     <div className="space-y-4">
@@ -729,6 +751,52 @@ export default function Analytics() {
             </ResponsiveContainer>
           </ChartCard>
         )}
+
+        {/**
+          * CITAS AGENDADAS POR SERVICIO (sep-2026).
+          *
+          * Lo que la agenda real agendó: el total de citas del rango por el
+          * servicio del catálogo de la agenda (el que sale en el selector al
+          * agendar, no el del inventario), y de cada uno cuántas están
+          * pendientes, asistidas y completadas — la fila del dinero que vino y
+          * el que falta por venir. La columna «Otras» junta confirmadas, no
+          * asistió y canceladas, para que el total cuadre siempre.
+          */}
+        <ChartCard
+          title="Citas agendadas por servicio"
+          subtitle="Citas del rango por servicio del catálogo de la agenda, con su estado actual."
+          columns={[
+            { key: 'servicio', label: 'Servicio' },
+            { key: 'total', label: 'Agendadas', num: true },
+            { key: 'pendiente', label: 'Pendientes', num: true },
+            { key: 'asistida', label: 'Asistidas', num: true },
+            { key: 'completada', label: 'Completadas', num: true },
+            { key: 'otras', label: 'Otras', num: true },
+          ]}
+          rows={citasPorServicio}
+          empty={!citasPorServicio.length}
+          legend={[
+            { label: 'Pendientes', color: C_PENDIENTE },
+            { label: 'Asistidas', color: C_ASISTIDA },
+            { label: 'Completadas', color: C_COMPLETADA },
+            { label: 'Otras', color: C_OTRAS },
+          ]}
+        >
+          <ResponsiveContainer width="100%" height={Math.max(citasPorServicio.length, 1) * 40 + 24}>
+            <BarChart data={citasPorServicio} layout="vertical" margin={{ top: 8, right: 24, bottom: 8, left: 8 }}>
+              <CartesianGrid horizontal={false} stroke={INK.grid} />
+              <XAxis type="number" hide domain={[0, 'dataMax']} />
+              <YAxis type="category" dataKey="servicio" width={190} tickLine={false} axisLine={false} tick={{ fill: INK.text, fontSize: 12 }} />
+              <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipSerie />} />
+              {/* Apiladas: la barra entera ES el total agendado, y el color dice
+                  en qué estado está cada trozo. */}
+              <Bar dataKey="pendiente" stackId="cita" name="Pendientes" fill={C_PENDIENTE} barSize={20} isAnimationActive={false} />
+              <Bar dataKey="asistida" stackId="cita" name="Asistidas" fill={C_ASISTIDA} barSize={20} isAnimationActive={false} />
+              <Bar dataKey="completada" stackId="cita" name="Completadas" fill={C_COMPLETADA} barSize={20} radius={[0, 4, 4, 0]} isAnimationActive={false} />
+              <Bar dataKey="otras" stackId="cita" name="Otras" fill={C_OTRAS} barSize={20} radius={[0, 4, 4, 0]} isAnimationActive={false} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
       </div>
 
       {/* La `key` fuerza a montarlo de nuevo al cambiar de barra: así el detalle

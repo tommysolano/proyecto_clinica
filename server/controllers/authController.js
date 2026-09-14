@@ -18,6 +18,9 @@ const buildPublicUser = (user, activeClinic = null, role = null) => ({
   name: user.name,
   email: user.email,
   isSuperAdmin: !!user.isSuperAdmin,
+  // Doctor que también puede atender como terapeuta (ver User.alsoTherapist):
+  // la agenda pregunta con cuál gorra atender y las pantallas abren lo suyo.
+  alsoTherapist: !!user.alsoTherapist,
   specialty: user.specialty,
   cedula: user.cedula,
   phone: user.phone,

@@ -229,15 +229,33 @@ const hideContactData = (record, req) => {
 const THERAPIST_ROLE = 'terapeuta';
 
 /**
+ * ¿Esta petición actúa con la GORRA DE TERAPEUTA?
+ *
+ * Lo hace el terapeuta de oficio, y también el doctor marcado
+ * «también terapeuta» (User.alsoTherapist) cuando la pantalla le preguntó con
+ * cuál gorra atender y él contestó «terapeuta» (`comoTerapeuta` en el cuerpo,
+ * ver el modal de la agenda). Es lo que decide con qué sombrero se sella lo
+ * guardado —y con él, quién lo ve después—.
+ */
+const actuaComoTerapeuta = (req) =>
+  req?.role === THERAPIST_ROLE
+  || (!!req?.user?.alsoTherapist && req?.body?.comoTerapeuta === true);
+
+/**
  * ¿Puede esta petición leer las notas del terapeuta?
  *
  * MIRA `req.role` A PELO, y no `canReq`, a propósito: `can()` aplana TODA
  * especialidad médica a la clave 'doctor' (ver utils/permissions.js), así que
  * por esa vía odontología y terapeuta darían exactamente lo mismo y el recorte
  * no recortaría nada.
+ *
+ * El doctor «también terapeuta» entra aquí SIEMPRE, con cualquiera de sus dos
+ * gorras: lo que escribió como terapeuta es SUYO y no se le redacta por haber
+ * entrado en modo doctor (sep-2026).
  */
 const canReadTherapy = (req) =>
-  !!req?.user?.isSuperAdmin || req?.role === 'admin' || req?.role === THERAPIST_ROLE;
+  !!req?.user?.isSuperAdmin || req?.role === 'admin' || req?.role === THERAPIST_ROLE
+  || !!req?.user?.alsoTherapist;
 
 /**
  * QUITA de la ficha lo que escribió el terapeuta.
@@ -263,7 +281,12 @@ const hideTherapyNotes = (record, req) => {
   // administración las ven.
   obj.terapiasComplementarias = undefined;
   obj.followUps = (obj.followUps || []).map((fu) => {
-    if (fu?.createdByRole !== THERAPIST_ROLE) return fu;
+    if (fu?.createdByRole !== THERAPIST_ROLE) {
+      // La FOTO de terapias complementarias que lleva un seguimiento es de la
+      // misma familia, aunque la entrada la haya escrito administración: a
+      // quien no le corresponde tampoco se le manda.
+      return { ...fu, terapiasComplementarias: undefined };
+    }
     return {
       _id: fu._id,
       fecha: fu.fecha,
@@ -664,12 +687,42 @@ exports.updateByPatient = async (req, res) => {
       }
     }
 
-    const record = await ClinicalRecord.findOneAndUpdate(
-      { patient: patientId },
+    /**
+     * LA ENTRADA DEL HISTORIAL (sep-2026).
+     *
+     * Guardar terapias complementarias YA NO solo sobrescribe el plan de la
+     * ficha: como un seguimiento, empuja una ENTRADA NUEVA al historial con
+     * fecha, autor y la foto de lo que se guardó esa sesión. Así el historial
+     * acumula sesiones en vez de solo mostrar la última versión del plan.
+     */
+    const updateDoc = {
+      $set: update,
       // `clinic` va en el $setOnInsert porque ya no está en el filtro y el
       // esquema lo exige: es DÓNDE SE ABRIÓ la ficha, y solo se escribe si esta
       // llamada es la que la crea.
-      { $set: update, $setOnInsert: { createdBy: req.user._id, clinic: req.clinicId } },
+      $setOnInsert: { createdBy: req.user._id, clinic: req.clinicId },
+    };
+    if (update.terapiasComplementarias !== undefined) {
+      // La firma de «quién guardó el plan» es de la ficha, no de la foto.
+      const { updatedBy: _quien, updatedAt: _cuando, ...tcsFoto } = update.terapiasComplementarias;
+      updateDoc.$push = {
+        followUps: {
+          fecha: new Date(),
+          descripcion: 'Terapias complementarias',
+          motivoConsulta: 'Terapias complementarias',
+          terapiasComplementarias: tcsFoto,
+          createdBy: req.user._id,
+          // Con qué sombrero se escribió: el censor de lectura (`hideTherapyNotes`)
+          // se apoya en esto para reservar la entrada. Un doctor «también
+          // terapeuta» que guarda desde el modal como terapeuta firma igual.
+          createdByRole: actuaComoTerapeuta(req) ? THERAPIST_ROLE : (req.role || ''),
+        },
+      };
+    }
+
+    const record = await ClinicalRecord.findOneAndUpdate(
+      { patient: patientId },
+      updateDoc,
       { new: true, upsert: true, runValidators: true }
     );
 
@@ -677,47 +730,38 @@ exports.updateByPatient = async (req, res) => {
      * LA CITA SE CIERRA AQUÍ TAMBIÉN (sep-2026, a petición del terapeuta).
      *
      * «Guardar terapias complementarias» es el paso final de SU consulta: si la
-     * pestaña se abrió desde una cita (`appointmentId`), el guardado la cierra
-     * con la MISMA lógica que un seguimiento — avanza el turno de quien la
-     * escribió y, si era el último, la da por completada. Antes la cita se
-     * quedaba abierta en la agenda aunque el trabajo ya estaba guardado, y
-     * mostrador tenía que cerrarla a mano.
+     * pestaña se abrió desde una cita (`appointmentId`), el guardado cierra EL
+     * TURNO de quien guardó —enlazado a la entrada del historial que acaba de
+     * empujarse— con la MISMA lógica y los mismos avisos que un seguimiento
+     * (ver `avanzarTurnoDeCita`). Antes la cita se quedaba abierta en la agenda
+     * aunque el trabajo ya estaba guardado, y mostrador tenía que cerrarla a mano.
      *
-     * Aquí no hay seguimiento nuevo que enlazar: el turno se cierra sin
-     * `followUpId`. Si algo falla, el guardado NO se deshace: el cierre de la
-     * cita no puede tumbar la escritura de la ficha.
+     * Si algo falla, el guardado NO se deshace: el cierre de la cita no puede
+     * tumbar la escritura de la ficha.
      */
+    let siguienteTurno = null;
     if (update.terapiasComplementarias !== undefined && req.body.appointmentId) {
       try {
-        const Appointment = require('../models/Appointment');
-        const { completarTurno } = require('../utils/appointmentTurns');
-        const apt = await Appointment.findOne({
-          _id: req.body.appointmentId,
-          clinic: req.clinicId,
+        const entradaNueva = (record.followUps || []).slice(-1)[0];
+        siguienteTurno = await avanzarTurnoDeCita({
+          req,
+          appointmentId: req.body.appointmentId,
+          patientId,
+          followUpId: entradaNueva?._id,
         });
-        if (apt && ['asistida', 'pendiente', 'confirmada'].includes(apt.status)) {
-          const { siguiente, terminado } = completarTurno(apt, { userId: req.user._id });
-          if (terminado || !apt.turns?.length) {
-            apt.status = 'completada';
-            apt.consultationEndedAt = new Date();
-          }
-          await apt.save();
-          if (apt.status === 'completada') {
-            await require('../utils/appointmentNotice').apagarAvisosDeCita(apt._id);
-          }
-          emitToClinic(req.clinicId, 'appointment:updated', apt);
-          if (siguiente?.user) {
-            emitToUser(siguiente.user, 'appointment:assigned', apt);
-          } else if (siguiente) {
-            emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
-          }
-        }
       } catch (cerrito) {
         console.error('[updateByPatient] no se pudo cerrar la cita:', cerrito?.message || cerrito);
       }
     }
 
-    res.json(hideContactData(hideTherapyNotes(record, req), req));
+    // `nextTurn` deja que la pantalla diga "pasa a X" en vez de dar la cita por
+    // terminada cuando no lo está (igual que `addFollowUp`).
+    const visible = hideContactData(hideTherapyNotes(record, req), req);
+    res.json(
+      siguienteTurno
+        ? { ...(visible.toObject ? visible.toObject() : visible), nextTurn: siguienteTurno }
+        : visible
+    );
   } catch (error) {
     res
       .status(500)
@@ -1243,6 +1287,107 @@ const sanitizeOdontologiaNeurofocal = (o) => {
   };
 };
 
+/**
+ * AVANCE DE TURNO AL GUARDAR, compartido (sep-2026).
+ *
+ * Vivía solo en `addFollowUp`; ahora lo llaman también las terapias
+ * complementarias (`updateByPatient`), que cierran la cita IGUAL que un
+ * seguimiento — con la MISMA regla: se cierra EL TURNO de quien guardó, y solo
+ * el último turno deja la cita completada. Una copia de 80 líneas en dos
+ * controladores se queda desactualizada el día que alguien toque una de las
+ * dos, así que la lógica vive aquí y los dos la llaman.
+ *
+ * Devuelve `siguienteTurno` ({ kind, user }) para que la pantalla diga
+ * «pasa a X» en vez de dar la cita por terminada cuando no lo está, o `null`
+ * si la cita no existe (en esa sucursal) o ya no está abierta.
+ */
+const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId }) => {
+  const Appointment = require('../models/Appointment');
+  const { completarTurno } = require('../utils/appointmentTurns');
+  const apt = await Appointment.findOne({
+    _id: appointmentId,
+    clinic: req.clinicId,
+  });
+  if (!apt || !['asistida', 'pendiente', 'confirmada'].includes(apt.status)) return null;
+
+  const { siguiente, terminado } = completarTurno(apt, {
+    userId: req.user._id,
+    followUpId,
+  });
+  // Sin turnos (cita anterior al cambio, o asignada a la antigua) se comporta
+  // como siempre: un seguimiento la cierra.
+  if (terminado || !apt.turns?.length) {
+    apt.status = 'completada';
+    apt.consultationEndedAt = new Date();
+  }
+  await apt.save();
+  // Si la cita quedó COMPLETADA, ya no espera a nadie: sus avisos de campana
+  // se apagan aquí también (el reclamo es solo un camino).
+  if (apt.status === 'completada') {
+    await require('../utils/appointmentNotice').apagarAvisosDeCita(apt._id);
+  }
+  emitToClinic(req.clinicId, 'appointment:updated', apt);
+
+  /**
+   * El aviso del relevo lleva EL NOMBRE DEL PACIENTE por delante y va a sus
+   * seguimientos (ver utils/appointmentNotice): «el doctor terminó su parte»
+   * a secas dejaba a enfermería sin saber a por quién ir, y mandarla a la
+   * agenda la obligaba a buscar la cita otra vez.
+   */
+  let siguienteTurno = null;
+  const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion, laCitaMereceAviso } =
+    require('../utils/appointmentNotice');
+  const paciente = siguiente ? await pacienteDeCita(apt) : '';
+
+  if (siguiente?.user) {
+    // Con el nombre resuelto: la pantalla dice "pasa al Dr. X" en vez de un id,
+    // y quien acaba de atender sabe a quién le deja el paciente.
+    const User = require('../models/User');
+    const quien = await User.findById(siguiente.user).select('name').lean().catch(() => null);
+    siguienteTurno = { kind: siguiente.kind, user: { _id: siguiente.user, name: quien?.name || '' } };
+    // Al siguiente le llega la cita ahora: aviso en su pantalla y en su móvil.
+    emitToUser(siguiente.user, 'appointment:assigned', apt);
+    const { notificarUsuarios } = require('../utils/pushNotifications');
+    await notificarUsuarios([siguiente.user], {
+      clinicId: req.clinicId,
+      type: 'appointment_assigned',
+      title: 'Te toca atender',
+      body: cuerpoDeAviso({
+        paciente,
+        servicio: servicioDeCita(apt, siguiente),
+        hora: apt.startTime,
+        motivo: 'El profesional anterior terminó su parte.',
+      }),
+      url: urlDeAtencion(patientId, apt._id),
+    }).catch(() => {});
+  } else if (siguiente) {
+    // Turno de enfermería sin dueño: sale a la bandeja de todos, y les llega al
+    // móvil igual que si recepción se la hubiera mandado directa — hasta ahora
+    // solo se enteraban con la pestaña abierta.
+    siguienteTurno = { kind: 'enfermeria', user: null };
+    emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
+    // Cita de días pasados: el trabajo ya está en la bandeja de la agenda;
+    // avisar otra vez por el móvil solo llena la campana.
+    if (laCitaMereceAviso(apt)) {
+      const { notificarRol } = require('../utils/pushNotifications');
+      await notificarRol(req.clinicId, 'enfermero', {
+        type: 'appointment_nursing',
+        title: 'Cita para enfermería',
+        body: cuerpoDeAviso({
+          paciente,
+          servicio: servicioDeCita(apt, siguiente),
+          hora: apt.startTime,
+          motivo: 'El doctor terminó su parte.',
+        }),
+        url: urlDeAtencion(patientId, apt._id),
+        // La cita va en el aviso: al reclamarla, nurseClaim lo apaga.
+        meta: { appointment: apt._id },
+      }).catch(() => {});
+    }
+  }
+  return siguienteTurno;
+};
+
 exports.addFollowUp = async (req, res) => {
   try {
     const { patientId } = req.params;    const {
@@ -1518,8 +1663,10 @@ exports.addFollowUp = async (req, res) => {
             createdBy: req.user._id,
             // Con qué sombrero se escribió. Se sella aquí porque el rol de una
             // persona cambia (y es distinto en cada sucursal): deducirlo al leer
-            // reetiquetaría consultas viejas.
-            createdByRole: req.role || '',
+            // reetiquetaría consultas viejas. El doctor «también terapeuta» que
+            // atendió con la gorra de terapeuta firma como terapeuta — y con eso
+            // su consulta se vuelve reservada para los demás (ver hideTherapyNotes).
+            createdByRole: actuaComoTerapeuta(req) ? THERAPIST_ROLE : (req.role || ''),
           },
         },
         $setOnInsert: { createdBy: req.user._id },
@@ -1546,89 +1693,13 @@ exports.addFollowUp = async (req, res) => {
     let citaAutomatica = null;
     if (req.body.appointmentId) {
       try {
-        const Appointment = require('../models/Appointment');
-        const { completarTurno } = require('../utils/appointmentTurns');
-        const apt = await Appointment.findOne({
-          _id: req.body.appointmentId,
-          clinic: req.clinicId,
+        const nuevoFu = (record.followUps || []).slice(-1)[0];
+        siguienteTurno = await avanzarTurnoDeCita({
+          req,
+          appointmentId: req.body.appointmentId,
+          patientId,
+          followUpId: nuevoFu?._id,
         });
-        if (apt && ['asistida', 'pendiente', 'confirmada'].includes(apt.status)) {
-          const nuevoFu = (record.followUps || []).slice(-1)[0];
-          const { siguiente, terminado } = completarTurno(apt, {
-            userId: req.user._id,
-            followUpId: nuevoFu?._id,
-          });
-          // Sin turnos (cita anterior al cambio, o asignada a la antigua) se
-          // comporta como siempre: un seguimiento la cierra.
-          if (terminado || !apt.turns?.length) {
-            apt.status = 'completada';
-            apt.consultationEndedAt = new Date();
-          }
-          await apt.save();
-          // Si la cita quedó COMPLETADA, ya no espera a nadie: sus avisos de
-          // campana se apagan aquí también (el reclamo es solo un camino).
-          if (apt.status === 'completada') {
-            await require('../utils/appointmentNotice').apagarAvisosDeCita(apt._id);
-          }
-          emitToClinic(req.clinicId, 'appointment:updated', apt);
-
-          /**
-           * El aviso del relevo lleva EL NOMBRE DEL PACIENTE por delante y va a
-           * sus seguimientos (ver utils/appointmentNotice): «el doctor terminó
-           * su parte» a secas dejaba a enfermería sin saber a por quién ir, y
-           * mandarla a la agenda la obligaba a buscar la cita otra vez.
-           */
-          const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion } = require('../utils/appointmentNotice');
-          const paciente = siguiente ? await pacienteDeCita(apt) : '';
-
-          if (siguiente?.user) {
-            // Con el nombre resuelto: la pantalla dice "pasa al Dr. X" en vez de
-            // un id, y quien acaba de atender sabe a quién le deja el paciente.
-            const User = require('../models/User');
-            const quien = await User.findById(siguiente.user).select('name').lean().catch(() => null);
-            siguienteTurno = { kind: siguiente.kind, user: { _id: siguiente.user, name: quien?.name || '' } };
-            // Al siguiente le llega la cita ahora: aviso en su pantalla y en su móvil.
-            emitToUser(siguiente.user, 'appointment:assigned', apt);
-            const { notificarUsuarios } = require('../utils/pushNotifications');
-            await notificarUsuarios([siguiente.user], {
-              clinicId: req.clinicId,
-              type: 'appointment_assigned',
-              title: 'Te toca atender',
-              body: cuerpoDeAviso({
-                paciente,
-                servicio: servicioDeCita(apt, siguiente),
-                hora: apt.startTime,
-                motivo: 'El profesional anterior terminó su parte.',
-              }),
-              url: urlDeAtencion(patientId, apt._id),
-            }).catch(() => {});
-          } else if (siguiente) {
-            // Turno de enfermería sin dueño: sale a la bandeja de todos, y les
-            // llega al móvil igual que si recepción se la hubiera mandado
-            // directa — hasta ahora solo se enteraban con la pestaña abierta.
-            siguienteTurno = { kind: 'enfermeria', user: null };
-            emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
-            // Cita de días pasados: el trabajo ya está en la bandeja de la
-            // agenda; avisar otra vez por el móvil solo llena la campana.
-            const { laCitaMereceAviso } = require('../utils/appointmentNotice');
-            if (laCitaMereceAviso(apt)) {
-              const { notificarRol } = require('../utils/pushNotifications');
-              await notificarRol(req.clinicId, 'enfermero', {
-                type: 'appointment_nursing',
-                title: 'Cita para enfermería',
-                body: cuerpoDeAviso({
-                  paciente,
-                  servicio: servicioDeCita(apt, siguiente),
-                  hora: apt.startTime,
-                  motivo: 'El doctor terminó su parte.',
-                }),
-                url: urlDeAtencion(patientId, apt._id),
-                // La cita va en el aviso: al reclamarla, nurseClaim lo apaga.
-                meta: { appointment: apt._id },
-              }).catch(() => {});
-            }
-          }
-        }
       } catch (e) {
         console.warn('No se pudo avanzar el turno de la cita:', e.message);
       }
@@ -1683,7 +1754,7 @@ exports.addFollowUp = async (req, res) => {
            * era una fuga por la puerta de al lado: el seguimiento quedaba
            * recortado, pero su motivo se publicaba en la lista de citas del día.
            */
-          serviceName: req.role === THERAPIST_ROLE
+          serviceName: actuaComoTerapeuta(req)
             ? 'Terapia'
             : String(descripcion || req.body.motivoConsulta || '').trim(),
         });

@@ -34,10 +34,15 @@ const EMPTY = {
   phone: '',
   specialty: '',
   active: true,
+  // Doctor que también puede atender como terapeuta (ver User.alsoTherapist).
+  alsoTherapist: false,
+  // Solo quien ya es super-admin la ve (y el servidor solo la acepta de él).
+  isSuperAdmin: false,
 };
 
 export default function Users() {
-  const { activeClinic } = useAuth();
+  const { activeClinic, user } = useAuth();
+  const soySuperAdmin = !!user?.isSuperAdmin;
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -101,6 +106,8 @@ export default function Users() {
       phone: u.phone || '',
       specialty: u.specialty || '',
       active: u.active !== false,
+      alsoTherapist: !!u.alsoTherapist,
+      isSuperAdmin: !!u.isSuperAdmin,
     });
     setShowModal(true);
   };
@@ -123,6 +130,8 @@ export default function Users() {
           // aquí mismo, junto a la contraseña: es el sitio donde se va a buscar.
           active: form.active,
           clinics: [{ clinic: activeClinic._id, role: form.role }],
+          alsoTherapist: form.alsoTherapist,
+          ...(soySuperAdmin ? { isSuperAdmin: form.isSuperAdmin } : {}),
         };
         if (form.password) payload.password = form.password;
         await api.put(`/users/${editing._id}`, payload);
@@ -214,6 +223,11 @@ export default function Users() {
                   {u.isSuperAdmin && (
                     <span className="ml-2 text-xs px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded">
                       super
+                    </span>
+                  )}
+                  {u.alsoTherapist && (
+                    <span className="ml-2 text-xs px-1.5 py-0.5 bg-violet-100 text-violet-700 rounded">
+                      también terapeuta
                     </span>
                   )}
                 </td>
@@ -370,6 +384,58 @@ export default function Users() {
                   onChange={(e) => handleChange('specialty', e.target.value)}
                   className="input"
                 />
+              </Field>
+            )}
+            {/**
+              * DOCTOR QUE TAMBIÉN ATIENDE COMO TERAPEUTA (sep-2026).
+              *
+              * No cambia el rol: es una SEGUNDA gorra. Al atender una cita, la
+              * agenda le pregunta si va como doctor o como terapeuta, y según lo
+              * que conteste se abren las pantallas de uno u otro. Lo que escriba
+              * con la gorra de terapeuta queda reservado: los demás doctores solo
+              * verán en Seguimientos que el paciente fue atendido por él.
+              *
+              * No se pregunta a quien ya ES terapeuta: su gorra no es segunda.
+              */}
+            {roleSatisfies(form.role, ['doctor']) && form.role !== 'terapeuta' && (
+              <Field label="Terapias">
+                <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer h-[42px]">
+                  <input
+                    type="checkbox"
+                    checked={form.alsoTherapist}
+                    onChange={(e) => handleChange('alsoTherapist', e.target.checked)}
+                    className="w-4 h-4 mt-1 accent-emerald-600"
+                  />
+                  <span>
+                    <b>También terapeuta</b>
+                    <span className="block text-xs text-slate-500 font-normal">
+                      Al atender una cita se le preguntará si va como doctor o como terapeuta.
+                    </span>
+                  </span>
+                </label>
+              </Field>
+            )}
+            {/**
+              * CREAR OTRO SUPER-ADMIN (sep-2026): solo el dueño la ve, y el
+              * servidor solo la acepta de quien ya es super-admin — un admin de
+              * sucursal no puede escalar a nadie.
+              */}
+            {soySuperAdmin && (
+              <Field label="Acceso global">
+                <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer h-[42px]">
+                  <input
+                    type="checkbox"
+                    checked={form.isSuperAdmin}
+                    onChange={(e) => handleChange('isSuperAdmin', e.target.checked)}
+                    className="w-4 h-4 mt-1 accent-emerald-600"
+                  />
+                  <span>
+                    <b>Super administrador</b>
+                    <span className="block text-xs text-slate-500 font-normal">
+                      Acceso total a todas las sucursales y configuración del sistema.
+                    </span>
+                  </span>
+                </label>
               </Field>
             )}
           </div>
