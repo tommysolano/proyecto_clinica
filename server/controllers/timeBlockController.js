@@ -1,5 +1,5 @@
 const TimeBlock = require('../models/TimeBlock');
-const { sucursalesVisibles, alcanzaSucursal } = require('../utils/clinicScope');
+const { sucursalesVisibles, alcanzaSucursal, validarSucursalDestino } = require('../utils/clinicScope');
 
 // Normaliza una fecha 'YYYY-MM-DD' al inicio del día local (12:00 para evitar TZ).
 const startOfLocalDay = (value) => {
@@ -76,9 +76,22 @@ exports.create = async (req, res) => {
     if (!allDay && startTime && endTime && startTime >= endTime) {
       return res.status(400).json({ message: 'La hora de fin debe ser posterior a la de inicio' });
     }
+    /**
+     * LA SUCURSAL DEL BLOQUEO se escoge en el formulario (sep-2026).
+     *
+     * Antes siempre era la activa: para bloquear otra sede había que cambiar de
+     * sucursal y volver. Ahora el modal la pregunta — con la misma regla que el
+     * agendamiento (`validarSucursalDestino`): si la pedida no existe o está
+     * inactiva, no se crea a ciegas. Sin `clinic` en el cuerpo queda la activa,
+     * como siempre.
+     */
+    const destino = await validarSucursalDestino(req, req.body.clinic);
+    if (!destino.ok) {
+      return res.status(destino.status).json({ message: destino.message });
+    }
     const block = await TimeBlock.create({
       ...req.body,
-      clinic: req.clinicId,
+      clinic: destino.clinicId,
       doctor: req.body.doctor || null,
       room: req.body.room || null,
       service: req.body.service || null,
@@ -101,8 +114,11 @@ exports.update = async (req, res) => {
     if (update.startDate) update.startDate = startOfLocalDay(update.startDate);
     if (update.endDate) update.endDate = endOfLocalDay(update.endDate);
     if (update.service !== undefined) update.service = update.service || null;
+    // El listado puede enseñar bloqueos de OTRAS sucursales dentro del alcance
+    // (la misma regla del listado), así que la escritura también respeta el
+    // alcance y no solo la sucursal activa.
     const block = await TimeBlock.findOneAndUpdate(
-      { _id: req.params.id, clinic: req.clinicId },
+      { _id: req.params.id, clinic: { $in: resuelveClinicas(req).map(String) } },
       update,
       { new: true }
     );
@@ -117,7 +133,7 @@ exports.remove = async (req, res) => {
   try {
     const block = await TimeBlock.findOneAndDelete({
       _id: req.params.id,
-      clinic: req.clinicId,
+      clinic: { $in: resuelveClinicas(req).map(String) },
     });
     if (!block) return res.status(404).json({ message: 'Bloqueo no encontrado' });
     res.json({ message: 'Bloqueo eliminado' });

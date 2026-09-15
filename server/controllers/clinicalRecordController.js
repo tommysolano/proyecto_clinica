@@ -743,12 +743,12 @@ exports.updateByPatient = async (req, res) => {
     if (update.terapiasComplementarias !== undefined && req.body.appointmentId) {
       try {
         const entradaNueva = (record.followUps || []).slice(-1)[0];
-        siguienteTurno = await avanzarTurnoDeCita({
+        siguienteTurno = (await avanzarTurnoDeCita({
           req,
           appointmentId: req.body.appointmentId,
           patientId,
           followUpId: entradaNueva?._id,
-        });
+        }))?.siguienteTurno || null;
       } catch (cerrito) {
         console.error('[updateByPatient] no se pudo cerrar la cita:', cerrito?.message || cerrito);
       }
@@ -1305,9 +1305,23 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
   const Appointment = require('../models/Appointment');
   const { completarTurno } = require('../utils/appointmentTurns');
   const { atiendePacientes } = require('../constants/roles');
+  const { sucursalesVisibles } = require('../utils/clinicScope');
+  /**
+   * ALCANCE DE LA BÚSQUEDA: las sucursales que este usuario ALCANZA, no solo la
+   * activa del token. Era `clinic: req.clinicId` a secas, y con eso una cita
+   * de OTRA sede del alcance se quedaba sin encontrar: el guardado del
+   * seguimiento salía bien, pero el turno NUNCA se cerraba — la cita seguía
+   * viva en la agenda de quien la atendió y nunca le llegaba a quien venía
+   * detrás (con el suero dentro). Es la misma regla de `filtroSucursalCita`
+   * (appointmentController) y de la agenda: leer y escribir responden igual.
+   */
+  const visibles = sucursalesVisibles(req);
+  const alcanceCita = visibles === null
+    ? {}
+    : { clinic: { $in: [req.clinicId, ...visibles] } };
   const apt = await Appointment.findOne({
     _id: appointmentId,
-    clinic: req.clinicId,
+    ...alcanceCita,
   });
   if (!apt || !['asistida', 'pendiente', 'confirmada', 'completada'].includes(apt.status)) return null;
 
@@ -1341,7 +1355,13 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
   if (apt.status === 'completada') {
     await require('../utils/appointmentNotice').apagarAvisosDeCita(apt._id);
   }
-  emitToClinic(req.clinicId, 'appointment:updated', apt);
+  /**
+   * TODO LO QUE DEPENDE DE LA SUCURSAL va con `apt.clinic`, no con la activa
+   * del token (ver filtroSucursalCita): los sockets, los avisos y las campanas
+   * de una cita de otra sede iban a la sede equivocada — y el aviso no llegaba
+   * NUNCA al profesional de la sede donde sí está el paciente.
+   */
+  emitToClinic(apt.clinic, 'appointment:updated', apt);
 
   /**
    * El aviso del relevo lleva EL NOMBRE DEL PACIENTE por delante y va a sus
@@ -1364,7 +1384,7 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
     emitToUser(siguiente.user, 'appointment:assigned', apt);
     const { notificarUsuarios } = require('../utils/pushNotifications');
     await notificarUsuarios([siguiente.user], {
-      clinicId: req.clinicId,
+      clinicId: apt.clinic,
       type: 'appointment_assigned',
       title: 'Te toca atender',
       body: cuerpoDeAviso({
@@ -1383,12 +1403,12 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
     // móvil igual que si recepción se la hubiera mandado directa — hasta ahora
     // solo se enteraban con la pestaña abierta.
     siguienteTurno = { kind: 'enfermeria', user: null };
-    emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
+    emitToRole(apt.clinic, 'enfermero', 'appointment:assigned', apt);
     // Cita de días pasados: el trabajo ya está en la bandeja de la agenda;
     // avisar otra vez por el móvil solo llena la campana.
     if (laCitaMereceAviso(apt)) {
       const { notificarRol } = require('../utils/pushNotifications');
-      await notificarRol(req.clinicId, 'enfermero', {
+      await notificarRol(apt.clinic, 'enfermero', {
         type: 'appointment_nursing',
         title: 'Cita para enfermería',
         body: cuerpoDeAviso({
@@ -1403,8 +1423,114 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
       }).catch(() => {});
     }
   }
-  return siguienteTurno;
+  /**
+   * El resultado también dice: la SUCURSAL de la cita (los avisos y la tarea
+   * del suero van a ELLA, no a la activa del token) y si queda un turno de
+   * enfermería pendiente —con ella en la cola, la cita misma le lleva el
+   * suero a la enfermera y no hace falta tarea aparte—.
+   */
+  return {
+    siguienteTurno,
+    citaClinica: apt.clinic,
+  };
 };
+
+/**
+ * DEJA EL SUERO EN LA COLA DE ENFERMERÍA: la cita "Suero por aplicar".
+ *
+ * Es la MISMA pieza que usaba la receta del mostrador (sin cita), extraída
+ * porque ahora también la necesita QUIEN ATIENDE: un doctor —p.ej. el
+ * odontólogo neurofocal— que termina su consulta y receta un suero dejaba la
+ * aplicación huérfana: el suero quedaba escrito en la ficha pero la cita se
+ * cerraba y a la enfermera no le llegaba NADA — ni cita ni aviso ni suero.
+ *
+ * Si el paciente YA está esperando a enfermería (cita de hoy 'asistida' con
+ * turno de enfermería vigente), no se agenda otra: se apunta a la que ya hay.
+ *
+ * @returns {{ _id, startTime, isFirstVisit, paraEnfermeria }} lo que la
+ *          pantalla cuenta como `autoAppointment`.
+ */
+async function dejarSueroEnColaEnfermeria({ clinicId, patientId, sueros, user, role }) {
+  const Appointment = require('../models/Appointment');
+  const { crearCitaAtencionInmediata } = require('../utils/walkInAppointment');
+
+  /**
+   * ¿YA ESTÁ EN LA COLA DE ENFERMERÍA? Entonces no se agenda otra vez.
+   *
+   * El paciente puede tener ya una cita esperando a que le pongan algo —la
+   * asignó recepción, o le recetaron otro suero hace un rato—. Una segunda
+   * fila para la misma persona a la misma hora no añade trabajo, añade dudas:
+   * el enfermero no sabe si son dos aplicaciones o la misma repetida, y una de
+   * las dos se queda sin cerrar en la agenda.
+   */
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+  const manana = new Date(hoy); manana.setDate(manana.getDate() + 1);
+  const yaEnCola = await Appointment.findOne({
+    // La CITA sí es de una sucursal (a diferencia de la ficha): la cola de
+    // enfermería de Central no bloquea una aplicación en Extensión.
+    clinic: clinicId,
+    patient: patientId,
+    status: 'asistida',
+    currentTurnKind: 'enfermeria',
+    date: { $gte: hoy, $lt: manana },
+  }).lean();
+  if (yaEnCola) {
+    // Ya estaba esperando: se le dice a la pantalla que sí, que enfermería
+    // lo tiene, apuntando a la cita que YA existe.
+    return {
+      _id: yaEnCola._id,
+      startTime: yaEnCola.startTime,
+      isFirstVisit: yaEnCola.isFirstVisit,
+      paraEnfermeria: true,
+    };
+  }
+
+  const apt = await crearCitaAtencionInmediata({
+    Appointment,
+    clinicId,
+    patientId,
+    user,
+    role,
+    estado: 'abierta',
+    kind: 'enfermeria',
+    sinDueno: true,
+    seguimientosDeEstaAtencion: 1,
+    reason: 'Aplicación de suero recetado en mostrador',
+    // Qué hay que poner, en la propia fila de la agenda: el enfermero ve
+    // el suero sin tener que abrir la ficha para saber a qué va.
+    serviceName: sueros.map((s) => s.name).filter(Boolean).join(', ') || 'Suero',
+  });
+  emitToClinic(clinicId, 'appointment:created', apt);
+  // Y les llega el aviso, con la pestaña cerrada incluida: es el mismo
+  // camino que cuando el doctor termina y les pasa el paciente.
+  emitToRole(clinicId, 'enfermero', 'appointment:assigned', apt);
+  const { notificarRol } = require('../utils/pushNotifications');
+  const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion } = require('../utils/appointmentNotice');
+  await notificarRol(clinicId, 'enfermero', {
+    type: 'appointment_nursing',
+    title: 'Suero por aplicar',
+    // Con el nombre y el suero delante, el aviso ya dice a quién y qué:
+    // seis «mostrador acaba de recetar un suero» seguidos en la campana
+    // eran seis avisos indistinguibles.
+    body: cuerpoDeAviso({
+      paciente: await pacienteDeCita(apt),
+      servicio: servicioDeCita(apt),
+      hora: apt.startTime,
+      motivo: 'El paciente está esperando.',
+    }),
+    url: urlDeAtencion(patientId, apt._id),
+    // La cita va en el aviso: al reclamarla, nurseClaim lo apaga.
+    meta: { appointment: apt._id },
+  }).catch(() => {});
+  // La pantalla lo dice con otras palabras: esta cita no registra algo
+  // que ya pasó, deja algo PENDIENTE en la bandeja de enfermería.
+  return {
+    _id: apt._id,
+    startTime: apt.startTime,
+    isFirstVisit: apt.isFirstVisit,
+    paraEnfermeria: true,
+  };
+}
 
 exports.addFollowUp = async (req, res) => {
   try {
@@ -1709,15 +1835,19 @@ exports.addFollowUp = async (req, res) => {
     // pantalla la usa para decirlo: si no, quien atiende no sabe que quedó
     // registrada y acaba creándola otra vez a mano.
     let citaAutomatica = null;
+    // Datos de la cita de partida, para la tarea del suero (abajo).
+    let citaClinica = null;
     if (req.body.appointmentId) {
       try {
         const nuevoFu = (record.followUps || []).slice(-1)[0];
-        siguienteTurno = await avanzarTurnoDeCita({
+        const avance = await avanzarTurnoDeCita({
           req,
           appointmentId: req.body.appointmentId,
           patientId,
           followUpId: nuevoFu?._id,
         });
+        siguienteTurno = avance?.siguienteTurno || null;
+        citaClinica = avance?.citaClinica || null;
       } catch (e) {
         console.warn('No se pudo avanzar el turno de la cita:', e.message);
       }
@@ -1792,11 +1922,6 @@ exports.addFollowUp = async (req, res) => {
        * a su ficha a mano. Con dos o tres a la vez, eso es exactamente el sitio
        * donde se pierde una aplicación o se le pone a quien no era.
        *
-       * Así que la receta agenda. La cita nace 'asistida' —el paciente está
-       * delante— con UN turno de enfermería SIN DUEÑO: le sale a todos los
-       * enfermeros de la sucursal y la toma el primero que la reclame, igual que
-       * cuando un doctor termina su parte y les pasa el paciente.
-       *
        * NO se le abre turno a quien la escribe. Mostrador no atiende: un turno
        * suyo le metería el paciente en los dashboards de atención y, peor, en
        * las comisiones de médico (`apt.doctor` es el espejo del turno de
@@ -1806,87 +1931,66 @@ exports.addFollowUp = async (req, res) => {
        * no se puede perder porque falle el registro de la cita.
        */
       try {
-        const Appointment = require('../models/Appointment');
-        const { crearCitaAtencionInmediata } = require('../utils/walkInAppointment');
-
-        /**
-         * ¿YA ESTÁ EN LA COLA DE ENFERMERÍA? Entonces no se agenda otra vez.
-         *
-         * El paciente puede tener ya una cita esperando a que le pongan algo —la
-         * asignó recepción, o el cajero le recetó otro suero hace un rato—. Una
-         * segunda fila para la misma persona a la misma hora no añade trabajo,
-         * añade dudas: el enfermero no sabe si son dos aplicaciones o la misma
-         * repetida, y una de las dos se queda sin cerrar en la agenda.
-         */
-        const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
-        const manana = new Date(hoy); manana.setDate(manana.getDate() + 1);
-        const yaEnCola = await Appointment.findOne({
-          // La CITA sí es de una sucursal (a diferencia de la ficha): la cola de
-          // enfermería de Central no bloquea una aplicación en Extensión.
-          clinic: req.clinicId,
-          patient: patientId,
-          status: 'asistida',
-          currentTurnKind: 'enfermeria',
-          date: { $gte: hoy, $lt: manana },
-        }).lean();
-        if (yaEnCola) {
-          // Ya estaba esperando: se le dice a la pantalla que sí, que enfermería
-          // lo tiene, apuntando a la cita que YA existe.
-          citaAutomatica = {
-            _id: yaEnCola._id,
-            startTime: yaEnCola.startTime,
-            isFirstVisit: yaEnCola.isFirstVisit,
-            paraEnfermeria: true,
-          };
-        } else {
-          const apt = await crearCitaAtencionInmediata({
-            Appointment,
-            clinicId: req.clinicId,
-            patientId,
-            user: req.user,
-            role: req.role,
-            estado: 'abierta',
-            kind: 'enfermeria',
-            sinDueno: true,
-            seguimientosDeEstaAtencion: 1,
-            reason: 'Aplicación de suero recetado en mostrador',
-            // Qué hay que poner, en la propia fila de la agenda: el enfermero ve
-            // el suero sin tener que abrir la ficha para saber a qué va.
-            serviceName: sueros.map((s) => s.name).filter(Boolean).join(', ') || 'Suero',
-          });
-          citaAutomatica = {
-            _id: apt._id,
-            startTime: apt.startTime,
-            isFirstVisit: apt.isFirstVisit,
-            // La pantalla lo dice con otras palabras: esta cita no registra algo
-            // que ya pasó, deja algo PENDIENTE en la bandeja de enfermería.
-            paraEnfermeria: true,
-          };
-          emitToClinic(req.clinicId, 'appointment:created', apt);
-          // Y les llega el aviso, con la pestaña cerrada incluida: es el mismo
-          // camino que cuando el doctor termina y les pasa el paciente.
-          emitToRole(req.clinicId, 'enfermero', 'appointment:assigned', apt);
-          const { notificarRol } = require('../utils/pushNotifications');
-          const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion } = require('../utils/appointmentNotice');
-          await notificarRol(req.clinicId, 'enfermero', {
-            type: 'appointment_nursing',
-            title: 'Suero por aplicar',
-            // Con el nombre y el suero delante, el aviso ya dice a quién y qué:
-            // seis «mostrador acaba de recetar un suero» seguidos en la campana
-            // eran seis avisos indistinguibles.
-            body: cuerpoDeAviso({
-              paciente: await pacienteDeCita(apt),
-              servicio: servicioDeCita(apt),
-              hora: apt.startTime,
-              motivo: 'El paciente está esperando.',
-            }),
-            url: urlDeAtencion(patientId, apt._id),
-            // La cita va en el aviso: al reclamarla, nurseClaim lo apaga.
-            meta: { appointment: apt._id },
-          }).catch(() => {});
-        }
+        citaAutomatica = await dejarSueroEnColaEnfermeria({
+          clinicId: req.clinicId,
+          patientId,
+          sueros,
+          user: req.user,
+          role: req.role,
+        });
       } catch (e) {
         console.warn('No se pudo registrar la cita del suero recetado:', e.message);
+      }
+    }
+
+    /**
+     * EL SUERO QUE RECETÓ QUIEN ATIENDE (sep-2026).
+     *
+     * Un doctor que termina su consulta y receta un suero dejaba la aplicación
+     * huérfana: con cita, la cita se cerraba (o pasaba a otro doctor) y el
+     * suero quedaba escrito en la ficha SIN que a la enfermera le llegara nada
+     * — ni cita ni aviso. Era el caso del odontólogo neurofocal, tres veces
+     * reportado: «la cita nunca le llega al enfermero, por ende tampoco el
+     * suero».
+     *
+     * Si la cita de partida ya tiene un turno de enfermería pendiente NO se
+     * crea tarea aparte ni se anuncia nada: la cita misma le va a llegar con
+     * el suero en la receta (con la cola doctor → enfermería es exactamente lo
+     * que pasa). En los demás casos —cita cerrada, o la cola sigue con
+     * doctores y el suero no lo aplicará nadie— la aplicación agenda su
+     * propia cita, el mismo camino del mostrador.
+     */
+    if (sueros.length && !citaAutomatica?.paraEnfermeria) {
+      try {
+        let hayEnfermeriaPendiente = false;
+        if (req.body.appointmentId) {
+          const Appointment = require('../models/Appointment');
+          const { sucursalesVisibles } = require('../utils/clinicScope');
+          const visibles = sucursalesVisibles(req);
+          const alcancePartida = visibles === null
+            ? {}
+            : { clinic: { $in: [req.clinicId, ...visibles] } };
+          const partida = await Appointment.findOne({
+            _id: req.body.appointmentId,
+            ...alcancePartida,
+          }).select('turns').lean();
+          hayEnfermeriaPendiente = !!(partida?.turns || []).some(
+            (t) => t.kind === 'enfermeria' && t.status === 'pendiente'
+          );
+        }
+        if (!hayEnfermeriaPendiente) {
+          // La tarea nace en la SUCURSAL DE LA CITA (la enfermera que la aplica
+          // es la de esa sede), no en la activa de quien recetó.
+          citaAutomatica = await dejarSueroEnColaEnfermeria({
+            clinicId: citaClinica || req.clinicId,
+            patientId,
+            sueros,
+            user: req.user,
+            role: req.role,
+          });
+        }
+      } catch (e) {
+        console.warn('No se pudo dejar el suero para enfermería:', e.message);
       }
     }
 

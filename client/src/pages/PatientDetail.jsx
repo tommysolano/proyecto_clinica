@@ -406,6 +406,18 @@ export default function PatientDetail() {
   const reclameMiTurno = enTramite && (aptData.turns || []).length
     ? (!miTurnoVigente || miTurnoYaReclamado)
     : true;
+  /**
+   * LO QUE TOCA HACER en el paso de enfermería («Qué hace: Detox,
+   * Sueroterapia…», escrito por recepción al asignar). Antes solo se veía en
+   * el modal de acciones de la agenda: la enfermera entraba a la ficha —que es
+   * donde trabaja— sin saber qué toca aplicar.
+   */
+  const pasoEnfermeriaPendiente = enTramite
+    ? (aptData?.turns || []).find((t) => t.kind === 'enfermeria' && t.status === 'pendiente')
+    : null;
+  const queHaceEnfermeria = enfermeriaLibre || enfermeriaMia
+    ? (miTurnoVigente?.serviceName || pasoEnfermeriaPendiente?.serviceName || '')
+    : '';
   const [reclamando, setReclamando] = useState(false);
   const [cerrandoTurno, setCerrandoTurno] = useState(false);
   /**
@@ -527,6 +539,13 @@ export default function PatientDetail() {
                 : !reclameMiTurno
                   ? 'Esta atención se te asignó, pero todavía no la tomaste. Tómala para que tus compañeros sepan que vas tú.'
                   : 'Estás atendiendo esta cita. Cuando acabes de aplicar lo indicado, cierra tu parte.'}
+              {/* Lo que recepción anotó al asignar («Qué hace: Detox…»): la
+                  tarea concreta del paso, visible justo donde trabaja. */}
+              {queHaceEnfermeria && (
+                <span className="inline-flex items-center gap-1 ml-2 px-1.5 py-0.5 rounded bg-white border border-amber-300 text-amber-900 font-semibold">
+                  Qué hace: {queHaceEnfermeria}
+                </span>
+              )}
             </span>
             {enfermeriaLibre || !reclameMiTurno ? (
               <button

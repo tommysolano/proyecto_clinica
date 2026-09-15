@@ -10,7 +10,7 @@ import { useAuth } from '../context/AuthContext';
 
 const EMPTY = {
   doctor: '',
-  room: '',
+  clinic: '',
   service: null,
   startDate: new Date().toISOString().slice(0, 10),
   endDate: new Date().toISOString().slice(0, 10),
@@ -25,27 +25,42 @@ const EMPTY = {
  *
  * Administración y marketing impiden que se agende en fechas u horarios
  * concretos. Un bloqueo puede ser:
- *   · GENERAL (sin restricciones): nada se agenda en esa franja de la sucursal;
+ *   · GENERAL (sin restricciones): nada se agenda en esa franja de SU sucursal;
  *   · para un SERVICIO del catálogo de la agenda («no se agenda Limpieza el
  *     martes de 9 a 10»);
- *   · para un DOCTOR o un CONSULTORIO.
+ *   · para un DOCTOR.
+ *
+ * LA SUCURSAL SE ESCOGE EN EL FORMULARIO (sep-2026): antes era siempre la
+ * activa y bloquear otra sede obligaba a cambiar de sucursal y volver. El
+ * listado enseña los de todas las que el usuario alcanza, con su columna.
+ * (La casilla de CONSULTORIO se retiró del formulario: no se pedía y los
+ * bloqueos ya guardados con ella se siguen leyendo y aplicando.)
  *
  * La vista del día de la agenda pinta un recuadro en el horario bloqueado para
  * que quien agenda lo vea ANTES de chocar con el rechazo del servidor.
  */
 export default function Blocks() {
-  const { activeClinic } = useAuth();
+  const { activeClinic, clinics } = useAuth();
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [doctors, setDoctors] = useState([]);
-  const [rooms, setRooms] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(EMPTY);
+
+  // Las sucursales que se pueden bloquear: las del usuario, operativas. La
+  // activa va primera y es el valor por defecto.
+  const sucursales = (clinics || []).filter((c) => c.active !== false);
+  const sucursalPorDefecto = activeClinic?._id
+    || sucursales[0]?._id
+    || '';
 
   const load = async () => {
     setLoading(true);
     try {
-      const r = await api.get('/time-blocks');
+      // clinic=all: el formulario bloquea cualquier sucursal del alcance, así
+      // que el listado enseña TODAS las que este usuario alcanza (la misma
+      // regla de la vista del día de la agenda).
+      const r = await api.get('/time-blocks', { params: { clinic: 'all' } });
       setList(r.data || []);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error');
@@ -59,26 +74,30 @@ export default function Blocks() {
     // a los demás; el bloqueo se puede crear igual con lo que haya.
     Promise.allSettled([
       api.get('/users/doctors'),
-      api.get('/rooms'),
-    ]).then(([d, r]) => {
+    ]).then(([d]) => {
       setDoctors(d.status === 'fulfilled' ? d.value.data || [] : []);
-      setRooms(r.status === 'fulfilled' ? r.value.data || [] : []);
     });
     load();
   }, []);
+
+  const abrirModal = () => {
+    setForm({ ...EMPTY, clinic: sucursalPorDefecto });
+    setShowModal(true);
+  };
 
   const submit = async (e) => {
     e.preventDefault();
     try {
       await api.post('/time-blocks', {
         ...form,
+        // Sin sucursal escogida (o sin selector disponible) la activa decide.
+        clinic: form.clinic || undefined,
         doctor: form.doctor || null,
-        room: form.room || null,
         service: form.service?._id || null,
       });
       toast.success('Bloqueo creado');
       setShowModal(false);
-      setForm(EMPTY);
+      setForm({ ...EMPTY, clinic: sucursalPorDefecto });
       load();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error');
@@ -95,10 +114,13 @@ export default function Blocks() {
     }
   };
 
+  const nombreDeSucursal = (b) =>
+    b.clinic?.nombreComercial || b.clinic?.name || '';
+
   const alcanceDe = (b) => {
     if (b.service?.name) return `Solo «${b.service.name}»`;
     if (b.doctor?.name) return `Solo Dr. ${b.doctor.name}`;
-    if (b.room?.name) return `Solo ${b.room.name}`;
+    if (b.room?.name) return `Consultorio ${b.room.name}`;
     return 'Toda la sucursal';
   };
 
@@ -110,12 +132,12 @@ export default function Blocks() {
             <HiOutlineNoSymbol className="text-rose-600" /> Bloqueos de horarios
           </h1>
           <p className="text-sm text-slate-500">
-            Impide agendar citas en fechas u horarios concretos de{' '}
-            <b>{activeClinic?.nombreComercial || activeClinic?.name || 'la sucursal activa'}</b>
-            {' '}(cambia la sucursal arriba). General, por servicio, doctor o consultorio.
+            Impide agendar citas en fechas u horarios concretos. General, por
+            servicio o por doctor — y la <b>sucursal</b> se escoge en el
+            formulario.
           </p>
         </div>
-        <button onClick={() => setShowModal(true)} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700">
+        <button onClick={abrirModal} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700">
           <HiOutlinePlus className="w-4 h-4" /> Nuevo bloqueo
         </button>
       </div>
@@ -127,18 +149,24 @@ export default function Blocks() {
               <th className="text-left px-3 py-2">Inicio</th>
               <th className="text-left px-3 py-2">Fin</th>
               <th className="text-left px-3 py-2">Horario</th>
+              <th className="text-left px-3 py-2">Sucursal</th>
               <th className="text-left px-3 py-2">Alcance</th>
               <th className="text-left px-3 py-2">Motivo</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={6} className="text-center py-4 text-slate-400">Cargando...</td></tr>}
+            {loading && <tr><td colSpan={7} className="text-center py-4 text-slate-400">Cargando...</td></tr>}
             {list.map((b) => (
               <tr key={b._id} className="border-t border-slate-100">
                 <td className="px-3 py-2">{fmtDate(b.startDate)}</td>
                 <td className="px-3 py-2">{fmtDate(b.endDate)}</td>
                 <td className="px-3 py-2">{b.allDay ? 'Todo el día' : `${b.startTime} – ${b.endTime}`}</td>
+                <td className="px-3 py-2">
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
+                    {nombreDeSucursal(b) || '—'}
+                  </span>
+                </td>
                 <td className="px-3 py-2">
                   <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
                     {alcanceDe(b)}
@@ -150,7 +178,7 @@ export default function Blocks() {
                 </td>
               </tr>
             ))}
-            {!loading && list.length === 0 && <tr><td colSpan={6} className="text-center py-6 text-slate-400">Sin bloqueos</td></tr>}
+            {!loading && list.length === 0 && <tr><td colSpan={7} className="text-center py-6 text-slate-400">Sin bloqueos</td></tr>}
           </tbody>
         </table>
       </div>
@@ -207,11 +235,23 @@ export default function Blocks() {
               </select>
             </label>
             <label className="block">
-              <span className="text-xs font-medium text-slate-600">Consultorio (opcional)</span>
-              <select value={form.room} onChange={(e) => setForm({ ...form, room: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
-                <option value="">Todos</option>
-                {rooms.map((r) => <option key={r._id} value={r._id}>{r.name}</option>)}
+              <span className="text-xs font-medium text-slate-600">Sucursal</span>
+              <select
+                required
+                value={form.clinic}
+                onChange={(e) => setForm({ ...form, clinic: e.target.value })}
+                className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
+              >
+                {!sucursalPorDefecto && <option value="">—</option>}
+                {sucursales.map((c) => (
+                  <option key={c._id} value={c._id}>
+                    {c.nombreComercial || c.name}
+                  </option>
+                ))}
               </select>
+              <p className="text-[11px] text-slate-400 mt-1">
+                La sucursal donde rige el bloqueo, no la del menú de arriba.
+              </p>
             </label>
           </div>
           <label className="block">

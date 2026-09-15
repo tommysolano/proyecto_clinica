@@ -414,10 +414,14 @@ function ColaProfesionales({ apt }) {
         className={`text-[11px] mt-0.5 ${esEnf ? 'text-sky-700' : 'text-emerald-700'} ${
           cerrado ? 'opacity-60' : ''
         } ${t === vigente ? 'font-semibold' : ''}`}
+        title={t.serviceName ? `Qué hace: ${t.serviceName}` : undefined}
       >
         {marca}
         {esEnf ? 'Enf. ' : 'Dr. '}
         {nombre}
+        {/* Lo que recepción anotó al asignar el paso («Detox, Sueroterapia…»):
+            en la propia fila, para que la tarea se vea sin abrir nada. */}
+        {t.serviceName && <span className="text-slate-500 font-normal"> · {t.serviceName}</span>}
       </div>
     );
   });
