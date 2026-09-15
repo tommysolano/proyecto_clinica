@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const {
   getAppointments,
+  getCalendarSummary,
   getAppointment,
   createAppointment,
   exportAppointments,
@@ -34,6 +35,13 @@ router.get('/stats', requireRole('admin', 'cajero', 'doctor', 'call_center', 'en
  */
 router.get('/analytics/by-service', requireRole('admin', 'marketing'), appointmentsByService);
 router.get('/', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getAppointments);
+/**
+ * RESUMEN DEL CALENDARIO: por día, solo total y contadores por estado. Va
+ * ANTES de `/:id` para que no lo capture esa ruta (un id de ObjectId no puede
+ * ser 'calendar-summary', pero Express igualmente se lo llevaría por orden).
+ * Mismos roles que la lista: quien la ve puede contarla.
+ */
+router.get('/calendar-summary', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getCalendarSummary);
 router.get('/:id', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getAppointment);
 router.get(
   '/:id/pdf',
@@ -63,12 +71,16 @@ router.post('/export.xlsx', requireRole('admin', 'cajero'), exportAppointments);
  * bajar al mostrador a que se lo agendaran — y desde «Clientes», al registrar un
  * paciente y marcar «agendar cita», se llevaba un 403 con el paciente ya creado.
  *
- * Lo que NO se le abre es editar la cita después (`PUT /:id`): eso sigue siendo
- * de mostrador, por lo mismo que se le quitó al doctor en su día — el formulario
- * entero incluye fecha, hora, paciente y precio de una visita que suele ser
- * suya.
+ * MARKETING AGENDA DESDE LA AGENDA (sep-2026): ya editaba y borraba citas, pero
+ * la CREACIÓN era de mostrador y le obligaba a pedirle a otro que la escribiera
+ * — el mismo motivo por el que se le abrió editar (líneas abajo).
+ *
+ * Lo que NO se le abre a odontología es editar la cita después (`PUT /:id`):
+ * eso sigue siendo de mostrador, por lo mismo que se le quitó al doctor en su
+ * día — el formulario entero incluye fecha, hora, paciente y precio de una
+ * visita que suele ser suya.
  */
-router.post('/', requireRole('admin', 'cajero', 'call_center', 'odontologia', 'odontologia_neurofocal'), createAppointment);
+router.post('/', requireRole('admin', 'cajero', 'call_center', 'marketing', 'odontologia', 'odontologia_neurofocal'), createAppointment);
 // ATENCIÓN INMEDIATA: crea la cita ya asignada a quien la pide. 'doctor' expande
 // a las especialidades — nace para óptica, donde el paciente entra sin cita y lo
 // registra el propio optómetra.

@@ -3,7 +3,6 @@ const multer = require('multer');
 const User = require('../models/User');
 const { VALID_ROLES, DOCTOR_LIKE_ROLES } = require('../constants/roles');
 const { sucursalPedida } = require('../utils/clinicScope');
-const { ROLES_QUE_AGENDAN } = require('../utils/appointmentBooker');
 const { encrypt: encryptSecret } = require('../modules/invoicing/ec/crypto');
 const {
   loadP12,
@@ -557,6 +556,16 @@ exports.getNurses = async (req, res) => {
  * necesita poder acreditarla a quien la cerró (ver utils/appointmentBooker.js,
  * que valida lo mismo al guardar).
  *
+ * SOLO CALL CENTER Y MARKETING (sep-2026, a petición del usuario): la lista del
+ * selector mostraba a TODO el mundo —cajeros, administración, hasta doctores
+ * asignados a la sede— y «agendada por» es un dato de quien cierra la cita, no
+ * de quien la escribe. Ahora la lista es la bandeja del CRM: la gente del call
+ * center y de marketing, que es entre quienes se pasa la cita a mitad de
+ * conversación. Administración y caja siguen pudiendo dejar la cita a su propio
+ * nombre (eso no pasa por esta lista); acreditarla a un cajero sigue validando
+ * en `resolverAgendadoPor` por compatibilidad con lo ya seleccionado, pero ya no
+ * se ofrece en el desplegable.
+ *
  * NO se filtra por sucursal a propósito: el call center atiende el teléfono de
  * la clínica entera y agenda para todas las sedes; filtrando, la asesora que
  * está asignada a otra sucursal desaparecía de la lista de sus propias
@@ -566,10 +575,7 @@ exports.getSchedulers = async (req, res) => {
   try {
     const users = await User.find({
       active: true,
-      $or: [
-        { clinics: { $elemMatch: { role: { $in: ROLES_QUE_AGENDAN } } } },
-        { isSuperAdmin: true },
-      ],
+      clinics: { $elemMatch: { role: { $in: ['call_center', 'marketing'] } } },
     })
       .select('name email clinics isSuperAdmin worksInAllClinics')
       .sort({ name: 1 })
@@ -584,7 +590,7 @@ exports.getSchedulers = async (req, res) => {
         role:
           (u.clinics || []).find((c) => String(c.clinic) === String(req.clinicId))?.role
           || u.clinics?.[0]?.role
-          || (u.isSuperAdmin ? 'admin' : null),
+          || null,
       }))
     );
   } catch (error) {

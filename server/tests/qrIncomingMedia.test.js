@@ -62,9 +62,11 @@ test('la nota de voz (ptt) se guarda como audio y con la cabecera limpia', async
   assert.equal(media.dataUrl, 'data:audio/ogg;base64,T2dnUw==');
 });
 
-test('un archivo enorme no se guarda en Mongo, pero el mensaje sigue apareciendo', async () => {
-  // ~12 MB en base64: por encima del tope (reventaría el documento BSON de 16 MB).
-  const msg = fakeMsg({ type: 'video', attempts: [{ data: 'A'.repeat(12 * 1024 * 1024), mimetype: 'video/mp4' }] });
+test('un archivo enorme no se guarda, pero el mensaje sigue apareciendo', async () => {
+  // ~140 MB en base64 = ~105 MB de archivo: por encima del tope (el de WhatsApp:
+  // 100 MB por archivo). Un video de 16 MB sí se guarda desde que la media va al
+  // disco (el tope viejo de 8 MB era por el BSON de Mongo, ya no aplica).
+  const msg = fakeMsg({ type: 'video', attempts: [{ data: 'A'.repeat(140 * 1024 * 1024), mimetype: 'video/mp4' }] });
   const media = await extractQrMedia(msg, null, FAST);
   assert.equal(media.type, 'video');
   assert.equal(media.unavailable, true);

@@ -4853,7 +4853,47 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
           {appts.length === 0 ? (
             <div className="text-xs text-slate-400">Sin citas registradas.</div>
           ) : (
-            <ul className="space-y-1 max-h-44 overflow-y-auto pr-1">
+            <>
+              {(() => {
+                /**
+                 * LA ÚLTIMA CITA, arriba y en una línea: qué servicio y EN QUÉ
+                 * SUCURSAL fue, agendada por quien sea —desde el chat del CRM,
+                 * por teléfono o en mostrador, las tres valen porque el listado
+                 * trae a todas las citas del paciente (clinic=all). Es lo que el
+                 * asesor necesita leer de un vistazo antes de prometerle algo.
+                 */
+                const ultima = [...appts].sort(
+                  (a, b) => new Date(b.date) - new Date(a.date)
+                )[0];
+                if (!ultima) return null;
+                const servicio =
+                  ultima.serviceItem?.name
+                  || ultima.serviceName
+                  || (ultima.services || []).map((s) => s.name).filter(Boolean).join(', ');
+                const sede = ultima.clinic?.nombreComercial || ultima.clinic?.name || '';
+                const estado = {
+                  pendiente: 'agendada',
+                  confirmada: 'agendada',
+                  asistida: 'atendida',
+                  completada: 'atendida',
+                  no_asistio: 'no asistió',
+                  cancelada: 'cancelada',
+                }[ultima.status] || ultima.status;
+                const dt = new Date(ultima.date);
+                const fecha = `${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}/${dt.getFullYear()}`;
+                return (
+                  <div className="mb-1.5 text-[11px] bg-emerald-50 border border-emerald-100 text-emerald-800 rounded-lg px-2 py-1.5">
+                    <div className="font-semibold">
+                      Última cita ({estado}): {fecha} · {ultima.startTime || ''}
+                    </div>
+                    <div className="text-emerald-700/90 break-words">
+                      {servicio ? `${servicio}` : 'Sin servicio'}
+                      {sede ? ` · ${sede}` : ''}
+                    </div>
+                  </div>
+                );
+              })()}
+              <ul className="space-y-1 max-h-44 overflow-y-auto pr-1">
               {appts
                 .sort((a, b) => new Date(b.date) - new Date(a.date))
                 .slice(0, 10)
@@ -4885,10 +4925,11 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
                           </button>
                         )}
                       </span>
-                    </li>
-                  );
-                })}
-            </ul>
+                     </li>
+                   );
+                 })}
+              </ul>
+            </>
           )}
         </div>
       )}

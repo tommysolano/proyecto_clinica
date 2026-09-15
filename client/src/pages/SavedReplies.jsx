@@ -375,7 +375,9 @@ function SavedReplyModal({ reply, folders, defaultFolder = '', onClose, onSaved 
     const isVideo = file.type.startsWith('video/');
     if (!isImage && !isVideo) return toast.error('Solo imágenes o videos');
     if (isImage && file.size > 6 * 1024 * 1024) return toast.error('Imagen: máximo 6MB');
-    if (isVideo && file.size > 32 * 1024 * 1024) return toast.error('Video: máximo 32MB');
+    // Mismo techo que el backend y que el editor de workflows: el video se
+    // comprime solo al subirlo para que WhatsApp lo entregue (≤ 15 MB).
+    if (isVideo && file.size > 100 * 1024 * 1024) return toast.error('Video: máximo 100MB');
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
@@ -552,7 +554,7 @@ function SavedReplyModal({ reply, folders, defaultFolder = '', onClose, onSaved 
                       WhatsApp entrega (H.264), el servidor lo convierte al
                       subirlo. Vale la pena avisar para que nadie crea que se
                       colgó. */}
-                  {uploading ? 'Subiendo y preparando el archivo…' : '↥ Añadir adjunto (imagen máx 6MB, video máx 32MB)'}
+                  {uploading ? 'Subiendo y preparando el archivo…' : '↥ Añadir adjunto (imagen máx 6MB, video máx 100MB)'}
                 </button>
                 <p className="text-[10px] text-slate-400 mt-1">
                   Los videos se convierten solos al formato que WhatsApp acepta (H.264); si es grande, la subida tarda un poco.

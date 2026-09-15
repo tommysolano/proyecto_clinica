@@ -23,6 +23,19 @@ SITIO="${1:-}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="/root/nginx-backup-$STAMP"
 
+# Bytes de una directiva de tamaño de nginx ('1g', '500m', '1024k', '0'…).
+tamanio_bytes() {
+  awk -v v="$1" 'BEGIN {
+    n = v + 0
+    u = tolower(v)
+    sub(/^[0-9.]+/, "", u)
+    if (u == "g" || u == "gb") n *= 1073741824
+    else if (u == "m" || u == "mb") n *= 1048576
+    else if (u == "k" || u == "kb") n *= 1024
+    print int(n)
+  }'
+}
+
 if [ "$(id -u)" != "0" ]; then
   echo "ERROR: hay que ejecutarlo como root (usa sudo)." >&2
   exit 1
@@ -69,7 +82,7 @@ install -m 0644 "$CONF_SRC" "$CONF_DST"
 # justo lo que hizo fallar el primer intento. Así que comentamos en NUESTRA copia
 # lo que ya esté activo arriba.
 NEUTRALIZADAS=""
-for d in gzip gzip_vary gzip_proxied gzip_comp_level gzip_min_length gzip_types client_max_body_size; do
+for d in gzip gzip_vary gzip_proxied gzip_comp_level gzip_min_length gzip_types; do
   # `[[:space:]]` tras el nombre evita que `gzip` case con `gzip_vary`.
   if grep -qE "^[[:space:]]*${d}[[:space:]]" "$NGINX_CONF" 2>/dev/null; then
     sed -i -E "s|^([[:space:]]*)(${d}[[:space:]][^;]*;)|\1# [ya activo en nginx.conf] \2|" "$CONF_DST"
@@ -78,6 +91,48 @@ for d in gzip gzip_vary gzip_proxied gzip_comp_level gzip_min_length gzip_types 
 done
 if [ -n "$NEUTRALIZADAS" ]; then
   echo "    Ya estaban en nginx.conf (se dejan las de allí):$NEUTRALIZADAS"
+fi
+
+# --- 1b. client_max_body_size: garantizar el tope de subida ------------------
+# OJO: `client_max_body_size` NO va en el bucle de arriba. Si nginx.conf la
+# declara, comentar la NUESTRA dejaba activo el valor PEQUEÑO de allí (o, peor,
+# el del fichero del sitio): todo archivo grande moría con 413 ANTES de llegar
+# a Node y el 1g del drop-in era letra muerta.
+#
+# nginx usa la declaración del contexto más específico: una de 25m/50m en el
+# fichero del sitio (contexto server) GANA silenciosamente sobre la de http, y
+# duplicar la directiva en el mismo contexto http ABORTA nginx. Así que el
+# drop-in mantiene SU `client_max_body_size 1g` y aquí se neutraliza cualquier
+# OTRA declaración (nginx.conf, conf.d, sites-enabled, sites-available) cuyo
+# valor sea menor que 1g — con copia previa para poder restaurar.
+echo "==> 1b/3 Subida de archivos: garantizando client_max_body_size 1g"
+TOPE_BYTES="$(tamanio_bytes 1g)"
+CMB_NEUTRALIZADOS=""
+CMB_FICHEROS=""
+for fich in /etc/nginx/nginx.conf \
+            $(find /etc/nginx/conf.d -type f -name '*.conf' ! -name 'clinica-perf.conf' 2>/dev/null) \
+            $(find /etc/nginx/sites-enabled /etc/nginx/sites-available -type f 2>/dev/null); do
+  [ -f "$fich" ] || continue
+  # Idempotente: una línea ya neutralizada empieza por '#' y no vuelve a casar.
+  while IFS= read -r coincidencia; do
+    [ -z "$coincidencia" ] && continue
+    valor="$(printf '%s\n' "$coincidencia" | grep -oE 'client_max_body_size[[:space:]]+[^;]+' | awk '{print $2}')"
+    [ -z "$valor" ] && continue
+    if [ "$(tamanio_bytes "$valor")" -lt "$TOPE_BYTES" ]; then
+      if ! echo "$CMB_FICHEROS" | grep -qw "$fich"; then
+        hash="$(printf '%s' "$fich" | md5sum | cut -d' ' -f1)"
+        cp -a "$fich" "$BACKUP_DIR/cmb-$hash"
+        echo "$fich $BACKUP_DIR/cmb-$hash" >> "$BACKUP_DIR/cmb-restaurar.txt"
+        CMB_FICHEROS="$CMB_FICHEROS $fich"
+      fi
+      sed -i -E "s|^([[:space:]]*)(client_max_body_size[[:space:]][^;]*;)|\1# [clinica-perf: sustituido por 1g] \2|" "$fich"
+      CMB_NEUTRALIZADOS="$CMB_NEUTRALIZADOS $fich ($valor)"
+    fi
+  done < <(grep -nE '^[[:space:]]*client_max_body_size' "$fich" 2>/dev/null)
+done
+if [ -n "$CMB_NEUTRALIZADOS" ]; then
+  echo "    Neutralizadas (mandará el 1g del drop-in):"
+  echo "$CMB_NEUTRALIZADOS" | tr ' ' '\n' | grep -v '^$' | sed 's/^/      /'
 fi
 
 # `gzip_types` es LA directiva que arregla el problema. Si estuviera declarada
@@ -121,6 +176,12 @@ if ! nginx -t; then
   [ -f "$BACKUP_DIR/$(basename "$CONF_DST")" ] && cp -a "$BACKUP_DIR/$(basename "$CONF_DST")" "$CONF_DST"
   if [ -n "$SITIO" ] && [ -f "$BACKUP_DIR/sitio-$(basename "$SITIO")" ]; then
     cp -a "$BACKUP_DIR/sitio-$(basename "$SITIO")" "$SITIO"
+  fi
+  # Y los ficheros donde se neutralizó un client_max_body_size pequeño.
+  if [ -f "$BACKUP_DIR/cmb-restaurar.txt" ]; then
+    while read -r orig copia; do
+      [ -f "$copia" ] && cp -a "$copia" "$orig"
+    done < "$BACKUP_DIR/cmb-restaurar.txt"
   fi
   nginx -t && echo "Restaurado el estado anterior. nginx sigue como estaba." >&2
   exit 1

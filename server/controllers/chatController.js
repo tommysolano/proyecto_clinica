@@ -1536,9 +1536,16 @@ exports.uploadSavedReplyMedia = async (req, res) => {
     // el tope del documento subió de ~10 MB a ~100 MB (sep-2026): los exámenes
     // escaneados y los PDFs de laboratorio no cabían en el tope viejo. El resto
     // de la cadena aguanta: express.json admite 150 MB de cuerpo y nginx 1 GB.
-    const MAX_LEN = { video: 43_000_000, audio: 21_000_000, image: 8_000_000, document: 134_000_000 };
+    //
+    // El VIDEO se deja subir hasta ~100 MB aunque WhatsApp solo entregue videos
+    // de hasta 16 MB: al subirlo el video se COMPRIME solo (utils/videoTranscode,
+    // que lo deja en H.264 y ≤ 15 MB). Un tope de subida de 32 MB rechazaba de
+    // entrada videos que comprimidos cabían de sobra; si el video es demasiado
+    // largo y no baja de 15 MB ni comprimiéndolo, videoTranscode lo rechaza con
+    // un mensaje claro — ese es el momento correcto, no al elegir el archivo.
+    const MAX_LEN = { video: 134_000_000, audio: 21_000_000, image: 8_000_000, document: 134_000_000 };
     const TOO_BIG = {
-      video: 'Video demasiado grande (máx ~32MB)',
+      video: 'Video demasiado grande (máx ~100MB)',
       audio: 'Audio demasiado grande (máx ~15MB)',
       image: 'Imagen demasiado grande (máx ~6MB)',
       document: 'El archivo supera los 100 MB que admite WhatsApp',

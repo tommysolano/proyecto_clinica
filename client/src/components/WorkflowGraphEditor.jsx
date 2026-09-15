@@ -2779,7 +2779,10 @@ function NodeAttachment({ d, set }) {
     const isAudio = file.type.startsWith('audio/');
     if (!isImage && !isVideo && !isAudio) return toast.error('Solo imágenes, videos o audios');
     if (isImage && file.size > 6 * 1024 * 1024) return toast.error('Imagen: máximo 6MB');
-    if (isVideo && file.size > 32 * 1024 * 1024) return toast.error('Video: máximo 32MB');
+    // Video: se deja subir hasta ~100 MB (el mismo techo del backend). El video
+    // se comprime solo al subirlo para que WhatsApp lo entregue (≤ 15 MB); si
+    // es demasiado largo y no baja ni comprimiéndolo, el backend lo avisa.
+    if (isVideo && file.size > 100 * 1024 * 1024) return toast.error('Video: máximo 100MB');
     if (isAudio && file.size > 15 * 1024 * 1024) return toast.error('Audio: máximo 15MB');
     const reader = new FileReader();
     reader.onload = async (ev) => {

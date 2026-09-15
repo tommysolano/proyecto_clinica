@@ -260,6 +260,59 @@ export default function AssignAttentionModal({
       .join(' · ');
   };
 
+  /** Composición pendiente del suero de la ficha, lista para el editor. */
+  const composicionDeFicha = (fu) => {
+    const linea = pendingSerums(fu)[0];
+    if (!linea) return null;
+    return {
+      base: {
+        name: linea.serumBase?.name || SUERO_CLORURO_NOMBRE,
+        volumeMl: linea.serumBase?.volumeMl ?? null,
+      },
+      components: (linea.serumComponents || []).map((c) => ({ ...c })),
+    };
+  };
+
+  /** Descripción corta del suero pendiente (sin la fecha, que va aparte). */
+  const textoDelSueroDeFicha = (fu) =>
+    nombreDelSuero(fu).split(' · ').slice(1).join(' · ');
+
+  /**
+   * ESCOGER UN SUERO QUE YA ESTÁ EN LA FICHA.
+   *
+   * La composición se PRECARGA en el editor: el usuario ve TODAS las
+   * ampollas/moléculas que ese suero lleva —igual que al crearlo desde cero—
+   * y puede añadir o quitar alguna antes de guardar. `serumTocado` queda
+   * apagado: si se guarda sin tocar nada, la receta se respeta tal cual está
+   * escrita; en cuanto se corrige algo, el editor enciende la marca y el
+   * servidor REESCRIBE aquella receta (no abre otra).
+   */
+  const escogerSueroDeFicha = (idx, fu) => {
+    editarPaso(idx, {
+      serumFollowUp: String(fu._id),
+      serum: composicionDeFicha(fu) || sueroVacio(),
+      serumTocado: false,
+      serumMergeIntoService: false,
+    });
+  };
+
+  /**
+   * QUITAR EL SUERO DEL PASO, también de la ficha.
+   *
+   * Se limpia `serumFollowUp` a propósito: es lo que le dice al servidor que
+   * aquella receta se quedó sin dueño y que la quite (la del SERVICIO no se
+   * toca, la protege el propio servidor). Dejarla puesta era precisamente lo
+   * que impedía quitar un suero ya escrito: el limpiador lo seguía contando
+   * como vivo y la receta quedaba huérfana para siempre.
+   */
+  const quitarSueroDelPaso = (idx) =>
+    editarPaso(idx, {
+      serum: null,
+      serumFollowUp: null,
+      serumTocado: false,
+      serumMergeIntoService: false,
+    });
+
   /**
    * El VALOR de la cita lo pone mostrador, en el momento en que recibe al
    * paciente. Al resto (doctores, enfermería) ni se le enseña el campo, y el
@@ -595,70 +648,170 @@ export default function AssignAttentionModal({
                     * al guardar se escriben en los seguimientos.
                     */}
                   {esEnf && (
-                    <div className="mt-2 pl-8">
+                    <div className="mt-2 pl-8 space-y-2">
+                      {/**
+                       * ESCOGEDOR DE SUERO DE LA FICHA, rediseñado (sep-2026).
+                       *
+                       * Era un <select> nativo cuyo texto de opciones
+                       * («Suero · Cloruro 250 ml · [AMP ×1, ...] · 0 de 1
+                       * aplicado · falta 1») se cortaba y se veía inviable, y
+                       * sin responsive en móvil. Ahora son TARJETAS: cada una
+                       * dice la fecha, el nombre, la composición y el progreso,
+                       * con scroll vertical y rompimiento de línea reales.
+                       */}
                       {suerosDeFicha.length > 0 && (
-                        <div className="mb-2 rounded-lg border border-violet-200 bg-violet-50/60 p-2">
-                          <label className="block text-[11px] font-medium text-violet-900 mb-1">
-                            Suero de la ficha que se aplicará en esta cita
-                          </label>
-                          <select
-                            value={paso.serumFollowUp || (paso.serum ? '__nuevo__' : '')}
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              editarPaso(idx, value === '__nuevo__'
-                                ? { serumFollowUp: null, serum: sueroVacio(), serumTocado: true }
-                                : { serumFollowUp: value || null, serum: null, serumTocado: false, serumMergeIntoService: false });
-                            }}
-                            className="w-full rounded-lg border border-violet-200 bg-white px-2 py-1.5 text-xs text-slate-700"
-                          >
-                            <option value="">Crear/escoger un suero nuevo</option>
-                            {suerosDeFicha.map((fu) => (
-                              <option key={fu._id} value={fu._id}>{nombreDelSuero(fu)}</option>
-                            ))}
-                            <option value="__nuevo__">Crear un suero nuevo desde cero</option>
-                          </select>
-                          <p className="m-0 mt-1 text-[10px] text-violet-700">
-                            El enfermero verá únicamente este seguimiento al abrir la cita.
-                          </p>
-                        </div>
-                      )}
-                      {paso.serumFollowUp && !paso.serumTocado ? (
-                        /* YA ESTÁ ESCRITO, PERO SE PUEDE CORREGIR.
-                           Esto solo decía «ya está en los seguimientos» y ahí se
-                           acababa: quien se equivocaba de ampolla no tenía vuelta
-                           atrás desde la cita —había que abrir la ficha del
-                           paciente y arreglarlo a mano, o dejarlo mal—. Se
-                           reescribe AQUELLA receta, no se abre otra. */
-                        <div className="text-[11px] text-emerald-700">
-                          <p className="m-0">
-                            <HiOutlineCheck className="inline w-3.5 h-3.5 -mt-px" /> Suero ya escrito
-                            en los seguimientos:{' '}
-                            {(paso.serum?.components || []).map((c) => `${c.name} ×${c.quantity || 1}`).join(', ')}
-                          </p>
-                          <div className="flex items-center gap-3 mt-1">
-                            <button
-                              type="button"
-                              onClick={() => editarPaso(idx, { serumTocado: true })}
-                              className="text-[11px] font-medium text-sky-700 bg-transparent border-none cursor-pointer p-0"
-                            >
-                              Cambiar el suero
-                            </button>
+                        <div className="rounded-xl border border-violet-200 bg-violet-50/60 p-2.5">
+                          <div className="flex items-start justify-between gap-2 mb-1.5">
+                            <span className="text-[11px] font-semibold text-violet-900">
+                              Suero de la ficha que se aplicará en esta cita
+                            </span>
+                            {paso.serumFollowUp && (
+                              <button
+                                type="button"
+                                onClick={() => quitarSueroDelPaso(idx)}
+                                className="text-[10px] text-violet-700 hover:text-violet-900 underline bg-transparent border-none cursor-pointer shrink-0"
+                              >
+                                Ninguno (dejar vacío)
+                              </button>
+                            )}
+                          </div>
+                          <div className="grid gap-1.5 max-h-60 overflow-y-auto pr-1">
+                            {suerosDeFicha.map((fu) => {
+                              const elegido = paso.serumFollowUp === String(fu._id);
+                              const fecha = fu?.fecha
+                                ? new Date(fu.fecha).toLocaleDateString('es-EC')
+                                : '';
+                              return (
+                                <button
+                                  key={fu._id}
+                                  type="button"
+                                  onClick={() => escogerSueroDeFicha(idx, fu)}
+                                  className={`text-left w-full rounded-lg border px-2.5 py-2 cursor-pointer transition-colors ${
+                                    elegido
+                                      ? 'border-violet-500 bg-white ring-2 ring-violet-300'
+                                      : 'border-violet-200 bg-white hover:border-violet-400'
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-[11px] font-semibold text-violet-900 min-w-0 truncate">
+                                      {fecha ? `${fecha} · ` : ''}
+                                      {(pendingSerums(fu)[0]?.name) || 'Suero'}
+                                    </span>
+                                    {elegido && (
+                                      <HiOutlineCheck className="w-4 h-4 text-violet-600 shrink-0" />
+                                    )}
+                                  </div>
+                                  <div className="text-[10px] text-violet-800/80 mt-0.5 break-words">
+                                    {textoDelSueroDeFicha(fu)}
+                                  </div>
+                                </button>
+                              );
+                            })}
                             <button
                               type="button"
                               onClick={() =>
-                                editarPaso(idx, { serum: null, serumTocado: true, serumMergeIntoService: false })
+                                editarPaso(idx, {
+                                  serumFollowUp: null,
+                                  serum: sueroVacio(),
+                                  serumTocado: true,
+                                  serumMergeIntoService: !!sueroDelServicio,
+                                })
                               }
-                              className="text-[11px] text-red-500 bg-transparent border-none cursor-pointer p-0"
+                              className="text-left w-full rounded-lg border border-dashed border-violet-300 bg-transparent px-2.5 py-2 text-[11px] font-medium text-violet-800 hover:bg-white cursor-pointer"
                             >
-                              Quitarlo
+                              + Crear un suero nuevo desde cero
                             </button>
                           </div>
-                          <p className="m-0 mt-1 text-[11px] text-slate-400">
-                            Se corrige la receta que ya está en la ficha; no se crea otra. Si el
-                            paciente ya lo tiene puesto, no se toca.
+                          <p className="m-0 mt-1.5 text-[10px] text-violet-700">
+                            El enfermero verá únicamente el seguimiento escogido al abrir la cita.
                           </p>
                         </div>
-                      ) : !paso.serum ? (
+                      )}
+
+                      {paso.serum && paso.serum.components?.some((c) => c.name?.trim()) ? (
+                        <>
+                          {paso.serumMergeIntoService && (
+                            <p className="m-0 mb-1 text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5">
+                              Estás editando el suero de <b>«{sueroDelServicio?.name || servicio?.name}»</b>,
+                              el que ya está escrito en la ficha. Se guarda como <b>una sola receta</b>.
+                            </p>
+                          )}
+                          {/* Corrigiendo uno que YA está en la ficha: conviene
+                              decirlo, porque lo que se guarda no es un suero
+                              nuevo sino la reescritura de aquella receta. */}
+                          {paso.serumFollowUp && paso.serumTocado && !paso.serumMergeIntoService && (
+                            <p className="m-0 mb-1 text-[11px] text-sky-900 bg-sky-50 border border-sky-200 rounded-lg px-2 py-1.5">
+                              Estás corrigiendo el suero que <b>ya está escrito en la ficha</b>: se
+                              reescribe esa misma receta, no se crea otra.
+                            </p>
+                          )}
+                          {paso.serumFollowUp && !paso.serumTocado && (
+                            <p className="m-0 mb-1 text-[11px] text-violet-800 bg-violet-50 border border-violet-100 rounded-lg px-2 py-1.5">
+                              Estas son las ampollas del suero escogido de la ficha. Puedes
+                              <b> añadir o quitar</b> las que quieras: al primer cambio se reescribe
+                              esa receta. Si guardas sin tocar nada, queda como está.
+                            </p>
+                          )}
+                          <SueroComposicionEditor
+                            base={paso.serum.base}
+                            componentes={paso.serum.components}
+                            onChangeBase={(base) =>
+                              editarPaso(idx, { serum: { ...paso.serum, base }, serumTocado: true })
+                            }
+                            onChangeComponentes={(components) =>
+                              editarPaso(idx, { serum: { ...paso.serum, components }, serumTocado: true })
+                            }
+                            onAbrirCatalogo={() => setCatalogoDe(idx)}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => quitarSueroDelPaso(idx)}
+                            className="mt-1 text-[11px] text-red-500 bg-transparent border-none cursor-pointer p-0"
+                          >
+                            Quitar el suero
+                          </button>
+                        </>
+                      ) : paso.serumFollowUp ? (
+                        /* Referencia a un suero de la ficha cuya composición
+                           no está en el turno (escogido solo por referencia, o
+                           ya aplicado). Si sigue pendiente en la ficha, se
+                           muestra aquí para verlo y editarlo. */
+                        (() => {
+                          const fu = suerosDeFicha.find((f) => String(f._id) === String(paso.serumFollowUp));
+                          if (!fu) {
+                            return (
+                              <div className="text-[11px] text-emerald-700">
+                                <p className="m-0">
+                                  <HiOutlineCheck className="inline w-3.5 h-3.5 -mt-px" /> Suero ya escrito
+                                  en los seguimientos.
+                                </p>
+                                <button
+                                  type="button"
+                                  onClick={() => quitarSueroDelPaso(idx)}
+                                  className="mt-1 text-[11px] text-red-500 bg-transparent border-none cursor-pointer p-0"
+                                >
+                                  Quitar el suero
+                                </button>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div className="text-[11px] text-emerald-700">
+                              <p className="m-0 break-words">
+                                <HiOutlineCheck className="inline w-3.5 h-3.5 -mt-px" /> Suero de la ficha
+                                ({textoDelSueroDeFicha(fu)}).
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => escogerSueroDeFicha(idx, fu)}
+                                className="mt-1 text-[11px] font-medium text-sky-700 bg-transparent border-none cursor-pointer p-0"
+                              >
+                                Ver sus ampollas (y corregirlas si hace falta)
+                              </button>
+                            </div>
+                          );
+                        })()
+                      ) : (
                         <>
                           {/* El servicio YA escribe su bolsa: lo que se escoja aquí
                               se le suma, no abre una segunda receta con su mismo
@@ -686,44 +839,6 @@ export default function AssignAttentionModal({
                             {sueroDelServicio
                               ? `Añadir ampollas al suero de «${sueroDelServicio.name}»`
                               : 'Escoger el suero que se va a aplicar'}
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          {paso.serumMergeIntoService && (
-                            <p className="m-0 mb-1 text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5">
-                              Estás editando el suero de <b>«{sueroDelServicio?.name || servicio?.name}»</b>,
-                              el que ya está escrito en la ficha. Se guarda como <b>una sola receta</b>.
-                            </p>
-                          )}
-                          {/* Corrigiendo uno que YA está en la ficha: conviene
-                              decirlo, porque lo que se guarda no es un suero
-                              nuevo sino la reescritura de aquella receta. */}
-                          {paso.serumFollowUp && !paso.serumMergeIntoService && (
-                            <p className="m-0 mb-1 text-[11px] text-sky-900 bg-sky-50 border border-sky-200 rounded-lg px-2 py-1.5">
-                              Estás corrigiendo el suero que <b>ya está escrito en la ficha</b>: se
-                              reescribe esa misma receta, no se crea otra.
-                            </p>
-                          )}
-                          <SueroComposicionEditor
-                            base={paso.serum.base}
-                            componentes={paso.serum.components}
-                            onChangeBase={(base) =>
-                              editarPaso(idx, { serum: { ...paso.serum, base }, serumTocado: true })
-                            }
-                            onChangeComponentes={(components) =>
-                              editarPaso(idx, { serum: { ...paso.serum, components }, serumTocado: true })
-                            }
-                            onAbrirCatalogo={() => setCatalogoDe(idx)}
-                          />
-                          <button
-                            type="button"
-                            onClick={() =>
-                              editarPaso(idx, { serum: null, serumTocado: true, serumMergeIntoService: false })
-                            }
-                            className="mt-1 text-[11px] text-red-500 bg-transparent border-none cursor-pointer p-0"
-                          >
-                            Quitar el suero
                           </button>
                         </>
                       )}

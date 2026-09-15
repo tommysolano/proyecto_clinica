@@ -19,10 +19,14 @@ const DEFAULT_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
 
 /**
  * Descarga un media entrante de WhatsApp (imagen/audio/documento) por su id.
- * Devuelve { ok, dataUrl, mimeType } o { ok:false }. Cap de tamaño para no
- * desbordar el documento de Mongo (la media se guarda como dataUrl base64).
+ * Devuelve { ok, dataUrl, mimeType } o { ok:false }. Cap de tamaño: el tope que
+ * WhatsApp admite por archivo (100 MB). Antes era 8 MB —un video de 16 MB que
+ * llegaba de un contacto quedaba guardado SIN archivo y el agente veía "demasiado
+ * grande para descargarlo"— pero ese tope era una reliquia de cuando la media se
+ * guardaba como base64 DENTRO del documento de Mongo: ahora los bytes van al
+ * disco (ver utils/chatMedia → mediaStore), que no tiene ese límite.
  */
-async function downloadMedia(creds, mediaId, { maxBytes = 8 * 1024 * 1024 } = {}) {
+async function downloadMedia(creds, mediaId, { maxBytes = 100 * 1024 * 1024 } = {}) {
   if (!isConfigured(creds)) return { ok: false, error: 'El número no tiene credenciales de Cloud API.' };
   if (!mediaId) return { ok: false, error: 'Meta no envió el identificador del archivo.' };
   const apiVersion = creds.apiVersion || DEFAULT_API_VERSION;

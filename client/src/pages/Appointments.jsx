@@ -78,7 +78,10 @@ const statusColors = {
 function filtrarEnCliente(lista, filter) {
   return (lista || [])
     .filter((apt) => {
-      if (filter.service) {
+      // VARIOS SERVICIOS A LA VEZ (sep-2026): el filtro era de uno solo y no
+      // dejaba ver, p. ej., dos servicios juntos. Vacío = sin filtro, como antes.
+      const servicios = filter.services || (filter.service ? [filter.service] : []);
+      if (servicios.length) {
         /**
          * Por el SERVICIO DE LA CITA (el del catálogo de la agenda), no por el
          * producto del inventario: `serviceItem` es lo que se escoge al agendar
@@ -86,9 +89,17 @@ function filtrarEnCliente(lista, filter) {
          * como respaldo para las citas viejas.
          */
         const idDe = (v) => String(v?._id || v || '');
-        const tiene = idDe(apt.serviceItem) === String(filter.service)
-          || (apt.services || []).some((s) => idDe(s.product) === String(filter.service));
+        const tiene = servicios.some((sid) => idDe(apt.serviceItem) === String(sid)
+          || (apt.services || []).some((s) => idDe(s.product) === String(sid)));
         if (!tiene) return false;
+      }
+      // FILTRO POR DOCTOR (sep-2026): los doctores ya viajan poblados en la
+      // cita, así que también se recorta aquí, igual que la sucursal.
+      if (filter.doctor) {
+        const idDe = (v) => String(v?._id || v || '');
+        const loAtiende = idDe(apt.doctor) === String(filter.doctor)
+          || (apt.turns || []).some((t) => idDe(t.user) === String(filter.doctor));
+        if (!loAtiende) return false;
       }
       if (filter.clinic) {
         const c = apt.clinic?._id || apt.clinic;
@@ -200,6 +211,22 @@ function nombreServicio(apt) {
     apt.serviceItem?.name ||
     (apt.services || []).map((s) => s.name || s.product?.name).filter(Boolean).join(', ')
   );
+}
+
+/**
+ * EL COLOR DEL SERVICIO DE LA CITA, el mismo que pinta el filtro
+ * «Filtrar por servicio» (ver ProductAutocomplete): cada servicio del catálogo
+ * (`appointment-service-items`) lleva su color propio, y la agenda de día
+ * identifica a los suyos con ese mismo punto.
+ */
+function colorServicio(apt, catalogo = []) {
+  if (!apt) return '';
+  if (apt.serviceItem?.color) return apt.serviceItem.color;
+  const idDe = (v) => String(v?._id || v || '');
+  const id = idDe(apt.serviceItem) || idDe((apt.services || [])[0]?.product);
+  if (!id) return '';
+  const svc = (catalogo || []).find((s) => idDe(s._id) === id);
+  return svc?.color || '';
 }
 
 /**
@@ -419,8 +446,9 @@ export default function Appointments() {
   // 'odontologia' va enumerada y no por 'doctor', que expande a todas las
   // especialidades: agendar se le abrió a ella, no al resto. Es espejo de la
   // ruta `POST /appointments` — si se cambia una, la otra también, o el botón
-  // sale y lleva a un 403.
-  const canWrite = hasRole('admin', 'cajero', 'call_center', 'odontologia', 'odontologia_neurofocal');
+  // sale y lleva a un 403. MARKETING se sumó (sep-2026): agenda desde la agenda
+  // como mostrador, igual que ya editaba y borraba.
+  const canWrite = hasRole('admin', 'cajero', 'call_center', 'marketing', 'odontologia', 'odontologia_neurofocal');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
   // 'optica' no se expande desde 'doctor' en el cliente, por eso va aparte.
   const isDoctor = roleSatisfies(role, ['doctor']) || role === 'optica';
@@ -437,6 +465,9 @@ export default function Appointments() {
   const esOdontologia = role === 'odontologia' || role === 'odontologia_neurofocal';
   const isNurse = role === 'enfermero';
   const isCallCenter = role === 'call_center';
+  // Marketing edita las citas "como administración" (sep-2026): es quien ya las
+  // elimina, y el servidor le acepta el PUT igual que al mostrador.
+  const isMarketing = role === 'marketing';
   const isReception = hasRole('admin', 'cajero', 'enfermero');
   // Quién puede lanzar el envío de recordatorios desde aquí. Son los mismos roles
   // que hacen los otros envíos masivos (ver routes/appointmentBlasts.js): si el
@@ -592,7 +623,10 @@ export default function Appointments() {
     status: '',
     isFirstVisit: '',
     clinic: '',
-    service: '',
+    // VARIOS servicios a la vez (ids del catálogo de la agenda). Vacío = sin filtro.
+    services: [],
+    // FILTRO POR DOCTOR (id). Vacío = todos.
+    doctor: '',
     timeFrom: '',
     timeTo: '',
     patientQuery: '',
@@ -699,22 +733,47 @@ export default function Appointments() {
       setLoading(true);
     }
     try {
-      const params = {};
+      // Parámetros que comparten las dos lecturas.
+      const baseParams = {};
+      if (filter.isFirstVisit) baseParams.isFirstVisit = filter.isFirstVisit;
+      if (filter.patientQuery && filter.patientQuery.trim()) baseParams.q = filter.patientQuery.trim();
+      if (filter.status) baseParams.status = filter.status;
+      // Filtros de servicio (VARIOS) y de doctor: en la lista se re-aplican en
+      // el navegador, pero en el calendario son los que cuentan, así que
+      // viajan al servidor (el endpoint los acepta separados por coma).
+      if (filter.services?.length) baseParams.service = filter.services.join(',');
+      if (filter.doctor) baseParams.doctor = filter.doctor;
       if (view === 'calendar') {
-        // Trae todas las citas del mes visible para pintarlas en la cuadrícula.
+        /**
+         * EL CALENDARIO NO NECESITA LAS CITAS, solo sus CONTEOS.
+         *
+         * La cuadrícula del mes pinta por día el total y los contadores por
+         * estado —nada más—. Antes traía TODAS las citas del mes con paciente,
+         * doctor, turnos y servicios poblados para contarlas aquí: megas de
+         * JSON y una espera enorme cada vez que se entraba a la agenda. Ahora
+         * pide el resumen ligero (`/appointments/calendar-summary`, que baja
+         * solo fecha y estado de cada cita) y la vista lista, que sí abre el
+         * día completo, sigue pidiendo `/appointments`.
+         */
         const first = new Date(calMonth.getFullYear(), calMonth.getMonth(), 1);
         const last = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0);
-        params.startDate = toYmd(first);
-        params.endDate = toYmd(last);
-        if (filter.status) params.status = filter.status;
-      } else {
-        // Lista = un solo día (navegable por flechas).
-        params.startDate = listDay;
-        params.endDate = listDay;
-        if (filter.status) params.status = filter.status;
+        const res = await api.get('/appointments/calendar-summary', {
+          params: {
+            ...baseParams,
+            startDate: toYmd(first),
+            endDate: toYmd(last),
+            // El filtro de sucursal lo aplica el servidor (la vista unificada
+            // sigue siendo la de «todas» cuando no se elige ninguna).
+            clinic: filter.clinic || 'all',
+          },
+        });
+        // Llegó tarde: ya hay otra petición más nueva en marcha.
+        if (miTurno !== peticionRef.current) return;
+        setCalResumen(res.data || []);
+        return;
       }
-      if (filter.isFirstVisit) params.isFirstVisit = filter.isFirstVisit;
-      if (filter.patientQuery && filter.patientQuery.trim()) params.q = filter.patientQuery.trim();
+      // Lista = un solo día (navegable por flechas).
+      const params = { ...baseParams, startDate: listDay, endDate: listDay };
       // Vista unificada: trae las citas de TODAS las sucursales del usuario para que
       // ninguna quede oculta por la sucursal activa (la cita puede tener otra
       // "sucursal destino"). Cada tarjeta muestra a qué sucursal pertenece.
@@ -781,6 +840,16 @@ export default function Appointments() {
     // sesión entrara por otra sede el filtro del navegador dejaría la lista en
     // blanco sin ninguna cita a la vista.
     if (esOdontologia) return;
+    /**
+     * CALL CENTER Y MARKETING ARRANCAN SIN FILTRO DE SUCURSAL (sep-2026).
+     *
+     * El sistema les ponía la sucursal activa en el filtro al entrar, y para
+     * ellos era una molestia más que una ayuda: agendan y consultan para TODAS
+     * las sedes —esa es su función— y el filtro preseleccionado escondía las
+     * citas de las demás sin que nadie lo pidiera. El resto de roles conserva
+     * el comportamiento: quien trabaja en una sede entra mirando su sede.
+     */
+    if (isCallCenter || isMarketing) return;
     const propia = activeClinic?._id;
     if (!propia) return;
     setFilter((f) => (String(f.clinic) === String(propia) ? f : { ...f, clinic: propia }));
@@ -951,9 +1020,13 @@ export default function Appointments() {
      * suele ser la suya. Eso es trabajo de mostrador, no clínico — lo suyo es la
      * ficha— y el botón, ahí puesto, invitaba a tocarlo. El servidor aplica la
      * misma regla (`updateAppointment`), así que esto solo evita el intento.
+     *
+     * MARKETING (sep-2026): edita "como administración" — la ruta y el
+     * controlador ya le aceptan el PUT y las cerradas, como a quien ya le dio
+     * el borrado.
      */
-    if (!isAdmin && !canCharge && !isCallCenter) return false;
-    if (apt.status === 'completada') return isAdmin || canCharge;
+    if (!isAdmin && !canCharge && !isCallCenter && !isMarketing) return false;
+    if (apt.status === 'completada') return isAdmin || canCharge || isMarketing;
     return true;
   };
 
@@ -1283,12 +1356,26 @@ export default function Appointments() {
    * en cuanto una de las dos cambiara.
    */
   const citasParaElExcel = async () => {
-    if (!rangoExcel) return view === 'calendar' ? citasFiltradas : filteredAppointments;
+    /**
+     * La vista calendario ya NO carga las citas completas (solo el resumen de
+     * conteos), así que el Excel de "lo que se está viendo" pide su rango
+     * SIEMPRE al servidor: el mes visible en calendario, el día en lista.
+     */
+    const rango = rangoExcel || (view === 'calendar'
+      ? {
+          desde: toYmd(new Date(calMonth.getFullYear(), calMonth.getMonth(), 1)),
+          hasta: toYmd(new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0)),
+        }
+      : { desde: listDay, hasta: listDay });
 
-    const params = { startDate: rangoExcel.desde, endDate: rangoExcel.hasta, clinic: 'all' };
+    const params = { startDate: rango.desde, endDate: rango.hasta, clinic: 'all' };
     if (filter.status) params.status = filter.status;
     if (filter.isFirstVisit) params.isFirstVisit = filter.isFirstVisit;
     if (filter.patientQuery?.trim()) params.q = filter.patientQuery.trim();
+    // Los mismos filtros que ve la pantalla: el servidor los acepta, y con
+    // esto el rango ya llega recortado (y `filtrarEnCliente` re-aplica igual).
+    if (filter.services?.length) params.service = filter.services.join(',');
+    if (filter.doctor) params.doctor = filter.doctor;
     const res = await api.get('/appointments', { params });
     const lista = filtrarEnCliente(
       (res.data || []).map((a) => ({ ...a, status: normalizeStatus(a.status) })),
@@ -1335,12 +1422,17 @@ export default function Appointments() {
         ? `Mes de ${calMonth.toLocaleDateString('es-EC', { month: 'long', year: 'numeric' })}`
         : `Día ${dia(listDay)}`;
     const sede = clinicasFiltro.find((c) => String(c._id) === String(filter.clinic));
-    const servicio = services.find((p) => String(p._id) === String(filter.service));
+    // VARIOS servicios y el doctor: la cabecera dice los nombres, no los ids.
+    const serviciosElegidos = (filter.services || [])
+      .map((sid) => services.find((p) => String(p._id) === String(sid))?.name)
+      .filter(Boolean);
+    const doctorElegido = doctors.find((d) => String(d._id) === String(filter.doctor));
     const filtros = [
       filter.status && `Estado: ${statusLabels[filter.status] || filter.status}`,
       filter.isFirstVisit && (filter.isFirstVisit === 'true' ? 'Solo pacientes nuevos' : 'Solo recurrentes'),
       sede && `Sucursal: ${sede.nombreComercial || sede.name}`,
-      servicio && `Servicio: ${servicio.name}`,
+      serviciosElegidos.length > 0 && `Servicios: ${serviciosElegidos.join(', ')}`,
+      doctorElegido && `Doctor: ${doctorElegido.name}`,
       filter.timeFrom && `Desde las ${filter.timeFrom}`,
       filter.timeTo && `Hasta las ${filter.timeTo}`,
       filter.patientQuery?.trim() && `Paciente: «${filter.patientQuery.trim()}»`,
@@ -1501,6 +1593,41 @@ export default function Appointments() {
     setShowPatientList(false);
   };
 
+  /**
+   * IR AL CHAT DE UNA CITA, en PESTAÑA nueva.
+   *
+   * Antes navegaba en la misma pestaña y se perdía el punto de la agenda donde
+   * se estaba. Dos casos:
+   *
+   *  1. Agendada DESDE el CRM: lleva `conversation` → se abre ese chat directo.
+   *  2. Agendada de otro lado pero el paciente TIENE TELÉFONO: se abre (o crea)
+   *     su conversación igual. `POST /chats` devuelve la existente si ya hay una
+   *     con ese número, y si no la crea — el agente empieza con un mensaje nuevo
+   *     sin salir de la agenda.
+   */
+  const abrirChatDeCita = async (apt) => {
+    if (!apt) return;
+    if (apt.conversation) {
+      window.open(`/chats?chat=${apt.conversation}`, '_blank', 'noopener');
+      return;
+    }
+    const tel = apt.patient?.whatsapp || apt.patient?.phone;
+    if (!tel) {
+      toast.error('El paciente no tiene teléfono registrado para abrir un chat');
+      return;
+    }
+    try {
+      const { data } = await api.post('/chats', {
+        phone: tel,
+        contactName: [apt.patient?.firstName, apt.patient?.lastName].filter(Boolean).join(' '),
+        ...(apt.patient?._id ? { patient: apt.patient._id } : {}),
+      });
+      window.open(`/chats?chat=${data._id}`, '_blank', 'noopener');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo abrir el chat');
+    }
+  };
+
   // Aplica filtros en el cliente para servicio/sucursal/rango horario.
   // Ordena cronológicamente (por fecha y hora) para verlas en forma de HORARIO,
   // no en el orden en que se agendaron.
@@ -1515,7 +1642,7 @@ export default function Appointments() {
   const citasFiltradas = useMemo(
     () => filtrarEnCliente(appointments, filter),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [appointments, filter.service, filter.clinic, filter.timeFrom, filter.timeTo]
+    [appointments, filter.services, filter.doctor, filter.clinic, filter.timeFrom, filter.timeTo]
   );
 
   /**
@@ -1614,21 +1741,22 @@ export default function Appointments() {
    */
   const filtrosActivos = [
     filter.status, filter.isFirstVisit, filter.clinic,
-    filter.service, filter.timeFrom, filter.timeTo,
+    filter.services?.length, filter.doctor, filter.timeFrom, filter.timeTo,
   ].filter(Boolean).length;
 
-  // Agrupa las citas (ya filtradas) por día YYYY-MM-DD para pintar la cuadrícula.
-  // SIN la bandeja: esa es de la lista, y el calendario no tiene dónde enseñarla
-  // — un mes recortado, sin el control a la vista, se lee como citas perdidas.
-  const calApptsByDay = useMemo(() => {
+  /**
+   * EL RESUMEN DEL CALENDARIO. Lo pide `fetchAppointments` en la vista
+   * calendario: por día, total y contadores por estado. Es lo único que esa
+   * vista pinta — no hace falta cargar las citas completas del mes.
+   */
+  const [calResumen, setCalResumen] = useState([]);
+  const calResumenMap = useMemo(() => {
     const map = new Map();
-    citasFiltradas.forEach((a) => {
-      const k = String(a.date || '').slice(0, 10);
-      if (!map.has(k)) map.set(k, []);
-      map.get(k).push(a);
+    (calResumen || []).forEach((r) => {
+      if (r && r.date) map.set(r.date, r);
     });
     return map;
-  }, [citasFiltradas]);
+  }, [calResumen]);
 
   // Celdas del mes (con relleno para alinear a lunes). null = celda vacía.
   const calendarCells = useMemo(() => {
@@ -1869,12 +1997,65 @@ export default function Appointments() {
               <option value="false">Solo pacientes recurrentes</option>
             </select>
             {(!isDoctor || esOdontologia) && (
-              <ProductAutocomplete
-                products={services}
-                value={filter.service}
-                onSelect={(p) => setFilter({ ...filter, service: p?._id || '' })}
-                placeholder="Filtrar por servicio..."
-              />
+              <div className="flex flex-col gap-1.5">
+                {/* VARIOS SERVICIOS (sep-2026): el autocomplete añade y los
+                    chips quitan. Cada uno con SU color de catálogo, igual que
+                    en la lista del propio autocomplete. */}
+                <ProductAutocomplete
+                  products={services}
+                  value=""
+                  onSelect={(p) => {
+                    if (p && !filter.services.some((sid) => String(sid) === String(p._id))) {
+                      setFilter({ ...filter, services: [...filter.services, p._id] });
+                    }
+                  }}
+                  placeholder="Filtrar por servicio..."
+                />
+                {filter.services.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {filter.services.map((sid) => {
+                      const svc = services.find((s) => String(s._id) === String(sid));
+                      return (
+                        <span
+                          key={sid}
+                          className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-slate-100 text-xs text-slate-700"
+                        >
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: svc?.color || '#94a3b8' }}
+                          />
+                          <span className="max-w-[160px] truncate">{svc?.name || 'Servicio'}</span>
+                          <button
+                            type="button"
+                            onClick={() => setFilter({
+                              ...filter,
+                              services: filter.services.filter((x) => String(x) !== String(sid)),
+                            })}
+                            title="Quitar del filtro"
+                            className="text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer leading-none"
+                          >
+                            ✕
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+            {(!isDoctor || esOdontologia) && (
+              <select
+                value={filter.doctor}
+                onChange={(e) => setFilter({ ...filter, doctor: e.target.value })}
+                className="px-3 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+              >
+                {/* FILTRO POR DOCTOR (sep-2026). `doctors` es el listado que ya
+                    carga la agenda para la asignación de turnos. */}
+                <option value="">Todos los doctores</option>
+                {doctors.map((d) => (
+                  <option key={d._id} value={d._id}>{doctorOptionLabel(d)}</option>
+                ))}
+              </select>
             )}
             {(!isDoctor || esOdontologia) && clinicasFiltro.length > 1 && (
               <select
@@ -1919,11 +2100,20 @@ export default function Appointments() {
 
           <div className="flex items-center justify-between text-[11px] text-slate-500">
             {/* En la lista cuenta lo que se está viendo (la bandeja abierta); en
-                el calendario, el mes entero, que es lo que se pinta. */}
-            <span>Total filtrado: <strong className="text-slate-800">{view === 'calendar' ? citasFiltradas.length : filteredAppointments.length}</strong> citas</span>
-            {(filter.service || filter.clinic || filter.timeFrom || filter.timeTo || filter.status || filter.isFirstVisit || filter.patientQuery) && (
+                el calendario, el mes entero — que ahora es el resumen ligero,
+                no las citas completas. */}
+            <span>
+              Total filtrado:{' '}
+              <strong className="text-slate-800">
+                {view === 'calendar'
+                  ? (calResumen || []).reduce((t, r) => t + (Number(r.total) || 0), 0)
+                  : filteredAppointments.length}
+              </strong>{' '}
+              citas
+            </span>
+            {(filter.services?.length || filter.doctor || filter.clinic || filter.timeFrom || filter.timeTo || filter.status || filter.isFirstVisit || filter.patientQuery) && (
               <button
-                onClick={() => setFilter({ startDate: '', endDate: '', status: '', isFirstVisit: '', clinic: '', service: '', timeFrom: '', timeTo: '', patientQuery: '' })}
+                onClick={() => setFilter({ startDate: '', endDate: '', status: '', isFirstVisit: '', clinic: '', services: [], doctor: '', timeFrom: '', timeTo: '', patientQuery: '' })}
                 className="text-emerald-600 hover:underline border-none bg-transparent cursor-pointer"
               >Limpiar filtros</button>
             )}
@@ -1970,14 +2160,10 @@ export default function Appointments() {
             {calendarCells.map((d, idx) => {
               if (!d) return <div key={`e${idx}`} className="border-t border-l border-slate-100 min-h-[92px] bg-slate-50/30" />;
               const ymd = toYmd(d);
-              const dayAppts = calApptsByDay.get(ymd) || [];
               const isToday = ymd === toYmd(new Date());
-              const counts = dayAppts.reduce((acc, a) => {
-                if (['asistida', 'completada'].includes(a.status)) acc.asistida += 1;
-                else if (a.status === 'no_asistio') acc.no_asistio += 1;
-                else if (a.status !== 'cancelada') acc.pendiente += 1;
-                return acc;
-              }, { pendiente: 0, asistida: 0, no_asistio: 0 });
+              // Los contadores vienen DEL SERVIDOR (calResumen): por día, total
+              // y estado. La cuadrícula no pinta nada más de cada cita.
+              const dia = calResumenMap.get(ymd);
               return (
                 <button
                   key={ymd}
@@ -1989,18 +2175,18 @@ export default function Appointments() {
                   <div className={`text-xs font-semibold mb-1 ${isToday ? 'text-emerald-700' : 'text-slate-600'}`}>
                     {d.getDate()}
                   </div>
-                  {dayAppts.length > 0 ? (
+                  {dia && dia.total > 0 ? (
                     <div className="space-y-0.5">
-                      <div className="text-[11px] font-bold text-slate-700">{dayAppts.length} cita{dayAppts.length !== 1 ? 's' : ''}</div>
+                      <div className="text-[11px] font-bold text-slate-700">{dia.total} cita{dia.total !== 1 ? 's' : ''}</div>
                       <div className="flex flex-wrap gap-1">
-                        {counts.pendiente > 0 && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{counts.pendiente} pend.</span>
+                        {dia.pendiente > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{dia.pendiente} pend.</span>
                         )}
-                        {counts.asistida > 0 && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">{counts.asistida} asist.</span>
+                        {dia.asistida > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">{dia.asistida} asist.</span>
                         )}
-                        {counts.no_asistio > 0 && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">{counts.no_asistio} no</span>
+                        {dia.no_asistio > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">{dia.no_asistio} no</span>
                         )}
                       </div>
                     </div>
@@ -2212,15 +2398,16 @@ export default function Appointments() {
                      * una por una; el menú solo cambia CÓMO se enseñan.
                      */
                     const opciones = [];
-                    /* Ir al chat de origen: solo citas agendadas desde el
-                        CRM (guardan `conversation`), y solo a quien la
-                        bandeja le corresponde. */
-                    if (puedeVerChats && apt.conversation) {
+                    /* Ir al chat: de la cita agendada desde el CRM (guarda
+                        `conversation`), o del PACIENTE si tiene teléfono —
+                        se abre (o crea) su conversación. En PESTAÑA nueva,
+                        para no perder el punto de la agenda. */
+                    if (puedeVerChats && (apt.conversation || apt.patient?.phone || apt.patient?.whatsapp)) {
                       opciones.push({
                         id: 'chat',
                         label: 'Ir al chat',
                         icon: HiOutlineChatBubbleLeftRight,
-                        fn: () => navigate(`/chats?chat=${apt.conversation}`),
+                        fn: () => abrirChatDeCita(apt),
                       });
                     }
                     /* Recepción: a quién pasa el paciente. También en las ya
@@ -2468,7 +2655,20 @@ export default function Appointments() {
                         )}
                       </td>
                       <td data-cell="detalle" className="md:px-6 md:py-3.5 text-sm text-slate-600">
-                        {nombreServicio(apt) || <span className="text-slate-400 italic">Sin servicio</span>}
+                        {/* EL PUNTO DE COLOR del servicio: mismo criterio que
+                            el filtro de servicio, para leer de un vistazo de
+                            qué tipo de cita se trata (ver `colorServicio`). */}
+                        {nombreServicio(apt) ? (
+                          <div className="flex items-start gap-2">
+                            <span
+                              className="w-2.5 h-2.5 rounded-full shrink-0 mt-1"
+                              style={{ backgroundColor: colorServicio(apt, services) || '#94a3b8' }}
+                            />
+                            <span>{nombreServicio(apt)}</span>
+                          </div>
+                        ) : (
+                          <span className="text-slate-400 italic">Sin servicio</span>
+                        )}
                         {/* Lo que además se hizo en la visita. Va debajo y no
                             pegado con comas para que se siga leyendo de un
                             vistazo cuál fue el servicio por el que vino. */}
@@ -3079,13 +3279,15 @@ export default function Appointments() {
                       Editar
                     </button>
                   )}
-                  {/* AGENDADA DESDE EL CHAT: volver a la conversación en un
-                      clic. Mismo acceso que la bandeja (ver `puedeVerChats`). */}
-                  {puedeVerChats && detailModal.conversation && (
+                  {/* IR AL CHAT: de la cita agendada desde el chat (`conversation`)
+                      o del paciente con teléfono — abre (o crea) su conversación,
+                      en pestaña nueva (ver `abrirChatDeCita`). */}
+                  {puedeVerChats
+                    && (detailModal.conversation || detailModal.patient?.phone || detailModal.patient?.whatsapp) && (
                     <button
                       type="button"
-                      onClick={() => navigate(`/chats?chat=${detailModal.conversation}`)}
-                      title="Abrir el chat de este paciente"
+                      onClick={() => abrirChatDeCita(detailModal)}
+                      title="Abrir el chat de este paciente en una pestaña nueva"
                       className="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 hover:text-emerald-800 bg-transparent border-none cursor-pointer p-0"
                     >
                       <HiOutlineChatBubbleLeftRight className="w-3.5 h-3.5" />

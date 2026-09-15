@@ -40,8 +40,10 @@ async function seed() {
     });
   const sofia = await crear('Sofia', 'call_center');   // la que cierra la cita
   const jaime = await crear('Jaime', 'call_center');   // el que la escribe
+  const mk = await crear('Mkt', 'marketing');          // también aparece en la lista
+  const caja = await crear('Caja', 'cajero');          // ya NO aparece (sep-2026)
   const doc = await crear('DocA', 'doctor');           // no agenda
-  return { clinicId, userId, patient, sofia, jaime, doc };
+  return { clinicId, userId, patient, sofia, jaime, mk, caja, doc };
 }
 
 /**
@@ -123,8 +125,8 @@ test('quien no agenda tampoco puede acreditar la cita a otro', async () => {
   assert.equal(r.statusCode, 403, JSON.stringify(r.payload));
 });
 
-test('el selector de «agendada por» ofrece a quien agenda, no a quien atiende', async () => {
-  const { clinicId, sofia, jaime, doc } = await seed();
+test('el selector de «agendada por» ofrece SOLO call center y marketing (sep-2026)', async () => {
+  const { clinicId, sofia, jaime, mk, caja, doc } = await seed();
 
   const r = await H.runController(
     users.getSchedulers,
@@ -132,8 +134,12 @@ test('el selector de «agendada por» ofrece a quien agenda, no a quien atiende'
   );
   assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
   const nombres = r.payload.map((u) => u.name).sort();
-  assert.deepEqual(nombres, ['Jaime', 'Sofia']);
+  // Caja y doctor quedan fuera: el desplegable no ofrecía a la gente correcta
+  // (aparecía TODO el mundo). Ahora es la bandeja del CRM.
+  assert.deepEqual(nombres, ['Jaime', 'Mkt', 'Sofia']);
   assert.equal(r.payload.find((u) => u.name === 'Sofia').role, 'call_center');
+  assert.equal(r.payload.some((u) => String(u._id) === String(mk._id)), true, 'marketing sale');
+  assert.equal(r.payload.some((u) => String(u._id) === String(caja._id)), false, 'caja ya no sale');
   assert.equal(r.payload.some((u) => String(u._id) === String(doc._id)), false);
 });
 

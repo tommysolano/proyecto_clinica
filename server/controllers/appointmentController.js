@@ -161,205 +161,239 @@ const filtroSucursalCita = (req) => {
   return { clinic: { $in: [req.clinicId, ...visibles] } };
 };
 
+/**
+ * LA CONSULTA DE LA AGENDA, en un solo sitio.
+ *
+ * La usan DOS lectores: la lista completa (getAppointments, que luego puebla
+ * pacientes, doctores y servicios) y el resumen del CALENDARIO
+ * (getCalendarSummary, que solo quiere día y estado de cada cita). Que ambos
+ * compartan la MISMA construcción es lo que hace que el calendario y la lista
+ * del día digan siempre lo mismo: un mes se cuenta con los mismos filtros con
+ * los que después se abre el día.
+ *
+ * Extraído de getAppointments tal cual estaba (incluidos los comentarios de
+ * cada regla, que siguen valiendo para los dos).
+ */
+async function construirQueryAgenda(req, {
+  startDate,
+  endDate,
+  doctor,
+  status,
+  createdBy,
+  isFirstVisit,
+  service,
+  fromTime,
+  toTime,
+  room,
+  patient,
+  origin,
+  q,
+  clinic: clinicParam,
+}) {
+  // Conjunto de sucursales a consultar:
+  //  - `clinic=all` → VISTA UNIFICADA: todas las sucursales a las que el usuario
+  //    tiene acceso (superadmin = todas). Así ninguna cita queda "escondida" por
+  //    la sucursal activa (p.ej. una cita creada con "sucursal destino" distinta).
+  //  - `clinic=<id>` (distinto al activo, con acceso) → esa sucursal (call center
+  //    agendando para otra sede).
+  //  - por defecto → la sucursal activa del usuario.
+  /**
+   * QUIÉN VE LA AGENDA DE TODAS LAS SUCURSALES (`sedesVisibles === null`).
+   *
+   * Sale de `sucursalesVisibles`, la MISMA función que usa `filtroSucursalCita`
+   * para las escrituras: leer y escribir tienen que responder igual, o la cita
+   * se ve en la lista y ningún botón la encuentra. Son dos motivos:
+   *
+   *  · POR EL ROL — mostrador, administración y call center. El cajero está
+   *    asignado a UNA sede y con eso el filtro «Todas las sucursales» no le
+   *    salía nunca; pero quien atiende el mostrador y el teléfono necesita ver
+   *    dónde está agendado un paciente sin preguntar por otra sede.
+   *  · POR LA PERSONA — quien está marcado como «trabaja en todas las
+   *    sucursales». Es el caso de la enfermera que cubre dos sedes: sus citas
+   *    del día estaban agendadas en la otra y la agenda le salía VACÍA.
+   *
+   * Al resto —un doctor o un enfermero de una sola sede— no le cambia nada:
+   * sigue viendo las sucursales que tiene asignadas.
+   */
+  const sedesVisibles = sucursalesVisibles(req);
+  let clinicScope; // valor para query.clinic; null = sin filtro (todas)
+  if (clinicParam === 'all') {
+    clinicScope = sedesVisibles === null ? null : { $in: sedesVisibles };
+  } else if (clinicParam && String(clinicParam) !== String(req.clinicId)) {
+    clinicScope = alcanzaSucursal(req, clinicParam) ? clinicParam : req.clinicId;
+  } else {
+    clinicScope = req.clinicId;
+  }
+  /**
+   * EL ENFERMERO MIRA LA SEDE QUE ELIGIÓ AL ENTRAR (sep-2026).
+   *
+   * La persona marcada «en todas las sucursales» veía aquí las citas de
+   * enfermería de TODAS las sedes — y una bandeja mezclando Central con
+   * Extensión no se puede cuadrar: no se sabe dónde está el paciente. Ahora
+   * manda la sucursal del token, que es la que seleccionó en el login (y la
+   * que cambia desde el header); las citas de las demás ni aparecen, igual
+   * que sus avisos (ver notificarRol). Al enfermero de una sola sede no le
+   * cambia nada: ya era su sede.
+   */
+  if (req.role === 'enfermero' && req.clinicId) {
+    clinicScope = req.clinicId;
+  }
+  /**
+   * ODONTOLOGÍA VE TODA LA AGENDA DE SU SUCURSAL (sep-2026).
+   *
+   * Al odontólogo se le abrió la agenda como a mostrador —ve TODAS las citas
+   * agendadas, no solo las suyas—, pero con UNA condición: únicamente las de
+   * la sucursal de odontología. El filtro por turno (`filtroCitasDelDoctor`,
+   * más abajo) no le aplica: ese recorte es para el doctor de especialidad
+   * que solo mira SU cola, y a odontología se le pidió lo contrario.
+   *
+   * La sucursal se resuelve por su NOMBRE (ver `sucursalOdontologia` en
+   * utils/clinicScope.js, que es un dato, no un campo del modelo). Si no
+   * existe una sede llamada odontología, NO se abre nada: se conserva el
+   * comportamiento de antes —solo sus turnos— en vez de regalar la agenda
+   * completa a ciegas.
+   */
+  let odontoVeTodo = false;
+  // Odontología y odontología neurofocal comparten la sucursal de odontología
+  // y las dos miran la agenda como mostrador (ver el bloque de arriba).
+  if (['odontologia', 'odontologia_neurofocal'].includes(req.role)) {
+    const sedeOdonto = await sucursalOdontologia();
+    if (sedeOdonto) {
+      clinicScope = String(sedeOdonto._id);
+      odontoVeTodo = true;
+    }
+  }
+  const query = {};
+  if (clinicScope !== null) query.clinic = clinicScope;
+
+  if (startDate && endDate) {
+    /**
+     * EL RANGO ES DE DÍAS ENTEROS, POR LAS DOS PUNTAS.
+     *
+     * `parseLocalDate` devuelve las 12:00 (así se guarda `date`), y el final
+     * se estiraba a las 23:59 pero el principio se quedaba a mediodía. Con las
+     * citas agendadas daba igual —todas caen justo en las 12:00— pero una cita
+     * registrada con la hora dentro del campo del día, como las atenciones sin
+     * cita de la MAÑANA, quedaba por debajo del corte: existía y no salía.
+     */
+    const start = parseLocalDate(startDate);
+    const end = parseLocalDate(endDate);
+    if (start) start.setHours(0, 0, 0, 0);
+    if (end) end.setHours(23, 59, 59, 999);
+    query.date = { $gte: start, $lte: end };
+  }
+  if (doctor) {
+    // UNO o VARIOS separados por coma: la agenda filtra por varios médicos a la
+    // vez (sep-2026, igual que el filtro de servicio).
+    const doctores = String(doctor).split(',').map((s) => s.trim()).filter(Boolean);
+    query.doctor = doctores.length === 1 ? doctores[0] : { $in: doctores };
+  }
+  if (status) query.status = status;
+  if (createdBy) query.createdBy = createdBy;
+  if (isFirstVisit === 'true') query.isFirstVisit = true;
+  else if (isFirstVisit === 'false') query.isFirstVisit = { $ne: true };
+  if (service) {
+    /**
+     * EL FILTRO DE SERVICIO MIRA EL CATÁLOGO DE LA AGENDA, no el inventario.
+     *
+     * El listado que el usuario elige al agendar una cita es
+     * `appointment-service-items`; el inventario ni se usa para esto. Filtrar
+     * por `services.product` —el arreglo legado— dejaba la agenda sin ninguna
+     * cita aunque el servicio estuviera delante en cada tarjeta: la cita de
+     * hoy guarda su servicio en `serviceItem`, no en el inventario.
+     *
+     * Se mantiene el filtro legado como $or para no perder las citas viejas
+     * que solo tienen el producto del inventario.
+     *
+     * VARIOS A LA VEZ (sep-2026): el cliente manda los ids separados por coma;
+     * cada uno se expande a sus tres formas (serviceItem, serviceName, legado)
+     * y cualquiera de ellas casa.
+     */
+    const servicios = String(service).split(',').map((s) => s.trim()).filter(Boolean);
+    const nombres = servicios.length > 1
+      ? await AppointmentServiceItem.find({ _id: { $in: servicios } }).select('name').lean()
+      : [];
+    const nombreDe = new Map(nombres.map((n) => [String(n._id), n.name]));
+    query.$or = servicios.flatMap((id) => [
+      { serviceItem: id },
+      // El nombre guardado como snapshot cubre las citas viejas cuyo catálogo
+      // se renombró o borró después (mismo respaldo que el filtro de uno).
+      ...(nombreDe.has(id) ? [{ serviceName: nombreDe.get(id) }] : []),
+      { 'services.product': id },
+    ]);
+  }
+  if (room) query.room = room;
+  if (patient) query.patient = patient;
+  if (origin) query.origin = origin;
+  // Filtro por rango de horario (HH:MM)
+  if (fromTime && toTime) {
+    query.startTime = { $gte: fromTime, $lte: toTime };
+  } else if (fromTime) {
+    query.startTime = { $gte: fromTime };
+  } else if (toTime) {
+    query.startTime = { $lte: toTime };
+  }
+
+  /**
+   * LOS FILTROS EXTRA NO SE PISAN ENTRE ELLOS.
+   *
+   * El filtro de doctor y el de servicio traen cada uno su `$or`: con
+   * `Object.assign` el segundo pisaba al primero y «Filtrar por servicio»
+   * devolvía citas del doctor sin respetar el servicio (o al revés, según el
+   * orden). Ambos van dentro de un `$and` para que se acumulen.
+   */
+  const extras = [];
+  // Odontología con su sucursal resuelta ve TODO el día de la sede (ver el
+  // bloque de arriba): el filtro por turno no le aplica.
+  if (isDoctorRole(req.role) && !odontoVeTodo) {
+    // Su turno VIGENTE o uno que ya atendió: al doctor que va segundo la cita
+    // no le aparece hasta que el primero termine (ver filtroCitasDelDoctor).
+    extras.push(filtroCitasDelDoctor(req.user._id));
+  }
+  // El call center puede ver TODAS las citas agendadas (no solo las suyas).
+  if (req.role === 'enfermero') {
+    extras.push(await filtroEnfermeria(req));
+  }
+  if (extras.length) {
+    Object.assign(query, extras.length === 1 ? extras[0] : { $and: extras });
+  }
+
+  /**
+   * Búsqueda libre por paciente (nombre, apellido, cédula o teléfono).
+   *
+   * POR PALABRAS SUELTAS y sin tildes (ver `utils/nameSearch.js`): «tommy
+   * solano» encuentra a «TOMMY NELSON SOLANO PEÑAFIEL», que con la expresión
+   * regular del texto tal cual no aparecía. El teléfono va aparte, por
+   * `phoneSearchRegex`, que compara dígitos y no se puede partir en palabras.
+   */
+  if (q && String(q).trim()) {
+    const term = String(q).trim();
+    const porNombre = nameSearchFilter(term, ['firstName', 'lastName', 'cedula']);
+    const telefono = phoneSearchRegex(term);
+    const alternativas = [
+      ...(porNombre ? [porNombre] : []),
+      ...(telefono ? [{ phone: telefono }, { whatsapp: telefono }] : []),
+    ];
+    const matched = await Patient.find({
+      ...(clinicScope !== null ? { clinic: clinicScope } : {}),
+      // Sin ninguna alternativa (texto de solo signos) no debe casar nada, y
+      // un `$or: []` lo rechaza mongo.
+      ...(alternativas.length ? { $or: alternativas } : { _id: null }),
+    }).select('_id');
+    const ids = matched.map((p) => p._id);
+    if (query.patient) {
+      // Si ya filtró por paciente concreto, lo respetamos.
+    } else {
+      query.patient = { $in: ids };
+    }
+  }
+
+  return query;
+}
+
 exports.getAppointments = async (req, res) => {
   try {
-    const {
-      startDate,
-      endDate,
-      doctor,
-      status,
-      createdBy,
-      isFirstVisit,
-      service,
-      fromTime,
-      toTime,
-      room,
-      patient,
-      origin,
-      q,
-      clinic: clinicParam,
-    } = req.query;
-    // Conjunto de sucursales a consultar:
-    //  - `clinic=all` → VISTA UNIFICADA: todas las sucursales a las que el usuario
-    //    tiene acceso (superadmin = todas). Así ninguna cita queda "escondida" por
-    //    la sucursal activa (p.ej. una cita creada con "sucursal destino" distinta).
-    //  - `clinic=<id>` (distinto al activo, con acceso) → esa sucursal (call center
-    //    agendando para otra sede).
-    //  - por defecto → la sucursal activa del usuario.
-    /**
-     * QUIÉN VE LA AGENDA DE TODAS LAS SUCURSALES (`sedesVisibles === null`).
-     *
-     * Sale de `sucursalesVisibles`, la MISMA función que usa `filtroSucursalCita`
-     * para las escrituras: leer y escribir tienen que responder igual, o la cita
-     * se ve en la lista y ningún botón la encuentra. Son dos motivos:
-     *
-     *  · POR EL ROL — mostrador, administración y call center. El cajero está
-     *    asignado a UNA sede y con eso el filtro «Todas las sucursales» no le
-     *    salía nunca; pero quien atiende el mostrador y el teléfono necesita ver
-     *    dónde está agendado un paciente sin preguntar por otra sede.
-     *  · POR LA PERSONA — quien está marcado como «trabaja en todas las
-     *    sucursales». Es el caso de la enfermera que cubre dos sedes: sus citas
-     *    del día estaban agendadas en la otra y la agenda le salía VACÍA.
-     *
-     * Al resto —un doctor o un enfermero de una sola sede— no le cambia nada:
-     * sigue viendo las sucursales que tiene asignadas.
-     */
-    const sedesVisibles = sucursalesVisibles(req);
-    let clinicScope; // valor para query.clinic; null = sin filtro (todas)
-    if (clinicParam === 'all') {
-      clinicScope = sedesVisibles === null ? null : { $in: sedesVisibles };
-    } else if (clinicParam && String(clinicParam) !== String(req.clinicId)) {
-      clinicScope = alcanzaSucursal(req, clinicParam) ? clinicParam : req.clinicId;
-    } else {
-      clinicScope = req.clinicId;
-    }
-    /**
-     * EL ENFERMERO MIRA LA SEDE QUE ELIGIÓ AL ENTRAR (sep-2026).
-     *
-     * La persona marcada «en todas las sucursales» veía aquí las citas de
-     * enfermería de TODAS las sedes — y una bandeja mezclando Central con
-     * Extensión no se puede cuadrar: no se sabe dónde está el paciente. Ahora
-     * manda la sucursal del token, que es la que seleccionó en el login (y la
-     * que cambia desde el header); las citas de las demás ni aparecen, igual
-     * que sus avisos (ver notificarRol). Al enfermero de una sola sede no le
-     * cambia nada: ya era su sede.
-     */
-    if (req.role === 'enfermero' && req.clinicId) {
-      clinicScope = req.clinicId;
-    }
-    /**
-     * ODONTOLOGÍA VE TODA LA AGENDA DE SU SUCURSAL (sep-2026).
-     *
-     * Al odontólogo se le abrió la agenda como a mostrador —ve TODAS las citas
-     * agendadas, no solo las suyas—, pero con UNA condición: únicamente las de
-     * la sucursal de odontología. El filtro por turno (`filtroCitasDelDoctor`,
-     * más abajo) no le aplica: ese recorte es para el doctor de especialidad
-     * que solo mira SU cola, y a odontología se le pidió lo contrario.
-     *
-     * La sucursal se resuelve por su NOMBRE (ver `sucursalOdontologia` en
-     * utils/clinicScope.js, que es un dato, no un campo del modelo). Si no
-     * existe una sede llamada odontología, NO se abre nada: se conserva el
-     * comportamiento de antes —solo sus turnos— en vez de regalar la agenda
-     * completa a ciegas.
-     */
-    let odontoVeTodo = false;
-    // Odontología y odontología neurofocal comparten la sucursal de odontología
-    // y las dos miran la agenda como mostrador (ver el bloque de arriba).
-    if (['odontologia', 'odontologia_neurofocal'].includes(req.role)) {
-      const sedeOdonto = await sucursalOdontologia();
-      if (sedeOdonto) {
-        clinicScope = String(sedeOdonto._id);
-        odontoVeTodo = true;
-      }
-    }
-    const query = {};
-    if (clinicScope !== null) query.clinic = clinicScope;
-
-    if (startDate && endDate) {
-      /**
-       * EL RANGO ES DE DÍAS ENTEROS, POR LAS DOS PUNTAS.
-       *
-       * `parseLocalDate` devuelve las 12:00 (así se guarda `date`), y el final
-       * se estiraba a las 23:59 pero el principio se quedaba a mediodía. Con las
-       * citas agendadas daba igual —todas caen justo en las 12:00— pero una cita
-       * registrada con la hora dentro del campo del día, como las atenciones sin
-       * cita de la MAÑANA, quedaba por debajo del corte: existía y no salía.
-       */
-      const start = parseLocalDate(startDate);
-      const end = parseLocalDate(endDate);
-      if (start) start.setHours(0, 0, 0, 0);
-      if (end) end.setHours(23, 59, 59, 999);
-      query.date = { $gte: start, $lte: end };
-    }
-    if (doctor) query.doctor = doctor;
-    if (status) query.status = status;
-    if (createdBy) query.createdBy = createdBy;
-    if (isFirstVisit === 'true') query.isFirstVisit = true;
-    else if (isFirstVisit === 'false') query.isFirstVisit = { $ne: true };
-    if (service) {
-      /**
-       * EL FILTRO DE SERVICIO MIRA EL CATÁLOGO DE LA AGENDA, no el inventario.
-       *
-       * El listado que el usuario elige al agendar una cita es
-       * `appointment-service-items`; el inventario ni se usa para esto. Filtrar
-       * por `services.product` —el arreglo legado— dejaba la agenda sin ninguna
-       * cita aunque el servicio estuviera delante en cada tarjeta: la cita de
-       * hoy guarda su servicio en `serviceItem`, no en el inventario.
-       *
-       * Se mantiene el filtro legado como $or para no perder las citas viejas
-       * que solo tienen el producto del inventario.
-       */
-      query.$or = [
-        { serviceItem: service },
-        { serviceName: (await AppointmentServiceItem.findById(service).select('name').lean())?.name },
-        { 'services.product': service },
-      ];
-    }
-    if (room) query.room = room;
-    if (patient) query.patient = patient;
-    if (origin) query.origin = origin;
-    // Filtro por rango de horario (HH:MM)
-    if (fromTime && toTime) {
-      query.startTime = { $gte: fromTime, $lte: toTime };
-    } else if (fromTime) {
-      query.startTime = { $gte: fromTime };
-    } else if (toTime) {
-      query.startTime = { $lte: toTime };
-    }
-
-    /**
-     * LOS FILTROS EXTRA NO SE PISAN ENTRE ELLOS.
-     *
-     * El filtro de doctor y el de servicio traen cada uno su `$or`: con
-     * `Object.assign` el segundo pisaba al primero y «Filtrar por servicio»
-     * devolvía citas del doctor sin respetar el servicio (o al revés, según el
-     * orden). Ambos van dentro de un `$and` para que se acumulen.
-     */
-    const extras = [];
-    // Odontología con su sucursal resuelta ve TODO el día de la sede (ver el
-    // bloque de arriba): el filtro por turno no le aplica.
-    if (isDoctorRole(req.role) && !odontoVeTodo) {
-      // Su turno VIGENTE o uno que ya atendió: al doctor que va segundo la cita
-      // no le aparece hasta que el primero termine (ver filtroCitasDelDoctor).
-      extras.push(filtroCitasDelDoctor(req.user._id));
-    }
-    // El call center puede ver TODAS las citas agendadas (no solo las suyas).
-    if (req.role === 'enfermero') {
-      extras.push(await filtroEnfermeria(req));
-    }
-    if (extras.length) {
-      Object.assign(query, extras.length === 1 ? extras[0] : { $and: extras });
-    }
-
-    /**
-     * Búsqueda libre por paciente (nombre, apellido, cédula o teléfono).
-     *
-     * POR PALABRAS SUELTAS y sin tildes (ver `utils/nameSearch.js`): «tommy
-     * solano» encuentra a «TOMMY NELSON SOLANO PEÑAFIEL», que con la expresión
-     * regular del texto tal cual no aparecía. El teléfono va aparte, por
-     * `phoneSearchRegex`, que compara dígitos y no se puede partir en palabras.
-     */
-    if (q && String(q).trim()) {
-      const term = String(q).trim();
-      const porNombre = nameSearchFilter(term, ['firstName', 'lastName', 'cedula']);
-      const telefono = phoneSearchRegex(term);
-      const alternativas = [
-        ...(porNombre ? [porNombre] : []),
-        ...(telefono ? [{ phone: telefono }, { whatsapp: telefono }] : []),
-      ];
-      const matched = await Patient.find({
-        ...(clinicScope !== null ? { clinic: clinicScope } : {}),
-        // Sin ninguna alternativa (texto de solo signos) no debe casar nada, y
-        // un `$or: []` lo rechaza mongo.
-        ...(alternativas.length ? { $or: alternativas } : { _id: null }),
-      }).select('_id');
-      const ids = matched.map((p) => p._id);
-      if (query.patient) {
-        // Si ya filtró por paciente concreto, lo respetamos.
-      } else {
-        query.patient = { $in: ids };
-      }
-    }
+    const query = await construirQueryAgenda(req, req.query);
 
     const appointments = await Appointment.find(query)
       .populate('patient', POPULATE_PATIENT)
@@ -377,6 +411,53 @@ exports.getAppointments = async (req, res) => {
   } catch (error) {
     console.error('[getAppointments] ERROR:', error);
     res.status(500).json({ message: 'Error al obtener citas', error: error.message, stack: error.stack });
+  }
+};
+
+/**
+ * RESUMEN DEL CALENDARIO: lo mínimo que esa vista necesita.
+ *
+ * La vista de calendario del mes NO pinta citas: pinta POR DÍA el total y los
+ * contadores por estado (pendiente / asistida / no asistió — mismo criterio que
+ * siempre). Antes pedía `GET /appointments` del mes entero, con paciente,
+ * doctor, turnos, sucursal y servicios POBLADOS, para contar en el navegador:
+ * con un mes cargado la petición se llevaba megas de JSON y la agenda tardaba
+ * una eternidad en abrirse.
+ *
+ * Aquí se leen SOLO dos campos por cita (`date` y `status`) y se agrupa en el
+ * servidor. Mismos filtros que la lista (ver `construirQueryAgenda`), así que
+ * el número de cada celda cuadra con el día que se abre después.
+ */
+exports.getCalendarSummary = async (req, res) => {
+  try {
+    const query = await construirQueryAgenda(req, req.query);
+    const filas = await Appointment.find(query).select('date status').lean();
+
+    // La fecha se guarda al mediodía LOCAL (ver parseLocalDate): contar por
+    // año/mes/día del objeto Date en el huso del servidor es exactamente el día
+    // que se guarda, sin depender de cómo MongoDB serialice en UTC.
+    const ymdDe = (d) => (d instanceof Date
+      ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      : String(d || '').slice(0, 10));
+    const dias = new Map();
+    for (const a of filas) {
+      const key = ymdDe(a.date);
+      if (!key) continue;
+      let dia = dias.get(key);
+      if (!dia) {
+        dia = { date: key, total: 0, pendiente: 0, asistida: 0, no_asistio: 0 };
+        dias.set(key, dia);
+      }
+      dia.total += 1;
+      const s = a.status;
+      if (s === 'asistida' || s === 'completada') dia.asistida += 1;
+      else if (s === 'no_asistio') dia.no_asistio += 1;
+      else if (s !== 'cancelada') dia.pendiente += 1;
+    }
+    res.json([...dias.values()].sort((x, y) => x.date.localeCompare(y.date)));
+  } catch (error) {
+    console.error('[getCalendarSummary] ERROR:', error);
+    res.status(500).json({ message: 'Error al resumir el calendario', error: error.message });
   }
 };
 
@@ -1192,8 +1273,12 @@ exports.updateAppointment = async (req, res) => {
      * al cobrar— tiene su propia puerta: `PATCH /appointments/:id/service-value`
      * (`updateServiceAndValue`), que solo toca esos campos. El administrador
      * sigue entrando por aquí para todo lo demás.
+     *
+     * MARKETING TAMBIÉN (sep-2026): el rol edita citas "como administración" —
+     * es quien ya las elimina (`DELETE /:id`)—, así que el bloqueo de las
+     * cerradas no le aplica.
      */
-    if (existing.status === 'completada' && !isAdmin) {
+    if (existing.status === 'completada' && !isAdmin && req.role !== 'marketing') {
       return res.status(403).json({
         message: 'Una cita completada solo admite corregir el servicio y el valor.',
         code: 'COMPLETED_ONLY_SERVICE_VALUE',

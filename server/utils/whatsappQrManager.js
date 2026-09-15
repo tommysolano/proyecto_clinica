@@ -106,6 +106,13 @@ const MAX_MISSES = 4;
 // EXACTAMENTE los mismos mensajes o la comparación daría falsos positivos.
 const CONTENT_TYPES = ['chat', 'image', 'video', 'audio', 'ptt', 'document', 'sticker', 'location', 'vcard', 'multi_vcard'];
 
+// Tipos que TRAEN ARCHIVO (el resto de CONTENT_TYPES son texto que se describe).
+// Si uno de estos no logra bajarse —o WhatsApp Web ni siquiera lo tiene cargado
+// en el instante del evento— el mensaje se guarda IGUAL con su tarjeta «no
+// disponible» y el botón de reintentar: un audio o un archivo que no aparece en
+// el chat es exactamente el síntoma que esto evita.
+const MEDIA_TYPES = new Set(['image', 'video', 'audio', 'ptt', 'document', 'sticker']);
+
 // Desfase que se tolera entre el mensaje entrante más nuevo que WhatsApp Web
 // tiene en memoria y el último que llegamos a guardar. Cubre el tiempo normal de
 // ingesta (descargar la media de un mensaje puede tardar hasta 45 s).
@@ -514,10 +521,13 @@ function mapQrMediaType(t) {
   return 'document';
 }
 
-// Tope de bytes de una media entrante que se guarda en Mongo: el mensaje lleva el
-// data URL base64 embebido y un documento BSON no puede pasar de 16 MB. Por encima
-// de esto el mensaje se guarda SIN los bytes (pero se ve en el chat qué llegó).
-const MAX_QR_MEDIA_BYTES = 8 * 1024 * 1024;
+// Tope de bytes de una media entrante que se guarda. Los bytes ya NO van dentro
+// del mensaje: la ingesta los externaliza a disco (chatController → chatMedia →
+// mediaStore), así que el techo del BSON de 16 MB de Mongo ya no manda. El tope
+// real es el de WhatsApp: 100 MB por archivo. Por encima de esto el mensaje se
+// guarda SIN los bytes (pero se ve en el chat qué llegó). Antes era 8 MB y un
+// video entrante de más quedaba "demasiado grande para descargarlo".
+const MAX_QR_MEDIA_BYTES = 100 * 1024 * 1024;
 
 // Reintentos de descarga. WhatsApp Web emite el mensaje ANTES de terminar de bajar
 // la media (mediaData.mediaStage = 'FETCHING') y whatsapp-web.js devuelve
@@ -888,9 +898,19 @@ async function extractQrMedia(msg, client, { retryDelays = MEDIA_RETRY_DELAYS } 
     // Plan B: la vía de la propia app (ver downloadQrMediaInPage). Se intenta en
     // CADA vuelta porque cuando WhatsApp cambia sus funciones internas el camino
     // de la librería falla SIEMPRE, y sin esto no entraría ni un archivo.
+    // TODO dentro de try: estas vías tocan funciones internas del navegador y
+    // pueden LANZAR (no solo devolver error). Si se escapaba la excepción, el
+    // mensaje entero se perdía — el audio o el archivo nunca aparecían en el
+    // chat —. Convertirla en `lastError` deja que la siguiente vuelta (o el
+    // «no disponible» final) haga su trabajo.
     if (client && (serializedId || hash)) {
-      // eslint-disable-next-line no-await-in-loop
-      const alt = await downloadQrMediaInPage(client, serializedId, hash);
+      let alt = null;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        alt = await downloadQrMediaInPage(client, serializedId, hash);
+      } catch (e) {
+        alt = { ok: false, error: e.message || String(e) };
+      }
       if (alt.ok && alt.data) {
         console.log('[whatsapp-qr media] descargada por la vía alterna (%s) type=%s', alt.via, type);
         return pack(alt.data, alt.mimetype, alt.filename, alt.filesize);
@@ -899,11 +919,22 @@ async function extractQrMedia(msg, client, { retryDelays = MEDIA_RETRY_DELAYS } 
 
       // Plan C — el definitivo: bajar el archivo CIFRADO del CDN de WhatsApp y
       // descifrarlo aquí. No depende de nada interno del navegador.
-      // eslint-disable-next-line no-await-in-loop
-      const keys = await fetchQrMediaKeys(client, serializedId, hash);
-      if (keys && keys.directPath && keys.mediaKey) {
+      let keys = null;
+      try {
         // eslint-disable-next-line no-await-in-loop
-        const direct = await downloadAndDecryptWaMedia(keys);
+        keys = await fetchQrMediaKeys(client, serializedId, hash);
+      } catch (e) {
+        keys = null;
+        lastError = `${lastError} | CDN: ${e.message || String(e)}`;
+      }
+      if (keys && keys.directPath && keys.mediaKey) {
+        let direct = null;
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          direct = await downloadAndDecryptWaMedia(keys);
+        } catch (e) {
+          direct = { ok: false, error: e.message || String(e) };
+        }
         if (direct.ok) {
           console.log('[whatsapp-qr media] descargada y descifrada desde el CDN type=%s bytes=%d', type, direct.buffer.length);
           return pack(
@@ -1260,7 +1291,33 @@ async function ingestIncomingQrMessage(msg, client, accountId) {
   const phone = await resolveQrPhone(client, from, msg);
   if (!phone) return false;
 
-  const media = await extractQrMedia(msg, client);
+  // La media se baja aquí (hasta 45 s de reintentos). Si algo falla, el mensaje
+  // SE GUARDA IGUAL: primero se intentó bajarse el archivo, y si WhatsApp Web
+  // no lo entrega el agente ve la tarjeta «no disponible» con el botón de
+  // reintentar — no una burbuja vacía ni un mensaje que desapareció.
+  let media = null;
+  try {
+    // eslint-disable-next-line no-await-in-loop
+    media = await extractQrMedia(msg, client);
+  } catch (e) {
+    console.error('[whatsapp-qr media] error inesperado extrayendo la media type=%s: %s', msg.type, e.message);
+    media = null;
+  }
+  // Un mensaje de tipo media SIN bytes (p.ej. WhatsApp Web emite el evento con
+  // `hasMedia` en false, o el rescate relee un mensaje cuya media ya no está):
+  // antes caía en el `return false` de abajo — un audio o un ARCHIVO que el
+  // contacto mandó desaparecía del chat sin dejar rastro. Ahora se guarda como
+  // «no disponible», con su tipo y su botón de reintentar.
+  if (!media && MEDIA_TYPES.has(msg.type)) {
+    media = {
+      type: mapQrMediaType(msg.type),
+      caption: msg.body || '',
+      filename: msg._data?.filename || '',
+      size: Number(msg._data?.size) || 0,
+      unavailable: true,
+      error: 'No se pudo descargar el archivo de WhatsApp.',
+    };
+  }
   // Ubicación / tarjeta de contacto: no traen texto ni media, pero SÍ son un
   // mensaje real del paciente; se describen en vez de descartarse (y en el
   // vcard se muestra el nombre, no el volcado crudo del contacto).

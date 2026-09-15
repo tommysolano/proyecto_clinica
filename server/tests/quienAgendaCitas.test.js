@@ -9,6 +9,8 @@
  * Lo que fija:
  *  · odontología SÍ (sep-2026, a petición del usuario): el paciente sale del
  *    sillón con el control a quince días y quien lo sabe es quien lo atendió;
+ *  · marketing SÍ (sep-2026): ya editaba y borraba citas, pero la CREACIÓN
+ *    obligaba a pedírsela a otro;
  *  · y va enumerada, NO por 'doctor' — porque `requireRole` expande ese rol a
  *    TODAS las especialidades, y agendar no se le abrió al resto.
  */
@@ -55,11 +57,16 @@ test('mostrador, administración y call center siguen agendando', () => {
   }
 });
 
+test('marketing puede agendar citas (sep-2026)', () => {
+  const { pasó } = dejaPasar('marketing');
+  assert.equal(pasó, true, 'marketing entra a POST /appointments');
+});
+
 test('agendar NO se le abrió a las demás especialidades ni al resto', () => {
   // 'doctor' no está en la lista de la ruta, así que la expansión de
   // `requireRole` no entra en juego: cada especialidad va por su nombre.
   for (const role of ['doctor', 'optica', 'podologia', 'ginecologia', 'cosmetologia',
-    'cardiologia', 'terapeuta', 'enfermero', 'marketing', 'contabilidad']) {
+    'cardiologia', 'terapeuta', 'enfermero', 'contabilidad']) {
     const { pasó, estado } = dejaPasar(role);
     assert.equal(pasó, false, `${role} NO debería poder agendar`);
     assert.equal(estado, 403);
