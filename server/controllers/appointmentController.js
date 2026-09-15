@@ -2983,6 +2983,10 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
           title: 'Cita asignada',
           body: cuerpo,
           url: urlDeAtencion(apt.patient, apt._id),
+          // DE QUÉ CITA HABLA: es el sello que permite apagar el aviso en
+          // cuanto ese doctor atiende (ver filtroDeAvisosVivos en
+          // notificationController) y que no quede sonando para siempre.
+          meta: { appointment: apt._id },
         });
       }
       // Cita de días pasados: el trabajo ya está en la bandeja de la agenda.
@@ -3341,6 +3345,9 @@ exports.nurseComplete = async (req, res) => {
           // El doctor abre por la ficha (antecedentes antes de explorar);
           // enfermería, directa a los seguimientos, que es donde trabaja.
           url: urlDeAtencion(apt.patient, apt._id, siguiente.kind === 'enfermeria' ? 'seguimientos' : 'ficha'),
+          // El sello de la cita: apaga el aviso en cuanto quien lo recibe
+          // atiende (ver filtroDeAvisosVivos en notificationController).
+          meta: { appointment: apt._id },
         }).catch(() => {});
       } else {
         // El socket SIEMPRE (refresca la agenda de todos); la campana solo si

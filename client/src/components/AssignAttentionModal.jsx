@@ -832,13 +832,25 @@ export default function AssignAttentionModal({
                           )}
                           <button
                             type="button"
-                            onClick={() =>
+                            onClick={() => {
                               editarPaso(idx, {
                                 serum: sueroDelServicio ? bolsaDelServicio() : sueroVacio(),
                                 serumTocado: true,
                                 serumMergeIntoService: !!sueroDelServicio,
-                              })
-                            }
+                              });
+                              /**
+                               * EL CATÁLOGO SE ABRE DE UNA VEZ.
+                               *
+                               * Antes solo se preparaba la bolsa en el estado y
+                               * el editor aparecía debajo: con la bolsa vacía
+                               * había versiones donde el clic «no hacía nada»
+                               * visible y el usuario lo leía como un botón
+                               * roto. Abrir el catálogo de una vez da una
+                               * respuesta inmediata, y si lo cancela se queda
+                               * el editor con la preparación a la vista.
+                               */
+                              setCatalogoDe(idx);
+                            }}
                             className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-700 bg-transparent border-none cursor-pointer p-0"
                           >
                             <HiOutlineBeaker className="w-4 h-4" />

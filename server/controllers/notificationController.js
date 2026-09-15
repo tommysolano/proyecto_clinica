@@ -71,7 +71,7 @@ async function baseFilter(req) {
 }
 
 /**
- * LOS AVISOS DE ENFERMERÍA SOLO SUENAN MIENTRAS LA CITA ESPERA.
+ * LOS AVISOS DE ATENCIÓN SOLO SUENAN MIENTRAS LA CITA ESPERA.
  *
  * La campana acumulaba avisos de citas de días pasados —atendidas, canceladas,
  * marcadas no-show— porque casi nada en el sistema los apagaba: el único
@@ -79,34 +79,58 @@ async function baseFilter(req) {
  * resultado: decenas de notificaciones muertas que aturden a quien las recibe.
  *
  * La regla es la de la propia agenda (ver `bandejaDe` en el cliente): el aviso
- * vive SOLO mientras su cita sigue esperando a enfermería —
+ * vive SOLO mientras su cita sigue esperando a quien la atiende —
  *   · la cita está pendiente/confirmada/asistida (no completada, cancelada ni
  *     ausente);
+ *
+ * AVISO DE ENFERMERÍA (`appointment_nursing`):
  *   · el turno vigente es de ENFERMERÍA (si le toca al doctor, el aviso aún no
  *     va);
  *   · el turno está ABIERTO (para todos) o nombrado a quien mira, y todavía
  *     sin reclamar (startedAt): en cuanto alguien lo toma, ya no es noticia.
  *
+ * AVISO DE CITA ASIGNADA (`appointment_assigned`):
+ *   · el turno de doctor nombrado a quien mira sigue PENDIENTE — en cuanto lo
+ *     atiende (su turno pasa a 'completado'), la cita ya no le debe nada y el
+ *     aviso sobra; en citas viejas sin turnos manda el espejo `doctor`.
+ *
  * Se aplica EN LECTURA, no solo al crear: así las notificaciones huérfanas que
  * ya están en Mongo dejan de sonar sin necesidad de migración, y el contador
- * de no leídas coincide con lo que la bandeja enseña.
+ * de no leídas coincide con lo que la bandeja enseña. Los avisos de atención
+ * que NO llevan la cita en `meta.appointment` (los anteriores a ese sello) se
+ * dan por muertos: eran avisos de tarea pendiente y nada los apagaba.
  */
 async function filtroDeAvisosVivos(req, filter) {
   const citaIds = await Notification.distinct('meta.appointment', {
     ...filter,
-    type: 'appointment_nursing',
+    type: { $in: ['appointment_nursing', 'appointment_assigned'] },
     'meta.appointment': { $ne: null },
   });
   if (!citaIds.length) return filter;
 
   const citas = await require('../models/Appointment')
     .find({ _id: { $in: citaIds } })
-    .select('status currentTurnKind currentTurnUser turns')
+    .select('status doctor currentTurnKind currentTurnUser turns')
     .lean();
   const miId = String(req.user._id);
-  const vivas = [];
+  const vivasNursing = [];
+  const vivasAsignada = [];
   for (const a of citas) {
     if (!['pendiente', 'confirmada', 'asistida'].includes(a.status)) continue;
+
+    // «Cita asignada» al doctor: sigue viva mientras su turno siga pendiente.
+    // Atenderla (su turno pasa a 'completado'), cerrarla o pasarla a otro la
+    // apaga — es el aviso de una tarea que ya no existe.
+    const conTurnos = (a.turns || []).length > 0;
+    const miTurnoDoctor =
+      conTurnos && (a.turns || []).some(
+        (t) => t.kind === 'doctor' && t.status === 'pendiente' && String(t.user) === miId
+      );
+    // Citas viejas, sin turnos: manda el espejo `doctor` (se completa y muere).
+    if (miTurnoDoctor || (!conTurnos && String(a.doctor) === miId)) {
+      vivasAsignada.push(a._id);
+    }
+
     if (a.currentTurnKind !== 'enfermeria') continue;
     const dueño = a.currentTurnUser ? String(a.currentTurnUser) : null;
     // Nombrada a OTRO: no es noticia para quien mira.
@@ -116,7 +140,7 @@ async function filtroDeAvisosVivos(req, filter) {
       const turno = (a.turns || []).find((t) => t.kind === 'enfermeria' && t.status === 'pendiente');
       if (turno?.startedAt) continue;
     }
-    vivas.push(a._id);
+    vivasNursing.push(a._id);
   }
 
   return {
@@ -125,8 +149,9 @@ async function filtroDeAvisosVivos(req, filter) {
       ...(filter.$and || []),
       {
         $or: [
-          { type: { $ne: 'appointment_nursing' } },
-          { type: 'appointment_nursing', 'meta.appointment': { $in: vivas } },
+          { type: { $nin: ['appointment_nursing', 'appointment_assigned'] } },
+          { type: 'appointment_nursing', 'meta.appointment': { $in: vivasNursing } },
+          { type: 'appointment_assigned', 'meta.appointment': { $in: vivasAsignada } },
         ],
       },
     ],

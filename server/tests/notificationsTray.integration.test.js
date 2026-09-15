@@ -35,8 +35,8 @@ async function seedAnchor() {
   return clinicId;
 }
 
-const listFor = async (clinicId, role, { isSuperAdmin = false } = {}) => {
-  const req = H.mockReq(clinicId, new H.mongoose.Types.ObjectId(), {}, { role });
+const listFor = async (clinicId, role, { isSuperAdmin = false, userId } = {}) => {
+  const req = H.mockReq(clinicId, userId || new H.mongoose.Types.ObjectId(), {}, { role });
   if (isSuperAdmin) req.user.isSuperAdmin = true;
   const res = await H.runController(notifications.list, req);
   assert.equal(res.statusCode, 200);
@@ -150,6 +150,67 @@ test('un doctor no puede marcar como leída una notificación que no ve', async 
   );
   assert.equal(res.statusCode, 404);
   assert.equal((await Notification.findById(n._id)).read, false);
+});
+
+/**
+ * EL AVISO DE CITA ASIGNADA MUERE CUANDO EL DOCTOR ATIENDE.
+ *
+ * La campana del doctor se llenaba de «Cita asignada» de pacientes que YA había
+ * atendido: nada apagaba ese tipo, y el filtro de lectura solo cubría los avisos
+ * de enfermería. La regla nueva: el aviso vive mientras SU turno siga pendiente
+ * en una cita viva; al atenderla deja de sonar — y sin migración, porque se
+ * aplica en lectura (ver filtroDeAvisosVivos).
+ */
+test('el aviso «Cita asignada» deja de sonar cuando el doctor atiende al paciente', async () => {
+  const clinicId = await seedAnchor();
+  const Appointment = require('../models/Appointment');
+  const doctorId = new H.mongoose.Types.ObjectId();
+
+  const apt = await Appointment.create({
+    clinic: clinicId,
+    patient: new H.mongoose.Types.ObjectId(),
+    date: new Date(),
+    startTime: '10:00',
+    status: 'asistida',
+    turns: [{ kind: 'doctor', user: doctorId, status: 'pendiente' }],
+    currentTurnKind: 'doctor',
+    currentTurnUser: doctorId,
+  });
+  await Notification.create({
+    clinic: clinicId, user: doctorId, type: 'appointment_assigned',
+    title: 'Cita asignada', body: 'paciente · 10:00',
+    meta: { appointment: apt._id, url: '/appointments' },
+  });
+
+  // Mientras su turno siga pendiente, el aviso suena para ÉL.
+  const antes = await listFor(clinicId, 'doctor', { userId: doctorId });
+  assert.equal(antes.unread, 1);
+  assert.equal(antes.items.length, 1);
+  assert.equal(antes.items[0].type, 'appointment_assigned');
+
+  // Para nadie más: el aviso va dirigido a una sola persona.
+  const otro = await listFor(clinicId, 'doctor');
+  assert.equal(otro.unread, 0);
+  assert.deepEqual(otro.items, []);
+
+  // Atiende al paciente: su turno pasa a 'completado' — el aviso muere.
+  await Appointment.updateOne(
+    { _id: apt._id },
+    { $set: { 'turns.0.status': 'completado', status: 'completada' } }
+  );
+  const despues = await listFor(clinicId, 'doctor', { userId: doctorId });
+  assert.equal(despues.unread, 0);
+  assert.deepEqual(despues.items, []);
+
+  // Los avisos VIEJOS, sin el sello `meta.appointment`, ya no suenan: eran
+  // tarea pendiente y nada los apagaba jamás.
+  await Notification.create({
+    clinic: clinicId, user: doctorId, type: 'appointment_assigned',
+    title: 'Cita asignada (vieja)', body: 'sin sello',
+  });
+  const legacy = await listFor(clinicId, 'doctor', { userId: doctorId });
+  assert.equal(legacy.unread, 0);
+  assert.deepEqual(legacy.items, []);
 });
 
 test('el chequeo diario deja constancia y avisa UNA vez si Meta no responde', async () => {

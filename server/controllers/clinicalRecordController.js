@@ -1359,6 +1359,9 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
         motivo: 'El profesional anterior terminó su parte.',
       }),
       url: urlDeAtencion(patientId, apt._id),
+      // El sello de la cita: apaga el aviso en cuanto quien lo recibe atiende
+      // (ver filtroDeAvisosVivos en notificationController).
+      meta: { appointment: apt._id },
     }).catch(() => {});
   } else if (siguiente) {
     // Turno de enfermería sin dueño: sale a la bandeja de todos, y les llega al

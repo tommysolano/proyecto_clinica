@@ -2555,6 +2555,20 @@ export default function Appointments() {
                       });
                     }
                     /**
+                      * ENFERMERÍA QUE YA RECLAMÓ la cita: «Volver a la atención».
+                      * Salir de la ficha no podía dejarla sin camino de vuelta:
+                      * el doctor reentra con «Atender», y el enfermero con esto.
+                      * No reinicia nada: abre la ficha en seguimientos.
+                      */
+                    if (isNurse && laTengoYo) {
+                      opciones.push({
+                        id: 'continuar',
+                        label: 'Volver a la atención',
+                        icon: HiOutlinePencilSquare,
+                        fn: () => abrirAtencion(apt, { soloVolver: true }),
+                      });
+                    }
+                    /**
                       * VER LA RECETA de una visita ya atendida, sin salir de
                       * la agenda. Antes había que abrir la ficha del paciente
                       * y buscar el seguimiento por fecha entre todos los
@@ -4035,6 +4049,17 @@ export default function Appointments() {
             await nurseFinish(apt);
             setNurseActionModal(null);
           }}
+          onContinuar={(apt) => {
+            setNurseActionModal(null);
+            /**
+             * VOLVER A ENTRAR a una cita que ya reclamó y dejó a medias. Era el
+             * hueco del enfermero: «Atender» ya no estaba (el turno está suyo),
+             * así que al salir de la ficha la única salida era «Terminar».
+             * El doctor vuelve con el mismo botón «Atender»; a enfermería se le
+             * ofrece aquí, y entra directo a seguimientos sin reiniciar nada.
+             */
+            abrirAtencion(apt, { soloVolver: true });
+          }}
         />
       )}
 
@@ -4230,7 +4255,7 @@ function MenuAccionesCita({ opciones, bottom, right, btn, onClose }) {
  * acciones grandes y una línea que explica qué hace cada una — porque «Terminar»
  * no dice que deja registrado lo que se aplicó.
  */
-function NurseActionModal({ appointment, working = false, onClose, onAtender, onTerminar }) {
+function NurseActionModal({ appointment, working = false, onClose, onAtender, onTerminar, onContinuar }) {
   const apt = appointment;
   const conTurnos = (apt.turns || []).length > 0;
   const miId = String(apt.miId || '');
@@ -4279,6 +4304,20 @@ function NurseActionModal({ appointment, working = false, onClose, onAtender, on
             <span className="block">Atender</span>
             <span className="block text-xs font-normal text-sky-100 mt-1">
               Marca que te haces cargo de esta cita y abre la receta para ver qué debes aplicar.
+            </span>
+          </button>
+        )}
+
+        {puedeTerminar && onContinuar && (
+          <button
+            type="button"
+            disabled={working}
+            onClick={() => onContinuar(apt)}
+            className="w-full px-4 py-4 rounded-xl bg-white text-sky-700 text-base font-bold hover:bg-sky-50 active:bg-sky-100 disabled:opacity-60 cursor-pointer border border-sky-300 text-left"
+          >
+            <span className="block">Volver a la atención</span>
+            <span className="block text-xs font-normal text-sky-600 mt-1">
+              Abre de nuevo la receta y los seguimientos para ver o seguir anotando lo que aplicaste.
             </span>
           </button>
         )}
