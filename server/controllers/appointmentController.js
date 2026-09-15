@@ -556,6 +556,49 @@ async function resolverServicioAgenda(serviceItemId) {
 }
 
 /**
+ * LOS BLOQUEOS DE HORARIO QUE APLICAN A UNA CITA, en un solo sitio.
+ *
+ * Lo usan las DOS puertas donde una cita nace o se mueve —crear (con sucursal
+ * destino) y editar—. Replicado en cada una, una puerta decía «bloqueado» y la
+ * otra dejaba pasar la misma cita.
+ *
+ * SEMÁNTICA (sep-2026): un bloqueo declara cero o más dimensiones —servicio,
+ * doctor, consultorio— y aplica a la cita cuando TODAS las que declara
+ * coinciden. Un bloqueo sin nada declarado es GENERAL: bloquea todo en su
+ * sucursal. El servicio se declara con el catálogo de la agenda
+ * (AppointmentServiceItem) y casa también con el legado del inventario
+ * (`services[].product`), igual que el filtro de servicio de la agenda.
+ */
+async function bloqueosQueAplican({ clinicId, date, serviceIds = [], doctor = null, room = null }) {
+  const TimeBlock = require('../models/TimeBlock');
+  const blocks = await TimeBlock.find({
+    clinic: clinicId,
+    startDate: { $lte: date },
+    endDate: { $gte: date },
+  }).lean();
+  const servicios = new Set((serviceIds || []).filter(Boolean).map(String));
+  const doc = doctor ? String(doctor) : null;
+  const sala = room ? String(room) : null;
+  return blocks.filter((b) => {
+    if (b.service && !servicios.has(String(b.service))) return false;
+    if (b.doctor && String(b.doctor) !== doc) return false;
+    if (b.room && String(b.room) !== sala) return false;
+    return true;
+  });
+}
+
+/** ¿El horario de la cita cae dentro del bloqueo? (allDay o sin horas = todo el día) */
+function bloqueaElHorario(block, start, end) {
+  if (block.allDay || !block.startTime || !block.endTime) return true;
+  // `>=` abajo: una cita que empieza justo cuando empieza el bloqueo, cae.
+  return start < block.endTime && (end || start) >= block.startTime;
+}
+
+function mensajeBloqueo(block) {
+  return `Horario bloqueado por administración${block.reason ? `: ${block.reason}` : ''}`;
+}
+
+/**
  * QUIEN ATIENDE TIENE QUE SER DE LA SUCURSAL DE LA CITA.
  *
  * Caja asigna citas de cualquier sede desde su mostrador, y el selector le
@@ -916,31 +959,24 @@ exports.createAppointment = async (req, res) => {
     // NOTA: Antes se rechazaba si el doctor tenía otra cita en el mismo horario.
     // Por requerimiento del negocio se permite que un mismo doctor atienda a
     // varios pacientes en la misma fecha y horario. Solo verificamos bloqueos
-    // de horario (TimeBlock) creados por el administrador.
-    const TimeBlock = require('../models/TimeBlock');
-    const blocks = await TimeBlock.find({
-      clinic: targetClinicId,
-      $or: [
-        { doctor: null, room: null },
-        ...(doctor ? [{ doctor }] : []),
-        ...(req.body.room ? [{ room: req.body.room }] : []),
-      ],
-      startDate: { $lte: localDate },
-      endDate: { $gte: localDate },
+    // de horario (TimeBlock) creados por administración y marketing.
+    const serviciosLegacy = (Array.isArray(services) ? services : [])
+      .map((s) => (typeof s === 'string' ? s : s?.product))
+      .filter(Boolean);
+    const bloqueos = await bloqueosQueAplican({
+      clinicId: targetClinicId,
+      date: localDate,
+      // El servicio del catálogo de la agenda y el legado del inventario: el
+      // bloqueo por servicio casa con cualquiera de las dos formas.
+      serviceIds: [req.body.serviceItem, ...serviciosLegacy],
+      doctor,
+      room: req.body.room || null,
     });
-    for (const block of blocks) {
+    for (const block of bloqueos) {
       // Determinar si el rango de la cita se solapa con el bloqueo.
       // Caso allDay o sin horario explícito → bloqueo aplica a todo el día.
-      // De lo contrario: startTime < block.endTime && (endTime || startTime) >= block.startTime
-      // Se usa >= en el límite inferior para incluir el caso "cita inicia justo cuando inicia el bloqueo".
-      const inHours =
-        block.allDay ||
-        (!block.startTime || !block.endTime) ||
-        (startTime < block.endTime && (endTime || startTime) >= block.startTime);
-      if (inHours) {
-        return res.status(400).json({
-          message: `Horario bloqueado por administración${block.reason ? `: ${block.reason}` : ''}`,
-        });
+      if (bloqueaElHorario(block, startTime, endTime)) {
+        return res.status(400).json({ message: mensajeBloqueo(block) });
       }
     }
 
@@ -1475,26 +1511,24 @@ exports.updateAppointment = async (req, res) => {
     }
 
     if (!isAdmin && finalDate && finalStart) {
-      const TimeBlock = require('../models/TimeBlock');
-      const blocks = await TimeBlock.find({
-        clinic: clinicScope,
-        $or: [
-          { doctor: null, room: null },
-          ...(finalDoctor ? [{ doctor: finalDoctor }] : []),
-          ...(finalRoom ? [{ room: finalRoom }] : []),
-        ],
-        startDate: { $lte: finalDate },
-        endDate: { $gte: finalDate },
+      // El servicio FINAL de la cita: el que viene en el update, o el que ya
+      // tenía. El bloqueo por servicio casa con el del catálogo y con el
+      // legado del inventario, igual que al crear.
+      const servicioFinal = update.serviceItem !== undefined ? update.serviceItem : existing.serviceItem;
+      const serviciosLegacy = (update.services !== undefined
+        ? (Array.isArray(update.services) ? update.services : [])
+        : (existing.services || [])
+      ).map((s) => (typeof s === 'string' ? s : s?.product)).filter(Boolean);
+      const bloqueos = await bloqueosQueAplican({
+        clinicId: clinicScope,
+        date: finalDate,
+        serviceIds: [servicioFinal, ...serviciosLegacy],
+        doctor: finalDoctor,
+        room: finalRoom,
       });
-      for (const block of blocks) {
-        const inHours =
-          block.allDay ||
-          (!block.startTime || !block.endTime) ||
-          (finalStart < block.endTime && (finalEnd || finalStart) >= block.startTime);
-        if (inHours) {
-          return res.status(400).json({
-            message: `Horario bloqueado por administración${block.reason ? `: ${block.reason}` : ''}`,
-          });
+      for (const block of bloqueos) {
+        if (bloqueaElHorario(block, finalStart, finalEnd)) {
+          return res.status(400).json({ message: mensajeBloqueo(block) });
         }
       }
     }

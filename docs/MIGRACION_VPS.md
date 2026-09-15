@@ -344,6 +344,11 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # El video del chat se COMPRIME dentro de la propia petición de subida
+        # (ffmpeg): sin esto, una subida que tarde más de 60 s moría aquí con
+        # un error de red. 300 s cubre las conversiones más largas.
+        proxy_read_timeout 300;
+        proxy_send_timeout 300;
     }
 
     # WebSocket (Socket.IO)
@@ -359,7 +364,10 @@ server {
         proxy_read_timeout 86400;   # conexiones largas
     }
 
-    client_max_body_size 50m;       # acorde al límite de express.json en el API
+    # El adjunto del chat viaja como JSON con data URL base64 y el tope real
+    # está en express.json (150mb). 1 GB da margen; `aplicar-perf-nginx.sh`
+    # neutraliza cualquier valor menor que exista en otros ficheros.
+    client_max_body_size 1g;
     listen 80;
 }
 ```

@@ -728,7 +728,13 @@ export default function AssignAttentionModal({
                         </div>
                       )}
 
-                      {paso.serum && paso.serum.components?.some((c) => c.name?.trim()) ? (
+                      {/* OJO con la condición: basta con que `paso.serum` exista.
+                          Al crear el suero desde cero nace con la composición
+                          VACÍA — exigirle componentes aquí volvía a caer en el
+                          botón «Escoger el suero…» y el editor NUNCA abría:
+                          el sistema bloqueaba crear sueros desde la agenda
+                          (sep-2026, regresión del rediseño). */}
+                      {paso.serum ? (
                         <>
                           {paso.serumMergeIntoService && (
                             <p className="m-0 mb-1 text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5">

@@ -44,6 +44,7 @@ import {
   HiOutlinePaperAirplane,
   HiOutlineArrowDownTray,
   HiOutlineChatBubbleLeftRight,
+  HiOutlineNoSymbol,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import TimeSlotInput from '../components/TimeSlotInput';
@@ -203,8 +204,39 @@ function ultimoReagendamiento(apt) {
   return `${nombre}${rol ? ` (${rol})` : ''}${cuando ? ` · ${cuando}` : ''}`;
 }
 
-/** Servicio de la cita: el del catálogo de agenda y, si no, el del inventario. */
-function nombreServicio(apt) {
+/**
+ * LA FILA DE BLOQUEO en la vista del día. No es una cita: es un recuadro que
+ * avisa en su hora de que NO se puede agendar (administración y marketing lo
+ * crean desde «Bloqueos de horarios»). Lleva su alcance: general, o solo para
+ * un servicio, doctor o consultorio, y a qué sucursal pertenece.
+ */
+function FilaBloqueo({ b }) {
+  return (
+    <tr className="bg-rose-50/70">
+      <td colSpan="6" className="px-4 md:px-6 py-2">
+        <div className="flex items-center gap-2 flex-wrap text-xs text-rose-700">
+          <HiOutlineNoSymbol className="w-4 h-4 shrink-0" />
+          <span className="font-semibold whitespace-nowrap">
+            {b.allDay ? 'Todo el día' : `${b.startTime || ''} – ${b.endTime || ''}`}
+          </span>
+          <span className="font-medium">No se puede agendar</span>
+          {b.service?.name && <span>· Solo «{b.service.name}»</span>}
+          {b.doctor?.name && <span>· Dr. {b.doctor.name}</span>}
+          {b.room?.name && <span>· {b.room.name}</span>}
+          {(b.clinic?.nombreComercial || b.clinic?.name) && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-white border border-rose-200">
+              {b.clinic.nombreComercial || b.clinic.name}
+            </span>
+          )}
+          {b.reason && <span className="italic text-rose-600/90">· {b.reason}</span>}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * Servicio de la cita: el del catálogo de agenda y, si no, el del inventario. */function nombreServicio(apt) {
   if (!apt) return '';
   return (
     apt.serviceName ||
@@ -510,6 +542,10 @@ export default function Appointments() {
   const veObservaciones = hasRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing');
 
   const [appointments, setAppointments] = useState([]);
+  // BLOQUEOS DE HORARIO DEL DÍA (vista lista): lo pide fetchAppointments y la
+  // tabla muestra un recuadro en el horario bloqueado, para que quien agenda
+  // vea de un vistazo dónde NO se puede citar (y por qué).
+  const [bloquesDia, setBloquesDia] = useState([]);
   const [doctors, setDoctors] = useState([]);
   // Enfermeros de la sucursal, para poder nombrar un turno de enfermería en vez
   // de dejarlo abierto a todos.
@@ -787,6 +823,17 @@ export default function Appointments() {
         status: normalizeStatus(a.status),
       }));
       setAppointments(list);
+      // BLOQUEOS DEL DÍA: los recuadros de la vista por día (mismo refresco
+      // que las citas, sockets incluidos). clinic=all: el día puede tener
+      // citas de varias sedes y cada bloqueo es de SU sucursal.
+      try {
+        const rb = await api.get('/time-blocks', {
+          params: { startDate: listDay, endDate: listDay, clinic: 'all' },
+        });
+        if (miTurno === peticionRef.current) setBloquesDia(rb.data || []);
+      } catch {
+        if (miTurno === peticionRef.current) setBloquesDia([]);
+      }
     } catch {
       if (miTurno !== peticionRef.current) return;
       toast.error('Error al cargar citas');
@@ -1733,6 +1780,29 @@ export default function Appointments() {
   );
 
   /**
+   * LAS FILAS DEL DÍA: citas MEZCLADAS con los bloqueos de horario, por hora.
+   * Cada cita conserva su índice original (`idx`) para que la cabecera de
+   * fecha y el resto de la fila sigan leyendo de `filteredAppointments`.
+   */
+  const filasDelDia = useMemo(() => {
+    const citas = filteredAppointments.map((apt, idx) => ({ tipo: 'cita', apt, idx }));
+    const bloqueos = (bloquesDia || []).map((b) => ({
+      tipo: 'bloqueo',
+      b,
+      // Un bloqueo de día completo va al tope de la lista.
+      hora: b.allDay ? '00:00' : (b.startTime || '00:00'),
+    }));
+    return [...citas, ...bloqueos].sort((x, y) => {
+      const hx = x.tipo === 'cita' ? (x.apt.startTime || '00:00') : x.hora;
+      const hy = y.tipo === 'cita' ? (y.apt.startTime || '00:00') : y.hora;
+      if (hx !== hy) return hx < hy ? -1 : 1;
+      // A la misma hora, el bloqueo primero: explica la brecha.
+      if (x.tipo !== y.tipo) return x.tipo === 'bloqueo' ? -1 : 1;
+      return 0;
+    });
+  }, [filteredAppointments, bloquesDia]);
+
+  /**
    * Cuántos filtros SECUNDARIOS están puestos. Es lo que lleva el globito del
    * botón "Filtros" del móvil: plegados, un filtro olvidado explicaría una lista
    * vacía sin que se vea por qué.
@@ -2284,14 +2354,18 @@ export default function Appointments() {
                     Cargando...
                   </td>
                 </tr>
-              ) : filteredAppointments.length === 0 ? (
+              ) : filasDelDia.length === 0 ? (
                 <tr>
                   <td colSpan="6" className="text-center py-10 text-slate-500">
                     No se encontraron citas
                   </td>
                 </tr>
               ) : (
-                filteredAppointments.map((apt, aptIdx) => {
+                filasDelDia.map((fila) => {
+                  if (fila.tipo === 'bloqueo') {
+                    return <FilaBloqueo key={`bloq-${fila.b._id}`} b={fila.b} />;
+                  }
+                  const { apt, idx: aptIdx } = fila;
                   const editable = canEdit(apt);
                   /**
                    * QUIÉN TIENE LA PELOTA AHORA. Todo lo que ofrece esta fila se

@@ -98,6 +98,11 @@ app.use(
     filter: (req, res) => {
       const type = String(res.getHeader('Content-Type') || '');
       if (/^(image|video|audio)\//.test(type)) return false;
+      // La DESCARGA de adjuntos del chat también va sin comprimir: un PDF de
+      // 50 MB comprimido en memoria por cada descarga era CPU y RAM regaladas
+      // (y en el VPS pequeño, un empujón más hacia el OOM). Los documentos del
+      // sistema (reportes) sí siguen comprimiéndose.
+      if (/^\/api\/public\/(media|message-media)\//.test(String(req.url || ''))) return false;
       return compression.filter(req, res);
     },
   })
@@ -109,10 +114,14 @@ app.use(express.json({
   // DOCUMENTO de ~100 MB — el máximo que WhatsApp acepta — y deja margen para
   // el resto del JSON. OJO PRODUCCIÓN: nginx debe tener client_max_body_size
   // >= 150m o cortará el upload con 413 antes de llegar aquí (el drop-in de
-  // deploy/nginx lo deja en 1 GB).
+  // deploy/nginx lo deja en 1 GB y deploy.sh lo aplica en cada despliegue).
   limit: '150mb',
   verify: (req, _res, buf) => {
-    req.rawBody = buf;
+    // SOLO los webhooks de Meta necesitan el cuerpo crudo (verificar su firma
+    // con HMAC). Guardar el buffer completo en CADA petición duplicaba la
+    // memoria de cada subida grande de chat (un adjunto de 50 MB pasaba por
+    // aquí dos veces) y era un empujón más hacia el OOM en el VPS.
+    if (req.headers['x-hub-signature-256']) req.rawBody = buf;
   },
 }));
 

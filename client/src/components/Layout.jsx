@@ -75,7 +75,17 @@ const MENU_GROUPS = [
   {
     key: 'agenda', label: 'Agenda', icon: HiOutlineCalendarDays, items: [
       { path: '/appointments', label: 'Calendario y Citas', roles: ['admin', 'cajero', 'doctor', 'optica', 'call_center', 'enfermero', 'marketing'] },
-      { path: '/tasks', label: 'Tareas', roles: ['admin', 'call_center', 'marketing'] },
+      /**
+       * BLOQUEOS DE HORARIOS (sep-2026), en lugar de «Tareas».
+       *
+       * «Tareas» salió del menú (la pedía el usuario: no la usaban); las tareas
+       * de agente se siguen creando desde el chat. En su lugar, los bloqueos de
+       * agendamiento —que vivían escondidos en Configuración y solo para el
+       * administrador— pasan a ser una opción de la agenda, donde les toca:
+       * administración y MARKETING impiden agendar fechas u horarios, para un
+       * servicio, un doctor, una sucursal o de forma general.
+       */
+      { path: '/blocks', label: 'Bloqueos de horarios', roles: ['admin', 'marketing'] },
     ],
   },
   {
@@ -214,7 +224,8 @@ const MENU_GROUPS = [
       { path: '/admin-config', label: 'Personal y Agenda', roles: ['admin'] },
       { path: '/users', label: 'Usuarios', roles: ['admin'] },
       { path: '/rooms', label: 'Consultorios', roles: ['admin'] },
-      { path: '/blocks', label: 'Bloqueos', roles: ['admin'] },
+      // Los bloqueos de horario se movieron al grupo AGENDA (sep-2026): ahí es
+      // donde se usan, y ahora también los gestiona marketing.
       { path: '/access-blocks', label: 'Bloqueo de Acceso', roles: [], superOnly: true },
       { path: '/clinics', label: 'Sucursales', roles: [], superOnly: true },
     ],

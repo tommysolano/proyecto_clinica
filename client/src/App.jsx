@@ -82,7 +82,6 @@ const WorkflowEditor = pagina(() => import('./pages/WorkflowEditor'));
 const RecycleBin = pagina(() => import('./pages/RecycleBin'));
 const Attribution = pagina(() => import('./pages/Attribution'));
 const Reputation = pagina(() => import('./pages/Reputation'));
-const Tasks = pagina(() => import('./pages/Tasks'));
 const Scanner = pagina(() => import('./pages/Scanner'));
 const PublicBooking = pagina(() => import('./pages/PublicBooking'));
 const BookingConfig = pagina(() => import('./pages/BookingConfig'));
@@ -481,19 +480,14 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'marketing']}>
                       <Reputation />
-                    </RoleRoute>
-                  }
-                />
-                <Route
-                  path="/tasks"
-                  element={
-                    <RoleRoute roles={['admin', 'call_center', 'marketing']}>
-                      <Tasks />
-                    </RoleRoute>
-                  }
-                />
-                {/* Escáner de documentos: sin RoleRoute, es para todos los usuarios. */}
-                <Route path="/scanner" element={<Scanner />} />
+                     </RoleRoute>
+                   }
+                 />
+                 {/* «Tareas» salió de la ruta y del menú (sep-2026): no se usaba.
+                     Las tareas de agente se siguen creando desde el chat (panel
+                     de tareas) con /agent-tasks; el modelo y la API quedan. */}
+                 {/* Escáner de documentos: sin RoleRoute, es para todos los usuarios. */}
+                 <Route path="/scanner" element={<Scanner />} />
                 <Route
                   path="/booking-config"
                   element={
@@ -534,10 +528,12 @@ function AppRoutes() {
                     </RoleRoute>
                   }
                 />
+                {/* Bloqueos de horario: administración y marketing los
+                    gestionan (espejo de las rutas /time-blocks). */}
                 <Route
                   path="/blocks"
                   element={
-                    <RoleRoute roles={['admin']}>
+                    <RoleRoute roles={['admin', 'marketing']}>
                       <Blocks />
                     </RoleRoute>
                   }

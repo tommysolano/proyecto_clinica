@@ -1,8 +1,9 @@
 const mongoose = require('mongoose');
 
 /**
- * Bloqueo de horario / fecha. Lo crea el admin para impedir que se agenden citas.
- * Puede aplicar a toda la clínica, a un doctor, o a un consultorio específico.
+ * Bloqueo de horario / fecha. Lo crean administración y marketing para impedir
+ * que se agenden citas. Puede aplicar a toda la sucursal (general), a un
+ * doctor, a un consultorio o a un SERVICIO del catálogo de la agenda (sep-2026).
  */
 const timeBlockSchema = new mongoose.Schema(
   {
@@ -15,6 +16,14 @@ const timeBlockSchema = new mongoose.Schema(
     // Si todos están vacíos, bloquea para toda la clínica
     doctor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     room: { type: mongoose.Schema.Types.ObjectId, ref: 'Room', default: null },
+    // Solo se bloquea el agendamiento de ESTE servicio del catálogo de la
+    // agenda (p.ej. "no se agenda Limpieza los martes de 9 a 10"). Vacío = el
+    // bloqueo aplica a cualquier servicio.
+    service: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'AppointmentServiceItem',
+      default: null,
+    },
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
     // Si allDay = true se ignoran startTime/endTime

@@ -122,6 +122,32 @@ else
   echo "--> client/ no ha cambiado desde ${COMMIT_DIST:0:7}: se conserva el dist ya compilado"
 fi
 
+echo "==> 3b/6 Ajustes de nginx (límite de subida + timeouts del proxy)"
+# SIN ESTO el arreglo de los adjuntos NO llegaba al servidor: los límites viven
+# en nginx (client_max_body_size y los timeouts de proxy), el script que los
+# aplica era MANUAL y nadie lo había corrido — la subida de archivos seguía
+# muriendo con 413/504 aunque el backend ya los aceptara.
+#
+# El script es IDEMPOTENTE y con rollback automático (si `nginx -t` falla deja
+# todo como estaba), así que correrlo en cada despliegue es seguro. Solo actúa
+# como root (deploy.sh corre como usuario normal de servicio): si no, se deja
+# la instrucción en el log.
+if command -v nginx >/dev/null 2>&1; then
+  if [ "$(id -u)" = "0" ]; then
+    if bash "$APP_DIR/deploy/nginx/aplicar-perf-nginx.sh" 2>&1 | tail -n 6; then
+      echo "--> nginx verificado (1 GB de subida, timeouts de proxy aplicados)"
+    else
+      echo "ADVERTENCIA: aplicar-perf-nginx falló; nginx quedó como estaba. Correr a mano:"
+      echo "   sudo bash $APP_DIR/deploy/nginx/aplicar-perf-nginx.sh"
+    fi
+  else
+    echo "--> Este despliegue no corre como root: recuerda aplicar los límites de nginx a mano si cambiaron:"
+    echo "   sudo bash $APP_DIR/deploy/nginx/aplicar-perf-nginx.sh"
+  fi
+else
+  echo "--> nginx no está instalado en esta máquina: nada que hacer."
+fi
+
 echo "==> 4/6 Tareas de UNA SOLA VEZ"
 # Cada tarea lleva su marca en la base (coleccion `onetimetasks`), asi que se ejecuta
 # solo en el PRIMER despliegue que la trae: los siguientes push la encuentran DONE y no

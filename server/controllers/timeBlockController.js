@@ -1,4 +1,5 @@
 const TimeBlock = require('../models/TimeBlock');
+const { sucursalesVisibles, alcanzaSucursal } = require('../utils/clinicScope');
 
 // Normaliza una fecha 'YYYY-MM-DD' al inicio del día local (12:00 para evitar TZ).
 const startOfLocalDay = (value) => {
@@ -25,10 +26,28 @@ const endOfLocalDay = (value) => {
   return new Date(str);
 };
 
+/**
+ * Qué sucursales consulta el listado.
+ *
+ * Por defecto la activa; `?clinic=all` = TODAS las visibles (la vista del día
+ * de la agenda lo usa, porque ahí se ven citas de varias sedes y el recuadro
+ * del bloqueo tiene que salir en todas). Cualquier otra sucursal pedida se
+ * respeta solo si el usuario tiene alcance (misma regla que la agenda).
+ */
+function resuelveClinicas(req) {
+  const param = req.query.clinic;
+  if (!param || param === req.clinicId) return [req.clinicId];
+  if (param === 'all') {
+    const visibles = sucursalesVisibles(req);
+    return visibles === null ? [req.clinicId] : visibles;
+  }
+  return alcanzaSucursal(req, param) ? [param] : [req.clinicId];
+}
+
 exports.list = async (req, res) => {
   try {
     const { startDate, endDate, doctor } = req.query;
-    const query = { clinic: req.clinicId };
+    const query = { clinic: { $in: resuelveClinicas(req).map(String) } };
     if (startDate && endDate) {
       query.$or = [
         { startDate: { $lte: new Date(endDate) }, endDate: { $gte: new Date(startDate) } },
@@ -38,8 +57,10 @@ exports.list = async (req, res) => {
     const blocks = await TimeBlock.find(query)
       .populate('doctor', 'name')
       .populate('room', 'name')
+      .populate('service', 'name color')
+      .populate('clinic', 'name nombreComercial')
       .populate('createdBy', 'name')
-      .sort({ startDate: 1 });
+      .sort({ startDate: 1, startTime: 1 });
     res.json(blocks);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener bloqueos', error: error.message });
@@ -52,11 +73,15 @@ exports.create = async (req, res) => {
     if (!startDate || !endDate) {
       return res.status(400).json({ message: 'Fechas requeridas' });
     }
+    if (!allDay && startTime && endTime && startTime >= endTime) {
+      return res.status(400).json({ message: 'La hora de fin debe ser posterior a la de inicio' });
+    }
     const block = await TimeBlock.create({
       ...req.body,
       clinic: req.clinicId,
       doctor: req.body.doctor || null,
       room: req.body.room || null,
+      service: req.body.service || null,
       startDate: startOfLocalDay(startDate),
       endDate: endOfLocalDay(endDate),
       allDay: !!allDay,
@@ -75,6 +100,7 @@ exports.update = async (req, res) => {
     const update = { ...req.body };
     if (update.startDate) update.startDate = startOfLocalDay(update.startDate);
     if (update.endDate) update.endDate = endOfLocalDay(update.endDate);
+    if (update.service !== undefined) update.service = update.service || null;
     const block = await TimeBlock.findOneAndUpdate(
       { _id: req.params.id, clinic: req.clinicId },
       update,
