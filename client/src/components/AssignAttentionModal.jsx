@@ -166,6 +166,14 @@ export default function AssignAttentionModal({
       : [];
   });
   /**
+   * LA COLA VIENE DE LA CITA (sep-2026). Cuando hay turnos pendientes, este
+   * modal los CARGA para reordenarlos — y ha generado confusión: se abre, se
+   * añade o corrige un paso, se cierra sin guardar, y de fuera parece que ya
+   * estaba asignado. Que quede dicho: lo que se ve aquí es lo que YA está
+   * asignado; cambiarlo no hace nada hasta pulsar «Asignar».
+   */
+  const vinieronDeLaCita = (apt?.turns || []).some((t) => t.status === 'pendiente');
+  /**
    * EL SERVICIO DE LA CITA SE CORRIGE AQUÍ, al recibir al paciente.
    *
    * Es el momento en que se sabe a qué viene de verdad: media agenda se llena
@@ -555,6 +563,13 @@ export default function AssignAttentionModal({
             <p className="text-xs text-slate-400 italic mb-2">
               Todavía no has añadido a nadie. Usa los botones de abajo — o guarda así, y la cita
               queda recibida a la espera de que se decida quién la ve.
+            </p>
+          )}
+
+          {vinieronDeLaCita && cola.length > 0 && (
+            <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5 mb-2">
+              Esta cola <b>ya estaba asignada</b> en la cita: lo que ve aquí es lo que hay ahora.
+              Añadir, quitar o reordenar no cambia nada hasta pulsar <b>Asignar</b>.
             </p>
           )}
 

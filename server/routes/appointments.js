@@ -107,7 +107,12 @@ router.post('/:id/attended', requireRole('admin', 'cajero', 'enfermero'), markAt
 // PUT general vale también con la cita ya completada. Es lo único que se puede
 // corregir después de atender; quién atendió, nunca.
 router.patch('/:id/service-value', requireRole('admin', 'cajero'), updateServiceAndValue);
-router.post('/:id/assign-doctor', requireRole('admin', 'cajero', 'enfermero'), assignDoctor);
+/**
+ * ODONTOLOGÍA ATENDE DIRECTO (sep-2026): se suma a la cola de recepción.
+ * El controlador solo le acepta la cita asignada a SÍ MISMO — no puede
+ * repartir la atención de los demás. Ver `assignDoctor`.
+ */
+router.post('/:id/assign-doctor', requireRole('admin', 'cajero', 'enfermero', 'odontologia', 'odontologia_neurofocal'), assignDoctor);
 router.post('/:id/no-show', requireRole('admin', 'cajero', 'enfermero'), markNoShow);
 router.post('/:id/nurse-claim', requireRole('admin', 'enfermero'), nurseClaim);
 router.post('/:id/nurse-complete', requireRole('admin', 'enfermero'), nurseComplete);

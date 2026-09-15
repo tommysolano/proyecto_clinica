@@ -233,8 +233,15 @@ function fijarDoctorDeLaCita(apt, userId, { por = null } = {}) {
  *
  * Devuelve { cerrado, siguiente, terminado }. El llamador decide con eso si la
  * cita queda 'completada' o si solo cambia de manos.
+ *
+ * `tomarVigente` (por defecto true) habilita el RESPALDO de cerrar el turno
+ * vigente sin tener uno propio. Es para quien está atendiendo de hecho —el
+ * doctor de una cita reasignada—. Quien NO atiende pacientes (mostrador,
+ * administración) documentando un seguimiento no debe cerrarle el turno a
+ * nadie: le ponía su nombre a la cita y la sacaba de la agenda del
+ * profesional que venía detrás.
  */
-function completarTurno(apt, { userId, followUpId = null } = {}) {
+function completarTurno(apt, { userId, followUpId = null, tomarVigente = true } = {}) {
   const orden = turnosOrdenados(apt);
   const propio = orden.find((t) => t.status === 'pendiente' && String(t.user) === String(userId));
   /**
@@ -254,7 +261,9 @@ function completarTurno(apt, { userId, followUpId = null } = {}) {
   const yaCerroElSuyo = orden.some(
     (t) => t.status === 'completado' && String(t.user) === String(userId)
   );
-  const cerrado = propio || (yaCerroElSuyo ? null : orden.find((t) => t.status === 'pendiente')) || null;
+  const cerrado = propio
+    || (yaCerroElSuyo || !tomarVigente ? null : orden.find((t) => t.status === 'pendiente'))
+    || null;
 
   if (cerrado) {
     cerrado.status = 'completado';

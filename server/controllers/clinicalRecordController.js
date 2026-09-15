@@ -1304,11 +1304,24 @@ const sanitizeOdontologiaNeurofocal = (o) => {
 const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId }) => {
   const Appointment = require('../models/Appointment');
   const { completarTurno } = require('../utils/appointmentTurns');
+  const { atiendePacientes } = require('../constants/roles');
   const apt = await Appointment.findOne({
     _id: appointmentId,
     clinic: req.clinicId,
   });
-  if (!apt || !['asistida', 'pendiente', 'confirmada'].includes(apt.status)) return null;
+  if (!apt || !['asistida', 'pendiente', 'confirmada', 'completada'].includes(apt.status)) return null;
+
+  /**
+   * QUIÉN PUEDE CERRAR UN TURNO AL GUARDAR: quien atiende pacientes.
+   *
+   * Mostrador y administración pueden escribir seguimientos (documentan por
+   * otro), pero NO están atendiendo a nadie: si con su guardado se cerrara el
+   * turno vigente —el de la enfermera que viene detrás, o el del doctor que
+   * sigue en consulta— la cita quedaría completada (o con la pelota en manos
+   * del cajero) sin que el paciente pasara por quien le tocaba. Su
+   * seguimiento se guarda igual; el turno no se toca.
+   */
+  if (!atiendePacientes(req.role)) return null;
 
   const { siguiente, terminado } = completarTurno(apt, {
     userId: req.user._id,
@@ -1317,8 +1330,10 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
   // Sin turnos (cita anterior al cambio, o asignada a la antigua) se comporta
   // como siempre: un seguimiento la cierra.
   if (terminado || !apt.turns?.length) {
-    apt.status = 'completada';
-    apt.consultationEndedAt = new Date();
+    if (apt.status !== 'completada') {
+      apt.status = 'completada';
+      apt.consultationEndedAt = new Date();
+    }
   }
   await apt.save();
   // Si la cita quedó COMPLETADA, ya no espera a nadie: sus avisos de campana

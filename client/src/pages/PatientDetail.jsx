@@ -3633,17 +3633,17 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
         {isCardio && <CardiologiaSection value={form.cardiologia} onChange={(c) => setForm((f) => ({ ...f, cardiologia: c }))} />}
         {isTerapeuta && <TerapiaSection value={form.terapia} onChange={(t) => setForm((f) => ({ ...f, terapia: t }))} />}
 
-        {/* Orden de la consulta: cómo va el paciente → qué se le receta → el
-            plan narrado → lo que hace por su cuenta → y, al final, a dónde se le
-            deriva. La derivación se decide DESPUÉS de tener el plan, y es lo
-            último que se le explica al paciente antes de que salga. */}
-        {esHojaMsp && (
-        <Field label="Evolución" className="md:col-span-3">
+        {/* Orden de la consulta (petición del usuario, sep-2026): el plan → la
+            receta → lo que hace por su cuenta → cómo va el paciente → y, al
+            final, a dónde se le deriva. La derivación se decide DESPUÉS de tener
+            el plan, y es lo último que se le explica antes de que salga. */}
+        {esConsultaMedica && esHojaMsp && (
+        <Field label="Plan de tratamiento" className="md:col-span-3">
           <textarea
             rows={2}
-            value={form.evolucion}
-            onChange={(e) => setForm((f) => ({ ...f, evolucion: e.target.value }))}
-            placeholder="Cómo evoluciona el paciente respecto de los controles anteriores"
+            value={form.planTratamiento}
+            onChange={(e) => setForm((f) => ({ ...f, planTratamiento: e.target.value }))}
+            placeholder="Diagnóstico, terapéutico y educacional"
             className="input resize-none"
           />
         </Field>
@@ -3672,20 +3672,6 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
         />
 
         {esConsultaMedica && (<>
-        {/* J. Plan de tratamiento (narrado; la receta va arriba y las
-            derivaciones justo debajo) */}
-        {esHojaMsp && (
-        <Field label="Plan de tratamiento" className="md:col-span-3">
-          <textarea
-            rows={2}
-            value={form.planTratamiento}
-            onChange={(e) => setForm((f) => ({ ...f, planTratamiento: e.target.value }))}
-            placeholder="Diagnóstico, terapéutico y educacional"
-            className="input resize-none"
-          />
-        </Field>
-        )}
-
         {/* Lo que el paciente tiene que hacer por su cuenta, sin receta de por
             medio. Campo aparte del plan a propósito: se le explica y se le
             entrega distinto, y mezclado con los fármacos se perdía.
@@ -3715,6 +3701,18 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
           onRemove={(idx) => removeRow('derivacionItems', idx)}
         />
         </>)}
+
+        {esHojaMsp && (
+        <Field label="Evolución" className="md:col-span-3">
+          <textarea
+            rows={2}
+            value={form.evolucion}
+            onChange={(e) => setForm((f) => ({ ...f, evolucion: e.target.value }))}
+            placeholder="Cómo evoluciona el paciente respecto de los controles anteriores"
+            className="input resize-none"
+          />
+        </Field>
+        )}
 
         {/* Archivos (PDF o imágenes) antes de guardar el seguimiento. Cuando la
             consulta es un estudio, esto NO es un anexo: es el estudio. */}

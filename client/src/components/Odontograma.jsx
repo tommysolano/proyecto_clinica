@@ -136,6 +136,12 @@ function SimboloCara({ simbolo, color, cx, cy, r = 3.2 }) {
   if (simbolo === 'cuadro') {
     return <rect x={cx - r} y={cy - r} width={r * 2} height={r * 2} {...props} />;
   }
+  // PUNTO RELLENO (petición del odontólogo, sep-2026): el obturado se marcaba
+  // con un círculo hueco, igual que la caries, y se distinguían solo por el
+  // tinte tenue de la cara. El suyo va macizo.
+  if (simbolo === 'circuloLleno') {
+    return <circle cx={cx} cy={cy} r={r} fill={color} stroke="none" />;
+  }
   return <circle cx={cx} cy={cy} r={r} {...props} />;
 }
 
@@ -154,6 +160,11 @@ function SimboloPieza({ simbolo, color }) {
       return <polygon points={`${L / 2},4 ${L - 5},${L - 5} 5,${L - 5}`} {...props} />;
     case 'punto':
       return <circle cx={L / 2} cy={L / 2} r={L * 0.22} fill={color} stroke="none" />;
+    // PIEZA LLENA (petición del odontólogo, sep-2026): corona pinta TODO el
+    // cuadrado del diente, no un punto dentro de él. En las piezas temporales
+    // el recorte circular la deja redonda, como el resto del dibujo.
+    case 'lleno':
+      return <rect x="0" y="0" width={L} height={L} fill={color} stroke="none" />;
     case 'barra':
       return <line x1="3" y1={L / 2} x2={L - 3} y2={L / 2} {...props} />;
     case 'doblebarra':
@@ -247,7 +258,12 @@ function Diente({ num, hemi, dato, herramienta, onPintar, onSeleccionar, selecci
         {info && info.ambito === 'pieza' && info.simbolo !== 'ninguno' && (
           // El color sale de la marca GUARDADA, no de la clave del catálogo: es
           // lo que eligió el odontólogo para esta pieza en concreto.
-          <SimboloPieza simbolo={info.simbolo} color={colorEstado(dato?.estado)} />
+          // El símbolo va DENTRO del recorte (con corona pintando todo el
+          // cuadrado, en una pieza temporal tiene que salir redondo) y sin
+          // captura de puntero: si no, el relleno tapaba los clics de las caras.
+          <g clipPath={redondo ? `url(#${clipId})` : undefined} pointerEvents="none">
+            <SimboloPieza simbolo={info.simbolo} color={colorEstado(dato?.estado)} />
+          </g>
         )}
       </svg>
       <span className="text-[9px] leading-none text-slate-500 tabular-nums flex items-center gap-px">

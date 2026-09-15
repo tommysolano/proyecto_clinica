@@ -11,6 +11,7 @@ import SameSlotPanel from '../components/SameSlotPanel';
 import AssignAttentionModal from '../components/AssignAttentionModal';
 import AppointmentServiceValueModal from '../components/AppointmentServiceValueModal';
 import AppointmentFollowUpModal from '../components/AppointmentFollowUpModal';
+import SeguimientosPacienteModal from '../components/SeguimientosPacienteModal';
 // Los datos del paciente se corrigen desde la propia cita: es el MISMO
 // formulario que el de la página de Pacientes (ver components/PatientFields).
 import PatientEditModal from '../components/PatientEditModal';
@@ -45,6 +46,7 @@ import {
   HiOutlineArrowDownTray,
   HiOutlineChatBubbleLeftRight,
   HiOutlineNoSymbol,
+  HiOutlineClipboardDocumentList,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import TimeSlotInput from '../components/TimeSlotInput';
@@ -583,6 +585,8 @@ export default function Appointments() {
   const [serviceValueModal, setServiceValueModal] = useState(null); // cita
   // Ver (solo leer) lo que se escribió en una cita ya atendida.
   const [consultaModal, setConsultaModal] = useState(null); // cita
+  // Ver (solo leer) TODOS los seguimientos de un paciente, sin salir de la agenda.
+  const [seguimientosPaciente, setSeguimientosPaciente] = useState(null); // { patientId, nombre }
   /**
    * MODAL DE ACCIONES DEL ENFERMERO.
    *
@@ -1634,6 +1638,31 @@ export default function Appointments() {
     navigate(`/patients/${apt.patient?._id}?appointment=${apt._id}&tab=${destino}${conGorra}`);
   };
 
+  /**
+   * ODONTOLOGÍA ATENDE DIRECTO (sep-2026).
+   *
+   * El odontólogo ve TODAS las citas de su sucursal, incluidas las que agendó
+   * él o cualquier otro. En ellas no hay «Asignar atención»: se salta ese paso
+   * — este clic se asigna a sí mismo como doctor de la cita (el servidor no le
+   * acepta otra cosa, ver `assignDoctor`) y entra directo a la ficha, el mismo
+   * camino que recorre «Atender» cuando recepción ya lo asignó.
+   */
+  const atenderOdontologia = async (apt) => {
+    try {
+      await api.post(`/appointments/${apt._id}/assign-doctor`, {
+        steps: [{ kind: 'doctor', user: user?.id }],
+      });
+      fetchAppointments();
+      if (user?.alsoTherapist) {
+        setElegirGorra(apt);
+      } else {
+        abrirAtencion(apt);
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo atender la cita');
+    }
+  };
+
   const handlePatientSelect = (p) => {
     setForm((f) => ({ ...f, patient: p._id }));
     setPatientSearch([`${p.firstName} ${p.lastName}`, p.cedula].filter(Boolean).join(' - '));
@@ -1718,13 +1747,22 @@ export default function Appointments() {
    */
   const bandejaDe = (apt) => {
     if (apt.status === 'cancelada' || apt.status === 'no_asistio') return null; // solo en «Todas»
-    if (apt.status === 'completada') return 'finalizado';
     const conTurnos = (apt.turns || []).length > 0;
 
     if (isNurse) {
+      /**
+       * EL TURNO MANDA, no el estado (sep-2026). Esta rama va ANTES del corte
+       * por 'completada': una cita quedó trabada —completada con SU turno de
+       * enfermería todavía pendiente, p.ej. porque mostrador cambió el estado
+       * a mano— y desaparecía de su bandeja por completo: ni pendiente ni
+       * atendida, sin forma de reclamarla ni cerrarla.
+       */
       // Citas viejas, sin turnos: el espejo `attendedByNurse` solo se sella al
       // reclamar, así que sigue separando bien pendientes de atendidas.
       if (!conTurnos) {
+        if (apt.status === 'completada') {
+          return idDeCampo(apt.attendedByNurse) === miId ? 'atendido' : 'finalizado';
+        }
         return idDeCampo(apt.attendedByNurse) === miId ? 'atendido' : 'pendiente';
       }
       if (apt.currentTurnKind === 'enfermeria') {
@@ -1744,6 +1782,8 @@ export default function Appointments() {
       // lo suyo aquí terminó, aunque la cita no.
       return 'finalizado';
     }
+
+    if (apt.status === 'completada') return 'finalizado';
 
     if (isDoctor) {
       // Cita anterior a los turnos: lo único que tiene es el reloj de la cita.
@@ -2443,7 +2483,25 @@ export default function Appointments() {
                   const prev = filteredAppointments[aptIdx - 1];
                   const dayKey = formatLocalDate(apt.date);
                   const showDayHeader = !prev || formatLocalDate(prev.date) !== dayKey;
-                  const atencion = textoAtencion(apt);
+                  /**
+                   * EL RÓTULO «ATENDIDA HH:MM» PARA LA ENFERMERA (sep-2026).
+                   *
+                   * La hora sale de CUALQUIER `startedAt` de la cita: con la
+                   * cola doctor → doctor → enfermería, basta que el doctor
+                   * arrancara su consulta para que la fila dijera «Atendida
+                   * 09:40» a la enfermera cuyo turno todavía no ha empezado —
+                   * la cita se veía atendida sin que nadie la hubiera pasado.
+                   * Para ella el rótulo solo tiene sentido cuando SU turno ya
+                   * arrancó; mientras tanto, la cola de profesionales (▸ Enf.)
+                   * es lo que dice quién sigue.
+                   */
+                  const enTurnoPendienteEnfermeria =
+                    isNurse
+                    && apt.currentTurnKind === 'enfermeria'
+                    && !((apt.turns || []).find(
+                      (t) => t.kind === 'enfermeria' && t.status === 'pendiente'
+                    )?.startedAt);
+                  const atencion = enTurnoPendienteEnfermeria ? null : textoAtencion(apt);
                   // Solo interesa señalar al que llegó tarde: ver `llegada`.
                   const llegadaDelPaciente = llegada(apt);
                   const llegadaTarde = llegadaDelPaciente?.tarde ? llegadaDelPaciente : null;
@@ -2458,10 +2516,14 @@ export default function Appointments() {
                      * estados donde hay algo por hacer: lo ya cerrado o
                      * cancelado no ofrece nada. Una cita en la bandeja
                      * «finalizado» tampoco (no hay acción que toque).
+                     * 'completada' SÍ cuenta cuando le queda SU turno
+                     * pendiente — cita trabada que hay que reclamar y cerrar
+                     * (ver `bandejaDe`) — y las completadas de verdad no
+                     * cumplen ninguna de las dos condiciones.
                      */
                     const enJuegoParaEnfermeria =
                       isNurse
-                      && ['pendiente', 'confirmada', 'asistida'].includes(apt.status)
+                      && ['pendiente', 'confirmada', 'asistida', 'completada'].includes(apt.status)
                       && (enfermeriaLibre || enfermeriaMia);
                     const handleCardClick = enJuegoParaEnfermeria
                       ? () => setNurseActionModal(apt)
@@ -2525,6 +2587,23 @@ export default function Appointments() {
                         fn: () => (user?.alsoTherapist ? setElegirGorra(apt) : abrirAtencion(apt)),
                       });
                     }
+                    /**
+                      * ODONTOLOGÍA ATENDE DIRECTO (sep-2026).
+                      *
+                      * Para una cita de su sucursal todavía SIN recibir
+                      * (agendada, o marcada ausente por error), el odontólogo
+                      * tiene «Atender» sin pasar por asignar médico: se pone él
+                      * mismo a la cola y abre la ficha. Sobre las ya asistidas
+                      * y suyas manda el «Atender» de arriba, con su turno.
+                      */
+                    if (esOdontologia && ['pendiente', 'confirmada', 'no_asistio'].includes(apt.status)) {
+                      opciones.push({
+                        id: 'atender_directo',
+                        label: 'Atender',
+                        icon: HiOutlinePencilSquare,
+                        fn: () => atenderOdontologia(apt),
+                      });
+                    }
                     if (showDoctorTimer && !inProgress && apt.status !== 'completada') {
                       opciones.push({
                         id: 'iniciar',
@@ -2582,6 +2661,29 @@ export default function Appointments() {
                         label: 'Ver consulta y receta',
                         icon: HiOutlineEye,
                         fn: () => setConsultaModal(apt),
+                      });
+                    }
+                    /**
+                      * LOS SEGUIMIENTOS DEL PACIENTE, DESDE LA AGENDA (sep-2026).
+                      *
+                      * «Ver consulta y receta» solo enseña lo escrito en ESA
+                      * cita; esto abre la historia entera del paciente en una
+                      * ventana de solo lectura. Piden verlo TODOS los que
+                      * acceden a la agenda — y el servidor ya se los da: la
+                      * ruta `GET /clinical-records/:patientId` acepta los
+                      * mismos roles con los que se entra aquí. Lo escrito por
+                      * un terapeuta llega sellado y se muestra como privado;
+                      * corregir no hay: se hace desde la ficha, por su autor.
+                      */
+                    if (apt.patient?._id) {
+                      opciones.push({
+                        id: 'seguimientos',
+                        label: 'Ver seguimientos del paciente',
+                        icon: HiOutlineClipboardDocumentList,
+                        fn: () => setSeguimientosPaciente({
+                          patientId: apt.patient._id,
+                          nombre: [apt.patient?.firstName, apt.patient?.lastName].filter(Boolean).join(' '),
+                        }),
                       });
                     }
                     /**
@@ -3613,6 +3715,24 @@ export default function Appointments() {
                     Ver la consulta y la receta
                   </button>
                 )}
+                {/* La historia entera del paciente, de solo lectura (ver la
+                    opción del menú de la fila: mismos roles que la agenda,
+                    porque el servidor ya se los da en `GET /clinical-records`). */}
+                {detailModal.patient?._id && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSeguimientosPaciente({
+                        patientId: detailModal.patient._id,
+                        nombre: [detailModal.patient?.firstName, detailModal.patient?.lastName].filter(Boolean).join(' '),
+                      });
+                      setDetailModal(null);
+                    }}
+                    className="mt-2 ml-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 cursor-pointer"
+                  >
+                    Ver seguimientos
+                  </button>
+                )}
               </div>
             )}
             {(detailModal.origin && detailModal.origin !== 'standalone') && (
@@ -4005,6 +4125,14 @@ export default function Appointments() {
         <AppointmentFollowUpModal
           appointment={consultaModal}
           onClose={() => setConsultaModal(null)}
+        />
+      )}
+
+      {seguimientosPaciente && (
+        <SeguimientosPacienteModal
+          patientId={seguimientosPaciente.patientId}
+          nombre={seguimientosPaciente.nombre}
+          onClose={() => setSeguimientosPaciente(null)}
         />
       )}
 

@@ -185,7 +185,7 @@ export const ODONTO_NEUROFOCAL_FILAS = [
 export const ODONTOGRAMA_ESTADOS = [
   { key: 'sano', label: 'Sano', tone: 'emerald', color: 'neutro', ambito: 'pieza', simbolo: 'ninguno' },
   { key: 'caries', label: 'Caries', tone: 'red', color: 'rojo', ambito: 'cara', simbolo: 'circulo' },
-  { key: 'obturado', label: 'Obturado / restaurado', tone: 'blue', color: 'azul', ambito: 'cara', simbolo: 'circulo' },
+  { key: 'obturado', label: 'Obturado / restaurado', tone: 'blue', color: 'azul', ambito: 'cara', simbolo: 'circuloLleno' },
   { key: 'sellanteNecesario', label: 'Sellante necesario', tone: 'red', color: 'rojo', ambito: 'cara', simbolo: 'asterisco' },
   { key: 'sellanteRealizado', label: 'Sellante realizado', tone: 'blue', color: 'azul', ambito: 'cara', simbolo: 'asterisco' },
   { key: 'extraccionIndicada', label: 'Extracción indicada', tone: 'rose', color: 'rojo', ambito: 'pieza', simbolo: 'equis' },
@@ -194,9 +194,14 @@ export const ODONTOGRAMA_ESTADOS = [
   // y la causa, si hace falta, va en la nota de la pieza. Se reaprovecha la clave
   // 'ausente' —que ya existía— en vez de inventar una tercera sinónima, así que
   // lo guardado hace tiempo con esa clave se sigue viendo con la etiqueta nueva.
-  { key: 'ausente', label: 'Ausencia', tone: 'slate', color: 'rojo', ambito: 'pieza', simbolo: 'equis' },
-  { key: 'endodoncia', label: 'Endodoncia', tone: 'violet', color: 'rojo', ambito: 'pieza', simbolo: 'triangulo' },
-  { key: 'corona', label: 'Corona', tone: 'amber', color: 'azul', ambito: 'pieza', simbolo: 'punto' },
+  // El color por defecto de cada estado lo pidió el odontólogo (sep-2026):
+  // ausencia y endodoncia salen en azul, corona en rojo. Cualquiera se puede
+  // repintar en la otra tinta desde el selector del odontograma.
+  { key: 'ausente', label: 'Ausencia', tone: 'slate', color: 'azul', ambito: 'pieza', simbolo: 'equis' },
+  { key: 'endodoncia', label: 'Endodoncia', tone: 'violet', color: 'azul', ambito: 'pieza', simbolo: 'triangulo' },
+  // Corona pinta la PIEZA COMPLETA («lleno»): el cuadrado entero queda del
+  // color, no un punto dentro de él.
+  { key: 'corona', label: 'Corona', tone: 'amber', color: 'rojo', ambito: 'pieza', simbolo: 'lleno' },
   { key: 'protesisFija', label: 'Prótesis fija', tone: 'amber', color: 'rojo', ambito: 'pieza', simbolo: 'cajaGuiones' },
   { key: 'protesisRemovible', label: 'Prótesis removible', tone: 'amber', color: 'rojo', ambito: 'pieza', simbolo: 'guiones' },
   { key: 'protesisTotal', label: 'Prótesis total', tone: 'amber', color: 'rojo', ambito: 'pieza', simbolo: 'doblebarra' },

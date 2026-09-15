@@ -1952,8 +1952,65 @@ exports.endConsultation = async (req, res) => {
     }
     await appointment.save();
     emitToClinic(appointment.clinic, 'appointment:updated', appointment);
-    // Al siguiente le llega la cita ahora, igual que al guardar un seguimiento.
-    if (siguiente?.user) emitToUser(siguiente.user, 'appointment:assigned', appointment);
+    /**
+     * Al siguiente le llega la cita ahora, igual que al guardar un seguimiento.
+     * TRES casos, no dos: si el turno que sigue es de enfermería ABIERTO, el
+     * aviso va al ROL entero — con su campana y su push («Cita para
+     * enfermería»), como ya hacían `nurseComplete` y el guardado de
+     * seguimientos. Antes solo se avisaba al siguiente con dueño, y el caso
+     * más común —el doctor que termina con «Finalizar consulta» y le pasa el
+     * paciente a enfermería— no avisaba a nadie: la cita se veía «Atendida»
+     * en la agenda y la enfermera no se enteraba nunca de que era su turno.
+     */
+    if (siguiente) {
+      const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion, laCitaMereceAviso } =
+        require('../utils/appointmentNotice');
+      const paciente = await pacienteDeCita(appointment);
+      if (siguiente.user) {
+        emitToUser(siguiente.user, 'appointment:assigned', appointment);
+        const { notificarUsuarios } = require('../utils/pushNotifications');
+        await notificarUsuarios([siguiente.user], {
+          clinicId: appointment.clinic,
+          type: 'appointment_assigned',
+          title: 'Te toca atender',
+          body: cuerpoDeAviso({
+            paciente,
+            servicio: servicioDeCita(appointment, siguiente),
+            hora: appointment.startTime,
+            motivo: 'El profesional anterior terminó su parte.',
+          }),
+          url: urlDeAtencion(
+            appointment.patient,
+            appointment._id,
+            siguiente.kind === 'enfermeria' ? 'seguimientos' : 'ficha'
+          ),
+          // El sello de la cita: apaga el aviso en cuanto quien lo recibe
+          // atiende (ver filtroDeAvisosVivos en notificationController).
+          meta: { appointment: appointment._id },
+        }).catch(() => {});
+      } else {
+        emitToRole(appointment.clinic, 'enfermero', 'appointment:assigned', appointment);
+        if (laCitaMereceAviso(appointment)) {
+          const { notificarRol } = require('../utils/pushNotifications');
+          await notificarRol(appointment.clinic, 'enfermero', {
+            type: 'appointment_nursing',
+            title: 'Cita para enfermería',
+            body: cuerpoDeAviso({
+              paciente,
+              servicio: servicioDeCita(appointment, siguiente),
+              hora: appointment.startTime,
+              motivo: 'El doctor terminó su parte.',
+            }),
+            url: urlDeAtencion(appointment.patient, appointment._id),
+            meta: { appointment: appointment._id },
+          }).catch(() => {});
+        }
+      }
+    }
+    // Si quedó COMPLETADA, sus avisos de campana sobran.
+    if (appointment.status === 'completada') {
+      await require('../utils/appointmentNotice').apagarAvisosDeCita(appointment._id);
+    }
     emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(appointment));
 
     // Sincronizar derivación asociada
@@ -2655,7 +2712,7 @@ exports.assignDoctor = async (req, res) => {
   try {
     // Cola tal cual la mandó recepción. Si viene el formato viejo, se traduce a
     // pasos: los doctores en fila y enfermería detrás.
-    const pasos = Array.isArray(req.body.steps)
+    let pasos = Array.isArray(req.body.steps)
       ? normalizarPasos(req.body.steps)
       : [
           ...(Array.isArray(req.body.doctors)
@@ -2665,6 +2722,20 @@ exports.assignDoctor = async (req, res) => {
               : []),
           ...(req.body.nursing ? [{ kind: 'enfermeria' }] : []),
         ];
+
+    /**
+     * ODONTOLOGÍA ATENDE DIRECTO (sep-2026).
+     *
+     * En la agenda de odontología el odontólogo puede «Atender» una cita
+     * agendada sin pasar por el modal de recepción: se salta el paso de
+     * asignar médico y se pone a SÍ MISMO como único doctor de la cola. Su
+     * route le abre la puerta a esta API, pero SOLO puede salir de ella con
+     * la cita asignada a su propia cuenta — no reparte la atención de nadie
+     * más, eso sigue siendo cosa de mostrador.
+     */
+    if (req.role === 'odontologia' || req.role === 'odontologia_neurofocal') {
+      pasos = [{ kind: 'doctor', user: String(req.user._id) }];
+    }
 
     const doctores = pasos.filter((p) => p.kind === 'doctor').map((p) => p.user);
     const enfermeria = pasos.some((p) => p.kind === 'enfermeria');
