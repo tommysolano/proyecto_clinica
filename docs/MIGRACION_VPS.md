@@ -384,7 +384,7 @@ server {
 > ```
 >
 > Instala `/etc/nginx/conf.d/clinica-perf.conf` (gzip, `Cache-Control: immutable`
-> en `/assets`, `client_max_body_size 50m`), activa HTTP/2 en la línea
+> en `/assets`, `client_max_body_size 1g`), activa HTTP/2 en la línea
 > `listen ... ssl` y recarga. Verifica con `nginx -t` y **deshace todo** si algo
 > falla. Ver [`deploy/nginx/clinica-perf.conf`](../deploy/nginx/clinica-perf.conf)
 > para el porqué de cada directiva.

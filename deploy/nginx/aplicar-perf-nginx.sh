@@ -234,5 +234,24 @@ else
 fi
 echo "    negociado por curl: $(curl -sS -o /dev/null -w '%{http_version}' --http2 https://app.shiluvecuador.com/api/health 2>/dev/null || echo '? (curl sin soporte http2)')"
 
+# Límite de subida EFECTIVO (lo que nginx va a aplicar de verdad, tras resolver
+# la directiva del contexto más específico). Si aquí aparece un valor menor que
+# 1g, alguna declaración sobrevivió: la subida de archivos seguirá muriendo con
+# 413 («archivo demasiado grande») por encima de ese tope.
+echo
+echo "  Límite de subida (client_max_body_size efectivo):"
+EFECTIVO="$(nginx -T 2>/dev/null | grep -oE 'client_max_body_size[[:space:]]+[^;]+' | awk '{print $2}' | sort -u)"
+if [ -n "$EFECTIVO" ]; then
+  echo "$EFECTIVO" | sed 's/^/    /'
+  MAXIMO="$(printf '%s\n' "$EFECTIVO" | while read -r v; do tamanio_bytes "$v"; done | sort -n | tail -1)"
+  if [ "$MAXIMO" -lt "$TOPE_BYTES" ]; then
+    echo "    ❌ el mayor límite activo es menor que 1g: los archivos grandes seguirán fallando con 413."
+  else
+    echo "    ✅ al menos una declaración llega a 1g."
+  fi
+else
+  echo "    (no se pudo leer la config efectiva con nginx -T)"
+fi
+
 echo
 echo "Copias de seguridad en $BACKUP_DIR"

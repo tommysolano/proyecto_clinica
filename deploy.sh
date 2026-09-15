@@ -140,8 +140,23 @@ if command -v nginx >/dev/null 2>&1; then
       echo "ADVERTENCIA: aplicar-perf-nginx falló; nginx quedó como estaba. Correr a mano:"
       echo "   sudo bash $APP_DIR/deploy/nginx/aplicar-perf-nginx.sh"
     fi
+  elif sudo -n true 2>/dev/null; then
+    # SI CORRE COMO NO-ROOT, igual lo intenta con sudo. Este era el agujero por el
+    # que el arreglo no llegaba al VPS: el usuario del despliegue (secrets.VPS_USER)
+    # no era root, el script solo imprimía el recordatorio y NADIE lo corría a mano
+    # — nginx seguía con su client_max_body_size pequeño (25m) y TODA subida de
+    # más de 25 MB moría con 413 («archivo demasiado grande») aunque el backend
+    # ya aceptara 150 MB. El usuario del deploy tiene sudo (el paso 5/6 ya usa
+    # `sudo -iu clinica` para pm2), así que `sudo -n` aquí funciona y el arreglo
+    # se aplica solo en cada despliegue.
+    if sudo -n bash "$APP_DIR/deploy/nginx/aplicar-perf-nginx.sh" 2>&1 | tail -n 6; then
+      echo "--> nginx verificado con sudo (1 GB de subida, timeouts de proxy aplicados)"
+    else
+      echo "ADVERTENCIA: aplicar-perf-nginx falló con sudo; nginx quedó como estaba. Correr a mano:"
+      echo "   sudo bash $APP_DIR/deploy/nginx/aplicar-perf-nginx.sh"
+    fi
   else
-    echo "--> Este despliegue no corre como root: recuerda aplicar los límites de nginx a mano si cambiaron:"
+    echo "--> Este despliegue no corre como root ni tiene sudo sin contraseña: recuerda aplicar los límites de nginx a mano:"
     echo "   sudo bash $APP_DIR/deploy/nginx/aplicar-perf-nginx.sh"
   fi
 else
