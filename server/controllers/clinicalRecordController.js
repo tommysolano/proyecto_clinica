@@ -1987,6 +1987,19 @@ exports.addFollowUp = async (req, res) => {
      * reportado: «la cita nunca le llega al enfermero, por ende tampoco el
      * suero».
      *
+     * SI LO RECETA QUIEN ATIENDE, NO SE CREA LA CITA (sep-2026, a petición de la
+     * clínica). El doctor atiende desde una cita asignada, guarda el seguimiento
+     * con la receta — y el sistema no debe inventarle una cita de enfermería:
+     * las citas las agendan call center, cajeros, administración y odontología,
+     * y una cita en la agenda de enfermería sin nadie detrás solo confunde
+     * (reportado: «tenemos una cita para atender pero no aparece ningún
+     * suero»). El suero queda PENDIENTE en la receta de la ficha, y ahí lo
+     * recoge quien reparte la atención: en «Asignar atención» la lista de
+     * «Suero de la ficha» lo ofrece con sus ampollas (`conReceta`), y enfermería
+     * lo ve igual al abrir la cita. Solo cuando RECETA MOSTRADOR —cajero,
+     * administración, call center, marketing— nace la tarea: es quien la deja
+     * preparada para que el paciente pase a que se la pongan.
+     *
      * Si la cita de partida ya tiene un turno de enfermería pendiente NO se
      * crea tarea aparte ni se anuncia nada: la cita misma le va a llegar con
      * el suero en la receta (con la cola doctor → enfermería es exactamente lo
@@ -1994,7 +2007,7 @@ exports.addFollowUp = async (req, res) => {
      * doctores y el suero no lo aplicará nadie— la aplicación agenda su
      * propia cita, el mismo camino del mostrador.
      */
-    if (sueros.length && !citaAutomatica?.paraEnfermeria) {
+    if (sueros.length && !citaAutomatica?.paraEnfermeria && !isDoctorRole(req.role)) {
       try {
         let hayEnfermeriaPendiente = false;
         if (req.body.appointmentId) {

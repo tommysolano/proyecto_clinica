@@ -97,8 +97,17 @@ test('odontologia_neurofocal guarda su seguimiento con suero y la cita pasa a en
   );
 });
 
-test('odontologia_neurofocal receta suero sin turno de enfermería: la cita se cierra y el suero le sale a la enfermera', async () => {
-  const { clinicId, userId, patient, odonto, enf, cita } = await seed();
+test('odontologia_neurofocal receta suero sin turno de enfermería: el suero queda pendiente, SIN cita inventada', async () => {
+  /**
+   * Sep-2026, a petición de la clínica: el sistema NO crea citas de enfermería
+   * automáticamente cuando quien receta es un doctor. Atendió desde su cita
+   * asignada, guardó el seguimiento con la receta — y ahí se acaba: ninguna
+   * cita extra en la agenda de nadie. El suero queda pendiente en la ficha y
+   * ahí lo recoge quien reparte la atención: en «Asignar atención» la lista de
+   * «Suero de la ficha» lo ofrece (ver `conReceta` en getOrCreateByPatient), y
+   * por la puerta `by-appointment` la receta también sale al abrir la cita.
+   */
+  const { clinicId, userId, patient, odonto, cita } = await seed();
 
   await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
     steps: [{ kind: 'doctor', user: odonto._id }],
@@ -115,23 +124,23 @@ test('odontologia_neurofocal receta suero sin turno de enfermería: la cita se c
   const media = await Appointment.findById(cita._id).lean();
   assert.equal(media.status, 'completada');
 
-  // …y la APLICACIÓN del suero quedó en cola: cita para enfermería + aviso.
-  const extra = r.payload?.autoAppointment;
-  assert.ok(extra?.paraEnfermeria, 'la respuesta debe avisar de la cita para enfermería');
-  assert.ok(extra?._id, 'debe venir la cita del suero');
-  const tarea = await Appointment.findById(extra._id).lean();
-  assert.equal(tarea.status, 'asistida');
-  assert.equal(tarea.currentTurnKind, 'enfermeria');
-  assert.equal(tarea.currentTurnUser, null, 'turno abierto: la toma quien pueda');
+  // …y NO nació ninguna cita de enfermería automática.
+  assert.equal(r.payload?.autoAppointment, undefined, 'no debe inventarse una cita para enfermería');
+  const cuentas = await Appointment.countDocuments({ patient: patient._id });
+  assert.equal(cuentas, 1, 'solo la cita original');
 
+  // El suero sigue pendiente en la ficha: es lo que la lista de «Asignar
+  // atención» ofrece para aplicarlo, con su sello de suero intacto.
+  const rec = await ClinicalRecord.findOne({ patient: patient._id }).lean();
+  const linea = (rec.followUps.find((f) => String(f._id) === String(media.turns[0].followUp))?.recetaItems || [])
+    .find((i) => i.isSerum);
+  assert.ok(linea, 'el suero queda escrito en la receta');
+  assert.equal(linea.quantity, 1);
+  assert.equal((linea.administrations || []).length, 0, 'todavía sin aplicar');
   assert.equal(
-    (await bandeja(clinicId, enf._id, 'enfermero')).includes(String(extra._id)),
-    true,
-    'la cita del suero debe salir en la bandeja del enfermero',
-  );
-  assert.ok(
-    await Notification.findOne({ type: 'appointment_nursing', title: 'Suero por aplicar', 'meta.appointment': extra._id }).lean(),
-    'debe existir el aviso «Suero por aplicar»',
+    await Notification.countDocuments({ type: 'appointment_nursing' }),
+    0,
+    'sin aviso de tarea que no existe',
   );
 });
 
