@@ -37,7 +37,7 @@ const DRY = process.argv.includes('--dry');
     ],
   };
 
-  const candidatas = await col.find(filtro).project({ _id: 1, patient: 1, reason: 1, status: 1, createdAt: 1 }).toArray();
+  const candidatas = await col.find(filtro).project({ _id: 1, clinic: 1, patient: 1, reason: 1, status: 1, createdAt: 1 }).toArray();
   const ids = candidatas.map((c) => c._id);
   console.log(`Candidatas: ${candidatas.length}`);
 
@@ -67,18 +67,28 @@ const DRY = process.argv.includes('--dry');
     console.log(`Notificaciones de campana apagadas: ${n.deletedCount || 0}`);
     // Queda constancia en la auditoría, igual que cuando una persona borra una
     // cita por la API (ver deleteAppointment): «quien la borró y qué borró».
+    // Va UNA entrada por sucursal (el esquema exige clinic).
     try {
       const AuditLog = require('../models/AuditLog');
-      await AuditLog.create({
-        action: 'DELETE',
-        entity: 'appointments',
-        entityId: null,
-        userName: 'script:limpiarCitasAutomaticasDoctor',
-        role: 'sistema',
-        description: `Limpieza automática (sep-2026): se eliminaron ${r.deletedCount} citas que el sistema creó solo cuando un doctor atendió o recetó (motivo «Atención inmediata» o «Aplicación de suero recetado»). Decisión de la clínica: los doctores no generan citas; solo agendan call center, cajeros, administración y odontología.`,
-        method: 'SCRIPT',
-        path: 'scripts/limpiarCitasAutomaticasDoctor.js',
-      });
+      const porSucursal = new Map();
+      for (const c of aBorrar) {
+        const k = String(c.clinic || '');
+        porSucursal.set(k, (porSucursal.get(k) || 0) + 1);
+      }
+      for (const [clinic, total] of porSucursal) {
+        // eslint-disable-next-line no-await-in-loop
+        await AuditLog.create({
+          clinic,
+          action: 'DELETE',
+          entity: 'appointments',
+          entityId: null,
+          userName: 'script:limpiarCitasAutomaticasDoctor',
+          role: 'sistema',
+          description: `Limpieza automática (sep-2026): se eliminaron ${total} citas que el sistema creó solo cuando un doctor atendió o recetó (motivo «Atención inmediata» o «Aplicación de suero recetado»). Decisión de la clínica: los doctores no generan citas; solo agendan call center, cajeros, administración y odontología.`,
+          method: 'SCRIPT',
+          path: 'scripts/limpiarCitasAutomaticasDoctor.js',
+        });
+      }
     } catch (e) {
       console.warn('No se pudo registrar la limpieza en auditoría:', e.message);
     }
