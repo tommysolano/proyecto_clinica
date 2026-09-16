@@ -34,6 +34,19 @@ const chatGalleryImageSchema = new mongoose.Schema(
       default: 'gallery',
       index: true,
     },
+    /**
+     * MEDIA IDS YA SUBIDOS A META (WhatsApp Cloud API), por número.
+     *
+     * Enviar un adjunto a Meta y luego mandar el mensaje por media id cuesta una
+     * subida multipart COMPLETA por cada destinatario: una automatización o
+     * campaña que manda el mismo PDF a 200 contactos subía 200 veces los mismos
+     * bytes. El media id que Meta devuelve es reutilizable dentro de la misma
+     * cuenta, así que se guarda aquí la primera subida —`{ accountId: { id, at }
+     * }`— y los envíos siguientes mandan ese id sin volver a subir nada.
+     * Escrito por utils/whatsappCloud.sendMedia; TTL de 30 días (por si Meta
+     * recicla ids, se re-subuye y listo).
+     */
+    metaMediaIds: { type: mongoose.Schema.Types.Mixed, default: {} },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

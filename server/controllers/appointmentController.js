@@ -524,45 +524,16 @@ async function resolverServicioAgenda(serviceItemId) {
 /**
  * LOS BLOQUEOS DE HORARIO QUE APLICAN A UNA CITA, en un solo sitio.
  *
- * Lo usan las DOS puertas donde una cita nace o se mueve —crear (con sucursal
- * destino) y editar—. Replicado en cada una, una puerta decía «bloqueado» y la
- * otra dejaba pasar la misma cita.
- *
- * SEMÁNTICA (sep-2026): un bloqueo declara cero o más dimensiones —servicio,
- * doctor, consultorio— y aplica a la cita cuando TODAS las que declara
- * coinciden. Un bloqueo sin nada declarado es GENERAL: bloquea todo en su
- * sucursal. El servicio se declara con el catálogo de la agenda
- * (AppointmentServiceItem) y casa también con el legado del inventario
- * (`services[].product`), igual que el filtro de servicio de la agenda.
+ * Viven en utils/timeBlockCheck.js para que TODAS las puertas donde nace una
+ * cita —crear y editar aquí, la tanda del chat/CRM y la reserva pública—
+ * apliquen exactamente la misma regla. Antes solo estaban aquí y la puerta del
+ * CRM dejaba agendar encima de un bloqueo del día 20 sin decir nada.
  */
-async function bloqueosQueAplican({ clinicId, date, serviceIds = [], doctor = null, room = null }) {
-  const TimeBlock = require('../models/TimeBlock');
-  const blocks = await TimeBlock.find({
-    clinic: clinicId,
-    startDate: { $lte: date },
-    endDate: { $gte: date },
-  }).lean();
-  const servicios = new Set((serviceIds || []).filter(Boolean).map(String));
-  const doc = doctor ? String(doctor) : null;
-  const sala = room ? String(room) : null;
-  return blocks.filter((b) => {
-    if (b.service && !servicios.has(String(b.service))) return false;
-    if (b.doctor && String(b.doctor) !== doc) return false;
-    if (b.room && String(b.room) !== sala) return false;
-    return true;
-  });
-}
-
-/** ¿El horario de la cita cae dentro del bloqueo? (allDay o sin horas = todo el día) */
-function bloqueaElHorario(block, start, end) {
-  if (block.allDay || !block.startTime || !block.endTime) return true;
-  // `>=` abajo: una cita que empieza justo cuando empieza el bloqueo, cae.
-  return start < block.endTime && (end || start) >= block.startTime;
-}
-
-function mensajeBloqueo(block) {
-  return `Horario bloqueado por administración${block.reason ? `: ${block.reason}` : ''}`;
-}
+const {
+  bloqueosQueAplican,
+  bloqueaElHorario,
+  mensajeBloqueo,
+} = require('../utils/timeBlockCheck');
 
 /**
  * QUIEN ATIENDE TIENE QUE SER DE LA SUCURSAL DE LA CITA.

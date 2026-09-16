@@ -42,7 +42,9 @@ router.get('/saved-replies/folders', requireRole(...CALL_CENTER_ROLES), ctrl.lis
 router.post('/saved-replies/folders', requireRole(...CALL_CENTER_ROLES), ctrl.createSavedReplyFolder);
 router.put('/saved-replies/folders', requireRole(...CALL_CENTER_ROLES), ctrl.renameSavedReplyFolder); // { path, name }
 router.delete('/saved-replies/folders', requireRole(...CALL_CENTER_ROLES), ctrl.deleteSavedReplyFolder); // ?path=...&mode=
-router.post('/saved-replies/upload', requireRole(...CALL_CENTER_ROLES), ctrl.uploadSavedReplyMedia);
+// Multipart opcional: el cliente puede mandar el archivo EN CRUDO (FormData)
+// o el data URL en JSON como siempre. Ver chatController.mediaUploadMiddleware.
+router.post('/saved-replies/upload', requireRole(...CALL_CENTER_ROLES), ctrl.mediaUploadMiddleware, ctrl.uploadSavedReplyMedia);
 router.post('/saved-replies/test', requireRole(...CALL_CENTER_ROLES), ctrl.testSavedReply);
 router.post('/saved-replies', requireRole(...CALL_CENTER_ROLES), ctrl.createSavedReply);
 router.post('/saved-replies/:id/used', requireRole(...CALL_CENTER_ROLES), ctrl.markSavedReplyUsed);
@@ -82,7 +84,7 @@ router.delete('/flows/:id', requireRole(...CALL_CENTER_ROLES), flowCtrl.deleteFl
 
 // Galería de imágenes
 router.get('/gallery', requireRole(...CALL_CENTER_ROLES), ctrl.listGallery);
-router.post('/gallery', requireRole(...CALL_CENTER_ROLES), ctrl.uploadGallery);
+router.post('/gallery', requireRole(...CALL_CENTER_ROLES), ctrl.mediaUploadMiddleware, ctrl.uploadGallery);
 router.delete('/gallery/:id', requireRole(...CALL_CENTER_ROLES), ctrl.deleteGalleryItem);
 
 // Vista global de oportunidades

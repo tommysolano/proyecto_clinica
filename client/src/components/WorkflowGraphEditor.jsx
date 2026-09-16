@@ -2772,7 +2772,7 @@ function NodeAttachment({ d, set }) {
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef(null);
 
-  const upload = (file) => {
+  const upload = async (file) => {
     if (!file) return;
     const isImage = file.type.startsWith('image/');
     const isVideo = file.type.startsWith('video/');
@@ -2784,22 +2784,23 @@ function NodeAttachment({ d, set }) {
     // es demasiado largo y no baja ni comprimiéndolo, el backend lo avisa.
     if (isVideo && file.size > 100 * 1024 * 1024) return toast.error('Video: máximo 100MB');
     if (isAudio && file.size > 15 * 1024 * 1024) return toast.error('Audio: máximo 15MB');
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        setUploading(true);
-        // Mismo storage autoalojado que los mensajes guardados: la URL pública
-        // resultante la entienden ambos gateways (Cloud por link, QR por bytes).
-        const r = await api.post('/chats/saved-replies/upload', { name: file.name, dataUrl: ev.target.result });
-        set({ mediaUrl: r.data.url, mediaType: r.data.type, mediaName: file.name });
-        toast.success('Adjunto subido');
-      } catch (err) {
-        toast.error(err.response?.data?.message || 'Error al subir adjunto');
-      } finally {
-        setUploading(false);
-      }
-    };
-    reader.readAsDataURL(file);
+    setUploading(true);
+    try {
+      // En crudo por multipart (FormData): el archivo no pasa por FileReader ni
+      // se infla a base64 — un video viaja sus MB reales y el servidor lo
+      // normaliza igual. Mismo storage autoalojado que los mensajes guardados:
+      // la URL pública resultante la entienden ambos gateways.
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      fd.append('name', file.name);
+      const r = await api.post('/chats/saved-replies/upload', fd);
+      set({ mediaUrl: r.data.url, mediaType: r.data.type, mediaName: file.name });
+      toast.success('Adjunto subido');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al subir adjunto');
+    } finally {
+      setUploading(false);
+    }
   };
 
   if (d.mediaUrl) return (

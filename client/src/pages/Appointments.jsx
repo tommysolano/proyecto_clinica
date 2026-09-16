@@ -131,6 +131,20 @@ const BANDEJAS = [
   ['todas', 'Todas'],
 ];
 
+/**
+ * BURBUJAS DE ESTADO (sep-2026, a pedido del usuario): las burbujas de antes,
+ * vueltas como filtros rápidos para MARKETING, CALL CENTER, CAJERO Y
+ * ADMINISTRACIÓN. Filtran por el ESTADO de la cita —no por turnos, como las
+ * bandejas del enfermero, que no se tocan— y no se enseñan a ningún otro rol.
+ */
+const BURBUJAS_ESTADO = [
+  ['todas', 'Todas'],
+  ['pendiente', 'Pendientes'],
+  ['asistida', 'Asistidas'],
+  ['completada', 'Completadas'],
+  ['no_asistio', 'No asistieron'],
+];
+
 const statusLabels = {
   pendiente: 'Pendiente',
   confirmada: 'Confirmada',
@@ -711,6 +725,17 @@ export default function Appointments() {
    * control por estado de la cita, y los botones solo les ocupaban sitio.
    */
   const [bandeja, setBandeja] = useState(isNurse ? 'pendiente' : 'todas');
+
+  /**
+   * BURBUJAS DE ESTADO para marketing, call center, cajero y administración
+   * (sep-2026): los filtros rápidos de antes, de vuelta, pero por el ESTADO de
+   * la cita y SOLO para esos roles. El enfermero conserva SUS bandejas intactas
+   * y el resto de roles no las pidió. La burbuja filtra en el navegador sobre
+   * el día ya cargado (igual que la bandeja de enfermería), así que los
+   * contadores siempre reflejan TODO el día, no la burbuja abierta.
+   */
+  const veBurbujasEstado = hasRole('admin', 'cajero', 'call_center', 'marketing');
+  const [burbujaEstado, setBurbujaEstado] = useState('');
   // Id del que mira, para decidir su bandeja: lo que para él está pendiente es
   // lo que todavía no ha tomado, no lo que la cita diga de sí misma.
   const miId = String(user?.id || user?._id || '');
@@ -1450,8 +1475,13 @@ export default function Appointments() {
       filter
     );
     // La bandeja también cuenta: si estás mirando «Pendientes», el archivo de un
-    // rango tiene que traer pendientes, no todo.
-    return bandeja === 'todas' ? lista : lista.filter((a) => bandejaDe(a) === bandeja);
+    // rango tiene que traer pendientes, no todo. La burbuja de estado de
+    // marketing/cajero/call center/admin corta igual.
+    let salida = bandeja === 'todas' ? lista : lista.filter((a) => bandejaDe(a) === bandeja);
+    if (veBurbujasEstado && burbujaEstado) {
+      salida = salida.filter((a) => a.status === burbujaEstado);
+    }
+    return salida;
   };
 
   const exportExcel = async () => {
@@ -1495,8 +1525,11 @@ export default function Appointments() {
       .map((sid) => services.find((p) => String(p._id) === String(sid))?.name)
       .filter(Boolean);
     const doctorElegido = doctors.find((d) => String(d._id) === String(filter.doctor));
+    // El desplegable de estado y la burbuja nunca están los dos puestos: la
+    // burbuja solo dice Estado cuando es el filtro real de lo que se baja.
+    const estadoDelFiltro = filter.status || (view === 'list' ? burbujaEstado : '');
     const filtros = [
-      filter.status && `Estado: ${statusLabels[filter.status] || filter.status}`,
+      estadoDelFiltro && `Estado: ${statusLabels[estadoDelFiltro] || estadoDelFiltro}`,
       filter.isFirstVisit && (filter.isFirstVisit === 'true' ? 'Solo pacientes nuevos' : 'Solo recurrentes'),
       sede && `Sucursal: ${sede.nombreComercial || sede.name}`,
       serviciosElegidos.length > 0 && `Servicios: ${serviciosElegidos.join(', ')}`,
@@ -1828,14 +1861,32 @@ export default function Appointments() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [citasFiltradas, isNurse, isDoctor, miId]);
 
-  const filteredAppointments = useMemo(
-    () =>
-      (!isNurse || bandeja === 'todas')
-        ? citasFiltradas
-        : citasFiltradas.filter((a) => bandejaDe(a) === bandeja),
+  /**
+   * CONTADORES DE LAS BURBUJAS DE ESTADO (marketing/cajero/call center/admin).
+   * Sobre `citasFiltradas` —todo el día ya filtrado por los demás filtros— para
+   * que cada burbuja diga lo que hay detrás sin abrirla.
+   */
+  const conteoBurbujas = useMemo(() => {
+    const c = { pendiente: 0, asistida: 0, completada: 0, no_asistio: 0, todas: citasFiltradas.length };
+    citasFiltradas.forEach((a) => {
+      if (c[a.status] !== undefined) c[a.status] += 1;
+    });
+    return c;
+  }, [citasFiltradas]);
+
+  const filteredAppointments = useMemo(() => {
+    if (isNurse) {
+      if (bandeja === 'todas') return citasFiltradas;
+      return citasFiltradas.filter((a) => bandejaDe(a) === bandeja);
+    }
+    // La burbuja de estado abierta recorta la lista en el navegador, igual que
+    // la bandeja del enfermero. Nada de esto cambia para quien no ve burbujas.
+    if (veBurbujasEstado && burbujaEstado) {
+      return citasFiltradas.filter((a) => a.status === burbujaEstado);
+    }
+    return citasFiltradas;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [citasFiltradas, bandeja, isNurse, isDoctor, miId]
-  );
+  }, [citasFiltradas, bandeja, burbujaEstado, isNurse, isDoctor, miId, veBurbujasEstado]);
 
   /**
    * LAS FILAS DEL DÍA: citas MEZCLADAS con los bloqueos de horario, por hora.
@@ -2107,6 +2158,10 @@ export default function Appointments() {
               onChange={(e) => {
                 setFilter({ ...filter, status: e.target.value });
                 if (e.target.value) setBandeja('todas');
+                // El desplegable y las burbujas de estado dicen lo mismo de dos
+                // formas: al usar el desplegable, la burbuja vuelve a «Todas»
+                // para que nunca den juntos una lista vacía.
+                setBurbujaEstado('');
               }}
               className="px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
             >
@@ -2370,6 +2425,47 @@ export default function Appointments() {
               </span>
             </button>
           ))}
+        </div>
+      )}
+
+      {/**
+       * BURBUJAS DE ESTADO para marketing, call center, cajero y administración
+       * (sep-2026): las burbujas de antes, de vuelta, ahora por el ESTADO de la
+       * cita. Misma forma que las bandejas de enfermería —que NO se tocan— y
+       * mismo trato con el desplegable de estado: uno de los dos se apaga al
+       * abrir el otro, para que nunca den la lista vacía por contradicción.
+       * Solo en la vista de lista, como las bandejas.
+       */}
+      {view !== 'calendar' && veBurbujasEstado && (
+        <div className="flex gap-1.5 overflow-x-auto mb-2 md:mb-3 pb-0.5">
+          {BURBUJAS_ESTADO.map(([id, label]) => {
+            const activa = id === 'todas' ? !burbujaEstado : burbujaEstado === id;
+            return (
+              <button
+                key={id}
+                onClick={() => {
+                  setBurbujaEstado(id === 'todas' ? '' : id);
+                  // Mismo acuerdo que las bandejas del enfermero: el desplegable
+                  // de estado dice lo mismo de otra forma.
+                  if (filter.status) setFilter((f) => ({ ...f, status: '' }));
+                }}
+                className={`shrink-0 flex items-center gap-1.5 px-3 sm:px-4 py-2 rounded-xl text-sm font-medium cursor-pointer border transition-colors ${
+                  activa
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-white text-slate-600 border-slate-200 hover:bg-emerald-50'
+                }`}
+              >
+                {label}
+                <span
+                  className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                    activa ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-500'
+                  }`}
+                >
+                  {conteoBurbujas[id]}
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
 

@@ -29,6 +29,42 @@ const { validarSucursalDestino } = require('../utils/clinicScope');
 const { aplicarValorDeCita } = require('../utils/appointmentValue');
 
 /**
+ * SUBIDA MULTIPART DE ADJUNTOS DEL CRM.
+ *
+ * Hasta ahora el archivo viajaba como data URL base64 DENTRO del JSON: el
+ * navegador inflaba los bytes un 33% (FileReader), express.json parseaba un
+ * cuerpo de decenas de megas en memoria y la subida de un video tardaba el
+ * doble de lo que manda la red. Con multipart los bytes van EN CRUDO — un
+ * archivo de 20 MB viaja 20 MB — y no hay JSON gigante que parsear. El handler
+ * recibe `req.file` y lo convierte al mismo data URL interno, así que TODO el
+ * pipeline de normalización (audio→ogg, video→H.264, guardado en disco) queda
+ * igual. El camino JSON (dataUrl en el cuerpo) sigue aceptándose: clientes
+ * viejos, tests y los adjuntos que llegan ya comprimidos desde el navegador.
+ */
+exports.mediaUploadMiddleware = (req, res, next) => {
+  const upload = require('multer')({
+    storage: require('multer').memoryStorage(),
+    limits: { fileSize: 110 * 1024 * 1024, files: 1 },
+  }).single('file');
+  upload(req, res, (err) => {
+    if (!err) return next();
+    const msg = err.code === 'LIMIT_FILE_SIZE'
+      ? 'El archivo supera los 110 MB de subida'
+      : (err.message || 'No se pudo recibir el archivo');
+    return res.status(400).json({ message: msg });
+  });
+};
+
+/** Data URL interno desde un archivo multipart, con cabecera SIEMPRE limpia. */
+function dataUrlDeMultipart(file) {
+  const mime = String(file.mimetype || '').split(';')[0].trim() || 'application/octet-stream';
+  return {
+    dataUrl: `data:${mime};base64,${file.buffer.toString('base64')}`,
+    name: file.originalname || '',
+  };
+}
+
+/**
  * Normaliza un número de teléfono a sólo dígitos (sin +, ni espacios).
  */
 function normalizePhone(raw) {
@@ -1519,8 +1555,15 @@ exports.updateSavedReply = async (req, res) => {
  */
 exports.uploadSavedReplyMedia = async (req, res) => {
   try {
-    const { name } = req.body;
+    let { name } = req.body;
     let { dataUrl } = req.body;
+    // Multipart: el archivo llegó en crudo (ver mediaUploadMiddleware). Se
+    // convierte al data URL interno y sigue el MISMO pipeline de siempre.
+    if (!dataUrl && req.file) {
+      const parts = dataUrlDeMultipart(req.file);
+      dataUrl = parts.dataUrl;
+      name = name || parts.name;
+    }
     const parsed = require('../utils/dataUrl').parseDataUrl(dataUrl);
     if (!parsed) {
       return res.status(400).json({ message: 'Archivo inválido' });
@@ -2214,7 +2257,13 @@ exports.listGallery = async (req, res) => {
 
 exports.uploadGallery = async (req, res) => {
   try {
-    const { name, dataUrl } = req.body;
+    let { name, dataUrl } = req.body;
+    // Multipart: mismos motivos que uploadSavedReplyMedia (sin base64 gigante).
+    if (!dataUrl && req.file) {
+      const parts = dataUrlDeMultipart(req.file);
+      dataUrl = parts.dataUrl;
+      name = name || parts.name;
+    }
     // Parseo tolerante (el tipo puede traer parámetros) y cabecera normalizada al
     // guardar, para que el adjunto siempre se pueda servir por su URL pública.
     const parsed = require('../utils/dataUrl').parseDataUrl(dataUrl);
@@ -5606,6 +5655,31 @@ exports.createAppointmentFromChat = async (req, res) => {
       const destino = await validarSucursalDestino(req, a.clinic);
       if (!destino.ok) return res.status(destino.status).json({ message: destino.message });
       const targetClinic = destino.clinicId;
+
+      /**
+       * LOS BLOQUEOS DE HORARIO TAMBIÉN CORTAN AQUÍ.
+       *
+       * Esta puerta creaba la cita DIRECTO (Appointment.create) sin mirar los
+       * TimeBlock de administración/marketing: un bloqueo del día 20 —general o
+       * por servicio— existía y la agenda lo respetaba, pero una cita agendada
+       * desde el CRM pasaba por encima igual. Es la misma regla que
+       * `createAppointment` (ver utils/timeBlockCheck): el bloqueo por servicio
+       * casa con el catálogo de la agenda y con el legado del inventario.
+       */
+      const rechazo = await require('../utils/timeBlockCheck').bloqueoQueRechaza({
+        clinicId: targetClinic,
+        date: localDate,
+        startTime: a.startTime,
+        endTime: a.endTime || null,
+        serviceIds: [a.serviceItem, ...(a.services || []).map((s) => s.product)],
+        doctor: a.doctor || null,
+        room: a.room || null,
+      });
+      if (rechazo) {
+        return res.status(400).json({
+          message: `Cita #${filas.indexOf(a) + 1}: ${require('../utils/timeBlockCheck').mensajeBloqueo(rechazo)}`,
+        });
+      }
 
       /**
        * VALOR ACORDADO Y PAGO ADELANTADO, por la misma puerta que el resto.

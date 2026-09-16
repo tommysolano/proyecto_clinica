@@ -175,6 +175,59 @@ function metaUploadMime(mimeType) {
  * (URL no alcanzable, HTTPS, tamaño, timeout). Devuelve { ok, id } o el error de
  * Meta (media muy grande, tipo no soportado, etc.) para marcar el envío fallido.
  */
+
+/**
+ * CACHÉ DE MEDIA IDS DE META (por adjunto y por número).
+ *
+ * La subida a Meta es la parte LENTA de cada envío con archivo: los bytes van
+ * completos por multipart a graph.facebook.com. Una automatización que manda el
+ * mismo PDF a 200 contactos —o una campaña, o un drip— repetía esa subida 200
+ * veces: los mismos bytes, una vez por destinatario. El media id que Meta
+ * devuelve es REUTILIZABLE dentro de la misma cuenta ( phoneNumberId ), así que
+ * la primera subida se recuerda —en memoria del proceso y en el documento del
+ * adjunto (ChatGalleryImage.metaMediaIds), para sobrevivir a un reinicio— y los
+ * envíos siguientes reutilizan el id sin subir nada. TTL de 30 días por si Meta
+ * recicla ids: vencido, se sube de nuevo sin más.
+ */
+const MEDIA_ID_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const metaMediaIdCache = new Map(); // `${phoneNumberId}:${attachmentId}` → { id, at }
+
+function mediaIdFresco(hit) {
+  return hit && hit.id && Date.now() - new Date(hit.at || 0).getTime() < MEDIA_ID_TTL_MS;
+}
+
+async function mediaIdDeCache(attachmentId, accountId) {
+  const key = `${accountId}:${attachmentId}`;
+  const mem = metaMediaIdCache.get(key);
+  if (mediaIdFresco(mem)) return mem.id;
+  // El doc del adjunto: la memoria se vació con un reinicio, pero la primera
+  // subida quedó escrita en Mongo.
+  const doc = await require('../models/ChatGalleryImage')
+    .findById(attachmentId)
+    .select('metaMediaIds')
+    .lean()
+    .catch(() => null);
+  const hit = doc?.metaMediaIds?.[String(accountId)];
+  if (mediaIdFresco(hit)) {
+    metaMediaIdCache.set(key, { id: hit.id, at: hit.at || new Date().toISOString() });
+    return hit.id;
+  }
+  return null;
+}
+
+function guardarMediaIdEnCache(attachmentId, accountId, mediaId) {
+  if (!attachmentId || !accountId || !mediaId) return;
+  const at = new Date().toISOString();
+  metaMediaIdCache.set(`${accountId}:${attachmentId}`, { id: mediaId, at });
+  // Best-effort: si Mongo falla, la memoria de proceso ya cubre esta tanda.
+  require('../models/ChatGalleryImage')
+    .updateOne(
+      { _id: attachmentId },
+      { $set: { [`metaMediaIds.${accountId}`]: { id: String(mediaId), at } } }
+    )
+    .catch(() => {});
+}
+
 async function uploadMedia(creds, { buffer, mimeType }) {
   if (!isConfigured(creds)) return { ok: false, simulated: true };
   const apiVersion = creds.apiVersion || DEFAULT_API_VERSION;
@@ -258,15 +311,26 @@ async function sendMedia(creds, to, url, caption, type = 'image', contextMessage
 
   let media;
   if (buffer) {
-    const up = await uploadMedia(creds, { buffer, mimeType: byteMime });
-    // La subida falló (media muy grande para WhatsApp, tipo no soportado…): se
-    // devuelve el error para que el envío se marque FALLIDO, NO "enviado".
-    if (!up.ok) {
-      console.warn('[wa-cloud sendMedia] subida a Meta FALLÓ kind=%s mime=%s bytes=%d error=%s', kind, byteMime, buffer.length, up.error || '');
-      return { ok: false, status: up.status, errorCode: 'media_upload_failed', error: up.error || 'No se pudo subir el archivo a WhatsApp.', data: up.data };
+    // Primero el caché: si este adjunto ya se subió a ESTA cuenta, Meta ya tiene
+    // los bytes y el mensaje sale directo por media id (ver arriba).
+    let mediaId = selfHosted
+      ? await mediaIdDeCache(selfHosted[1], creds.phoneNumberId)
+      : null;
+    if (mediaId) {
+      console.log('[wa-cloud sendMedia] media id en caché (sin re-subida) adjunto=%s cuenta=%s', selfHosted[1], creds.phoneNumberId);
+    } else {
+      const up = await uploadMedia(creds, { buffer, mimeType: byteMime });
+      // La subida falló (media muy grande para WhatsApp, tipo no soportado…): se
+      // devuelve el error para que el envío se marque FALLIDO, NO "enviado".
+      if (!up.ok) {
+        console.warn('[wa-cloud sendMedia] subida a Meta FALLÓ kind=%s mime=%s bytes=%d error=%s', kind, byteMime, buffer.length, up.error || '');
+        return { ok: false, status: up.status, errorCode: 'media_upload_failed', error: up.error || 'No se pudo subir el archivo a WhatsApp.', data: up.data };
+      }
+      mediaId = up.id;
+      if (selfHosted) guardarMediaIdEnCache(selfHosted[1], creds.phoneNumberId, mediaId);
+      console.log('[wa-cloud sendMedia] subida OK id=%s kind=%s mime=%s bytes=%d', up.id, kind, byteMime, buffer.length);
     }
-    media = { id: up.id };
-    console.log('[wa-cloud sendMedia] subida OK id=%s kind=%s mime=%s bytes=%d', up.id, kind, byteMime, buffer.length);
+    media = { id: mediaId };
   } else {
     // URL externa: se envía por link (Meta la descarga; debe ser pública).
     media = { link: String(url || '') };

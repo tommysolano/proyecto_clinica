@@ -65,7 +65,7 @@ import TagEditor from '../components/TagEditor';
 import SuggestInput from '../components/SuggestInput';
 import WhatsappButtons from '../components/WhatsappButtons';
 import { fmtDate, fmtDateTime, todayEc, nowEcHHMM } from '../utils/date';
-import { imageFromClipboard, imageFileToDataUrl, pastedImageName, readFileAsDataUrl } from '../utils/chatMedia';
+import { imageFromClipboard, imageFileToDataUrl, pastedImageName } from '../utils/chatMedia';
 import useVoiceRecorder, { formatDuration } from '../hooks/useVoiceRecorder';
 import useWhatsappCall from '../hooks/useWhatsappCall';
 import CallPanel from '../components/CallPanel';
@@ -1291,14 +1291,30 @@ export default function Chats() {
     }
   }, [activeId]);
 
-  // Sube un adjunto ya leído como data URL y lo deja preparado en el composer.
-  // Devuelve true si quedó listo. El uploader es el mismo que usan los mensajes
-  // guardados: almacena la media y devuelve una URL pública que ambos gateways
-  // (Cloud API y QR) saben resolver.
-  const attachMedia = async ({ dataUrl, name, type, size = 0 }) => {
+  // Sube un adjunto y lo deja preparado en el composer. Devuelve true si quedó
+  // listo. El uploader es el mismo que usan los mensajes guardados: almacena la
+  // media y devuelve una URL pública que ambos gateways (Cloud API y QR) saben
+  // resolver.
+  //
+  // Dos formas de viajar, a elegir por quien llama:
+  //   - `file` (File/Blob) → multipart con los bytes EN CRUDO. Es lo rápido:
+  //     sin FileReader ni base64 el archivo viaja un 25% más pequeño y el
+  //     servidor no parsea un JSON gigante. Para videos, documentos y notas de
+  //     voz es la diferencia entre «se cuelga» y «se sube».
+  //   - `dataUrl` → JSON como siempre (imágenes: ya vienen recomprimidas por
+  //     `imageFileToDataUrl`, que necesita mirarlas antes de mandarlas).
+  const attachMedia = async ({ file, dataUrl, name, type, size = 0 }) => {
     setAttachingMedia(true);
     try {
-      const { data } = await api.post('/chats/saved-replies/upload', { name, dataUrl });
+      let data;
+      if (file) {
+        const fd = new FormData();
+        fd.append('file', file, name);
+        if (name) fd.append('name', name);
+        ({ data } = await api.post('/chats/saved-replies/upload', fd));
+      } else {
+        ({ data } = await api.post('/chats/saved-replies/upload', { name, dataUrl }));
+      }
       setAttachmentDraft({ url: data.url, type: data.type || type, name: data.name || name, size });
       return true;
     } catch (err) {
@@ -1320,11 +1336,19 @@ export default function Chats() {
     const m = (file.type || '').toLowerCase();
     const type = m.startsWith('image/') ? 'image' : m.startsWith('video/') ? 'video' : m.startsWith('audio/') ? 'audio' : 'document';
     try {
-      let dataUrl = type === 'image' ? await imageFileToDataUrl(file) : await readFileAsDataUrl(file);
-      // Archivos sin tipo MIME: se marcan como binario para que el backend los
-      // acepte como documento en vez de rechazarlos por "data URL inválido".
-      if (/^data:;base64,/i.test(dataUrl)) dataUrl = dataUrl.replace(/^data:;base64,/i, 'data:application/octet-stream;base64,');
-      await attachMedia({ dataUrl, name: file.name, type, size: file.size });
+      if (type === 'image') {
+        // Las imágenes sí se leen antes: si pesan demasiado se recomprimen aquí
+        // (canvas) en vez de que las rechace el backend.
+        let dataUrl = await imageFileToDataUrl(file);
+        // Archivos sin tipo MIME: se marcan como binario para que el backend los
+        // acepte como documento en vez de rechazarlos por "data URL inválido".
+        if (/^data:;base64,/i.test(dataUrl)) dataUrl = dataUrl.replace(/^data:;base64,/i, 'data:application/octet-stream;base64,');
+        await attachMedia({ dataUrl, name: file.name, type, size: file.size });
+      } else {
+        // Video/documento/audio: EN CRUDO por multipart (sin base64 gigante).
+        // La normalización (video→H.264, audio→ogg) la hace el servidor igual.
+        await attachMedia({ file, name: file.name, type, size: file.size });
+      }
     } catch (err) {
       toast.error(err.message || 'No se pudo adjuntar el archivo');
     }
@@ -1351,8 +1375,8 @@ export default function Chats() {
   const recorder = useVoiceRecorder({
     onRecorded: async (blob) => {
       try {
-        const dataUrl = await readFileAsDataUrl(blob);
-        await attachMedia({ dataUrl, name: `nota-de-voz-${Date.now()}.ogg`, type: 'audio' });
+        // El blob viaja EN CRUDO: el servidor lo convierte a ogg/opus igual.
+        await attachMedia({ file: blob, name: `nota-de-voz-${Date.now()}.ogg`, type: 'audio' });
       } catch (err) {
         toast.error(err.message || 'No se pudo preparar la nota de voz');
       }
@@ -2758,19 +2782,20 @@ function GalleryModal({ images, onClose, onChange, onSend }) {
     if (!file) return;
     if (!file.type.startsWith('image/')) return toast.error('Solo imágenes');
     if (file.size > 6 * 1024 * 1024) return toast.error('Máximo 6MB');
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const r = await api.post('/chats/gallery', { name: file.name, dataUrl: ev.target.result });
-        const next = [r.data, ...list];
-        setList(next);
-        onChange?.(next);
-        toast.success('Imagen subida');
-      } catch (err) {
-        toast.error(err.response?.data?.message || 'Error');
-      }
-    };
-    reader.readAsDataURL(file);
+    try {
+      // En crudo por multipart: sin FileReader ni base64 (más rápido y el
+      // servidor la re-normaliza igual).
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      fd.append('name', file.name);
+      const r = await api.post('/chats/gallery', fd);
+      const next = [r.data, ...list];
+      setList(next);
+      onChange?.(next);
+      toast.success('Imagen subida');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error');
+    }
   };
 
   const remove = async (id) => {

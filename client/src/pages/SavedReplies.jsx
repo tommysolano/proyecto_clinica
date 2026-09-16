@@ -369,7 +369,7 @@ function SavedReplyModal({ reply, folders, defaultFolder = '', onClose, onSaved 
     }));
   };
 
-  const uploadFile = (file) => {
+  const uploadFile = async (file) => {
     if (!file) return;
     const isImage = file.type.startsWith('image/');
     const isVideo = file.type.startsWith('video/');
@@ -378,20 +378,21 @@ function SavedReplyModal({ reply, folders, defaultFolder = '', onClose, onSaved 
     // Mismo techo que el backend y que el editor de workflows: el video se
     // comprime solo al subirlo para que WhatsApp lo entregue (≤ 15 MB).
     if (isVideo && file.size > 100 * 1024 * 1024) return toast.error('Video: máximo 100MB');
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        setUploading(true);
-        const r = await api.post('/chats/saved-replies/upload', { name: file.name, dataUrl: ev.target.result });
-        setForm((f) => ({ ...f, attachment: { url: r.data.url, type: r.data.type, name: file.name } }));
-        toast.success('Adjunto subido');
-      } catch (err) {
-        toast.error(err.response?.data?.message || 'Error al subir adjunto');
-      } finally {
-        setUploading(false);
-      }
-    };
-    reader.readAsDataURL(file);
+    setUploading(true);
+    try {
+      // En crudo por multipart: sin FileReader ni base64 gigante (un video viaja
+      // sus MB reales y el servidor lo comprime/normaliza igual).
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      fd.append('name', file.name);
+      const r = await api.post('/chats/saved-replies/upload', fd);
+      setForm((f) => ({ ...f, attachment: { url: r.data.url, type: r.data.type, name: file.name } }));
+      toast.success('Adjunto subido');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al subir adjunto');
+    } finally {
+      setUploading(false);
+    }
   };
 
   const addUrlAttachment = () => {

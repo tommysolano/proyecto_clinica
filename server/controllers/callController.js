@@ -33,6 +33,15 @@ const RINGING_TIMEOUT_MS = 60 * 1000;
 async function resolveCallingAccount(conv) {
   const account = await gateway.resolveAccountForConversation(conv);
   if (!account) return { ok: false, reason: 'Sin número de WhatsApp configurado.' };
+  return resolvedCallingAccount(account);
+}
+
+/**
+ * Convierte una cuenta ya resuelta en las credenciales que necesita Calling API.
+ * Mantener esta validación en un solo sitio evita que las llamadas entrantes se
+ * desvíen silenciosamente a otro número cuando el chat tiene varias cuentas.
+ */
+function resolvedCallingAccount(account) {
   if (account.connectionType !== 'cloud_api') {
     return {
       ok: false,
@@ -40,6 +49,29 @@ async function resolveCallingAccount(conv) {
     };
   }
   return { ok: true, account, creds: gateway.cloudCreds(account) };
+}
+
+/**
+ * Las acciones sobre una llamada existente deben salir SIEMPRE por el número
+ * que recibió/originó esa llamada. La cuenta enlazada al chat puede ser otra si
+ * el mismo contacto conversa con varios números de la clínica; usarla haría que
+ * Meta recibiera un call_id de un número mediante el phone_number_id de otro y
+ * respondiera "Parameter value is not valid".
+ *
+ * Los registros antiguos sin whatsappAccount conservan el comportamiento previo
+ * y resuelven la cuenta desde la conversación.
+ */
+async function resolveCallingAccountForCall(call, conv) {
+  if (!call?.whatsappAccount) return resolveCallingAccount(conv);
+
+  const account = await gateway.getUsableAccount(call.whatsappAccount);
+  if (!account) {
+    return {
+      ok: false,
+      reason: 'El número de WhatsApp de esta llamada ya no está disponible.',
+    };
+  }
+  return resolvedCallingAccount(account);
 }
 
 function callPayload(call) {
@@ -185,7 +217,7 @@ exports.acceptCall = async (req, res) => {
     const sdp = String(req.body.sdp || '');
     if (!sdp) return res.status(400).json({ message: 'Falta la sesión de audio (SDP) del navegador' });
     const conv = await Conversation.findById(call.conversation);
-    const resolved = await resolveCallingAccount(conv);
+    const resolved = await resolveCallingAccountForCall(call, conv);
     if (!resolved.ok) return res.status(400).json({ message: resolved.reason });
 
     const r = await calls.acceptCall(resolved.creds, call.callId, sdp);
@@ -232,7 +264,7 @@ exports.rejectCall = async (req, res) => {
       return res.status(409).json({ message: 'Esa llamada ya fue atendida o terminó.' });
     }
     const conv = await Conversation.findById(call.conversation);
-    const resolved = await resolveCallingAccount(conv);
+    const resolved = await resolveCallingAccountForCall(call, conv);
     if (resolved.ok) await calls.rejectCall(resolved.creds, call.callId);
     await finishCall(call, { status: 'rejected' });
     res.json(callPayload(call));
@@ -250,7 +282,7 @@ exports.terminateCall = async (req, res) => {
       return res.status(403).json({ message: 'Este chat está reservado para otro asesor mediante un workflow' });
     }
     const conv = await Conversation.findById(call.conversation);
-    const resolved = await resolveCallingAccount(conv);
+    const resolved = await resolveCallingAccountForCall(call, conv);
     if (resolved.ok) await calls.terminateCall(resolved.creds, call.callId);
     await finishCall(call, { status: 'completed' });
     res.json(callPayload(call));
@@ -390,7 +422,9 @@ async function handleConnect(clinicId, ev, account) {
   const phone = ev.from || '';
   const conv = await conversationForIncomingCall(clinicId, phone, account);
   if (conv.blocked) {
-    const resolved = await resolveCallingAccount(conv);
+    // Todavía no existe un Call, así que se usa directamente la cuenta del
+    // webhook. El chat puede estar asociado a otro número de la clínica.
+    const resolved = account ? resolvedCallingAccount(account) : await resolveCallingAccount(conv);
     if (resolved.ok) await calls.rejectCall(resolved.creds, ev.callId);
     return;
   }

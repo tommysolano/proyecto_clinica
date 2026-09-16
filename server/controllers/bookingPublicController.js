@@ -145,11 +145,18 @@ async function computeSlots(cfg, dateStr, service) {
   const takenCounts = {};
   appts.forEach((a) => { takenCounts[a.startTime] = (takenCounts[a.startTime] || 0) + 1; });
 
-  // Bloqueos de horario a nivel de clínica (sin doctor/sala específicos).
+  // Bloqueos de horario a nivel de clínica (sin doctor/sala específicos). Solo
+  // los GENERALES: un bloqueo por SERVICIO apunta al catálogo de la agenda
+  // (AppointmentServiceItem) y la reserva pública trabaja con productos del
+  // inventario, así que no hay forma fiable de casarlos — aplicarlo a ciegas
+  // cerraba TODO el día de la reserva pública por un bloqueo que solo tocaba a
+  // un servicio. En las puertas internas (agenda y CRM) sí se respeta el
+  // alcance por servicio (ver utils/timeBlockCheck).
   const blocks = await TimeBlock.find({
     clinic: cfg.clinic,
     doctor: null,
     room: null,
+    service: null,
     startDate: { $lte: dayEnd },
     endDate: { $gte: dayStart },
   }).select('allDay startTime endTime');

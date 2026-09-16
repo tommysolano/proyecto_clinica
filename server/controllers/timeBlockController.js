@@ -49,8 +49,22 @@ exports.list = async (req, res) => {
     const { startDate, endDate, doctor } = req.query;
     const query = { clinic: { $in: resuelveClinicas(req).map(String) } };
     if (startDate && endDate) {
+      /**
+       * EL RANGO SE PARSEA EN HORA LOCAL, NO CON `new Date('YYYY-MM-DD')`.
+       *
+       * Ese constructor parsea a MEDIANOCHE UTC, y los bloqueos se guardan a
+       * medianoche LOCAL (ver startOfLocalDay). Con el servidor en una zona al
+       * oeste de UTC (Ecuador), la medianoche local es DESPUÉS que la UTC del
+       * mismo día: el `$lte` del primer día del bloqueo fallaba y el rango del
+       * día 20 no devolvía el bloqueo del día 20 — por eso no se veía en la
+       * vista de lista de la agenda ni en el calendario. Aquí se compara día
+       * contra día en la misma zona horaria de la que vienen las dos partes.
+       */
       query.$or = [
-        { startDate: { $lte: new Date(endDate) }, endDate: { $gte: new Date(startDate) } },
+        {
+          startDate: { $lte: endOfLocalDay(endDate) },
+          endDate: { $gte: startOfLocalDay(startDate) },
+        },
       ];
     }
     if (doctor) query.doctor = doctor;
