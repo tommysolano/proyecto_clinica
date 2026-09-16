@@ -1,0 +1,29 @@
+name: Probe VPS permisos
+
+# Temporal (sep-2026): diagnosticar la CAUSA de los reinicios. Se borra al resolver.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Causa de los reinicios (pm2.log)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: false
+          command_timeout: 10m
+          script: |
+            export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+            echo '===== ~/.pm2/pm2.log (ultimas 40) ====='
+            tail -n 40 ~/.pm2/pm2.log 2>/dev/null || true
+            echo '===== buscar heaps/crashes en logs ====='
+            grep -hiE 'fatal|heap|killed|signal|out of memory|exit' ~/.pm2/logs/clinica-api-error-0.log 2>/dev/null | tail -n 20 || true
+            echo '===== memoria AHORA ====='
+            free -m
+            echo '===== los 8 procesos que mas RAM ocupan ====='
+            ps -eo pid,user,rss,args --sort=-rss | head -9 || true
