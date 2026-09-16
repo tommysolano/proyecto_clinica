@@ -87,10 +87,10 @@ const crearFu = (clinicId, quien, patient, body, role) =>
     H.mockReq(clinicId, quien._id, body, { role, params: { patientId: String(patient._id) } }),
   );
 
-const leerFicha = (clinicId, quien, patient, role) =>
+const leerFicha = (clinicId, quien, patient, role, query = {}) =>
   H.runController(
     ctrl.getOrCreateByPatient,
-    H.mockReq(clinicId, quien._id, {}, { role, params: { patientId: String(patient._id) } }),
+    H.mockReq(clinicId, quien._id, {}, { role, query, params: { patientId: String(patient._id) } }),
   );
 
 /** Deja una consulta del terapeuta y otra de un doctor. Devuelve sus ids. */
@@ -165,6 +165,47 @@ test('el administrador sí lee la consulta del terapeuta', async () => {
   const fu = r.payload.followUps.find((f) => f.createdByRole === 'terapeuta');
   assert.equal(fu.descripcion, 'Desequilibrio de Fuego');
   assert.equal(fu.terapia.plan, 'Drenaje hepático 3 semanas');
+});
+
+/**
+ * CON RECETA PEDIDA (`?conReceta=true`), la receta del terapeuta SÍ sale (sep-2026).
+ *
+ * Es la puerta que usa «Asignar atención» para ofrecer los sueros pendientes:
+ * sin esto, el suero que recetó el terapeuta no aparecía en esa lista y la cita
+ * llegaba al enfermero sin nada que aplicar. Lo que se abre es EXACTAMENTE la
+ * receta —los ítems y las recomendaciones, lo que la hoja imprime— y NADA de la
+ * consulta. Sin el parámetro, como siempre: el tocón.
+ */
+test('con ?conReceta la ficha entrega la receta del terapeuta, la consulta sigue sellada', async () => {
+  const { clinicId, userId, patient, terapeuta } = await seed();
+  await crearFu(clinicId, terapeuta, patient, {
+    descripcion: 'Desequilibrio de Fuego',
+    observaciones: 'Notas privadas de la sesión',
+    planTratamiento: 'Drenaje hepático 3 semanas',
+    recetaItems: [{
+      name: 'Sueroterapia', quantity: 3, isSerum: true,
+      serumBase: { name: 'Cloruro', volumeMl: 500 },
+      serumComponents: [{ name: 'CEREBRAIN 2ML AMP', quantity: 2 }],
+    }],
+    recomendacionesNoFarmacologicas: 'Cenar tres horas antes de dormir',
+  }, 'terapeuta');
+
+  // Con el parámetro: la receta sale, el resto sigue privado.
+  const conReceta = await leerFicha(clinicId, userId, patient, 'cajero', { conReceta: 'true' });
+  const fu = conReceta.payload.followUps.find((f) => f.createdByRole === 'terapeuta');
+  assert.equal(fu.redacted, true, 'la consulta sigue sellada');
+  assert.equal(fu.descripcion, 'Atendido por terapeuta', 'el motivo sigue privado');
+  assert.equal(fu.planTratamiento, undefined, 'el plan sigue privado');
+  assert.equal(fu.observaciones, undefined, 'las observaciones siguen privadas');
+  assert.equal(fu.recetaItems.length, 1, 'la RECETA sí sale por esta puerta');
+  assert.equal(fu.recetaItems[0].name, 'Sueroterapia');
+  assert.ok(fu.recetaItems[0].isSerum, 'el suero sale con su sello para enfermería');
+
+  // Y sin el parámetro (la ficha normal), como siempre: tocón sin receta.
+  const normal = await leerFicha(clinicId, userId, patient, 'cajero');
+  const fuNormal = normal.payload.followUps.find((f) => f.createdByRole === 'terapeuta');
+  assert.deepEqual(fuNormal.recetaItems, [], 'sin el parámetro la receta NO sale');
+  assert.equal(fuNormal.recomendacionesNoFarmacologicas, undefined);
 });
 
 // ───────────────────── la ficha propia ─────────────────────

@@ -137,20 +137,6 @@ const toMinutes = (hhmm) => {
 };
 
 /**
- * LOS ROLES DE ODONTOLOGÍA, en un solo sitio.
- *
- * 'odontologia' y 'odontologia_neurofocal' comparten la MISMA regla de agenda
- * (sep-2026): miran la agenda como mostrador —TODAS las citas— y sin recorte de
- * sucursal: les agenden donde les agenden y entren desde la sede que entren,
- * sus citas aparecen. Antes se recortaba a la sucursal que se llame
- * "odontología" (resuelta por nombre en `utils/clinicScope.js`) y ese recorte
- * era el «Cita no encontrada»: el doctor de odontología neurofocal trabaja en
- * Central, sus citas nacían en Central y la agenda le enseñaba la sede de
- * odontología —que no era la suya—, y abrir la cita del aviso respondía 404.
- */
-const esRolOdontologia = (role) => role === 'odontologia' || role === 'odontologia_neurofocal';
-
-/**
  * FILTRO DE SUCURSAL PARA BUSCAR UNA CITA QUE SE VA A TOCAR.
  *
  * Tiene que ser EL MISMO alcance con el que se LEE la agenda: mostrador y
@@ -169,10 +155,6 @@ const esRolOdontologia = (role) => role === 'odontologia' || role === 'odontolog
  * acabaría en la sede equivocada.
  */
 const filtroSucursalCita = (req) => {
-  // Odontología opera la agenda como mostrador (ver `esRolOdontologia`): la
-  // lectura y la escritura tienen que responder igual, o la cita se ve en la
-  // lista y ningún botón la encuentra.
-  if (esRolOdontologia(req.role)) return {};
   const visibles = sucursalesVisibles(req);
   if (visibles === null) return {};
   return { clinic: { $in: [req.clinicId, ...visibles] } };
@@ -255,30 +237,6 @@ async function construirQueryAgenda(req, {
   if (req.role === 'enfermero' && req.clinicId) {
     clinicScope = req.clinicId;
   }
-  /**
-   * ODONTOLOGÍA VE LA AGENDA COMPLETA DE LA ORGANIZACIÓN (sep-2026).
-   *
-   * Al odontólogo se le abrió la agenda como a mostrador —ve TODAS las citas
-   * agendadas, no solo las suyas—. Al principio eso venía con UNA condición:
-   * únicamente las de la sucursal de odontología, resuelta por su NOMBRE (ver
-   * `sucursalOdontologia` en utils/clinicScope.js). Ese recorte se volvió el
-   * «Cita no encontrada»: el doctor de odontología neurofocal trabaja en otra
-   * sede, sus citas nacían en la sede donde él atiende y la agenda le enseñaba
-   * la sucursal de odontología, donde no estaba nada de lo suyo — y abrir la
-   * cita desde el aviso respondía 404.
-   *
-   * Ahora se le abre la agenda de TODAS las sucursales: les agenden donde les
-   * agenden y entre desde la sede que entre, las citas aparecen. El filtro por
-   * turno (`filtroCitasDelDoctor`, más abajo) tampoco le aplica: ese recorte es
-   * para el doctor de especialidad que solo mira SU cola, y a odontología se le
-   * pidió lo contrario.
-   */
-  let odontoVeTodo = false;
-  // Odontología y odontología neurofocal comparten la misma regla de agenda.
-  if (esRolOdontologia(req.role)) {
-    clinicScope = null;
-    odontoVeTodo = true;
-  }
   const query = {};
   if (clinicScope !== null) query.clinic = clinicScope;
 
@@ -359,11 +317,13 @@ async function construirQueryAgenda(req, {
    * orden). Ambos van dentro de un `$and` para que se acumulen.
    */
   const extras = [];
-  // Odontología con su sucursal resuelta ve TODO el día de la sede (ver el
-  // bloque de arriba): el filtro por turno no le aplica.
-  if (isDoctorRole(req.role) && !odontoVeTodo) {
+  if (isDoctorRole(req.role)) {
     // Su turno VIGENTE o uno que ya atendió: al doctor que va segundo la cita
     // no le aparece hasta que el primero termine (ver filtroCitasDelDoctor).
+    // Odontología y odontología neurofocal entran aquí igual que cualquier
+    // especialidad: solo ven SUS citas —les agenden donde les agenden, las de
+    // sus sucursales salen todas (sep-2026)—, no la agenda entera como
+    // mostrador.
     extras.push(filtroCitasDelDoctor(req.user._id));
   }
   // El call center puede ver TODAS las citas agendadas (no solo las suyas).
@@ -510,10 +470,6 @@ exports.getAppointment = async (req, res) => {
     const apptClinicId = String(appointment.clinic?._id || appointment.clinic);
     const visibles = sucursalesVisibles(req);
     let canAccess = visibles === null || visibles.some((c) => String(c) === apptClinicId);
-    // Odontología mira la agenda completa de la organización (ver
-    // `esRolOdontologia`): cualquier cita le llega por id —un enlace, un
-    // aviso— y la lee, igual que la lista se la enseña.
-    if (esRolOdontologia(req.role)) canAccess = true;
     if (!canAccess) return res.status(404).json({ message: 'Cita no encontrada' });
     res.json(appointment);
   } catch (error) {

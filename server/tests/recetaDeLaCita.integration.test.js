@@ -199,6 +199,50 @@ test('R7) la consulta del terapeuta no sale por esta puerta', async () => {
   assert.equal(paraEl.followUps[0].motivoConsulta, 'Lo que se habló en sesión');
 });
 
+/**
+ * LA RECETA SÍ SALE (sep-2026): la consulta del terapeuta sigue privada, pero lo
+ * que se le recetó es lo que mostrador necesita para cobrar y dispensar — y lo
+ * que ENFERMERÍA tiene que saber aplicar. El caso concreto: el suero que recetó
+ * el terapeuta nacía con su cita para enfermería, pero el suero vivía dentro del
+ * seguimiento privado y la enfermera reclamaba una cita «sin nada que aplicar».
+ * Por esta puerta viaja EXACTAMENTE lo que la hoja de receta imprime.
+ */
+test('R9) la receta de la consulta del terapeuta SÍ sale, el resto sigue privado', async () => {
+  const { clinicId, userId, patient, cita } = await seed();
+  const tera = await User.create({
+    name: 'Tera', email: 'tera2@t.com', password: 'secreto123',
+    clinics: [{ clinic: clinicId, role: 'terapeuta' }],
+  });
+  ok(await asignar(clinicId, userId, cita._id, [tera._id]));
+  ok(await escribir(clinicId, tera._id, patient._id, {
+    motivoConsulta: 'Lo que se habló en sesión',
+    observaciones: 'Notas privadas de la sesión',
+    planTratamiento: 'Plan privado',
+    appointmentId: String(cita._id),
+    recetaItems: [{
+      name: 'Sueroterapia', quantity: 3, isSerum: true,
+      serumBase: { name: 'Cloruro', volumeMl: 500 },
+      serumComponents: [{ name: 'CEREBRAIN 2ML AMP' }],
+    }],
+    recomendacionesNoFarmacologicas: 'Cenar tres horas antes de dormir',
+  }, 'terapeuta'));
+
+  const paraCaja = ok(await consultaDe(clinicId, userId, cita._id, 'cajero'));
+  const fu = paraCaja.followUps[0];
+  assert.equal(fu.redacted, true, 'la consulta sigue llegando sellada');
+  assert.notEqual(fu.motivoConsulta, 'Lo que se habló en sesión', 'el motivo sigue privado');
+  assert.equal(fu.planTratamiento, undefined, 'el plan sigue privado');
+  assert.equal(fu.observaciones, undefined, 'las observaciones siguen privadas');
+  assert.equal(fu.recetaItems.length, 1, 'la RECETA sí sale');
+  assert.equal(fu.recetaItems[0].name, 'Sueroterapia');
+  assert.ok(fu.recetaItems[0].isSerum, 'el suero sale con su sello');
+  assert.equal(fu.recomendacionesNoFarmacologicas, 'Cenar tres horas antes de dormir', 'lo que la hoja de receta imprime sale');
+
+  // Y para la ENFERMERÍA, que es quien lo aplica: lo mismo.
+  const paraEnf = ok(await consultaDe(clinicId, userId, cita._id, 'enfermero'));
+  assert.equal(paraEnf.followUps[0].recetaItems[0].name, 'Sueroterapia', 'la enfermera ve el suero');
+});
+
 test('R8) una cita que no existe da 404', async () => {
   const { clinicId, userId } = await seed();
   const r = await consultaDe(clinicId, userId, '6a0d91956966a5f0c17ed940');

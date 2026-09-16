@@ -21,15 +21,71 @@ export function Seguimiento({ fu, conFecha = false }) {
   const receta = fu.recetaItems || [];
 
   // Consulta del terapeuta vista por quien no le corresponde: el servidor manda
-  // un tocón, no los campos vacíos. Se dice tal cual.
+  // un tocón, no los campos vacíos. Se dice tal cual — PERO la RECETA sí viene
+  // cuando la puerta de la agenda la trae (sep-2026): con ella cobra y dispensa
+  // mostrador, y ENFERMERÍA ve el suero con sus ampollas que le toca aplicar.
+  // El caso que lo pidió: el suero que recetó el terapeuta nacía con su cita
+  // para enfermería, pero vivía dentro del seguimiento privado y la enfermera
+  // reclamaba una cita «sin nada que aplicar».
   if (fu.redacted) {
+    const tieneReceta = receta.length > 0 || fu.recomendacionesNoFarmacologicas;
     return (
-      <div className="border border-slate-200 rounded-xl px-4 py-3 bg-slate-50">
-        <p className="flex items-center gap-2 text-sm text-slate-600">
-          <HiOutlineLockClosed className="w-4 h-4 text-slate-400" />
-          Atendido por terapeuta — esta consulta es privada.
-        </p>
-        <p className="text-xs text-slate-400 mt-1">{autor}</p>
+      <div className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50">
+        <div className="px-4 py-3 border-b border-slate-100">
+          <p className="flex items-center gap-2 text-sm text-slate-600 m-0">
+            <HiOutlineLockClosed className="w-4 h-4 text-slate-400" />
+            Atendido por terapeuta — la consulta es privada.
+          </p>
+          <p className="text-xs text-slate-400 mt-1 mb-0">{autor}</p>
+        </div>
+        {tieneReceta && (
+          <div className="px-4 py-3 space-y-3">
+            {receta.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Receta</p>
+                <ul className="space-y-1.5 m-0 p-0 list-none">
+                  {receta.map((it) => (
+                    <li key={it._id} className="text-sm text-slate-700 bg-white rounded-lg px-3 py-2 border border-slate-100">
+                      <span className="font-medium">
+                        {it.name}
+                        {it.quantity > 1 ? ` × ${it.quantity}` : ''}
+                      </span>
+                      {[it.dose, it.frequency, it.duration].filter(Boolean).length > 0 && (
+                        <span className="text-slate-500">
+                          {' — '}
+                          {[it.dose, it.frequency, it.duration].filter(Boolean).join(', ')}
+                        </span>
+                      )}
+                      {it.instructions && (
+                        <p className="text-xs text-slate-500 mt-0.5">{it.instructions}</p>
+                      )}
+                      {it.isSerum && (
+                        <div className="mt-1.5 text-xs text-slate-600 space-y-0.5">
+                          {it.serumBase?.name && (
+                            <p className="flex items-center gap-1">
+                              <HiOutlineBeaker className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+                              {it.serumBase.name}
+                              {it.serumBase.volumeMl ? ` ${it.serumBase.volumeMl} ml` : ''}
+                            </p>
+                          )}
+                          {(it.serumComponents || []).length > 0 && (
+                            <p className="pl-4.5">
+                              {it.serumComponents.map((c) => c.name).filter(Boolean).join(' · ')}
+                            </p>
+                          )}
+                          <p className="pl-4.5 text-slate-500">
+                            {(it.administrations || []).length} de {it.quantity} aplicadas
+                          </p>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <Campo label="Recomendaciones" valor={fu.recomendacionesNoFarmacologicas} />
+          </div>
+        )}
       </div>
     );
   }

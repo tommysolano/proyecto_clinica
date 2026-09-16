@@ -267,13 +267,24 @@ const canReadTherapy = (req) =>
  *
  * Y se le quita también `fichaTerapia` entera, que es la otra mitad del secreto.
  *
+ * LA EXCEPCIÓN (sep-2026): LA RECETA SÍ SALE cuando la puerta la pide
+ * (`{ conReceta: true }`). Es la puerta de la agenda (`by-appointment`): con esa
+ * receta cobra y dispensa mostrador, y ENFERMERÍA sabe qué aplicar — el caso que
+ * la pidió a gritos: el suero que recetó el terapeuta nacía con su cita para
+ * enfermería, y la enfermera reclamaba una cita «sin nada que aplicar» porque el
+ * suero vivía dentro del seguimiento privado y llegaba como tocón. Lo que se
+ * expone ahí es EXACTAMENTE lo que la hoja de receta imprime —los ítems con sus
+ * ampollas y las recomendaciones— y NADA de la consulta: el motivo, el
+ * diagnóstico y lo hablado en sesión siguen siendo privados. Las demás puertas
+ * (la ficha del paciente, los PDF) no pasan por aquí con receta.
+ *
  * Se aplica en la SALIDA, no en la consulta a Mongo: hay siete `res.json` que
  * devuelven la ficha y tres PDF que la leen por su cuenta. Un solo punto de paso
  * es lo único que se puede auditar de un vistazo.
  */
 const TEXTO_TOCON = 'Atendido por terapeuta';
 
-const hideTherapyNotes = (record, req) => {
+const hideTherapyNotes = (record, req, { conReceta = false } = {}) => {
   if (!record || canReadTherapy(req)) return record;
   const obj = record.toObject ? record.toObject() : { ...record };
   obj.fichaTerapia = undefined;
@@ -299,10 +310,16 @@ const hideTherapyNotes = (record, req) => {
       redacted: true,
       descripcion: TEXTO_TOCON,
       motivoConsulta: TEXTO_TOCON,
-      recetaItems: [],
       attachments: [],
       diagnosticos: [],
       aplicaciones: [],
+      // La RECETA, cuando la puerta que llama la pide: sin ella, como siempre.
+      ...(conReceta
+        ? {
+            recetaItems: fu.recetaItems,
+            recomendacionesNoFarmacologicas: fu.recomendacionesNoFarmacologicas,
+          }
+        : { recetaItems: [] }),
     };
   });
   return obj;
@@ -608,7 +625,7 @@ exports.getOrCreateByPatient = async (req, res) => {
       record = await ClinicalRecord.create(enBlanco);
     }
 
-    res.json(hideContactData(hideTherapyNotes(record, req), req));
+    res.json(hideContactData(hideTherapyNotes(record, req, { conReceta: req.query?.conReceta === 'true' }), req));
   } catch (error) {
     res
       .status(500)
@@ -2696,8 +2713,13 @@ exports.getFollowUpsByAppointment = async (req, res) => {
     if (!record) return res.json({ appointment: apt, followUps: [], aproximado: false });
 
     // El recorte del terapeuta se aplica ANTES de elegir: su consulta es privada
-    // también por esta puerta, y aquí se devolvería entera.
-    const todos = hideTherapyNotes(record, req).followUps || [];
+    // también por esta puerta — PERO LA RECETA SÍ SALE (sep-2026): con ella
+    // cobra y dispensa mostrador, y ENFERMERÍA ve el suero que le toca aplicar.
+    // El caso concreto: el suero que recetó el terapeuta nacía con su cita para
+    // enfermería, pero el suero vivía dentro del seguimiento privado y la
+    // enfermera reclamaba una cita «sin nada que aplicar». Lo demás de su sesión
+    // sigue llegando como tocón.
+    const todos = hideTherapyNotes(record, req, { conReceta: true }).followUps || [];
 
     const sellados = new Set([
       ...(apt.turns || []).map((t) => t.followUp),

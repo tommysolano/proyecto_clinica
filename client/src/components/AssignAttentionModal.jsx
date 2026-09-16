@@ -222,11 +222,17 @@ export default function AssignAttentionModal({
   // Solo se trae el catálogo de sueros PENDIENTES de la ficha para ofrecerlo al
   // asignar enfermería. Los que ya llegaron a su cantidad recetada no deben
   // volver a proponerse para otra cita.
+  //
+  // `conReceta=1`: la receta de una consulta del TERAPEUTA es privada —el
+  // seguimiento llega como tocón—, pero lo que se le recetó sí se puede ver
+  // desde la agenda (sep-2026). Sin esto, el suero que recetó el terapeuta no
+  // salía en esta lista y quien asignaba a enfermería no tenía nada que
+  // escojer: la cita llegaba al enfermero sin suero dentro.
   useEffect(() => {
     const patientId = apt?.patient?._id || apt?.patient;
     if (!patientId) return undefined;
     let vivo = true;
-    api.get(`/clinical-records/${patientId}`)
+    api.get(`/clinical-records/${patientId}`, { params: { conReceta: 'true' } })
       .then(({ data }) => {
         const sueros = (data?.followUps || []).filter((fu) =>
           pendingSerums(fu).length > 0

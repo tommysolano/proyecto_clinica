@@ -195,6 +195,20 @@ function quienAgendo(apt) {
   return rol ? `${nombre} (${rol})` : nombre;
 }
 
+/**
+ * LA CITA DEL SUERO ES UNA TAREA, NO UN AGENDAMIENTO (sep-2026).
+ *
+ * Cuando alguien receta un suero —mostrador, o el profesional en su consulta— y
+ * detrás no hay turno de enfermería, el sistema deja PREPARADA la cita para que
+ * lo aplique enfermería (ver `dejarSueroEnColaEnfermeria`). Esa cita nace con el
+ * motivo «Aplicación de suero recetado…» que escribe el sistema, no una persona:
+ * es lo que la distingue de una cita agendada de verdad. Solo las agendan call
+ * center, cajeros, administración y odontología; un doctor no puede agendar —
+ * la ruta `POST /appointments` se lo niega.
+ */
+const MOTIVO_TAREA_SUERO = 'Aplicación de suero';
+const esTareaDeSuero = (apt) => String(apt?.reason || '').startsWith(MOTIVO_TAREA_SUERO);
+
 /** Quién movió la cita la última vez, y cuándo. */
 function ultimoReagendamiento(apt) {
   const h = apt?.rescheduleHistory;
@@ -491,15 +505,14 @@ export default function Appointments() {
   // 'optica' no se expande desde 'doctor' en el cliente, por eso va aparte.
   const isDoctor = roleSatisfies(role, ['doctor']) || role === 'optica';
   /**
-   * ODONTOLOGÍA MIRA LA AGENDA COMO MOSTRADOR (sep-2026).
+   * ODONTOLOGÍA EN LA AGENDA (sep-2026).
    *
-   * El rol es de doctor (atiende, abre la ficha, guarda el seguimiento), pero
-   * lo que se le pidió de la agenda es lo mismo que ve el cajero: TODAS las
-   * citas agendadas —el servidor le manda la agenda completa de la
-   * organización, sin recorte de sucursal (ver `esRolOdontologia`)—, con la
-   * vista de calendario, los filtros y el detalle de cita que un doctor no
-   * usaba. `isDoctor` sigue mandando para lo CLÍNICO (Atender, iniciar
-   * consulta, corregir); esto decide lo de AGENDA.
+   * El rol es de doctor y su agenda es la de cualquier especialidad: SOLO las
+   * citas asignadas a él (su turno vigente o las que ya atendió), no la agenda
+   * entera como mostrador. Lo que sí conserva es la pantalla de agenda —vista
+   * de calendario, filtros y detalle de cita— para poder organizar sus citas;
+   * `isDoctor` sigue mandando para lo CLÍNICO (Atender, iniciar consulta,
+   * corregir).
    */
   const esOdontologia = role === 'odontologia' || role === 'odontologia_neurofocal';
   const isNurse = role === 'enfermero';
@@ -522,17 +535,6 @@ export default function Appointments() {
    * `canCharge` se quedaba con las sedes de su usuario (casi siempre una).
    */
   const veTodaLaOrg = hasRole(...ROLES_TODA_LA_ORG);
-  /**
-   * ODONTOLOGÍA TAMBIÉN MIRA LA AGENDA DE TODAS LAS SUCURSALES (sep-2026).
-   *
-   * El servidor le manda la agenda completa —les agenden donde les agenden las
-   * citas aparecen—, así que aquí va el mismo alcance: el filtro de sucursal
-   * y el selector de «Sucursal destino» le ofrecen la organización entera, no
-   * solo su sede. Va aparte de `veTodaLaOrg` porque eso también destapa los
-   * sellos económicos de la tarjeta (canje, valor acordado, anticipo), que
-   * siguen siendo cosa de mostrador.
-   */
-  const veTodaLaAgenda = veTodaLaOrg || esOdontologia;
   // El correo del paciente: admin, mostrador y quien atiende (espejo de la
   // capacidad `patients.email`, que es la que manda desde el servidor).
   const veCorreo = hasRole(...ROLES_VEN_CORREO);
@@ -579,7 +581,7 @@ export default function Appointments() {
   // para los demás roles se conserva el alcance de sus asignaciones.
   const [clinicasFiltro, setClinicasFiltro] = useState([]);
   const appointmentClinics = (
-    veTodaLaAgenda && clinicasFiltro.length ? clinicasFiltro : (clinics || [])
+    veTodaLaOrg && clinicasFiltro.length ? clinicasFiltro : (clinics || [])
   ).filter((c) => c.active !== false);
   const showClinicSelector = appointmentClinics.length > 1;
   // Mientras no se escoja sucursal no hay destino: los espacios de la agenda se
@@ -878,11 +880,10 @@ export default function Appointments() {
    * suele tener una sola: por eso el filtro por sucursal no le aparecía nunca.
    * Mostrador y administración piden aquí la lista completa de la organización
    * —solo nombres, ver `scope=names` en clinicController—; el resto de roles se
-   * queda con las suyas, como hasta ahora. Odontología también pide la lista
-   * completa: mira la agenda de todas las sedes (ver `veTodaLaAgenda`).
+   * queda con las suyas, como hasta ahora.
    */
   const fetchClinicasFiltro = async () => {
-    if (!veTodaLaAgenda) { setClinicasFiltro(clinics || []); return; }
+    if (!veTodaLaOrg) { setClinicasFiltro(clinics || []); return; }
     try {
       const res = await api.get('/clinics', { params: { scope: 'names' } });
       setClinicasFiltro(res.data || []);
@@ -903,9 +904,9 @@ export default function Appointments() {
    * selección.
    */
   useEffect(() => {
-    // ODONTOLOGÍA no arranca filtrando por su sede activa: el servidor le manda
-    // la agenda de TODAS las sucursales (ver comentarios del rol), y un filtro
-    // preseleccionado dejaría fuera las citas agendadas en las demás sedes.
+    // ODONTOLOGÍA no arranca filtrando por su sede activa: sus citas pueden
+    // vivir en cualquiera de las sedes donde trabaja, y un filtro
+    // preseleccionado dejaría fuera las de las demás.
     if (esOdontologia) return;
     /**
      * CALL CENTER Y MARKETING ARRANCAN SIN FILTRO DE SUCURSAL (sep-2026).
@@ -1657,12 +1658,12 @@ export default function Appointments() {
   /**
    * ODONTOLOGÍA ATENDE DIRECTO (sep-2026).
    *
-   * El odontólogo ve TODAS las citas de la agenda, incluidas las que agendó
-   * él o cualquier otro —de cualquier sucursal—. En ellas no hay «Asignar
-   * atención»: se salta ese paso — este clic se asigna a sí mismo como doctor
-   * de la cita (el servidor no le acepta otra cosa, ver `assignDoctor`) y
-   * entra directo a la ficha, el mismo camino que recorre «Atender» cuando
-   * recepción ya lo asignó.
+   * El odontólogo ve SUS citas (el servidor solo le manda las asignadas a él,
+   * de cualquier sucursal donde trabaja). En ellas no hay «Asignar atención»:
+   * se salta ese paso — este clic se asigna a sí mismo como doctor de la cita
+   * (el servidor no le acepta otra cosa, ver `assignDoctor`) y entra directo
+   * a la ficha, el mismo camino que recorre «Atender» cuando recepción ya lo
+   * asignó.
    */
   const atenderOdontologia = async (apt) => {
     try {
@@ -2852,7 +2853,13 @@ export default function Appointments() {
                             vacío pero el nombre debe seguir apareciendo. */}
                         {quienAgendo(apt) && (
                           <div className="text-[11px] text-slate-400 mt-0.5">
-                            Agendó: {quienAgendo(apt)}
+                            {/* LA CITA DEL SUERO NO LA AGENDÓ NADIE: nace sola
+                                de la receta (sep-2026). El doctor/terapeuta que
+                                la recetó aparece como RECETÓ, no como agendó —
+                                decir «Agendó: X (Doctor)» daba a entender que un
+                                doctor agendó la cita, cosa que no puede hacer. */}
+                            {esTareaDeSuero(apt) ? 'Suero recetado por: ' : 'Agendó: '}
+                            {quienAgendo(apt)}
                           </div>
                         )}
                         {ultimoReagendamiento(apt) && (
