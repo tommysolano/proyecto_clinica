@@ -495,10 +495,11 @@ export default function Appointments() {
    *
    * El rol es de doctor (atiende, abre la ficha, guarda el seguimiento), pero
    * lo que se le pidió de la agenda es lo mismo que ve el cajero: TODAS las
-   * citas agendadas —el servidor ahora le manda la agenda completa de la
-   * sucursal de odontología—, con la vista de calendario, los filtros y el
-   * detalle de cita que un doctor no usaba. `isDoctor` sigue mandando para lo
-   * CLÍNICO (Atender, iniciar consulta, corregir); esto decide lo de AGENDA.
+   * citas agendadas —el servidor le manda la agenda completa de la
+   * organización, sin recorte de sucursal (ver `esRolOdontologia`)—, con la
+   * vista de calendario, los filtros y el detalle de cita que un doctor no
+   * usaba. `isDoctor` sigue mandando para lo CLÍNICO (Atender, iniciar
+   * consulta, corregir); esto decide lo de AGENDA.
    */
   const esOdontologia = role === 'odontologia' || role === 'odontologia_neurofocal';
   const isNurse = role === 'enfermero';
@@ -521,6 +522,17 @@ export default function Appointments() {
    * `canCharge` se quedaba con las sedes de su usuario (casi siempre una).
    */
   const veTodaLaOrg = hasRole(...ROLES_TODA_LA_ORG);
+  /**
+   * ODONTOLOGÍA TAMBIÉN MIRA LA AGENDA DE TODAS LAS SUCURSALES (sep-2026).
+   *
+   * El servidor le manda la agenda completa —les agenden donde les agenden las
+   * citas aparecen—, así que aquí va el mismo alcance: el filtro de sucursal
+   * y el selector de «Sucursal destino» le ofrecen la organización entera, no
+   * solo su sede. Va aparte de `veTodaLaOrg` porque eso también destapa los
+   * sellos económicos de la tarjeta (canje, valor acordado, anticipo), que
+   * siguen siendo cosa de mostrador.
+   */
+  const veTodaLaAgenda = veTodaLaOrg || esOdontologia;
   // El correo del paciente: admin, mostrador y quien atiende (espejo de la
   // capacidad `patients.email`, que es la que manda desde el servidor).
   const veCorreo = hasRole(...ROLES_VEN_CORREO);
@@ -567,7 +579,7 @@ export default function Appointments() {
   // para los demás roles se conserva el alcance de sus asignaciones.
   const [clinicasFiltro, setClinicasFiltro] = useState([]);
   const appointmentClinics = (
-    veTodaLaOrg && clinicasFiltro.length ? clinicasFiltro : (clinics || [])
+    veTodaLaAgenda && clinicasFiltro.length ? clinicasFiltro : (clinics || [])
   ).filter((c) => c.active !== false);
   const showClinicSelector = appointmentClinics.length > 1;
   // Mientras no se escoja sucursal no hay destino: los espacios de la agenda se
@@ -866,10 +878,11 @@ export default function Appointments() {
    * suele tener una sola: por eso el filtro por sucursal no le aparecía nunca.
    * Mostrador y administración piden aquí la lista completa de la organización
    * —solo nombres, ver `scope=names` en clinicController—; el resto de roles se
-   * queda con las suyas, como hasta ahora.
+   * queda con las suyas, como hasta ahora. Odontología también pide la lista
+   * completa: mira la agenda de todas las sedes (ver `veTodaLaAgenda`).
    */
   const fetchClinicasFiltro = async () => {
-    if (!veTodaLaOrg) { setClinicasFiltro(clinics || []); return; }
+    if (!veTodaLaAgenda) { setClinicasFiltro(clinics || []); return; }
     try {
       const res = await api.get('/clinics', { params: { scope: 'names' } });
       setClinicasFiltro(res.data || []);
@@ -890,10 +903,9 @@ export default function Appointments() {
    * selección.
    */
   useEffect(() => {
-    // ODONTOLOGÍA no arranca filtrando por su sede activa: el servidor ya le
-    // manda SOLO la sucursal de odontología (ver comentarios del rol), y si su
-    // sesión entrara por otra sede el filtro del navegador dejaría la lista en
-    // blanco sin ninguna cita a la vista.
+    // ODONTOLOGÍA no arranca filtrando por su sede activa: el servidor le manda
+    // la agenda de TODAS las sucursales (ver comentarios del rol), y un filtro
+    // preseleccionado dejaría fuera las citas agendadas en las demás sedes.
     if (esOdontologia) return;
     /**
      * CALL CENTER Y MARKETING ARRANCAN SIN FILTRO DE SUCURSAL (sep-2026).
@@ -1645,11 +1657,12 @@ export default function Appointments() {
   /**
    * ODONTOLOGÍA ATENDE DIRECTO (sep-2026).
    *
-   * El odontólogo ve TODAS las citas de su sucursal, incluidas las que agendó
-   * él o cualquier otro. En ellas no hay «Asignar atención»: se salta ese paso
-   * — este clic se asigna a sí mismo como doctor de la cita (el servidor no le
-   * acepta otra cosa, ver `assignDoctor`) y entra directo a la ficha, el mismo
-   * camino que recorre «Atender» cuando recepción ya lo asignó.
+   * El odontólogo ve TODAS las citas de la agenda, incluidas las que agendó
+   * él o cualquier otro —de cualquier sucursal—. En ellas no hay «Asignar
+   * atención»: se salta ese paso — este clic se asigna a sí mismo como doctor
+   * de la cita (el servidor no le acepta otra cosa, ver `assignDoctor`) y
+   * entra directo a la ficha, el mismo camino que recorre «Atender» cuando
+   * recepción ya lo asignó.
    */
   const atenderOdontologia = async (apt) => {
     try {

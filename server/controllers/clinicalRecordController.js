@@ -1337,7 +1337,7 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
    */
   if (!atiendePacientes(req.role)) return null;
 
-  const { siguiente, terminado } = completarTurno(apt, {
+  const { cerrado, siguiente, terminado } = completarTurno(apt, {
     userId: req.user._id,
     followUpId,
   });
@@ -1354,6 +1354,19 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
   // se apagan aquí también (el reclamo es solo un camino).
   if (apt.status === 'completada') {
     await require('../utils/appointmentNotice').apagarAvisosDeCita(apt._id);
+  }
+  /**
+   * QUIEN YA ATENDIÓ DEJA DE SONAR, AUNQUE LA CITA SIGA VIVA (sep-2026).
+   *
+   * Con la cola —doctor y luego enfermería, o dos doctores— la cita NO queda
+   * completada al cerrar el primer turno, y el barrido de arriba no corre: el
+   * aviso «Cita asignada» del que ya atendió seguía en Mongo (solo lo escondía
+   * el filtro de lectura). Su turno terminó, su seguimiento está escrito: a él
+   * la cita ya no le debe nada y su aviso se borra DE VERDAD, sin esperar a que
+   * la cita entera termine — o a que nunca termine.
+   */
+  if (cerrado) {
+    await require('../utils/appointmentNotice').apagarAvisoDeCitaPara(apt._id, req.user._id);
   }
   /**
    * TODO LO QUE DEPENDE DE LA SUCURSAL va con `apt.clinic`, no con la activa
@@ -1383,6 +1396,10 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
     // Al siguiente le llega la cita ahora: aviso en su pantalla y en su móvil.
     emitToUser(siguiente.user, 'appointment:assigned', apt);
     const { notificarUsuarios } = require('../utils/pushNotifications');
+    const { apagarAvisoDeCitaPara } = require('../utils/appointmentNotice');
+    // El aviso de la cita es UNO: el «te toca atender» reemplaza al que ya
+    // tenía de la asignación original (ver notificarAsignacion).
+    await apagarAvisoDeCitaPara(apt._id, siguiente.user);
     await notificarUsuarios([siguiente.user], {
       clinicId: apt.clinic,
       type: 'appointment_assigned',

@@ -114,6 +114,42 @@ async function apagarAvisosDeCita(appointmentId) {
 }
 
 /**
+ * APAGA EL AVISO DE UNA CITA PARA UNA SOLA PERSONA.
+ *
+ * `apagarAvisosDeCita` borra TODO lo que suena por la cita, y solo se llama
+ * cuando la cita ya no espera a NADIE. Pero en una cola —doctor, luego
+ * enfermería, o dos doctores— cada quien tiene SU aviso: en cuanto el doctor
+ * atiende (su turno pasa a 'completado'), a él la cita ya no le debe nada y su
+ * notificación sobra, aunque detrás siga esperando la enfermera. Con solo el
+ * barrido de «cita completada» el aviso del doctor quedaba sonando en Mongo
+ * hasta que la cita entera terminara (o para siempre, si detrás venía
+ * enfermería): el usuario se aturdía con avisos de pacientes que ya atendió.
+ *
+ * Se borra lo SUYO: por `user` y por el sello `meta.appointment`. Nunca lanza,
+ * igual que su hermana de arriba.
+ */
+async function apagarAvisoDeCitaPara(appointmentId, userId) {
+  const aid = idDe(appointmentId);
+  const uid = idDe(userId);
+  if (!aid || !uid) return;
+  try {
+    const Notification = require('../models/Notification');
+    const mongoose = require('mongoose');
+    // `meta.appointment` y `user` se guardan como ObjectId: Mongo NO casaría un
+    // string contra ellos (no hay coerción de tipos en las queries).
+    const clave = mongoose.isValidObjectId(aid) ? new mongoose.Types.ObjectId(aid) : aid;
+    const dueño = mongoose.isValidObjectId(uid) ? new mongoose.Types.ObjectId(uid) : uid;
+    await Notification.deleteMany({
+      type: { $in: ['appointment_nursing', 'appointment_assigned'] },
+      'meta.appointment': clave,
+      user: dueño,
+    });
+  } catch (e) {
+    console.warn('No se pudo apagar el aviso de la cita para la persona:', e.message);
+  }
+}
+
+/**
  * ¿MERECE AVISO ESTA CITA? Solo las de HOY o el futuro suenan en la campana.
  *
  * Reasignar una cita de días pasados —corregir un no-show, colgarle a alguien
@@ -133,5 +169,6 @@ module.exports = {
   cuerpoDeAviso,
   urlDeAtencion,
   apagarAvisosDeCita,
+  apagarAvisoDeCitaPara,
   laCitaMereceAviso,
 };

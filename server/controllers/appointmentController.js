@@ -46,7 +46,6 @@ const {
   sucursalesVisibles,
   alcanzaSucursal,
   validarSucursalDestino,
-  sucursalOdontologia,
 } = require('../utils/clinicScope');
 const { esPrimeraVisita } = require('../utils/firstVisit');
 const { registrarLlegada } = require('../utils/appointmentArrival');
@@ -138,6 +137,20 @@ const toMinutes = (hhmm) => {
 };
 
 /**
+ * LOS ROLES DE ODONTOLOGÍA, en un solo sitio.
+ *
+ * 'odontologia' y 'odontologia_neurofocal' comparten la MISMA regla de agenda
+ * (sep-2026): miran la agenda como mostrador —TODAS las citas— y sin recorte de
+ * sucursal: les agenden donde les agenden y entren desde la sede que entren,
+ * sus citas aparecen. Antes se recortaba a la sucursal que se llame
+ * "odontología" (resuelta por nombre en `utils/clinicScope.js`) y ese recorte
+ * era el «Cita no encontrada»: el doctor de odontología neurofocal trabaja en
+ * Central, sus citas nacían en Central y la agenda le enseñaba la sede de
+ * odontología —que no era la suya—, y abrir la cita del aviso respondía 404.
+ */
+const esRolOdontologia = (role) => role === 'odontologia' || role === 'odontologia_neurofocal';
+
+/**
  * FILTRO DE SUCURSAL PARA BUSCAR UNA CITA QUE SE VA A TOCAR.
  *
  * Tiene que ser EL MISMO alcance con el que se LEE la agenda: mostrador y
@@ -156,6 +169,10 @@ const toMinutes = (hhmm) => {
  * acabaría en la sede equivocada.
  */
 const filtroSucursalCita = (req) => {
+  // Odontología opera la agenda como mostrador (ver `esRolOdontologia`): la
+  // lectura y la escritura tienen que responder igual, o la cita se ve en la
+  // lista y ningún botón la encuentra.
+  if (esRolOdontologia(req.role)) return {};
   const visibles = sucursalesVisibles(req);
   if (visibles === null) return {};
   return { clinic: { $in: [req.clinicId, ...visibles] } };
@@ -239,29 +256,28 @@ async function construirQueryAgenda(req, {
     clinicScope = req.clinicId;
   }
   /**
-   * ODONTOLOGÍA VE TODA LA AGENDA DE SU SUCURSAL (sep-2026).
+   * ODONTOLOGÍA VE LA AGENDA COMPLETA DE LA ORGANIZACIÓN (sep-2026).
    *
    * Al odontólogo se le abrió la agenda como a mostrador —ve TODAS las citas
-   * agendadas, no solo las suyas—, pero con UNA condición: únicamente las de
-   * la sucursal de odontología. El filtro por turno (`filtroCitasDelDoctor`,
-   * más abajo) no le aplica: ese recorte es para el doctor de especialidad
-   * que solo mira SU cola, y a odontología se le pidió lo contrario.
+   * agendadas, no solo las suyas—. Al principio eso venía con UNA condición:
+   * únicamente las de la sucursal de odontología, resuelta por su NOMBRE (ver
+   * `sucursalOdontologia` en utils/clinicScope.js). Ese recorte se volvió el
+   * «Cita no encontrada»: el doctor de odontología neurofocal trabaja en otra
+   * sede, sus citas nacían en la sede donde él atiende y la agenda le enseñaba
+   * la sucursal de odontología, donde no estaba nada de lo suyo — y abrir la
+   * cita desde el aviso respondía 404.
    *
-   * La sucursal se resuelve por su NOMBRE (ver `sucursalOdontologia` en
-   * utils/clinicScope.js, que es un dato, no un campo del modelo). Si no
-   * existe una sede llamada odontología, NO se abre nada: se conserva el
-   * comportamiento de antes —solo sus turnos— en vez de regalar la agenda
-   * completa a ciegas.
+   * Ahora se le abre la agenda de TODAS las sucursales: les agenden donde les
+   * agenden y entre desde la sede que entre, las citas aparecen. El filtro por
+   * turno (`filtroCitasDelDoctor`, más abajo) tampoco le aplica: ese recorte es
+   * para el doctor de especialidad que solo mira SU cola, y a odontología se le
+   * pidió lo contrario.
    */
   let odontoVeTodo = false;
-  // Odontología y odontología neurofocal comparten la sucursal de odontología
-  // y las dos miran la agenda como mostrador (ver el bloque de arriba).
-  if (['odontologia', 'odontologia_neurofocal'].includes(req.role)) {
-    const sedeOdonto = await sucursalOdontologia();
-    if (sedeOdonto) {
-      clinicScope = String(sedeOdonto._id);
-      odontoVeTodo = true;
-    }
+  // Odontología y odontología neurofocal comparten la misma regla de agenda.
+  if (esRolOdontologia(req.role)) {
+    clinicScope = null;
+    odontoVeTodo = true;
   }
   const query = {};
   if (clinicScope !== null) query.clinic = clinicScope;
@@ -494,16 +510,10 @@ exports.getAppointment = async (req, res) => {
     const apptClinicId = String(appointment.clinic?._id || appointment.clinic);
     const visibles = sucursalesVisibles(req);
     let canAccess = visibles === null || visibles.some((c) => String(c) === apptClinicId);
-    /**
-     * ODONTOLOGÍA, MISMA REGLA que el listado (sep-2026): toda la agenda de la
-     * sucursal de odontología y nada más. Sin este check, la cita de otra sede
-     * le llegaría por id (un enlace, un aviso) aunque la lista nunca se la
-     * enseñe: leer por id y listar tienen que responder igual.
-     */
-    if (['odontologia', 'odontologia_neurofocal'].includes(req.role) && canAccess) {
-      const sedeOdonto = await sucursalOdontologia();
-      if (sedeOdonto && apptClinicId !== String(sedeOdonto._id)) canAccess = false;
-    }
+    // Odontología mira la agenda completa de la organización (ver
+    // `esRolOdontologia`): cualquier cita le llega por id —un enlace, un
+    // aviso— y la lee, igual que la lista se la enseña.
+    if (esRolOdontologia(req.role)) canAccess = true;
     if (!canAccess) return res.status(404).json({ message: 'Cita no encontrada' });
     res.json(appointment);
   } catch (error) {
@@ -1945,12 +1955,21 @@ exports.endConsultation = async (req, res) => {
      * detrás queda otro profesional, la cita CAMBIA DE MANOS en vez de cerrarse.
      */
     const { completarTurno } = require('../utils/appointmentTurns');
-    const { siguiente, terminado } = completarTurno(appointment, { userId: req.user._id });
+    const { cerrado, siguiente, terminado } = completarTurno(appointment, { userId: req.user._id });
     if (terminado || !appointment.turns?.length) {
       appointment.consultationEndedAt = new Date();
       appointment.status = 'completada';
     }
     await appointment.save();
+    // Quien cerró SU turno deja de sonar aunque la cita siga viva (ver
+    // `apagarAvisoDeCitaPara`): con enfermería detrás, el aviso del doctor no
+    // esperaba a que la cita entera terminara — que a veces nunca termina.
+    if (cerrado) {
+      await require('../utils/appointmentNotice').apagarAvisoDeCitaPara(
+        appointment._id,
+        req.user._id
+      );
+    }
     emitToClinic(appointment.clinic, 'appointment:updated', appointment);
     /**
      * Al siguiente le llega la cita ahora, igual que al guardar un seguimiento.
@@ -1969,6 +1988,10 @@ exports.endConsultation = async (req, res) => {
       if (siguiente.user) {
         emitToUser(siguiente.user, 'appointment:assigned', appointment);
         const { notificarUsuarios } = require('../utils/pushNotifications');
+        const { apagarAvisoDeCitaPara } = require('../utils/appointmentNotice');
+        // El aviso de la cita es UNO: el «te toca atender» reemplaza al que ya
+        // tenía de la asignación original (ver notificarAsignacion).
+        await apagarAvisoDeCitaPara(appointment._id, siguiente.user);
         await notificarUsuarios([siguiente.user], {
           clinicId: appointment.clinic,
           type: 'appointment_assigned',
@@ -2875,6 +2898,23 @@ exports.assignDoctor = async (req, res) => {
     await apt.save();
 
     /**
+     * EL AVISO DE QUIEN YA NO LE TOCA, SE APAGA (sep-2026).
+     *
+     * Reasignar la cola —cambiar el doctor, quitarlo, meter enfermería delante—
+     * dejaba sonando en Mongo el aviso «Cita asignada» de quien había sido
+     * avisado y ya no tiene turno pendiente: una tarea que ya no existe. El
+     * filtro de lectura lo escondía, pero nunca se borraba. Aquí se les borra
+     * DE VERDAD, antes de notificar a quien le toca ahora.
+     */
+    {
+      const quedan = doctoresPendientes(apt);
+      const fuera = anteriores.filter((id) => !quedan.includes(id));
+      for (const id of fuera) {
+        await require('../utils/appointmentNotice').apagarAvisoDeCitaPara(apt._id, id);
+      }
+    }
+
+    /**
      * EL SUERO INDICADO AQUÍ SE ESCRIBE EN LA FICHA.
      *
      * El nombre del paso es un rótulo: escribir «suero ala 20 ml» en él no le
@@ -3046,8 +3086,18 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
 
     try {
       const { notificarUsuarios: pushUsuarios, notificarRol: pushRol } = require('../utils/pushNotifications');
-      const { laCitaMereceAviso } = require('../utils/appointmentNotice');
+      const { laCitaMereceAviso, apagarAvisoDeCitaPara } = require('../utils/appointmentNotice');
       if (enTurno) {
+        /**
+         * UN SOLO AVISO VIVO POR CITA Y PERSONA (sep-2026).
+         *
+         * Cada asignación creaba otra notificación para el mismo doctor —
+         * recepción asigna, el odontólogo le da «Atender» (que vuelve a pasar
+         * por aquí), se reabre el modal y se guarda otra vez— y la campana
+         * amanecía con la MISMA cita repetida cuatro veces. El aviso es una
+         * tarea: el nuevo REEMPLAZA al que ya tenía.
+         */
+        await apagarAvisoDeCitaPara(apt._id, enTurno);
         await pushUsuarios([enTurno], {
           clinicId,
           type: 'appointment_assigned',
@@ -3078,6 +3128,7 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
           meta: { appointment: apt._id },
         };
         if (enfermeroNombrado) {
+          await apagarAvisoDeCitaPara(apt._id, enfermeroNombrado);
           await pushUsuarios([enfermeroNombrado], { clinicId, ...aviso });
         } else {
           await pushRol(clinicId, 'enfermero', aviso);
@@ -3408,6 +3459,10 @@ exports.nurseComplete = async (req, res) => {
       if (siguiente.user) {
         emitToUser(siguiente.user, 'appointment:assigned', apt);
         const { notificarUsuarios } = require('../utils/pushNotifications');
+        const { apagarAvisoDeCitaPara } = require('../utils/appointmentNotice');
+        // El aviso de la cita es UNO: el «te toca atender» reemplaza al que ya
+        // tenía de la asignación original (ver notificarAsignacion).
+        await apagarAvisoDeCitaPara(apt._id, siguiente.user);
         await notificarUsuarios([siguiente.user], {
           clinicId: apt.clinic,
           type: 'appointment_assigned',
