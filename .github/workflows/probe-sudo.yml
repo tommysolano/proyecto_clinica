@@ -1,7 +1,6 @@
 name: Probe VPS permisos
 
-# Temporal (sep-2026): diagnostico del 413 y de los reinicios en bucle del backend.
-# Se borra al resolver.
+# Temporal (sep-2026): observacion pasiva del bucle de reinicios. Se borra al resolver.
 
 on:
   workflow_dispatch:
@@ -10,7 +9,7 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Reproducir 502 via nginx y capturar la causa
+      - name: Observar pm2 durante 5 minutos
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -20,27 +19,11 @@ jobs:
           command_timeout: 10m
           script: |
             export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-            echo '===== config real de pm2 ====='
-            sudo -n -iu clinica pm2 describe clinica-api 2>&1 | grep -iE 'memory|uptime|restarts|exec|interpreter|node_args' || true
-            echo '===== NODE_ARGS / max-old-space del proceso vivo ====='
-            ps aux | grep 'server/index.js' | grep -v grep || true
-            cat /proc/$(pgrep -f 'server/index.js' | head -1)/cmdline 2>/dev/null | tr '\0' ' '; echo
-            echo '===== oom del kernel (arreglado) ====='
-            ( dmesg -T 2>/dev/null || journalctl -k --no-pager -n 5000 2>/dev/null ) | grep -iE 'killed process|oom' | tail -n 20
-            echo "fin-oom"
-            echo '===== generar 120MB ====='
-            printf '{"a":1,"b":"' > /tmp/big.json
-            head -c 125829000 /dev/zero | tr '\0' 'x' >> /tmp/big.json
-            printf '"}' >> /tmp/big.json
-            echo '===== ANTES ====='
-            sudo -n -iu clinica pm2 pid clinica-api 2>&1 || true
-            echo '===== 120MB VIA NGINX ====='
-            curl -sS -o /dev/null -w 'via-nginx-120MB -> HTTP %{http_code} T:%{time_total}\n' --max-time 240 -X POST -H 'Content-Type: application/json' --data-binary @/tmp/big.json https://app.shiluvecuador.com/api/auth/login
-            sleep 5
-            echo '===== DESPUES ====='
-            sudo -n -iu clinica pm2 status 2>&1 | head -10 || true
-            echo '===== ultimas 60 lineas error ====='
-            tail -n 60 ~/.pm2/logs/clinica-api-error-0.log 2>/dev/null || true
-            echo '===== nginx error log (colas) ====='
-            tail -n 15 /var/log/nginx/error.log 2>/dev/null || echo 'sin permiso para leer error.log'
-            rm -f /tmp/big.json
+            echo '===== observacion pasiva: 10 muestras x 30s ====='
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              date -u +"(%H:%M:%S) uptime/reinicios:"
+              sudo -n -iu clinica pm2 describe clinica-api 2>&1 | grep -iE 'uptime|restarts ' || true
+              sleep 30
+            done
+            echo '===== ultima hora del error log (solo [shutdown]/instancias) ====='
+            grep -hE 'shutdown|instancias|Servidor corriendo' ~/.pm2/logs/clinica-api-out-0.log ~/.pm2/logs/clinica-api-error-0.log 2>/dev/null | tail -n 30 || true
