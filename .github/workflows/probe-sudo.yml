@@ -1,0 +1,40 @@
+name: Probe VPS permisos
+
+# Temporal (sep-2026): diagnostico de POR QUE el limite de subida de nginx nunca
+# llega a aplicarse. Se borra cuando se resuelva el 413.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sondar permisos del usuario del deploy
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: false
+          script: |
+            export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+            echo '===== quien soy ====='
+            id
+            echo '===== sudoers: comandos permitidos ====='
+            sudo -n -l 2>&1 || true
+            echo '===== puede sudo a clinica ====='
+            sudo -n -iu clinica whoami 2>&1 || true
+            echo '===== puede sudo a root ====='
+            sudo -n -iu root whoami 2>&1 || true
+            echo '===== configuracion nginx visible ====='
+            grep -rn 'client_max_body_size' /etc/nginx 2>&1 | grep -v '^Binary' || true
+            echo '===== drop-in perf instalado ====='
+            ls -l /etc/nginx/conf.d/ 2>&1 || true
+            cat /etc/nginx/conf.d/clinica-perf.conf 2>&1 || echo 'NO EXISTE el drop-in'
+            echo '===== limites de subida que ve el usuario ====='
+            find /etc/nginx -maxdepth 3 -type f -name '*.conf' -writable 2>/dev/null | sed 's/^/WRITABLE: /' || true
+            echo '===== ssh keys del usuario ====='
+            ls -la ~/.ssh 2>&1 || true
+            echo '===== systemd: permisos de clinica ====='
+            systemctl --no-pager list-units --type=service 2>/dev/null | head -20 || true
