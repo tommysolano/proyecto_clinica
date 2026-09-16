@@ -23,6 +23,11 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script_stop: true
+          # La contraseña de sudo del usuario del deploy: el paso 3b/6 de deploy.sh
+          # la usa para aplicar el límite de subida de nginx (el 25m de fábrica
+          # mataba con 413 toda subida de más de 25 MB). Si el secret no existe,
+          # VPS_SUDO_PASS queda vacío y deploy.sh se lo salta sin más.
+          envs: VPS_SUDO_PASS
           # Primero traemos el codigo (esto baja/actualiza el propio deploy.sh en
           # el VPS, asi el primer despliegue tambien funciona) y luego lo corremos.
           script: |
@@ -54,8 +59,11 @@ jobs:
           script: |
             export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
             if [ "$(id -u)" != "0" ]; then
-              echo "AVISO: la llave no entra como root. Aplicar a mano desde la consola del droplet:"
-              echo "   sudo bash /var/www/clinica/deploy/nginx/aplicar-perf-nginx.sh"
+              echo "AVISO: la llave SSH del secret VPS_SSH_KEY no está autorizada para root."
+              echo "      Aplicar UNA vez a mano desde la consola del droplet (DigitalOcean → Droplet →"
+              echo "      Access → Launch Droplet Console, entra como root):"
+              echo "         bash /var/www/clinica/deploy/nginx/aplicar-perf-nginx.sh"
+              echo "      (o crear el secret VPS_SUDO_PASS con la contraseña de sudo del usuario del deploy)."
               exit 1
             fi
             cd /var/www/clinica

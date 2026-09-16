@@ -155,13 +155,30 @@ if command -v nginx >/dev/null 2>&1; then
       echo "ADVERTENCIA: aplicar-perf-nginx falló con sudo; nginx quedó como estaba. Correr a mano:"
       echo "   sudo bash $APP_DIR/deploy/nginx/aplicar-perf-nginx.sh"
     fi
+  elif [ -n "${VPS_SUDO_PASS:-}" ]; then
+    # TERCERA VÍA (sep-2026): el usuario del deploy está en el grupo sudo pero su
+    # sudo pide CONTRASEÑA (sudo -n falla) — verificado contra el VPS: era el
+    # agujero por el que el 413 seguía vivo (nginx con su 25m de fábrica en
+    # /etc/nginx/sites-available). Si existe el secret VPS_SUDO_PASS (la
+    # contraseña de sudo del usuario del deploy) se le pasa por `sudo -S` por
+    # stdin y el arreglo se aplica solo en CADA despliegue, sinentrar como root.
+    if printf '%s\n' "$VPS_SUDO_PASS" | sudo -S -p '' bash "$APP_DIR/deploy/nginx/aplicar-perf-nginx.sh" 2>&1 | tail -n 6; then
+      echo "--> nginx verificado con sudo (1 GB de subida, timeouts de proxy aplicados)"
+    else
+      echo "ADVERTENCIA: sudo rechazó la contraseña de VPS_SUDO_PASS; nginx quedó como estaba. Correr a mano desde la consola del droplet:"
+      echo "   sudo bash $APP_DIR/deploy/nginx/aplicar-perf-nginx.sh"
+    fi
   else
-    # El usuario del deploy (VPS_USER=clinica) NO tiene sudo sin contraseña hacia
-    # root: esto era lo que dejaba el 413 vivo (nginx seguía con 25m). El workflow
-    # de GitHub Actions trae DESPUÉS un paso aparte "Límite de subida de nginx
-    # (como root)" que entra al VPS directamente como root y lo aplica; si esa
-    # llave tampoco entra como root, queda este recordatorio:
-    echo "--> Este despliegue no corre como root ni tiene sudo sin contraseña: el paso 'Límite de subida de nginx (como root)' del workflow lo aplica; si no pudiera, correr a mano:"
+    # El usuario del deploy (VPS_USER) NO tiene sudo sin contraseña hacia root:
+    # esto era lo que dejaba el 413 vivo (nginx seguía con 25m). Dos curas
+    # permanentes, en orden de preferencia:
+    #   1. Secret VPS_SUDO_PASS en GitHub (la contraseña de sudo del usuario del
+    #      deploy) — este despliegue la usa arriba en cada push.
+    #   2. Autorizar la misma llave SSH para root (`/root/.ssh/authorized_keys`)
+    #      — el paso "Límite de subida de nginx (como root)" del workflow la usa.
+    # Mientras ninguna exista, correr UNA vez a mano (DigitalOcean → Droplet →
+    # Access → Launch Droplet Console, que entra como root):
+    echo "--> Sin forma de ser root en este despliegue: falta el secret VPS_SUDO_PASS y la llave no entra como root. Aplicar UNA vez a mano:"
     echo "   sudo bash $APP_DIR/deploy/nginx/aplicar-perf-nginx.sh"
   fi
 else
