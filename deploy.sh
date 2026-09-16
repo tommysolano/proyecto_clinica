@@ -156,7 +156,12 @@ if command -v nginx >/dev/null 2>&1; then
       echo "   sudo bash $APP_DIR/deploy/nginx/aplicar-perf-nginx.sh"
     fi
   else
-    echo "--> Este despliegue no corre como root ni tiene sudo sin contraseña: recuerda aplicar los límites de nginx a mano:"
+    # El usuario del deploy (VPS_USER=clinica) NO tiene sudo sin contraseña hacia
+    # root: esto era lo que dejaba el 413 vivo (nginx seguía con 25m). El workflow
+    # de GitHub Actions trae DESPUÉS un paso aparte "Límite de subida de nginx
+    # (como root)" que entra al VPS directamente como root y lo aplica; si esa
+    # llave tampoco entra como root, queda este recordatorio:
+    echo "--> Este despliegue no corre como root ni tiene sudo sin contraseña: el paso 'Límite de subida de nginx (como root)' del workflow lo aplica; si no pudiera, correr a mano:"
     echo "   sudo bash $APP_DIR/deploy/nginx/aplicar-perf-nginx.sh"
   fi
 else

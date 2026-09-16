@@ -30,3 +30,43 @@ jobs:
             git fetch --all --prune
             git reset --hard origin/main
             bash deploy.sh
+
+      # AQUÍ ESTABA EL AGUJERO (sep-2026): el límite de subida de archivos vive en
+      # nginx (`client_max_body_size`) y SOLO root puede tocarlo. El deploy corre
+      # como VPS_USER (clinica), que no tiene sudo sin contraseña hacia root, así
+      # que el paso 3b/6 de deploy.sh NUNCA pudo aplicar el script: nginx siguió
+      # con su 25m de fábrica y toda subida de más de 25 MB moría con 413
+      # («archivo demasiado grande») en el chat, en workflows y en las fichas.
+      #
+      # Este paso entra DIRECTAMENTE como root (misma llave, PermitRootLogin
+      # prohibit-password es el default de Ubuntu) y lo aplica, y de paso verifica
+      # el límite EFECTIVO con `nginx -T`. Si la llave no está autorizada para
+      # root, el paso se marca como advertencia y queda la instrucción para la
+      # consola del droplet (DigitalOcean → Access → Launch Droplet Console).
+      - name: Límite de subida de nginx (como root)
+        continue-on-error: true
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: root
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: false
+          script: |
+            export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+            if [ "$(id -u)" != "0" ]; then
+              echo "AVISO: la llave no entra como root. Aplicar a mano desde la consola del droplet:"
+              echo "   sudo bash /var/www/clinica/deploy/nginx/aplicar-perf-nginx.sh"
+              exit 1
+            fi
+            cd /var/www/clinica
+            git fetch --all --prune || true
+            git reset --hard origin/main || true
+            bash deploy/nginx/aplicar-perf-nginx.sh
+            echo '===== límite efectivo tras aplicar ====='
+            nginx -T 2>/dev/null | grep -oE 'client_max_body_size[[:space:]]+[^;]+' | sort -u
+            # Prueba REAL: un POST de 30 MB no debe morir con 413 (400 = llegó a Node).
+            dd if=/dev/zero of=/tmp/prueba30mb.bin bs=1M count=30 2>/dev/null
+            printf 'Subida de 30 MB -> HTTP '
+            curl -sS -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' \
+              --data-binary @/tmp/prueba30mb.bin https://app.shiluvecuador.com/api/auth/login
+            rm -f /tmp/prueba30mb.bin
