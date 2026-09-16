@@ -10,7 +10,7 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Prueba controlada de body grande desde el propio VPS
+      - name: Reproducir 502 via nginx y capturar la causa
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -20,27 +20,27 @@ jobs:
           command_timeout: 10m
           script: |
             export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
-            echo '===== TODOS los procesos node/pm2 (a ver si hay un 2do backend) ====='
-            ps aux | grep -E 'node|PM2|God' | grep -v grep || true
-            echo '===== quien escucha el 5000 ====='
-            ss -tlnp 2>/dev/null | grep ':5000' || true
-            echo '===== marcar la hora ====='
-            date -u +%H:%M:%S
-            echo '===== generar body de 120 MB y probar CONTRA LOCALHOST:5000 (sin nginx) ====='
-            head -c 125829120 /dev/zero | tr '\0' 'x' > /tmp/big.json
+            echo '===== config real de pm2 ====='
+            sudo -n -iu clinica pm2 describe clinica-api 2>&1 | grep -iE 'memory|uptime|restarts|exec|interpreter|node_args' || true
+            echo '===== NODE_ARGS / max-old-space del proceso vivo ====='
+            ps aux | grep 'server/index.js' | grep -v grep || true
+            cat /proc/$(pgrep -f 'server/index.js' | head -1)/cmdline 2>/dev/null | tr '\0' ' '; echo
+            echo '===== oom del kernel (arreglado) ====='
+            ( dmesg -T 2>/dev/null || journalctl -k --no-pager -n 5000 2>/dev/null ) | grep -iE 'killed process|oom' | tail -n 20
+            echo "fin-oom"
+            echo '===== generar 120MB ====='
             printf '{"a":1,"b":"' > /tmp/big.json
             head -c 125829000 /dev/zero | tr '\0' 'x' >> /tmp/big.json
             printf '"}' >> /tmp/big.json
-            ls -l /tmp/big.json
-            curl -sS -o /dev/null -w 'localhost -> HTTP %{http_code} T:%{time_total}\n' --max-time 120 -X POST -H 'Content-Type: application/json' --data-binary @/tmp/big.json http://localhost:5000/api/auth/login
-            sleep 3
-            echo '===== logs de error tras la prueba ====='
-            tail -n 30 ~/.pm2/logs/clinica-api-error-0.log 2>/dev/null || true
-            echo '===== logs de out tras la prueba ====='
-            tail -n 15 ~/.pm2/logs/clinica-api-out-0.log 2>/dev/null || true
-            echo '===== pm2 status ====='
-            sudo -n -iu clinica pm2 status 2>&1 | head -12 || true
-            echo '===== probar CONTRA NGINX (30MB) ====='
-            head -c 31457280 /dev/zero | tr '\0' 'y' > /tmp/med.json
-            curl -sS -o /dev/null -w 'via-nginx -> HTTP %{http_code} T:%{time_total}\n' --max-time 120 -X POST -H 'Content-Type: application/json' --data-binary @/tmp/med.json https://app.shiluvecuador.com/api/auth/login
-            rm -f /tmp/big.json /tmp/med.json
+            echo '===== ANTES ====='
+            sudo -n -iu clinica pm2 pid clinica-api 2>&1 || true
+            echo '===== 120MB VIA NGINX ====='
+            curl -sS -o /dev/null -w 'via-nginx-120MB -> HTTP %{http_code} T:%{time_total}\n' --max-time 240 -X POST -H 'Content-Type: application/json' --data-binary @/tmp/big.json https://app.shiluvecuador.com/api/auth/login
+            sleep 5
+            echo '===== DESPUES ====='
+            sudo -n -iu clinica pm2 status 2>&1 | head -10 || true
+            echo '===== ultimas 60 lineas error ====='
+            tail -n 60 ~/.pm2/logs/clinica-api-error-0.log 2>/dev/null || true
+            echo '===== nginx error log (colas) ====='
+            tail -n 15 /var/log/nginx/error.log 2>/dev/null || echo 'sin permiso para leer error.log'
+            rm -f /tmp/big.json
