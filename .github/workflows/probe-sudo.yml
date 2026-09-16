@@ -1,0 +1,33 @@
+name: Probe VPS permisos
+
+# Temporal (sep-2026): diagnostico de POR QUE el limite de subida de nginx nunca
+# llega a aplicarse y por que los bodies grandes devuelven 502. Se borra al resolver.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Logs de PM2 y estado
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: false
+          script: |
+            export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+            echo '===== pm2 status ====='
+            sudo -n -iu clinica pm2 status 2>&1 | head -30 || true
+            echo '===== reinicios del proceso ====='
+            sudo -n -iu clinica pm2 describe clinica-api 2>&1 | grep -iE 'uptime|restarts|status' || true
+            echo '===== errores recientes del backend ====='
+            tail -n 80 ~/.pm2/logs/clinica-api-error-0.log 2>/dev/null || true
+            echo '===== out recientes ====='
+            tail -n 40 ~/.pm2/logs/clinica-api-out-0.log 2>/dev/null || true
+            echo '===== oom del kernel hoy ====='
+            ( dmesg -T 2>/dev/null || journalctl -k --no-pager -n 3000 2>/dev/null ) | grep -iE 'out of memory|killed process|oom-kill' | tail -n 15 || echo 'sin OOM'
+            echo '===== memoria ====='
+            free -m
