@@ -3124,15 +3124,27 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
           ...(quotedMessageId || quoteBody ? { quote: { applied: false, how: '', reason: 'timeout', wamid: '' } } : {}),
         };
       }
+      // Un rechazo real de la capa de media (por ejemplo, una incompatibilidad
+      // entre la versión de WhatsApp Web y whatsapp-web.js) NO significa que el
+      // número QR esté desconectado. Antes, como el chat sí se podía leer, TODO
+      // error acababa disfrazado de «la sesión se cayó» y llevaba al equipo a
+      // revisar una configuración que estaba correcta.
+      if (!isSessionGlitch(e)) {
+        console.error('[wa-qr sendMedia] fallo real preparando/subiendo %s: %s', what, e?.stack || e);
+        return {
+          ok: false,
+          errorCode: 'qr_media_send_error',
+          error: `WhatsApp Web no pudo procesar ${what}: ${String(e?.message || e).slice(0, 240)}`,
+        };
+      }
       if (conf.checked) {
         // Se leyó el chat y el adjunto no está: NO salió. Reintentar es seguro.
         return {
           ok: false,
           errorCode: 'qr_send_failed',
-          error: `${what.charAt(0).toUpperCase()}${what.slice(1)} no salió (se comprobó en el chat): la sesión de WhatsApp Web se cayó a mitad del envío. Se reintenta solo.`,
+          error: `${what.charAt(0).toUpperCase()}${what.slice(1)} no salió (se comprobó en el chat): la sesión de WhatsApp Web se cayó a mitad del envío. Puedes reintentarlo sin riesgo de duplicarlo.`,
         };
       }
-      if (!isSessionGlitch(e)) throw e;
       rememberPending(key, r.chatId, huella, startedAt);
       return { ok: false, errorCode: 'qr_send_unconfirmed', error: qrSendErrorText(e) };
     }
