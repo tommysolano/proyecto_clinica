@@ -49,7 +49,7 @@ test('getChat recupera un chat @lid por $1 si la búsqueda antigua falla', async
   }
 });
 
-test('processMediaData no pasa un adjunto normal por el getter que ahora exige id', async () => {
+test('processMediaData evita el getter con id y convierte desde el tipo MMSv3', async () => {
   const previousWindow = global.window;
   let memoizedGetterCalls = 0;
   let uploadedMediaType = '';
@@ -62,7 +62,7 @@ test('processMediaData no pasa un adjunto normal por el getter que ahora exige i
   }
 
   const mediaObject = {
-    type: 'video', filehash: 'HASH', size: 123,
+    type: 'MMSV3_VIDEO', filehash: 'HASH', size: 123,
     contentInfo: {},
     consolidate() {},
   };
@@ -91,7 +91,13 @@ test('processMediaData no pasa un adjunto normal por el getter que ahora exige i
             memoizedGetterCalls += 1;
             throw new Error("Data passed to getter must include an id property (it's how we memoize)");
           },
-          castToV4: (type) => `v4:${type}`,
+          castToV4: (type) => {
+            if (type === 'video') {
+              throw new Error('castToV4: unexpected mmsv3 type video');
+            }
+            assert.equal(type, 'MMSV3_VIDEO');
+            return 'v4:video';
+          },
         };
       }
       if (name === 'WAWebMediaDataUtils') return { shouldUseMediaCache: () => false };

@@ -149,10 +149,10 @@ index dd977e8..db0179b 100644
  
          /**
 diff --git a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
-index 540078a..2b4f488 100644
+index 540078a..28b2d36 100644
 --- a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
 +++ b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
-@@ -713,18 +713,27 @@ exports.LoadUtils = () => {
+@@ -713,18 +713,28 @@ exports.LoadUtils = () => {
              .require('WAWebPrepRawMedia')
              .prepRawMedia(opaqueData, mediaParams);
          const mediaData = await mediaPrep.waitForPrep();
@@ -170,7 +170,8 @@ index 540078a..2b4f488 100644
 +        // existe ningún mensaje: solo tenemos la media preparada, por lo que
 +        // pasarlo por ese getter rompe TODOS los adjuntos de chats normales con
 +        // "Data passed to getter must include an id property". Para esos chats
-+        // la propia librería ya expone la conversión pura `castToV4`.
++        // se usa el tipo MMSv3 del objeto de media; `mediaData.type` contiene el
++        // texto crudo (por ejemplo, "video") y `castToV4` no acepta ese valor.
          if (!mediaData.filehash) {
              throw new Error('media-fault: sendToChat filehash undefined');
          }
@@ -184,11 +185,11 @@ index 540078a..2b4f488 100644
 +                  isGif: mediaData.isGif,
 +                  isNewsletter: true,
 +              })
-+            : MmsMediaTypes.castToV4(mediaData.type);
++            : MmsMediaTypes.castToV4(mediaObject.type);
  
          if (
              (forceVoice && mediaData.type === 'ptt') ||
-@@ -830,49 +839,63 @@ exports.LoadUtils = () => {
+@@ -830,49 +840,63 @@ exports.LoadUtils = () => {
  
          if (typeof msg.id.remote === 'object') {
              msg.id = Object.assign({}, msg.id, {
