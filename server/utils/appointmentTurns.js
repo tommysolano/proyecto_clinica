@@ -304,18 +304,17 @@ function turnoEnfermeriaParaUsuario(apt, userId) {
 /**
  * Condición de Mongo con las citas que un enfermero debe ver en su bandeja.
  *
- * Tres casos, y los tres hacen falta:
+ * Dos casos, y ambos requieren una asignación explícita de enfermería:
  *  1. La que puede tomar AHORA: el turno vigente es de enfermería y está libre
  *     (`currentTurnUser: null`) o es suyo.
  *  2. Las que YA atendió, para que no se le caigan de la lista al pasar el turno
  *     a la siguiente compañera.
- *  3. Las citas SIN turnos (anteriores al cambio), donde manda el servicio.
  *
  * NO se mira `attendedByNurse`: ese campo es ahora un espejo del último turno de
  * enfermería y nunca se suelta, así que filtrar por él escondía la cita a la
  * segunda enfermera aunque el turno fuera suyo.
  */
-function filtroCitasDeEnfermeria(userId, condicionLegado) {
+function filtroCitasDeEnfermeria(userId) {
   return {
     $or: [
       {
@@ -326,7 +325,6 @@ function filtroCitasDeEnfermeria(userId, condicionLegado) {
       // detrás de un doctor le saldría ya en la bandeja, y la cola dejaría de
       // valer para nada: el paciente sigue en consulta.
       { turns: { $elemMatch: { kind: 'enfermeria', user: userId, status: 'completado' } } },
-      ...(condicionLegado ? [condicionLegado] : []),
     ],
   };
 }

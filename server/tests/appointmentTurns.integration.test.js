@@ -20,6 +20,7 @@ const Appointment = require('../models/Appointment');
 const Patient = require('../models/Patient');
 const User = require('../models/User');
 const ClinicalRecord = require('../models/ClinicalRecord');
+const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const appt = require('../controllers/appointmentController');
 const clinicalRecords = require('../controllers/clinicalRecordController');
 
@@ -172,6 +173,51 @@ test('mandar a enfermería crea un turno SIN dueño', async () => {
   assert.ok(turno, 'hay turno de enfermería');
   assert.equal(turno.user, null, 'sin dueño: sale a la bandeja de todos');
   assert.equal(guardada.status, 'asistida');
+});
+
+test('un servicio de enfermería no aparece hasta que recepción asigne el turno', async () => {
+  const { clinicId, userId, enf1, enf2, cita } = await seed();
+  const servicio = await AppointmentServiceItem.create({
+    clinic: clinicId,
+    name: 'Sueroterapia',
+    slug: 'sueroterapia',
+    nursingService: true,
+    createdBy: userId,
+  });
+  await Appointment.findByIdAndUpdate(cita._id, {
+    serviceItem: servicio._id,
+    serviceName: servicio.name,
+  });
+
+  const bandejaDe = async (enfermero) => {
+    const r = await H.runController(
+      appt.getAppointments,
+      H.mockReq(clinicId, enfermero._id, {}, { role: 'enfermero', query: {} }),
+    );
+    const lista = Array.isArray(r.payload) ? r.payload : r.payload?.appointments || [];
+    return lista.map((a) => String(a._id));
+  };
+
+  assert.deepEqual(await bandejaDe(enf1), [], 'el servicio no asigna la cita automáticamente');
+  assert.deepEqual(await bandejaDe(enf2), [], 'ningún enfermero la ve sin un turno explícito');
+
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, { steps: [{ kind: 'enfermeria' }] }, params(cita._id)),
+  );
+
+  assert.deepEqual(await bandejaDe(enf1), [String(cita._id)], 'el turno abierto aparece a cualquiera');
+  assert.deepEqual(await bandejaDe(enf2), [String(cita._id)], 'el turno abierto aparece a cualquiera');
+
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [{ kind: 'enfermeria', user: String(enf1._id) }],
+    }, params(cita._id)),
+  );
+
+  assert.deepEqual(await bandejaDe(enf1), [String(cita._id)], 'la asignada directamente la ve su dueña');
+  assert.deepEqual(await bandejaDe(enf2), [], 'la asignada directamente no aparece a las demás');
 });
 
 test('solo UN enfermero se queda la cita aunque dos la reclamen a la vez', async () => {

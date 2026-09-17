@@ -2590,12 +2590,10 @@ exports.createWalkIn = async (req, res) => {
 /**
  * Qué ve un enfermero en su bandeja.
  *
- * Tres criterios, porque conviven dos formas de mandar una cita a enfermería:
- *  · la NUEVA — recepción pone un turno de enfermería al asignar, y ese turno
- *    puede estar ABIERTO (lo toma el primero que lo vea) o NOMBRADO a alguien;
- *  · la VIEJA — la cita lleva un servicio del inventario con `nursingService`.
- * El segundo se mantiene para que las citas ya agendadas no desaparezcan de la
- * bandeja el día del despliegue.
+ * Una cita solo entra cuando recepción le asignó un turno de enfermería. Ese
+ * turno puede estar ABIERTO (lo toma el primero que lo vea) o NOMBRADO a una
+ * persona concreta. Elegir un servicio marcado como `nursingService` no es una
+ * asignación y, por sí solo, nunca debe publicar la cita en esta bandeja.
  *
  * YA NO SE FILTRA POR `attendedByNurse`. Ese campo pasó a ser un espejo del
  * último turno de enfermería y nunca se suelta: con dos turnos seguidos —un
@@ -2603,33 +2601,9 @@ exports.createWalkIn = async (req, res) => {
  * segunda no llegaba a ver la cita ni siendo suyo el turno. Ahora manda el
  * turno vigente (`currentTurnUser`), que es quien de verdad tiene la pelota.
  */
-async function filtroEnfermeria(req) {
-  const nursingProductIds = await Product.find({ nursingService: true }).distinct('_id');
-  const nursingItemIds = await require('../models/AppointmentServiceItem')
-    // Un servicio con suero automático no es una asignación a enfermería por sí
-    // solo: primero debe pasar por «Asignar atención», donde recepción escoge el
-    // enfermero y el suero/seguimiento concreto. La ruta legacy solo conserva los
-    // servicios antiguos que no tienen ese mecanismo.
-    .find({ nursingService: true, 'autoSerum.enabled': { $ne: true } })
-    .distinct('_id');
-
-  const legado = {
-    $and: [
-      { turns: { $in: [null, []] } },
-      {
-        $or: [
-          { 'services.product': { $in: nursingProductIds } },
-          { serviceItem: { $in: nursingItemIds } },
-        ],
-      },
-      // En las citas viejas no hay turno que mande, así que sigue valiendo el
-      // campo antiguo: libre, o mía.
-      { $or: [{ attendedByNurse: null }, { attendedByNurse: req.user._id }] },
-    ],
-  };
-
+function filtroEnfermeria(req) {
   return {
-    ...filtroCitasDeEnfermeria(req.user._id, legado),
+    ...filtroCitasDeEnfermeria(req.user._id),
     // Un turno de enfermeria puede quedar preparado desde que se agenda la
     // cita. Todavia no es una atencion, pero debe aparecer en la bandeja
     // pendiente para que enfermeria la vea y la reclame.
