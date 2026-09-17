@@ -49,34 +49,45 @@ function mediaUrlForId(id) {
  *   - 'attachment' → adjunto subido para enviar (mensajes guardados, composer)
  *   - 'inbound'    → lo que MANDA el contacto; nunca debe aparecer en la galería
  */
-async function storeInlineMedia({ clinicId, dataUrl, name, kind = 'inbound', createdBy = null }) {
-  const parsed = parseDataUrl(dataUrl);
-  if (!parsed) return null;
+async function storeBufferMedia({ clinicId, buffer, mimeType, name, kind = 'inbound', createdBy = null }) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) return null;
   const mongoose = require('mongoose');
   const mediaStore = require('./mediaStore');
   const ChatGalleryImage = require('../models/ChatGalleryImage');
 
-  const mimeType = parsed.mimeType || 'application/octet-stream';
-  const buffer = Buffer.from(parsed.b64, 'base64');
+  const cleanMimeType = String(mimeType || 'application/octet-stream').split(';')[0].toLowerCase();
 
   // El id se genera aquí porque forma parte del nombre del archivo. Se escribe a
   // disco ANTES de crear el documento: si la escritura falla no queda un registro
   // en Mongo apuntando a un archivo inexistente. Al revés (documento sin archivo)
   // sería un adjunto roto; así, lo peor que puede pasar es un archivo huérfano.
   const _id = new mongoose.Types.ObjectId();
-  const { storageKey } = await mediaStore.write({ id: _id, buffer, mimeType });
+  const { storageKey } = await mediaStore.write({ id: _id, buffer, mimeType: cleanMimeType });
 
   const doc = await ChatGalleryImage.create({
     _id,
     clinic: clinicId,
     name: String(name || `adjunto_${Date.now()}`).slice(0, 200),
     storageKey,
-    mimeType,
+    mimeType: cleanMimeType,
     size: buffer.length,
     kind,
     ...(createdBy ? { createdBy } : {}),
   });
   return { id: doc._id, url: mediaUrlForId(doc._id), size: doc.size };
+}
+
+async function storeInlineMedia({ clinicId, dataUrl, name, kind = 'inbound', createdBy = null }) {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed) return null;
+  return storeBufferMedia({
+    clinicId,
+    buffer: Buffer.from(parsed.b64, 'base64'),
+    mimeType: parsed.mimeType,
+    name,
+    kind,
+    createdBy,
+  });
 }
 
 /**
@@ -129,5 +140,6 @@ module.exports = {
   legacyInlineMediaUrl,
   mediaUrlForId,
   sanitizeMessageForSocket,
+  storeBufferMedia,
   storeInlineMedia,
 };

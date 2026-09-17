@@ -5,6 +5,7 @@ import {
   HiOutlinePhoneArrowDownLeft,
   HiOutlineMicrophone,
   HiOutlineSpeakerXMark,
+  HiOutlineSpeakerWave,
 } from 'react-icons/hi2';
 import { formatDuration } from '../hooks/useVoiceRecorder';
 
@@ -16,7 +17,17 @@ import { formatDuration } from '../hooks/useVoiceRecorder';
  * que es un panel flotante que no bloquea la pantalla. Tampoco se cierra con
  * Escape ni al hacer clic fuera: de una llamada solo se sale colgando.
  */
-export default function CallPanel({ call, seconds, muted, onAccept, onReject, onHangUp, onToggleMute }) {
+export default function CallPanel({
+  call,
+  seconds,
+  muted,
+  needsAudioUnlock,
+  onAccept,
+  onReject,
+  onHangUp,
+  onToggleMute,
+  onResumeAudio,
+}) {
   if (!call) return null;
 
   const isIncoming = call.direction === 'in';
@@ -46,6 +57,16 @@ export default function CallPanel({ call, seconds, muted, onAccept, onReject, on
           </div>
         </div>
       </div>
+
+      {needsAudioUnlock && !ringing && (
+        <button
+          type="button"
+          onClick={onResumeAudio}
+          className="mx-4 mt-3 py-2 rounded-lg bg-amber-50 text-amber-900 border border-amber-200 cursor-pointer hover:bg-amber-100 flex items-center justify-center gap-1.5 text-sm font-medium"
+        >
+          <HiOutlineSpeakerWave className="w-4 h-4" /> Activar audio del contacto
+        </button>
+      )}
 
       <div className="px-4 py-3 flex items-center justify-center gap-3">
         {isIncoming && ringing ? (

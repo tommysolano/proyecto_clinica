@@ -20,7 +20,7 @@ import { useSocketEvent } from '../context/SocketContext';
 // Meta no admite trickle ICE: el SDP debe ir con TODOS los candidatos dentro, así
 // que hay que esperar a que el navegador termine de recolectarlos antes de
 // mandarlo. Sin esto el SDP viaja sin candidatos y la llamada nunca da audio.
-function waitForIceGathering(pc, timeoutMs = 5000) {
+function waitForIceGathering(pc, timeoutMs = 10000) {
   if (pc.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise((resolve) => {
     let timer = null;
@@ -39,16 +39,18 @@ function waitForIceGathering(pc, timeoutMs = 5000) {
   });
 }
 
-const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+const FALLBACK_ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302'] }];
 
 export default function useWhatsappCall() {
   // null | { callId, direction, status, contactName, phone, conversationId }
   const [call, setCall] = useState(null);
   const [muted, setMuted] = useState(false);
+  const [needsAudioUnlock, setNeedsAudioUnlock] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
+  const remoteStreamRef = useRef(null);
   const timerRef = useRef(null);
   // El OFFER de una entrante llega por socket y se usa recién al aceptar.
   const pendingOfferRef = useRef('');
@@ -57,6 +59,7 @@ export default function useWhatsappCall() {
   useEffect(() => {
     const el = document.createElement('audio');
     el.autoplay = true;
+    el.playsInline = true;
     document.body.appendChild(el);
     remoteAudioRef.current = el;
     return () => el.remove();
@@ -72,8 +75,10 @@ export default function useWhatsappCall() {
       pcRef.current = null;
     }
     if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+    remoteStreamRef.current = null;
     pendingOfferRef.current = '';
     setMuted(false);
+    setNeedsAudioUnlock(false);
     setSeconds(0);
   }, []);
 
@@ -88,6 +93,20 @@ export default function useWhatsappCall() {
     timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
   }, []);
 
+  const playRemoteAudio = useCallback(async () => {
+    const el = remoteAudioRef.current;
+    if (!el?.srcObject) return;
+    try {
+      await el.play();
+      setNeedsAudioUnlock(false);
+    } catch (err) {
+      // Safari/iOS y algunos Chrome bloquean autoplay aunque la llamada se haya
+      // contestado desde un clic. La UI ofrece un botón explícito para activarlo.
+      if (err?.name === 'NotAllowedError') setNeedsAudioUnlock(true);
+      else console.warn('[call] no se pudo reproducir el audio remoto:', err?.message || err);
+    }
+  }, []);
+
   // Prepara la conexión WebRTC: micrófono + reproducción de la voz del contacto.
   const buildPeerConnection = useCallback(async () => {
     let stream;
@@ -96,21 +115,43 @@ export default function useWhatsappCall() {
     } catch {
       throw new Error('No se pudo usar el micrófono. Revisa los permisos del navegador.');
     }
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    let iceServers = FALLBACK_ICE_SERVERS;
+    try {
+      const { data } = await api.get('/chats/calls/ice-config');
+      if (Array.isArray(data?.iceServers) && data.iceServers.length) iceServers = data.iceServers;
+    } catch {
+      // El STUN público conserva el comportamiento anterior mientras se termina
+      // de configurar TURN en un entorno recién desplegado.
+    }
+    const pc = new RTCPeerConnection({ iceServers });
     stream.getTracks().forEach((t) => pc.addTrack(t, stream));
     pc.ontrack = (e) => {
-      if (remoteAudioRef.current) remoteAudioRef.current.srcObject = e.streams[0];
+      // Meta puede mandar una pista "streamless": en ese caso `streams` está
+      // vacío. Antes asignábamos undefined al <audio>, causando exactamente el
+      // audio de un solo sentido que reportaron los usuarios.
+      let remoteStream = e.streams?.[0];
+      if (!remoteStream) {
+        remoteStream = remoteStreamRef.current || new MediaStream();
+        if (!remoteStream.getTracks().some((track) => track.id === e.track.id)) {
+          remoteStream.addTrack(e.track);
+        }
+      }
+      remoteStreamRef.current = remoteStream;
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = remoteStream;
+        playRemoteAudio();
+      }
     };
     pc.onconnectionstatechange = () => {
-      if (['failed', 'closed'].includes(pc.connectionState)) {
-        toast.error('Se perdió la conexión de la llamada');
+      if (pc.connectionState === 'failed') {
+        toast.error('No se pudo conectar el audio. Revisa la red o la configuración TURN.');
         endLocally();
       }
     };
     localStreamRef.current = stream;
     pcRef.current = pc;
     return pc;
-  }, [endLocally]);
+  }, [endLocally, playRemoteAudio]);
 
   /** Llama al contacto de una conversación. */
   const startCall = useCallback(async (conversation) => {
@@ -236,5 +277,16 @@ export default function useWhatsappCall() {
   // Cerrar la página/desmontar no debe dejar el micrófono abierto.
   useEffect(() => cleanup, [cleanup]);
 
-  return { call, seconds, muted, startCall, acceptCall, rejectCall, hangUp, toggleMute };
+  return {
+    call,
+    seconds,
+    muted,
+    needsAudioUnlock,
+    startCall,
+    acceptCall,
+    rejectCall,
+    hangUp,
+    toggleMute,
+    resumeAudio: playRemoteAudio,
+  };
 }

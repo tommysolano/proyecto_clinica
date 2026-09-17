@@ -1556,22 +1556,26 @@ exports.updateSavedReply = async (req, res) => {
 exports.uploadSavedReplyMedia = async (req, res) => {
   try {
     let { name } = req.body;
-    let { dataUrl } = req.body;
-    // Multipart: el archivo llegó en crudo (ver mediaUploadMiddleware). Se
-    // convierte al data URL interno y sigue el MISMO pipeline de siempre.
-    if (!dataUrl && req.file) {
-      const parts = dataUrlDeMultipart(req.file);
-      dataUrl = parts.dataUrl;
-      name = name || parts.name;
-    }
-    const parsed = require('../utils/dataUrl').parseDataUrl(dataUrl);
-    if (!parsed) {
-      return res.status(400).json({ message: 'Archivo inválido' });
+    let buffer;
+    let mimeType;
+    // El chat y workflows mandan multipart. Se conserva el Buffer de multer:
+    // antes se inflaba 33% al pasarlo a Base64 y luego se volvía a decodificar,
+    // manteniendo varias copias de un video grande en la RAM del VPS.
+    if (req.file) {
+      buffer = req.file.buffer;
+      mimeType = String(req.file.mimetype || 'application/octet-stream').split(';')[0].toLowerCase();
+      name = name || req.file.originalname;
+    } else {
+      // Compatibilidad con clientes antiguos que todavía mandan JSON/data URL.
+      const parsed = require('../utils/dataUrl').parseDataUrl(req.body.dataUrl);
+      if (!parsed) return res.status(400).json({ message: 'Archivo inválido' });
+      buffer = Buffer.from(parsed.b64, 'base64');
+      mimeType = parsed.mimeType;
     }
     // Clasifica por el tipo MIME: imagen/video/audio se envían como tales; TODO lo
     // demás (PDF, Word, Excel, ZIP…) se manda como DOCUMENTO adjunto.
-    const kind = mediaKindOf(parsed.mimeType);
-    // Topes en CARACTERES de data URL base64 (~1.33× el tamaño real del archivo).
+    const kind = mediaKindOf(mimeType);
+    // Topes sobre los bytes reales, iguales para clientes nuevos y antiguos.
     //
     // Los bytes van AL DISCO (ver utils/chatMedia → mediaStore), no a Mongo, así
     // que el techo de BSON ya no manda. El techo de verdad es el de WhatsApp:
@@ -1586,21 +1590,25 @@ exports.uploadSavedReplyMedia = async (req, res) => {
     // entrada videos que comprimidos cabían de sobra; si el video es demasiado
     // largo y no baja de 15 MB ni comprimiéndolo, videoTranscode lo rechaza con
     // un mensaje claro — ese es el momento correcto, no al elegir el archivo.
-    const MAX_LEN = { video: 134_000_000, audio: 21_000_000, image: 8_000_000, document: 134_000_000 };
+    const MAX_BYTES = {
+      video: 100 * 1024 * 1024,
+      audio: 15 * 1024 * 1024,
+      image: 6 * 1024 * 1024,
+      document: 100 * 1024 * 1024,
+    };
     const TOO_BIG = {
       video: 'Video demasiado grande (máx ~100MB)',
       audio: 'Audio demasiado grande (máx ~15MB)',
       image: 'Imagen demasiado grande (máx ~6MB)',
       document: 'El archivo supera los 100 MB que admite WhatsApp',
     };
-    if (dataUrl.length > MAX_LEN[kind]) {
+    if (buffer.length > MAX_BYTES[kind]) {
       return res.status(400).json({ message: TOO_BIG[kind] });
     }
-    let mimeType = parsed.mimeType;
     if (kind === 'audio') {
-      const conv = await require('../utils/audioTranscode').toWhatsappVoice(dataUrl);
+      const conv = await require('../utils/audioTranscode').toWhatsappVoiceBuffer(buffer, mimeType);
       if (!conv.ok) return res.status(400).json({ message: conv.error });
-      dataUrl = conv.dataUrl;
+      buffer = conv.buffer;
       mimeType = conv.mimeType;
     } else if (kind === 'video') {
       // El video se normaliza AQUÍ, al subirlo una vez, y no en cada envío: un
@@ -1608,23 +1616,19 @@ exports.uploadSavedReplyMedia = async (req, res) => {
       // acepta Meta al subirlo y lo rechaza DESPUÉS al entregarlo, con el error
       // 131053, así que el fallo aparecía en el chat sin que nadie pudiera
       // explicarlo. Ver utils/videoTranscode. Si ya es H.264+AAC no se toca.
-      const conv = await require('../utils/videoTranscode').toWhatsappVideo(dataUrl);
+      const conv = await require('../utils/videoTranscode').toWhatsappVideoBuffer(buffer, mimeType);
       if (!conv.ok) return res.status(400).json({ message: conv.error });
-      dataUrl = conv.dataUrl;
+      buffer = conv.buffer;
       mimeType = conv.mimeType;
       if (conv.transcoded) {
         console.log('[video] adjunto convertido a H.264 al subirlo (%s)', conv.reason);
       }
-    } else {
-      // Cabecera SIEMPRE limpia (`data:<mime>;base64,…`). El navegador puede meter
-      // parámetros en el tipo (codecs, charset) y eso rompe a quien luego lee el
-      // adjunto por su URL pública. El contenido no se toca.
-      dataUrl = `data:${mimeType};base64,${parsed.b64}`;
     }
     // Los bytes van al DISCO del servidor, no dentro de Mongo (ver utils/mediaStore).
-    const stored = await chatMedia.storeInlineMedia({
+    const stored = await chatMedia.storeBufferMedia({
       clinicId: req.clinicId,
-      dataUrl,
+      buffer,
+      mimeType,
       name: name || `adjunto_${Date.now()}`,
       kind: 'attachment',
       createdBy: req.user._id,

@@ -97,6 +97,23 @@ test('subir un adjunto guarda el archivo en disco y NADA en Mongo', async () => 
   assert.deepEqual(onDisk, Buffer.from(PNG_B64, 'base64'));
 });
 
+test('multipart guarda los bytes crudos sin convertir el archivo a Base64', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const req = H.mockReq(clinicId, userId, { name: 'multipart.png' });
+  req.file = {
+    buffer: Buffer.from(PNG_B64, 'base64'),
+    mimetype: 'image/png',
+    originalname: 'multipart.png',
+  };
+  const r = await H.runController(chat.uploadSavedReplyMedia, req);
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  const doc = await ChatGalleryImage.findById(r.payload.id).lean();
+  assert.ok(doc.storageKey);
+  assert.ok(!doc.dataUrl);
+  assert.deepEqual(await fs.readFile(path.join(tmpDir, doc.storageKey)), req.file.buffer);
+});
+
 test('una clave maliciosa no puede salirse del almacén', () => {
   // La clave viene de la base de datos: no debe poder apuntar al .env del server.
   assert.throws(() => mediaStore.absolutePath('../../../.env'), /fuera del almacén/);
@@ -118,6 +135,33 @@ test('el endpoint público sirve el archivo desde disco', async () => {
   assert.equal(cap.state.headers['content-type'], 'image/png');
   assert.equal(cap.state.headers['accept-ranges'], 'bytes');
   assert.deepEqual(cap.body(), Buffer.from(PNG_B64, 'base64'));
+});
+
+test('en producción puede delegar los bytes a nginx con X-Accel-Redirect', async () => {
+  const { clinicId } = await H.seedClinic();
+  const _id = new H.mongoose.Types.ObjectId();
+  const { storageKey } = await mediaStore.write({
+    id: _id,
+    buffer: Buffer.from('archivo grande'),
+    mimeType: 'application/pdf',
+  });
+  await ChatGalleryImage.create({
+    _id,
+    clinic: clinicId,
+    name: 'informe.pdf',
+    storageKey,
+    mimeType: 'application/pdf',
+    size: 14,
+  });
+  process.env.MEDIA_X_ACCEL_PREFIX = '/_clinica_media';
+  try {
+    const cap = captureRes();
+    await media.serve({ params: { id: String(_id) }, headers: {}, query: {} }, cap.res);
+    assert.equal(cap.state.headers['x-accel-redirect'], `/_clinica_media/${storageKey}`);
+    assert.equal(cap.body().length, 0, 'Node solo devuelve la cabecera; nginx mueve los bytes');
+  } finally {
+    delete process.env.MEDIA_X_ACCEL_PREFIX;
+  }
 });
 
 test('el endpoint responde a rangos desde disco (Safari no reproduce audio sin esto)', async () => {

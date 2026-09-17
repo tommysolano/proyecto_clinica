@@ -2743,10 +2743,12 @@ export default function Chats() {
         call={voiceCall.call}
         seconds={voiceCall.seconds}
         muted={voiceCall.muted}
+        needsAudioUnlock={voiceCall.needsAudioUnlock}
         onAccept={voiceCall.acceptCall}
         onReject={voiceCall.rejectCall}
         onHangUp={voiceCall.hangUp}
         onToggleMute={voiceCall.toggleMute}
+        onResumeAudio={voiceCall.resumeAudio}
       />
     </div>
   );

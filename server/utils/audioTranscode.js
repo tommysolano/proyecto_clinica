@@ -78,12 +78,14 @@ function runFfmpeg(ffmpeg, args, timeoutMs = 30000) {
  * Se usan ficheros temporales en vez de pipes porque ffmpeg necesita una entrada
  * "buscable" para leer la cabecera de WebM de forma fiable.
  */
-async function toWhatsappVoice(dataUrl) {
-  const parsed = parseDataUrl(dataUrl);
-  if (!parsed || parsed.kind !== 'audio') return { ok: false, error: 'El audio no es válido' };
-  const { mimeType, b64 } = parsed;
+async function toWhatsappVoiceBuffer(buffer, mimeType) {
+  const cleanMimeType = String(mimeType || '').split(';')[0].toLowerCase();
+  if (!Buffer.isBuffer(buffer) || !buffer.length || !cleanMimeType.startsWith('audio/')) {
+    return { ok: false, error: 'El audio no es válido' };
+  }
+  mimeType = cleanMimeType;
   // Cabecera saneada (sin `;codecs=…`): es lo que se guarda si no hay conversión.
-  const asIs = { ok: true, dataUrl: `data:${mimeType};base64,${b64}`, mimeType };
+  const asIs = { ok: true, buffer, mimeType };
 
   const ffmpeg = resolveFfmpegPath();
   if (!ffmpeg) {
@@ -98,7 +100,7 @@ async function toWhatsappVoice(dataUrl) {
   // caerían en el MISMO fichero y ffmpeg aborta con "Invalid argument".
   const outPath = path.join(os.tmpdir(), `voz_${id}_out.ogg`);
   try {
-    await fs.promises.writeFile(inPath, Buffer.from(b64, 'base64'));
+    await fs.promises.writeFile(inPath, buffer);
     // -vn: descarta cualquier pista de video (WebM puede traer una vacía).
     // Mono a 32k es lo que usa la app oficial para notas de voz: suficiente para
     // voz y mantiene el data URL pequeño (se guarda en Mongo).
@@ -124,7 +126,7 @@ async function toWhatsappVoice(dataUrl) {
     }
     return {
       ok: true,
-      dataUrl: `data:audio/ogg;base64,${out.toString('base64')}`,
+      buffer: out,
       mimeType: 'audio/ogg',
     };
   } catch (e) {
@@ -136,4 +138,14 @@ async function toWhatsappVoice(dataUrl) {
   }
 }
 
-module.exports = { toWhatsappVoice, isOggOpus, resolveFfmpegPath };
+/** Compatibilidad con los callers antiguos que todavía envían data URLs. */
+async function toWhatsappVoice(dataUrl) {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed || parsed.kind !== 'audio') return { ok: false, error: 'El audio no es válido' };
+  const result = await toWhatsappVoiceBuffer(Buffer.from(parsed.b64, 'base64'), parsed.mimeType);
+  if (!result.ok) return result;
+  const { buffer, ...rest } = result;
+  return { ...rest, dataUrl: `data:${result.mimeType};base64,${buffer.toString('base64')}` };
+}
+
+module.exports = { toWhatsappVoice, toWhatsappVoiceBuffer, isOggOpus, resolveFfmpegPath };

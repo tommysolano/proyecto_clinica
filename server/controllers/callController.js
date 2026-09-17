@@ -18,6 +18,7 @@
  */
 const Call = require('../models/Call');
 const Conversation = require('../models/Conversation');
+const crypto = require('crypto');
 const gateway = require('../utils/whatsappGateway');
 const calls = require('../utils/whatsappCalls');
 const { emitToCallCenter, emitChatAssignment } = require('../realtime');
@@ -25,6 +26,43 @@ const { emitToCallCenter, emitChatAssignment } = require('../realtime');
 // Una entrante que nadie contesta no puede quedarse "sonando" para siempre en
 // la UI: si Meta no manda 'terminate' se marca perdida por tiempo.
 const RINGING_TIMEOUT_MS = 60 * 1000;
+
+function csv(value) {
+  return String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+/**
+ * Servidores ICE que usará el navegador. STUN descubre la dirección pública,
+ * pero no atraviesa NAT simétrico ni redes corporativas/celulares restrictivas;
+ * para esos casos hace falta TURN. Las credenciales efímeras evitan publicar la
+ * contraseña maestra de coturn en el frontend.
+ */
+function iceServersForUser(userId) {
+  const stunUrls = csv(process.env.WEBRTC_STUN_URLS);
+  const iceServers = [{ urls: stunUrls.length ? stunUrls : ['stun:stun.l.google.com:19302'] }];
+  const turnUrls = csv(process.env.WEBRTC_TURN_URLS);
+  if (!turnUrls.length) return iceServers;
+
+  if (process.env.TURN_SHARED_SECRET) {
+    const ttl = Math.max(300, Number(process.env.TURN_CREDENTIAL_TTL_SEC) || 3600);
+    const username = `${Math.floor(Date.now() / 1000) + ttl}:${String(userId || 'crm')}`;
+    const credential = crypto.createHmac('sha1', process.env.TURN_SHARED_SECRET)
+      .update(username)
+      .digest('base64');
+    iceServers.push({ urls: turnUrls, username, credential });
+  } else if (process.env.WEBRTC_TURN_USERNAME && process.env.WEBRTC_TURN_CREDENTIAL) {
+    iceServers.push({
+      urls: turnUrls,
+      username: process.env.WEBRTC_TURN_USERNAME,
+      credential: process.env.WEBRTC_TURN_CREDENTIAL,
+    });
+  }
+  return iceServers;
+}
+
+exports.getIceConfig = async (req, res) => {
+  res.json({ iceServers: iceServersForUser(req.user?._id) });
+};
 
 /**
  * Resuelve el número Cloud API por el que hablar con esta conversación y explica

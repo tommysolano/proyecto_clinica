@@ -144,6 +144,12 @@ exports.serve = async (req, res) => {
     if (img.storageKey) {
       const total = await mediaStore.size(img.storageKey);
       if (total != null) {
+        // En producción nginx puede entregar los bytes con sendfile, sin hacer
+        // que cada descarga atraviese el event loop de Node. Node conserva el
+        // control de acceso por id, nombre y MIME; X-Accel solo sirve el archivo.
+        if (sendThroughNginx(res, img.storageKey, img.mimeType || 'application/octet-stream')) {
+          return undefined;
+        }
         return streamFromDisk(res, img.storageKey, total, {
           mimeType: img.mimeType || 'application/octet-stream',
           range: req.headers?.range,
@@ -162,6 +168,21 @@ exports.serve = async (req, res) => {
     return res.status(500).send('Error');
   }
 };
+
+function sendThroughNginx(res, storageKey, mimeType) {
+  const configured = String(process.env.MEDIA_X_ACCEL_PREFIX || '').trim();
+  if (!configured) return false;
+  // Valida que una clave manipulada en Mongo no pueda señalar fuera de MEDIA_DIR.
+  mediaStore.absolutePath(storageKey);
+  const prefix = `/${configured.replace(/^\/+|\/+$/g, '')}`;
+  const encodedKey = String(storageKey).split('/').map(encodeURIComponent).join('/');
+  res.set('Content-Type', mimeType);
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  res.set('Accept-Ranges', 'bytes');
+  res.set('X-Accel-Redirect', `${prefix}/${encodedKey}`);
+  res.end();
+  return true;
+}
 
 /**
  * Envía un archivo del disco, atendiendo `Range` (206 Parcial). Los rangos no son

@@ -132,10 +132,12 @@ echo "==> 3b/6 Ajustes de nginx (límite de subida + timeouts del proxy)"
 # todo como estaba), así que correrlo en cada despliegue es seguro. Solo actúa
 # como root (deploy.sh corre como usuario normal de servicio): si no, se deja
 # la instrucción en el log.
+NGINX_MEDIA_READY=0
 if command -v nginx >/dev/null 2>&1; then
   if [ "$(id -u)" = "0" ]; then
     if bash "$APP_DIR/deploy/nginx/aplicar-perf-nginx.sh" 2>&1 | tail -n 6; then
       echo "--> nginx verificado (1 GB de subida, timeouts de proxy aplicados)"
+      [ -f /tmp/clinica-media-nginx-ready ] && NGINX_MEDIA_READY=1
     else
       echo "ADVERTENCIA: aplicar-perf-nginx falló; nginx quedó como estaba. Correr a mano:"
       echo "   sudo bash $APP_DIR/deploy/nginx/aplicar-perf-nginx.sh"
@@ -151,6 +153,7 @@ if command -v nginx >/dev/null 2>&1; then
     # se aplica solo en cada despliegue.
     if sudo -n bash "$APP_DIR/deploy/nginx/aplicar-perf-nginx.sh" 2>&1 | tail -n 6; then
       echo "--> nginx verificado con sudo (1 GB de subida, timeouts de proxy aplicados)"
+      [ -f /tmp/clinica-media-nginx-ready ] && NGINX_MEDIA_READY=1
     else
       echo "ADVERTENCIA: aplicar-perf-nginx falló con sudo; nginx quedó como estaba. Correr a mano:"
       echo "   sudo bash $APP_DIR/deploy/nginx/aplicar-perf-nginx.sh"
@@ -164,6 +167,7 @@ if command -v nginx >/dev/null 2>&1; then
     # stdin y el arreglo se aplica solo en CADA despliegue, sinentrar como root.
     if printf '%s\n' "$VPS_SUDO_PASS" | sudo -S -p '' bash "$APP_DIR/deploy/nginx/aplicar-perf-nginx.sh" 2>&1 | tail -n 6; then
       echo "--> nginx verificado con sudo (1 GB de subida, timeouts de proxy aplicados)"
+      [ -f /tmp/clinica-media-nginx-ready ] && NGINX_MEDIA_READY=1
     else
       echo "ADVERTENCIA: sudo rechazó la contraseña de VPS_SUDO_PASS; nginx quedó como estaba. Correr a mano desde la consola del droplet:"
       echo "   sudo bash $APP_DIR/deploy/nginx/aplicar-perf-nginx.sh"
@@ -183,6 +187,17 @@ if command -v nginx >/dev/null 2>&1; then
   fi
 else
   echo "--> nginx no está instalado en esta máquina: nada que hacer."
+fi
+
+# Solo se activa X-Accel cuando nginx aceptó la ubicación `internal`. Hacerlo
+# antes dejaría las descargas en 404 si la configuración no pudo aplicarse.
+if [ "$NGINX_MEDIA_READY" = "1" ] && [ -f "$APP_DIR/server/.env" ]; then
+  if grep -qE '^MEDIA_X_ACCEL_PREFIX=' "$APP_DIR/server/.env"; then
+    sed -i -E 's|^MEDIA_X_ACCEL_PREFIX=.*$|MEDIA_X_ACCEL_PREFIX=/_clinica_media|' "$APP_DIR/server/.env"
+  else
+    printf '\nMEDIA_X_ACCEL_PREFIX=/_clinica_media\n' >> "$APP_DIR/server/.env"
+  fi
+  echo "--> descargas de adjuntos delegadas a nginx/sendfile"
 fi
 
 echo "==> 4/6 Tareas de UNA SOLA VEZ"

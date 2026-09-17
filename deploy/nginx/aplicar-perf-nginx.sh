@@ -18,6 +18,9 @@ set -euo pipefail
 
 CONF_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/clinica-perf.conf"
 CONF_DST="/etc/nginx/conf.d/clinica-perf.conf"
+MEDIA_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/clinica-media-location.conf"
+MEDIA_DST="/etc/nginx/snippets/clinica-media-location.conf"
+MEDIA_MARKER="/tmp/clinica-media-nginx-ready"
 NGINX_CONF="/etc/nginx/nginx.conf"
 SITIO="${1:-}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -40,10 +43,12 @@ if [ "$(id -u)" != "0" ]; then
   echo "ERROR: hay que ejecutarlo como root (usa sudo)." >&2
   exit 1
 fi
+rm -f "$MEDIA_MARKER"
 
 mkdir -p "$BACKUP_DIR"
 echo "==> Copias de seguridad en $BACKUP_DIR"
 [ -f "$CONF_DST" ] && cp -a "$CONF_DST" "$BACKUP_DIR/"
+[ -f "$MEDIA_DST" ] && cp -a "$MEDIA_DST" "$BACKUP_DIR/"
 
 # ---------------------------------------------------------------------------
 # Localizar el bloque `server` (el que gestiona certbot).
@@ -76,6 +81,16 @@ fi
 # --- 1. Instalar el drop-in, sin duplicar directivas -------------------------
 echo "==> 1/3 Instalando $CONF_DST"
 install -m 0644 "$CONF_SRC" "$CONF_DST"
+
+# Descargas: Node autoriza y resuelve el id, pero nginx mueve los bytes mediante
+# sendfile. Se incluye dentro del primer bloque HTTPS detectado; `internal` evita
+# que la ruta física sea accesible sin pasar antes por el endpoint del CRM.
+install -d -m 0755 "$(dirname "$MEDIA_DST")"
+install -m 0644 "$MEDIA_SRC" "$MEDIA_DST"
+if [ -n "$SITIO" ] && ! grep -qF "include $MEDIA_DST;" "$SITIO"; then
+  sed -i "0,/^[[:space:]]*listen[[:space:]].*ssl.*;[[:space:]]*$/s||&\n    include $MEDIA_DST;|" "$SITIO"
+  echo "    Descargas directas por nginx habilitadas en $SITIO"
+fi
 
 # nginx ABORTA si una directiva ya está declarada en el mismo contexto (`http`),
 # no se queda con la más interna. El nginx.conf de Ubuntu trae `gzip on;`, que fue
@@ -173,7 +188,9 @@ if ! nginx -t; then
   echo
   echo "ERROR: la configuración NO es válida. DESHACIENDO todo…" >&2
   rm -f "$CONF_DST"
+  rm -f "$MEDIA_DST"
   [ -f "$BACKUP_DIR/$(basename "$CONF_DST")" ] && cp -a "$BACKUP_DIR/$(basename "$CONF_DST")" "$CONF_DST"
+  [ -f "$BACKUP_DIR/$(basename "$MEDIA_DST")" ] && cp -a "$BACKUP_DIR/$(basename "$MEDIA_DST")" "$MEDIA_DST"
   if [ -n "$SITIO" ] && [ -f "$BACKUP_DIR/sitio-$(basename "$SITIO")" ]; then
     cp -a "$BACKUP_DIR/sitio-$(basename "$SITIO")" "$SITIO"
   fi
@@ -188,6 +205,7 @@ if ! nginx -t; then
 fi
 
 systemctl reload nginx
+[ -n "$SITIO" ] && touch "$MEDIA_MARKER"
 # `reload` es ASÍNCRONO: los workers viejos siguen atendiendo las conexiones que
 # ya tenían y la config nueva solo vale para las nuevas. Sin esta pausa, la
 # comprobación de abajo puede caer en un worker viejo y dar un falso negativo

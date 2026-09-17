@@ -157,12 +157,13 @@ const ENCODE_ARGS = [
  * Si el archivo ya está bien NO se toca (ni se recomprime): la mayoría de los
  * videos ya vienen en H.264 y recodificarlos solo perdería calidad y tiempo.
  */
-async function toWhatsappVideo(dataUrl) {
-  const parsed = parseDataUrl(dataUrl);
-  if (!parsed || parsed.kind !== 'video') return { ok: false, error: 'El video no es válido' };
-  const { mimeType, b64 } = parsed;
-  const buffer = Buffer.from(b64, 'base64');
-  const asIs = { ok: true, dataUrl: `data:${mimeType};base64,${b64}`, mimeType, transcoded: false, reason: '' };
+async function toWhatsappVideoBuffer(buffer, mimeType) {
+  const cleanMimeType = String(mimeType || '').split(';')[0].toLowerCase();
+  if (!Buffer.isBuffer(buffer) || !buffer.length || !cleanMimeType.startsWith('video/')) {
+    return { ok: false, error: 'El video no es válido' };
+  }
+  mimeType = cleanMimeType;
+  const asIs = { ok: true, buffer, mimeType, transcoded: false, reason: '' };
 
   const ffmpeg = resolveFfmpegPath();
   if (!ffmpeg) {
@@ -209,7 +210,7 @@ async function toWhatsappVideo(dataUrl) {
         console.log('[video] recontenido a MP4 sin recodificar (%d bytes)', salida.length);
         return {
           ok: true,
-          dataUrl: `data:video/mp4;base64,${salida.toString('base64')}`,
+          buffer: salida,
           mimeType: 'video/mp4',
           transcoded: true,
           reason,
@@ -264,7 +265,7 @@ async function toWhatsappVideo(dataUrl) {
     }
     return {
       ok: true,
-      dataUrl: `data:video/mp4;base64,${out.toString('base64')}`,
+      buffer: out,
       mimeType: 'video/mp4',
       transcoded: true,
       reason,
@@ -275,6 +276,16 @@ async function toWhatsappVideo(dataUrl) {
     fs.promises.unlink(inPath).catch(() => {});
     fs.promises.unlink(outPath).catch(() => {});
   }
+}
+
+/** Compatibilidad con los callers antiguos que todavía envían data URLs. */
+async function toWhatsappVideo(dataUrl) {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed || parsed.kind !== 'video') return { ok: false, error: 'El video no es válido' };
+  const result = await toWhatsappVideoBuffer(Buffer.from(parsed.b64, 'base64'), parsed.mimeType);
+  if (!result.ok) return result;
+  const { buffer, ...rest } = result;
+  return { ...rest, dataUrl: `data:${result.mimeType};base64,${buffer.toString('base64')}` };
 }
 
 /**
@@ -304,6 +315,7 @@ function looksLikeHevc(buffer) {
 
 module.exports = {
   toWhatsappVideo,
+  toWhatsappVideoBuffer,
   probeMedia,
   transcodeReason,
   looksLikeHevc,
