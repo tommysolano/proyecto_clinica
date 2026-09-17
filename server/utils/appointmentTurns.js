@@ -127,6 +127,7 @@ function sincronizarEspejo(apt, { colaReescrita = false } = {}) {
  * puede borrar el trabajo del que ya atendió (ni su seguimiento).
  */
 function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, por = null } = {}) {
+  const teniaTurnoDeEnfermeria = (apt.turns || []).some((t) => t.kind === 'enfermeria');
   /**
    * La cola es UNA sola y enfermería es un paso más dentro de ella.
    *
@@ -188,6 +189,21 @@ function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, p
   // La cola se acaba de reescribir entera: si no quedó ningún doctor, es porque
   // se le quitó, no porque no se sepa.
   sincronizarEspejo(apt, { colaReescrita: true });
+  /**
+   * Si se retiró el turno de enfermería que todavía no se había realizado,
+   * también se limpia su espejo. Los turnos completados están en `completados`
+   * y se conservan arriba, por lo que nunca se borra aquí a quien sí atendió.
+   * La condición inicial evita tocar citas antiguas sin turnos que solo guardan
+   * `attendedByNurse`.
+   */
+  const conservaEnfermero = (apt.turns || []).some(
+    (t) => t.kind === 'enfermeria' && t.user
+  );
+  if (teniaTurnoDeEnfermeria && !conservaEnfermero) {
+    apt.attendedByNurse = null;
+    apt.nurseClaimedAt = null;
+    apt.nurseAttendedAt = null;
+  }
   return apt;
 }
 

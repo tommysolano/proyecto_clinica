@@ -128,10 +128,16 @@ export default function AssignAttentionModal({
    * agenda). Si al guardar falta alguien que estaba, se avisa antes.
    */
   const doctoresIniciales = useMemo(() => {
-    const pendientes = (apt?.turns || [])
+    const turnos = apt?.turns || [];
+    const pendientes = turnos
       .filter((t) => t.kind === 'doctor' && t.status === 'pendiente')
       .map((t) => String(t.user?._id || t.user));
-    if (pendientes.length) return pendientes;
+    // Si hay turnos, el doctor completado no forma parte de la cola editable:
+    // el servidor lo conserva como historial. Incluir aquí el espejo `doctor`
+    // hacía que quitar únicamente un turno pendiente de enfermería pareciera
+    // también un intento de borrar al médico que ya atendió.
+    if (turnos.length) return pendientes;
+    // Respaldo para citas antiguas que todavía no tienen `turns`.
     return apt?.doctor ? [String(apt.doctor._id || apt.doctor)] : [];
   }, [apt]);
 
@@ -140,8 +146,9 @@ export default function AssignAttentionModal({
   //   { kind: 'enfermeria', user: id|'' , serviceName }   ('' = cualquier enfermero)
   // `key` solo para React: enfermería puede repetirse y los ids no bastan.
   const [cola, setCola] = useState(() => {
-    const pendientes = (apt?.turns || []).filter((t) => t.status === 'pendiente');
-    if (pendientes.length) {
+    const turnos = apt?.turns || [];
+    const pendientes = turnos.filter((t) => t.status === 'pendiente');
+    if (turnos.length) {
       return pendientes.map((t, i) =>
         t.kind === ENFERMERIA
           ? {

@@ -2691,7 +2691,22 @@ exports.assignDoctor = async (req, res) => {
      * es cosa de antes de entrar a consulta, no de después.
      */
     const previo = apt.doctor ? String(apt.doctor) : '';
-    if (previo && consultationDone(apt) && !doctores.includes(previo)) {
+    const doctorYaCompletado = (apt.turns || []).some(
+      (t) =>
+        t.kind === 'doctor' &&
+        t.status === 'completado' &&
+        String(t.user?._id || t.user || '') === previo
+    );
+    /**
+     * El cliente solo envía los turnos PENDIENTES. Por eso, si el médico ya
+     * terminó, que no venga en `pasos` NO significa que quieran borrarlo:
+     * `asignarTurnos` conserva su turno completado. Este era el bloqueo que
+     * impedía quitar únicamente a enfermería cuando el paciente rechazaba el
+     * suero. La protección antigua sigue aplicando a citas sin un turno médico
+     * completado que garantice qué profesional debe conservarse.
+     */
+    const cambiaDoctorAtendido = !doctorYaCompletado && !doctores.includes(previo);
+    if (previo && consultationDone(apt) && cambiaDoctorAtendido) {
       return res.status(400).json({ message: DOCTOR_LOCKED_MESSAGE });
     }
 

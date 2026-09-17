@@ -659,6 +659,54 @@ test('enfermería cierra su turno SIN escribir seguimiento y la cita pasa al doc
 // ───────────── asistió SIN repartir la atención ─────────────
 
 /**
+ * QUITAR ENFERMERÍA NO BORRA AL MÉDICO QUE YA ATENDIÓ.
+ *
+ * La pantalla solo envía la cola pendiente; el turno médico completado queda
+ * fuera porque es historial. El servidor confundía su ausencia con un intento
+ * de quitar al doctor y bloqueaba retirar un suero que el paciente rechazó.
+ */
+test('una cita completada permite quitar enfermería sin borrar al doctor que atendió', async () => {
+  const { clinicId, userId, patient, docA, enf1, cita } = await seed();
+  await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, {
+      steps: [
+        { kind: 'doctor', user: String(docA._id) },
+        { kind: 'enfermeria', user: String(enf1._id), serviceName: 'Sueroterapia' },
+      ],
+    }, params(cita._id)),
+  );
+
+  await H.runController(
+    clinicalRecords.addFollowUp,
+    H.mockReq(
+      clinicId,
+      docA._id,
+      { descripcion: 'Consulta terminada', appointmentId: String(cita._id) },
+      { role: 'doctor', params: { patientId: String(patient._id) } },
+    ),
+  );
+  // Reproduce el dato reportado: la cita figura completada aunque enfermería
+  // todavía quedó pendiente porque el paciente finalmente rechazó el suero.
+  await Appointment.updateOne({ _id: cita._id }, { $set: { status: 'completada' } });
+
+  const r = await H.runController(
+    appt.assignDoctor,
+    H.mockReq(clinicId, userId, { steps: [] }, params(cita._id)),
+  );
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const guardada = await Appointment.findById(cita._id).lean();
+  assert.equal(guardada.status, 'completada');
+  assert.equal(String(guardada.doctor), String(docA._id), 'conserva al médico que atendió');
+  assert.equal(guardada.turns.length, 1, 'solo queda el turno médico completado');
+  assert.equal(guardada.turns[0].kind, 'doctor');
+  assert.equal(guardada.turns[0].status, 'completado');
+  assert.equal(guardada.currentTurnKind, null, 'ya no queda enfermería pendiente');
+  assert.equal(guardada.attendedByNurse, null, 'el nombre del enfermero también se retira');
+});
+
+/**
  * QUIÉN VIENE Y QUIÉN LE ATIENDE SON DOS PREGUNTAS DISTINTAS.
  *
  * Reclamo real (5-sep-2026): para corregir una cita marcada como ausente hubo
