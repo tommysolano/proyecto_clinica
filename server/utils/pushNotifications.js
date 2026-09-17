@@ -149,12 +149,17 @@ async function notificarLlamadaEntrante({ callId, conversation, contactName, pho
 
   const caller = String(contactName || phone || 'un contacto').trim().slice(0, 80);
   const conversationId = conversation?._id || conversation;
+  const baseUrl = `/chats?chat=${encodeURIComponent(String(conversationId || ''))}`;
+  const encodedCallId = encodeURIComponent(String(callId || ''));
   const payload = {
     type: 'whatsapp_incoming_call',
     callId: String(callId || ''),
     title: `Llamada de ${caller}`,
     body: 'Llamada entrante de WhatsApp. Toca para abrir el CRM.',
-    url: `/chats?chat=${encodeURIComponent(String(conversationId || ''))}`,
+    // Tocar el cuerpo muestra el panel; el boton Contestar lleva la intencion
+    // explicita para que el cliente construya el WebRTC al abrirse.
+    url: `${baseUrl}&incomingCall=${encodedCallId}`,
+    answerUrl: `${baseUrl}&answerCall=${encodedCallId}`,
     tag: `whatsapp-call-${String(callId || conversationId || '').slice(-40)}`,
     timestamp: Date.now(),
   };

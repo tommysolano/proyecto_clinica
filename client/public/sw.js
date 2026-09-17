@@ -28,7 +28,7 @@
  * Para forzar que TODOS los dispositivos tiren su caché, sube VERSION.
  */
 
-const VERSION = 'vikingo-v4';
+const VERSION = 'vikingo-v5';
 const CACHE_SHELL = `${VERSION}-shell`;
 const CACHE_ASSETS = `${VERSION}-assets`;
 const INDEX = '/index.html';
@@ -95,12 +95,13 @@ self.addEventListener('push', (event) => {
       timestamp: Number(datos.timestamp) || Date.now(),
       actions: esLlamada
         ? [
-            { action: 'open-call', title: 'Abrir llamada' },
+            { action: 'answer-call', title: 'Contestar' },
             { action: 'dismiss-call', title: 'Ignorar' },
           ]
         : undefined,
       data: {
         url: datos.url || '/',
+        answerUrl: datos.answerUrl || datos.url || '/',
         type: datos.type || '',
         callId: datos.callId || '',
       },
@@ -112,7 +113,9 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   if (event.action === 'dismiss-call') return;
-  const destino = event.notification.data?.url || '/';
+  const destino = event.action === 'answer-call'
+    ? event.notification.data?.answerUrl || event.notification.data?.url || '/'
+    : event.notification.data?.url || '/';
   event.waitUntil(
     (async () => {
       const ventanas = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });

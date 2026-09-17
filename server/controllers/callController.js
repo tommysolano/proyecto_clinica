@@ -137,6 +137,46 @@ async function canAccessCall(req, call) {
   return require('./chatController').canAccessConversation(req, conv);
 }
 
+/**
+ * Recupera una entrante que sigue sonando.
+ *
+ * Es la pieza que faltaba al abrir el CRM desde una notificacion: el socket es
+ * efimero y una PWA cerrada nunca recibio el OFFER original. La consulta vuelve
+ * a aplicar el mismo candado de workflows antes de revelar el SDP.
+ */
+exports.getPendingCall = async (req, res) => {
+  try {
+    const query = {
+      clinic: req.clinicId,
+      direction: 'in',
+      status: 'ringing',
+    };
+    if (req.query?.callId) query.callId = String(req.query.callId);
+
+    const candidates = await Call.find(query)
+      .select('+offerSdp')
+      .sort({ startedAt: -1 })
+      .limit(10);
+    for (const call of candidates) {
+      // eslint-disable-next-line no-await-in-loop
+      if (!(await canAccessCall(req, call))) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const conv = await Conversation.findById(call.conversation).select('contactName phone');
+      if (!call.offerSdp) continue;
+      return res.json({
+        call: {
+          ...callPayload(call),
+          contactName: conv?.contactName || conv?.phone || call.phone,
+          sdp: call.offerSdp,
+        },
+      });
+    }
+    return res.json({ call: null });
+  } catch (err) {
+    return res.status(500).json({ message: 'Error al recuperar la llamada entrante', error: err.message });
+  }
+};
+
 /** ¿Se pueden hacer llamadas en el número de este chat? (para pintar el botón) */
 exports.getCallingStatus = async (req, res) => {
   try {
@@ -273,6 +313,7 @@ exports.acceptCall = async (req, res) => {
     call.connectedAt = new Date();
     call.agent = req.user._id;
     call.agentName = req.user.name;
+    call.offerSdp = '';
     await call.save();
     if (conv && !conv.assignedTo) {
       conv.assignedTo = req.user._id;
@@ -368,6 +409,7 @@ async function finishCall(call, { status, errorMessage = '' } = {}) {
     call.durationSec = Math.max(0, Math.round((call.endedAt - call.connectedAt) / 1000));
   }
   if (errorMessage) call.errorMessage = errorMessage;
+  call.offerSdp = '';
   await call.save();
   emitToCallCenter('call:ended', callPayload(call));
   return call;
@@ -480,6 +522,7 @@ async function handleConnect(clinicId, ev, account) {
     direction: 'in',
     phone: conv.phone,
     status: 'ringing',
+    offerSdp: ev.sdp,
   });
   emitToCallCenter('call:incoming', {
     ...callPayload(call),

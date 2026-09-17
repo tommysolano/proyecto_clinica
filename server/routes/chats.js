@@ -56,6 +56,7 @@ router.delete('/saved-replies/:id', requireRole(...CALL_CENTER_ROLES), ctrl.dele
 // un id de chat.
 const callCtrl = require('../controllers/callController');
 router.get('/calls/ice-config', requireRole(...CALL_CENTER_ROLES), callCtrl.getIceConfig);
+router.get('/calls/pending', requireRole(...CALL_CENTER_ROLES), callCtrl.getPendingCall);
 router.post('/calls/:callId/accept', requireRole(...CALL_CENTER_ROLES), callCtrl.acceptCall);
 router.post('/calls/:callId/reject', requireRole(...CALL_CENTER_ROLES), callCtrl.rejectCall);
 router.post('/calls/:callId/terminate', requireRole(...CALL_CENTER_ROLES), callCtrl.terminateCall);

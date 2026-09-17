@@ -67,8 +67,7 @@ import WhatsappButtons from '../components/WhatsappButtons';
 import { fmtDate, fmtDateTime, todayEc, nowEcHHMM } from '../utils/date';
 import { imageFromClipboard, imageFileToDataUrl, pastedImageName } from '../utils/chatMedia';
 import useVoiceRecorder, { formatDuration } from '../hooks/useVoiceRecorder';
-import useWhatsappCall from '../hooks/useWhatsappCall';
-import CallPanel from '../components/CallPanel';
+import { useWhatsappCallContext } from '../context/WhatsappCallContext';
 import ChatComposerToolbar from '../components/ChatComposerToolbar';
 import { renderWhatsappText } from '../utils/whatsappText';
 import { downloadFromUrl, triggerAnchorDownload, triggerBlobDownload } from '../utils/download';
@@ -1414,7 +1413,7 @@ export default function Chats() {
   // Llamadas de voz por WhatsApp. `calling` dice si el número de ESTE chat puede
   // llamar (solo Cloud API, y con las llamadas habilitadas en Meta); se consulta
   // al abrir el chat para no ofrecer un botón que fallaría al pulsarlo.
-  const voiceCall = useWhatsappCall();
+  const voiceCall = useWhatsappCallContext();
   const [calling, setCalling] = useState(null);
   useEffect(() => {
     if (!activeId) return setCalling(null);
@@ -2737,19 +2736,6 @@ export default function Chats() {
       {newChatOpen && (
         <NewChatModal onClose={() => setNewChatOpen(false)} onCreate={createNewChat} />
       )}
-      {/* Fuera del chat activo a propósito: una llamada entrante debe sonar
-          aunque el agente esté mirando otra conversación. */}
-      <CallPanel
-        call={voiceCall.call}
-        seconds={voiceCall.seconds}
-        muted={voiceCall.muted}
-        needsAudioUnlock={voiceCall.needsAudioUnlock}
-        onAccept={voiceCall.acceptCall}
-        onReject={voiceCall.rejectCall}
-        onHangUp={voiceCall.hangUp}
-        onToggleMute={voiceCall.toggleMute}
-        onResumeAudio={voiceCall.resumeAudio}
-      />
     </div>
   );
 }

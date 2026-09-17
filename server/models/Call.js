@@ -23,6 +23,12 @@ const callSchema = new mongoose.Schema(
     direction: { type: String, enum: ['in', 'out'], required: true },
     phone: { type: String, trim: true, default: '' },
 
+    // OFFER WebRTC de una entrante. Antes solo viajaba por socket y se perdia
+    // si la PWA estaba cerrada. Se oculta de todas las consultas normales y se
+    // entrega unicamente por el endpoint autenticado de llamada pendiente.
+    // Al aceptar/terminar se vacia; su vida util normal es menor a un minuto.
+    offerSdp: { type: String, default: '', select: false },
+
     // ringing   → sonando (saliente: esperando que conteste; entrante: sin atender)
     // active    → audio conectado
     // completed → colgada normalmente

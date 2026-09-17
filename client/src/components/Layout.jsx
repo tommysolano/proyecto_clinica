@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { roleSatisfies, ROLE_LABELS } from '../utils/roles';
 import NotificationBell from './NotificationBell';
 import IncomingCallPushPrompt from './IncomingCallPushPrompt';
+import { WhatsappCallProvider } from '../context/WhatsappCallContext';
 import shiluvLogo from '../Shiluv-logo-4.png';
 import { nombreSucursal } from '../utils/clinicName';
 import {
@@ -324,6 +325,7 @@ export default function Layout({ children }) {
   const isChatsPage = location.pathname.startsWith('/chats');
 
   return (
+    <WhatsappCallProvider>
     <div className="flex h-screen overflow-hidden bg-body">
       <IncomingCallPushPrompt />
       {sidebarOpen && (
@@ -600,5 +602,6 @@ export default function Layout({ children }) {
         </main>
       </div>
     </div>
+    </WhatsappCallProvider>
   );
 }

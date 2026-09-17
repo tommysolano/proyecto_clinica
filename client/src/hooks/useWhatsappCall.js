@@ -41,7 +41,7 @@ function waitForIceGathering(pc, timeoutMs = 10000) {
 
 const FALLBACK_ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302'] }];
 
-export default function useWhatsappCall() {
+export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false } = {}) {
   // null | { callId, direction, status, contactName, phone, conversationId }
   const [call, setCall] = useState(null);
   const [muted, setMuted] = useState(false);
@@ -52,6 +52,7 @@ export default function useWhatsappCall() {
   const remoteAudioRef = useRef(null);
   const remoteStreamRef = useRef(null);
   const timerRef = useRef(null);
+  const autoAnswerAttemptRef = useRef('');
   // El OFFER de una entrante llega por socket y se usa recién al aceptar.
   const pendingOfferRef = useRef('');
 
@@ -195,11 +196,64 @@ export default function useWhatsappCall() {
       setCall((c) => (c ? { ...c, status: 'active' } : c));
       startTimer();
     } catch (err) {
+      const offerToRetry = offer;
       cleanup();
-      setCall(null);
+      // Si fue un permiso de microfono o un fallo local, la llamada aun puede
+      // estar sonando: se conserva el panel y el OFFER para que el usuario
+      // habilite el permiso y vuelva a pulsar Contestar. 404/409/502 significan
+      // que la llamada ya termino o el proveedor rechazo la conexion.
+      if ([404, 409, 502].includes(err.response?.status)) {
+        setCall(null);
+      } else {
+        pendingOfferRef.current = offerToRetry;
+      }
       toast.error(err.response?.data?.message || err.message || 'No se pudo aceptar la llamada');
     }
   }, [call, buildPeerConnection, cleanup, startTimer]);
+
+  // Al abrir la PWA desde una notificacion no existe un socket historico que
+  // pueda repetir el evento. Se recupera del servidor el OFFER que aun esta
+  // sonando y se reconstruye exactamente el mismo panel de llamada entrante.
+  useEffect(() => {
+    let cancelled = false;
+    const config = pendingCallId ? { params: { callId: pendingCallId } } : undefined;
+    api.get('/chats/calls/pending', config)
+      .then(({ data }) => {
+        const incoming = data?.call;
+        if (cancelled || !incoming?.callId || !incoming?.sdp) return;
+        setCall((current) => {
+          if (current) return current;
+          pendingOfferRef.current = incoming.sdp;
+          return {
+            callId: incoming.callId,
+            conversationId: incoming.conversationId,
+            direction: 'in',
+            status: 'ringing',
+            contactName: incoming.contactName,
+            phone: incoming.phone,
+          };
+        });
+      })
+      .catch(() => {
+        // La bandeja sigue funcionando; puede que la llamada terminara durante
+        // el arranque o que el telefono recuperara internet demasiado tarde.
+      });
+    return () => { cancelled = true; };
+  }, [pendingCallId]);
+
+  // La accion Contestar del aviso abre la PWA con answerCall=<id>. El toque en
+  // la notificacion es la decision explicita del usuario: una vez recuperado el
+  // OFFER se crea el answer WebRTC sin exigir un segundo toque en el panel.
+  useEffect(() => {
+    if (!autoAnswer || !pendingCallId || !call) return;
+    if (call.callId !== pendingCallId || call.direction !== 'in' || call.status !== 'ringing') return;
+    if (autoAnswerAttemptRef.current === call.callId) return;
+    autoAnswerAttemptRef.current = call.callId;
+    // Se difiere un tick para que la restauracion del panel termine su render
+    // antes de abrir el permiso de microfono y crear la conexion WebRTC.
+    const timer = setTimeout(() => acceptCall(), 0);
+    return () => clearTimeout(timer);
+  }, [autoAnswer, pendingCallId, call, acceptCall]);
 
   /** Rechaza la entrante sin contestar. */
   const rejectCall = useCallback(async () => {
