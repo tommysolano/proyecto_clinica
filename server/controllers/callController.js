@@ -22,6 +22,7 @@ const crypto = require('crypto');
 const gateway = require('../utils/whatsappGateway');
 const calls = require('../utils/whatsappCalls');
 const { emitToCallCenter, emitChatAssignment } = require('../realtime');
+const { notificarLlamadaEntrante } = require('../utils/pushNotifications');
 
 // Una entrante que nadie contesta no puede quedarse "sonando" para siempre en
 // la UI: si Meta no manda 'terminate' se marca perdida por tiempo.
@@ -485,5 +486,13 @@ async function handleConnect(clinicId, ev, account) {
     sdp: ev.sdp,
     contactName: conv.contactName || conv.phone,
   });
+  // Meta debe recibir respuesta rapido: el proveedor push corre en segundo
+  // plano y un fallo suyo no impide que las sesiones abiertas sigan sonando.
+  notificarLlamadaEntrante({
+    callId: call.callId,
+    conversation: conv,
+    contactName: conv.contactName,
+    phone: conv.phone,
+  }).catch((err) => console.warn('[whatsapp calls] no se pudo enviar el timbre push:', err.message));
   scheduleRingingTimeout(call._id);
 }

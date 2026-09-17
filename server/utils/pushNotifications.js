@@ -23,6 +23,7 @@ const Notification = require('../models/Notification');
 const PushSubscription = require('../models/PushSubscription');
 const User = require('../models/User');
 const { emitToUser, emitToRole } = require('../realtime');
+const { ownerIdOf, restrictionIsActive } = require('./workflowChatRestriction');
 
 const CLAVE_AJUSTE = 'webpush_vapid';
 // Sin correo de contacto los servicios de push pueden rechazar el envío.
@@ -78,14 +79,15 @@ async function clavePublica() {
 }
 
 /** Envía a UNA suscripción. Borra la suscripción si el navegador ya no existe. */
-async function enviarASuscripcion(sub, payload) {
+async function enviarASuscripcion(sub, payload, options = {}) {
   const vapid = await obtenerVapid();
   if (!vapid) return false;
   webpush.setVapidDetails(CONTACTO, vapid.publicKey, vapid.privateKey);
   try {
     await webpush.sendNotification(
       { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } },
-      JSON.stringify(payload)
+      JSON.stringify(payload),
+      options
     );
     await PushSubscription.updateOne({ _id: sub._id }, { lastSuccessAt: new Date() });
     return true;
@@ -99,6 +101,71 @@ async function enviarASuscripcion(sub, payload) {
     console.warn('[push] envío fallido (%s): %s', err.statusCode || '?', err.message);
     return false;
   }
+}
+
+/**
+ * Usuarios que pueden ver una llamada entrante del CRM.
+ *
+ * Es el espejo del reparto de `emitToCallCenter`: marketing y super-admin son
+ * supervisores; call center respeta la reserva temporal de los workflows. El
+ * rol admin comun se excluye expresamente.
+ */
+async function usuariosParaLlamada(conversation) {
+  const [supervisores, agentes] = await Promise.all([
+    User.find({
+      active: { $ne: false },
+      $or: [
+        { isSuperAdmin: true },
+        { clinics: { $elemMatch: { role: 'marketing' } } },
+      ],
+    }).select('_id').lean(),
+    User.find({
+      active: { $ne: false },
+      clinics: { $elemMatch: { role: 'call_center' } },
+    }).select('_id').lean(),
+  ]);
+
+  const supervisorIds = supervisores.map((u) => String(u._id));
+  const owner = String(ownerIdOf(conversation) || '');
+  let agentIds = agentes.map((u) => String(u._id));
+  if (owner && restrictionIsActive(conversation)) {
+    agentIds = agentIds.filter((id) => id === owner);
+  } else if (owner) {
+    agentIds = agentIds.filter((id) => id !== owner);
+  }
+  return [...new Set([...supervisorIds, ...agentIds])];
+}
+
+/** Timbre efimero de llamada para las PWA instaladas. */
+async function notificarLlamadaEntrante({ callId, conversation, contactName, phone }) {
+  const ids = await usuariosParaLlamada(conversation);
+  if (!ids.length) return { users: 0, subscriptions: 0, sent: 0 };
+
+  const subs = await PushSubscription.find({
+    user: { $in: ids },
+    appMode: 'standalone',
+  }).lean();
+  if (!subs.length) return { users: ids.length, subscriptions: 0, sent: 0 };
+
+  const caller = String(contactName || phone || 'un contacto').trim().slice(0, 80);
+  const conversationId = conversation?._id || conversation;
+  const payload = {
+    type: 'whatsapp_incoming_call',
+    callId: String(callId || ''),
+    title: `Llamada de ${caller}`,
+    body: 'Llamada entrante de WhatsApp. Toca para abrir el CRM.',
+    url: `/chats?chat=${encodeURIComponent(String(conversationId || ''))}`,
+    tag: `whatsapp-call-${String(callId || conversationId || '').slice(-40)}`,
+    timestamp: Date.now(),
+  };
+  const results = await Promise.all(
+    subs.map((sub) => enviarASuscripcion(sub, payload, { TTL: 70, urgency: 'high' }))
+  );
+  return {
+    users: ids.length,
+    subscriptions: subs.length,
+    sent: results.filter(Boolean).length,
+  };
 }
 
 /**
@@ -181,4 +248,6 @@ module.exports = {
   clavePublica,
   notificarUsuarios,
   notificarRol,
+  notificarLlamadaEntrante,
+  usuariosParaLlamada,
 };

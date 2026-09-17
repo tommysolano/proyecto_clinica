@@ -25,6 +25,14 @@ const pushSubscriptionSchema = new mongoose.Schema(
       auth: { type: String, required: true },
     },
     userAgent: { type: String, trim: true, default: '' },
+    // Las llamadas entrantes solo deben despertar instalaciones reales de la
+    // PWA. Los avisos normales siguen pudiendo llegar tambien al navegador.
+    appMode: {
+      type: String,
+      enum: ['browser', 'standalone'],
+      default: 'browser',
+      index: true,
+    },
     lastSuccessAt: { type: Date, default: null },
   },
   { timestamps: true }

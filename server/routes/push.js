@@ -36,6 +36,9 @@ router.post('/subscribe', async (req, res) => {
         user: req.user._id,
         clinic: req.clinicId,
         userAgent: String(req.headers['user-agent'] || '').slice(0, 200),
+        // Solo las suscripciones de la app instalada participan en el timbre
+        // de llamadas; una pestana comun conserva los demas avisos push.
+        appMode: req.body?.appMode === 'standalone' ? 'standalone' : 'browser',
       },
       { new: true, upsert: true }
     );

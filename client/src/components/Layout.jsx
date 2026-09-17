@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { roleSatisfies, ROLE_LABELS } from '../utils/roles';
 import NotificationBell from './NotificationBell';
+import IncomingCallPushPrompt from './IncomingCallPushPrompt';
 import shiluvLogo from '../Shiluv-logo-4.png';
 import { nombreSucursal } from '../utils/clinicName';
 import {
@@ -324,6 +325,7 @@ export default function Layout({ children }) {
 
   return (
     <div className="flex h-screen overflow-hidden bg-body">
+      <IncomingCallPushPrompt />
       {sidebarOpen && (
         <div
           className="fixed inset-0 bg-black/40 backdrop-blur-sm z-20 lg:hidden"

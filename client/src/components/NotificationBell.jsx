@@ -56,7 +56,8 @@ function relativeTime(value) {
  */
 export default function NotificationBell() {
   const navigate = useNavigate();
-  const { activeClinic } = useAuth();
+  const { activeClinic, user, role } = useAuth();
+  const receivesCalls = !!user?.isSuperAdmin || ['call_center', 'marketing'].includes(role);
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState([]);
   const [unread, setUnread] = useState(0);
@@ -261,10 +262,14 @@ export default function NotificationBell() {
                   <p className="text-xs font-semibold text-slate-700 m-0">Avisos en este dispositivo</p>
                   <p className="text-[11px] text-slate-500 m-0 leading-snug">
                     {push.suscrito
-                      ? 'Te avisamos aunque tengas la app cerrada.'
+                      ? receivesCalls
+                        ? 'Las llamadas y citas llegan aunque tengas la app cerrada.'
+                        : 'Te avisamos aunque tengas la app cerrada.'
                       : push.permiso === 'denied'
                         ? 'Bloqueados en los ajustes del navegador.'
-                        : 'Actívalos para enterarte cuando te asignen una cita.'}
+                        : receivesCalls
+                          ? 'Actívalos para enterarte cuando entre una llamada.'
+                          : 'Actívalos para enterarte cuando te asignen una cita.'}
                   </p>
                 </div>
                 {push.suscrito ? (

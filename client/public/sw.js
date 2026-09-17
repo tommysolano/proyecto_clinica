@@ -28,7 +28,7 @@
  * Para forzar que TODOS los dispositivos tiren su caché, sube VERSION.
  */
 
-const VERSION = 'vikingo-v3';
+const VERSION = 'vikingo-v4';
 const CACHE_SHELL = `${VERSION}-shell`;
 const CACHE_ASSETS = `${VERSION}-assets`;
 const INDEX = '/index.html';
@@ -79,16 +79,31 @@ self.addEventListener('push', (event) => {
     datos = { title: 'Vikingo', body: event.data ? event.data.text() : '' };
   }
   const title = datos.title || 'Vikingo';
+  const esLlamada = datos.type === 'whatsapp_incoming_call';
   event.waitUntil(
     self.registration.showNotification(title, {
       body: datos.body || '',
       icon: '/pwa-192.png',
       badge: '/pwa-192.png',
-      // `tag` por tipo: si llegan tres avisos del mismo tipo seguidos, el móvil
-      // los apila en vez de llenar la pantalla de bloqueo.
-      tag: datos.type || 'vikingo',
+      // `tag` reemplaza reintentos de la misma llamada y evita duplicados.
+      tag: datos.tag || datos.type || 'vikingo',
       renotify: true,
-      data: { url: datos.url || '/' },
+      // El sistema operativo decide sonido y vibración según los ajustes del
+      // teléfono. La llamada queda visible hasta que el usuario actúe.
+      silent: false,
+      requireInteraction: esLlamada,
+      timestamp: Number(datos.timestamp) || Date.now(),
+      actions: esLlamada
+        ? [
+            { action: 'open-call', title: 'Abrir llamada' },
+            { action: 'dismiss-call', title: 'Ignorar' },
+          ]
+        : undefined,
+      data: {
+        url: datos.url || '/',
+        type: datos.type || '',
+        callId: datos.callId || '',
+      },
     }),
   );
 });
@@ -96,6 +111,7 @@ self.addEventListener('push', (event) => {
 /** Al tocar el aviso: si ya hay una ventana abierta se reutiliza, no se abre otra. */
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  if (event.action === 'dismiss-call') return;
   const destino = event.notification.data?.url || '/';
   event.waitUntil(
     (async () => {

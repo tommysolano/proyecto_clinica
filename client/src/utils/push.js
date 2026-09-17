@@ -31,6 +31,13 @@ export function pushSoportado() {
   return typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 }
 
+/** La app esta abierta desde su icono instalado, no como una pestana web. */
+export function pwaInstalada() {
+  if (typeof window === 'undefined') return false;
+  return window.matchMedia?.('(display-mode: standalone)').matches
+    || window.navigator.standalone === true;
+}
+
 /**
  * Estado real, para poder DECIRLE al usuario qué pasa en vez de fallar callando.
  *
@@ -84,7 +91,11 @@ export async function activarPush({ pedirPermiso = false } = {}) {
     }
 
     const json = sub.toJSON();
-    await api.post('/push/subscribe', { endpoint: json.endpoint, keys: json.keys });
+    await api.post('/push/subscribe', {
+      endpoint: json.endpoint,
+      keys: json.keys,
+      appMode: pwaInstalada() ? 'standalone' : 'browser',
+    });
     return 'ok';
   } catch {
     // Nunca se propaga: sin push la app funciona igual, solo hay que mirar la
