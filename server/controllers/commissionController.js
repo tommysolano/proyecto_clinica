@@ -3,9 +3,9 @@ const Appointment = require('../models/Appointment');
 const User = require('../models/User');
 const CommissionPosting = require('../models/CommissionPosting');
 const AppointmentServiceItem = require('../models/AppointmentServiceItem');
-// Registra el esquema para poder `populate('referral')` en las citas aunque el proceso no
-// haya cargado el módulo de derivaciones por otra vía (p. ej. en pruebas aisladas).
-require('../models/Referral');
+const ClinicalRecord = require('../models/ClinicalRecord');
+const Sale = require('../models/Sale');
+const Referral = require('../models/Referral');
 const { createEntry, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { DOCTOR_SPECIALTY_ROLES } = require('../constants/roles');
@@ -349,7 +349,6 @@ async function computeCommissions(clinicId, startDate, endDate) {
   // ─── Comisiones sobre ventas ───
   // trigger 'sale'           -> performer = quien registró la venta (cajero)
   // trigger 'recommendation' -> performer = recomendado por (doctor/enfermero/otro)
-  const Sale = require('../models/Sale');
   const sales = await Sale.find({
     clinic: clinicId,
     status: { $ne: 'anulada' },
@@ -574,43 +573,52 @@ exports.reportExcel = async (req, res) => {
 const parseList = (v) =>
   String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
 
+const ESTADOS_CITA = ['pendiente', 'confirmada', 'asistida', 'no_asistio', 'cancelada', 'completada'];
+
+/** Query compartida por el resumen por doctor y su detalle de citas. */
+async function construirQueryResumen(req) {
+  const { start, end, doctor, status, service, clinic } = req.query;
+  const { startDate, endDate } = parseRange(start, end);
+
+  const query = { date: { $gte: startDate, $lte: endDate } };
+  if (clinic === 'all') {
+    // 'all' = todas las sucursales
+  } else {
+    query.clinic = clinic || req.clinicId;
+  }
+
+  const doctores = parseList(doctor);
+  if (doctores.length === 1) query.doctor = doctores[0];
+  else if (doctores.length > 1) query.doctor = { $in: doctores };
+
+  const estados = parseList(status);
+  query.status = { $in: estados.length ? estados : ['asistida', 'completada'] };
+
+  const servicios = parseList(service);
+  if (servicios.length) {
+    const items = await AppointmentServiceItem.find({ _id: { $in: servicios } }).select('name').lean();
+    const nombreDe = new Map(items.map((n) => [String(n._id), n.name]));
+    query.$or = servicios.flatMap((id) => [
+      { serviceItem: id },
+      ...(nombreDe.has(id) ? [{ serviceName: nombreDe.get(id) }] : []),
+      { 'services.product': id },
+      { 'additionalServices.serviceItem': id },
+    ]);
+  }
+
+  return { query, estados, startDate, endDate };
+}
+
 exports.doctorSummary = async (req, res) => {
   try {
-    const { start, end, doctor, status, service, clinic } = req.query;
-    const { startDate, endDate } = parseRange(start, end);
-
-    const query = { date: { $gte: startDate, $lte: endDate } };
-    if (clinic === 'all') {
-      // 'all' = todas las sucursales
-    } else {
-      query.clinic = clinic || req.clinicId;
-    }
-
-    const doctores = parseList(doctor);
-    if (doctores.length === 1) query.doctor = doctores[0];
-    else if (doctores.length > 1) query.doctor = { $in: doctores };
-
-    const estados = parseList(status);
-    query.status = { $in: estados.length ? estados : ['asistida', 'completada'] };
-
-    const servicios = parseList(service);
-    if (servicios.length) {
-      const items = await AppointmentServiceItem.find({ _id: { $in: servicios } }).select('name').lean();
-      const nombreDe = new Map(items.map((n) => [String(n._id), n.name]));
-      query.$or = servicios.flatMap((id) => [
-        { serviceItem: id },
-        ...(nombreDe.has(id) ? [{ serviceName: nombreDe.get(id) }] : []),
-        { 'services.product': id },
-        { 'additionalServices.serviceItem': id },
-      ]);
-    }
+    const { query, estados, startDate, endDate } = await construirQueryResumen(req);
 
     const appts = await Appointment.find(query)
       .populate('doctor', 'name specialty')
       .populate('clinic', 'name nombreComercial')
       .lean();
 
-    const ESTADOS = ['pendiente', 'confirmada', 'asistida', 'no_asistio', 'cancelada', 'completada'];
+    const ESTADOS = ESTADOS_CITA;
     const byDoctor = new Map();
     for (const appt of appts) {
       const doc = appt.doctor;
@@ -672,6 +680,188 @@ exports.doctorSummary = async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ message: 'Error al calcular el resumen por doctor', error: e.message });
+  }
+};
+
+/**
+ * DETALLE de las citas del resumen: una fila por cita con paciente, quién atendió
+ * (turnos: puede ser más de un doctor), valor/pago (canje, abono, venta) y lo que
+ * el doctor escribió en seguimientos (sueros y demás receta). Mismos filtros que
+ * `doctorSummary` (start/end/clinic/doctor/status/service).
+ */
+exports.doctorAppointments = async (req, res) => {
+  try {
+    const { query, startDate, endDate } = await construirQueryResumen(req);
+
+    const appts = await Appointment.find(query)
+      .populate('patient', 'firstName lastName')
+      .populate('doctor', 'name')
+      .populate('turns.user', 'name')
+      .populate('attendedByNurse', 'name')
+      .populate('clinic', 'name nombreComercial')
+      .sort({ date: 1, startTime: 1 })
+      .lean();
+
+    // Ventas ligadas: para decir CUÁNDO se pagó la cita y con qué número.
+    const ids = appts.map((a) => a._id);
+    const ventas = ids.length
+      ? await Sale.find({ appointment: { $in: ids }, status: { $ne: 'anulada' } })
+          .select('appointment saleNumber total createdAt')
+          .lean()
+      : [];
+    const ventaDe = new Map(ventas.map((v) => [String(v.appointment), v]));
+
+    // Seguimientos de los turnos (ahí vive la receta y los sueros recetados).
+    const followUpIds = [];
+    for (const a of appts) {
+      for (const t of a.turns || []) if (t.followUp) followUpIds.push(t.followUp);
+      if (a.autoSerumFollowUp) followUpIds.push(a.autoSerumFollowUp);
+    }
+    let parteDe = new Map();
+    if (followUpIds.length) {
+      const partes = await ClinicalRecord.aggregate([
+        { $match: { 'followUps._id': { $in: followUpIds } } },
+        { $unwind: '$followUps' },
+        { $match: { 'followUps._id': { $in: followUpIds } } },
+        {
+          $project: {
+            parte: {
+              id: '$followUps._id',
+              kind: '$followUps.kind',
+              motivoConsulta: '$followUps.motivoConsulta',
+              sueros: {
+                $size: {
+                  $filter: {
+                    input: { $ifNull: ['$followUps.recetaItems', []] },
+                    as: 'it',
+                    cond: { $eq: ['$$it.isSerum', true] },
+                  },
+                },
+              },
+              otros: {
+                $map: {
+                  input: {
+                    $filter: {
+                      input: { $ifNull: ['$followUps.recetaItems', []] },
+                      as: 'it',
+                      cond: { $ne: ['$$it.isSerum', true] },
+                    },
+                  },
+                  as: 'it',
+                  in: '$$it.name',
+                },
+              },
+            },
+          },
+        },
+      ]);
+      parteDe = new Map(partes.map((p) => [String(p.parte.id), p.parte]));
+    }
+
+    // Visitas repetidas: cuántas veces atendió este doctor AL MISMO paciente.
+    // Se cuenta DENTRO del resultado (las citas que pasaron los filtros).
+    const visitasPaciente = new Map();
+    for (const a of appts) {
+      const pid = a.patient?._id ? String(a.patient._id) : null;
+      const did = a.doctor?._id ? String(a.doctor._id) : null;
+      if (!pid || !did) continue;
+      const key = `${pid}|${did}`;
+      if (!visitasPaciente.has(key)) visitasPaciente.set(key, []);
+      visitasPaciente.get(key).push(a);
+    }
+    const visitaDe = new Map();
+    for (const citas of visitasPaciente.values()) {
+      citas.sort((x, y) => new Date(x.date) - new Date(y.date));
+      citas.forEach((a, i) => { visitaDe.set(String(a._id), { numero: i + 1, total: citas.length }); });
+    }
+
+    // Derivaciones AÑADIDAS por los doctores del resultado, en el mismo rango.
+    const doctorIds = [...new Set(appts.filter((a) => a.doctor).map((a) => String(a.doctor._id || a.doctor)))];
+    let derivaciones = [];
+    if (doctorIds.length) {
+      const filtroDeriva = { fromDoctor: { $in: doctorIds }, date: { $gte: startDate, $lte: endDate } };
+      if (query.clinic) filtroDeriva.clinic = query.clinic;
+      derivaciones = await Referral.find(filtroDeriva)
+        .populate('patient', 'firstName lastName')
+        .populate('toDoctor', 'name')
+        .select('fromDoctor patient toDoctor specialty status date reason')
+        .lean();
+    }
+    const derivacionesPorDoctor = new Map();
+    for (const d of derivaciones) {
+      const did = String(d.fromDoctor);
+      if (!derivacionesPorDoctor.has(did)) derivacionesPorDoctor.set(did, []);
+      derivacionesPorDoctor.get(did).push({
+        id: String(d._id),
+        patient: d.patient ? `${d.patient.firstName} ${d.patient.lastName}` : '—',
+        toDoctor: d.toDoctor?.name || '',
+        specialty: d.specialty || '',
+        status: d.status,
+        date: d.date,
+        reason: d.reason || '',
+      });
+    }
+
+    const appointments = appts.map((a) => {
+      const pid = a.patient?._id ? String(a.patient._id) : null;
+      const did = a.doctor?._id ? String(a.doctor._id) : null;
+      const visit = pid && did ? visitaDe.get(String(a._id)) : null;
+      const atendientes = (a.turns || [])
+        .filter((t) => t.user)
+        .map((t) => ({
+          kind: t.kind,
+          name: t.user?.name || '—',
+          status: t.status,
+          serviceName: t.serviceName || '',
+        }));
+      if (a.attendedByNurse && !(a.turns || []).some((t) => String(t.user?._id) === String(a.attendedByNurse._id))) {
+        atendientes.push({ kind: 'enfermeria', name: a.attendedByNurse.name, status: '', serviceName: '' });
+      }
+      const doctoresTurno = (a.turns || []).filter((t) => t.kind === 'doctor' && t.user);
+      const seguimientos = (a.turns || [])
+        .filter((t) => t.followUp && parteDe.has(String(t.followUp)))
+        .map((t) => parteDe.get(String(t.followUp)));
+      const venta = ventaDe.get(String(a._id));
+      return {
+        id: String(a._id),
+        date: a.date,
+        startTime: a.startTime,
+        patientId: pid,
+        patient: a.patient ? `${a.patient.firstName} ${a.patient.lastName}` : '—',
+        status: a.status,
+        clinic: a.clinic?.nombreComercial || a.clinic?.name || '',
+        services: [
+          a.serviceName,
+          ...(a.additionalServices || []).map((s) => s.name),
+          ...(a.services || []).map((s) => s.name),
+        ].filter(Boolean),
+        atendientes,
+        multiprofesional: doctoresTurno.length > 1,
+        visitNumber: visit?.numero || null,
+        visitsTotal: visit?.total || null,
+        payment: {
+          agreedValue: a.agreedValue,
+          isCanje: a.isCanje,
+          advancePayment: a.advancePayment || '',
+          advanceAmount: a.advanceAmount,
+          advanceMethod: a.advanceMethod || '',
+          valueSetAt: a.valueSetAt,
+        },
+        venta: venta
+          ? { number: venta.saleNumber || '', total: venta.total, date: venta.createdAt }
+          : null,
+        seguimientos,
+      };
+    });
+
+    res.json({
+      start: startDate,
+      end: endDate,
+      appointments,
+      referralsByDoctor: Object.fromEntries(derivacionesPorDoctor),
+    });
+  } catch (e) {
+    res.status(500).json({ message: 'Error al obtener el detalle de citas', error: e.message });
   }
 };
 

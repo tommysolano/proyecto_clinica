@@ -11,6 +11,9 @@ const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient');
 const User = require('../models/User');
 const AppointmentServiceItem = require('../models/AppointmentServiceItem');
+const ClinicalRecord = require('../models/ClinicalRecord');
+const Sale = require('../models/Sale');
+const Referral = require('../models/Referral');
 const ctrl = require('../controllers/commissionController');
 
 let mongod;
@@ -118,4 +121,105 @@ test('resume las citas por doctor con estados y servicios', async () => {
   assert.strictEqual(res3.payload.totals.total, 2);
   const fila3 = res3.payload.doctors.find((d) => d.doctorId === String(otro._id));
   assert.strictEqual(fila3.byStatus.cancelada, 1);
+});
+
+test('detalle de citas: pago, canje, seguimiento con suero, multiprofesional y derivaciones', async () => {
+  const clinic = await Clinic.create({ name: 'Sur', nombreComercial: 'Sur', active: true });
+  const doctor = await User.create({
+    name: 'Marcos Vera', email: 'marcos@test.com', password: '123456',
+    clinics: [{ clinic: clinic._id, role: 'doctor' }],
+  });
+  const colega = await User.create({
+    name: 'Bea Diaz', email: 'bea@test.com', password: '123456',
+    clinics: [{ clinic: clinic._id, role: 'doctor' }],
+  });
+  const paciente = await Patient.create({ clinic: clinic._id, firstName: 'Pedro', lastName: 'Sáenz' });
+
+  // Seguimiento con receta: un suero y otro medicamento.
+  const rec = await ClinicalRecord.create({
+    clinic: clinic._id,
+    patient: paciente._id,
+    followUps: [{
+      motivoConsulta: 'Detox',
+      recetaItems: [
+        { name: 'Suero Detox', isSerum: true, quantity: 7 },
+        { name: 'Paracetamol', quantity: 1 },
+      ],
+    }],
+  });
+  const seguimiento = rec.followUps[0];
+
+  const dia = (d) => new Date(2026, 7, d, 12, 0, 0, 0);
+  // Dos citas del MISMO paciente con este doctor (visita 1 y 2).
+  const cita1 = await Appointment.create({
+    clinic: clinic._id, patient: paciente._id, doctor: doctor._id,
+    date: dia(10), startTime: '09:00', status: 'completada',
+    serviceName: 'Detox', agreedValue: 40, advancePayment: 'abono', advanceAmount: 20, advanceMethod: 'efectivo',
+    turns: [
+      { kind: 'doctor', user: doctor._id, status: 'completado', followUp: seguimiento._id },
+      // un segundo doctor en la MISMA cita: multiprofesional
+      { kind: 'doctor', user: colega._id, status: 'completado' },
+    ],
+  });
+  const cita2 = await Appointment.create({
+    clinic: clinic._id, patient: paciente._id, doctor: doctor._id,
+    date: dia(20), startTime: '10:00', status: 'asistida',
+    serviceName: 'Consulta', isCanje: true,
+  });
+  await Sale.create({
+    clinic: clinic._id, appointment: cita1._id, patient: paciente._id,
+    items: [{ product: new mongoose.Types.ObjectId(), productName: 'Detox', quantity: 1, unitPrice: 40, subtotal: 40 }],
+    subtotal: 40, taxAmount: 0, total: 40,
+  });
+  await Referral.create({
+    clinic: clinic._id, patient: paciente._id, fromDoctor: doctor._id,
+    toDoctor: colega._id, specialty: 'Cardiología', reason: 'Dolor torácico',
+    status: 'agendada', date: dia(15),
+  });
+
+  const req = reqDe(clinic._id);
+  req.query = { start: '2026-08-01', end: '2026-08-31', doctor: String(doctor._id) };
+  const res = respDe();
+  await ctrl.doctorAppointments(req, res);
+
+  assert.strictEqual(res.status, 200);
+  const citas = res.payload.appointments;
+  assert.strictEqual(citas.length, 2);
+
+  // Visitas del mismo paciente: 1 y 2
+  const porFecha = citas.sort((a, b) => new Date(a.date) - new Date(b.date));
+  assert.strictEqual(porFecha[0].visitNumber, 1);
+  assert.strictEqual(porFecha[0].visitsTotal, 2);
+  assert.strictEqual(porFecha[1].visitNumber, 2);
+  assert.strictEqual(porFecha[1].visitsTotal, 2);
+
+  // Multiprofesional: la cita 1 tiene DOS doctores en turnos
+  assert.strictEqual(porFecha[0].multiprofesional, true);
+  assert.strictEqual(porFecha[1].multiprofesional, false);
+  assert.strictEqual(porFecha[0].atendientes.length, 2);
+
+  // Seguimiento: suero recetado + otro medicamento
+  const parte = porFecha[0].seguimientos[0];
+  assert.ok(parte);
+  assert.strictEqual(parte.sueros, 1);
+  assert.deepStrictEqual(parte.otros, ['Paracetamol']);
+
+  // Pago de la cita 1: valor $40 con abono de $20 en efectivo, y su venta ligada
+  assert.strictEqual(porFecha[0].payment.agreedValue, 40);
+  assert.strictEqual(porFecha[0].payment.advancePayment, 'abono');
+  assert.strictEqual(porFecha[0].payment.advanceAmount, 20);
+  assert.ok(porFecha[0].venta);
+  assert.strictEqual(porFecha[0].venta.total, 40);
+  assert.ok(porFecha[0].venta.number);
+
+  // Cita 2: canje, sin venta
+  assert.strictEqual(porFecha[1].payment.isCanje, true);
+  assert.strictEqual(porFecha[1].venta, null);
+
+  // Derivaciones añadidas por el doctor
+  const derivas = res.payload.referralsByDoctor[String(doctor._id)];
+  assert.strictEqual(derivas.length, 1);
+  assert.strictEqual(derivas[0].specialty, 'Cardiología');
+  assert.strictEqual(derivas[0].status, 'agendada');
+  assert.strictEqual(derivas[0].patient, 'PEDRO SÁENZ');
 });
