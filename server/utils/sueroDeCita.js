@@ -250,9 +250,18 @@ async function fichaTieneSueroPendiente(patientId) {
  *
  * El doctor cerró SU turno y el vigente es de enfermería: la cita solo se le
  * entrega a enfermería si el suero que va a aplicar ya está decidido —lo escogió
- * mostrador en el paso (`turn.serum`/`serumFollowUp`)— o si en la ficha no hay
- * ningún suero pendiente de aplicar. En los demás casos la cita se retiene:
- * `serumStatus = 'por_asignar'` y mostrador decide en «Asignar atención».
+ * mostrador en el paso (`turn.serum`/`serumFollowUp`)—. En los demás casos la
+ * cita se retiene: `serumStatus = 'por_asignar'` y mostrador decide en
+ * «Asignar atención» (escoge el suero, o lo deja sin él si el paciente no se lo
+ * pondrá — eso es el «suero pendiente»).
+ *
+ * NO se pregunta si la ficha tiene un suero recetado pendiente. Así se hizo la
+ * primera vez (17-sep) y se coló el caso de FAUSTO MALLA UVACO (18-sep): el paso
+ * de enfermería era un suero sin decidir, pero la ficha no tenía NINGUNA receta
+ * de suero —el servicio de la cita no trae bolsa de serie y nadie recetó nada—,
+ * la condición daba falso y la cita salió sola a la bandeja de la enfermera.
+ * La decisión del suero es de mostrador SIEMPRE que el paso no lo lleve
+ * escrito, haya o no receta previa en la ficha.
  */
 async function leFaltaElSueroDeEnfermeria(apt) {
   const { turnoVigente } = require('./appointmentTurns');
@@ -260,7 +269,7 @@ async function leFaltaElSueroDeEnfermeria(apt) {
   if (!vigente || vigente.kind !== 'enfermeria') return false;
   if (vigente.serumFollowUp) return false;
   if ((vigente.serum?.components || []).some((c) => String(c?.name || '').trim())) return false;
-  return fichaTieneSueroPendiente(apt.patient);
+  return true;
 }
 
 module.exports = {

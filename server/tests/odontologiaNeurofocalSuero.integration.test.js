@@ -227,7 +227,15 @@ test('la cita de otra sucursal del alcance TAMBIÉN avanza su turno al guardar',
   const otraSede = new (require('mongoose').Types.ObjectId)();
 
   await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
-    steps: [{ kind: 'doctor', user: odonto._id }, { kind: 'enfermeria' }],
+    steps: [{
+      kind: 'doctor',
+      user: odonto._id,
+    }, {
+      kind: 'enfermeria',
+      // Con el suero YA decidido: la retención (ver el test de abajo) no aplica,
+      // y el aviso de relevo a enfermería es lo que este test mira.
+      serum: { base: { name: 'Cloruro de sodio', volumeMl: 500 }, components: [{ name: 'Vitamina C', quantity: 1 }] },
+    }],
   }, { params: { id: String(cita._id) } }));
 
   // Token en OTRA sucursal, pero el usuario tiene alcance a las dos.
@@ -246,5 +254,60 @@ test('la cita de otra sucursal del alcance TAMBIÉN avanza su turno al guardar',
   assert.ok(
     await Notification.findOne({ type: 'appointment_nursing', 'meta.appointment': cita._id }).lean(),
     'el aviso va a la sucursal de la CITA',
+  );
+});
+
+test('paso de enfermería SIN suero decidido y SIN receta en la ficha: la cita TAMBIÉN queda retenida', async () => {
+  /**
+   * FAUSTO MALLA UVACO, 18-sep-2026: la cita tenía doctor, doctor y un paso de
+   * enfermería «SUERO TRAPIA» sin suero escogido. La ficha no tenía NINGUNA
+   * receta de suero (el servicio no trae bolsa de serie), la primera regla de
+   * retención —que exigía una receta pendiente— daba falso y la cita salió
+   * sola a la bandeja de la enfermera. La decisión del suero es de mostrador
+   * SIEMPRE que el paso no lo lleve escrito, haya o no receta previa.
+   */
+  const { clinicId, userId, patient, odonto, enf, cita } = await seed();
+
+  await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
+    steps: [{ kind: 'doctor', user: odonto._id }, { kind: 'enfermeria', serviceName: 'SUERO TRAPIA' }],
+  }, { params: { id: String(cita._id) } }));
+
+  // El doctor guarda SIN recetar suero alguno.
+  const r = await H.runController(records.addFollowUp, comoFicha(clinicId, odonto._id, patient._id, 'odontologia_neurofocal', {
+    descripcion: 'Consulta sin receta de suero',
+    appointmentId: String(cita._id),
+  }));
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  const media = await Appointment.findById(cita._id).lean();
+  assert.equal(media.turns[0].status, 'completado', 'el turno del doctor se cierra');
+  assert.equal(media.currentTurnKind, 'enfermeria', 'le toca a enfermería, pero con la cita retenida');
+  assert.equal(media.serumStatus, 'por_asignar', 'retiene aunque la ficha no tenga suero recetado');
+  assert.equal(
+    (await bandeja(clinicId, enf._id, 'enfermero')).includes(String(cita._id)),
+    false,
+    'la cita NO sale en la bandeja del enfermero sin decisión de mostrador',
+  );
+  assert.equal(
+    await Notification.countDocuments({ type: 'appointment_nursing' }),
+    0,
+    'sin aviso a enfermería de una cita retenida',
+  );
+
+  // Mostrador reasigna el paso CON el suero y la cita se libera.
+  await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
+    steps: [{
+      kind: 'enfermeria',
+      serviceName: 'SUERO TRAPIA',
+      serum: { base: { name: 'Cloruro de sodio', volumeMl: 500 }, components: [{ name: 'Vitamina C', quantity: 1 }] },
+    }],
+  }, { params: { id: String(cita._id) } }));
+
+  const liberada = await Appointment.findById(cita._id).lean();
+  assert.equal(liberada.serumStatus, null, 'al asignar el suero se libera');
+  assert.equal(
+    (await bandeja(clinicId, enf._id, 'enfermero')).includes(String(cita._id)),
+    true,
+    'con el suero decidido, la cita ya sale en la bandeja',
   );
 });
