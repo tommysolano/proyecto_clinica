@@ -107,6 +107,11 @@ const MENU_GROUPS = [
     ],
   },
   {
+    key: 'comisiones', label: 'Comisiones', icon: HiOutlineCurrencyDollar, items: [
+      { path: '/commissions', label: 'Comisiones', roles: [], superOnly: true },
+    ],
+  },
+  {
     key: 'inventario', label: 'Inventario', icon: HiOutlineCube, items: [
       { path: '/inventory', label: 'Productos', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/inv-categories', label: 'Categorías', roles: ['admin', 'contabilidad'] },

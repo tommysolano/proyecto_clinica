@@ -1,8 +1,11 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/commissionController');
-const { auth, requireClinic, requireRole } = require('../middleware/auth');
+const { auth, requireClinic, requireRole, requireSuperAdmin } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
+
+// Resumen de atenciones por doctor: solo el super administrador (módulo de comisiones).
+router.get('/doctor-summary', requireSuperAdmin, ctrl.doctorSummary);
 
 // Admin y contabilidad gestionan reglas de comisión y ven el reporte global.
 router.get('/rules', requireRole('admin', 'contabilidad'), ctrl.listRules);

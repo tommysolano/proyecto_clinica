@@ -87,6 +87,7 @@ const PublicBooking = pagina(() => import('./pages/PublicBooking'));
 const BookingConfig = pagina(() => import('./pages/BookingConfig'));
 const CallCenterConfig = pagina(() => import('./pages/CallCenterConfig'));
 const CommissionRules = pagina(() => import('./pages/CommissionRules'));
+const Commissions = pagina(() => import('./pages/Commissions'));
 const Settings = pagina(() => import('./pages/Settings'));
 const Reports = pagina(() => import('./pages/Reports'));
 const Discounts = pagina(() => import('./pages/Discounts'));
@@ -544,6 +545,15 @@ function AppRoutes() {
                   element={
                     <SuperAdminRoute>
                       <Clinics />
+                    </SuperAdminRoute>
+                  }
+                />
+
+                <Route
+                  path="/commissions"
+                  element={
+                    <SuperAdminRoute>
+                      <Commissions />
                     </SuperAdminRoute>
                   }
                 />

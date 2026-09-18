@@ -1,307 +1,298 @@
-import { useEffect, useState } from 'react';
-import toast from 'react-hot-toast';
-import {
-  HiOutlineCurrencyDollar,
-  HiOutlineUserGroup,
-  HiOutlineTrophy,
-  HiOutlineCalendarDays,
-  HiOutlineArrowPath,
-} from 'react-icons/hi2';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
+import { useEffect, useMemo, useState } from 'react';
 import api from '../api/axios';
-import { useAuth } from '../context/AuthContext';
-import { fmtDate } from '../utils/date';
+import toast from 'react-hot-toast';
+import { HiOutlineCurrencyDollar } from 'react-icons/hi2';
+import DateInput from '../components/DateInput';
+import ProductAutocomplete from '../components/ProductAutocomplete';
+import { doctorOptionLabel } from '../utils/roles';
 
-const RANGES = [
-  { value: 'today', label: 'Hoy' },
-  { value: 'week', label: 'Semana' },
-  { value: 'month', label: 'Mes' },
-  { value: 'quarter', label: 'Trimestre' },
-  { value: 'year', label: 'Año' },
+const STATUS_OPTIONS = [
+  { value: 'pendiente', label: 'Pendiente' },
+  { value: 'confirmada', label: 'Confirmada' },
+  { value: 'asistida', label: 'Asistida' },
+  { value: 'no_asistio', label: 'No asistió' },
+  { value: 'cancelada', label: 'Cancelada' },
+  { value: 'completada', label: 'Completada' },
 ];
 
-export default function Commissions() {
-  const { role, user } = useAuth();
-  const isAgent = role === 'call_center' && !user?.isSuperAdmin;
-  const isSupervisor = role === 'marketing' || role === 'admin' || user?.isSuperAdmin;
+const STATUS_COLORS = {
+  pendiente: 'bg-slate-100 text-slate-700',
+  confirmada: 'bg-blue-100 text-blue-700',
+  asistida: 'bg-emerald-100 text-emerald-700',
+  no_asistio: 'bg-amber-100 text-amber-700',
+  cancelada: 'bg-red-100 text-red-700',
+  completada: 'bg-teal-100 text-teal-700',
+};
 
-  const [range, setRange] = useState('month');
-  const [agent, setAgent] = useState('');
-  const [agents, setAgents] = useState([]);
+const today = () => new Date().toISOString().slice(0, 10);
+const monthAgo = () => new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+
+export default function Commissions() {
+  const [start, setStart] = useState(monthAgo());
+  const [end, setEnd] = useState(today());
+  const [clinic, setClinic] = useState('all');
+  const [doctorFilter, setDoctorFilter] = useState([]);
+  const [statusFilter, setStatusFilter] = useState(['asistida', 'completada']);
+  const [serviceFilter, setServiceFilter] = useState([]);
+  const [clinics, setClinics] = useState([]);
+  const [doctors, setDoctors] = useState([]);
+  const [services, setServices] = useState([]);
   const [data, setData] = useState(null);
-  const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(false);
 
   const load = async () => {
     setLoading(true);
     try {
-      const params = { range };
-      if (agent) params.agent = agent;
-      const [c, s] = await Promise.all([
-        api.get('/call-center/commissions', { params }),
-        api.get('/call-center/summary', { params }),
-      ]);
-      setData(c.data);
-      setSummary(s.data);
+      const params = { start, end };
+      if (clinic) params.clinic = clinic;
+      if (doctorFilter.length) params.doctor = doctorFilter.join(',');
+      if (statusFilter.length) params.status = statusFilter.join(',');
+      if (serviceFilter.length) params.service = serviceFilter.join(',');
+      const res = await api.get('/commissions/doctor-summary', { params });
+      setData(res.data);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al cargar comisiones');
+      toast.error(err.response?.data?.message || 'Error al cargar el resumen');
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (isSupervisor) {
-      api.get('/call-center/agents').then((r) => setAgents(r.data || [])).catch(() => {});
+    api.get('/clinics').then((r) => setClinics(r.data || [])).catch(() => {});
+    api.get('/appointment-service-items').then((r) => setServices(r.data || [])).catch(() => {});
+    load();
+  }, []);
+
+  const loadDoctors = async () => {
+    try {
+      const res = await api.get('/users/doctors');
+      setDoctors(res.data || []);
+    } catch {
+      // sin listado de doctores el filtro queda vacío, no rompe la página
     }
-  }, [isSupervisor]);
+  };
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range, agent]);
+    if (clinic === 'all') setDoctors([]);
+    else loadDoctors();
+  }, [clinic]);
 
-  const totalCommissions = data?.total || 0;
-  const myRow = data?.byAgent?.find((a) => String(a._id) === String(user?._id));
+  const addDoctor = (id) => {
+    if (id && !doctorFilter.some((d) => String(d) === String(id))) {
+      setDoctorFilter([...doctorFilter, id]);
+    }
+  };
+
+  const nameOfService = (sid) =>
+    services.find((s) => String(s._id) === String(sid))?.name || 'Servicio';
+
+  const toggleStatus = (s) =>
+    setStatusFilter((prev) =>
+      prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]
+    );
+
+  const columnas = useMemo(() => {
+    const presentes = new Set();
+    (data?.doctors || []).forEach((d) => {
+      Object.entries(d.byStatus || {}).forEach(([k, v]) => {
+        if (v > 0) presentes.add(k);
+      });
+    });
+    return STATUS_OPTIONS.filter((s) => presentes.has(s.value));
+  }, [data]);
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-            <HiOutlineTrophy className="text-emerald-600" /> Comisiones del call center
-          </h1>
-          <p className="text-xs text-slate-500">
-            Cada comisión equivale a un paciente <strong>nuevo</strong> que <strong>asistió</strong>{' '}
-            a una cita creada por el agente. Se cuenta en unidades, no en dinero.
-          </p>
-        </div>
-        <div className="flex gap-2 items-center">
-          <select
-            value={range}
-            onChange={(e) => setRange(e.target.value)}
-            className="border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
-          >
-            {RANGES.map((r) => (
-              <option key={r.value} value={r.value}>
-                {r.label}
-              </option>
-            ))}
-          </select>
-          {isSupervisor && (
+      <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
+        <HiOutlineCurrencyDollar className="text-emerald-600" /> Comisiones
+      </h1>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-3">
+        <div className="flex flex-wrap gap-3 items-end">
+          <label className="text-sm">Desde<DateInput value={start} onChange={(e) => setStart(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
+          <label className="text-sm">Hasta<DateInput value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
+          <label className="text-sm">Sucursal
             <select
-              value={agent}
-              onChange={(e) => setAgent(e.target.value)}
-              className="border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
+              value={clinic}
+              onChange={(e) => setClinic(e.target.value)}
+              className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm min-w-[180px]"
             >
-              <option value="">Todos los agentes</option>
-              {agents.map((a) => (
-                <option key={a._id} value={a._id}>
-                  {a.name}
-                </option>
+              <option value="all">Todas las sucursales</option>
+              {clinics.map((c) => (
+                <option key={c._id} value={c._id}>{c.nombreComercial || c.name}</option>
               ))}
             </select>
+          </label>
+          {clinic !== 'all' && (
+            <label className="text-sm">Doctor
+              <select
+                value=""
+                onChange={(e) => addDoctor(e.target.value)}
+                className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm min-w-[200px]"
+              >
+                <option value="">Añadir doctor al filtro...</option>
+                {doctors
+                  .filter((d) => !doctorFilter.some((x) => String(x) === String(d._id)))
+                  .map((d) => (
+                    <option key={d._id} value={d._id}>{doctorOptionLabel(d)}</option>
+                  ))}
+              </select>
+            </label>
           )}
+          <label className="text-sm">Servicio
+            <div className="mt-1">
+              <ProductAutocomplete
+                products={services}
+                value=""
+                onSelect={(p) => {
+                  if (p && !serviceFilter.some((sid) => String(sid) === String(p._id))) {
+                    setServiceFilter([...serviceFilter, p._id]);
+                  }
+                }}
+                placeholder="Filtrar por servicio..."
+              />
+            </div>
+          </label>
           <button
             onClick={load}
-            className="p-1.5 border border-slate-200 rounded-lg hover:bg-slate-50"
-            title="Recargar"
+            className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm border-none cursor-pointer hover:bg-emerald-700"
           >
-            <HiOutlineArrowPath className="w-4 h-4" />
+            Calcular
           </button>
         </div>
+
+        <div className="flex flex-wrap gap-1.5 items-center">
+          <span className="text-xs text-slate-500">Estados:</span>
+          {STATUS_OPTIONS.map((s) => (
+            <button
+              key={s.value}
+              type="button"
+              onClick={() => toggleStatus(s.value)}
+              className={`px-2.5 py-1 rounded-full text-xs cursor-pointer border-none ${
+                statusFilter.includes(s.value)
+                  ? `${STATUS_COLORS[s.value]} font-semibold`
+                  : 'bg-slate-50 text-slate-400 border border-slate-200'
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+
+        {(doctorFilter.length > 0 || serviceFilter.length > 0 || statusFilter.length !== STATUS_OPTIONS.length) && (
+          <div className="flex flex-wrap gap-1.5">
+            {doctorFilter.map((id) => (
+              <span key={id} className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-slate-100 text-xs text-slate-700">
+                {doctorOptionLabel(doctors.find((d) => String(d._id) === String(id)) || { name: 'Doctor', roleInClinic: '' })}
+                <button
+                  type="button"
+                  onClick={() => setDoctorFilter(doctorFilter.filter((x) => String(x) !== String(id)))}
+                  className="text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer leading-none"
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+            {serviceFilter.map((sid) => (
+              <span key={sid} className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-slate-100 text-xs text-slate-700">
+                {nameOfService(sid)}
+                <button
+                  type="button"
+                  onClick={() => setServiceFilter(serviceFilter.filter((x) => String(x) !== String(sid)))}
+                  className="text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer leading-none"
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+            <button
+              onClick={() => { setDoctorFilter([]); setServiceFilter([]); setStatusFilter(['asistida', 'completada']); }}
+              className="text-xs text-emerald-600 hover:underline bg-transparent border-none cursor-pointer px-1"
+            >
+              Limpiar filtros
+            </button>
+          </div>
+        )}
       </div>
 
-      {loading ? (
-        <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-sm text-slate-400">
-          Cargando...
-        </div>
-      ) : (
-        <>
-          {data && data.rulesCount === 0 && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
-              No hay <strong>reglas de comisión</strong> configuradas para el call center. Las comisiones se calculan
-              a partir de las reglas (menú <strong>Reglas de Comisión</strong>): crea una regla con destino
-              <em> rol = Call Center</em>, alcance <em>pacientes nuevos</em> y el monto por cita asistida.
-            </div>
-          )}
-          {/* KPIs */}
-          <div className="grid sm:grid-cols-4 gap-3">
-            <KPICard
-              label={isAgent ? 'Mi comisión ($)' : 'Comisión total ($)'}
-              value={`$${Number(isAgent ? myRow?.total || 0 : totalCommissions || 0).toFixed(2)}`}
-              icon={HiOutlineTrophy}
-              color="emerald"
-            />
-            <KPICard
-              label={isAgent ? 'Citas con comisión' : 'Pacientes que generaron comisión'}
-              value={isAgent ? myRow?.commissions || 0 : data?.byAgent?.reduce((a, x) => a + x.uniquePatients, 0) || 0}
-              icon={HiOutlineUserGroup}
-              color="sky"
-            />
-            <KPICard
-              label="Citas creadas (período)"
-              value={summary?.agents?.reduce((a, x) => a + x.totalCreated, 0) || 0}
-              icon={HiOutlineCalendarDays}
-              color="indigo"
-            />
-            <KPICard
-              label="Tasa asistencia 1ras citas"
-              value={(() => {
-                const first = summary?.agents?.reduce((a, x) => a + x.firstVisit, 0) || 0;
-                const firstAtt = summary?.agents?.reduce((a, x) => a + x.firstAttended, 0) || 0;
-                if (!first) return '—';
-                return `${Math.round((firstAtt / first) * 100)}%`;
-              })()}
-              icon={HiOutlineTrophy}
-              color="amber"
-            />
-          </div>
+      {loading && <div className="text-slate-500">Cargando...</div>}
 
-          {/* Gráfico evolución */}
-          {data?.timeline?.length > 0 && (
-            <section className="bg-white rounded-xl border border-slate-200 p-4">
-              <h2 className="font-semibold text-slate-800 mb-2">Evolución de comisiones</h2>
-              <div style={{ height: 240 }}>
-                <ResponsiveContainer>
-                  <LineChart data={data.timeline}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="_id" fontSize={11} />
-                    <YAxis allowDecimals={false} fontSize={11} />
-                    <Tooltip />
-                    <Line type="monotone" dataKey="total" name="Comisión ($)" stroke="#059669" strokeWidth={2} dot={{ r: 3 }} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </section>
-          )}
+      {data && (
+        <div className="space-y-3">
+          <p className="text-sm text-slate-500">
+            Total de citas en el filtro: <b>{data.totals?.total ?? 0}</b>
+            {data.statuses && data.statuses.length > 0 && (
+              <span className="text-slate-400"> · {data.statuses.join(', ')}</span>
+            )}
+          </p>
 
-          {/* Ranking por agente (supervisor/admin) */}
-          {isSupervisor && (
-            <section className="bg-white rounded-xl border border-slate-200 p-4">
-              <h2 className="font-semibold text-slate-800 mb-2">Ranking por agente</h2>
-              {data?.byAgent?.length > 0 ? (
-                <>
-                  <div style={{ height: Math.max(200, data.byAgent.length * 40) }}>
-                    <ResponsiveContainer>
-                      <BarChart data={data.byAgent} layout="vertical" margin={{ left: 20 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                        <XAxis type="number" allowDecimals={false} fontSize={11} />
-                        <YAxis type="category" dataKey="name" fontSize={11} width={140} />
-                        <Tooltip />
-                        <Bar dataKey="total" fill="#10b981" name="Comisión ($)" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="overflow-x-auto mt-3">
-                    <table className="tbl">
-                      <thead className="bg-slate-50 text-slate-600">
-                        <tr>
-                          <th className="text-left px-3 py-2">#</th>
-                          <th className="text-left px-3 py-2">Agente</th>
-                          <th className="text-right px-3 py-2">Comisión ($)</th>
-                          <th className="text-right px-3 py-2">Citas</th>
-                          <th className="text-right px-3 py-2">Pacientes</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {data.byAgent.map((a, i) => (
-                          <tr key={a._id} className="border-t border-slate-100">
-                            <td className="px-3 py-2 text-slate-400">#{i + 1}</td>
-                            <td className="px-3 py-2 font-medium">{a.name}</td>
-                            <td className="px-3 py-2 text-right text-emerald-700 font-bold">${Number(a.total || 0).toFixed(2)}</td>
-                            <td className="px-3 py-2 text-right">{a.commissions}</td>
-                            <td className="px-3 py-2 text-right">{a.uniquePatients}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              ) : (
-                <div className="text-sm text-slate-400 py-4 text-center">Sin comisiones en el período</div>
-              )}
-            </section>
-          )}
-
-          {/* Detalle de pacientes que generaron comisión */}
-          <section className="bg-white rounded-xl border border-slate-200 p-4">
-            <h2 className="font-semibold text-slate-800 mb-2">
-              Detalle ({data?.details?.length || 0} citas)
-            </h2>
-            <div className="overflow-x-auto">
-              <table className="tbl">
-                <thead className="bg-slate-50 text-slate-600">
-                  <tr>
-                    <th className="text-left px-3 py-2">Fecha</th>
-                    <th className="text-left px-3 py-2">Paciente</th>
-                    {isSupervisor && <th className="text-left px-3 py-2">Agente</th>}
-                    <th className="text-left px-3 py-2">Regla</th>
-                    <th className="text-right px-3 py-2">Estado</th>
-                    <th className="text-right px-3 py-2">Comisión</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(data?.details || []).map((d) => (
-                    <tr key={d._id} className="border-t border-slate-100">
-                      <td className="px-3 py-2 text-slate-600 text-xs">
-                        {d.date ? fmtDate(d.date) : ''} {d.startTime}
-                      </td>
-                      <td className="px-3 py-2">
-                        <div className="font-medium">
-                          {d.patient?.firstName} {d.patient?.lastName}
-                          {d.isFirstVisit && <span className="ml-1 text-[10px] px-1.5 py-0.5 bg-sky-100 text-sky-700 rounded-full">nuevo</span>}
-                        </div>
-                        <div className="text-[11px] text-slate-400">{d.patient?.cedula}</div>
-                      </td>
-                      {isSupervisor && (
-                        <td className="px-3 py-2 text-xs text-slate-600">{d.createdBy?.name}</td>
-                      )}
-                      <td className="px-3 py-2 text-xs text-slate-600">{d.ruleName || '—'}</td>
-                      <td className="px-3 py-2 text-right">
-                        <span className="text-[11px] px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full">
-                          {d.status}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-right font-bold text-emerald-700">${Number(d.amount || 0).toFixed(2)}</td>
-                    </tr>
+          <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-500">
+                <tr>
+                  <th className="text-left px-4 py-2">Doctor</th>
+                  <th className="text-left px-4 py-2">Sucursales</th>
+                  <th className="text-center px-4 py-2">Total citas</th>
+                  {columnas.map((s) => (
+                    <th key={s.value} className="text-center px-4 py-2">{s.label}</th>
                   ))}
-                  {(!data?.details || data.details.length === 0) && (
-                    <tr>
-                      <td colSpan={isSupervisor ? 6 : 5} className="px-3 py-8 text-center text-slate-400 text-sm">
-                        Sin comisiones en este período
+                  <th className="text-left px-4 py-2">Servicios atendidos</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(data.doctors || []).map((d) => (
+                  <tr key={d.doctorId} className="border-t border-slate-100">
+                    <td className="px-4 py-2 font-medium text-slate-800 whitespace-nowrap">
+                      {d.name}
+                      {d.specialty ? <span className="text-slate-400 text-xs ml-1">({d.specialty})</span> : null}
+                    </td>
+                    <td className="px-4 py-2 text-slate-500 text-xs">
+                      {(d.clinics || []).join(', ') || '—'}
+                    </td>
+                    <td className="px-4 py-2 text-center font-bold text-slate-800">{d.total}</td>
+                    {columnas.map((s) => (
+                      <td key={s.value} className="px-4 py-2 text-center">
+                        {(d.byStatus?.[s.value] || 0) > 0 ? (
+                          <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${STATUS_COLORS[s.value]}`}>
+                            {d.byStatus[s.value]}
+                          </span>
+                        ) : (
+                          <span className="text-slate-300">0</span>
+                        )}
                       </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        </>
-      )}
-    </div>
-  );
-}
-
-function KPICard({ label, value, icon: Icon, color, suffix = '' }) {
-  const colors = {
-    emerald: 'bg-emerald-50 text-emerald-700',
-    sky: 'bg-sky-50 text-sky-700',
-    indigo: 'bg-indigo-50 text-indigo-700',
-    amber: 'bg-amber-50 text-amber-700',
-  };
-  return (
-    <div className={`rounded-xl p-4 ${colors[color] || colors.emerald}`}>
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="text-xs">{label}</div>
-          <div className="text-2xl font-bold">
-            {value}
-            {suffix}
+                    ))}
+                    <td className="px-4 py-2">
+                      {d.services && d.services.length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5">
+                          {d.services.map((svc) => (
+                            <span
+                              key={svc.name}
+                              title={Object.entries(svc.byStatus || {}).map(([k, v]) => `${k}: ${v}`).join(' · ')}
+                              className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 text-slate-700 text-xs px-2 py-0.5 rounded-full"
+                            >
+                              {svc.name}
+                              <span className="bg-emerald-600 text-white text-[10px] font-bold px-1.5 rounded-full">{svc.count}</span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-slate-300 text-xs">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {(!data.doctors || data.doctors.length === 0) && (
+                  <tr>
+                    <td colSpan={4 + columnas.length} className="px-4 py-6 text-center text-slate-400">
+                      Sin atenciones en el período con los filtros aplicados.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
-        {Icon && <Icon className="w-8 h-8 opacity-30" />}
-      </div>
+      )}
     </div>
   );
 }

@@ -2,6 +2,7 @@ const CommissionRule = require('../models/CommissionRule');
 const Appointment = require('../models/Appointment');
 const User = require('../models/User');
 const CommissionPosting = require('../models/CommissionPosting');
+const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 // Registra el esquema para poder `populate('referral')` en las citas aunque el proceso no
 // haya cargado el módulo de derivaciones por otra vía (p. ej. en pruebas aisladas).
 require('../models/Referral');
@@ -564,6 +565,113 @@ exports.reportExcel = async (req, res) => {
     res.end();
   } catch (e) {
     res.status(500).json({ message: 'Error al exportar comisiones', error: e.message });
+  }
+};
+
+// ─────────── Resumen de atenciones por doctor (solo super-admin) ───────────
+
+/** 'a,b,c' → ['a','b','c'] (trim, sin vacíos). */
+const parseList = (v) =>
+  String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
+
+exports.doctorSummary = async (req, res) => {
+  try {
+    const { start, end, doctor, status, service, clinic } = req.query;
+    const { startDate, endDate } = parseRange(start, end);
+
+    const query = { date: { $gte: startDate, $lte: endDate } };
+    if (clinic === 'all') {
+      // 'all' = todas las sucursales
+    } else {
+      query.clinic = clinic || req.clinicId;
+    }
+
+    const doctores = parseList(doctor);
+    if (doctores.length === 1) query.doctor = doctores[0];
+    else if (doctores.length > 1) query.doctor = { $in: doctores };
+
+    const estados = parseList(status);
+    query.status = { $in: estados.length ? estados : ['asistida', 'completada'] };
+
+    const servicios = parseList(service);
+    if (servicios.length) {
+      const items = await AppointmentServiceItem.find({ _id: { $in: servicios } }).select('name').lean();
+      const nombreDe = new Map(items.map((n) => [String(n._id), n.name]));
+      query.$or = servicios.flatMap((id) => [
+        { serviceItem: id },
+        ...(nombreDe.has(id) ? [{ serviceName: nombreDe.get(id) }] : []),
+        { 'services.product': id },
+        { 'additionalServices.serviceItem': id },
+      ]);
+    }
+
+    const appts = await Appointment.find(query)
+      .populate('doctor', 'name specialty')
+      .populate('clinic', 'name nombreComercial')
+      .lean();
+
+    const ESTADOS = ['pendiente', 'confirmada', 'asistida', 'no_asistio', 'cancelada', 'completada'];
+    const byDoctor = new Map();
+    for (const appt of appts) {
+      const doc = appt.doctor;
+      if (!doc || !doc.name) continue;
+      const id = String(doc._id);
+      let fila = byDoctor.get(id);
+      if (!fila) {
+        fila = {
+          doctorId: id,
+          name: doc.name,
+          specialty: doc.specialty || '',
+          clinics: new Set(),
+          total: 0,
+          byStatus: Object.fromEntries(ESTADOS.map((s) => [s, 0])),
+          services: [],
+        };
+        byDoctor.set(id, fila);
+      }
+      fila.total += 1;
+      const nombreSucursal = appt.clinic?.nombreComercial || appt.clinic?.name;
+      if (nombreSucursal) fila.clinics.add(nombreSucursal);
+      if (fila.byStatus[appt.status] != null) fila.byStatus[appt.status] += 1;
+
+      const apptStatus = appt.status;
+      const nombresServicios = [
+        appt.serviceName,
+        ...(appt.additionalServices || []).map((s) => s.name),
+        ...(appt.services || []).map((s) => s.name),
+      ].filter(Boolean);
+      const vistos = new Set();
+      for (const nombre of nombresServicios) {
+        if (!nombre || vistos.has(nombre)) continue;
+        vistos.add(nombre);
+        let svc = fila.services.find((s) => s.name === nombre);
+        if (!svc) {
+          svc = { name: nombre, count: 0 };
+          fila.services.push(svc);
+        }
+        svc.count += 1;
+        if (svc.byStatus == null) svc.byStatus = {};
+        svc.byStatus[apptStatus] = (svc.byStatus[apptStatus] || 0) + 1;
+      }
+    }
+
+    const doctors = [...byDoctor.values()]
+      .map((f) => ({ ...f, clinics: [...f.clinics] }))
+      .sort((a, b) => b.total - a.total);
+    const totals = Object.fromEntries(ESTADOS.map((s) => [s, 0]));
+    for (const fila of doctors) {
+      for (const s of ESTADOS) totals[s] += fila.byStatus[s] || 0;
+    }
+
+    res.json({
+      start: startDate,
+      end: endDate,
+      statuses: estados.length ? estados : ESTADOS,
+      doctors,
+      totals: { total: appts.length, byStatus: totals },
+    });
+  } catch (e) {
+    res.status(500).json({ message: 'Error al calcular el resumen por doctor', error: e.message });
   }
 };
 
