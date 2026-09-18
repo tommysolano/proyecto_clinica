@@ -49,7 +49,7 @@ test('getChat recupera un chat @lid por $1 si la búsqueda antigua falla', async
   }
 });
 
-test('processMediaData da identidad al descriptor y no usa castToV4', async () => {
+test('processMediaData usa una clave real de mensaje y no el hash del archivo', async () => {
   const previousWindow = global.window;
   let memoizedGetterCalls = 0;
   let uploadedMediaType = '';
@@ -72,6 +72,10 @@ test('processMediaData da identidad al descriptor y no usa castToV4', async () =
     toJSON: () => ({}),
     set(values) { Object.assign(this, values); },
   };
+  const outgoingMessageId = {
+    $1: 'true_149460634050699@lid_NEW_VIDEO_ID',
+    remote: { $1: '149460634050699@lid' },
+  };
 
   global.window = {};
   try {
@@ -92,7 +96,11 @@ test('processMediaData da identidad al descriptor y no usa castToV4', async () =
             if (descriptor.id == null) {
               throw new Error("Data passed to getter must include an id property (it's how we memoize)");
             }
-            assert.equal(descriptor.id, 'HASH');
+            if (typeof descriptor.id === 'string' || !descriptor.id.remote) {
+              throw new TypeError("Cannot read properties of undefined (reading '_serialized')");
+            }
+            assert.equal(descriptor.id, outgoingMessageId);
+            assert.notEqual(descriptor.id, mediaData.filehash);
             assert.equal(descriptor.type, 'video');
             assert.equal(descriptor.isNewsletter, false);
             return 'v4:video';
@@ -126,6 +134,7 @@ test('processMediaData da identidad al descriptor y no usa castToV4', async () =
       {
         forceSticker: false, forceGif: false, forceVoice: false,
         forceDocument: false, forceMediaHd: false, sendToChannel: false, sendToStatus: false,
+        messageId: outgoingMessageId,
       }
     );
 
@@ -147,6 +156,7 @@ test('la vista previa de enlaces recibe el chat requerido por WhatsApp Web', () 
 test('sendMessage recupera el mensaje saliente usando el nuevo id $1', async () => {
   const previousWindow = global.window;
   let lookupId = '';
+  let mediaMessageId;
 
   const lid = {
     $1: '149460634050699@lid',
@@ -165,10 +175,13 @@ test('sendMessage recupera el mensaje saliente usando el nuevo id $1', async () 
   global.window = {};
   try {
     LoadUtils();
-    global.window.WWebJS.processMediaData = async () => ({
-      preview: 'video-preview',
-      toJSON: () => ({ type: 'video', directPath: '/uploaded-video' }),
-    });
+    global.window.WWebJS.processMediaData = async (_media, options) => {
+      mediaMessageId = options.messageId;
+      return {
+        preview: 'video-preview',
+        toJSON: () => ({ type: 'video', directPath: '/uploaded-video' }),
+      };
+    };
     global.window.require = (name) => {
       if (name === 'WAWebChatGetters') {
         return { getIsNewsletter: () => false, getIsBroadcast: () => false };
@@ -204,6 +217,7 @@ test('sendMessage recupera el mensaje saliente usando el nuevo id $1', async () 
     );
 
     assert.equal(lookupId, 'true_149460634050699@lid_NEW_VIDEO_ID');
+    assert.equal(mediaMessageId.$1, lookupId, 'la preparación usa el mismo MsgKey completo del envío');
     assert.equal(result.id, lookupId);
   } finally {
     global.window = previousWindow;
