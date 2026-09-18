@@ -854,14 +854,98 @@ exports.doctorAppointments = async (req, res) => {
       };
     });
 
+    const doctorNames = {};
+    for (const a of appts) {
+      if (a.doctor?._id) doctorNames[String(a.doctor._id)] = a.doctor.name;
+    }
+
     res.json({
       start: startDate,
       end: endDate,
       appointments,
+      doctorNames,
       referralsByDoctor: Object.fromEntries(derivacionesPorDoctor),
     });
   } catch (e) {
     res.status(500).json({ message: 'Error al obtener el detalle de citas', error: e.message });
+  }
+};
+
+/**
+ * Resumen de AGENDAMIENTOS por agente de call center: cuántas citas agendó cada
+ * uno y de esas cuántas fueron para pacientes NUEVOS y cuántas para
+ * RECURRENTES. Mismo alcance de fechas/sucursal que el resumen por doctor.
+ */
+exports.callCenterSummary = async (req, res) => {
+  try {
+    const { start, end, clinic } = req.query;
+    const { startDate, endDate } = parseRange(start, end);
+
+    const query = { date: { $gte: startDate, $lte: endDate } };
+    if (clinic === 'all') {
+      // 'all' = todas las sucursales
+    } else {
+      query.clinic = clinic || req.clinicId;
+    }
+
+    const agentes = await User.find({
+      active: true,
+      ...(clinic === 'all'
+        ? { 'clinics.role': 'call_center' }
+        : User.enSucursal(clinic || req.clinicId, ['call_center'])),
+    })
+      .select('name clinics worksInAllClinics')
+      .lean();
+    const idsAgentes = agentes.map((a) => String(a._id));
+
+    const appts = idsAgentes.length
+      ? await Appointment.find({ ...query, createdBy: { $in: idsAgentes } })
+          .populate('clinic', 'name nombreComercial')
+          .select('createdBy isFirstVisit clinic')
+          .lean()
+      : [];
+
+    const porAgente = new Map();
+    for (const a of appts) {
+      const id = String(a.createdBy?._id || a.createdBy);
+      let fila = porAgente.get(id);
+      if (!fila) {
+        fila = { total: 0, nuevos: 0, recurrentes: 0, clinics: new Set() };
+        porAgente.set(id, fila);
+      }
+      fila.total += 1;
+      if (a.isFirstVisit) fila.nuevos += 1;
+      else fila.recurrentes += 1;
+      const nombreSucursal = a.clinic?.nombreComercial || a.clinic?.name;
+      if (nombreSucursal) fila.clinics.add(nombreSucursal);
+    }
+
+    const agents = agentes
+      .map((a) => {
+        const f = porAgente.get(String(a._id)) || { total: 0, nuevos: 0, recurrentes: 0, clinics: [] };
+        return {
+          userId: String(a._id),
+          name: a.name,
+          clinics: f.clinics instanceof Set ? [...f.clinics] : (f.clinics || []),
+          total: f.total,
+          nuevos: f.nuevos,
+          recurrentes: f.recurrentes,
+        };
+      })
+      .sort((a, b) => b.total - a.total);
+
+    res.json({
+      start: startDate,
+      end: endDate,
+      agents,
+      totals: {
+        total: appts.length,
+        nuevos: agents.reduce((t, a) => t + a.nuevos, 0),
+        recurrentes: agents.reduce((t, a) => t + a.recurrentes, 0),
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ message: 'Error al calcular el resumen de call center', error: e.message });
   }
 };
 

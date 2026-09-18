@@ -223,3 +223,40 @@ test('detalle de citas: pago, canje, seguimiento con suero, multiprofesional y d
   assert.strictEqual(derivas[0].status, 'agendada');
   assert.strictEqual(derivas[0].patient, 'PEDRO SÁENZ');
 });
+
+test('resumen de call center: citas agendadas por agente, nuevos vs recurrentes', async () => {
+  const clinic = await Clinic.create({ name: 'Norte', nombreComercial: 'Norte', active: true });
+  const agente = await User.create({
+    name: 'Carla Call', email: 'carla@test.com', password: '123456',
+    clinics: [{ clinic: clinic._id, role: 'call_center' }],
+  });
+  const admin = await User.create({
+    name: 'El Admin', email: 'admincc@test.com', password: '123456',
+    clinics: [{ clinic: clinic._id, role: 'admin' }],
+  });
+  const paciente = await Patient.create({ clinic: clinic._id, firstName: 'Nueva', lastName: 'Uno' });
+  const paciente2 = await Patient.create({ clinic: clinic._id, firstName: 'Vieja', lastName: 'Dos' });
+
+  const dia = (d) => new Date(2026, 7, d, 12, 0, 0, 0);
+  await Appointment.create([
+    { clinic: clinic._id, patient: paciente._id, date: dia(3), startTime: '09:00', status: 'pendiente', createdBy: agente._id, isFirstVisit: true },
+    { clinic: clinic._id, patient: paciente2._id, date: dia(4), startTime: '09:00', status: 'asistida', createdBy: agente._id, isFirstVisit: false },
+    { clinic: clinic._id, patient: paciente2._id, date: dia(5), startTime: '09:00', status: 'completada', createdBy: admin._id, isFirstVisit: false },
+  ]);
+
+  const req = reqDe(clinic._id);
+  req.query = { start: '2026-08-01', end: '2026-08-31' };
+  const res = respDe();
+  await ctrl.callCenterSummary(req, res);
+
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.payload.totals.total, 2);
+  const fila = res.payload.agents.find((a) => a.userId === String(agente._id));
+  assert.ok(fila);
+  assert.strictEqual(fila.total, 2);
+  assert.strictEqual(fila.nuevos, 1);
+  assert.strictEqual(fila.recurrentes, 1);
+  assert.strictEqual(fila.clinics[0], 'Norte');
+  // el admin NO es agente de call center: sus citas no cuentan aquí
+  assert.ok(!res.payload.agents.some((a) => a.name === 'El Admin' && a.total > 0));
+});

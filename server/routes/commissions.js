@@ -7,6 +7,8 @@ router.use(auth, requireClinic);
 // Resumen de atenciones por doctor: solo el super administrador (módulo de comisiones).
 router.get('/doctor-summary', requireSuperAdmin, ctrl.doctorSummary);
 router.get('/doctor-appointments', requireSuperAdmin, ctrl.doctorAppointments);
+// Agendamientos por agente de call center (pacientes nuevos vs recurrentes).
+router.get('/callcenter-summary', requireSuperAdmin, ctrl.callCenterSummary);
 
 // Admin y contabilidad gestionan reglas de comisión y ven el reporte global.
 router.get('/rules', requireRole('admin', 'contabilidad'), ctrl.listRules);
