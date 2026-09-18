@@ -149,7 +149,7 @@ index dd977e8..db0179b 100644
  
          /**
 diff --git a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
-index 540078a..58a65ce 100644
+index 540078a..d3d1e75 100644
 --- a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
 +++ b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
 @@ -344,7 +344,7 @@ exports.LoadUtils = () => {
@@ -161,7 +161,15 @@ index 540078a..58a65ce 100644
                  if (preview && preview.data) {
                      preview = preview.data;
                      preview.preview = true;
-@@ -713,19 +713,25 @@ exports.LoadUtils = () => {
+@@ -585 +585 @@ exports.LoadUtils = () => {
+-            .Msg.get(newMsgKey._serialized);
++            .Msg.get(newMsgKey._serialized || newMsgKey.$1);
+@@ -628 +628,3 @@ exports.LoadUtils = () => {
+-        return window.require('WAWebCollections').Msg.get(msg.id._serialized);
++        return window.require('WAWebCollections').Msg.get(
++            msg.id._serialized || msg.id.$1,
++        );
+@@ -713,19 +715,25 @@ exports.LoadUtils = () => {
              .require('WAWebPrepRawMedia')
              .prepRawMedia(opaqueData, mediaParams);
          const mediaData = await mediaPrep.waitForPrep();
@@ -192,7 +200,7 @@ index 540078a..58a65ce 100644
          if (
              (forceVoice && mediaData.type === 'ptt') ||
              (sendToStatus && mediaData.type === 'audio')
-@@ -748,9 +754,7 @@ exports.LoadUtils = () => {
+@@ -748,9 +756,7 @@ exports.LoadUtils = () => {
          mediaData.mediaBlob.autorelease();
          const shouldUseMediaCache = window
              .require('WAWebMediaDataUtils')
@@ -203,7 +211,7 @@ index 540078a..58a65ce 100644
          if (shouldUseMediaCache && mediaData.mediaBlob instanceof OpaqueData) {
              const formData = mediaData.mediaBlob.formData();
              window
-@@ -830,49 +834,63 @@ exports.LoadUtils = () => {
+@@ -830,49 +836,63 @@ exports.LoadUtils = () => {
  
          if (typeof msg.id.remote === 'object') {
              msg.id = Object.assign({}, msg.id, {

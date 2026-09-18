@@ -22,6 +22,7 @@ const {
   findRecentlySent, readRecentMessages, watchOutgoing, confirmAfterFailure, isSessionGlitch,
   ensurePageInjection,
   pendingSends, rememberPending, takePending, sendFingerprint, sameText,
+  qrMessageId, qrMessageHash, serializeMsgKey,
 } = qr.__test;
 
 test.beforeEach(() => pendingSends.clear());
@@ -32,6 +33,15 @@ function fakeEntry(messages) {
 }
 
 const textoDe = (t) => (m) => !m.hasMedia && sameText(m.body, t);
+
+test('reconoce directamente los ids $1 que devuelve WhatsApp Web actual', () => {
+  const serialized = 'true_149460634050699@lid_3EB0VIDEO';
+  const id = { fromMe: true, remote: { $1: '149460634050699@lid' }, id: '3EB0VIDEO', $1: serialized };
+
+  assert.equal(serializeMsgKey(id), serialized);
+  assert.equal(qrMessageId({ id }), serialized);
+  assert.equal(qrMessageHash({ id }), '3EB0VIDEO');
+});
 
 // ─────────────────────────── leer el chat ───────────────────────────
 

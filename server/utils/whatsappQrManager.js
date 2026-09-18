@@ -556,7 +556,7 @@ function cleanMime(mimeType, fallback) {
 function widToString(w) {
   if (!w) return '';
   if (typeof w === 'string') return w;
-  if (w._serialized) return w._serialized;
+  if (w._serialized || w.$1) return w._serialized || w.$1;
   if (w.user && w.server) return `${w.user}@${w.server}`;
   return '';
 }
@@ -574,7 +574,7 @@ function widToString(w) {
 function serializeMsgKey(idObj) {
   if (!idObj) return '';
   if (typeof idObj === 'string') return idObj;
-  if (idObj._serialized) return idObj._serialized;
+  if (idObj._serialized || idObj.$1) return idObj._serialized || idObj.$1;
   const remote = widToString(idObj.remote);
   const hash = idObj.id || '';
   if (!remote || !hash) return '';
@@ -586,7 +586,7 @@ function serializeMsgKey(idObj) {
 
 /** Clave completa de un mensaje de whatsapp-web.js (ver serializeMsgKey). */
 function qrMessageId(msg) {
-  return msg?.id?._serialized || serializeMsgKey(msg?.id) || serializeMsgKey(msg?._data?.id) || '';
+  return msg?.id?._serialized || msg?.id?.$1 || serializeMsgKey(msg?.id) || serializeMsgKey(msg?._data?.id) || '';
 }
 
 /** Parte única (hash) de la clave de un mensaje, sirva o no el resto. */

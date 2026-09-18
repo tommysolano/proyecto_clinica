@@ -144,6 +144,72 @@ test('la vista previa de enlaces recibe el chat requerido por WhatsApp Web', () 
   assert.match(source, /\.getLinkPreview\(link, chat\)/);
 });
 
+test('sendMessage recupera el mensaje saliente usando el nuevo id $1', async () => {
+  const previousWindow = global.window;
+  let lookupId = '';
+
+  const lid = {
+    $1: '149460634050699@lid',
+    isLid: () => true,
+    isGroup: () => false,
+    isStatus: () => false,
+  };
+  const me = { $1: '593967632250@lid' };
+  class FakeMsgKey {
+    constructor({ to, id }) {
+      this.$1 = `true_${to.$1}_${id}`;
+    }
+    static async newId() { return 'NEW_VIDEO_ID'; }
+  }
+
+  global.window = {};
+  try {
+    LoadUtils();
+    global.window.WWebJS.processMediaData = async () => ({
+      preview: 'video-preview',
+      toJSON: () => ({ type: 'video', directPath: '/uploaded-video' }),
+    });
+    global.window.require = (name) => {
+      if (name === 'WAWebChatGetters') {
+        return { getIsNewsletter: () => false, getIsBroadcast: () => false };
+      }
+      if (name === 'WALinkify') return { findLink: () => null };
+      if (name === 'WAWebUserPrefsMeUser') {
+        return { getMaybeMeLidUser: () => me, getMaybeMePnUser: () => me };
+      }
+      if (name === 'WAWebMsgKey') return FakeMsgKey;
+      if (name === 'WAWebGetEphemeralFieldsMsgActionsUtils') {
+        return { getEphemeralFields: () => ({}) };
+      }
+      if (name === 'WAWebSendMsgChatAction') {
+        return { addAndSendMsgToChat: () => [Promise.resolve(), Promise.resolve()] };
+      }
+      if (name === 'WAWebCollections') {
+        return {
+          Msg: {
+            get: (id) => {
+              lookupId = id;
+              return { id };
+            },
+          },
+        };
+      }
+      throw new Error(`módulo inesperado: ${name}`);
+    };
+
+    const result = await global.window.WWebJS.sendMessage(
+      { id: lid },
+      'video-preview',
+      { media: { mimetype: 'video/mp4' }, caption: 'Ubicación' }
+    );
+
+    assert.equal(lookupId, 'true_149460634050699@lid_NEW_VIDEO_ID');
+    assert.equal(result.id, lookupId);
+  } finally {
+    global.window = previousWindow;
+  }
+});
+
 test('los adjuntos QR no intentan crear otra vista previa desde el caption', () => {
   const fs = require('node:fs');
   const managerPath = require.resolve('../utils/whatsappQrManager');
