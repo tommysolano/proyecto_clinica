@@ -49,7 +49,7 @@ test('getChat recupera un chat @lid por $1 si la búsqueda antigua falla', async
   }
 });
 
-test('processMediaData evita el getter con id y convierte desde el tipo MMSv3', async () => {
+test('processMediaData da identidad al descriptor y no usa castToV4', async () => {
   const previousWindow = global.window;
   let memoizedGetterCalls = 0;
   let uploadedMediaType = '';
@@ -62,7 +62,7 @@ test('processMediaData evita el getter con id y convierte desde el tipo MMSv3', 
   }
 
   const mediaObject = {
-    type: 'MMSV3_VIDEO', filehash: 'HASH', size: 123,
+    type: 'video', filehash: 'HASH', size: 123,
     contentInfo: {},
     consolidate() {},
   };
@@ -87,16 +87,18 @@ test('processMediaData evita el getter con id y convierte desde el tipo MMSv3', 
       }
       if (name === 'WAWebMmsMediaTypes') {
         return {
-          msgToMediaType: () => {
+          msgToMediaType: (descriptor) => {
             memoizedGetterCalls += 1;
-            throw new Error("Data passed to getter must include an id property (it's how we memoize)");
-          },
-          castToV4: (type) => {
-            if (type === 'video') {
-              throw new Error('castToV4: unexpected mmsv3 type video');
+            if (descriptor.id == null) {
+              throw new Error("Data passed to getter must include an id property (it's how we memoize)");
             }
-            assert.equal(type, 'MMSV3_VIDEO');
+            assert.equal(descriptor.id, 'HASH');
+            assert.equal(descriptor.type, 'video');
+            assert.equal(descriptor.isNewsletter, false);
             return 'v4:video';
+          },
+          castToV4: () => {
+            throw new Error('castToV4 no debe intervenir en este flujo');
           },
         };
       }
@@ -127,10 +129,34 @@ test('processMediaData evita el getter con id y convierte desde el tipo MMSv3', 
       }
     );
 
-    assert.equal(memoizedGetterCalls, 0, 'un chat normal no usa msgToMediaType');
+    assert.equal(memoizedGetterCalls, 1, 'la conversión recibe un descriptor con identidad');
     assert.equal(uploadedMediaType, 'v4:video');
     assert.equal(result.directPath, '/video');
   } finally {
     global.window = previousWindow;
   }
+});
+
+test('la vista previa de enlaces recibe el chat requerido por WhatsApp Web', () => {
+  const fs = require('node:fs');
+  const utilsPath = require.resolve('whatsapp-web.js/src/util/Injected/Utils');
+  const source = fs.readFileSync(utilsPath, 'utf8');
+  assert.match(source, /\.getLinkPreview\(link, chat\)/);
+});
+
+test('los adjuntos QR no intentan crear otra vista previa desde el caption', () => {
+  const fs = require('node:fs');
+  const managerPath = require.resolve('../utils/whatsappQrManager');
+  const source = fs.readFileSync(managerPath, 'utf8');
+  const optionsBlock = source.slice(
+    source.indexOf('const opts = isVoice'),
+    source.indexOf('const bytes =', source.indexOf('const opts = isVoice'))
+  );
+
+  assert.notEqual(optionsBlock, '', 'debe localizar las opciones del envío de adjuntos');
+  assert.equal(
+    (optionsBlock.match(/linkPreview:\s*false/g) || []).length,
+    3,
+    'audio, documento e imagen/video deben desactivar el preview de enlaces'
+  );
 });

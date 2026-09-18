@@ -3086,11 +3086,15 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
     const media = new MessageMedia(mime, b64, mediaName);
     // Nota de voz: sin pie. Documento: se fuerza a enviarse como ADJUNTO (no como
     // una vista previa) con `sendMediaAsDocument`, así llega con su nombre e icono.
+    // Un adjunto ya tiene su propia vista previa. Evitar la tarjeta adicional de
+    // enlaces también esquiva una incompatibilidad de WhatsApp Web que afecta a
+    // captions con URL (como el mensaje guardado de ubicación de Rocío). El URL
+    // del caption sigue llegando como texto clicable.
     const opts = isVoice
-      ? { sendAudioAsVoice: true }
+      ? { sendAudioAsVoice: true, linkPreview: false }
       : isDoc
-        ? { sendMediaAsDocument: true, caption: String(caption || '').slice(0, 1024) }
-        : { caption: String(caption || '').slice(0, 1024) };
+        ? { sendMediaAsDocument: true, linkPreview: false, caption: String(caption || '').slice(0, 1024) }
+        : { linkPreview: false, caption: String(caption || '').slice(0, 1024) };
     const bytes = Math.floor(b64.length * 0.75);
     console.log('[wa-qr sendMedia] enviando kind=%s mime=%s bytes≈%d chat=%s', type, mime, bytes, r.chatId);
     // El tiempo de espera CRECE con el tamaño: un video de 10 MB tiene que

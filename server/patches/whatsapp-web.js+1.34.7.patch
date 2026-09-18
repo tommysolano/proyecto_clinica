@@ -149,47 +149,61 @@ index dd977e8..db0179b 100644
  
          /**
 diff --git a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
-index 540078a..28b2d36 100644
+index 540078a..58a65ce 100644
 --- a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
 +++ b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
-@@ -713,18 +713,28 @@ exports.LoadUtils = () => {
+@@ -344,7 +344,7 @@ exports.LoadUtils = () => {
+             if (link) {
+                 let preview = await window
+                     .require('WAWebLinkPreviewChatAction')
+-                    .getLinkPreview(link);
++                    .getLinkPreview(link, chat);
+                 if (preview && preview.data) {
+                     preview = preview.data;
+                     preview.preview = true;
+@@ -713,19 +713,25 @@ exports.LoadUtils = () => {
              .require('WAWebPrepRawMedia')
              .prepRawMedia(opaqueData, mediaParams);
          const mediaData = await mediaPrep.waitForPrep();
--        const mediaObject = window
--            .require('WAWebMediaStorage')
--            .getOrCreateMediaObject(mediaData.filehash);
++
++        // En algunas variantes de WhatsApp Web, `msgToMediaType` pasa por la
++        // infraestructura de getters memoizados y exige que el descriptor tenga
++        // `id`. En otras sigue siendo la conversión directa. Una identidad local
++        // estable mantiene compatibles ambas variantes sin inventar un mensaje.
++        if (!mediaData.filehash) {
++            throw new Error('media-fault: sendToChat filehash undefined');
++        }
+         const mediaObject = window
+             .require('WAWebMediaStorage')
+             .getOrCreateMediaObject(mediaData.filehash);
 -        const mediaType = window.require('WAWebMmsMediaTypes').msgToMediaType({
--            type: mediaData.type,
--            isGif: mediaData.isGif,
--            isNewsletter: sendToChannel,
--        });
- 
-+        // WhatsApp Web convirtió `msgToMediaType` en un getter memoizado que
-+        // desde septiembre de 2026 exige un mensaje con `id`. Aquí todavía no
-+        // existe ningún mensaje: solo tenemos la media preparada, por lo que
-+        // pasarlo por ese getter rompe TODOS los adjuntos de chats normales con
-+        // "Data passed to getter must include an id property". Para esos chats
-+        // se usa el tipo MMSv3 del objeto de media; `mediaData.type` contiene el
-+        // texto crudo (por ejemplo, "video") y `castToV4` no acepta ese valor.
-         if (!mediaData.filehash) {
-             throw new Error('media-fault: sendToChat filehash undefined');
-         }
-+        const mediaObject = window
-+            .require('WAWebMediaStorage')
-+            .getOrCreateMediaObject(mediaData.filehash);
 +        const MmsMediaTypes = window.require('WAWebMmsMediaTypes');
-+        const mediaType = sendToChannel
-+            ? MmsMediaTypes.msgToMediaType({
-+                  type: mediaData.type,
-+                  isGif: mediaData.isGif,
-+                  isNewsletter: true,
-+              })
-+            : MmsMediaTypes.castToV4(mediaObject.type);
++        const mediaType = MmsMediaTypes.msgToMediaType({
++            id: mediaData.id || mediaData.filehash,
+             type: mediaData.type,
+             isGif: mediaData.isGif,
+             isNewsletter: sendToChannel,
+         });
  
+-        if (!mediaData.filehash) {
+-            throw new Error('media-fault: sendToChat filehash undefined');
+-        }
+-
          if (
              (forceVoice && mediaData.type === 'ptt') ||
-@@ -830,49 +840,63 @@ exports.LoadUtils = () => {
+             (sendToStatus && mediaData.type === 'audio')
+@@ -748,9 +754,7 @@ exports.LoadUtils = () => {
+         mediaData.mediaBlob.autorelease();
+         const shouldUseMediaCache = window
+             .require('WAWebMediaDataUtils')
+-            .shouldUseMediaCache(
+-                window.require('WAWebMmsMediaTypes').castToV4(mediaObject.type),
+-            );
++            .shouldUseMediaCache(mediaType);
+         if (shouldUseMediaCache && mediaData.mediaBlob instanceof OpaqueData) {
+             const formData = mediaData.mediaBlob.formData();
+             window
+@@ -830,49 +834,63 @@ exports.LoadUtils = () => {
  
          if (typeof msg.id.remote === 'object') {
              msg.id = Object.assign({}, msg.id, {
