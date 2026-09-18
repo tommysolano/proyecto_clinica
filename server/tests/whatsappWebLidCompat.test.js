@@ -49,9 +49,9 @@ test('getChat recupera un chat @lid por $1 si la búsqueda antigua falla', async
   }
 });
 
-test('processMediaData usa una clave real de mensaje y no el hash del archivo', async () => {
+test('processMediaData usa el tipo V4 sin inventar una identidad de mensaje', async () => {
   const previousWindow = global.window;
-  let memoizedGetterCalls = 0;
+  let mediaTypeCalls = 0;
   let uploadedMediaType = '';
 
   class FakeOpaqueData {
@@ -72,11 +72,6 @@ test('processMediaData usa una clave real de mensaje y no el hash del archivo', 
     toJSON: () => ({}),
     set(values) { Object.assign(this, values); },
   };
-  const outgoingMessageId = {
-    $1: 'true_149460634050699@lid_NEW_VIDEO_ID',
-    remote: { $1: '149460634050699@lid' },
-  };
-
   global.window = {};
   try {
     LoadUtils();
@@ -92,15 +87,8 @@ test('processMediaData usa una clave real de mensaje y no el hash del archivo', 
       if (name === 'WAWebMmsMediaTypes') {
         return {
           msgToMediaType: (descriptor) => {
-            memoizedGetterCalls += 1;
-            if (descriptor.id == null) {
-              throw new Error("Data passed to getter must include an id property (it's how we memoize)");
-            }
-            if (typeof descriptor.id === 'string' || !descriptor.id.remote) {
-              throw new TypeError("Cannot read properties of undefined (reading '_serialized')");
-            }
-            assert.equal(descriptor.id, outgoingMessageId);
-            assert.notEqual(descriptor.id, mediaData.filehash);
+            mediaTypeCalls += 1;
+            assert.equal(Object.hasOwn(descriptor, 'id'), false);
             assert.equal(descriptor.type, 'video');
             assert.equal(descriptor.isNewsletter, false);
             return 'v4:video';
@@ -134,11 +122,10 @@ test('processMediaData usa una clave real de mensaje y no el hash del archivo', 
       {
         forceSticker: false, forceGif: false, forceVoice: false,
         forceDocument: false, forceMediaHd: false, sendToChannel: false, sendToStatus: false,
-        messageId: outgoingMessageId,
       }
     );
 
-    assert.equal(memoizedGetterCalls, 1, 'la conversión recibe un descriptor con identidad');
+    assert.equal(mediaTypeCalls, 1);
     assert.equal(uploadedMediaType, 'v4:video');
     assert.equal(result.directPath, '/video');
   } finally {
@@ -157,6 +144,7 @@ test('sendMessage recupera el mensaje saliente usando el nuevo id $1', async () 
   const previousWindow = global.window;
   let lookupId = '';
   let mediaMessageId;
+  let sentMessage;
 
   const lid = {
     $1: '149460634050699@lid',
@@ -178,6 +166,7 @@ test('sendMessage recupera el mensaje saliente usando el nuevo id $1', async () 
     global.window.WWebJS.processMediaData = async (_media, options) => {
       mediaMessageId = options.messageId;
       return {
+        __x_id: undefined,
         preview: 'video-preview',
         toJSON: () => ({ type: 'video', directPath: '/uploaded-video' }),
       };
@@ -195,7 +184,12 @@ test('sendMessage recupera el mensaje saliente usando el nuevo id $1', async () 
         return { getEphemeralFields: () => ({}) };
       }
       if (name === 'WAWebSendMsgChatAction') {
-        return { addAndSendMsgToChat: () => [Promise.resolve(), Promise.resolve()] };
+        return {
+          addAndSendMsgToChat: (_chat, message) => {
+            sentMessage = message;
+            return [Promise.resolve(), Promise.resolve()];
+          },
+        };
       }
       if (name === 'WAWebCollections') {
         return {
@@ -217,7 +211,9 @@ test('sendMessage recupera el mensaje saliente usando el nuevo id $1', async () 
     );
 
     assert.equal(lookupId, 'true_149460634050699@lid_NEW_VIDEO_ID');
-    assert.equal(mediaMessageId.$1, lookupId, 'la preparación usa el mismo MsgKey completo del envío');
+    assert.equal(mediaMessageId, undefined, 'MediaData no recibe una identidad ajena a su contrato');
+    assert.equal(Object.hasOwn(sentMessage, '__x_id'), false, 'el id privado de MediaData no llega al Msg');
+    assert.equal(sentMessage.id.$1, lookupId, 'el Msg conserva su clave saliente válida');
     assert.equal(result.id, lookupId);
   } finally {
     global.window = previousWindow;

@@ -149,7 +149,7 @@ index dd977e8..db0179b 100644
  
          /**
 diff --git a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
-index 540078a..e74d6d2 100644
+index 540078a..53413c4 100644
 --- a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
 +++ b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
 @@ -148,6 +148,42 @@ exports.LoadUtils = () => {
@@ -195,15 +195,7 @@ index 540078a..e74d6d2 100644
          const { findLink } = window.require('WALinkify');
  
          let mediaOptions = {};
-@@ -163,6 +199,7 @@ exports.LoadUtils = () => {
-                           forceMediaHd: options.sendMediaAsHd,
-                           sendToChannel: isChannel,
-                           sendToStatus: isStatus,
-+                          messageId: newMsgKey,
-                       });
-             mediaOptions.caption = options.caption;
-             content = options.sendMediaAsSticker
-@@ -344,7 +381,7 @@ exports.LoadUtils = () => {
+@@ -344,7 +380,7 @@ exports.LoadUtils = () => {
              if (link) {
                  let preview = await window
                      .require('WAWebLinkPreviewChatAction')
@@ -212,7 +204,7 @@ index 540078a..e74d6d2 100644
                  if (preview && preview.data) {
                      preview = preview.data;
                      preview.preview = true;
-@@ -417,39 +454,6 @@ exports.LoadUtils = () => {
+@@ -417,39 +453,6 @@ exports.LoadUtils = () => {
                  .BotProfileCollection.get(options.invokedBotWid).personaId;
              delete options.invokedBotWid;
          }
@@ -252,7 +244,19 @@ index 540078a..e74d6d2 100644
          const extraOptions = options.extraOptions || {};
          delete options.extraOptions;
  
-@@ -582,7 +586,7 @@ exports.LoadUtils = () => {
+@@ -483,6 +486,11 @@ exports.LoadUtils = () => {
+             ...extraOptions,
+         };
+ 
++        // MediaData is a model whose enumerable private id collides with the
++        // outgoing Msg model's own internal id. WhatsApp Web 2.3000.104777+
++        // then initializes the message without a valid sender identity.
++        delete message.__x_id;
++
+         // Bot's won't reply if canonicalUrl is set (linking)
+         if (botOptions) {
+             delete message.canonicalUrl;
+@@ -582,7 +590,7 @@ exports.LoadUtils = () => {
  
          return window
              .require('WAWebCollections')
@@ -261,7 +265,7 @@ index 540078a..e74d6d2 100644
      };
  
      window.WWebJS.editMessage = async (msg, content, options = {}) => {
-@@ -625,7 +629,9 @@ exports.LoadUtils = () => {
+@@ -625,7 +633,9 @@ exports.LoadUtils = () => {
          await window
              .require('WAWebSendMessageEditAction')
              .sendMessageEdit(msg, content, internalOptions);
@@ -272,27 +276,13 @@ index 540078a..e74d6d2 100644
      };
  
      window.WWebJS.toStickerData = async (mediaInfo) => {
-@@ -690,6 +696,7 @@ exports.LoadUtils = () => {
-             forceMediaHd,
-             sendToChannel,
-             sendToStatus,
-+            messageId,
-         },
-     ) => {
-         const file = window.WWebJS.mediaInfoToFile(mediaInfo);
-@@ -713,19 +720,27 @@ exports.LoadUtils = () => {
+@@ -713,19 +723,20 @@ exports.LoadUtils = () => {
              .require('WAWebPrepRawMedia')
              .prepRawMedia(opaqueData, mediaParams);
          const mediaData = await mediaPrep.waitForPrep();
 +
-+        // Current WhatsApp Web routes msgToMediaType through memoized getters.
-+        // Its descriptor needs the complete outgoing MsgKey built above; using
-+        // filehash here makes WAWebMsgKey parse an invalid remote WID.
 +        if (!mediaData.filehash) {
 +            throw new Error('media-fault: sendToChat filehash undefined');
-+        }
-+        if (!messageId) {
-+            throw new Error('media-fault: outgoing message id undefined');
 +        }
          const mediaObject = window
              .require('WAWebMediaStorage')
@@ -300,7 +290,6 @@ index 540078a..e74d6d2 100644
 -        const mediaType = window.require('WAWebMmsMediaTypes').msgToMediaType({
 +        const MmsMediaTypes = window.require('WAWebMmsMediaTypes');
 +        const mediaType = MmsMediaTypes.msgToMediaType({
-+            id: messageId,
              type: mediaData.type,
              isGif: mediaData.isGif,
              isNewsletter: sendToChannel,
@@ -313,7 +302,7 @@ index 540078a..e74d6d2 100644
          if (
              (forceVoice && mediaData.type === 'ptt') ||
              (sendToStatus && mediaData.type === 'audio')
-@@ -748,9 +763,7 @@ exports.LoadUtils = () => {
+@@ -748,9 +759,7 @@ exports.LoadUtils = () => {
          mediaData.mediaBlob.autorelease();
          const shouldUseMediaCache = window
              .require('WAWebMediaDataUtils')
@@ -324,7 +313,7 @@ index 540078a..e74d6d2 100644
          if (shouldUseMediaCache && mediaData.mediaBlob instanceof OpaqueData) {
              const formData = mediaData.mediaBlob.formData();
              window
-@@ -830,49 +843,63 @@ exports.LoadUtils = () => {
+@@ -830,49 +839,63 @@ exports.LoadUtils = () => {
  
          if (typeof msg.id.remote === 'object') {
              msg.id = Object.assign({}, msg.id, {
