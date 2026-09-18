@@ -2902,15 +2902,33 @@ exports.assignDoctor = async (req, res) => {
     asignarTurnos(apt, { pasos, por: req.user._id });
 
     /**
-     * GUARDAR LA ASIGNACIÓN LIBERA LA CITA (sep-2026).
+     * EL SUERO SE DECIDE AQUÍ TAMBIÉN, NO SOLO EN EL RELEVO (sep-2026).
      *
-     * Si estaba retenida —«falta asignar suero» o «suero pendiente»— es porque
-     * el doctor la dejó esperando a que mostrador decidiera el suero. Reabrir
-     * este modal y guardar ES esa decisión: el turno de enfermería queda con lo
-     * que haya escogido (o sin suero, si el paciente no se lo pondrá) y la cita
-     * vuelve a salir en la bandeja de enfermería.
+     * GUARDAR LA ASIGNACIÓN LIBERABA LA CITA SIEMPRE: `serumStatus = null` a
+     * secas. Bastaba con que el paso de enfermería se añadiera DESPUÉS de que
+     * los doctores ya habían cerrado —el flujo normal de la tarde, cuando
+     * recepción manda al paciente a que le pongan el suero— para que la
+     * retención no se evaluara NUNCA: la retención vive en el relevo
+     * doctor→enfermería al cerrar el turno, y aquí no hubo relevo, hubo
+     * asignación tardía. Así se le apareció la cita a la enfermera sin que
+     * nadie hubiera escogido suero (Pilar Yumbla González, 18-sep), y el
+     * modal ni siquiera ofrecía «Asignar suero / Suero pendiente» porque la
+     * cita nunca llegó a estar retenida.
+     *
+     * Ahora se evalúa con la cola YA reescrita: si el turno VIGENTE es de
+     * enfermería y su paso no lleva suero escrito, la cita queda retenida
+     * ('por_asignar') con sus opciones en la agenda. Solo sale a la bandeja
+     * cuando el suero va decidido en el paso. Un 'aplazado' no se pisa: si
+     * mostrador lo marcó «suero pendiente» y vuelve a guardar sin escoger
+     * nada, sigue pendiente en vez de voltear a «falta asignar».
      */
-    apt.serumStatus = null;
+    const { leFaltaElSueroDeEnfermeria } = require('../utils/sueroDeCita');
+    const faltaSueroDelPaso = await leFaltaElSueroDeEnfermeria(apt).catch(() => false);
+    if (faltaSueroDelPaso) {
+      if (apt.serumStatus !== 'aplazado') apt.serumStatus = 'por_asignar';
+    } else {
+      apt.serumStatus = null;
+    }
 
     // El valor de la cita se anota AQUÍ, en el mismo gesto de recibir al
     // paciente: este modal es lo que sustituyó al antiguo "marcar asistió", y es
@@ -3133,8 +3151,10 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
    */
   const enTurno = doctorEnTurno(apt);
   // El turno de enfermería tampoco sale a la bandeja mientras haya un doctor
-  // por delante: la cola es la misma para todos.
-  const leTocaEnfermeria = enfermeria && !enTurno && turnoVigenteEsEnfermeria(apt);
+  // por delante: la cola es la misma para todos. Ni cuando la cita quedó
+  // RETENIDA por el suero: entonces no hay relevo que avisar — a enfermería
+  // no le llega nada hasta que mostrador escoga el suero (sep-2026).
+  const leTocaEnfermeria = enfermeria && !enTurno && turnoVigenteEsEnfermeria(apt) && !apt.serumStatus;
   // Nombrado, o abierto a todos. `null` = a todos.
   const enfermeroNombrado = leTocaEnfermeria ? enfermeroEnTurno(apt) : null;
 

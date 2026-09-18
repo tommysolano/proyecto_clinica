@@ -294,6 +294,25 @@ test('paso de enfermería SIN suero decidido y SIN receta en la ficha: la cita T
     'sin aviso a enfermería de una cita retenida',
   );
 
+  /**
+   * PILAR YUMBLA GONZÁLEZ (18-sep): el paso de enfermería se AÑADE después de
+   * que los doctores ya cerraron. Guardar la asignación liberaba la cita a
+   * secas (`serumStatus = null`), así que la retención nunca actuaba: el suero
+   * se le aparecía a la enfermera sin decisión de mostrador. Reasignar el paso
+   * SIN suero debe dejar la cita retenida igual.
+   */
+  await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
+    steps: [{ kind: 'enfermeria', serviceName: 'SUERO TRAPIA' }],
+  }, { params: { id: String(cita._id) } }));
+
+  const reasignada = await Appointment.findById(cita._id).lean();
+  assert.equal(reasignada.serumStatus, 'por_asignar', 'asignar el paso sin suero TAMBIÉN retiene');
+  assert.equal(
+    (await bandeja(clinicId, enf._id, 'enfermero')).includes(String(cita._id)),
+    false,
+    'seguía retenida tras la reasignación sin suero',
+  );
+
   // Mostrador reasigna el paso CON el suero y la cita se libera.
   await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
     steps: [{

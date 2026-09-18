@@ -568,8 +568,8 @@ export default function AssignAttentionModal({
         {apt?.serumStatus && (
           <div className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2">
             {apt.serumStatus === 'aplazado'
-              ? 'Esta cita quedó con SUERO PENDIENTE: el paciente decidió no aplicárselo en esa visita. Al guardar con el suero que corresponda (o sin él) la liberas para enfermería.'
-              : 'Esta cita está esperando que asignes el SUERO de enfermería: lo que recetó el doctor no siempre es lo que toca aplicar ahora. Escoge el suero en su paso de enfermería y guarda para liberar la cita.'}
+              ? 'Esta cita quedó con SUERO PENDIENTE: el paciente decidió no aplicárselo en esa visita. Al guardar con el suero que corresponda la liberas para enfermería; guardando sin suero sigue pendiente.'
+              : 'Esta cita está esperando que asignes el SUERO de enfermería: lo que recetó el doctor no siempre es lo que toca aplicar ahora. Escoge el suero en su paso de enfermería y guarda para liberar la cita; guardando sin suero, la cita no sale a la bandeja.'}
           </div>
         )}
 
