@@ -48,5 +48,10 @@ jobs:
             df -h /var/www || true
             echo '===== prueba QR contra el server vivo ====='
             node scripts/diagQrProd.js || true
+            echo '===== errores completos de envio QR (tail) ====='
+            # No mezclar este archivo con stdout antes del `tail`: stdout tiene
+            # mucho más volumen y antes expulsaba precisamente los stacks que
+            # necesitábamos ver para diagnosticar los fallos de adjuntos.
+            grep -n -B 2 -A 35 '\[wa-qr sendMedia\]' ~/.pm2/logs/clinica-api-error-0.log 2>/dev/null | tail -n 240 || true
             echo '===== lineas whatsapp/chrome de los logs (tail) ====='
             grep -hiE 'whatsapp|wwebjs|puppeteer|chrome|inject' ~/.pm2/logs/clinica-api-error-0.log ~/.pm2/logs/clinica-api-out-0.log 2>/dev/null | tail -n 60 || true
