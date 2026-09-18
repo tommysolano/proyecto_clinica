@@ -226,70 +226,68 @@ export default function Commissions() {
             )}
           </p>
 
-          <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-slate-500">
-                <tr>
-                  <th className="text-left px-4 py-2">Doctor</th>
-                  <th className="text-left px-4 py-2">Sucursales</th>
-                  <th className="text-center px-4 py-2">Total citas</th>
-                  {columnas.map((s) => (
-                    <th key={s.value} className="text-center px-4 py-2">{s.label}</th>
-                  ))}
-                  <th className="text-left px-4 py-2">Servicios atendidos</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(data.doctors || []).map((d) => (
-                  <tr key={d.doctorId} className="border-t border-slate-100">
-                    <td className="px-4 py-2 font-medium text-slate-800 whitespace-nowrap">
-                      {d.name}
-                      {d.specialty ? <span className="text-slate-400 text-xs ml-1">({d.specialty})</span> : null}
-                    </td>
-                    <td className="px-4 py-2 text-slate-500 text-xs">
-                      {(d.clinics || []).join(', ') || '—'}
-                    </td>
-                    <td className="px-4 py-2 text-center font-bold text-slate-800">{d.total}</td>
+          <div className="space-y-3">
+            {(data.doctors || []).map((d) => (
+              <div key={d.doctorId} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-slate-50 border-b border-slate-100">
+                  <div>
+                    <span className="font-semibold text-slate-800">{d.name}</span>
+                    {d.specialty ? (
+                      <span className="ml-2 text-xs px-2 py-0.5 rounded bg-slate-200/70 text-slate-600">{d.specialty}</span>
+                    ) : null}
+                    {(d.clinics || []).length > 0 && (
+                      <span className="block text-xs text-slate-500 mt-0.5">{d.clinics.join(', ')}</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap justify-end">
+                    <span className="text-sm text-slate-600 mr-1">
+                      Total: <b className="text-slate-900">{d.total}</b>
+                    </span>
                     {columnas.map((s) => (
-                      <td key={s.value} className="px-4 py-2 text-center">
-                        {(d.byStatus?.[s.value] || 0) > 0 ? (
-                          <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${STATUS_COLORS[s.value]}`}>
-                            {d.byStatus[s.value]}
-                          </span>
-                        ) : (
-                          <span className="text-slate-300">0</span>
-                        )}
-                      </td>
+                      <span
+                        key={s.value}
+                        title={`${s.label}: ${d.byStatus?.[s.value] || 0}`}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${
+                          (d.byStatus?.[s.value] || 0) > 0
+                            ? `${STATUS_COLORS[s.value]} font-semibold`
+                            : 'bg-white border border-slate-200 text-slate-300'
+                        }`}
+                      >
+                        {s.label} {d.byStatus?.[s.value] || 0}
+                      </span>
                     ))}
-                    <td className="px-4 py-2">
-                      {d.services && d.services.length > 0 ? (
-                        <div className="flex flex-wrap gap-1.5">
-                          {d.services.map((svc) => (
-                            <span
-                              key={svc.name}
-                              title={Object.entries(svc.byStatus || {}).map(([k, v]) => `${k}: ${v}`).join(' · ')}
-                              className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 text-slate-700 text-xs px-2 py-0.5 rounded-full"
-                            >
-                              {svc.name}
-                              <span className="bg-emerald-600 text-white text-[10px] font-bold px-1.5 rounded-full">{svc.count}</span>
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-slate-300 text-xs">—</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                {(!data.doctors || data.doctors.length === 0) && (
-                  <tr>
-                    <td colSpan={4 + columnas.length} className="px-4 py-6 text-center text-slate-400">
-                      Sin atenciones en el período con los filtros aplicados.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                  </div>
+                </div>
+                <div className="px-4 py-3">
+                  {d.services && d.services.length > 0 ? (
+                    <>
+                      <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-2">
+                        Servicios atendidos
+                      </p>
+                      <div className="flex flex-wrap gap-1.5 bg-emerald-50/40 border border-emerald-100 rounded-lg p-3">
+                        {[...d.services].sort((a, b) => b.count - a.count).map((svc) => (
+                          <span
+                            key={svc.name}
+                            title={Object.entries(svc.byStatus || {}).map(([k, v]) => `${k}: ${v}`).join(' · ')}
+                            className="inline-flex items-center gap-1.5 bg-white border border-emerald-200 text-slate-700 text-xs px-2.5 py-1 rounded-full"
+                          >
+                            {svc.name}
+                            <span className="bg-emerald-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{svc.count}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-slate-400">Sin servicios registrados en las citas de este doctor.</p>
+                  )}
+                </div>
+              </div>
+            ))}
+            {(!data.doctors || data.doctors.length === 0) && (
+              <div className="bg-white rounded-xl border border-slate-200 px-4 py-6 text-center text-slate-400">
+                Sin atenciones en el período con los filtros aplicados.
+              </div>
+            )}
           </div>
         </div>
       )}
