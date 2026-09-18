@@ -232,7 +232,7 @@ test('detalle de citas: pago, canje, seguimiento con suero, multiprofesional y d
   assert.strictEqual(derivas[0].patient, 'PEDRO SÁENZ');
 });
 
-test('configura por doctor y servicio una comisión fija o porcentual', async () => {
+test('prioriza la comisión por servicio sobre la comisión base por paciente', async () => {
   const clinic = await Clinic.create({ name: 'Comisiones', nombreComercial: 'Comisiones', active: true });
   const doctor = await User.create({
     name: 'Domenica Prueba', email: 'domenica-comision@test.com', password: '123456',
@@ -242,11 +242,21 @@ test('configura por doctor y servicio una comisión fija o porcentual', async ()
   const servicio = await AppointmentServiceItem.create({
     clinic: clinic._id, name: 'Mujer Sana 360', slug: 'mujer sana 360',
   });
-  await Appointment.create({
-    clinic: clinic._id, patient: paciente._id, doctor: doctor._id,
-    date: new Date(2026, 7, 12, 12, 0, 0), startTime: '09:00', status: 'completada',
-    serviceItem: servicio._id, serviceName: servicio.name, agreedValue: 80,
+  const servicioSinComision = await AppointmentServiceItem.create({
+    clinic: clinic._id, name: 'Control sin comisión', slug: 'control sin comision',
   });
+  await Appointment.create([
+    {
+      clinic: clinic._id, patient: paciente._id, doctor: doctor._id,
+      date: new Date(2026, 7, 12, 12, 0, 0), startTime: '09:00', status: 'completada',
+      serviceItem: servicio._id, serviceName: servicio.name, agreedValue: 80,
+    },
+    {
+      clinic: clinic._id, patient: paciente._id, doctor: doctor._id,
+      date: new Date(2026, 7, 13, 12, 0, 0), startTime: '10:00', status: 'completada',
+      serviceItem: servicioSinComision._id, serviceName: servicioSinComision.name, agreedValue: 30,
+    },
+  ]);
 
   const saveReq = reqDe(clinic._id);
   saveReq.body = {
@@ -261,7 +271,7 @@ test('configura por doctor y servicio una comisión fija o porcentual', async ()
   summaryReq.query = { start: '2026-08-01', end: '2026-08-31' };
   const summaryRes = respDe();
   await ctrl.doctorSummary(summaryReq, summaryRes);
-  const row = summaryRes.payload.doctors[0].services[0];
+  const row = summaryRes.payload.doctors[0].services.find((s) => s.serviceId === String(servicio._id));
   assert.deepStrictEqual(
     { amountType: row.commission.amountType, value: row.commission.value, earned: row.commission.earned },
     { amountType: 'fixed', value: 15, earned: 15 }
@@ -274,6 +284,30 @@ test('configura por doctor y servicio una comisión fija o porcentual', async ()
   await ctrl.report(reportReq, reportFixed);
   assert.strictEqual(reportFixed.payload.total, 15);
 
+  // Base de $5 por paciente. En Mujer Sana NO se suma: gana $15 por servicio.
+  // En el control, que no tiene comisión propia, sí gana los $5 base.
+  const patientReq = reqDe(clinic._id);
+  patientReq.body = {
+    doctor: String(doctor._id), clinics: [String(clinic._id)], amountType: 'fixed', value: 5,
+  };
+  const patientRes = respDe();
+  await ctrl.saveDoctorPatientRule(patientReq, patientRes);
+  assert.strictEqual(patientRes.status, 200);
+
+  const reportWithBase = respDe();
+  await ctrl.report(reportReq, reportWithBase);
+  assert.strictEqual(reportWithBase.payload.total, 20, 'servicio $15 + base $5; no $25');
+  assert.deepStrictEqual(
+    reportWithBase.payload.detail.map((d) => d.source).sort(),
+    ['cita atendida', 'paciente atendido']
+  );
+
+  const summaryWithBase = respDe();
+  await ctrl.doctorSummary(summaryReq, summaryWithBase);
+  const doctorSummary = summaryWithBase.payload.doctors[0];
+  assert.strictEqual(doctorSummary.patientCommission.earned, 5);
+  assert.strictEqual(doctorSummary.commissionTotal, 20);
+
   saveReq.body.amountType = 'percent';
   saveReq.body.value = 25;
   const updateRes = respDe();
@@ -282,7 +316,7 @@ test('configura por doctor y servicio una comisión fija o porcentual', async ()
 
   const reportPercent = respDe();
   await ctrl.report(reportReq, reportPercent);
-  assert.strictEqual(reportPercent.payload.total, 20, '25% del valor cobrado de $80');
+  assert.strictEqual(reportPercent.payload.total, 25, '25% de $80 por servicio + $5 base de la otra cita');
 });
 
 test('resumen de call center: citas agendadas por agente, nuevos vs recurrentes', async () => {

@@ -116,15 +116,11 @@ exports.deleteRule = async (req, res) => {
   }
 };
 
-/**
- * Crea, actualiza o quita la comisión de un doctor por un servicio de Agenda.
- * Cuando el resumen está en "todas las sucursales", el cliente envía las
- * sucursales donde apareció ese servicio y se guarda la misma configuración en
- * cada una: el motor contable continúa siendo estrictamente multi-tenant.
- */
-exports.saveDoctorServiceRule = async (req, res) => {
+/** Guarda una regla administrada desde Comisiones > Doctores. */
+const saveManagedDoctorRule = async (req, res, scope) => {
   try {
     const { doctor, service, amountType = 'fixed', active = true } = req.body || {};
+    const isPatientRule = scope === 'patient';
     const rawValue = req.body?.value;
     const value = Number(rawValue);
     const clinicIds = [...new Set(
@@ -135,7 +131,7 @@ exports.saveDoctorServiceRule = async (req, res) => {
         .filter((id) => mongoose.isValidObjectId(id))
     )];
 
-    if (!mongoose.isValidObjectId(doctor) || !mongoose.isValidObjectId(service)) {
+    if (!mongoose.isValidObjectId(doctor) || (!isPatientRule && !mongoose.isValidObjectId(service))) {
       return res.status(400).json({ message: 'Doctor o servicio no válido' });
     }
     if (!clinicIds.length) return res.status(400).json({ message: 'Selecciona al menos una sucursal' });
@@ -148,14 +144,14 @@ exports.saveDoctorServiceRule = async (req, res) => {
 
     const [doctorDoc, serviceDoc] = await Promise.all([
       User.findById(doctor).select('name').lean(),
-      AppointmentServiceItem.findById(service).select('name').lean(),
+      isPatientRule ? null : AppointmentServiceItem.findById(service).select('name').lean(),
     ]);
     if (!doctorDoc) return res.status(404).json({ message: 'Doctor no encontrado' });
-    if (!serviceDoc) return res.status(404).json({ message: 'Servicio no encontrado' });
+    if (!isPatientRule && !serviceDoc) return res.status(404).json({ message: 'Servicio no encontrado' });
 
     const identity = {
       doctorServiceDoctor: doctor,
-      appointmentService: service,
+      appointmentService: isPatientRule ? null : service,
       managedFromDoctorCommissions: true,
     };
     if (active === false) {
@@ -170,7 +166,7 @@ exports.saveDoctorServiceRule = async (req, res) => {
         {
           $set: {
             clinic: clinicId,
-            name: `${doctorDoc.name} · ${serviceDoc.name}`,
+            name: isPatientRule ? `${doctorDoc.name} · Paciente atendido` : `${doctorDoc.name} · ${serviceDoc.name}`,
             active: true,
             targetType: 'user',
             user: doctor,
@@ -181,9 +177,10 @@ exports.saveDoctorServiceRule = async (req, res) => {
             service: null,
             services: [],
             serviceAmounts: [],
-            appointmentService: service,
+            appointmentService: isPatientRule ? null : service,
             doctorServiceDoctor: doctor,
             managedFromDoctorCommissions: true,
+            doctorCommissionScope: scope,
             amountType,
             amount: amountType === 'fixed' ? value : 0,
             percent: amountType === 'percent' ? value : 0,
@@ -202,9 +199,20 @@ exports.saveDoctorServiceRule = async (req, res) => {
     res.json({ active: true, amountType, value, clinics: clinicIds, rules: saved });
   } catch (e) {
     const status = e?.code === 11000 ? 409 : 500;
-    res.status(status).json({ message: status === 409 ? 'Ya existe una configuración para este doctor y servicio' : 'Error al guardar la comisión', error: e.message });
+    res.status(status).json({
+      message: status === 409
+        ? 'Ya existe una configuración para este doctor'
+        : 'Error al guardar la comisión',
+      error: e.message,
+    });
   }
 };
+
+/** Comisión prioritaria por servicio de Agenda. */
+exports.saveDoctorServiceRule = (req, res) => saveManagedDoctorRule(req, res, 'service');
+
+/** Comisión base por paciente, usada solo cuando la cita no comisiona por servicio. */
+exports.saveDoctorPatientRule = (req, res) => saveManagedDoctorRule(req, res, 'patient');
 
 // ─────────── Cálculo de comisiones devengadas ───────────
 const num = (v) => Number(v) || 0;
@@ -289,6 +297,14 @@ async function computeCommissions(clinicId, startDate, endDate) {
   const appointmentServiceNameById = new Map(
     appointmentServiceDocs.map((s) => [String(s._id), normalizeServiceName(s.name)])
   );
+  const matchesAppointmentService = (rule, svc) => {
+    if (!rule.appointmentService || svc?.sourceType !== 'appointment') return false;
+    const ruleServiceId = String(rule.appointmentService);
+    if (svc.appointmentService && String(svc.appointmentService) === ruleServiceId) return true;
+    return !svc.appointmentService
+      && !!svc.normalizedName
+      && svc.normalizedName === appointmentServiceNameById.get(ruleServiceId);
+  };
 
   // Citas asistidas o completadas. El call center devenga al ASISTIR; el doctor /
   // enfermero / admin sólo cuando la cita se COMPLETA (fue atendida).
@@ -410,17 +426,14 @@ async function computeCommissions(clinicId, startDate, endDate) {
         if (rule.patientScope === 'new' && !appt.isFirstVisit) continue;
         if (!inSchedule(rule, appt)) continue;
 
+        // La regla base por paciente se evalúa una sola vez después de los
+        // servicios, donde también se aplica la prioridad anti-doble-pago.
+        if (rule.managedFromDoctorCommissions && rule.doctorCommissionScope === 'patient') continue;
+
         // Filtro de servicio + config de monto.
         let cfg;
         if (rule.appointmentService) {
-          if (svc.sourceType !== 'appointment') continue;
-          const ruleServiceId = String(rule.appointmentService);
-          const matchesId = svc.appointmentService && String(svc.appointmentService) === ruleServiceId;
-          // Citas antiguas conservan el nombre pero no el id del catálogo.
-          const matchesLegacyName = !svc.appointmentService
-            && svc.normalizedName
-            && svc.normalizedName === appointmentServiceNameById.get(ruleServiceId);
-          if (!matchesId && !matchesLegacyName) continue;
+          if (!matchesAppointmentService(rule, svc)) continue;
           cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
         } else if (svc.sourceType === 'appointment') {
           // Las reglas generales apuntan a productos de inventario, no al
@@ -463,6 +476,40 @@ async function computeCommissions(clinicId, startDate, endDate) {
               service: svc.name || '—', patient: patientName, source: 'cita atendida', apptId: String(appt._id),
             });
           }
+        }
+      }
+    }
+
+    // Comisión BASE POR PACIENTE: se paga una sola vez por cita completada y
+    // solamente si para ese doctor no aplica ninguna comisión de servicio en
+    // esta misma cita. Así una configuración de servicio reemplaza a la base en
+    // vez de sumarse a ella.
+    if (isCompleted) {
+      const patientRules = rules.filter((r) =>
+        r.managedFromDoctorCommissions && r.doctorCommissionScope === 'patient'
+      );
+      for (const performer of performers) {
+        const performerRole = roleFor(performer);
+        const hasSpecificServiceCommission = rules.some((r) =>
+          r.managedFromDoctorCommissions
+          && r.doctorCommissionScope !== 'patient'
+          && !!r.appointmentService
+          && matchTarget(r, performer, performerRole)
+          && inSchedule(r, appt)
+          && agendaServices.some((svc) => matchesAppointmentService(r, svc))
+        );
+        if (hasSpecificServiceCommission) continue;
+
+        for (const rule of patientRules) {
+          if (rule.patientScope === 'new' && !appt.isFirstVisit) continue;
+          if (!inSchedule(rule, appt) || !matchTarget(rule, performer, performerRole)) continue;
+          const cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
+          detail.push({
+            userId: String(performer._id), userName: performer.name, userRole: performerRole,
+            ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
+            amount: calcAmount(cfg, paidValue), date: appt.date,
+            service: 'Paciente atendido', patient: patientName, source: 'paciente atendido', apptId: String(appt._id),
+          });
         }
       }
     }
@@ -802,6 +849,7 @@ exports.doctorSummary = async (req, res) => {
           name: doc.name,
           specialty: doc.specialty || '',
           clinics: new Set(),
+          clinicIds: new Set(),
           total: 0,
           byStatus: Object.fromEntries(ESTADOS.map((s) => [s, 0])),
           services: [],
@@ -811,6 +859,7 @@ exports.doctorSummary = async (req, res) => {
       fila.total += 1;
       const nombreSucursal = appt.clinic?.nombreComercial || appt.clinic?.name;
       if (nombreSucursal) fila.clinics.add(nombreSucursal);
+      if (appt.clinic?._id) fila.clinicIds.add(String(appt.clinic._id));
       if (fila.byStatus[appt.status] != null) fila.byStatus[appt.status] += 1;
 
       const apptStatus = appt.status;
@@ -838,7 +887,10 @@ exports.doctorSummary = async (req, res) => {
           // cita para que el redondeo porcentual coincida exactamente con él.
           if (appt.status === 'completada') {
             if (!svc.commissionInputs[clinicId]) svc.commissionInputs[clinicId] = [];
-            svc.commissionInputs[clinicId].push(appointmentPaymentValue(appt));
+            svc.commissionInputs[clinicId].push({
+              appointmentId: String(appt._id),
+              paid: appointmentPaymentValue(appt),
+            });
           }
         }
         svc.count += 1;
@@ -851,29 +903,41 @@ exports.doctorSummary = async (req, res) => {
       .map((f) => ({
         ...f,
         clinics: [...f.clinics],
+        clinicIds: [...f.clinicIds],
         services: f.services.map((s) => ({ ...s, clinicIds: [...s.clinicIds] })),
       }))
       .sort((a, b) => b.total - a.total);
 
     const doctorIds = doctors.map((d) => d.doctorId);
     const appointmentServiceIds = [...new Set(doctors.flatMap((d) => d.services.map((s) => s.serviceId).filter(Boolean)))];
-    const clinicIds = [...new Set(doctors.flatMap((d) => d.services.flatMap((s) => s.clinicIds || [])))];
-    const managedRules = doctorIds.length && appointmentServiceIds.length && clinicIds.length
+    const clinicIds = [...new Set(doctors.flatMap((d) => d.clinicIds || []))];
+    const managedRules = doctorIds.length && clinicIds.length
       ? await CommissionRule.find({
           managedFromDoctorCommissions: true,
           active: true,
           doctorServiceDoctor: { $in: doctorIds },
-          appointmentService: { $in: appointmentServiceIds },
+          $or: [
+            { appointmentService: null, doctorCommissionScope: 'patient' },
+            ...(appointmentServiceIds.length ? [{ appointmentService: { $in: appointmentServiceIds } }] : []),
+          ],
           clinic: { $in: clinicIds },
-        }).select('clinic doctorServiceDoctor appointmentService amountType amount percent').lean()
+        }).select('clinic doctorServiceDoctor appointmentService doctorCommissionScope amountType amount percent').lean()
       : [];
     const rulesByDoctorService = new Map();
+    const patientRulesByDoctor = new Map();
     for (const rule of managedRules) {
+      if (!rule.appointmentService && rule.doctorCommissionScope === 'patient') {
+        const doctorId = String(rule.doctorServiceDoctor);
+        if (!patientRulesByDoctor.has(doctorId)) patientRulesByDoctor.set(doctorId, []);
+        patientRulesByDoctor.get(doctorId).push(rule);
+        continue;
+      }
       const key = `${rule.doctorServiceDoctor}|${rule.appointmentService}`;
       if (!rulesByDoctorService.has(key)) rulesByDoctorService.set(key, []);
       rulesByDoctorService.get(key).push(rule);
     }
     for (const doctor of doctors) {
+      const coveredAppointments = new Set();
       for (const serviceRow of doctor.services) {
         if (!serviceRow.serviceId) {
           serviceRow.commission = null;
@@ -891,7 +955,10 @@ exports.doctorSummary = async (req, res) => {
         const earned = configs.reduce((total, rule) => {
           const values = serviceRow.commissionInputs?.[String(rule.clinic)] || [];
           const cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
-          return total + values.reduce((sum, paid) => sum + calcAmount(cfg, paid), 0);
+          return total + values.reduce((sum, input) => {
+            coveredAppointments.add(input.appointmentId);
+            return sum + calcAmount(cfg, input.paid);
+          }, 0);
         }, 0);
         const signatures = [...new Set(configs.map((r) => `${r.amountType}:${r.amountType === 'percent' ? num(r.percent) : num(r.amount)}`))];
         if (signatures.length > 1) {
@@ -916,8 +983,49 @@ exports.doctorSummary = async (req, res) => {
         };
         delete serviceRow.commissionInputs;
       }
-      doctor.commissionTotal = +doctor.services.reduce((sum, s) => sum + num(s.commission?.earned), 0).toFixed(2);
-      doctor.hasConfiguredCommissions = doctor.services.some((s) => !!s.commission);
+
+      const relevantClinics = new Set(doctor.clinicIds || []);
+      const patientConfigs = (patientRulesByDoctor.get(doctor.doctorId) || [])
+        .filter((r) => relevantClinics.has(String(r.clinic)));
+      if (patientConfigs.length) {
+        const earned = patientConfigs.reduce((total, rule) => {
+          const cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
+          return total + appts
+            .filter((a) =>
+              a.status === 'completada'
+              && String(a.doctor?._id || a.doctor) === doctor.doctorId
+              && String(a.clinic?._id || a.clinic) === String(rule.clinic)
+              && !coveredAppointments.has(String(a._id))
+            )
+            .reduce((sum, a) => sum + calcAmount(cfg, appointmentPaymentValue(a)), 0);
+        }, 0);
+        const signatures = [...new Set(patientConfigs.map((r) => `${r.amountType}:${r.amountType === 'percent' ? num(r.percent) : num(r.amount)}`))];
+        if (signatures.length > 1) {
+          doctor.patientCommission = {
+            mixed: true,
+            earned: +earned.toFixed(2),
+            configuredClinics: patientConfigs.length,
+            totalClinics: relevantClinics.size,
+          };
+        } else {
+          const first = patientConfigs[0];
+          doctor.patientCommission = {
+            mixed: false,
+            amountType: first.amountType || 'fixed',
+            value: first.amountType === 'percent' ? num(first.percent) : num(first.amount),
+            earned: +earned.toFixed(2),
+            partial: patientConfigs.length < relevantClinics.size,
+            configuredClinics: patientConfigs.length,
+            totalClinics: relevantClinics.size,
+          };
+        }
+      } else {
+        doctor.patientCommission = null;
+      }
+
+      const serviceTotal = doctor.services.reduce((sum, s) => sum + num(s.commission?.earned), 0);
+      doctor.commissionTotal = +(serviceTotal + num(doctor.patientCommission?.earned)).toFixed(2);
+      doctor.hasConfiguredCommissions = doctor.services.some((s) => !!s.commission) || !!doctor.patientCommission;
     }
     const totals = Object.fromEntries(ESTADOS.map((s) => [s, 0]));
     for (const fila of doctors) {

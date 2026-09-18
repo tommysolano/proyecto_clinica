@@ -110,6 +110,9 @@ const commissionRuleSchema = new mongoose.Schema(
     // Campos de control para las reglas creadas desde Comisiones > Doctores.
     doctorServiceDoctor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     managedFromDoctorCommissions: { type: Boolean, default: false },
+    // `patient`: una vez por cita completada, solo si ningún servicio de esa
+    // cita tiene una comisión específica para el doctor.
+    doctorCommissionScope: { type: String, enum: ['patient', 'service'], default: 'service' },
 
     // Agente de call center al que está ligado un usuario marketing. Sólo aplica
     // al trigger 'call_center_commission': el marketing gana en función de la
@@ -146,8 +149,9 @@ const commissionRuleSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Una sola configuración por doctor, servicio y sucursal. El índice es parcial
-// para no imponer restricciones nuevas a las reglas generales ya existentes.
+// Una sola configuración por doctor, alcance y sucursal: `appointmentService`
+// identifica la tarifa específica y null identifica la base por paciente. El
+// índice es parcial para no tocar las reglas generales ya existentes.
 commissionRuleSchema.index(
   { clinic: 1, doctorServiceDoctor: 1, appointmentService: 1 },
   {

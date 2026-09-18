@@ -8,6 +8,7 @@ router.use(auth, requireClinic);
 router.get('/doctor-summary', requireSuperAdmin, ctrl.doctorSummary);
 router.get('/doctor-appointments', requireSuperAdmin, ctrl.doctorAppointments);
 router.put('/doctor-service-rule', requireSuperAdmin, ctrl.saveDoctorServiceRule);
+router.put('/doctor-patient-rule', requireSuperAdmin, ctrl.saveDoctorPatientRule);
 // Agendamientos por agente de call center (pacientes nuevos vs recurrentes).
 router.get('/callcenter-summary', requireSuperAdmin, ctrl.callCenterSummary);
 

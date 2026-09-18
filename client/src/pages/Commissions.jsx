@@ -124,7 +124,16 @@ export default function Commissions() {
       return;
     }
     const current = service.commission;
-    setCommissionEditor({ doctor, service });
+    setCommissionEditor({ scope: 'service', doctor, service, commission: current });
+    setCommissionForm({
+      amountType: !current?.mixed && current?.amountType ? current.amountType : 'fixed',
+      value: !current?.mixed && current?.value != null ? String(current.value) : '',
+    });
+  };
+
+  const openPatientCommissionEditor = (doctor) => {
+    const current = doctor.patientCommission;
+    setCommissionEditor({ scope: 'patient', doctor, service: null, commission: current });
     setCommissionForm({
       amountType: !current?.mixed && current?.amountType ? current.amountType : 'fixed',
       value: !current?.mixed && current?.value != null ? String(current.value) : '',
@@ -138,13 +147,20 @@ export default function Commissions() {
     if (commissionForm.amountType === 'percent' && value > 100) return toast.error('El porcentaje no puede superar 100');
     setSavingCommission(true);
     try {
-      await api.put('/commissions/doctor-service-rule', {
+      await api.put(
+        commissionEditor.scope === 'patient'
+          ? '/commissions/doctor-patient-rule'
+          : '/commissions/doctor-service-rule',
+        {
         doctor: commissionEditor.doctor.doctorId,
-        service: commissionEditor.service.serviceId,
-        clinics: commissionEditor.service.clinicIds,
+        ...(commissionEditor.scope === 'service' ? { service: commissionEditor.service.serviceId } : {}),
+        clinics: commissionEditor.scope === 'service'
+          ? commissionEditor.service.clinicIds
+          : commissionEditor.doctor.clinicIds,
         amountType: commissionForm.amountType,
         value,
-      });
+        }
+      );
       toast.success('Comisión guardada');
       setCommissionEditor(null);
       await load();
@@ -156,15 +172,22 @@ export default function Commissions() {
   };
 
   const removeCommission = async () => {
-    if (!commissionEditor?.service?.commission) return;
+    if (!commissionEditor?.commission) return;
     setSavingCommission(true);
     try {
-      await api.put('/commissions/doctor-service-rule', {
+      await api.put(
+        commissionEditor.scope === 'patient'
+          ? '/commissions/doctor-patient-rule'
+          : '/commissions/doctor-service-rule',
+        {
         doctor: commissionEditor.doctor.doctorId,
-        service: commissionEditor.service.serviceId,
-        clinics: commissionEditor.service.clinicIds,
+        ...(commissionEditor.scope === 'service' ? { service: commissionEditor.service.serviceId } : {}),
+        clinics: commissionEditor.scope === 'service'
+          ? commissionEditor.service.clinicIds
+          : commissionEditor.doctor.clinicIds,
         active: false,
-      });
+        }
+      );
       toast.success('Comisión eliminada');
       setCommissionEditor(null);
       await load();
@@ -355,6 +378,18 @@ export default function Commissions() {
                     <span className="text-sm text-slate-600 mr-1">
                       Total: <b className="text-slate-900">{d.total}</b>
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => openPatientCommissionEditor(d)}
+                      title="Comisión base por cada paciente atendido, salvo cuando la cita ya paga por servicio"
+                      className={`border-none rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer ${
+                        d.patientCommission
+                          ? 'bg-violet-100 text-violet-700 hover:bg-violet-200'
+                          : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      Por paciente: {commissionLabel(d.patientCommission)}
+                    </button>
                     {d.hasConfiguredCommissions && (
                       <span className="text-sm text-emerald-700 mr-1">
                         Ganado: <b>${Number(d.commissionTotal || 0).toFixed(2)}</b>
@@ -485,24 +520,32 @@ export default function Commissions() {
       <Modal
         isOpen={!!commissionEditor}
         onClose={() => !savingCommission && setCommissionEditor(null)}
-        title="Comisión por servicio"
+        title={commissionEditor?.scope === 'patient' ? 'Comisión por paciente atendido' : 'Comisión por servicio'}
         size="sm"
       >
         {commissionEditor && (
           <form onSubmit={saveCommission} className="space-y-4">
             <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2.5 text-sm">
               <div className="font-semibold text-slate-800">{commissionEditor.doctor.name}</div>
-              <div className="text-slate-500">{commissionEditor.service.name}</div>
-              {(commissionEditor.service.clinicIds || []).length > 1 && (
+              <div className="text-slate-500">
+                {commissionEditor.scope === 'patient' ? 'Cada paciente atendido' : commissionEditor.service.name}
+              </div>
+              {((commissionEditor.scope === 'patient' ? commissionEditor.doctor.clinicIds : commissionEditor.service.clinicIds) || []).length > 1 && (
                 <div className="text-xs text-sky-700 mt-1">
-                  Se aplicará en {commissionEditor.service.clinicIds.length} sucursales del resultado.
+                  Se aplicará en {(commissionEditor.scope === 'patient' ? commissionEditor.doctor.clinicIds : commissionEditor.service.clinicIds).length} sucursales del resultado.
                 </div>
               )}
             </div>
 
-            {commissionEditor.service.commission?.mixed && (
+            {commissionEditor.commission?.mixed && (
               <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                 Actualmente existen valores distintos por sucursal. Al guardar se unificarán con este valor.
+              </p>
+            )}
+
+            {commissionEditor.scope === 'patient' && (
+              <p className="text-xs text-violet-700 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+                Esta comisión se paga una vez por cita completada. Si la cita tiene un servicio con comisión propia, se paga la del servicio y esta base no se suma.
               </p>
             )}
 
@@ -537,7 +580,7 @@ export default function Commissions() {
 
             <div className="flex items-center justify-between gap-3 pt-1">
               <div>
-                {commissionEditor.service.commission && (
+                {commissionEditor.commission && (
                   <button
                     type="button"
                     onClick={removeCommission}
