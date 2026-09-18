@@ -825,7 +825,7 @@ exports.doctorSummary = async (req, res) => {
     const { query, estados, startDate, endDate } = await construirQueryResumen(req);
 
     const appts = await Appointment.find(query)
-      .populate('doctor', 'name specialty')
+      .populate('doctor', 'name specialty clinics worksInAllClinics')
       .populate('clinic', 'name nombreComercial')
       .lean();
 
@@ -848,6 +848,7 @@ exports.doctorSummary = async (req, res) => {
           doctorId: id,
           name: doc.name,
           specialty: doc.specialty || '',
+          roles: new Set(),
           clinics: new Set(),
           clinicIds: new Set(),
           total: 0,
@@ -860,6 +861,10 @@ exports.doctorSummary = async (req, res) => {
       const nombreSucursal = appt.clinic?.nombreComercial || appt.clinic?.name;
       if (nombreSucursal) fila.clinics.add(nombreSucursal);
       if (appt.clinic?._id) fila.clinicIds.add(String(appt.clinic._id));
+      const clinicId = String(appt.clinic?._id || appt.clinic || '');
+      const roleInClinic = (doc.clinics || []).find((c) => String(c.clinic?._id || c.clinic) === clinicId)?.role
+        || (doc.worksInAllClinics ? doc.clinics?.[0]?.role : null);
+      if (roleInClinic) fila.roles.add(roleInClinic);
       if (fila.byStatus[appt.status] != null) fila.byStatus[appt.status] += 1;
 
       const apptStatus = appt.status;
@@ -904,6 +909,8 @@ exports.doctorSummary = async (req, res) => {
         ...f,
         clinics: [...f.clinics],
         clinicIds: [...f.clinicIds],
+        roles: [...f.roles],
+        roleInClinic: [...f.roles][0] || null,
         services: f.services.map((s) => ({ ...s, clinicIds: [...s.clinicIds] })),
       }))
       .sort((a, b) => b.total - a.total);

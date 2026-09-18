@@ -6,7 +6,7 @@ import DateInput from '../components/DateInput';
 import Modal from '../components/Modal';
 import NumericInput from '../components/NumericInput';
 import ProductAutocomplete from '../components/ProductAutocomplete';
-import { doctorOptionLabel } from '../utils/roles';
+import { doctorOptionLabel, doctorTypeLabel } from '../utils/roles';
 import { STATUS_COLORS, STATUS_OPTIONS } from '../utils/commissionsFormat';
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -367,8 +367,16 @@ export default function Commissions() {
                 <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-slate-50 border-b border-slate-100">
                   <div>
                     <span className="font-semibold text-slate-800">{d.name}</span>
-                    {d.specialty ? (
-                      <span className="ml-2 text-xs px-2 py-0.5 rounded bg-slate-200/70 text-slate-600">{d.specialty}</span>
+                    {(d.roles?.length ? d.roles : [d.roleInClinic].filter(Boolean)).map((role) => (
+                      <span key={role} className="ml-2 text-xs px-2 py-0.5 rounded bg-sky-100 text-sky-700 font-semibold">
+                        {doctorTypeLabel({ roleInClinic: role })}
+                      </span>
+                    ))}
+                    {d.specialty && !(d.roles?.length ? d.roles : [d.roleInClinic].filter(Boolean))
+                      .some((role) => doctorTypeLabel({ roleInClinic: role }).toLowerCase() === d.specialty.trim().toLowerCase()) ? (
+                      <span className="ml-2 text-xs px-2 py-0.5 rounded bg-slate-200/70 text-slate-600">
+                        Especialidad: {d.specialty}
+                      </span>
                     ) : null}
                     {(d.clinics || []).length > 0 && (
                       <span className="block text-xs text-slate-500 mt-0.5">{d.clinics.join(', ')}</span>

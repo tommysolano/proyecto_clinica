@@ -84,6 +84,8 @@ test('resume las citas por doctor con estados y servicios', async () => {
   assert.strictEqual(fila.total, 2);
   assert.strictEqual(fila.byStatus.asistida, 1);
   assert.strictEqual(fila.byStatus.completada, 1);
+  assert.deepStrictEqual(fila.roles, ['doctor']);
+  assert.strictEqual(fila.roleInClinic, 'doctor');
   const nombres = fila.services.map((s) => s.name).sort();
   assert.deepStrictEqual(nombres, ['Consulta', 'Detox']);
   assert.strictEqual(
@@ -126,6 +128,7 @@ test('resume las citas por doctor con estados y servicios', async () => {
   assert.strictEqual(res3.payload.totals.total, 2);
   const fila3 = res3.payload.doctors.find((d) => d.doctorId === String(otro._id));
   assert.strictEqual(fila3.byStatus.cancelada, 1);
+  assert.deepStrictEqual(fila3.roles, ['optica']);
 });
 
 test('detalle de citas: pago, canje, seguimiento con suero, multiprofesional y derivaciones', async () => {
