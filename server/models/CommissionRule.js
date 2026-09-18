@@ -95,6 +95,22 @@ const commissionRuleSchema = new mongoose.Schema(
     // ignorando `service`, `amount`, `amountType` y `percent` globales.
     serviceAmounts: { type: [serviceAmountSchema], default: [] },
 
+    /**
+     * Servicio del catálogo operativo de Agenda. Las reglas generales siguen
+     * usando `service`/`services` (productos de inventario); esta referencia
+     * permite que la pantalla de Comisiones del superadministrador configure
+     * directamente lo que gana un doctor por el servicio que realmente figura
+     * en la cita.
+     */
+    appointmentService: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'AppointmentServiceItem',
+      default: null,
+    },
+    // Campos de control para las reglas creadas desde Comisiones > Doctores.
+    doctorServiceDoctor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    managedFromDoctorCommissions: { type: Boolean, default: false },
+
     // Agente de call center al que está ligado un usuario marketing. Sólo aplica
     // al trigger 'call_center_commission': el marketing gana en función de la
     // comisión que devengue ESTE agente.
@@ -128,6 +144,17 @@ const commissionRuleSchema = new mongoose.Schema(
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
+);
+
+// Una sola configuración por doctor, servicio y sucursal. El índice es parcial
+// para no imponer restricciones nuevas a las reglas generales ya existentes.
+commissionRuleSchema.index(
+  { clinic: 1, doctorServiceDoctor: 1, appointmentService: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { managedFromDoctorCommissions: true },
+    name: 'uniq_doctor_appointment_service_commission',
+  }
 );
 
 /**

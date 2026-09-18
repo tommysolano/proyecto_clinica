@@ -3,6 +3,8 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineCurrencyDollar, HiOutlineMegaphone, HiOutlineUserGroup } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
+import Modal from '../components/Modal';
+import NumericInput from '../components/NumericInput';
 import ProductAutocomplete from '../components/ProductAutocomplete';
 import { doctorOptionLabel } from '../utils/roles';
 import { STATUS_COLORS, STATUS_OPTIONS } from '../utils/commissionsFormat';
@@ -24,6 +26,9 @@ export default function Commissions() {
   const [data, setData] = useState(null);
   const [dataCC, setDataCC] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [commissionEditor, setCommissionEditor] = useState(null);
+  const [commissionForm, setCommissionForm] = useState({ amountType: 'fixed', value: '' });
+  const [savingCommission, setSavingCommission] = useState(false);
 
   const filtrosBase = () => {
     const params = { start, end };
@@ -59,6 +64,9 @@ export default function Commissions() {
     api.get('/clinics').then((r) => setClinics(r.data || [])).catch(() => {});
     api.get('/appointment-service-items').then((r) => setServices(r.data || [])).catch(() => {});
     load();
+    // La carga inicial usa deliberadamente los filtros iniciales; los cambios se
+    // aplican con el botón Calcular.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadDoctors = async () => {
@@ -108,6 +116,73 @@ export default function Commissions() {
     if (serviceFilter.length) params.set('service', serviceFilter.join(','));
     if (doctorName) params.set('name', doctorName);
     return `/commissions/${doctorId}?${params.toString()}`;
+  };
+
+  const openCommissionEditor = (doctor, service) => {
+    if (!service.serviceId) {
+      toast.error('Este servicio antiguo no está vinculado al catálogo de Agenda');
+      return;
+    }
+    const current = service.commission;
+    setCommissionEditor({ doctor, service });
+    setCommissionForm({
+      amountType: !current?.mixed && current?.amountType ? current.amountType : 'fixed',
+      value: !current?.mixed && current?.value != null ? String(current.value) : '',
+    });
+  };
+
+  const saveCommission = async (e) => {
+    e.preventDefault();
+    const value = Number(commissionForm.value);
+    if (!Number.isFinite(value) || value < 0) return toast.error('Ingresa un valor válido');
+    if (commissionForm.amountType === 'percent' && value > 100) return toast.error('El porcentaje no puede superar 100');
+    setSavingCommission(true);
+    try {
+      await api.put('/commissions/doctor-service-rule', {
+        doctor: commissionEditor.doctor.doctorId,
+        service: commissionEditor.service.serviceId,
+        clinics: commissionEditor.service.clinicIds,
+        amountType: commissionForm.amountType,
+        value,
+      });
+      toast.success('Comisión guardada');
+      setCommissionEditor(null);
+      await load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al guardar la comisión');
+    } finally {
+      setSavingCommission(false);
+    }
+  };
+
+  const removeCommission = async () => {
+    if (!commissionEditor?.service?.commission) return;
+    setSavingCommission(true);
+    try {
+      await api.put('/commissions/doctor-service-rule', {
+        doctor: commissionEditor.doctor.doctorId,
+        service: commissionEditor.service.serviceId,
+        clinics: commissionEditor.service.clinicIds,
+        active: false,
+      });
+      toast.success('Comisión eliminada');
+      setCommissionEditor(null);
+      await load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al eliminar la comisión');
+    } finally {
+      setSavingCommission(false);
+    }
+  };
+
+  const commissionLabel = (commission) => {
+    if (!commission) return 'Definir comisión';
+    if (commission.mixed) return `Valores distintos · ganado $${Number(commission.earned || 0).toFixed(2)}`;
+    const label = commission.amountType === 'percent'
+      ? `${Number(commission.value).toFixed(2)}%`
+      : `$${Number(commission.value).toFixed(2)}`;
+    const earned = `ganado $${Number(commission.earned || 0).toFixed(2)}`;
+    return commission.partial ? `${label} (parcial) · ${earned}` : `${label} · ${earned}`;
   };
 
   return (
@@ -280,6 +355,11 @@ export default function Commissions() {
                     <span className="text-sm text-slate-600 mr-1">
                       Total: <b className="text-slate-900">{d.total}</b>
                     </span>
+                    {d.hasConfiguredCommissions && (
+                      <span className="text-sm text-emerald-700 mr-1">
+                        Ganado: <b>${Number(d.commissionTotal || 0).toFixed(2)}</b>
+                      </span>
+                    )}
                     {columnas.map((s) => (
                       <span
                         key={s.value}
@@ -303,14 +383,29 @@ export default function Commissions() {
                       </p>
                       <div className="flex flex-wrap gap-1.5 bg-emerald-50/40 border border-emerald-100 rounded-lg p-3">
                         {[...d.services].sort((a, b) => b.count - a.count).map((svc) => (
-                          <span
+                          <div
                             key={svc.name}
                             title={Object.entries(svc.byStatus || {}).map(([k, v]) => `${k}: ${v}`).join(' · ')}
-                            className="inline-flex items-center gap-1.5 bg-white border border-emerald-200 text-slate-700 text-xs px-2.5 py-1 rounded-full"
+                            className="inline-flex items-center gap-1.5 bg-white border border-emerald-200 text-slate-700 text-xs pl-2.5 pr-1 py-1 rounded-full"
                           >
-                            {svc.name}
+                            <span>{svc.name}</span>
                             <span className="bg-emerald-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{svc.count}</span>
-                          </span>
+                            <button
+                              type="button"
+                              onClick={() => openCommissionEditor(d, svc)}
+                              disabled={!svc.serviceId}
+                              title={svc.serviceId ? 'Definir lo que gana el doctor por esta atención' : 'Servicio sin vínculo al catálogo de Agenda'}
+                              className={`border-none rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                svc.serviceId
+                                  ? svc.commission
+                                    ? 'bg-sky-100 text-sky-700 hover:bg-sky-200 cursor-pointer'
+                                    : 'bg-slate-100 text-slate-500 hover:bg-slate-200 cursor-pointer'
+                                  : 'bg-slate-50 text-slate-300 cursor-not-allowed'
+                              }`}
+                            >
+                              {commissionLabel(svc.commission)}
+                            </button>
+                          </div>
                         ))}
                       </div>
                     </div>
@@ -386,6 +481,85 @@ export default function Commissions() {
           </div>
         </div>
       )}
+
+      <Modal
+        isOpen={!!commissionEditor}
+        onClose={() => !savingCommission && setCommissionEditor(null)}
+        title="Comisión por servicio"
+        size="sm"
+      >
+        {commissionEditor && (
+          <form onSubmit={saveCommission} className="space-y-4">
+            <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2.5 text-sm">
+              <div className="font-semibold text-slate-800">{commissionEditor.doctor.name}</div>
+              <div className="text-slate-500">{commissionEditor.service.name}</div>
+              {(commissionEditor.service.clinicIds || []).length > 1 && (
+                <div className="text-xs text-sky-700 mt-1">
+                  Se aplicará en {commissionEditor.service.clinicIds.length} sucursales del resultado.
+                </div>
+              )}
+            </div>
+
+            {commissionEditor.service.commission?.mixed && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                Actualmente existen valores distintos por sucursal. Al guardar se unificarán con este valor.
+              </p>
+            )}
+
+            <label className="block text-sm text-slate-700">Forma de cálculo
+              <select
+                value={commissionForm.amountType}
+                onChange={(e) => setCommissionForm({ ...commissionForm, amountType: e.target.value })}
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2.5 bg-white"
+              >
+                <option value="fixed">Valor fijo por cita atendida</option>
+                <option value="percent">Porcentaje del valor cobrado</option>
+              </select>
+            </label>
+
+            <label className="block text-sm text-slate-700">
+              {commissionForm.amountType === 'percent' ? 'Porcentaje (%)' : 'Valor fijo ($)'}
+              <NumericInput
+                value={commissionForm.value}
+                onChange={(e) => setCommissionForm({ ...commissionForm, value: e.target.value })}
+                min="0"
+                max={commissionForm.amountType === 'percent' ? '100' : undefined}
+                required
+                placeholder={commissionForm.amountType === 'percent' ? 'Ej. 20' : 'Ej. 15.00'}
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2.5"
+              />
+              {commissionForm.amountType === 'percent' && (
+                <span className="block mt-1 text-xs text-slate-400">
+                  Se calcula sobre el valor total acordado de la cita. Un abono incluido en ese valor no se duplica.
+                </span>
+              )}
+            </label>
+
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <div>
+                {commissionEditor.service.commission && (
+                  <button
+                    type="button"
+                    onClick={removeCommission}
+                    disabled={savingCommission}
+                    className="px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded-xl bg-transparent border-none cursor-pointer disabled:opacity-50"
+                  >
+                    Quitar comisión
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setCommissionEditor(null)} disabled={savingCommission} className="px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white cursor-pointer disabled:opacity-50">
+                  Cancelar
+                </button>
+                <button disabled={savingCommission} className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-xl border-none cursor-pointer disabled:opacity-50">
+                  {savingCommission ? 'Guardando...' : 'Guardar'}
+                </button>
+              </div>
+            </div>
+          </form>
+        )}
+      </Modal>
     </div>
   );
 }

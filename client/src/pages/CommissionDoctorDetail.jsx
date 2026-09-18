@@ -42,6 +42,7 @@ export default function CommissionDoctorDetail() {
   const citas = data?.appointments || [];
   const derivaciones = data?.referralsByDoctor?.[doctorId] || [];
   const nombreReal = data?.doctorNames?.[doctorId] || doctorName;
+  const totalPagos = Number(data?.totals?.payments || 0);
 
   return (
     <div className="space-y-4">
@@ -58,9 +59,14 @@ export default function CommissionDoctorDetail() {
         <HiOutlineCurrencyDollar className="text-emerald-600" /> Citas de {nombreReal}
       </h1>
       {data && (
-        <p className="text-sm text-slate-500">
-          {fmtDate(data.start)} — {fmtDate(data.end)} · <b>{citas.length}</b> citas en el filtro
-        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-sm text-slate-500">
+            {fmtDate(data.start)} — {fmtDate(data.end)} · <b>{citas.length}</b> citas en el filtro
+          </p>
+          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-sm font-semibold">
+            Total pagos: ${totalPagos.toFixed(2)}
+          </span>
+        </div>
       )}
 
       {loading && <div className="text-slate-500">Cargando...</div>}
@@ -148,6 +154,13 @@ export default function CommissionDoctorDetail() {
                     </tr>
                   ))}
                 </tbody>
+                <tfoot className="bg-emerald-50 border-t-2 border-emerald-200">
+                  <tr>
+                    <td colSpan={5} className="px-3 py-2 text-right font-semibold text-emerald-800">Total pagos</td>
+                    <td className="px-3 py-2 whitespace-nowrap font-bold text-emerald-800">${totalPagos.toFixed(2)}</td>
+                    <td></td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           ) : (

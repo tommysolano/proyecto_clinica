@@ -86,6 +86,11 @@ test('resume las citas por doctor con estados y servicios', async () => {
   assert.strictEqual(fila.byStatus.completada, 1);
   const nombres = fila.services.map((s) => s.name).sort();
   assert.deepStrictEqual(nombres, ['Consulta', 'Detox']);
+  assert.strictEqual(
+    fila.services.find((s) => s.name === 'Consulta').serviceId,
+    String(consulta._id),
+    'las citas antiguas por nombre se vinculan al catálogo para configurar su comisión'
+  );
   assert.strictEqual(fila.clinics[0], 'Central');
   // el doctor de la otra especialidad no aparece porque su única cita es 'cancelada'
   // (fuera del filtro por defecto asistida+completada)
@@ -208,13 +213,16 @@ test('detalle de citas: pago, canje, seguimiento con suero, multiprofesional y d
   assert.strictEqual(porFecha[0].payment.agreedValue, 40);
   assert.strictEqual(porFecha[0].payment.advancePayment, 'abono');
   assert.strictEqual(porFecha[0].payment.advanceAmount, 20);
+  assert.strictEqual(porFecha[0].payment.totalValue, 40);
   assert.ok(porFecha[0].venta);
   assert.strictEqual(porFecha[0].venta.total, 40);
   assert.ok(porFecha[0].venta.number);
 
   // Cita 2: canje, sin venta
   assert.strictEqual(porFecha[1].payment.isCanje, true);
+  assert.strictEqual(porFecha[1].payment.totalValue, 0);
   assert.strictEqual(porFecha[1].venta, null);
+  assert.strictEqual(res.payload.totals.payments, 40, 'el abono no se suma otra vez al valor acordado y el canje vale cero');
 
   // Derivaciones añadidas por el doctor
   const derivas = res.payload.referralsByDoctor[String(doctor._id)];
@@ -222,6 +230,59 @@ test('detalle de citas: pago, canje, seguimiento con suero, multiprofesional y d
   assert.strictEqual(derivas[0].specialty, 'Cardiología');
   assert.strictEqual(derivas[0].status, 'agendada');
   assert.strictEqual(derivas[0].patient, 'PEDRO SÁENZ');
+});
+
+test('configura por doctor y servicio una comisión fija o porcentual', async () => {
+  const clinic = await Clinic.create({ name: 'Comisiones', nombreComercial: 'Comisiones', active: true });
+  const doctor = await User.create({
+    name: 'Domenica Prueba', email: 'domenica-comision@test.com', password: '123456',
+    clinics: [{ clinic: clinic._id, role: 'doctor' }],
+  });
+  const paciente = await Patient.create({ clinic: clinic._id, firstName: 'Paciente', lastName: 'Comision' });
+  const servicio = await AppointmentServiceItem.create({
+    clinic: clinic._id, name: 'Mujer Sana 360', slug: 'mujer sana 360',
+  });
+  await Appointment.create({
+    clinic: clinic._id, patient: paciente._id, doctor: doctor._id,
+    date: new Date(2026, 7, 12, 12, 0, 0), startTime: '09:00', status: 'completada',
+    serviceItem: servicio._id, serviceName: servicio.name, agreedValue: 80,
+  });
+
+  const saveReq = reqDe(clinic._id);
+  saveReq.body = {
+    doctor: String(doctor._id), service: String(servicio._id),
+    clinics: [String(clinic._id)], amountType: 'fixed', value: 15,
+  };
+  const saveRes = respDe();
+  await ctrl.saveDoctorServiceRule(saveReq, saveRes);
+  assert.strictEqual(saveRes.status, 200);
+
+  const summaryReq = reqDe(clinic._id);
+  summaryReq.query = { start: '2026-08-01', end: '2026-08-31' };
+  const summaryRes = respDe();
+  await ctrl.doctorSummary(summaryReq, summaryRes);
+  const row = summaryRes.payload.doctors[0].services[0];
+  assert.deepStrictEqual(
+    { amountType: row.commission.amountType, value: row.commission.value, earned: row.commission.earned },
+    { amountType: 'fixed', value: 15, earned: 15 }
+  );
+  assert.strictEqual(summaryRes.payload.doctors[0].commissionTotal, 15);
+
+  const reportReq = reqDe(clinic._id);
+  reportReq.query = { start: '2026-08-01', end: '2026-08-31' };
+  const reportFixed = respDe();
+  await ctrl.report(reportReq, reportFixed);
+  assert.strictEqual(reportFixed.payload.total, 15);
+
+  saveReq.body.amountType = 'percent';
+  saveReq.body.value = 25;
+  const updateRes = respDe();
+  await ctrl.saveDoctorServiceRule(saveReq, updateRes);
+  assert.strictEqual(updateRes.status, 200);
+
+  const reportPercent = respDe();
+  await ctrl.report(reportReq, reportPercent);
+  assert.strictEqual(reportPercent.payload.total, 20, '25% del valor cobrado de $80');
 });
 
 test('resumen de call center: citas agendadas por agente, nuevos vs recurrentes', async () => {
