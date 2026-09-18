@@ -65,7 +65,15 @@ const SUERO = {
   serumComponents: [{ name: 'Vitamina C', quantity: 1 }],
 };
 
-test('odontologia_neurofocal guarda su seguimiento con suero y la cita pasa a enfermería', async () => {
+test('odontologia_neurofocal guarda su seguimiento con suero y la cita queda RETENIDA hasta que mostrador asigne', async () => {
+  /**
+   * Sep-2026, a pedido de la clínica: el suero que recetó el doctor NO siempre
+   * es el que toca aplicar en ese momento. Al guardar el seguimiento con la
+   * receta y pasar el turno a enfermería —sin suero escogido en el paso—, la
+   * cita NO sale a la bandeja del enfermero: queda retenida
+   * (`serumStatus='por_asignar'`) con su indicativo en la agenda general, y
+   * mostrador decide en «Asignar atención». Ahí se libera.
+   */
   const { clinicId, userId, patient, odonto, enf, cita } = await seed();
 
   await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
@@ -85,15 +93,43 @@ test('odontologia_neurofocal guarda su seguimiento con suero y la cita pasa a en
   assert.equal(media.currentTurnKind, 'enfermeria', 'ahora le toca a enfermería');
   assert.equal(media.currentTurnUser, null);
   assert.equal(media.status, 'asistida');
+  assert.equal(media.serumStatus, 'por_asignar', 'la cita queda esperando el suero de mostrador');
 
+  // Retenida: ni bandeja ni aviso de enfermería.
+  assert.equal(
+    (await bandeja(clinicId, enf._id, 'enfermero')).includes(String(cita._id)),
+    false,
+    'la cita NO sale en la bandeja del enfermero mientras falta el suero',
+  );
+  assert.equal(
+    await Notification.countDocuments({ type: 'appointment_nursing', 'meta.appointment': cita._id }),
+    0,
+    'sin aviso para enfermería de una cita retenida',
+  );
+
+  // Mostrador asigna el suero DE LA FICHA (el recetado, o el que corresponda)
+  // y la cita se libera a la bandeja.
+  const rec = await ClinicalRecord.findOne({ patient: patient._id }).lean();
+  const fuConSuero = rec.followUps.find((f) => (f.recetaItems || []).some((i) => i.isSerum));
+  await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
+    steps: [{
+      kind: 'enfermeria',
+      serviceName: 'Sueroterapia',
+      serumFollowUp: String(fuConSuero._id),
+      serum: { base: { name: 'Cloruro de sodio', volumeMl: 250 }, components: [{ name: 'Vitamina C', quantity: 1 }] },
+    }],
+  }, { params: { id: String(cita._id) } }));
+
+  const liberada = await Appointment.findById(cita._id).lean();
+  assert.equal(liberada.serumStatus, null, 'al asignar se libera');
   assert.equal(
     (await bandeja(clinicId, enf._id, 'enfermero')).includes(String(cita._id)),
     true,
-    'la cita debe salir en la bandeja del enfermero',
+    'la cita ya sale en la bandeja del enfermero',
   );
   assert.ok(
     await Notification.findOne({ type: 'appointment_nursing', 'meta.appointment': cita._id }).lean(),
-    'debe existir el aviso para enfermería',
+    'el aviso llega una vez liberada la cita',
   );
 });
 
@@ -144,7 +180,13 @@ test('odontologia_neurofocal receta suero sin turno de enfermería: el suero que
   );
 });
 
-test('odontologia_neurofocal receta suero y detras hay turno de enfermeria: NO se duplica la tarea', async () => {
+test('odontologia_neurofocal receta suero y detras hay turno de enfermeria: queda retenida, sin tarea duplicada', async () => {
+  /**
+   * Sep-2026: el sistema NO crea una cita de suero aparte, y TAMPOCO le entrega
+   * la cita a enfermería con el suero del doctor dentro. Queda retenida
+   * (`serumStatus='por_asignar'`) y sin aviso, hasta que mostrador asigne en
+   * «Asignar atención».
+   */
   const { clinicId, userId, patient, odonto, enf, cita } = await seed();
 
   await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
@@ -162,9 +204,17 @@ test('odontologia_neurofocal receta suero y detras hay turno de enfermeria: NO s
   assert.equal(r.payload?.autoAppointment, undefined, 'no debe crearse una cita de suero aparte');
   const cuentas = await Appointment.countDocuments({ patient: patient._id });
   assert.equal(cuentas, 1, 'solo la cita original');
-  assert.ok(
-    await Notification.findOne({ type: 'appointment_nursing', 'meta.appointment': cita._id }).lean(),
-    'el aviso del relevo sí llega',
+  const media = await Appointment.findById(cita._id).lean();
+  assert.equal(media.serumStatus, 'por_asignar', 'espera la decisión de mostrador');
+  assert.equal(
+    (await bandeja(clinicId, enf._id, 'enfermero')).includes(String(cita._id)),
+    false,
+    'retenida: no sale en la bandeja de enfermería',
+  );
+  assert.equal(
+    await Notification.countDocuments({ type: 'appointment_nursing' }),
+    0,
+    'sin aviso de relevo mientras falta asignar el suero',
   );
 });
 

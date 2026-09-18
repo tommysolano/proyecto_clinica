@@ -624,6 +624,11 @@ function normalizarPasos(steps) {
         // de abrir una receta nueva (ver el campo en models/Appointment.js).
         serumMergeIntoService: !!(suero && p.serumMergeIntoService),
         /**
+         * INDICACIONES PARA ENFERMERÍA (sep-2026): lo que mostrador le escribe
+         * a la enfermera para este paso. Va con el suero a la barra de atención.
+         */
+        nurseInstructions: String(p.nurseInstructions || '').trim(),
+        /**
          * SEÑAL DE LA PANTALLA, no un campo del turno: `asignarTurnos` copia
          * campos concretos y este no está, así que no se guarda en la cita.
          *
@@ -1504,6 +1509,27 @@ exports.updateAppointment = async (req, res) => {
       if (!update.status && ['cancelada', 'no_asistio'].includes(existing.status)) {
         update.status = 'pendiente';
       }
+      /**
+       * REAGENDAR UNA CITA FUTURA LE QUITA LA MARCA «ASISTIDA» (sep-2026).
+       *
+       * Reagendar una 'asistida' conservaba el estado y la hora de llegada:
+       * mover al paciente del jueves al domingo lo dejaba figurando como que
+       * el domingo ya llegó — y el doctor de ese día la veía con «Atender» de
+       * una asistencia que no había ocurrido (por eso el botón se volvía
+       * «Finalizar consulta» sin llevar a nadie a la ficha). La llegada se
+       * selló para la cita ANTERIOR: se borra con el estado, que es lo que
+       * representa.
+       */
+      if (
+        dateChanged &&
+        !update.status &&
+        existing.status === 'asistida' &&
+        isFutureLocalDate(newDate)
+      ) {
+        update.status = 'pendiente';
+        update.arrivedAt = null;
+        update.arrivalDelayMinutes = null;
+      }
     }
 
     /**
@@ -1831,6 +1857,22 @@ exports.startConsultation = async (req, res) => {
       });
     }
 
+    /**
+     * UNA CITA DE MAÑANA NO SE ATIENDE HOY (sep-2026).
+     *
+     * Arrancar el cronómetro de una cita futura la dejaba «en curso» con su
+     * botón convertido en «Finalizar consulta», sin que el paciente hubiera
+     * llegado: un clic de prueba quedaba sellado en la agenda. Si el día es
+     * futuro, no hay consulta que iniciar.
+     */
+    if (isFutureLocalDate(appointment.date)) {
+      return res.status(409).json({
+        message:
+          `Esta cita es del ${new Date(appointment.date).toLocaleDateString('es-EC')}: ` +
+          'todavía no se puede atender.',
+      });
+    }
+
     const ahora = new Date();
     appointment.consultationStartedAt = ahora;
     appointment.consultationEndedAt = undefined;
@@ -1866,6 +1908,16 @@ exports.endConsultation = async (req, res) => {
       });
     }
 
+    // Y lo mismo para CERRAR: una cita futura no puede quedar 'completada' de
+    // una visita que no ocurrió (ver el guard de `startConsultation`).
+    if (isFutureLocalDate(appointment.date)) {
+      return res.status(409).json({
+        message:
+          `Esta cita es del ${new Date(appointment.date).toLocaleDateString('es-EC')}: ` +
+          'todavía no se puede finalizar.',
+      });
+    }
+
     /**
      * FINALIZAR TAMBIÉN CIERRA EL TURNO.
      *
@@ -1883,6 +1935,27 @@ exports.endConsultation = async (req, res) => {
      */
     const { completarTurno } = require('../utils/appointmentTurns');
     const { cerrado, siguiente, terminado } = completarTurno(appointment, { userId: req.user._id });
+    /**
+     * RETENIDA POR EL SUERO (sep-2026): el doctor cerró su parte y le toca a
+     * enfermería con un suero sin decidir — igual que al guardar el seguimiento
+     * (ver avanzarTurnoDeCita). La cita no sale a la bandeja de enfermería hasta
+     * que mostrador asigne; lo que sí se emite es `appointment:updated`, que ya
+     * lleva el indicativo «Falta asignar suero» a la agenda general.
+     */
+    let retenidaPorSuero = false;
+    if (
+      cerrado?.kind === 'doctor'
+      && siguiente?.kind === 'enfermeria'
+      && appointment.status !== 'completada'
+    ) {
+      try {
+        const { leFaltaElSueroDeEnfermeria } = require('../utils/sueroDeCita');
+        retenidaPorSuero = await leFaltaElSueroDeEnfermeria(appointment);
+        if (retenidaPorSuero) appointment.serumStatus = 'por_asignar';
+      } catch (e) {
+        console.warn('No se pudo evaluar la retención del suero:', e.message);
+      }
+    }
     if (terminado || !appointment.turns?.length) {
       appointment.consultationEndedAt = new Date();
       appointment.status = 'completada';
@@ -1908,7 +1981,7 @@ exports.endConsultation = async (req, res) => {
      * paciente a enfermería— no avisaba a nadie: la cita se veía «Atendida»
      * en la agenda y la enfermera no se enteraba nunca de que era su turno.
      */
-    if (siguiente) {
+    if (siguiente && !retenidaPorSuero) {
       const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion, laCitaMereceAviso } =
         require('../utils/appointmentNotice');
       const paciente = await pacienteDeCita(appointment);
@@ -2280,6 +2353,23 @@ exports.markAttended = async (req, res) => {
   try {
     const apt = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+    /**
+     * «ASISTIÓ» DE UNA CITA FUTURA, NO (sep-2026).
+     *
+     * Era la puerta que dejaba citas de días posteriores convertidas en
+     * 'asistida' —por un clic de más o por error—: el doctor las veía con
+     * «Atender» y al darle quedaba la consulta arrancada sin que el paciente
+     * llegara nunca (el botón se quedaba en «Finalizar consulta»). Un paciente
+     * que llega adelantado se recibe el día que le toca; si vino hoy, la
+     * atención de hoy es otra cita.
+     */
+    if (isFutureLocalDate(apt.date)) {
+      return res.status(400).json({
+        message:
+          `Esta cita es del ${new Date(apt.date).toLocaleDateString('es-EC')}: no se puede ` +
+          'marcar como asistida antes de su día.',
+      });
+    }
     const wasAttended = apt.status === 'asistida';
     if (req.body.doctorId) {
       // Misma regla que assign-doctor: no se cambia el doctor de una consulta
@@ -2321,6 +2411,54 @@ exports.markAttended = async (req, res) => {
     res.json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al marcar asistencia' });
+  }
+};
+
+/**
+ * EL SUERO QUE ENFERMERÍA APLICARÁ, decidido por mostrador (sep-2026).
+ *
+ * Al doctor que terminó su parte no se le pregunta qué suero va a poner
+ * enfermería: el recetado no siempre es el que toca aplicar en ese momento, y
+ * mandar a la enfermera con información equivocada era la confusión de todos los
+ * días. Esta puerta pone el estado de la decisión:
+ *
+ *   · 'aplazado' → suero pendiente: el paciente decidió no aplicárselo en esta
+ *     visita. La cita sigue en la agenda general con su indicativo, y NO sale a
+ *     la bandeja de enfermería.
+ *   · 'por_asignar' → vuelve a esperar la asignación (después de un aplazado,
+ *     p.ej. si el paciente cambió de idea).
+ *
+ * La salida definitiva es «Asignar atención»: al guardar, el turno queda con el
+ * suero escogido (o sin él) y la cita se libera (`assignDoctor` borra la marca).
+ */
+exports.setSerumStatus = async (req, res) => {
+  try {
+    const { status } = req.body || {};
+    if (!['por_asignar', 'aplazado'].includes(status)) {
+      return res.status(400).json({ message: 'Estado de suero no válido' });
+    }
+    const apt = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) });
+    if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+    if (apt.status === 'cancelada') {
+      return res.status(400).json({ message: 'La cita está cancelada' });
+    }
+    if (!turnoVigenteEsEnfermeria(apt)) {
+      return res.status(400).json({
+        message: 'Esta cita no está esperando un suero de enfermería.',
+      });
+    }
+    apt.serumStatus = status;
+    await apt.save();
+    const populated = await Appointment.findById(apt._id)
+      .populate('patient', POPULATE_PATIENT)
+      .populate('doctor', POPULATE_DOCTOR)
+      .populate('turns.user', POPULATE_DOCTOR)
+      .populate('serviceItem', POPULATE_SERVICE_ITEM)
+      .populate('services.product', 'name code salePrice category');
+    emitToClinic(apt.clinic, 'appointment:updated', populated);
+    res.json(populated);
+  } catch (error) {
+    res.status(500).json({ message: 'No se pudo actualizar el estado del suero', error: error.message });
   }
 };
 
@@ -2763,6 +2901,17 @@ exports.assignDoctor = async (req, res) => {
 
     asignarTurnos(apt, { pasos, por: req.user._id });
 
+    /**
+     * GUARDAR LA ASIGNACIÓN LIBERA LA CITA (sep-2026).
+     *
+     * Si estaba retenida —«falta asignar suero» o «suero pendiente»— es porque
+     * el doctor la dejó esperando a que mostrador decidiera el suero. Reabrir
+     * este modal y guardar ES esa decisión: el turno de enfermería queda con lo
+     * que haya escogido (o sin suero, si el paciente no se lo pondrá) y la cita
+     * vuelve a salir en la bandeja de enfermería.
+     */
+    apt.serumStatus = null;
+
     // El valor de la cita se anota AQUÍ, en el mismo gesto de recibir al
     // paciente: este modal es lo que sustituyó al antiguo "marcar asistió", y es
     // el momento en que recepción tiene delante a quien va a pagar. Solo lo
@@ -3145,11 +3294,29 @@ const advanceTreatmentsForAppointment = async (clinicId, apt) => {
 exports.nurseClaim = async (req, res) => {
   try {
     const previa = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) })
-      .select('clinic currentTurnKind currentTurnUser turns attendedByNurse')
+      .select('clinic currentTurnKind currentTurnUser turns attendedByNurse serumStatus')
       .lean();
     if (!previa) return res.status(404).json({ message: 'Cita no encontrada' });
 
     const conTurnos = (previa.turns || []).length > 0;
+
+    /**
+     * RETENIDA POR EL SUERO, NO SE TOMA (sep-2026).
+     *
+     * La agenda del enfermero ya no la enseña (ver `filtroCitasDeEnfermeria`),
+     * pero una pestaña abierta desde antes —o el aviso que recibió cuando la
+     * asignación era libre— podría mandarla igual. Reclamarla pondría al
+     * paciente en manos de enfermería con el suero todavía sin decidir: es
+     * exactamente lo que la retención viene a impedir.
+     */
+    if (previa.serumStatus) {
+      return res.status(409).json({
+        message: previa.serumStatus === 'aplazado'
+          ? 'Esta cita quedó con suero pendiente: mostrador todavía no la liberó.'
+          : 'Falta asignar el suero: mostrador tiene que escogerlo antes de que enfermería la tome.',
+        code: 'SERUM_PENDING',
+      });
+    }
 
     /**
      * Solo si a enfermería LE TOCA. Con la cola ordenada, un turno de enfermería

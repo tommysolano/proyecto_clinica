@@ -15,6 +15,7 @@ const {
   getStats,
   markAttended,
   updateServiceAndValue,
+  setSerumStatus,
   markNoShow,
   markConfirmed,
   assignDoctor,
@@ -107,6 +108,15 @@ router.post('/:id/attended', requireRole('admin', 'cajero', 'enfermero'), markAt
 // PUT general vale también con la cita ya completada. Es lo único que se puede
 // corregir después de atender; quién atendió, nunca.
 router.patch('/:id/service-value', requireRole('admin', 'cajero'), updateServiceAndValue);
+/**
+ * EL SUERO QUE ENFERMERÍA APLICARÁ, decidido por mostrador (sep-2026).
+ *
+ * 'aplazado' marca que el paciente decidió no aplicarse el suero en esa visita:
+ * la cita queda en la agenda general con su indicativo «Suero pendiente» y no
+ * sale a la bandeja de enfermería hasta que se le asigne uno. Solo mostrador
+ * tiene la palabra: es quien recibe al paciente y a quien va a cobrar.
+ */
+router.patch('/:id/serum-status', requireRole('admin', 'cajero'), setSerumStatus);
 /**
  * ODONTOLOGÍA ATENDE DIRECTO (sep-2026): se suma a la cola de recepción.
  * El controlador solo le acepta la cita asignada a SÍ MISMO — no puede

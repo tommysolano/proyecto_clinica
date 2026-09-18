@@ -215,6 +215,54 @@ async function quitarSueroDelSeguimiento({ patientId, followUpId }) {
   return 'quitado';
 }
 
+/**
+ * ¿HAY ALGÚN SUERO RECETADO EN LA FICHA QUE SIGA SIN APLICARSE?
+ *
+ * Es la pregunta que decide si la cita se RETIENE al pasar a enfermería
+ * (sep-2026): si la ficha tiene una receta de suero pendiente y el paso de
+ * enfermería no lleva uno escogido, lo que le llegaría a la enfermera es «el
+ * que recetó el doctor» — y ya no se confía en eso: el que toca aplicar en ese
+ * momento lo decide mostrador. Con la ficha limpia de sueros no hay nada que
+ * asignar y la cita sigue su camino normal.
+ *
+ * Misma cuenta que `pendingSerums` del cliente (utils/serumProgress.js): una
+ * línea está pendiente cuando sus aplicaciones (`administrations`) no llegan a
+ * la cantidad recetada.
+ */
+async function fichaTieneSueroPendiente(patientId) {
+  if (!patientId) return false;
+  const record = await ClinicalRecord.findOne({ patient: patientId })
+    .select('followUps.recetaItems')
+    .lean();
+  if (!record) return false;
+  return (record.followUps || []).some((fu) =>
+    (fu.recetaItems || []).some(
+      (item) =>
+        item?.isSerum &&
+        (Number(item?.quantity) || 0) >
+          (Array.isArray(item?.administrations) ? item.administrations.length : 0)
+    )
+  );
+}
+
+/**
+ * ¿ESTA CITA QUEDA RETENIDA al pasar el turno a enfermería?
+ *
+ * El doctor cerró SU turno y el vigente es de enfermería: la cita solo se le
+ * entrega a enfermería si el suero que va a aplicar ya está decidido —lo escogió
+ * mostrador en el paso (`turn.serum`/`serumFollowUp`)— o si en la ficha no hay
+ * ningún suero pendiente de aplicar. En los demás casos la cita se retiene:
+ * `serumStatus = 'por_asignar'` y mostrador decide en «Asignar atención».
+ */
+async function leFaltaElSueroDeEnfermeria(apt) {
+  const { turnoVigente } = require('./appointmentTurns');
+  const vigente = turnoVigente(apt);
+  if (!vigente || vigente.kind !== 'enfermeria') return false;
+  if (vigente.serumFollowUp) return false;
+  if ((vigente.serum?.components || []).some((c) => String(c?.name || '').trim())) return false;
+  return fichaTieneSueroPendiente(apt.patient);
+}
+
 module.exports = {
   sueroterapiaDeLaCita,
   sembrarSueroEnFicha,
@@ -222,4 +270,6 @@ module.exports = {
   sumarSueroAlSeguimiento,
   reescribirSueroDelSeguimiento,
   quitarSueroDelSeguimiento,
+  fichaTieneSueroPendiente,
+  leFaltaElSueroDeEnfermeria,
 };

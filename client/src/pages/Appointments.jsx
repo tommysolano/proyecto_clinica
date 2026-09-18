@@ -42,6 +42,7 @@ import {
   HiOutlineAdjustmentsHorizontal,
   HiOutlineChevronDown,
   HiOutlineBeaker,
+  HiOutlineClock,
   HiOutlinePaperAirplane,
   HiOutlineArrowDownTray,
   HiOutlineChatBubbleLeftRight,
@@ -110,6 +111,12 @@ function filtrarEnCliente(lista, filter) {
       }
       if (filter.timeFrom && apt.startTime && apt.startTime < filter.timeFrom) return false;
       if (filter.timeTo && apt.startTime && apt.startTime > filter.timeTo) return false;
+      /**
+       * EL SUERO DE ENFERMERÍA (sep-2026): las retenidas —«falta asignar
+       * suero» y «suero pendiente»— se pueden buscar por separado para que
+       * mostrador no se deje ninguna atrás.
+       */
+      if (filter.serumStatus && apt.serumStatus !== filter.serumStatus) return false;
       return true;
     })
     .sort((a, b) => {
@@ -702,6 +709,9 @@ export default function Appointments() {
     timeFrom: '',
     timeTo: '',
     patientQuery: '',
+    // EL SUERO DE ENFERMERÍA (sep-2026): 'por_asignar' (falta asignar suero) o
+    // 'aplazado' (suero pendiente). Vacío = todas.
+    serumStatus: '',
   });
   /**
    * BANDEJAS POR ESTADO: pendientes → en atención → finalizadas.
@@ -1569,6 +1579,24 @@ export default function Appointments() {
     }
   };
 
+  /**
+   * EL SUERO QUE ENFERMERÍA APLICARÁ, decidido por mostrador (sep-2026).
+   *
+   * 'aplazado' marca que el paciente decidió NO aplicarse el suero en esa
+   * visita: la cita queda en la agenda con su indicativo y fuera de la bandeja
+   * de enfermería. La salida definitiva es «Asignar atención», que al guardar
+   * libera la cita con el suero escogido (o sin ninguno).
+   */
+  const setSueroPendiente = async (apt) => {
+    try {
+      await api.patch(`/appointments/${apt._id}/serum-status`, { status: 'aplazado' });
+      toast.success('Cita marcada con suero pendiente. No sale a la bandeja de enfermería.');
+      fetchAppointments();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo marcar el suero pendiente');
+    }
+  };
+
   const openDetail = async (id) => {
     try {
       const res = await api.get(`/appointments/${id}`);
@@ -1655,7 +1683,7 @@ export default function Appointments() {
    * ruta además es suya (`requireRole('admin', 'doctor')`), así que llamarla
    * como enfermero solo dejaría un 403 en el camino.
    */
-  const abrirAtencion = (apt, opciones = {}) => {
+  const abrirAtencion = async (apt, opciones = {}) => {
     /**
      * El cronómetro NO se arranca al volver a entrar en una cita ya completada.
      *
@@ -1668,7 +1696,18 @@ export default function Appointments() {
     // Se arranca si MI turno no ha empezado, no si la cita no ha empezado: con
     // varios profesionales, el segundo tiene su propio reloj desde cero.
     if (!soloVolver && !isNurse && !inicioDeMiTurno(apt)) {
-      api.post(`/appointments/${apt._id}/start`).catch(() => {});
+      /**
+       * SE ESPERA EL POST ANTES DE NAVEGAR (sep-2026).
+       *
+       * Antes iba fire-and-forget: el `navigate` salía con la petición en
+       * vuelo y en iOS/Safari la navegación se perdía — el usuario daba a
+       * «Atender», se quedaba en la agenda y la fila cambiaba sola a
+       * «Finalizar consulta» (la petición SÍ llegó, la pantalla no). Es el
+       * mismo problema que ya se parcheó en `nurseClaim`: ceder antes de
+       * navegar deja asentar la respuesta.
+       */
+      await api.post(`/appointments/${apt._id}/start`).catch(() => {});
+      await new Promise((r) => setTimeout(r, 0));
     }
     // Enfermería entra a Seguimientos a leer la receta y anotar los sueros; el
     // doctor abre por la ficha, donde repasa antecedentes antes de la consulta.
@@ -1685,7 +1724,17 @@ export default function Appointments() {
      * queda limpia, como la de cualquier doctor.
      */
     const conGorra = opciones.como ? `&como=${opciones.como}` : '';
-    navigate(`/patients/${apt.patient?._id}?appointment=${apt._id}&tab=${destino}${conGorra}`);
+    /**
+     * Sin paciente no hay a dónde ir: navegar a `/patients/undefined` cae en
+     * «Paciente no encontrado» y parece que el clic no hizo nada. La fila
+     * siempre trae al paciente poblado, pero es la red de seguridad del detalle.
+     */
+    const patientId = apt.patient?._id || apt.patient;
+    if (!patientId) {
+      toast.error('No se pudo abrir la ficha: la cita no tiene paciente.');
+      return;
+    }
+    navigate(`/patients/${patientId}?appointment=${apt._id}&tab=${destino}${conGorra}`);
   };
 
   /**
@@ -1769,7 +1818,7 @@ export default function Appointments() {
   const citasFiltradas = useMemo(
     () => filtrarEnCliente(appointments, filter),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [appointments, filter.services, filter.doctor, filter.clinic, filter.timeFrom, filter.timeTo]
+    [appointments, filter.services, filter.doctor, filter.clinic, filter.timeFrom, filter.timeTo, filter.serumStatus]
   );
 
   /**
@@ -1817,6 +1866,14 @@ export default function Appointments() {
         return idDeCampo(apt.attendedByNurse) === miId ? 'atendido' : 'pendiente';
       }
       if (apt.currentTurnKind === 'enfermeria') {
+        /**
+         * RETENIDA POR EL SUERO (sep-2026): mientras quede «falta asignar
+         * suero» o «suero pendiente», la cita no sale en NINGUNA bandeja de
+         * enfermería (ni siquiera en la de quien la tiene nombrada): el suero
+         * que se va a aplicar lo decide mostrador primero. En «Todas» sigue
+         * disponible por si hay que mirarla.
+         */
+        if (apt.serumStatus) return null;
         // Es su turno: reclamado (startedAt) está en atención; nombrado sin
         // reclamar todavía es trabajo pendiente, aunque el estado diga asistida.
         if (idDeCampo(apt.currentTurnUser) === miId) {
@@ -1921,6 +1978,7 @@ export default function Appointments() {
   const filtrosActivos = [
     filter.status, filter.isFirstVisit, filter.clinic,
     filter.services?.length, filter.doctor, filter.timeFrom, filter.timeTo,
+    filter.serumStatus,
   ].filter(Boolean).length;
 
   /**
@@ -2179,6 +2237,22 @@ export default function Appointments() {
               <option value="true">Solo pacientes nuevos</option>
               <option value="false">Solo pacientes recurrentes</option>
             </select>
+            {/**
+              * EL SUERO DE ENFERMERÍA (sep-2026): «Falta asignar suero» son las
+              * citas que el doctor dejó esperando la decisión de mostrador, y
+              * «Suero pendiente» las que el paciente decidió no aplicarse en esa
+              * visita. Ninguna de las dos sale en la bandeja de enfermería hasta
+              * que se resuelvan.
+              */}
+            <select
+              value={filter.serumStatus}
+              onChange={(e) => setFilter({ ...filter, serumStatus: e.target.value })}
+              className="px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+            >
+              <option value="">Suero: todas</option>
+              <option value="por_asignar">Falta asignar suero</option>
+              <option value="aplazado">Suero pendiente</option>
+            </select>
             {(!isDoctor || esOdontologia) && (
               <div className="flex flex-col gap-1.5">
                 {/* VARIOS SERVICIOS (sep-2026): el autocomplete añade y los
@@ -2294,9 +2368,9 @@ export default function Appointments() {
               </strong>{' '}
               citas
             </span>
-            {(filter.services?.length || filter.doctor || filter.clinic || filter.timeFrom || filter.timeTo || filter.status || filter.isFirstVisit || filter.patientQuery) && (
+            {(filter.services?.length || filter.doctor || filter.clinic || filter.timeFrom || filter.timeTo || filter.status || filter.isFirstVisit || filter.patientQuery || filter.serumStatus) && (
               <button
-                onClick={() => setFilter({ startDate: '', endDate: '', status: '', isFirstVisit: '', clinic: '', services: [], doctor: '', timeFrom: '', timeTo: '', patientQuery: '' })}
+                onClick={() => setFilter({ startDate: '', endDate: '', status: '', isFirstVisit: '', clinic: '', services: [], doctor: '', timeFrom: '', timeTo: '', patientQuery: '', serumStatus: '' })}
                 className="text-emerald-600 hover:underline border-none bg-transparent cursor-pointer"
               >Limpiar filtros</button>
             )}
@@ -2538,12 +2612,16 @@ export default function Appointments() {
                   );
                   // Turno de enfermería LIBRE: lo puede tomar cualquiera. En las
                   // citas viejas (sin turnos) sigue mandando el campo de antes.
+                  // RETENIDA POR EL SUERO (sep-2026): con «falta asignar suero»
+                  // o «suero pendiente», la tarjeta no abre el modal de
+                  // enfermería — ni libre ni nombrada; la libera mostrador.
+                  const retenidaPorSuero = !!apt.serumStatus;
                   const enfermeriaLibre = conTurnos
-                    ? apt.currentTurnKind === 'enfermeria' && !apt.currentTurnUser
+                    ? apt.currentTurnKind === 'enfermeria' && !apt.currentTurnUser && !retenidaPorSuero
                     : !apt.attendedByNurse;
                   // Ya es suyo: puede ver la receta y cerrar su parte.
                   const enfermeriaMia = conTurnos
-                    ? apt.currentTurnKind === 'enfermeria' && esMiTurno
+                    ? apt.currentTurnKind === 'enfermeria' && esMiTurno && !retenidaPorSuero
                     : idDe(apt.attendedByNurse) === String(user?.id);
                   /**
                    * ¿PUEDO VOLVER A ENTRAR A CORREGIR LO QUE ESCRIBÍ?
@@ -2672,6 +2750,36 @@ export default function Appointments() {
                         icon: HiOutlineUserPlus,
                         fn: () => setAssignModal({ appointment: apt }),
                       });
+                      /**
+                       * EL SUERO DE ENFERMERÍA (sep-2026). Si la cita quedó
+                       * retenida —el doctor terminó y el suero de enfermería
+                       * sigue sin decidir— mostrador lo resuelve AQUÍ: abre la
+                       * asignación para escoger el suero que sí toca aplicar, o
+                       * la marca «suero pendiente» cuando el paciente decidió
+                       * no aplicárselo en esa visita.
+                       */
+                      if (apt.serumStatus === 'por_asignar') {
+                        opciones.push({
+                          id: 'asignar_suero',
+                          label: 'Asignar suero',
+                          icon: HiOutlineBeaker,
+                          fn: () => setAssignModal({ appointment: apt }),
+                        });
+                        opciones.push({
+                          id: 'suero_pendiente',
+                          label: 'Suero pendiente (no se lo pone hoy)',
+                          icon: HiOutlineClock,
+                          fn: () => setSueroPendiente(apt),
+                        });
+                      }
+                      if (apt.serumStatus === 'aplazado') {
+                        opciones.push({
+                          id: 'asignar_suero',
+                          label: 'Asignar suero',
+                          icon: HiOutlineBeaker,
+                          fn: () => setAssignModal({ appointment: apt }),
+                        });
+                      }
                     }
                     /**
                       * Doctor: abrir la ficha SOLO si le toca AHORA.
@@ -3018,6 +3126,31 @@ export default function Appointments() {
                                 {textoAdelanto(apt)}
                               </span>
                             )}
+                          </div>
+                        )}
+                        {/**
+                          * EL INDICATIVO DEL SUERO (sep-2026): la cita quedó
+                          * retenida al pasar a enfermería. «Falta asignar suero»
+                          * pide la decisión de mostrador (menú → Asignar suero);
+                          * «Suero pendiente» dice que el paciente no se lo
+                          * aplicará en esa visita.
+                          */}
+                        {apt.serumStatus && (
+                          <div className="mt-1 flex flex-wrap items-center gap-1">
+                            <span
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase whitespace-nowrap cursor-default ${
+                                apt.serumStatus === 'aplazado'
+                                  ? 'bg-sky-100 text-sky-800'
+                                  : 'bg-rose-100 text-rose-700'
+                              }`}
+                              title={
+                                apt.serumStatus === 'aplazado'
+                                  ? 'El paciente decidió no aplicarse el suero en esta visita'
+                                  : 'El suero que enfermería va a aplicar todavía no fue asignado'
+                              }
+                            >
+                              💧 {apt.serumStatus === 'aplazado' ? 'Suero pendiente' : 'Falta asignar suero'}
+                            </span>
                           </div>
                         )}
                         {/**

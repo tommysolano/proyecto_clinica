@@ -1358,6 +1358,31 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
     userId: req.user._id,
     followUpId,
   });
+  /**
+   * EL TURNO PASA A ENFERMERÍA CON EL SUERO SIN DECIDIR → SE RETIENE (sep-2026).
+   *
+   * Antes la cita salía sola a la bandeja de los enfermeros, llevándose el
+   * suero que hubiera recetado el doctor — y ese no siempre es el que toca
+   * aplicar en ese momento. Ahora se pregunta: si el paso de enfermería no
+   * tiene un suero escogido y en la ficha queda alguno pendiente, la cita se
+   * retiene ('por_asignar'): no sale a la bandeja de nadie, y en la agenda
+   * general cuelga el indicativo «Falta asignar suero» para que mostrador
+   * decida en «Asignar atención».
+   */
+  let retenidaPorSuero = false;
+  if (
+    cerrado?.kind === 'doctor'
+    && siguiente?.kind === 'enfermeria'
+    && apt.status !== 'completada'
+  ) {
+    try {
+      const { leFaltaElSueroDeEnfermeria } = require('../utils/sueroDeCita');
+      retenidaPorSuero = await leFaltaElSueroDeEnfermeria(apt);
+      if (retenidaPorSuero) apt.serumStatus = 'por_asignar';
+    } catch (e) {
+      console.warn('No se pudo evaluar la retención del suero:', e.message);
+    }
+  }
   // Sin turnos (cita anterior al cambio, o asignada a la antigua) se comporta
   // como siempre: un seguimiento la cierra.
   if (terminado || !apt.turns?.length) {
@@ -1409,33 +1434,49 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
     // y quien acaba de atender sabe a quién le deja el paciente.
     const User = require('../models/User');
     const quien = await User.findById(siguiente.user).select('name').lean().catch(() => null);
-    siguienteTurno = { kind: siguiente.kind, user: { _id: siguiente.user, name: quien?.name || '' } };
-    // Al siguiente le llega la cita ahora: aviso en su pantalla y en su móvil.
-    emitToUser(siguiente.user, 'appointment:assigned', apt);
-    const { notificarUsuarios } = require('../utils/pushNotifications');
-    const { apagarAvisoDeCitaPara } = require('../utils/appointmentNotice');
-    // El aviso de la cita es UNO: el «te toca atender» reemplaza al que ya
-    // tenía de la asignación original (ver notificarAsignacion).
-    await apagarAvisoDeCitaPara(apt._id, siguiente.user);
-    await notificarUsuarios([siguiente.user], {
-      clinicId: apt.clinic,
-      type: 'appointment_assigned',
-      title: 'Te toca atender',
-      body: cuerpoDeAviso({
-        paciente,
-        servicio: servicioDeCita(apt, siguiente),
-        hora: apt.startTime,
-        motivo: 'El profesional anterior terminó su parte.',
-      }),
-      url: urlDeAtencion(patientId, apt._id),
-      // El sello de la cita: apaga el aviso en cuanto quien lo recibe atiende
-      // (ver filtroDeAvisosVivos en notificationController).
-      meta: { appointment: apt._id },
-    }).catch(() => {});
-  } else if (siguiente) {
+    siguienteTurno = {
+      kind: siguiente.kind,
+      user: { _id: siguiente.user, name: quien?.name || '' },
+      // La cita quedó retenida a la espera del suero: la pantalla lo dice, en
+      // vez de anunciar un relevo que todavía no se produjo.
+      esperaSuero: retenidaPorSuero,
+    };
+    if (retenidaPorSuero) {
+      // RETENIDA: a enfermería no se le avisa de nada (el turno es suyo pero la
+      // cita no sale en su bandeja hasta que mostrador asigne el suero). Lo que
+      // le sigue al doctor es la agenda general, que ya ve el indicativo por el
+      // `appointment:updated` de arriba.
+      siguienteTurno.user = null;
+      siguienteTurno.kind = 'enfermeria';
+    } else {
+      // Al siguiente le llega la cita ahora: aviso en su pantalla y en su móvil.
+      emitToUser(siguiente.user, 'appointment:assigned', apt);
+      const { notificarUsuarios } = require('../utils/pushNotifications');
+      const { apagarAvisoDeCitaPara } = require('../utils/appointmentNotice');
+      // El aviso de la cita es UNO: el «te toca atender» reemplaza al que ya
+      // tenía de la asignación original (ver notificarAsignacion).
+      await apagarAvisoDeCitaPara(apt._id, siguiente.user);
+      await notificarUsuarios([siguiente.user], {
+        clinicId: apt.clinic,
+        type: 'appointment_assigned',
+        title: 'Te toca atender',
+        body: cuerpoDeAviso({
+          paciente,
+          servicio: servicioDeCita(apt, siguiente),
+          hora: apt.startTime,
+          motivo: 'El profesional anterior terminó su parte.',
+        }),
+        url: urlDeAtencion(patientId, apt._id),
+        // El sello de la cita: apaga el aviso en cuanto quien lo recibe atiende
+        // (ver filtroDeAvisosVivos en notificationController).
+        meta: { appointment: apt._id },
+      }).catch(() => {});
+    }
+  } else if (siguiente && !retenidaPorSuero) {
     // Turno de enfermería sin dueño: sale a la bandeja de todos, y les llega al
     // móvil igual que si recepción se la hubiera mandado directa — hasta ahora
-    // solo se enteraban con la pestaña abierta.
+    // solo se enteraban con la pestaña abierta. Retenida por el suero, nada de
+    // esto: la cita ni sale en su bandeja ni suena (ver arriba).
     siguienteTurno = { kind: 'enfermeria', user: null };
     emitToRole(apt.clinic, 'enfermero', 'appointment:assigned', apt);
     // Cita de días pasados: el trabajo ya está en la bandeja de la agenda;

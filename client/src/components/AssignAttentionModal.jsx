@@ -155,6 +155,9 @@ export default function AssignAttentionModal({
               kind: ENFERMERIA,
               user: t.user ? String(t.user?._id || t.user) : '',
               serviceName: t.serviceName || '',
+              // Lo que mostrador le escribió a la enfermera para este paso
+              // (sep-2026): viaja con el paso para poder corregirlo aquí.
+              nurseInstructions: t.nurseInstructions || '',
               // El suero que ya se indicó, y DÓNDE quedó escrito. Los dos viajan
               // de vuelta: sin el segundo, reordenar la cola volvería a
               // escribirlo en la ficha (ver Appointment.turns[].serumFollowUp).
@@ -370,7 +373,7 @@ export default function AssignAttentionModal({
       ...c,
       // Nace ABIERTO: es como se ha trabajado siempre y como sigue siendo la
       // mayoría de las veces. Nombrarlo es la excepción, y se hace a mano.
-      { kind: ENFERMERIA, user: '', serviceName: '', key: `enf-${(contador.current += 1)}` },
+      { kind: ENFERMERIA, user: '', serviceName: '', nurseInstructions: '', key: `enf-${(contador.current += 1)}` },
     ]);
   const editarPaso = (idx, patch) =>
     setCola((c) => c.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
@@ -439,6 +442,9 @@ export default function AssignAttentionModal({
                 // Lo escogido aquí se SUMA a la bolsa que ya escribió el servicio
                 // (no abre una segunda receta con el mismo nombre).
                 serumMergeIntoService: !!p.serumMergeIntoService,
+                // Indicaciones para la enfermera de este paso: le aparecen en su
+                // barra de atención, junto al suero que va a aplicar.
+                nurseInstructions: (p.nurseInstructions || '').trim(),
               }
             : { kind: 'doctor', user: p.user }
         ),
@@ -550,6 +556,20 @@ export default function AssignAttentionModal({
               .map((t) => t.user?.name || (t.kind === 'enfermeria' ? 'Enfermería' : 'Profesional'))
               .join(', ')}
             . No se pueden quitar: su seguimiento ya está escrito.
+          </div>
+        )}
+
+        {/**
+          * LA CITA QUEDÓ ESPERANDO EL SUERO (sep-2026): el doctor terminó y el
+          * turno vigente es de enfermería con el suero sin decidir. Este guardado
+          * es lo que la libera: escoge el suero del paso (o deja el paso sin
+          * ninguno, si no se lo pondrán) y al guardar sale a la bandeja.
+          */}
+        {apt?.serumStatus && (
+          <div className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2">
+            {apt.serumStatus === 'aplazado'
+              ? 'Esta cita quedó con SUERO PENDIENTE: el paciente decidió no aplicárselo en esa visita. Al guardar con el suero que corresponda (o sin él) la liberas para enfermería.'
+              : 'Esta cita está esperando que asignes el SUERO de enfermería: lo que recetó el doctor no siempre es lo que toca aplicar ahora. Escoge el suero en su paso de enfermería y guarda para liberar la cita.'}
           </div>
         )}
 
@@ -888,6 +908,30 @@ export default function AssignAttentionModal({
                           </button>
                         </>
                       )}
+                    </div>
+                  )}
+
+                  {/**
+                    * INDICACIONES PARA ENFERMERÍA (sep-2026).
+                    *
+                    * El suero dice QUÉ se pone; esto dice CÓMO y con qué cuidado:
+                    * «primero tomar signos», «aplicar lento, avisar si duele»…
+                    * La enfermera lo lee en su barra de atención, junto al suero
+                    * que le toca poner en ese momento.
+                    */}
+                  {esEnf && (
+                    <div className="mt-2 pl-8">
+                      <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                        Indicaciones para enfermería{' '}
+                        <span className="font-normal text-slate-400">(opcional)</span>
+                      </label>
+                      <textarea
+                        value={paso.nurseInstructions || ''}
+                        onChange={(e) => editarPaso(idx, { nurseInstructions: e.target.value })}
+                        rows={2}
+                        placeholder="Tomar signos antes de aplicar. Aplicar despacio y avisar si duele…"
+                        className="w-full px-3 py-2 border border-sky-200 rounded-lg text-[13px] outline-none focus:ring-2 focus:ring-sky-400 focus:border-sky-400 bg-sky-50/50 resize-none"
+                      />
                     </div>
                   )}
                 </li>

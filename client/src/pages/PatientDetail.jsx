@@ -368,7 +368,14 @@ export default function PatientDetail() {
   const idDe = (v) => String(v?._id || v || '');
   const miId = String(user?.id || user?._id || '');
   const enTramite = !!aptData && aptData.status !== 'completada';
-  const enfermeriaLibre = enTramite && (
+  /**
+   * RETENIDA POR EL SUERO (sep-2026): con «falta asignar suero» o «suero
+   * pendiente», la cita no sale a la bandeja de enfermería hasta que mostrador
+   * decida el suero — ni libre ni nombrada (la agenda y el servidor lo exigen
+   * igual).
+   */
+  const retenidaPorSuero = !!aptData?.serumStatus;
+  const enfermeriaLibre = enTramite && !retenidaPorSuero && (
     (aptData.turns || []).length
       ? aptData.currentTurnKind === 'enfermeria' && !aptData.currentTurnUser
       : !aptData.attendedByNurse
@@ -376,7 +383,7 @@ export default function PatientDetail() {
   // Ya es SUYA: es la única situación en la que puede cerrar su parte. Antes el
   // botón «Terminar» salía con solo entrar con una cita, y pulsarlo cuando el
   // turno era del doctor —o de otra compañera— solo devolvía un 403.
-  const enfermeriaMia = enTramite && (
+  const enfermeriaMia = enTramite && !retenidaPorSuero && (
     (aptData.turns || []).length
       ? (
           aptData.currentTurnKind === 'enfermeria' && idDe(aptData.currentTurnUser) === miId
@@ -417,6 +424,15 @@ export default function PatientDetail() {
     : null;
   const queHaceEnfermeria = enfermeriaLibre || enfermeriaMia
     ? (miTurnoVigente?.serviceName || pasoEnfermeriaPendiente?.serviceName || '')
+    : '';
+  /**
+   * INDICACIONES PARA ENFERMERÍA (sep-2026): lo que mostrador escribió al
+   * asignar el paso. Le aparece aquí, junto al suero que le toca aplicar en
+   * este momento — «primero tomar signos», «aplicar despacio, avisar si
+   * duele»…
+   */
+  const indicacionesEnfermeria = enfermeriaLibre || enfermeriaMia
+    ? String(miTurnoVigente?.nurseInstructions || pasoEnfermeriaPendiente?.nurseInstructions || '').trim()
     : '';
   const [reclamando, setReclamando] = useState(false);
   const [cerrandoTurno, setCerrandoTurno] = useState(false);
@@ -544,6 +560,13 @@ export default function PatientDetail() {
               {queHaceEnfermeria && (
                 <span className="inline-flex items-center gap-1 ml-2 px-1.5 py-0.5 rounded bg-white border border-amber-300 text-amber-900 font-semibold">
                   Qué hace: {queHaceEnfermeria}
+                </span>
+              )}
+              {/* Y lo que mostrador le escribió para este paso, en su propia
+                  línea para que se lea completa (sep-2026). */}
+              {indicacionesEnfermeria && (
+                <span className="block mt-1 text-amber-900">
+                  <b>Indicaciones:</b> {indicacionesEnfermeria}
                 </span>
               )}
             </span>
@@ -1404,9 +1427,11 @@ function TerapiasComplementariasTab({ patientId, appointmentId }) {
       const quien = siguiente?.user?.name || (siguiente?.kind === 'enfermeria' ? 'enfermería' : null);
       toast.success(
         appointmentId
-          ? siguiente
-            ? `Terapias complementarias guardadas. Pasa a ${quien || 'el siguiente profesional'}.`
-            : 'Terapias complementarias guardadas. Cita finalizada.'
+          ? siguiente?.esperaSuero
+            ? 'Terapias complementarias guardadas. La cita queda esperando que asignen el suero.'
+            : siguiente
+              ? `Terapias complementarias guardadas. Pasa a ${quien || 'el siguiente profesional'}.`
+              : 'Terapias complementarias guardadas. Cita finalizada.'
           : 'Terapias complementarias guardadas'
       );
       if (appointmentId) navigate('/appointments');
@@ -3063,10 +3088,17 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
       const siguiente = updated.nextTurn || res.data?.nextTurn;
       if (appointmentId) {
         const quien = siguiente?.user?.name || (siguiente?.kind === 'enfermeria' ? 'enfermería' : null);
+        /**
+         * RETENIDA POR EL SUERO (sep-2026): el servidor responde `esperaSuero`
+         * cuando la cita NO pasó a enfermería sola — el suero que se va a
+         * aplicar lo tiene que escoger mostrador en la agenda.
+         */
         toast.success(
-          siguiente
-            ? `Seguimiento guardado. Pasa a ${quien || 'el siguiente profesional'}.`
-            : 'Seguimiento guardado. Cita finalizada.'
+          siguiente?.esperaSuero
+            ? 'Seguimiento guardado. La cita queda en la agenda esperando que asignen el suero.'
+            : siguiente
+              ? `Seguimiento guardado. Pasa a ${quien || 'el siguiente profesional'}.`
+              : 'Seguimiento guardado. Cita finalizada.'
         );
       } else {
         /**
@@ -4548,9 +4580,11 @@ function ArchivosTab({ patientId, appointmentId }) {
       if (appointmentId) {
         const siguiente = res.data.nextTurn;
         toast.success(
-          siguiente
-            ? 'Estudio guardado. Pasa al siguiente profesional.'
-            : 'Estudio guardado. Cita finalizada.'
+          siguiente?.esperaSuero
+            ? 'Estudio guardado. La cita queda esperando que asignen el suero.'
+            : siguiente
+              ? 'Estudio guardado. Pasa al siguiente profesional.'
+              : 'Estudio guardado. Cita finalizada.'
         );
         navigate('/appointments');
       } else {

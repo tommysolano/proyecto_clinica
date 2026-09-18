@@ -142,6 +142,15 @@ const appointmentTurnSchema = new mongoose.Schema(
      * verdad) no lleva la marca y sigue teniendo su receta aparte.
      */
     serumMergeIntoService: { type: Boolean, default: false },
+    /**
+     * INDICACIONES PARA ENFERMERÍA, escritas por mostrador al asignar el paso.
+     *
+     * El rótulo del paso («Detox») y el suero dicen QUÉ se pone, pero no CÓMO ni
+     * con qué cuidado: «aplicar despacio, avisar si duele», «primero tomar
+     * signos»… Eso viaja aquí y la enfermera lo lee en su barra de atención,
+     * junto al suero que le toca poner.
+     */
+    nurseInstructions: { type: String, trim: true, default: '' },
     order: { type: Number, default: 0 },
     status: {
       type: String,
@@ -349,10 +358,33 @@ const appointmentSchema = new mongoose.Schema(
     },
     serviceName: { type: String, trim: true, default: '' },
     /**
-     * Seguimiento donde quedó escrito el suero DE SERIE DEL SERVICIO
-     * (`AppointmentServiceItem.autoSerum`): un «Detox Plus» es siempre la misma
-     * bolsa y se escribe solo al agendar.
+     * RETENCIÓN DEL SUERO DE ENFERMERÍA (sep-2026, a pedido de la clínica).
      *
+     * Cuando el doctor cierra su turno y el turno vigente pasa a enfermería con
+     * un suero sin dueño, la cita NO sale sola a la bandeja de los enfermeros:
+     * queda retenida en la agenda general con un indicativo para que mostrador
+     * decida qué suero se aplica de verdad — el recetado no siempre es el que
+     * toca en ese momento. Dos estados:
+     *
+     *   · 'por_asignar' → falta asignar suero: mostrador lo escoge en
+     *     «Asignar atención» y al guardar la cita se libera;
+     *   · 'aplazado'    → suero pendiente: el paciente decidió no aplicárselo
+     *     en esa visita; la cita sigue en la agenda con su indicativo y se
+     *     libera igual cuando mostrador asigne (o quite) el suero.
+     *
+     * Mientras haya un valor, ni la bandeja de enfermería ni `nurse-claim` lo
+     * ven: enviar un suero que no es, o uno que no se va a poner, es justo la
+     * confusión que esto viene a impedir.
+     */
+    serumStatus: {
+      type: String,
+      enum: ['por_asignar', 'aplazado', null],
+      default: null,
+    },
+    // Seguimiento donde quedó escrito el suero DE SERIE DEL SERVICIO
+    // (`AppointmentServiceItem.autoSerum`): un «Detox Plus» es siempre la misma
+    // bolsa y se escribe solo al agendar.
+    /**
      * Existe para que se escriba UNA vez y no una por cada guardado. La cita
      * pasa por tres puertas —agendarla, corregirle el servicio y asignar la
      * atención— y las tres tendrían que preguntarse si ya está; con la marca, la

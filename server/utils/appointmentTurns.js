@@ -182,6 +182,9 @@ function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, p
       serum: paso?.serum || undefined,
       serumFollowUp: paso?.serumFollowUp || null,
       serumMergeIntoService: !!paso?.serumMergeIntoService,
+      // Lo que mostrador le escribió a enfermería para este paso (sep-2026):
+      // la enfermera lo lee en su barra de atención, junto al suero.
+      nurseInstructions: String(paso?.nurseInstructions || '').trim(),
     });
   }
 
@@ -332,6 +335,14 @@ function turnoEnfermeriaParaUsuario(apt, userId) {
  */
 function filtroCitasDeEnfermeria(userId) {
   return {
+    /**
+     * RETENIDAS POR EL SUERO (sep-2026): mientras la cita diga «falta asignar
+     * suero» o «suero pendiente», no sale a la bandeja de NADIE de enfermería,
+     * ni libre ni nombrada — el suero que le va a llegar lo tiene que escoger
+     * mostrador primero (ver `Appointment.serumStatus`). `{ null }` también
+     * pega con las citas que no tienen el campo: es el estado normal.
+     */
+    serumStatus: null,
     $or: [
       {
         currentTurnKind: 'enfermeria',
