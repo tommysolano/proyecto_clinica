@@ -13,8 +13,8 @@ const fail = (res, e) => res.status(e.status || 400).json({ message: e.message }
 function dateRange(req) {
   const { startDate, endDate } = req.query;
   const r = {};
-  if (startDate) r.$gte = new Date(startDate);
-  if (endDate) r.$lte = new Date(endDate + 'T23:59:59.999');
+  if (startDate) r.$gte = new Date(`${startDate}T00:00:00.000-05:00`);
+  if (endDate) r.$lte = new Date(`${endDate}T23:59:59.999-05:00`);
   return Object.keys(r).length ? r : null;
 }
 

@@ -9,6 +9,12 @@ router.get('/doctor-summary', requireSuperAdmin, ctrl.doctorSummary);
 router.get('/doctor-appointments', requireSuperAdmin, ctrl.doctorAppointments);
 router.put('/doctor-service-rule', requireSuperAdmin, ctrl.saveDoctorServiceRule);
 router.put('/doctor-patient-rule', requireSuperAdmin, ctrl.saveDoctorPatientRule);
+// Ajustes manuales: sumar (o restar) un valor a las comisiones del doctor con
+// observación, para corregir comisiones que el sistema no contabilizó bien.
+router.post('/doctor-adjustment', requireSuperAdmin, ctrl.saveDoctorAdjustment);
+router.delete('/doctor-adjustment/:id', requireSuperAdmin, ctrl.deleteDoctorAdjustment);
+// Reporte PDF por doctor: fecha, paciente, servicio y valor de la comisión.
+router.get('/doctor-report.pdf', requireSuperAdmin, ctrl.doctorReportPdf);
 // Agendamientos por agente de call center (pacientes nuevos vs recurrentes).
 router.get('/callcenter-summary', requireSuperAdmin, ctrl.callCenterSummary);
 

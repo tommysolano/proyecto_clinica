@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const Appointment = require('../models/Appointment');
 const User = require('../models/User');
 const CommissionPosting = require('../models/CommissionPosting');
+const CommissionAdjustment = require('../models/CommissionAdjustment');
 const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const ClinicalRecord = require('../models/ClinicalRecord');
 const Sale = require('../models/Sale');
@@ -915,6 +916,31 @@ exports.doctorSummary = async (req, res) => {
       }))
       .sort((a, b) => b.total - a.total);
 
+    // Ajustes manuales del período: comisiones que el sistema no contabilizó
+    // correctamente y se corrigen a mano (valor + observación).
+    const ajustes = await CommissionAdjustment.find({
+      clinic: req.clinicId,
+      start: { $lte: endDate },
+      end: { $gte: startDate },
+    })
+      .populate('createdBy', 'name')
+      .sort({ createdAt: -1 })
+      .lean();
+    const ajustesPorDoctor = new Map();
+    for (const aj of ajustes) {
+      const did = String(aj.doctor?._id || aj.doctor);
+      if (!ajustesPorDoctor.has(did)) ajustesPorDoctor.set(did, []);
+      ajustesPorDoctor.get(did).push({
+        id: String(aj._id),
+        amount: num(aj.amount),
+        note: aj.note || '',
+        start: aj.start,
+        end: aj.end,
+        createdBy: aj.createdBy?.name || '',
+        createdAt: aj.createdAt,
+      });
+    }
+
     const doctorIds = doctors.map((d) => d.doctorId);
     const appointmentServiceIds = [...new Set(doctors.flatMap((d) => d.services.map((s) => s.serviceId).filter(Boolean)))];
     const clinicIds = [...new Set(doctors.flatMap((d) => d.clinicIds || []))];
@@ -1031,7 +1057,11 @@ exports.doctorSummary = async (req, res) => {
       }
 
       const serviceTotal = doctor.services.reduce((sum, s) => sum + num(s.commission?.earned), 0);
-      doctor.commissionTotal = +(serviceTotal + num(doctor.patientCommission?.earned)).toFixed(2);
+      const baseTotal = +(serviceTotal + num(doctor.patientCommission?.earned)).toFixed(2);
+      doctor.adjustments = ajustesPorDoctor.get(doctor.doctorId) || [];
+      doctor.adjustmentTotal = +doctor.adjustments.reduce((sum, a) => sum + a.amount, 0).toFixed(2);
+      doctor.commissionTotal = baseTotal;
+      doctor.commissionTotalWithAdjustments = +(baseTotal + doctor.adjustmentTotal).toFixed(2);
       doctor.hasConfiguredCommissions = doctor.services.some((s) => !!s.commission) || !!doctor.patientCommission;
     }
     const totals = Object.fromEntries(ESTADOS.map((s) => [s, 0]));
@@ -1430,5 +1460,325 @@ exports.cancelPosting = async (req, res) => {
     res.json(p);
   } catch (e) {
     res.status(400).json({ message: e.message });
+  }
+};
+
+// ─────────── Ajustes manuales de comisión por doctor ───────────
+
+/**
+ * Agrega un ajuste al total de comisiones de un doctor: valor (positivo o
+ * negativo) + observación de por qué no se contabilizó correctamente.
+ */
+exports.saveDoctorAdjustment = async (req, res) => {
+  try {
+    const { doctor, amount, note = '', start, end } = req.body || {};
+    const value = Number(amount);
+    if (!mongoose.isValidObjectId(doctor)) return res.status(400).json({ message: 'Doctor no válido' });
+    if (!Number.isFinite(value) || value === 0) {
+      return res.status(400).json({ message: 'Ingresa un valor distinto de cero' });
+    }
+    const { startDate, endDate } = parseRange(start, end);
+    const doctorDoc = await User.findById(doctor).select('name').lean();
+    if (!doctorDoc) return res.status(404).json({ message: 'Doctor no encontrado' });
+
+    const adj = await CommissionAdjustment.create({
+      clinic: req.clinicId,
+      doctor,
+      start: startDate,
+      end: endDate,
+      amount: +value.toFixed(2),
+      note: String(note || '').trim(),
+      createdBy: req.user._id,
+    });
+    res.status(201).json(adj);
+  } catch (e) {
+    res.status(500).json({ message: 'Error al guardar el ajuste', error: e.message });
+  }
+};
+
+/** Elimina un ajuste manual. */
+exports.deleteDoctorAdjustment = async (req, res) => {
+  try {
+    const adj = await CommissionAdjustment.findOneAndDelete({
+      _id: req.params.id,
+      clinic: req.clinicId,
+    });
+    if (!adj) return res.status(404).json({ message: 'Ajuste no encontrado' });
+    res.json({ message: 'Ajuste eliminado' });
+  } catch (e) {
+    res.status(500).json({ message: 'Error al eliminar el ajuste', error: e.message });
+  }
+};
+
+// ─────────── PDF por doctor (solo super-admin) ───────────
+
+const escapeHtml = (v) => String(v ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
+
+/**
+ * Reporte PDF de comisiones de un doctor en el período: una fila por cita
+ * atendida con fecha, paciente, servicio y valor de la comisión ganada, más
+ * los ajustes manuales del período y el total a pagar.
+ */
+exports.doctorReportPdf = async (req, res) => {
+  try {
+    const { query, estados, startDate, endDate } = await construirQueryResumen(req);
+
+    const appts = await Appointment.find(query)
+      .populate('doctor', 'name')
+      .populate('clinic', 'name nombreComercial')
+      .populate('patient', 'firstName lastName')
+      .sort({ date: 1, startTime: 1 })
+      .lean();
+
+    const rows = appts.filter((a) => a.doctor?.name);
+    const doctorName = rows[0]?.doctor?.name || 'Doctor';
+
+    const serviceCatalog = await AppointmentServiceItem.find({}).select('name').lean();
+    const serviceIdByName = new Map(
+      serviceCatalog.map((s) => [normalizeServiceName(s.name), String(s._id)])
+    );
+    const allServiceIds = [...new Set(rows.flatMap((a) => [
+      ...(a.serviceItem ? [String(a.serviceItem)] : []),
+      ...(a.additionalServices || []).map((s) => String(s.serviceItem || '')).filter(Boolean),
+    ]))];
+    const serviceDocs = allServiceIds.length
+      ? await AppointmentServiceItem.find({ _id: { $in: allServiceIds } }).select('name').lean()
+      : [];
+    const serviceNameById = new Map(serviceDocs.map((s) => [String(s._id), s.name]));
+
+    // Reglas administradas del doctor (por servicio y por paciente), igual que
+    // en doctorSummary, para calcular lo que gana por cada cita completada.
+    const doctorIds = [...new Set(rows.map((a) => String(a.doctor._id)))];
+    const clinicIds = [...new Set(rows.map((a) => String(a.clinic?._id || a.clinic || '')).filter(Boolean))];
+    const serviceIds = [...new Set(rows.flatMap((a) => [
+      ...(a.serviceItem ? [String(a.serviceItem)] : []),
+      ...(a.additionalServices || []).map((s) => String(s.serviceItem || '')).filter(Boolean),
+    ]))];
+    const managedRules = doctorIds.length && clinicIds.length
+      ? await CommissionRule.find({
+          managedFromDoctorCommissions: true,
+          active: true,
+          doctorServiceDoctor: { $in: doctorIds },
+          $or: [
+            { appointmentService: null, doctorCommissionScope: 'patient' },
+            ...(serviceIds.length ? [{ appointmentService: { $in: serviceIds } }] : []),
+          ],
+          clinic: { $in: clinicIds },
+        }).select('clinic doctorServiceDoctor appointmentService doctorCommissionScope amountType amount percent').lean()
+      : [];
+    const serviceRulesByDoctorService = new Map();
+    const patientRulesByDoctor = new Map();
+    for (const rule of managedRules) {
+      if (!rule.appointmentService && rule.doctorCommissionScope === 'patient') {
+        const did = String(rule.doctorServiceDoctor);
+        if (!patientRulesByDoctor.has(did)) patientRulesByDoctor.set(did, []);
+        patientRulesByDoctor.get(did).push(rule);
+        continue;
+      }
+      const key = `${String(rule.doctorServiceDoctor)}|${String(rule.appointmentService)}`;
+      if (!serviceRulesByDoctorService.has(key)) serviceRulesByDoctorService.set(key, []);
+      serviceRulesByDoctorService.get(key).push(rule);
+    }
+
+    const servicesOf = (a) => {
+      const lista = [
+        a.serviceItem
+          ? { id: String(a.serviceItem), name: serviceNameById.get(String(a.serviceItem)) || a.serviceName }
+          : { id: a.serviceName ? serviceIdByName.get(normalizeServiceName(a.serviceName)) || null : null, name: a.serviceName },
+        ...(a.additionalServices || []).map((s) => ({
+          id: s.serviceItem ? String(s.serviceItem) : null,
+          name: s.name,
+        })),
+        ...(a.services || []).map((s) => ({ id: null, name: s.name })),
+      ].filter((s) => s.name);
+      const vistos = new Set();
+      return lista.filter((s) => {
+        const key = s.id || normalizeServiceName(s.name);
+        if (!key || vistos.has(key)) return false;
+        vistos.add(key);
+        return true;
+      });
+    };
+
+    // Una fila por cita completada: fecha, paciente, servicio y comisión.
+    const detalle = [];
+    const coveredAppointments = new Set();
+    for (const a of rows) {
+      if (a.status !== 'completada') continue;
+      const apptId = String(a._id);
+      const did = String(a.doctor._id);
+      const clinicId = String(a.clinic?._id || a.clinic || '');
+      const paid = appointmentPaymentValue(a);
+      const fecha = new Date(a.date).toISOString().slice(0, 10).split('-').reverse().join('/');
+      const paciente = a.patient ? `${a.patient.firstName} ${a.patient.lastName}` : '—';
+      let comision = 0;
+      let servicioLabel = [];
+      for (const svc of servicesOf(a)) {
+        const key = `${did}|${svc.id || ''}`;
+        const configs = (serviceRulesByDoctorService.get(key) || [])
+          .filter((r) => !clinicId || String(r.clinic) === clinicId);
+        if (!configs.length) continue;
+        const cfgTotal = configs.reduce((sum, rule) => {
+          const cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
+          coveredAppointments.add(apptId);
+          return sum + calcAmount(cfg, paid);
+        }, 0);
+        comision += cfgTotal;
+        servicioLabel.push(`${svc.name} · $${cfgTotal.toFixed(2)}`);
+      }
+      if (!servicioLabel.length && !coveredAppointments.has(apptId)) {
+        const patientConfigs = (patientRulesByDoctor.get(did) || [])
+          .filter((r) => !clinicId || String(r.clinic) === clinicId);
+        if (patientConfigs.length) {
+          comision = patientConfigs.reduce((sum, rule) => {
+            const cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
+            return sum + calcAmount(cfg, paid);
+          }, 0);
+          servicioLabel.push('Paciente atendido');
+        }
+      }
+      detalle.push({
+        fecha,
+        paciente,
+        servicio: servicioLabel.join(', ') || '—',
+        comision: +comision.toFixed(2),
+      });
+    }
+
+    const ajustes = await CommissionAdjustment.find({
+      clinic: req.clinicId,
+      doctor: { $in: doctorIds },
+      start: { $lte: endDate },
+      end: { $gte: startDate },
+    }).populate('createdBy', 'name').sort({ createdAt: -1 }).lean();
+
+    const totalComisiones = +detalle.reduce((sum, d) => sum + d.comision, 0).toFixed(2);
+    const totalAjustes = +ajustes.reduce((sum, a) => sum + num(a.amount), 0).toFixed(2);
+    const totalPagar = +(totalComisiones + totalAjustes).toFixed(2);
+
+    const fmtMoney = (v) => `$${Number(v || 0).toFixed(2)}`;
+    const filasDetalle = detalle.length
+      ? detalle.map((d) => `
+            <tr>
+              <td>${escapeHtml(d.fecha)}</td>
+              <td>${escapeHtml(d.paciente)}</td>
+              <td>${escapeHtml(d.servicio)}</td>
+              <td class="num">${fmtMoney(d.comision)}</td>
+            </tr>`).join('')
+      : '<tr><td colspan="4" class="vacio">Sin citas con comisión en el período.</td></tr>';
+
+    const filasAjustes = ajustes.length
+      ? ajustes.map((a) => {
+          const desde = new Date(a.start).toISOString().slice(0, 10).split('-').reverse().join('/');
+          const hasta = new Date(a.end).toISOString().slice(0, 10).split('-').reverse().join('/');
+          return `
+            <tr>
+              <td>${desde} — ${hasta}</td>
+              <td>${escapeHtml(a.note || '—')}</td>
+              <td class="num">${fmtMoney(a.amount)}</td>
+            </tr>`;
+        }).join('')
+      : '';
+
+    const rango = `${startDate.toISOString().slice(0, 10).split('-').reverse().join('/')} — ${endDate.toISOString().slice(0, 10).split('-').reverse().join('/')}`;
+    const estadosLabel = (estados.length ? estados : ['asistida', 'completada']).join(', ');
+
+    const html = `
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"/>
+<title>Reporte de comisiones - ${escapeHtml(doctorName)}</title>
+<style>
+  body { font-family: Arial, sans-serif; color: #1e293b; padding: 26px; font-size: 12px; }
+  h1 { color: #047857; margin: 0 0 4px 0; font-size: 20px; }
+  .header { border-bottom: 2px solid #10b981; padding-bottom: 10px; margin-bottom: 14px; }
+  .meta { margin-bottom: 14px; color: #475569; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  th { background: #ecfdf5; text-align: left; padding: 6px 8px; border: 1px solid #e2e8f0; font-size: 11px; }
+  td { padding: 5px 8px; border: 1px solid #e2e8f0; }
+  .num { text-align: right; white-space: nowrap; }
+  .vacio { text-align: center; color: #94a3b8; padding: 14px; }
+  .totales { margin-top: 14px; width: 46%; margin-left: auto; }
+  .totales td { border: none; padding: 3px 8px; }
+  .totales .lbl { text-align: right; color: #475569; }
+  .totales .val { text-align: right; font-weight: bold; white-space: nowrap; }
+  .totales .final .lbl, .totales .final .val { font-size: 13px; color: #047857; border-top: 2px solid #10b981; padding-top: 6px; }
+  .subtitulo { font-size: 13px; font-weight: bold; color: #047857; margin-top: 16px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .footer { margin-top: 26px; font-size: 10px; color: #64748b; border-top: 1px dashed #cbd5e1; padding-top: 8px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>Reporte de comisiones</h1>
+    <div>Doctor: <b>${escapeHtml(doctorName)}</b></div>
+  </div>
+
+  <div class="meta">
+    Período: <b>${rango}</b> &nbsp;·&nbsp; Estados considerados: ${escapeHtml(estadosLabel)} &nbsp;·&nbsp; Citas en el filtro: ${rows.length}
+  </div>
+
+  <div class="subtitulo">Detalle de comisiones</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Fecha</th>
+        <th>Paciente</th>
+        <th>Servicio</th>
+        <th class="num">Comisión</th>
+      </tr>
+    </thead>
+    <tbody>${filasDetalle}</tbody>
+  </table>
+
+  ${ajustes.length ? `
+  <div class="subtitulo">Ajustes manuales</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Período</th>
+        <th>Observación</th>
+        <th class="num">Valor</th>
+      </tr>
+    </thead>
+    <tbody>${filasAjustes}</tbody>
+  </table>` : ''}
+
+  <table class="totales">
+    <tr><td class="lbl">Total comisiones del período:</td><td class="val">${fmtMoney(totalComisiones)}</td></tr>
+    ${ajustes.length ? `<tr><td class="lbl">Total ajustes manuales:</td><td class="val">${fmtMoney(totalAjustes)}</td></tr>` : ''}
+    <tr class="final"><td class="lbl">Total a pagar:</td><td class="val">${fmtMoney(totalPagar)}</td></tr>
+  </table>
+
+  <div class="footer">
+    Generado el ${new Date().toLocaleString('es-EC')} · Sistema de gestión clínica
+  </div>
+</body></html>`;
+
+    const puppeteer = require('puppeteer');
+    const browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+    const pdfBuffer = await page.pdf({
+      format: 'A4',
+      margin: { top: '15mm', bottom: '15mm', left: '12mm', right: '12mm' },
+    });
+    await browser.close();
+
+    const slug = doctorName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'doctor';
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="comisiones_${slug}_${startDate.toISOString().slice(0, 10)}_${endDate.toISOString().slice(0, 10)}.pdf"`
+    );
+    res.end(pdfBuffer);
+  } catch (error) {
+    console.error('Error generando PDF de comisiones:', error);
+    res.status(500).json({ message: 'Error al generar el PDF de comisiones', error: error.message });
   }
 };

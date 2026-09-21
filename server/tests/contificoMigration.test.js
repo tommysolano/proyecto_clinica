@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { ContificoApi } = require('../services/contificoApi');
 const { checksum, parseDate, fmt, months, externalId, search, parseArgs } = require('../scripts/migrateContifico');
-const { accountType, nature, splitName, tax, ledgerDocType } = require('../scripts/migrateContificoProject');
+const { accountType, nature, splitName, tax, ledgerDocType, contificoDate, contificoPayment, contificoSaleItem } = require('../scripts/migrateContificoProject');
 const { _decode } = require('../controllers/contificoArchiveController');
 const { decodeCompressedJson } = require('../utils/compressedJson');
 const zlib = require('zlib');
@@ -44,6 +44,7 @@ test('cliente API pagina solo con GET y Authorization', async () => {
 test('CLI permanece dry-run sin --commit', () => {
   assert.equal(parseArgs(['--phase=extract']).commit, false);
   assert.equal(parseArgs(['--phase=extract', '--commit']).commit, true);
+  assert.deepEqual([...parseArgs(['--only=documents,journal_entries']).only], ['documents', 'journal_entries']);
 });
 
 test('mapeos contables y tributarios de proyeccion', () => {
@@ -55,6 +56,23 @@ test('mapeos contables y tributarios de proyeccion', () => {
   assert.deepEqual(tax(15), { taxRate: 15, taxCodeSri: '4', taxCategory: 'IVA_15' });
   assert.equal(ledgerDocType('NCT'), 'NC');
   assert.deepEqual(splitName('ANA PEREZ'), { firstName: 'ANA', lastName: 'PEREZ' });
+});
+
+test('documentos Contifico conservan fecha Ecuador, pagos e impuestos por linea', () => {
+  assert.equal(contificoDate({ fecha_emision: '18/09/2026', hora_emision: '09:30:00' }).toISOString(), '2026-09-18T14:30:00.000Z');
+  assert.deepEqual(
+    { ...contificoPayment({ forma_cobro: 'TC', monto: '25.50', numero_comprobante: 'V-1' }, new Date()), date: null },
+    { method: 'tarjeta', amount: 25.5, date: null, reference: 'V-1', cardBrandSnapshot: '', cardPos: '', cardLote: '', cardVoucher: 'V-1' }
+  );
+  const item = contificoSaleItem({
+    cantidad: '2', precio: '11.50', base_gravable: '20', base_cero: '0',
+    base_no_gravable: '0', porcentaje_iva: 15, valor_ice: 0, producto_nombre: 'Prueba',
+  }, '507f1f77bcf86cd799439011', { code: 'P1', category: 'insumo' });
+  assert.equal(item.grossAmount, 23);
+  assert.equal(item.discount, 3);
+  assert.equal(item.taxAmount, 3);
+  assert.equal(item.lineTotal, 23);
+  assert.equal(item.taxCategory, 'IVA_15');
 });
 
 test('archivo comprimido se recupera sin perdida', () => {

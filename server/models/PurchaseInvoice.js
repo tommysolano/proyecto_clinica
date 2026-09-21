@@ -184,6 +184,10 @@ const purchaseInvoiceSchema = new mongoose.Schema(
     notes: { type: String, default: '' },
     deductible: { type: Boolean, default: true },
     journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
+    // Origen externo de una compra migrada. Permite sincronizarla sin duplicar ni volver a
+    // contabilizar sus asientos historicos (que se importan de forma independiente).
+    sourceModel: { type: String, default: null },
+    sourceRef: { type: mongoose.Schema.Types.ObjectId, default: null },
     retentionJournalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     // Marca que la compra se contabilizó bajo el flujo ESTRICTO (cuentas de
     // inventario/activo resueltas SOLO desde la categoría contable). Se fija en
@@ -240,5 +244,9 @@ purchaseInvoiceSchema.virtual('retentionSummary').get(function () {
 });
 
 purchaseInvoiceSchema.index({ clinic: 1, supplier: 1, serie: 1 }, { unique: true, partialFilterExpression: { serie: { $type: 'string' } } });
+purchaseInvoiceSchema.index(
+  { clinic: 1, sourceModel: 1, sourceRef: 1 },
+  { unique: true, partialFilterExpression: { sourceModel: { $type: 'string' }, sourceRef: { $type: 'objectId' } } }
+);
 
 module.exports = mongoose.model('PurchaseInvoice', purchaseInvoiceSchema);

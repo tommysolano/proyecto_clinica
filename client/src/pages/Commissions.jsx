@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
-import { HiOutlineCurrencyDollar, HiOutlineMegaphone, HiOutlineUserGroup } from 'react-icons/hi2';
+import { HiOutlineCurrencyDollar, HiOutlineMegaphone, HiOutlineUserGroup, HiOutlineDocumentArrowDown, HiOutlinePlusCircle } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import Modal from '../components/Modal';
 import NumericInput from '../components/NumericInput';
@@ -29,6 +29,9 @@ export default function Commissions() {
   const [commissionEditor, setCommissionEditor] = useState(null);
   const [commissionForm, setCommissionForm] = useState({ amountType: 'fixed', value: '' });
   const [savingCommission, setSavingCommission] = useState(false);
+  const [adjustEditor, setAdjustEditor] = useState(null);
+  const [adjustForm, setAdjustForm] = useState({ amount: '', note: '' });
+  const [savingAdjust, setSavingAdjust] = useState(false);
 
   const filtrosBase = () => {
     const params = { start, end };
@@ -206,6 +209,61 @@ export default function Commissions() {
       : `$${Number(commission.value).toFixed(2)}`;
     const earned = `ganado $${Number(commission.earned || 0).toFixed(2)}`;
     return commission.partial ? `${label} (parcial) · ${earned}` : `${label} · ${earned}`;
+  };
+
+  const openAdjustEditor = (doctor) => {
+    setAdjustEditor(doctor);
+    setAdjustForm({ amount: '', note: '' });
+  };
+
+  const saveAdjust = async (e) => {
+    e.preventDefault();
+    const value = Number(adjustForm.amount);
+    if (!Number.isFinite(value) || value === 0) return toast.error('Ingresa un valor distinto de cero');
+    setSavingAdjust(true);
+    try {
+      await api.post('/commissions/doctor-adjustment', {
+        doctor: adjustEditor.doctorId,
+        amount: value,
+        note: adjustForm.note,
+        start,
+        end,
+      });
+      toast.success('Ajuste agregado');
+      setAdjustEditor(null);
+      await load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al guardar el ajuste');
+    } finally {
+      setSavingAdjust(false);
+    }
+  };
+
+  const removeAdjust = async (doctor, adjId) => {
+    if (!confirm('¿Eliminar este ajuste?')) return;
+    try {
+      await api.delete(`/commissions/doctor-adjustment/${adjId}`);
+      toast.success('Ajuste eliminado');
+      await load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al eliminar el ajuste');
+    }
+  };
+
+  const downloadPdf = async (doctor) => {
+    try {
+      const params = filtrosActuales();
+      params.doctor = doctor.doctorId;
+      const res = await api.get('/commissions/doctor-report.pdf', { params, responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `comisiones_${doctor.name.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_${start}_${end}.pdf`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al generar el PDF');
+    }
   };
 
   return (
@@ -403,6 +461,32 @@ export default function Commissions() {
                         Ganado: <b>${Number(d.commissionTotal || 0).toFixed(2)}</b>
                       </span>
                     )}
+                    {(d.adjustments || []).length > 0 && (
+                      <span className="text-sm text-amber-700 mr-1">
+                        Ajustes: <b>{d.adjustmentTotal >= 0 ? '+' : ''}${Number(d.adjustmentTotal || 0).toFixed(2)}</b>
+                      </span>
+                    )}
+                    {((d.hasConfiguredCommissions && d.commissionTotal > 0) || d.adjustmentTotal > 0) && (
+                      <span className="text-sm font-bold text-emerald-800 bg-emerald-100 rounded-full px-3 py-1 mr-1">
+                        Total: ${Number(d.commissionTotalWithAdjustments || 0).toFixed(2)}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => downloadPdf(d)}
+                      title="Descargar reporte PDF de comisiones del doctor (fecha, paciente, servicio y comisión)"
+                      className="inline-flex items-center gap-1 border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-emerald-700 rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer"
+                    >
+                      <HiOutlineDocumentArrowDown className="w-3.5 h-3.5" /> PDF
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openAdjustEditor(d)}
+                      title="Sumar (o restar) un valor a las comisiones del doctor con una observación"
+                      className="inline-flex items-center gap-1 border border-amber-200 bg-white text-amber-700 hover:bg-amber-50 rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer"
+                    >
+                      <HiOutlinePlusCircle className="w-3.5 h-3.5" /> Ajuste
+                    </button>
                     {columnas.map((s) => (
                       <span
                         key={s.value}
@@ -454,6 +538,38 @@ export default function Commissions() {
                     </div>
                   ) : (
                     <p className="text-xs text-slate-400">Sin servicios registrados en las citas de este doctor.</p>
+                  )}
+
+                  {(d.adjustments || []).length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2">
+                        Ajustes manuales del período
+                      </p>
+                      <div className="space-y-1.5">
+                        {d.adjustments.map((adj) => (
+                          <div key={adj.id} className="flex items-center justify-between gap-3 bg-amber-50/60 border border-amber-200 rounded-lg px-3 py-2 text-xs">
+                            <div className="min-w-0">
+                              <span className={`font-bold ${adj.amount >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                                {adj.amount >= 0 ? '+' : ''}${Number(adj.amount).toFixed(2)}
+                              </span>
+                              {adj.note && <span className="text-slate-600 ml-2">{adj.note}</span>}
+                              <span className="block text-[10px] text-slate-400 mt-0.5">
+                                {new Date(adj.start).toLocaleDateString()} — {new Date(adj.end).toLocaleDateString()}
+                                {adj.createdBy ? ` · registrado por ${adj.createdBy}` : ''}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeAdjust(d, adj.id)}
+                              title="Eliminar ajuste"
+                              className="text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer text-sm leading-none"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   )}
 
                   <div>
@@ -607,6 +723,64 @@ export default function Commissions() {
                   {savingCommission ? 'Guardando...' : 'Guardar'}
                 </button>
               </div>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!adjustEditor}
+        onClose={() => !savingAdjust && setAdjustEditor(null)}
+        title="Ajuste de comisiones"
+        size="sm"
+      >
+        {adjustEditor && (
+          <form onSubmit={saveAdjust} className="space-y-4">
+            <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2.5 text-sm">
+              <div className="font-semibold text-slate-800">{adjustEditor.name}</div>
+              <div className="text-slate-500">
+                Período: {start} — {end}
+              </div>
+              {adjustEditor.hasConfiguredCommissions && (
+                <div className="text-xs text-emerald-700 mt-1">
+                  Ganado en el sistema: ${Number(adjustEditor.commissionTotal || 0).toFixed(2)}
+                </div>
+              )}
+            </div>
+
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              Este valor se suma al total de comisiones del doctor en el período (también admite un valor negativo para descontar). Úsalo cuando una comisión no se contabilizó correctamente en el sistema.
+            </p>
+
+            <label className="block text-sm text-slate-700">
+              Valor a sumar ($)
+              <NumericInput
+                value={adjustForm.amount}
+                onChange={(e) => setAdjustForm({ ...adjustForm, amount: e.target.value })}
+                required
+                placeholder="Ej. 25.00 (usa - para descontar)"
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2.5"
+              />
+            </label>
+
+            <label className="block text-sm text-slate-700">
+              Observación
+              <textarea
+                value={adjustForm.note}
+                onChange={(e) => setAdjustForm({ ...adjustForm, note: e.target.value })}
+                rows={3}
+                placeholder="Motivo del ajuste (p. ej. comisión de la cita del 12/09 no registrada)"
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2.5 resize-y"
+              />
+            </label>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button type="button" onClick={() => setAdjustEditor(null)} disabled={savingAdjust} className="px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white cursor-pointer disabled:opacity-50">
+                Cancelar
+              </button>
+              <button disabled={savingAdjust} className="px-4 py-2 text-sm bg-amber-600 text-white rounded-xl border-none cursor-pointer disabled:opacity-50">
+                {savingAdjust ? 'Guardando...' : 'Agregar ajuste'}
+              </button>
             </div>
           </form>
         )}

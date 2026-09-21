@@ -76,13 +76,15 @@ function parseArgs(argv) {
     through: parseDate(values.through) || new Date(Date.UTC(now.getUTCFullYear(), 11, 31, 12)),
     cutoff: parseDate(values.cutoff) || now,
     pageSize: Math.min(500, Math.max(10, num(values['page-size'], 100))),
+    only: new Set(String(values.only || '').split(',').map((value) => value.trim()).filter(Boolean)),
   };
 }
 
 class Extractor {
-  constructor({ api, clinic, commit, from, through, cutoff, pageSize }) {
+  constructor({ api, clinic, commit, from, through, cutoff, pageSize, only = new Set() }) {
     this.api = api; this.clinic = clinic; this.commit = commit;
     this.from = from; this.through = through; this.cutoff = cutoff; this.pageSize = pageSize;
+    this.only = only;
     this.stages = []; this.issues = []; this.run = null; this.cache = {}; this.earliestJournal = null;
   }
   log(text) { console.log(`[contifico] ${text}`); }
@@ -185,7 +187,7 @@ class Extractor {
     let persons = this.cache.person;
     if (!persons) persons = (await ContificoRecord.find({ clinic: this.clinic._id, entity: 'person' }).select('payloadCompressed').lean()).map((record) => decodeCompressedJson(record.payloadCompressed));
     const employees = persons.filter((person) => person.es_empleado && (person.cedula || person.ruc));
-    const ranges = months(this.earliestJournal || parseDate('01/11/2025'), this.cutoff);
+    const ranges = months(this.earliestJournal || this.from || parseDate('01/11/2025'), this.cutoff);
     for (const employee of employees) for (const month of ranges) for (const period of ['P', 'S', 'M']) {
       const rows = await this.api.listV1('/api/v1/rrhh/rol-pago/', { cedula: employee.cedula || employee.ruc, periodo: period, anio: month.from.getUTCFullYear(), mes: month.from.getUTCMonth() + 1 });
       await this.archive('payroll_role', rows.map((row) => ({ ...row, periodo_consultado: period })), stage);
@@ -195,26 +197,29 @@ class Extractor {
   async execute() {
     await this.begin();
     try {
-      await this.v1('chart_of_accounts', 'chart_account', '/api/v1/contabilidad/cuenta-contable/');
-      await this.v1('cost_centers', 'cost_center', '/api/v1/contabilidad/centro-costo/');
-      await this.v1('categories', 'category', '/api/v1/categoria/');
-      await this.v2('warehouses', 'warehouse', '/api/v2/bodega/');
-      await this.v2('units', 'unit', '/api/v2/unidad/');
-      await this.v1('variants', 'variant', '/api/v1/variante/');
-      await this.v1('brands', 'brand', '/api/v1/marca/');
-      await this.v2('bank_accounts', 'bank_account', '/api/v2/banco/cuenta/');
-      const companyStage = this.stage('company_parameters');
-      await this.archive('company_parameters', [await this.api.get('/api/v2/empresa/parametros')], companyStage, () => 'current');
-      await this.saveStage(companyStage);
-      await this.v2('persons', 'person', '/api/v2/persona/', { cache: true });
-      await this.v2('products', 'product', '/api/v2/producto/', { cache: true });
-      await this.stocks();
-      await this.v2('documents', 'document', '/api/v2/documento/');
-      await this.transactions();
-      await this.v1('bank_movements', 'bank_movement', '/api/v1/banco/movimiento/');
-      await this.v2('inventory_movements', 'inventory_movement', '/api/v2/movimiento-inventario/');
-      await this.journals();
-      await this.payroll();
+      const enabled = (name) => !this.only.size || this.only.has(name);
+      if (enabled('chart_of_accounts')) await this.v1('chart_of_accounts', 'chart_account', '/api/v1/contabilidad/cuenta-contable/');
+      if (enabled('cost_centers')) await this.v1('cost_centers', 'cost_center', '/api/v1/contabilidad/centro-costo/');
+      if (enabled('categories')) await this.v1('categories', 'category', '/api/v1/categoria/');
+      if (enabled('warehouses')) await this.v2('warehouses', 'warehouse', '/api/v2/bodega/');
+      if (enabled('units')) await this.v2('units', 'unit', '/api/v2/unidad/');
+      if (enabled('variants')) await this.v1('variants', 'variant', '/api/v1/variante/');
+      if (enabled('brands')) await this.v1('brands', 'brand', '/api/v1/marca/');
+      if (enabled('bank_accounts')) await this.v2('bank_accounts', 'bank_account', '/api/v2/banco/cuenta/');
+      if (enabled('company_parameters')) {
+        const companyStage = this.stage('company_parameters');
+        await this.archive('company_parameters', [await this.api.get('/api/v2/empresa/parametros')], companyStage, () => 'current');
+        await this.saveStage(companyStage);
+      }
+      if (enabled('persons')) await this.v2('persons', 'person', '/api/v2/persona/', { cache: true });
+      if (enabled('products')) await this.v2('products', 'product', '/api/v2/producto/', { cache: true });
+      if (enabled('product_stock')) await this.stocks();
+      if (enabled('documents')) await this.v2('documents', 'document', '/api/v2/documento/');
+      if (enabled('transactions')) await this.transactions();
+      if (enabled('bank_movements')) await this.v1('bank_movements', 'bank_movement', '/api/v1/banco/movimiento/');
+      if (enabled('inventory_movements')) await this.v2('inventory_movements', 'inventory_movement', '/api/v2/movimiento-inventario/');
+      if (enabled('journal_entries')) await this.journals();
+      if (enabled('payroll_roles')) await this.payroll();
       if (this.run) { this.run.status = this.stages.some((stage) => stage.duplicates) ? 'COMPLETED_WITH_WARNINGS' : 'COMPLETED'; this.run.completedAt = new Date(); await this.run.save(); }
       return { stages: this.stages.map(({ _seen, ...stage }) => stage), metrics: this.api.metrics };
     } catch (error) {

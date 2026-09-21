@@ -28,6 +28,14 @@ const oid = (v) => new mongoose.Types.ObjectId(String(v));
 const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
 const endOfDay = (d) => { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; };
 
+/** Limites de fecha en Ecuador (UTC-5), independientes de la zona horaria del servidor. */
+function ecuadorBoundary(value, end = false) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || '').trim());
+  if (m) return new Date(`${m[1]}-${m[2]}-${m[3]}T${end ? '23:59:59.999' : '00:00:00.000'}-05:00`);
+  const parsed = parseLocalDate(value);
+  return parsed ? (end ? endOfDay(parsed) : startOfDay(parsed)) : null;
+}
+
 /** 'YYYY-MM-DD' → medianoche LOCAL (Ecuador). Ver docs/FLUJO_DE_CAJA.md. */
 function parseLocalDate(value) {
   if (!value) return null;
@@ -89,8 +97,8 @@ async function buildSalesReport(clinicId, query = {}) {
     endDate: query.endDate || query.to,
   });
 
-  const desde = filters.startDate ? startOfDay(parseLocalDate(filters.startDate)) : null;
-  const hasta = filters.endDate ? endOfDay(parseLocalDate(filters.endDate)) : null;
+  const desde = filters.startDate ? ecuadorBoundary(filters.startDate) : null;
+  const hasta = filters.endDate ? ecuadorBoundary(filters.endDate, true) : null;
 
   const match = { clinic: oid(clinicId) };
   if (desde || hasta) {
@@ -319,4 +327,4 @@ function vacio(preset, filters, seleccion) {
   };
 }
 
-module.exports = { buildSalesReport, resolveSelection, applyPreset, parseLocalDate };
+module.exports = { buildSalesReport, resolveSelection, applyPreset, parseLocalDate, ecuadorBoundary };
