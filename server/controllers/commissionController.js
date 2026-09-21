@@ -889,9 +889,9 @@ exports.doctorSummary = async (req, res) => {
         if (appt.clinic?._id) {
           const clinicId = String(appt.clinic._id);
           svc.clinicIds.add(clinicId);
-          // El motor devenga al completar la atención. Guardamos una base por
-          // cita para que el redondeo porcentual coincida exactamente con él.
-          if (appt.status === 'completada') {
+          // Se devenga por cita ASISTIDA o COMPLETADA (una atención marcada
+          // como asistida ya se realizó y su comisión debe contarse).
+          if (appt.status === 'completada' || appt.status === 'asistida') {
             if (!svc.commissionInputs[clinicId]) svc.commissionInputs[clinicId] = [];
             svc.commissionInputs[clinicId].push({
               appointmentId: String(appt._id),
@@ -1025,7 +1025,7 @@ exports.doctorSummary = async (req, res) => {
           const cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
           return total + appts
             .filter((a) =>
-              a.status === 'completada'
+              (a.status === 'completada' || a.status === 'asistida')
               && String(a.doctor?._id || a.doctor) === doctor.doctorId
               && String(a.clinic?._id || a.clinic) === String(rule.clinic)
               && !coveredAppointments.has(String(a._id))
@@ -1604,11 +1604,12 @@ exports.doctorReportPdf = async (req, res) => {
       });
     };
 
-    // Una fila por cita completada: fecha, paciente, servicio y comisión.
+    // Una fila por cita atendida (asistida o completada): fecha, paciente,
+    // servicio y comisión.
     const detalle = [];
     const coveredAppointments = new Set();
     for (const a of rows) {
-      if (a.status !== 'completada') continue;
+      if (a.status !== 'completada' && a.status !== 'asistida') continue;
       const apptId = String(a._id);
       const did = String(a.doctor._id);
       const clinicId = String(a.clinic?._id || a.clinic || '');
