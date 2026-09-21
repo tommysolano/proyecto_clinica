@@ -38,6 +38,7 @@ const {
   slotMessage,
   isSameLocalDay,
   appointmentDateTime,
+  localDayAtNoon,
   PAST_DATE_MESSAGE,
   PAST_TIME_MESSAGE,
 } = require('../utils/appointmentDate');
@@ -531,6 +532,7 @@ async function resolverServicioAgenda(serviceItemId) {
  */
 const {
   bloqueosQueAplican,
+  bloqueoQueRechaza,
   bloqueaElHorario,
   mensajeBloqueo,
 } = require('../utils/timeBlockCheck');
@@ -911,6 +913,11 @@ exports.createAppointment = async (req, res) => {
       // El servicio del catálogo de la agenda y el legado del inventario: el
       // bloqueo por servicio casa con cualquiera de las dos formas.
       serviceIds: [req.body.serviceItem, ...serviciosLegacy],
+      serviceNames: [
+        req.body.serviceName,
+        ...(Array.isArray(services) ? services : []).map((s) => s?.name),
+        ...(Array.isArray(req.body.additionalServices) ? req.body.additionalServices : []).map((s) => s?.name),
+      ],
       doctor,
       room: req.body.room || null,
     });
@@ -1465,6 +1472,17 @@ exports.updateAppointment = async (req, res) => {
         clinicId: clinicScope,
         date: finalDate,
         serviceIds: [servicioFinal, ...serviciosLegacy],
+        serviceNames: [
+          update.serviceName !== undefined ? update.serviceName : existing.serviceName,
+          ...(update.services !== undefined
+            ? (Array.isArray(update.services) ? update.services : [])
+            : (existing.services || [])
+          ).map((s) => s?.name),
+          ...(update.additionalServices !== undefined
+            ? (Array.isArray(update.additionalServices) ? update.additionalServices : [])
+            : (existing.additionalServices || [])
+          ).map((s) => s?.name),
+        ],
         doctor: finalDoctor,
         room: finalRoom,
       });
@@ -2697,6 +2715,24 @@ exports.createWalkIn = async (req, res) => {
     if (!patient) return res.status(400).json({ message: 'Falta el paciente' });
 
     const servicioAgenda = await resolverServicioAgenda(serviceItem);
+
+    // LOS BLOQUEOS TAMBIÉN CORTAN LA ATENCIÓN INMEDIATA (antes pasaba por
+    // encima de cualquier TimeBlock). Se evalúa a la hora actual: es la hora
+    // exacta a la que nacería la cita (ver `crearCitaAtencionInmediata`).
+    const ahora = nowHHMM();
+    const rechazo = await bloqueoQueRechaza({
+      clinicId: req.clinicId,
+      date: localDayAtNoon(new Date()),
+      startTime: ahora,
+      endTime: null,
+      serviceIds: [servicioAgenda?._id || null],
+      serviceNames: [servicioAgenda?.name || ''],
+      doctor: req.user._id,
+      room: null,
+    });
+    if (rechazo) {
+      return res.status(400).json({ message: mensajeBloqueo(rechazo) });
+    }
 
     const apt = await crearCitaAtencionInmediata({
       Appointment,

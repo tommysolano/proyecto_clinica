@@ -17,10 +17,11 @@ const {
 } = require('../utils/sendWindow');
 const { sendWindowHold, windowOfNode } = require('../utils/workflowEngine');
 
-// Fechas en HORA LOCAL del proceso (America/Guayaquil en producción; el cálculo
-// de la ventana es local por definición: "de 11 a 6" es la hora de la clínica).
+// Fechas en HORA DE GUAYAQUIL (UTC-5), construidas de forma EXPLÍCITA para que
+// la suite pase con el proceso en la TZ que sea (producción corre en VPS con
+// UTC): la evaluación de la ventana es immune a la TZ del servidor.
 // Referencias: 2026-08-03 lunes · 05 miércoles · 07 viernes · 08 sábado · 09 domingo.
-const at = (y, mo, d, h, mi = 0) => new Date(y, mo - 1, d, h, mi, 0, 0);
+const at = (y, mo, d, h, mi = 0) => new Date(Date.UTC(y, mo - 1, d, h + 5, mi));
 // La ventana REAL de producción: silencio nocturno todos los días.
 const NOCHE = { mode: 'specific', days: [0, 1, 2, 3, 4, 5, 6], from: '23:00', to: '06:20' };
 // Silencio en horario de oficina (los agentes atienden; el bot se calla).
@@ -94,9 +95,28 @@ test('con un solo día de silencio, el resto de la semana envía', () => {
 });
 
 test('describeWindow resume días y horas en texto', () => {
-  assert.equal(describeWindow(OFICINA), 'lunes, martes, miércoles, jueves, viernes de 09:00 a 18:00');
-  assert.equal(describeWindow(NOCHE), 'todos los días de 23:00 a 06:20');
+  assert.equal(describeWindow(OFICINA), 'lunes, martes, miércoles, jueves, viernes de 09:00 a 18:00 (hora Ecuador)');
+  assert.equal(describeWindow(NOCHE), 'todos los días de 23:00 a 06:20 (hora Ecuador)');
   assert.equal(describeWindow({ mode: 'any' }), 'sin restricción');
+});
+
+test('LA VENTANA SIEMPRE ES HORA DE GUAYAQUIL, sin importar la TZ del proceso', () => {
+  // Un VPS con TZ=UTC (o la que sea) NO debe cambiar la evaluación: la franja
+  // que escribe el usuario es hora de Ecuador. `at()` construye el instante
+  // correcto de Guayaquil a mano — mismo instante, distinta pared — y la
+  // ventana debe callar/permitir exactamente igual que con el proceso en UTC-5.
+  const gtInstant = (y, mo, d, h, mi = 0) =>
+    new Date(Date.UTC(y, mo - 1, d, h + 5, mi)); // GT = UTC-5 → epoch = wall + 5h
+  assert.equal(isQuietTime(NOCHE, gtInstant(2026, 8, 6, 2)), true, '02:00 GT sigue siendo de noche');
+  assert.equal(isQuietTime(NOCHE, gtInstant(2026, 8, 6, 7)), false, '07:00 GT ya es de día');
+  assert.deepEqual(
+    nextAllowedTime(OFICINA, gtInstant(2026, 8, 5, 10)), // miércoles 10:00 GT
+    gtInstant(2026, 8, 5, 18), // espera hasta las 18:00 GT
+  );
+  assert.deepEqual(
+    nextAllowedTime(OFICINA, gtInstant(2026, 8, 5, 18)), // 18:00 GT: ya salió
+    gtInstant(2026, 8, 5, 18),
+  );
 });
 
 test('sendWindowHold retiene los pasos de ENVÍO durante el silencio', () => {

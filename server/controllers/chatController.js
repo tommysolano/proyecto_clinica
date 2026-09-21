@@ -2677,19 +2677,44 @@ exports.opportunityAnalytics = async (req, res) => {
             ...(range ? [{ $match: { _created: range } }] : []),
             { $group: { _id: { $ifNull: ['$channel', 'whatsapp'] }, count: { $sum: 1 } } },
           ],
-          porAgente: [
+          // EMBUDO DE ASISTENCIA (sep-2026, a petición de la clínica): de las
+          // oportunidades del rango, cuántos CONTACTOS escribieron, cuántos
+          // AGENDARON cita (oportunidad con cita vinculada) y de esas cuántas
+          // citas terminaron ASISTIDAS/COMPLETADAS — el paciente de verdad fue.
+          funnelAsistencia: [
             ...(range ? [{ $match: { _created: range } }] : []),
             {
-              $group: {
-                _id: { $ifNull: ['$assignedToName', ''] },
-                total: { $sum: 1 },
-                agendadas: { $sum: { $cond: [{ $eq: ['$_stage', 'agendado'] }, 1, 0] } },
-                ganadas: { $sum: { $cond: [{ $eq: ['$_stage', 'ganado'] }, 1, 0] } },
-                valorGanado: { $sum: { $cond: [{ $eq: ['$_stage', 'ganado'] }, '$_value', 0] } },
+              $lookup: {
+                from: 'appointments',
+                localField: '_opps.appointment',
+                foreignField: '_id',
+                as: '_cita',
               },
             },
-            { $sort: { total: -1 } },
-            { $limit: 12 },
+            { $addFields: { _cita: { $arrayElemAt: ['$_cita', 0] } } },
+            {
+              $group: {
+                _id: '$_id', // un grupo por CHAT = un contacto
+                oportunidades: { $sum: 1 },
+                agendaron: { $sum: { $cond: [{ $ifNull: ['$_opps.appointment', false] }, 1, 0] } },
+                asistieron: {
+                  $sum: {
+                    $cond: [{ $in: [{ $ifNull: ['$_cita.status', ''] }, ['asistida', 'completada']] }, 1, 0],
+                  },
+                },
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                contactos: { $sum: 1 },
+                oportunidades: { $sum: '$oportunidades' },
+                agendaron: { $sum: '$agendaron' },
+                contactosAgendaron: { $sum: { $cond: [{ $gt: ['$agendaron', 0] }, 1, 0] } },
+                asistieron: { $sum: '$asistieron' },
+                contactosAsistieron: { $sum: { $cond: [{ $gt: ['$asistieron', 0] }, 1, 0] } },
+              },
+            },
           ],
           // Servicios: solo se cuentan oportunidades, NO se suma el valor — una
           // oportunidad con tres servicios repartiría su importe tres veces.
@@ -2840,13 +2865,16 @@ exports.opportunityAnalytics = async (req, res) => {
     let valorPagadoMostrador = 0;
     let citasCreadas = 0;
     let citasConPago = 0;
+    // Valor ESCRITO en oportunidades con cita asistida/completada (ver abajo).
+    let valorPagadoOportunidades = 0;
+    let oportunidadesPagadas = 0;
     try {
       const Appointment = require('../models/Appointment');
       const Sale = require('../models/Sale');
       const Payment = require('../models/Payment');
       const citasDelRango = await Appointment.aggregate([
         { $match: { clinic: clinicOid, ...(range ? { date: range } : {}) } },
-        { $project: { advanceAmount: 1 } },
+        { $project: { advanceAmount: 1, status: 1 } },
       ]);
       citasCreadas = citasDelRango.length;
       valorPagadoAlCrear = citasDelRango.reduce((s, c) => s + (Number(c.advanceAmount) || 0), 0);
@@ -2898,8 +2926,94 @@ exports.opportunityAnalytics = async (req, res) => {
         (c) => (Number(c.advanceAmount) || 0) > 0 || citasConVenta.has(String(c._id))
       ).length;
       valorPagado = valorPagadoAlCrear + valorPagadoMostrador;
+
+      /**
+       * "PAGADO POR PACIENTES" SEGÚN LAS OPORTUNIDADES (petición de la clínica).
+       *
+       * El valor que el AGENTE ESCRIBE en la oportunidad (`expectedValue`) cuenta
+       * como pagado SOLO cuando la cita vinculada a esa oportunidad —el enlace lo
+       * sella el chat al agendar (opportunity.appointment)— quedó ASISTIDA o
+       * COMPLETADA: esa es la prueba de que el paciente de verdad fue y pagó.
+       */
+      valorPagadoOportunidades = 0;
+      oportunidadesPagadas = 0;
+      const atendidasIds = citasDelRango
+        .filter((c) => c.status === 'asistida' || c.status === 'completada')
+        .map((c) => c._id);
+      if (atendidasIds.length) {
+        const atendidasSet = new Set(atendidasIds.map(String));
+        const convsConCita = await Conversation.find({
+          clinic: clinicOid,
+          $or: [
+            { 'opportunities.appointment': { $in: atendidasIds } },
+            { 'opportunity.appointment': { $in: atendidasIds } },
+          ],
+        })
+          .select('opportunities opportunity')
+          .lean();
+        const vistas = new Set(); // el espejo legacy puede duplicar la misma opp
+        for (const conv of convsConCita) {
+          const opps = conv.opportunities?.length
+            ? conv.opportunities
+            : (conv.opportunity?.isOpportunity ? [conv.opportunity] : []);
+          for (const opp of opps) {
+            if (!opp?.appointment || !atendidasSet.has(String(opp.appointment))) continue;
+            const clave = `${String(conv._id)}|${String(opp.appointment)}|${opp.expectedValue ?? ''}`;
+            if (vistas.has(clave)) continue;
+            vistas.add(clave);
+            valorPagadoOportunidades += Number(opp.expectedValue) || 0;
+            oportunidadesPagadas += 1;
+          }
+        }
+      }
     } catch (err) {
       console.warn('[analytics] no se pudo sumar el valor de las citas:', err.message);
+    }
+
+    /**
+     * CITAS POR AGENTE (sep-2026, a petición de la clínica): la sección
+     * "Oportunidades por agente" ahora muestra las CITAS agendadas por
+     * usuarios con rol call center / marketing — snapshot `createdByRole` que
+     * la agenda sella al crear la cita (utils/appointmentBooker.js). Se cuentan
+     * también las que el paciente asistió (asistida/completada).
+     */
+    let porAgenteCitas = [];
+    try {
+      const Appointment = require('../models/Appointment');
+      const citaMatch = {
+        clinic: clinicOid, // mismo alcance que el resto del informe: la clínica ancla del CRM
+        createdByRole: { $in: ['call_center', 'marketing'] },
+        ...(range ? { date: range } : {}),
+      };
+      const citasAgg = await Appointment.aggregate([
+        { $match: citaMatch },
+        {
+          $group: {
+            _id: '$createdBy',
+            nombre: { $first: '$createdByName' },
+            total: { $sum: 1 },
+            asistidas: { $sum: { $cond: [{ $eq: ['$status', 'asistida'] }, 1, 0] } },
+            completadas: { $sum: { $cond: [{ $eq: ['$status', 'completada'] }, 1, 0] } },
+          },
+        },
+        { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: '_u' } },
+        {
+          $addFields: {
+            agente: { $ifNull: [{ $arrayElemAt: ['$_u.name', 0] }, '$nombre'] },
+          },
+        },
+        { $sort: { total: -1 } },
+        { $limit: 12 },
+      ]);
+      porAgenteCitas = citasAgg.map((r) => ({
+        agente: r.agente || 'Sin nombre',
+        total: r.total,
+        asistidas: r.asistidas,
+        completadas: r.completadas,
+        atendidas: r.asistidas + r.completadas,
+      }));
+    } catch (err) {
+      console.warn('[analytics] no se pudo calcular citas por agente:', err.message);
     }
 
     res.json({
@@ -2935,19 +3049,28 @@ exports.opportunityAnalytics = async (req, res) => {
         valorPagadoMostrador: Math.round(valorPagadoMostrador * 100) / 100,
         citasCreadas,
         citasConPago,
+        // "Pagado por pacientes" REAL: el valor escrito por los agentes en las
+        // oportunidades cuya cita vinculada quedó asistida/completada.
+        valorPagadoOportunidades: Math.round(valorPagadoOportunidades * 100) / 100,
+        oportunidadesPagadas,
       },
       embudo,
       serie,
       porCanal: (facets.porCanal || [])
         .map((r) => ({ canal: r._id || 'whatsapp', count: r.count }))
         .sort((a, b) => b.count - a.count),
-      porAgente: (facets.porAgente || []).map((r) => ({
-        agente: r._id || 'Sin asignar',
-        total: r.total,
-        agendadas: r.agendadas,
-        ganadas: r.ganadas,
-        valorGanado: Math.round((r.valorGanado || 0) * 100) / 100,
-      })),
+      // De la OPORTUNIDAD a la CONSULTA: contactos distintos en cada peldaño.
+      embudoAsistencia: (() => {
+        const f = (facets.funnelAsistencia || [])[0] || {};
+        return {
+          escriben: { contactos: f.contactos || 0, oportunidades: f.oportunidades || 0 },
+          agendan: { contactos: f.contactosAgendaron || 0, oportunidades: f.agendaron || 0 },
+          asisten: { contactos: f.contactosAsistieron || 0, citas: f.asistieron || 0 },
+        };
+      })(),
+      // CITAS agendadas por usuarios de call center / marketing (ya no son
+      // oportunidades: ver "Citas por agente" en la página).
+      porAgente: porAgenteCitas,
       porAnuncio: topAnuncios.map((r) => ({
         adId: r._id,
         // Dos anuncios con el mismo titular salían como dos filas idénticas: al
@@ -5676,6 +5799,11 @@ exports.createAppointmentFromChat = async (req, res) => {
         startTime: a.startTime,
         endTime: a.endTime || null,
         serviceIds: [a.serviceItem, ...(a.services || []).map((s) => s.product)],
+        serviceNames: [
+          a.serviceName,
+          ...(a.services || []).map((s) => s?.name),
+          ...(a.additionalServices || []).map((s) => s?.name),
+        ],
         doctor: a.doctor || null,
         room: a.room || null,
       });

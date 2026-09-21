@@ -131,7 +131,7 @@ test('los chats son los del rango, sin tope de página', async () => {
   assert.equal(payload.serie.find((s) => s.date === iso(hace(1))).chats, 320);
 });
 
-test('tasas, canal, agente y servicios salen de la etapa de la oportunidad', async () => {
+test('tasas, canal y servicios salen de la etapa de la oportunidad', async () => {
   const clinic = await Clinic.create({ name: 'Principal' });
   await Conversation.create({
     clinic: clinic._id, phone: '593900000007', channel: 'instagram', assignedToName: 'Lucía',
@@ -157,9 +157,10 @@ test('tasas, canal, agente y servicios salen de la etapa de la oportunidad', asy
     payload.porCanal.map((c) => [c.canal, c.count]).sort(),
     [['instagram', 2], ['whatsapp', 2]]
   );
-  const lucia = payload.porAgente.find((a) => a.agente === 'Lucía');
-  assert.deepEqual([lucia.total, lucia.agendadas, lucia.ganadas, lucia.valorGanado], [2, 1, 1, 400]);
-  assert.equal(payload.porAgente.find((a) => a.agente === 'Sin asignar').total, 2);
+  // "porAgente" ya NO es información de oportunidades (sep-2026): es el número
+  // de CITAS agendadas por usuarios de call center / marketing. Sin citas no
+  // hay filas, aunque las oportunidades tengan asignado un agente.
+  assert.deepEqual(payload.porAgente, []);
   // El servicio cuenta oportunidades, no importes (una oportunidad con tres
   // servicios repartiría su valor tres veces).
   assert.deepEqual(payload.servicios, [{ servicio: 'Botox', count: 2 }]);
@@ -585,4 +586,135 @@ test('la tabla de oportunidades avisa y trae hasta 100 nombres, no 15', async ()
   assert.equal(payload.porOportunidad.length, 100, 'el tope subió de 15 a 100');
   // Y el aviso sabe cuántos se quedaron fuera.
   assert.ok(payload.nombresDeOportunidad > payload.porOportunidad.length);
+});
+
+// ─────────── sep-2026: de la oportunidad a la consulta atendida ───────────
+
+test('«Pagado por pacientes»: el valor ESCRITO en la oportunidad cuenta solo con cita asistida/completada', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const Appointment = require('../models/Appointment');
+  const Patient = require('../models/Patient');
+  const patient = await Patient.create({ clinic: clinic._id, firstName: 'Ana', lastName: 'L' });
+
+  const citaIda = await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: hace(2), startTime: '09:00', status: 'asistida',
+  });
+  const citaVuelta = await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '10:00', status: 'completada',
+  });
+  const citaFutura = await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '15:00', status: 'pendiente',
+  });
+
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000501', patient: patient._id,
+    opportunities: [
+      // Pagada: su cita quedó asistida.
+      { isOpportunity: true, stage: 'agendado', expectedValue: 150, appointment: citaIda._id, createdAt: hace(4) },
+      // Pagada: su cita quedó completada.
+      { isOpportunity: true, stage: 'ganado', expectedValue: 80, appointment: citaVuelta._id, createdAt: hace(4) },
+      // NO pagada: la cita sigue pendiente (aún no se sabe si fue).
+      { isOpportunity: true, stage: 'agendado', expectedValue: 500, appointment: citaFutura._id, createdAt: hace(3) },
+      // Sin cita vinculada: todavía no hay nada que corroborar el pago.
+      { isOpportunity: true, stage: 'nuevo', expectedValue: 999, createdAt: hace(2) },
+    ],
+  });
+
+  const { payload } = await pedir(clinic._id, rango);
+  assert.equal(payload.totals.valorPagadoOportunidades, 230, '150 de la asistida + 80 de la completada');
+  assert.equal(payload.totals.oportunidadesPagadas, 2);
+});
+
+test('embudo de asistencia: escribieron → agendaron → asistieron', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const Appointment = require('../models/Appointment');
+  const Patient = require('../models/Patient');
+  const patient = await Patient.create({ clinic: clinic._id, firstName: 'Beto', lastName: 'M' });
+
+  const citaOk = await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '09:00', status: 'asistida',
+  });
+  await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '11:00', status: 'completada',
+  });
+  const citaPendiente = await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '16:00', status: 'pendiente',
+  });
+
+  // Contacto 1: escribió (2 oportunidades) y una quedó asistida.
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000601', patient: patient._id,
+    opportunities: [
+      { isOpportunity: true, stage: 'nuevo', createdAt: hace(5) },
+      { isOpportunity: true, stage: 'agendado', expectedValue: 90, appointment: citaOk._id, createdAt: hace(4) },
+    ],
+  });
+  // Contacto 2: agendó pero aún no llega (pendiente).
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000602', patient: patient._id,
+    opportunities: [
+      { isOpportunity: true, stage: 'agendado', appointment: citaPendiente._id, createdAt: hace(3) },
+    ],
+  });
+  // Contacto 3: solo escribió, nunca agendó.
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000603',
+    opportunities: [{ isOpportunity: true, stage: 'interesado', createdAt: hace(2) }],
+  });
+
+  const { payload } = await pedir(clinic._id, rango);
+  const fa = payload.embudoAsistencia;
+  assert.equal(fa.escriben.contactos, 3, 'tres contactos con oportunidad');
+  assert.equal(fa.escriben.oportunidades, 4);
+  assert.equal(fa.agendan.contactos, 2, 'dos contactos tienen cita vinculada');
+  assert.equal(fa.agendan.oportunidades, 2);
+  assert.equal(fa.asisten.contactos, 1, 'solo el contacto 1 atendió');
+  assert.equal(fa.asisten.citas, 1, 'una cita asistida/completada (la completada no tiene opp)');
+});
+
+test('«Citas por agente»: citas de call center y marketing con su asistencia', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const User = require('../models/User');
+  const Appointment = require('../models/Appointment');
+  const Patient = require('../models/Patient');
+  const agenta = await User.create({
+    name: 'Andrea', email: `andrea-${Date.now()}@t.com`, password: 'secret123',
+    clinics: [{ clinic: clinic._id, role: 'call_center' }],
+  });
+  const marketera = await User.create({
+    name: 'Karla', email: `karla-${Date.now()}@t.com`, password: 'secret123',
+    clinics: [{ clinic: clinic._id, role: 'marketing' }],
+  });
+  const patient = await Patient.create({ clinic: clinic._id, firstName: 'Caro', lastName: 'R' });
+
+  await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: hace(2), startTime: '09:00',
+    createdBy: agenta._id, createdByRole: 'call_center', createdByName: agenta.name, status: 'asistida',
+  });
+  await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '10:00',
+    createdBy: agenta._id, createdByRole: 'call_center', createdByName: agenta.name, status: 'cancelada',
+  });
+  await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '11:00',
+    createdBy: marketera._id, createdByRole: 'marketing', createdByName: marketera.name, status: 'completada',
+  });
+  // Una cita agendada por recepción: NO entra en la sección.
+  await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: hace(1), startTime: '12:00',
+    createdByRole: 'admin', createdByName: 'Recepción', status: 'asistida',
+  });
+  // Citas de otra sede: fuera.
+  await Appointment.create({
+    clinic: (await Clinic.create({ name: 'Otra' }))._id, patient: patient._id,
+    date: hace(1), startTime: '13:00', createdByRole: 'call_center', createdByName: 'Ajena',
+    status: 'asistida',
+  });
+
+  const { payload } = await pedir(clinic._id, rango);
+  assert.equal(payload.porAgente.length, 2);
+  const andrea = payload.porAgente.find((a) => a.agente === 'Andrea');
+  assert.deepEqual([andrea.total, andrea.asistidas, andrea.completadas, andrea.atendidas], [2, 1, 0, 1]);
+  const karla = payload.porAgente.find((a) => a.agente === 'Karla');
+  assert.deepEqual([karla.total, karla.completadas, karla.atendidas], [1, 1, 1]);
 });

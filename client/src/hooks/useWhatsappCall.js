@@ -47,6 +47,9 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
   const [muted, setMuted] = useState(false);
   const [needsAudioUnlock, setNeedsAudioUnlock] = useState(false);
   const [seconds, setSeconds] = useState(0);
+  // Altavoz apagado por defecto (estilo WhatsApp): la voz va a la salida por
+  // defecto del sistema y el agente la sube al altavoz cuando quiere.
+  const [speakerOn, setSpeakerOn] = useState(false);
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
@@ -55,6 +58,10 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
   const autoAnswerAttemptRef = useRef('');
   // El OFFER de una entrante llega por socket y se usa recién al aceptar.
   const pendingOfferRef = useRef('');
+  // Salidas de audio del sistema y espejo de speakerOn para usarlas dentro de
+  // callbacks sin reconstruirlos en cada render.
+  const outputsRef = useRef([]);
+  const speakerOnRef = useRef(false);
 
   // Elemento <audio> oculto donde suena la voz del contacto.
   useEffect(() => {
@@ -81,7 +88,53 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
     setMuted(false);
     setNeedsAudioUnlock(false);
     setSeconds(0);
+    setSpeakerOn(false);
+    speakerOnRef.current = false;
   }, []);
+
+  // Lista de salidas de audio. Los labels solo llegan con permiso de micro ya
+  // concedido, así que se refresca al montar la conexión de cada llamada.
+  const refreshOutputs = useCallback(async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      outputsRef.current = (devices || []).filter((d) => d.kind === 'audiooutput');
+    } catch {
+      outputsRef.current = [];
+    }
+  }, []);
+
+  /**
+   * Enruta el audio remoto según el altavoz. `setSinkId` solo existe en
+   * Chrome/Edge/Opera (desktop y Android): donde no está —Safari/iOS, Firefox—
+   * la llamada suena por la salida por defecto y el botón no tiene efecto.
+   */
+  const applyOutput = useCallback(async (on) => {
+    const el = remoteAudioRef.current;
+    if (!el || typeof el.setSinkId !== 'function') return;
+    try {
+      if (!on) {
+        // Auricular: si el sistema expone un dispositivo concreto (auricular/
+        // manos libres/communications), usarlo; si no, la salida por defecto.
+        const outputs = outputsRef.current.filter((d) => d.deviceId && d.deviceId !== 'default');
+        const auricular = outputs.find((d) => /hand|ear|comm|head|auric/i.test(d.label || ''));
+        await el.setSinkId(auricular ? auricular.deviceId : '');
+      } else {
+        // Altavoz: el 'default' del sistema ES el altavoz en la mayoría de
+        // equipos; pedidos por id explícito para que el cambio siempre dispare.
+        await el.setSinkId('default');
+      }
+    } catch (err) {
+      console.warn('[call] no se pudo cambiar la salida de audio:', err?.message || err);
+    }
+  }, []);
+
+  /** Alterna altavoz / auricular de la llamada en curso. */
+  const toggleSpeaker = useCallback(() => {
+    const next = !speakerOnRef.current;
+    speakerOnRef.current = next;
+    setSpeakerOn(next);
+    applyOutput(next);
+  }, [applyOutput]);
 
   const endLocally = useCallback(() => {
     cleanup();
@@ -141,6 +194,8 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
       if (remoteAudioRef.current) {
         remoteAudioRef.current.srcObject = remoteStream;
         playRemoteAudio();
+        // La salida elegida (altavoz/auricular) sobrevive al nuevo stream.
+        applyOutput(speakerOnRef.current);
       }
     };
     pc.onconnectionstatechange = () => {
@@ -151,8 +206,11 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
     };
     localStreamRef.current = stream;
     pcRef.current = pc;
+    // Con el permiso concedido ya hay labels: enumerar salidas y aplicar la
+    // elección vigente de altavoz/auricular.
+    refreshOutputs().then(() => applyOutput(speakerOnRef.current));
     return pc;
-  }, [endLocally, playRemoteAudio]);
+  }, [endLocally, playRemoteAudio, applyOutput, refreshOutputs]);
 
   /** Llama al contacto de una conversación. */
   const startCall = useCallback(async (conversation) => {
@@ -336,11 +394,13 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
     seconds,
     muted,
     needsAudioUnlock,
+    speakerOn,
     startCall,
     acceptCall,
     rejectCall,
     hangUp,
     toggleMute,
+    toggleSpeaker,
     resumeAudio: playRemoteAudio,
   };
 }

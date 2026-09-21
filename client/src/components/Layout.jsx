@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { roleSatisfies, ROLE_LABELS } from '../utils/roles';
 import NotificationBell from './NotificationBell';
 import IncomingCallPushPrompt from './IncomingCallPushPrompt';
-import { WhatsappCallProvider } from '../context/WhatsappCallContext';
+import { WhatsappCallProvider, useWhatsappCallContext } from '../context/WhatsappCallContext';
+import { formatDuration } from '../hooks/useVoiceRecorder';
+import { HiOutlinePhone } from 'react-icons/hi2';
 import shiluvLogo from '../Shiluv-logo-4.png';
 import { nombreSucursal } from '../utils/clinicName';
 import {
@@ -245,6 +247,33 @@ const isPathActive = (pathname, path) =>
 // Normaliza para buscar sin acentos ni mayúsculas.
 const norm = (s) => (s || '').normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim();
 
+/**
+ * Pill fija del header con la LLAMADA EN CURSO. El panel flotante de llamada
+ * puede quedar tapado por un modal o minimizado a una pill pequeña: esto da una
+ * señal SIEMPRE visible (contacto + cronómetro + punto latiendo) de que la
+ * llamada sigue viva. Si no hay llamada, no renderiza nada.
+ */
+function CallInProgressPill() {
+  const voiceCall = useWhatsappCallContext();
+  if (!voiceCall?.call) return null;
+  const { call, seconds } = voiceCall;
+  const ringing = call.status === 'ringing';
+  return (
+    <div
+      title={ringing ? 'Llamada sonando' : 'Llamada en curso'}
+      className={`hidden sm:flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold flex-shrink-0 ${
+        ringing
+          ? 'bg-amber-100 text-amber-800 animate-pulse'
+          : 'bg-emerald-100 text-emerald-800'
+      }`}
+    >
+      <HiOutlinePhone className={`w-3.5 h-3.5 ${ringing ? 'animate-bounce' : ''}`} />
+      <span className="max-w-[140px] truncate">{call.contactName || call.phone || 'Llamada'}</span>
+      {!ringing && <span className="tabular-nums text-emerald-600">{formatDuration(seconds)}</span>}
+    </div>
+  );
+}
+
 export default function Layout({ children }) {
   const { user, role, activeClinic, clinics, selectClinic, logout } = useAuth();
   const location = useLocation();
@@ -328,6 +357,30 @@ export default function Layout({ children }) {
   // La página de chats gestiona su propio alto/scroll interno: se le da todo el
   // espacio (padding mínimo) para no desperdiciar la parte superior.
   const isChatsPage = location.pathname.startsWith('/chats');
+
+  /**
+   * CHATS A PANTALLA COMPLETA: al entrar a /chats la sidebar se COLAPSA SOLA.
+   * La bandeja necesita todo el ancho (lista + conversación) y con la barra de
+   * 270px abierta la conversación quedaba apretada. Al salir de chats se
+   * devuelve la sidebar al estado que tenía; el usuario aún puede abrirla a
+   * mano con el botón de siempre.
+   */
+  const prevChatsRef = useRef(isChatsPage);
+  const prevCollapsedRef = useRef(desktopCollapsed);
+  useEffect(() => {
+    if (isChatsPage && !prevChatsRef.current) {
+      prevCollapsedRef.current = desktopCollapsed;
+      if (!desktopCollapsed) {
+        setDesktopCollapsed(true);
+        localStorage.setItem('sidebarCollapsed', '1');
+      }
+    } else if (!isChatsPage && prevChatsRef.current) {
+      setDesktopCollapsed(prevCollapsedRef.current);
+      localStorage.setItem('sidebarCollapsed', prevCollapsedRef.current ? '1' : '0');
+    }
+    prevChatsRef.current = isChatsPage;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isChatsPage]);
 
   return (
     <WhatsappCallProvider>
@@ -546,7 +599,11 @@ export default function Layout({ children }) {
       </aside>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="sticky top-0 z-10 bg-white/85 backdrop-blur-md border-b border-slate-200/70 px-4 lg:px-8 h-16 flex items-center justify-between gap-3 shadow-sm shadow-slate-900/[0.03]">
+        <header
+          className={`sticky top-0 z-10 bg-white/85 backdrop-blur-md border-b border-slate-200/70 flex items-center justify-between gap-3 shadow-sm shadow-slate-900/[0.03] ${
+            isChatsPage ? 'h-11 px-3 lg:px-4' : 'h-16 px-4 lg:px-8'
+          }`}
+        >
           <div className="flex items-center gap-3 min-w-0">
             {/* Móvil: abre la barra como overlay */}
             <button
@@ -565,34 +622,42 @@ export default function Layout({ children }) {
               <HiOutlineBars3 className="w-6 h-6" />
             </button>
             <div className="min-w-0">
-              <h1 className="text-base sm:text-lg font-bold text-slate-800 tracking-tight truncate leading-tight">{pageTitle}</h1>
-              <p className="hidden sm:block text-[11px] text-slate-400 leading-tight">
-                {activeClinic?.nombreComercial || activeClinic?.name || 'Vikingo'}
-              </p>
+              <h1 className={`font-bold text-slate-800 tracking-tight truncate leading-tight ${isChatsPage ? 'text-sm' : 'text-base sm:text-lg'}`}>{pageTitle}</h1>
+              {!isChatsPage && (
+                <p className="hidden sm:block text-[11px] text-slate-400 leading-tight">
+                  {activeClinic?.nombreComercial || activeClinic?.name || 'Vikingo'}
+                </p>
+              )}
             </div>
+            {/* LLAMADA EN CURSO, siempre a la vista. El panel flotante puede
+                quedar tapado por un modal o minimizado; esta pill del header
+                persiste mientras la llamada viva, con contacto y cronómetro. */}
+            <CallInProgressPill />
           </div>
           <div className="flex items-center gap-3">
-            <div className="hidden md:flex items-center gap-2 bg-emerald-50 px-3.5 py-2 rounded-xl border border-emerald-100">
-              <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-              <span className="text-xs font-medium text-emerald-700 capitalize">
-                {new Date().toLocaleDateString('es-EC', { weekday: 'long', day: 'numeric', month: 'long' })}
-              </span>
-            </div>
+            {!isChatsPage && (
+              <div className="hidden md:flex items-center gap-2 bg-emerald-50 px-3.5 py-2 rounded-xl border border-emerald-100">
+                <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                <span className="text-xs font-medium text-emerald-700 capitalize">
+                  {new Date().toLocaleDateString('es-EC', { weekday: 'long', day: 'numeric', month: 'long' })}
+                </span>
+              </div>
+            )}
             {/* Bandeja de notificaciones: entre la fecha y la inicial del usuario. */}
             <NotificationBell />
-            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white text-sm font-bold shadow-sm" title={user?.name}>
+            <div className={`rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white text-sm font-bold shadow-sm ${isChatsPage ? 'w-7 h-7' : 'w-9 h-9'}`} title={user?.name}>
               {(user?.name || '?').trim().charAt(0).toUpperCase()}
             </div>
           </div>
         </header>
 
-        {/* El chat usa TODO el alto y ancho, con padding mínimo: el espacio que
-            antes se desperdiciaba en la parte superior ahora es conversación. El
-            resto de páginas conserva el padding cómodo y el scroll vertical. */}
+        {/* El chat usa TODO el alto y ancho: sin padding, con el header reducido
+            y la sidebar auto-colapsada, la conversación gana ~80px de alto y
+            ~270px de ancho frente al layout normal. */}
         <main
           className={
             isChatsPage
-              ? 'flex-1 min-h-0 overflow-hidden p-2 lg:p-3'
+              ? 'flex-1 min-h-0 overflow-hidden p-0'
               : 'flex-1 overflow-y-auto p-3 sm:p-6 lg:p-8'
           }
         >

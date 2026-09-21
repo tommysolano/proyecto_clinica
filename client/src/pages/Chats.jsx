@@ -2033,46 +2033,32 @@ export default function Chats() {
                       Contacto en opt-out. No se enviaran mensajes de marketing.
                     </div>
                   )}
-                  {activeWindowClosed && !activeOptedOut && !templateDraft.name && (
-                    <div className="mb-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                      Ventana de 24h cerrada. Solo puedes enviar una <b>plantilla aprobada</b> — pulsa “Plantilla”.
-                      {(() => {
-                        // La ventana de 24h es de la pareja (nuestro número, contacto):
-                        // que el paciente escribiera a OTRO de nuestros números no abre
-                        // ninguna ventana en el número por el que va a salir esto. Sin
-                        // decirlo, el aviso parece un error del sistema — el contacto
-                        // escribió hace un rato y aun así "cerrada".
-                        if (activeConv?.window?.otherNumber) {
-                          const last = lastInboundDate(activeConv);
-                          const num = activeConv?.sendingAccount;
-                          return (
-                            <div className="mt-0.5 text-amber-700">
-                              El contacto escribió {last ? <>el <b>{formatDateTimeEc(last)}</b> </> : ''}a <b>otro</b> de
-                              tus números, así que por {num?.label ? <b>{num.label}</b> : 'este número'}
-                              {num?.displayPhone ? ` (${num.displayPhone})` : ''} no hay ventana abierta.
-                            </div>
-                          );
-                        }
-                        // El CUÁNDO es la clave: sin la fecha, un chat cuyo último
-                        // entrante fue hace dos semanas parece de anoche (en el hilo
-                        // solo se ve la hora) y la ventana cerrada parece un error.
-                        const last = lastInboundDate(activeConv);
-                        if (!last) {
-                          return (
-                            <div className="mt-0.5 text-amber-700">
-                              Este contacto todavía no te ha escrito, así que nunca se abrió una ventana.
-                            </div>
-                          );
-                        }
-                        return (
-                          <div className="mt-0.5 text-amber-700">
-                            El contacto escribió por última vez el <b>{formatDateTimeEc(last)}</b> ({humanizeSince(last)}); la
-                            ventana se cerró 24 h después.
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  )}
+                  {activeWindowClosed && !activeOptedOut && !templateDraft.name && (() => {
+                    // COMPACTO: una sola línea —el detalle completo va en el
+                    // tooltip—. Los banners multi-línea se comían ~200px del
+                    // hilo y eran lo que dejaba "pequeño" el chat.
+                    let detalle = 'Solo puedes enviar una plantilla aprobada — pulsa "Plantilla".';
+                    if (activeConv?.window?.otherNumber) {
+                      const last = lastInboundDate(activeConv);
+                      const num = activeConv?.sendingAccount;
+                      detalle = `El contacto escribió ${last ? `el ${formatDateTimeEc(last)} ` : ''}a OTRO de tus números, así que por ${num?.label || 'este número'}${num?.displayPhone ? ` (${num.displayPhone})` : ''} no hay ventana abierta. Solo plantillas aprobadas — pulsa "Plantilla".`;
+                    } else {
+                      const last = lastInboundDate(activeConv);
+                      if (!last) {
+                        detalle = 'Este contacto todavía no te ha escrito, así que nunca se abrió una ventana. Solo plantillas aprobadas — pulsa "Plantilla".';
+                      } else {
+                        detalle = `El contacto escribió por última vez el ${formatDateTimeEc(last)} (${humanizeSince(last)}); la ventana se cerró 24 h después. Solo plantillas aprobadas — pulsa "Plantilla".`;
+                      }
+                    }
+                    return (
+                      <div
+                        title={detalle}
+                        className="mb-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1 truncate cursor-help"
+                      >
+                        Ventana de 24h <b>cerrada</b> — solo <b>plantilla aprobada</b>.
+                      </div>
+                    );
+                  })()}
                   {(() => {
                     if (activeWindowClosed || activeOptedOut || templateDraft.name) return null;
                     const ms = windowMsRemaining(activeConv);
@@ -2868,7 +2854,7 @@ function GalleryModal({ images, onClose, onChange, onSend }) {
 function RailItem(props) {
   // Icon se declara como const (mayúscula) para que se pueda usar como <Icon/>
   // sin que el linter la marque como no usada (varsIgnorePattern '^[A-Z_]').
-  const { Icon, label, active, onClick, badge } = props;
+  const { Icon, label, active, onClick, badge, compact } = props;
   return (
     <button
       type="button"
@@ -2878,7 +2864,7 @@ function RailItem(props) {
         active
           ? 'bg-emerald-50 text-emerald-700'
           : 'bg-transparent text-slate-500 hover:bg-slate-50 hover:text-slate-700'
-      }`}
+      } ${compact ? 'py-2' : ''}`}
     >
       <span className="relative">
         <Icon className="w-6 h-6" />
@@ -2888,27 +2874,44 @@ function RailItem(props) {
           </span>
         )}
       </span>
-      <span className="text-[10px] font-medium leading-tight text-center">{label}</span>
+      {!compact && <span className="text-[10px] font-medium leading-tight text-center">{label}</span>}
     </button>
   );
 }
 
 function ChatRail({ view, scope, canSupervise, unreadCounts = { mine: 0, all: 0 }, onNewChat, onSelectScope, onSelectView }) {
+  // COLAPSABLE: a iconos puros gana ~40px de ancho para la conversación. Se
+  // recuerda en localStorage; el botón chevron alterna entre ambos modos.
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem('chatRailCollapsed') === '1'
+  );
+  const toggleCollapsed = () =>
+    setCollapsed((v) => {
+      localStorage.setItem('chatRailCollapsed', v ? '0' : '1');
+      return !v;
+    });
   return (
-    <div className="w-[64px] sm:w-[72px] shrink-0 bg-white border border-slate-200 rounded-xl flex flex-col items-stretch p-1.5 gap-0.5 overflow-y-auto">
+    <div
+      className={`shrink-0 bg-white border border-slate-200 rounded-xl flex flex-col items-stretch p-1.5 gap-0.5 overflow-y-auto ${
+        collapsed ? 'w-12' : 'w-[64px] sm:w-[72px]'
+      }`}
+    >
       <button
         type="button"
         onClick={onNewChat}
         title="Nuevo chat"
-        className="w-full flex flex-col items-center gap-1 py-2.5 rounded-xl border-none cursor-pointer bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm shadow-emerald-600/20"
+        className={`w-full flex flex-col items-center gap-1 rounded-xl border-none cursor-pointer bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm shadow-emerald-600/20 ${
+          collapsed ? 'py-2' : 'py-2.5'
+        }`}
       >
         <HiOutlinePencilSquare className="w-6 h-6" />
-        <span className="text-[10px] font-semibold leading-tight text-center">Nuevo</span>
+        {!collapsed && <span className="text-[10px] font-semibold leading-tight text-center">Nuevo</span>}
       </button>
       <div className="h-px bg-slate-100 mx-2 my-1.5" />
       <RailItem
         Icon={HiOutlineUser}
         label="Mi chat"
+        compact={collapsed}
         badge={unreadCounts.mine}
         active={view === 'inbox' && scope === 'mine'}
         onClick={() => onSelectScope('mine')}
@@ -2916,6 +2919,7 @@ function ChatRail({ view, scope, canSupervise, unreadCounts = { mine: 0, all: 0 
       <RailItem
         Icon={HiOutlineUsers}
         label="Grupal"
+        compact={collapsed}
         badge={unreadCounts.all}
         active={view === 'inbox' && scope === 'all'}
         onClick={() => onSelectScope('all')}
@@ -2924,6 +2928,7 @@ function ChatRail({ view, scope, canSupervise, unreadCounts = { mine: 0, all: 0 
       <RailItem
         Icon={HiOutlineTag}
         label="Oportun."
+        compact={collapsed}
         active={view === 'opportunities'}
         onClick={() => onSelectView('opportunities')}
       />
@@ -2931,10 +2936,20 @@ function ChatRail({ view, scope, canSupervise, unreadCounts = { mine: 0, all: 0 
         <RailItem
           Icon={HiOutlineChartBar}
           label="Superv."
+          compact={collapsed}
           active={view === 'board'}
           onClick={() => onSelectView('board')}
         />
       )}
+      <div className="h-px bg-slate-100 mx-2 my-1.5" />
+      <button
+        type="button"
+        onClick={toggleCollapsed}
+        title={collapsed ? 'Expandir riel' : 'Colapsar riel (más espacio para el chat)'}
+        className="w-full flex items-center justify-center py-1.5 rounded-xl border-none cursor-pointer text-slate-400 hover:bg-slate-50 hover:text-slate-600 bg-transparent"
+      >
+        <HiOutlineChevronRight className={`w-4 h-4 transition-transform ${collapsed ? '' : 'rotate-180'}`} />
+      </button>
     </div>
   );
 }

@@ -1,5 +1,17 @@
 const TimeBlock = require('../models/TimeBlock');
 const { sucursalesVisibles, alcanzaSucursal, validarSucursalDestino } = require('../utils/clinicScope');
+const { emitToClinic, emitToCallCenter } = require('../realtime');
+
+/**
+ * Aviso en vivo de cambio de bloqueos. La agenda muestra citas de varias sedes
+ * (y el call center ve toda la organización), así que el evento va a la sala de
+ * la sucursal del bloqueo Y a la bandeja común del call center.
+ */
+const notificarCambioBloqueo = (block, action) => {
+  const payload = { action, id: String(block._id), clinic: String(block.clinic?._id || block.clinic || '') };
+  if (block.clinic) emitToClinic(block.clinic, 'timeblock:changed', payload);
+  emitToCallCenter('timeblock:changed', payload);
+};
 
 // Normaliza una fecha 'YYYY-MM-DD' al inicio del día local (12:00 para evitar TZ).
 const startOfLocalDay = (value) => {
@@ -33,21 +45,30 @@ const endOfLocalDay = (value) => {
  * de la agenda lo usa, porque ahí se ven citas de varias sedes y el recuadro
  * del bloqueo tiene que salir en todas). Cualquier otra sucursal pedida se
  * respeta solo si el usuario tiene alcance (misma regla que la agenda).
+ *
+ * Devuelve `null` cuando el usuario ve TODA la organización (admin, cajero,
+ * call center, marketing, super-admin): en ese caso el listado NO debe filtrar
+ * por sucursal — antes caía a la sucursal activa del token y los bloqueos de
+ * las demás sedes "desaparecían" para quien no tuviera esa sede como activa.
  */
 function resuelveClinicas(req) {
   const param = req.query.clinic;
   if (!param || param === req.clinicId) return [req.clinicId];
   if (param === 'all') {
     const visibles = sucursalesVisibles(req);
-    return visibles === null ? [req.clinicId] : visibles;
+    return visibles === null ? null : visibles;
   }
   return alcanzaSucursal(req, param) ? [param] : [req.clinicId];
 }
 
+/** Convierte el resultado de resuelveClinicas en el filtro Mongo de clinic. */
+const filtroClinicas = (clinicas) =>
+  clinicas === null ? { $exists: true } : { $in: clinicas.map(String) };
+
 exports.list = async (req, res) => {
   try {
     const { startDate, endDate, doctor } = req.query;
-    const query = { clinic: { $in: resuelveClinicas(req).map(String) } };
+    const query = { clinic: filtroClinicas(resuelveClinicas(req)) };
     if (startDate && endDate) {
       /**
        * EL RANGO SE PARSEA EN HORA LOCAL, NO CON `new Date('YYYY-MM-DD')`.
@@ -116,6 +137,7 @@ exports.create = async (req, res) => {
       endTime: allDay ? null : endTime || null,
       createdBy: req.user._id,
     });
+    notificarCambioBloqueo(block, 'created');
     res.status(201).json(block);
   } catch (error) {
     res.status(500).json({ message: 'Error al crear bloqueo', error: error.message });
@@ -132,11 +154,12 @@ exports.update = async (req, res) => {
     // (la misma regla del listado), así que la escritura también respeta el
     // alcance y no solo la sucursal activa.
     const block = await TimeBlock.findOneAndUpdate(
-      { _id: req.params.id, clinic: { $in: resuelveClinicas(req).map(String) } },
+      { _id: req.params.id, clinic: filtroClinicas(resuelveClinicas(req)) },
       update,
       { new: true }
     );
     if (!block) return res.status(404).json({ message: 'Bloqueo no encontrado' });
+    notificarCambioBloqueo(block, 'updated');
     res.json(block);
   } catch (error) {
     res.status(500).json({ message: 'Error al actualizar bloqueo' });
@@ -147,9 +170,10 @@ exports.remove = async (req, res) => {
   try {
     const block = await TimeBlock.findOneAndDelete({
       _id: req.params.id,
-      clinic: { $in: resuelveClinicas(req).map(String) },
+      clinic: filtroClinicas(resuelveClinicas(req)),
     });
     if (!block) return res.status(404).json({ message: 'Bloqueo no encontrado' });
+    notificarCambioBloqueo(block, 'deleted');
     res.json({ message: 'Bloqueo eliminado' });
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar bloqueo' });

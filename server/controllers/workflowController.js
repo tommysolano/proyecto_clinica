@@ -156,6 +156,42 @@ exports.create = async (req, res) => {
   }
 };
 
+/**
+ * DUPLICAR una automatización: copia nodos, pasos, disparadores, ventana de
+ * silencio y carpeta de la original, con nombre único " (copia n)".
+ * La copia nace PAUSADA (active: false) a propósito: una automatización activa
+ * duplicada en activo dispararía DOS veces el mismo flujo sobre los contactos.
+ */
+exports.duplicate = async (req, res) => {
+  try {
+    const base = await Workflow.findOne({ _id: req.params.id, clinic: req.clinicId }).lean();
+    if (!base) return res.status(404).json({ message: 'Workflow no encontrado' });
+    let name = `${base.name} (copia)`;
+    let n = 2;
+    /* eslint-disable no-await-in-loop */
+    while (await Workflow.findOne({ clinic: req.clinicId, folder: base.folder, name })) {
+      name = `${base.name} (copia ${n})`;
+      n += 1;
+    }
+    /* eslint-enable no-await-in-loop */
+    const copia = await Workflow.create({
+      ...base,
+      _id: undefined,
+      id: undefined,
+      name,
+      active: false,
+      stats: undefined,
+      createdAt: undefined,
+      updatedAt: undefined,
+      clinic: req.clinicId,
+      createdBy: req.user._id,
+    });
+    res.status(201).json(copia);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al duplicar la automatización', error: err.message });
+  }
+};
+
 exports.update = async (req, res) => {
   try {
     const buttonError = workflowButtonsError(req.body);

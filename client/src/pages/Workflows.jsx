@@ -9,6 +9,7 @@ import {
   HiOutlinePencil,
   HiOutlineFolder,
   HiOutlineArrowUpTray,
+  HiOutlineDocumentDuplicate,
 } from 'react-icons/hi2';
 import Modal from '../components/Modal';
 import BulkUploadModal from '../components/BulkUploadModal';
@@ -181,6 +182,23 @@ export default function Workflows() {
     }
   };
 
+  // DUPLICAR una automatización: copia completa (nodos, disparadores, ventana
+  // horaria y carpeta) con nombre "(copia)". Nace pausada para revisarla antes
+  // de activarla y evitar que el mismo flujo salga dos veces.
+  const [duplicando, setDuplicando] = useState('');
+  const duplicate = async (wf) => {
+    setDuplicando(wf._id);
+    try {
+      await api.post(`/workflows/${wf._id}/duplicate`);
+      toast.success('Copia creada (pausada). Revísala y actívala.');
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Error al duplicar');
+    } finally {
+      setDuplicando('');
+    }
+  };
+
   const matchItem = (wf, q) =>
     (wf.name || '').toLowerCase().includes(q) ||
     normFolderPath(wf.folder || 'General').toLowerCase().includes(q) ||
@@ -213,6 +231,14 @@ export default function Workflows() {
           onMove={(target) => moveToFolder(wf, target)}
           buttonClass="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer flex items-center gap-1"
         />
+        <button
+          onClick={() => duplicate(wf)}
+          disabled={duplicando === wf._id}
+          title="Crear una copia de esta automatización (nace pausada)"
+          className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer flex items-center gap-1 hover:border-emerald-300 hover:text-emerald-700 disabled:opacity-50"
+        >
+          <HiOutlineDocumentDuplicate className="w-3.5 h-3.5" /> {duplicando === wf._id ? 'Duplicando…' : 'Duplicar'}
+        </button>
         <button onClick={() => openEdit(wf)} className="p-2 text-slate-500 hover:text-emerald-600 bg-transparent border-none cursor-pointer"><HiOutlinePencil /></button>
         <button onClick={() => remove(wf._id)} className="p-2 text-slate-500 hover:text-red-600 bg-transparent border-none cursor-pointer"><HiOutlineTrash /></button>
       </div>

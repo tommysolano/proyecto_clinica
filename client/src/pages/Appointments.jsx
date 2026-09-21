@@ -48,6 +48,7 @@ import {
   HiOutlineChatBubbleLeftRight,
   HiOutlineNoSymbol,
   HiOutlineClipboardDocumentList,
+  HiOutlineLockClosed,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import TimeSlotInput from '../components/TimeSlotInput';
@@ -863,6 +864,17 @@ export default function Appointments() {
         // Llegó tarde: ya hay otra petición más nueva en marcha.
         if (miTurno !== peticionRef.current) return;
         setCalResumen(res.data || []);
+        // BLOQUEOS DEL PERÍODO (también en calendario): para el banner de
+        // bloqueos activos y los marcadores por día. Antes solo la vista lista
+        // los pedía y en calendario un bloqueo nuevo era invisible.
+        try {
+          const rb = await api.get('/time-blocks', {
+            params: { startDate: toYmd(first), endDate: toYmd(last), clinic: 'all' },
+          });
+          if (miTurno === peticionRef.current) setBloquesDia(rb.data || []);
+        } catch {
+          if (miTurno === peticionRef.current) setBloquesDia([]);
+        }
         return;
       }
       // Lista = un solo día (navegable por flechas).
@@ -1064,6 +1076,9 @@ export default function Appointments() {
   useSocketEvent('appointment:created', () => fetchRef.current());
   useSocketEvent('appointment:updated', () => fetchRef.current());
   useSocketEvent('appointment:deleted', () => fetchRef.current());
+  // BLOQUEOS: creado/editado/borrado desde Bloques o por marketing → recargar
+  // los del período visible sin esperar a que el usuario refresque a mano.
+  useSocketEvent('timeblock:changed', () => fetchRef.current());
 
   // Tick global del cronómetro (1s)
   useEffect(() => {
@@ -2094,6 +2109,45 @@ export default function Appointments() {
           )}
         </div>
       </div>
+
+      {/**
+        * BANNER DE BLOQUEOS del período visible (día en lista, mes en
+        * calendario). Antes el bloqueo era solo una fila rosa dentro de la lista
+        * del día — y en calendario no se veía en ninguna parte. Ahora cualquier
+        * usuario de la agenda ve, de un vistazo, que hay horarios bloqueados y
+        * por qué (llega en vivo por socket: ver `timeblock:changed`).
+        */}
+      {(bloquesDia || []).length > 0 && (
+        <div className="mb-2 sm:mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5">
+          <p className="text-xs font-semibold text-rose-700 uppercase tracking-wide flex items-center gap-1.5">
+            <HiOutlineLockClosed className="w-4 h-4" />
+            Horario bloqueado por administración ({bloquesDia.length})
+          </p>
+          <div className="mt-1 space-y-0.5">
+            {bloquesDia.slice(0, 4).map((b) => (
+              <p key={b._id} className="text-xs text-rose-700/90">
+                <b>
+                  {b.allDay
+                    ? 'Todo el día'
+                    : `${b.startTime || '00:00'} — ${b.endTime || '23:59'}`}
+                  {view === 'calendar' && b.startDate
+                    ? ` · ${new Date(b.startDate).toLocaleDateString()}`
+                    : ''}
+                </b>
+                {b.service?.name ? <> · Solo «{b.service.name}»</> : null}
+                {b.doctor?.name ? <> · Dr. {b.doctor.name}</> : null}
+                {b.clinic?.nombreComercial || b.clinic?.name ? (
+                  <> · {b.clinic?.nombreComercial || b.clinic?.name}</>
+                ) : null}
+                {b.reason ? <> — {b.reason}</> : null}
+              </p>
+            ))}
+            {bloquesDia.length > 4 && (
+              <p className="text-xs text-rose-500">… y {bloquesDia.length - 4} más</p>
+            )}
+          </div>
+        </div>
+      )}
 
       {/**
         * LOS FILTROS OCUPAN LO MÍNIMO.

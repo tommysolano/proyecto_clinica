@@ -28,6 +28,8 @@ router.get('/tags', requireRole(...ROLES), ctrl.listTags);
 router.get('/presets', requireRole(...ROLES), ctrl.listPresets);
 router.post('/presets/:key', requireRole(...ROLES), ctrl.installPreset);
 router.post('/', requireRole(...ROLES), ctrl.create);
+// Duplicar una automatización (copia con nodos, disparadores y carpeta; nace pausada).
+router.post('/:id/duplicate', requireRole(...ROLES), ctrl.duplicate);
 router.get('/:id', requireRole(...ROLES), ctrl.get);
 router.get('/:id/enrollments', requireRole(...ROLES), ctrl.enrollments);
 // Cancela una inscripción viva (desbloquea al contacto para el próximo envío).

@@ -21,10 +21,12 @@ function ActiveWhatsappCallProvider({ children }) {
         seconds={voiceCall.seconds}
         muted={voiceCall.muted}
         needsAudioUnlock={voiceCall.needsAudioUnlock}
+        speakerOn={voiceCall.speakerOn}
         onAccept={voiceCall.acceptCall}
         onReject={voiceCall.rejectCall}
         onHangUp={voiceCall.hangUp}
         onToggleMute={voiceCall.toggleMute}
+        onToggleSpeaker={voiceCall.toggleSpeaker}
         onResumeAudio={voiceCall.resumeAudio}
       />
     </WhatsappCallContext.Provider>

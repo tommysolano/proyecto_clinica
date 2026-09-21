@@ -20,12 +20,18 @@
  *  - Nodo "Ventana horaria" (`type: 'window'`): retiene el flujo entero en ese
  *    punto mientras dure el silencio, envíe o no el paso siguiente.
  *
- * Todo se calcula en HORA LOCAL del proceso, que index.js fija en
- * America/Guayaquil (ver zona-horaria del proyecto). Funciones PURAS y testeables.
+ * ZONA HORARIA: TODO se calcula en la hora del USUARIO (Guayaquil, UTC-5, sin
+ * horario de verano) de forma EXPLÍCITA — getUTCHours sobre el instante
+ * desplazado — y NO en la hora local del proceso. Así un VPS con TZ=UTC (o la
+ * TZ que sea) evalúa la ventana 22:00–06:00 en la hora de Ecuador que el usuario
+ * escribió, no en la del servidor. Funciones PURAS y testeables.
  */
 
 const MINUTES_PER_DAY = 1440;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Guayaquil = UTC-5 fijo (sin DST). El desplazamiento, en ms, de la pared de
+// Guayaquil respecto al instante UTC: wall = epoch + offset.
+const GT_OFFSET_MS = -5 * 60 * 60 * 1000;
 // Tramos de silencio encadenados que se saltan como mucho al buscar el próximo
 // hueco. Con silencios diarios, 16 saltos cubren más de una semana.
 const MAX_SLOT_HOPS = 16;
@@ -56,6 +62,25 @@ function normalizeDays(days) {
   return [...new Set(list)].sort((a, b) => a - b);
 }
 
+/** Hora de PARED de Guayaquil de un instante: { y, mo, d, day, minutes }. */
+function gtWall(date) {
+  const wall = new Date(date.getTime() + GT_OFFSET_MS);
+  return {
+    y: wall.getUTCFullYear(),
+    mo: wall.getUTCMonth(),
+    d: wall.getUTCDate(),
+    day: wall.getUTCDay(), // 0=domingo … 6=sábado, en hora de Guayaquil
+    minutes: wall.getUTCHours() * 60 + wall.getUTCMinutes(),
+  };
+}
+
+/** Instante (epoch) de la MEDIANOCHE de Guayaquil del día de `date`. */
+function startOfGtDay(date) {
+  const w = gtWall(date);
+  // Medianoche de Guayaquil (00:00 GT) = epoch de Date.UTC(y, mo, d) + offset.
+  return new Date(Date.UTC(w.y, w.mo, w.d) - GT_OFFSET_MS);
+}
+
 /**
  * ¿La ventana está ACTIVA (calla algo)? Una ventana en modo 'any', sin días o
  * con horas inválidas no calla nada: el flujo trabaja 24/7 como siempre.
@@ -76,22 +101,15 @@ function windowDurationMinutes(fromMin, toMin) {
   return diff === 0 ? MINUTES_PER_DAY : diff;
 }
 
-/** Fecha del inicio del día local de `date` (00:00). */
-function startOfLocalDay(date) {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
 /**
- * Tramo de silencio que arranca el día `dayStart` (Date a las 00:00), o null si
- * ese día de la semana no está marcado. Devuelve { start, end } (end exclusivo).
+ * Tramo de silencio que arranca el día `dayStart` (medianoche GT), o null si
+ * ese día de la semana no está marcado. Devuelve { start, end } (end exclusivo),
+ * como instantes reales: 00:00 GT del día + minutos de la franja.
  */
 function slotForDay(win, dayStart, fromMin, duration) {
   const days = normalizeDays(win.days);
-  if (!days.includes(dayStart.getDay())) return null;
-  const start = new Date(dayStart.getTime());
-  start.setMinutes(fromMin);
+  if (!days.includes(gtWall(dayStart).day)) return null;
+  const start = new Date(dayStart.getTime() + fromMin * 60000);
   return { start, end: new Date(start.getTime() + duration * 60000) };
 }
 
@@ -105,7 +123,7 @@ function quietSlotAt(win, date) {
   const fromMin = parseHHMM(win.from);
   const duration = windowDurationMinutes(fromMin, parseHHMM(win.to));
   const t = date.getTime();
-  const today = startOfLocalDay(date);
+  const today = startOfGtDay(date);
   for (let i = -1; i <= 0; i += 1) {
     const slot = slotForDay(win, new Date(today.getTime() + i * DAY_MS), fromMin, duration);
     if (slot && t >= slot.start.getTime() && t < slot.end.getTime()) return slot;
@@ -184,7 +202,7 @@ function describeWindow(win) {
   if (!isWindowActive(win)) return 'sin restricción';
   const days = normalizeDays(win.days);
   const label = days.length === 7 ? 'todos los días' : days.map((d) => DAY_NAMES[d]).join(', ');
-  return `${label} de ${formatHHMM(parseHHMM(win.from))} a ${formatHHMM(parseHHMM(win.to))}`;
+  return `${label} de ${formatHHMM(parseHHMM(win.from))} a ${formatHHMM(parseHHMM(win.to))} (hora Ecuador)`;
 }
 
 module.exports = {

@@ -26,7 +26,14 @@ require('dotenv').config();
 // setHours()/toLocaleString(), la fecha de emisión SRI, cortes de "hoy", etc. se
 // calculen siempre en hora de Ecuador y NUNCA en la del servidor (que en el VPS
 // suele estar en UTC). Node re-lee process.env.TZ al reasignarlo.
-process.env.TZ = process.env.TZ || 'America/Guayaquil';
+//
+// SE FUERZA a propósito (antes era `|| 'America/Guayaquil'`): si el VPS ya
+// traía TZ=UTC en el entorno, el fallback la respetaba y TODA la hora del
+// sistema —incluidas las ventanas horarias de las automatizaciones— corría en
+// UTC, cinco horas tarde. La hora del usuario es la de Guayaquil, sin peros.
+// (Las ventanas de workflow además se evalúan explícitamente en Guayaquil en
+// utils/sendWindow.js, inmunes a esta variable.)
+process.env.TZ = 'America/Guayaquil';
 
 // Una promesa sin manejar NO debe tumbar toda la API de la clínica (Node >=15
 // mata el proceso por defecto). Caso real: RemoteAuth de whatsapp-web.js

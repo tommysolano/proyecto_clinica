@@ -94,8 +94,19 @@ const EMPTY = {
     chats: 0, oportunidades: 0, agendadas: 0, ganadas: 0, perdidas: 0, enCurso: 0, anuncios: 0,
     valorTotal: 0, valorGanado: 0, valorAgendado: 0, tasaAgendamiento: 0, tasaCierre: 0,
     valorPagado: 0, valorPagadoAlCrear: 0, valorPagadoMostrador: 0, citasCreadas: 0, citasConPago: 0,
+    // "Pagado por pacientes" REAL: valor ESCRITO en las oportunidades cuya cita
+    // vinculada quedó asistida/completada (el paciente de verdad fue y pagó).
+    valorPagadoOportunidades: 0,
+    oportunidadesPagadas: 0,
   },
   embudo: [], serie: [], porOportunidad: [], porAnuncio: [], porCanal: [], porAgente: [], servicios: [], motivosPerdida: [],
+  // De la OPORTUNIDAD a la CONSULTA: cuántos contactos escribieron, agendaron
+  // y de esos cuántos asistieron a su cita (asistida/completada).
+  embudoAsistencia: {
+    escriben: { contactos: 0, oportunidades: 0 },
+    agendan: { contactos: 0, oportunidades: 0 },
+    asisten: { contactos: 0, citas: 0 },
+  },
   // CITAS AGENDADAS POR SERVICIO (sep-2026): vive aparte del informe del CRM —
   // viene del catálogo de la agenda, no de las oportunidades.
   citasPorServicio: [],
@@ -317,25 +328,23 @@ export default function Analytics() {
             hint={`de las ${nf.format(t.agendadas)} agendadas`}
             color={STAGE_COLOR.agendado}
           />
-          {/* TODO LO QUE PAGARON LOS PACIENTES DE LAS CITAS DEL RANGO (sep-2026).
-              Suma dos lados: lo anotado al crear la cita (abono o total al
-              reservar) y lo cobrado en mostrador EN VENTAS LIGADAS A LA CITA
-              (el botón «Cobrar cita» de la agenda — sin ese enlace, un cobro de
-              mostrador no se puede atribuir a ninguna cita). Las citas van por
-              SU FECHA: es lo mismo que se ve en la agenda del rango. */}
+          {/* PAGADO POR PACIENTES (sep-2026): el valor que el agente ESCRIBE en
+              la oportunidad, contado SOLO cuando la cita vinculada (el enlace
+              lo sella el chat al agendar) quedó ASISTIDA o COMPLETADA — esa es
+              la prueba de que el paciente de verdad fue y pagó. */}
           <Tile
             label="Pagado por pacientes"
-            value={moneyShort(t.valorPagado)}
+            value={moneyShort(t.valorPagadoOportunidades)}
             hint={
-              !t.citasCreadas
-                ? 'sin citas en el rango'
-                : `${nf.format(t.citasConPago)} de ${nf.format(t.citasCreadas)} citas con pago`
+              !t.oportunidadesPagadas
+                ? 'sin citas atendidas en el rango'
+                : `${nf.format(t.oportunidadesPagadas)} oportunidades con cita asistida/completada`
             }
             color={STAGE_COLOR.ganado}
             title={
-              `Total pagado por los pacientes de las citas del rango: $${Number(t.valorPagado || 0).toFixed(2)}. `
-              + `Al reservar la cita: $${Number(t.valorPagadoAlCrear || 0).toFixed(2)}. `
-              + `Cobrado en mostrador (ventas enlazadas a la cita): $${Number(t.valorPagadoMostrador || 0).toFixed(2)}.`
+              `Valor escrito en las oportunidades cuya cita vinculada está ASISTIDA o COMPLETADA: $${Number(t.valorPagadoOportunidades || 0).toFixed(2)} `
+              + `(${nf.format(t.oportunidadesPagadas)} oportunidades). `
+              + `Referencia de caja: al reservar la cita se anotó $${Number(t.valorPagadoAlCrear || 0).toFixed(2)} y en mostrador (ventas enlazadas) $${Number(t.valorPagadoMostrador || 0).toFixed(2)}.`
             }
           />
           <Tile
@@ -633,21 +642,21 @@ export default function Analytics() {
 
         {conAgentes && (
           <ChartCard
-            title="Oportunidades por agente"
-            subtitle="Quién tiene el embudo y cuánto de él llega a agendarse o a ganarse."
+            title="Citas por agente"
+            subtitle="Citas que agendaron los usuarios de call center y marketing, y cuántos pacientes asistieron a su cita."
             columns={[
               { key: 'agente', label: 'Agente' },
-              { key: 'total', label: 'Oportunidades', num: true },
-              { key: 'agendadas', label: 'Agendadas', num: true },
-              { key: 'ganadas', label: 'Ganadas', num: true },
-              { key: 'valorGanado', label: 'Valor ganado', num: true, fmt: money },
+              { key: 'total', label: 'Citas agendadas', num: true },
+              { key: 'asistidas', label: 'Asistidas', num: true },
+              { key: 'completadas', label: 'Completadas', num: true },
+              { key: 'atendidas', label: 'Atendidas', num: true },
             ]}
             rows={data.porAgente}
             empty={false}
             legend={[
-              { label: 'Oportunidades', color: C_TOTAL },
-              { label: 'Agendadas', color: STAGE_COLOR.agendado },
-              { label: 'Ganadas', color: STAGE_COLOR.ganado },
+              { label: 'Citas agendadas', color: C_TOTAL },
+              { label: 'Asistidas', color: C_ASISTIDA },
+              { label: 'Completadas', color: C_COMPLETADA },
             ]}
           >
             <ResponsiveContainer width="100%" height={data.porAgente.length * 72 + 40}>
@@ -656,19 +665,91 @@ export default function Analytics() {
                 <XAxis type="number" hide domain={[0, 'dataMax']} />
                 <YAxis type="category" dataKey="agente" width={150} tickLine={false} axisLine={false} tick={{ fill: INK.text, fontSize: 13 }} />
                 <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipSerie />} />
-                <Bar dataKey="total" name="Oportunidades" fill={C_TOTAL} barSize={14} radius={[0, 4, 4, 0]} isAnimationActive={false}>
+                <Bar dataKey="total" name="Citas agendadas" fill={C_TOTAL} barSize={14} radius={[0, 4, 4, 0]} isAnimationActive={false}>
                   <LabelList dataKey="total" position="right" fill={INK.text} fontSize={11} />
                 </Bar>
-                <Bar dataKey="agendadas" name="Agendadas" fill={STAGE_COLOR.agendado} barSize={14} radius={[0, 4, 4, 0]} isAnimationActive={false}>
-                  <LabelList dataKey="agendadas" position="right" fill={INK.text} fontSize={11} />
+                <Bar dataKey="asistidas" name="Asistidas" fill={C_ASISTIDA} barSize={14} radius={[0, 4, 4, 0]} isAnimationActive={false}>
+                  <LabelList dataKey="asistidas" position="right" fill={INK.text} fontSize={11} />
                 </Bar>
-                <Bar dataKey="ganadas" name="Ganadas" fill={STAGE_COLOR.ganado} barSize={14} radius={[0, 4, 4, 0]} isAnimationActive={false}>
-                  <LabelList dataKey="ganadas" position="right" fill={INK.text} fontSize={11} />
+                <Bar dataKey="completadas" name="Completadas" fill={C_COMPLETADA} barSize={14} radius={[0, 4, 4, 0]} isAnimationActive={false}>
+                  <LabelList dataKey="completadas" position="right" fill={INK.text} fontSize={11} />
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           </ChartCard>
         )}
+
+        {(() => {
+          // DE LA OPORTUNIDAD A LA CONSULTA (sep-2026, a petición de la clínica):
+          // de las oportunidades del rango, cuántos CONTACTOS escribieron,
+          // cuántos agendaron cita y de esos cuántos pacientes asistieron
+          // (cita asistida/completada). Los chats están vinculados al perfil
+          // del paciente, así que el cruce es directo.
+          const fa = data.embudoAsistencia || EMPTY.embudoAsistencia;
+          const filas = [
+            {
+              etapa: 'Escribieron (oportunidad creada)',
+              contactos: fa.escriben?.contactos || 0,
+              total: fa.escriben?.oportunidades || 0,
+              unidad: 'oportunidades',
+              color: C_TOTAL,
+            },
+            {
+              etapa: 'Agendaron cita',
+              contactos: fa.agendan?.contactos || 0,
+              total: fa.agendan?.oportunidades || 0,
+              unidad: 'citas agendadas',
+              color: STAGE_COLOR.agendado,
+            },
+            {
+              etapa: 'Asistieron a la cita',
+              contactos: fa.asisten?.contactos || 0,
+              total: fa.asisten?.citas || 0,
+              unidad: 'citas asistidas/completadas',
+              color: C_ASISTIDA,
+            },
+          ];
+          const hay = filas.some((f) => f.total > 0 || f.contactos > 0);
+          if (!hay) return null;
+          return (
+            <ChartCard
+              title="De la oportunidad a la consulta atendida"
+              subtitle="Cuántos contactos escribieron, cuántos agendaron cita y de esos cuántos pacientes asistieron (asistida/completada)."
+              columns={[
+                { key: 'etapa', label: 'Etapa' },
+                { key: 'contactos', label: 'Contactos', num: true },
+                { key: 'total', label: 'Oportunidades / Citas', num: true },
+              ]}
+              rows={filas}
+              empty={false}
+            >
+              <ResponsiveContainer width="100%" height={filas.length * 52 + 24}>
+                <BarChart data={filas} layout="vertical" margin={{ top: 8, right: 72, bottom: 8, left: 8 }}>
+                  <CartesianGrid horizontal={false} stroke={INK.grid} />
+                  <XAxis type="number" hide domain={[0, 'dataMax']} />
+                  <YAxis type="category" dataKey="etapa" width={210} tickLine={false} axisLine={false} tick={{ fill: INK.text, fontSize: 12 }} />
+                  <Tooltip
+                    cursor={{ fill: '#f8fafc' }}
+                    content={({ active, payload, label }) => {
+                      if (!active || !payload?.length) return null;
+                      const f = payload[0]?.payload || {};
+                      return (
+                        <div className="bg-white border border-slate-200 rounded-lg shadow-lg px-3 py-2 text-xs">
+                          <div className="font-semibold text-slate-800">{label}</div>
+                          <div className="text-slate-600">{nf.format(f.contactos || 0)} contactos</div>
+                          <div className="text-slate-600">{nf.format(f.total || 0)} {f.unidad}</div>
+                        </div>
+                      );
+                    }}
+                  />
+                  <Bar dataKey="total" name="Total" fill={C_TOTAL} barSize={22} radius={[0, 4, 4, 0]} isAnimationActive={false}>
+                    <LabelList dataKey="total" position="right" fill={INK.text} fontSize={12} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartCard>
+          );
+        })()}
 
         {conServicios && (
           <ChartCard
