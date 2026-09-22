@@ -156,41 +156,55 @@ function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, p
      * sin id, sale a la bandeja de todos. Antes se forzaba a `null` siempre, y
      * por eso no se podía dejar preparado «primero Ana y luego quien esté
      * libre», que es como se atiende un detox.
+     *
+     * UN PASO, VARIOS ENFERMEROS (sep-2026): `paso.users` es la lista de
+     * nombrados del paso. Todos comparten la MISMA posición en la cola — es un
+     * solo paso de atención en el que trabajan varios a la vez, cada uno su
+     * parte — y la bandeja los muestra a todos cuando le toca a enfermería.
      */
-    const user = paso?.user || null;
-    if (!esEnfermeria && !user) continue;
+    const usuariosDelPaso = esEnfermeria
+      ? (Array.isArray(paso?.users) && paso.users.length
+          ? paso.users.map((u) => u || null)
+          : [paso?.user || null])
+      : [paso?.user || null];
+    if (!esEnfermeria && !usuariosDelPaso[0]) continue;
     // A quien ya atendió no se le vuelve a poner en cola: su turno está cerrado
     // y su seguimiento escrito. (Enfermería sí puede repetirse: tomar signos
     // antes y aplicar algo después son dos pasos distintos, y los puede hacer
     // la misma persona.)
-    if (!esEnfermeria && completados.some((t) => String(t.user) === String(user))) continue;
-    nuevos.push({
-      kind: esEnfermeria ? 'enfermeria' : 'doctor',
-      user,
-      order: order++,
-      status: 'pendiente',
-      assignedAt: new Date(),
-      assignedBy: por,
-      serviceName: String(paso?.serviceName || '').trim(),
-      serviceItem: paso?.serviceItem || null,
-      /**
-       * El suero viaja con el paso, y con él su seguimiento ya escrito. Los DOS
-       * hacen falta: sin `serum` la pantalla no puede enseñar lo que ya se
-       * indicó al reabrir la asignación, y sin `serumFollowUp` reordenar la cola
-       * volvería a escribirlo en la ficha (ver `Appointment.turns[].serum`).
-       */
-      serum: paso?.serum || undefined,
-      serumFollowUp: paso?.serumFollowUp || null,
-      serumMergeIntoService: !!paso?.serumMergeIntoService,
-      // Lo que mostrador le escribió a enfermería para este paso (sep-2026):
-      // la enfermera lo lee en su barra de atención, junto al suero.
-      nurseInstructions: String(paso?.nurseInstructions || '').trim(),
-      // HIDROTERAPIA (sep-2026): la marca mostrador al asignar; la enfermera
-      // la ve en su barra de atención y da fe de si la realizó.
-      hidroterapia: paso?.hidroterapia
-        ? { solicitada: true, realizada: false, realizadaAt: null, realizadaBy: null }
-        : undefined,
-    });
+    if (!esEnfermeria && completados.some((t) => String(t.user) === String(usuariosDelPaso[0]))) continue;
+
+    for (const uid of usuariosDelPaso) {
+      nuevos.push({
+        kind: esEnfermeria ? 'enfermeria' : 'doctor',
+        user: uid || null,
+        order,
+        status: 'pendiente',
+        assignedAt: new Date(),
+        assignedBy: por,
+        serviceName: String(paso?.serviceName || '').trim(),
+        serviceItem: paso?.serviceItem || null,
+        /**
+         * El suero viaja con el paso, y con él su seguimiento ya escrito. Los DOS
+         * hacen falta: sin `serum` la pantalla no puede enseñar lo que ya se
+         * indicó al reabrir la asignación, y sin `serumFollowUp` reordenar la cola
+         * volvería a escribirlo en la ficha (ver `Appointment.turns[].serum`).
+         */
+        serum: paso?.serum || undefined,
+        serumFollowUp: paso?.serumFollowUp || null,
+        serumMergeIntoService: !!paso?.serumMergeIntoService,
+        // Lo que mostrador le escribió a enfermería para este paso (sep-2026):
+        // la enfermera lo lee en su barra de atención, junto al suero.
+        nurseInstructions: String(paso?.nurseInstructions || '').trim(),
+        // HIDROTERAPIA (sep-2026): la marca mostrador al asignar; la enfermera
+        // la ve en su barra de atención y da fe de si la realizó.
+        hidroterapia: paso?.hidroterapia
+          ? { solicitada: true, realizada: false, realizadaAt: null, realizadaBy: null }
+          : undefined,
+      });
+    }
+    // El paso (con uno o con varios enfermeros) ocupa UNA posición.
+    order += 1;
   }
 
   apt.turns = [...completados, ...nuevos];
@@ -331,13 +345,14 @@ function turnoEnfermeriaParaUsuario(apt, userId) {
  * Tres casos, y los tres hacen falta:
  *  1. La que puede tomar AHORA: el turno vigente es de enfermería y está libre
  *     (`currentTurnUser: null`) o es suyo.
- *  2. TURNOS PARALELOS (sep-2026): un turno de enfermería con SU nombre sigue
- *     pendiente, aunque la cita esté con un doctor o con otra enfermera. La
- *     clínica pidió que VARIOS enfermeros puedan atender al mismo paciente a la
- *     vez —cada uno su parte—, no que el segundo esperara a que el primero
- *     cerrara. Solo los NOMBRADOS van aquí: los abiertos siguen saliendo por
- *     su orden en la cola, para no ofertar a todos el paso de un momento que
- *     todavía no llegó.
+ *  2. EL PASO DE ENFERMERÍA ES COMPARTIDO (sep-2026): un solo paso de enfermería
+ *     puede llevar VARIOS enfermeros nombrados — todos atienden al mismo
+ *     paciente a la vez y cada uno cierra su parte. El espejo `currentTurnUser`
+     * solo apunta al primero, así que la bandeja pregunta además si hay un
+     * turno SUYO pendiente — PERO solo mientras la cita esté ya en manos de
+     * enfermería: si el paciente sigue con el doctor, la cita no sale para
+     * nadie (la cola manda; la clínica pidió que la cita aparezca recién
+     * cuando mostrador asigna el suero).
  *  3. Las que YA atendió, para que no se le caigan de la lista al pasar el turno
  *     a la siguiente compañera.
  *
@@ -360,10 +375,11 @@ function filtroCitasDeEnfermeria(userId) {
         currentTurnKind: 'enfermeria',
         $or: [{ currentTurnUser: null }, { currentTurnUser: userId }],
       },
+      // El paso de enfermería COMPARTIDO: mi turno pendiente manda solo cuando
+      // la cita ya está en manos de enfermería.
       {
-        turns: {
-          $elemMatch: { kind: 'enfermeria', user: userId, status: 'pendiente' },
-        },
+        currentTurnKind: 'enfermeria',
+        turns: { $elemMatch: { kind: 'enfermeria', user: userId, status: 'pendiente' } },
       },
       // Solo las COMPLETADAS. Sin el estado, un turno suyo que todavía está
       // detrás de un doctor le saldría ya en la bandeja, y la cola dejaría de

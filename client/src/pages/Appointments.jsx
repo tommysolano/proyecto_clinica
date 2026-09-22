@@ -1748,11 +1748,17 @@ export default function Appointments() {
    * turno se cierra desde aquí: queda constancia de la aplicación y, si detrás
    * hay un doctor, la cita pasa a sus manos en ese momento.
    */
-  const nurseFinish = async (apt) => {
+  const nurseFinish = async (apt, { todos = false } = {}) => {
     setNurseWorking(true);
     try {
-      await api.post(`/appointments/${apt._id}/nurse-complete`, {});
-      toast.success('Atención registrada');
+      await api.post(
+        `/appointments/${apt._id}/nurse-complete`,
+        // TERMINAR LA ATENCIÓN (sep-2026): cierra también los pendientes de
+        // enfermería de la cita, para que no quede 'asistida' esperando a
+        // alguien que no puede darle a terminar.
+        todos ? { terminarParaTodos: true } : {}
+      );
+      toast.success(todos ? 'Atención finalizada' : 'Atención registrada');
       // Que la fila cambie de bandeja AL MOMENTO, sin esperar al socket: en iOS
       // el evento a veces llega tarde y la cita parecía seguir pendiente.
       fetchAppointments();
@@ -1961,36 +1967,26 @@ export default function Appointments() {
          * disponible por si hay que mirarla.
          */
         if (apt.serumStatus) return null;
-        // Es su turno: reclamado (startedAt) está en atención; nombrado sin
-        // reclamar todavía es trabajo pendiente, aunque el estado diga asistida.
+        /**
+         * EL PASO DE ENFERMERÍA ES COMPARTIDO (sep-2026): puede llevar varios
+         * enfermeros nombrados; el espejo `currentTurnUser` solo apunta al
+         * primero, así que aquí también cuenta un pendiente a mi nombre. La
+         * cita SOLO aparece cuando ya le toca a enfermería (la cola manda).
+         */
+        const miTurno = (apt.turns || []).find(
+          (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDeCampo(t.user) === miId
+        );
         if (idDeCampo(apt.currentTurnUser) === miId) {
-          const turno = (apt.turns || []).find(
-            (t) => t.kind === 'enfermeria' && t.status === 'pendiente'
-          );
-          return turno?.startedAt ? 'atendido' : 'pendiente';
+          return miTurno?.startedAt ? 'atendido' : 'pendiente';
         }
+        if (miTurno) return miTurno.startedAt ? 'atendido' : 'pendiente';
         // Abierta: pendiente de todos. Nombrada a OTRA: no es suya; como su
         // bandeja no tiene dónde enseñarla, no la cuenta como pendiente.
         return !apt.currentTurnUser ? 'pendiente' : 'finalizado';
       }
-      /**
-       * TURNOS PARALELOS (sep-2026): aunque la pelota esté con un doctor o con
-       * otra compañera, un turno de enfermería NOMBRADO a esta persona sigue
-       * pendiente y le aparece — la clínica pidió que varios enfermeros puedan
-       * atender al mismo paciente a la vez, cada uno su parte.
-       */
-      const miTurnoParalelo = (apt.turns || []).find(
-        (t) =>
-          t.kind === 'enfermeria'
-          && t.status === 'pendiente'
-          && idDeCampo(t.user) === miId
-      );
-      if (miTurnoParalelo) {
-        if (apt.serumStatus) return null;
-        return miTurnoParalelo.startedAt ? 'atendido' : 'pendiente';
-      }
-      // Su turno ya se cerró y la cita siguió con otro profesional (o terminó):
-      // lo suyo aquí terminó, aunque la cita no.
+      // La cita sigue con un doctor (o terminó): a la bandeja de enfermería no
+      // entra hasta que le toca — la clínica pidió que aparezca recién cuando
+      // mostrador asigna el suero.
       return 'finalizado';
     }
 
@@ -2762,21 +2758,19 @@ export default function Appointments() {
                   const enfermeriaLibre = conTurnos
                     ? apt.currentTurnKind === 'enfermeria' && !apt.currentTurnUser && !retenidaPorSuero
                     : !apt.attendedByNurse;
-                  // Ya es suyo: puede ver la receta y cerrar su parte. Además del
-                  // turno vigente, un turno de enfermería NOMBRADO a esta persona
-                  // cuenta — TURNOS PARALELOS (sep-2026): varios enfermeros
-                  // atienden al mismo paciente a la vez, cada uno su parte.
-                  const miTurnoParalelo = conTurnos
-                    ? (apt.turns || []).find(
-                        (t) =>
-                          t.kind === 'enfermeria'
-                          && t.status === 'pendiente'
-                          && idDe(t.user) === String(user?.id)
-                      )
-                    : null;
+                  // Ya es suyo: puede ver la receta y cerrar su parte. El paso
+                  // de enfermería es COMPARTIDO (sep-2026): también cuenta un
+                  // pendiente a mi nombre — pero SOLO cuando ya le toca a
+                  // enfermería (si el paciente está con el doctor, nada sale).
                   const enfermeriaMia = conTurnos
-                    ? (apt.currentTurnKind === 'enfermeria' && esMiTurno && !retenidaPorSuero)
-                      || (!!miTurnoParalelo && !retenidaPorSuero)
+                    ? apt.currentTurnKind === 'enfermeria'
+                      && !retenidaPorSuero
+                      && (
+                        esMiTurno
+                        || (apt.turns || []).some(
+                          (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) === String(user?.id)
+                        )
+                      )
                     : idDe(apt.attendedByNurse) === String(user?.id);
                   /**
                    * ¿PUEDO VOLVER A ENTRAR A CORREGIR LO QUE ESCRIBÍ?
@@ -3023,6 +3017,26 @@ export default function Appointments() {
                         icon: HiOutlinePencilSquare,
                         fn: () => abrirAtencion(apt, { soloVolver: true }),
                       });
+                      /**
+                       * TERMINAR LA ATENCIÓN COMPLETA (sep-2026): el paso de
+                       * enfermería es compartido — hay otro pendiente — y la
+                       * cita no puede quedarse 'asistida' esperando a quien no
+                       * puede darle a terminar.
+                       */
+                      const hayOtrosEnfPendientes = conTurnos && (apt.turns || []).some(
+                        (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) !== String(user?.id)
+                      );
+                      if (hayOtrosEnfPendientes) {
+                        opciones.push({
+                          id: 'terminar_todos',
+                          label: 'Terminar la atención completa',
+                          icon: HiOutlineStop,
+                          fn: () => {
+                            if (!window.confirm('¿Terminar la atención completa? Se cierran también las partes de enfermería que quedan pendientes.')) return;
+                            nurseFinish(apt, { todos: true });
+                          },
+                        });
+                      }
                     }
                     /**
                      * AGENDAR LA DERIVACIÓN DEL DOCTOR (sep-2026): la cita tiene
@@ -4704,6 +4718,11 @@ export default function Appointments() {
             await nurseFinish(apt);
             setNurseActionModal(null);
           }}
+          onTerminarTodos={async (apt) => {
+            if (!window.confirm('¿Terminar la atención completa? Se cierran también las partes de enfermería que quedan pendientes.')) return;
+            await nurseFinish(apt, { todos: true });
+            setNurseActionModal(null);
+          }}
           onContinuar={(apt) => {
             setNurseActionModal(null);
             /**
@@ -5012,7 +5031,7 @@ function DerivacionesCitaModal({ appointment, onClose, onAgendar }) {
  * acciones grandes y una línea que explica qué hace cada una — porque «Terminar»
  * no dice que deja registrado lo que se aplicó.
  */
-function NurseActionModal({ appointment, working = false, onClose, onAtender, onTerminar, onContinuar }) {
+function NurseActionModal({ appointment, working = false, onClose, onAtender, onTerminar, onTerminarTodos, onContinuar }) {
   const apt = appointment;
   const conTurnos = (apt.turns || []).length > 0;
   const miId = String(apt.miId || '');
@@ -5023,25 +5042,32 @@ function NurseActionModal({ appointment, working = false, onClose, onAtender, on
    * Con los nombres de recepción esto importa: el turno nombrado a otra persona
    * no ofrece nada, ni aunque la pantalla traiga la cita vieja.
    *
-   * TURNOS PARALELOS (sep-2026): un turno nombrado a esta persona cuenta aunque
-   * la pelota esté con un doctor o con otra compañera — varios enfermeros
-   * atienden al mismo paciente a la vez, cada uno su parte.
+   * EL PASO DE ENFERMERÍA ES COMPARTIDO (sep-2026): varios nombrados atienden
+   * al mismo paciente, pero SOLO cuando ya le toca a enfermería (la cola
+   * manda: si el paciente sigue con el doctor, nada aparece).
    */
-  const miTurnoPendiente = conTurnos
+  const vigenteEnfermeria = conTurnos && apt.currentTurnKind === 'enfermeria';
+  const miTurnoPendiente = vigenteEnfermeria
     ? (apt.turns || []).find(
         (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) === miId
       )
     : null;
-  const vigenteEnfermeria = conTurnos && apt.currentTurnKind === 'enfermeria';
+  const esMio = vigenteEnfermeria && idDe(apt.currentTurnUser) === miId;
   const libre = vigenteEnfermeria && !apt.currentTurnUser;
   const puedeAtender = !apt.serumStatus && (conTurnos
-    ? !!miTurnoPendiente && !miTurnoPendiente.startedAt
-      ? true
-      : libre
+    ? (miTurnoPendiente && !miTurnoPendiente.startedAt) || libre
     : !apt.attendedByNurse);
   const puedeTerminar = !apt.serumStatus && (conTurnos
-    ? !!miTurnoPendiente && !!miTurnoPendiente.startedAt
+    ? ((esMio && !miTurnoPendiente) || (miTurnoPendiente && !!miTurnoPendiente.startedAt))
     : idDe(apt.attendedByNurse) === miId);
+  /**
+   * TERMINAR LA ATENCIÓN (sep-2026): con el paso COMPARTIDO, otro pendiente de
+   * enfermería puede quedar — y no puede ser obligatorio que esa persona
+   * pulse "Terminar". Quien cierra SU parte puede cerrar la atención entera.
+   */
+  const hayOtrosPendientes = conTurnos && (apt.turns || []).some(
+    (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) !== miId
+  );
   const nombre = `${apt.patient?.firstName || ''} ${apt.patient?.lastName || ''}`.trim() || 'el paciente';
   const servicio = apt.serviceName || (apt.turns || []).map((t) => t.serviceName).filter(Boolean)[0] || '';
 
@@ -5094,6 +5120,21 @@ function NurseActionModal({ appointment, working = false, onClose, onAtender, on
             <span className="block">Terminar</span>
             <span className="block text-xs font-normal text-emerald-100 mt-1">
               Cierra tu parte y deja registrado en la ficha del paciente lo que aplicaste.
+            </span>
+          </button>
+        )}
+
+        {puedeTerminar && hayOtrosPendientes && onTerminarTodos && (
+          <button
+            type="button"
+            disabled={working}
+            onClick={() => onTerminarTodos(apt)}
+            className="w-full px-4 py-4 rounded-xl bg-slate-800 text-white text-base font-bold hover:bg-slate-900 disabled:opacity-60 cursor-pointer border-none text-left"
+          >
+            <span className="block">Terminar la atención completa</span>
+            <span className="block text-xs font-normal text-slate-300 mt-1">
+              Cierra tu parte Y las partes de enfermería que quedan pendientes — la cita pasa a completada.
+              Úsalo si tu compañera no va a poder cerrar la suya.
             </span>
           </button>
         )}

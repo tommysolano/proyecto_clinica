@@ -380,12 +380,14 @@ export default function PatientDetail() {
    */
   const retenidaPorSuero = !!aptData?.serumStatus;
   /**
-   * MI TURNO de enfermería, pendiente y a mi nombre. Con TURNOS PARALELOS
-   * (sep-2026) puede existir aunque la pelota esté con un doctor o con otra
-   * compañera: varios enfermeros atienden al mismo paciente a la vez, cada uno
-   * su parte.
+   * MI TURNO de enfermería, pendiente y a mi nombre. El paso de enfermería es
+   * COMPARTIDO (sep-2026): puede llevar varios nombrados — pero la cita solo
+   * está "en enfermería" cuando ya le toca: si el paciente sigue con el doctor,
+   * nada aparece (la clínica pidió que la cita salga recién al asignar el
+   * suero).
    */
-  const miTurnoParalelo = enTramite
+  const miTurnoPendienteEnf = enTramite
+    && aptData?.currentTurnKind === 'enfermeria'
     ? (aptData?.turns || []).find(
         (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) === miId
       )
@@ -393,7 +395,7 @@ export default function PatientDetail() {
   const enfermeriaLibre = enTramite && !retenidaPorSuero && (
     (aptData.turns || []).length
       ? (aptData.currentTurnKind === 'enfermeria' && !aptData.currentTurnUser)
-        || (!!miTurnoParalelo && !miTurnoParalelo.startedAt)
+        || (!!miTurnoPendienteEnf && !miTurnoPendienteEnf.startedAt)
       : !aptData.attendedByNurse
   );
   // Ya es SUYA: es la única situación en la que puede cerrar su parte. Antes el
@@ -402,8 +404,12 @@ export default function PatientDetail() {
   const enfermeriaMia = enTramite && !retenidaPorSuero && (
     (aptData.turns || []).length
       ? (
-          !!miTurnoParalelo
-          || (aptData.currentTurnKind === 'enfermeria' && idDe(aptData.currentTurnUser) === miId)
+          aptData.currentTurnKind === 'enfermeria' && (
+            idDe(aptData.currentTurnUser) === miId
+            || (aptData.turns || []).some(
+              (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) === miId
+            )
+          )
         )
       : idDe(aptData.attendedByNurse) === miId
   );
@@ -498,11 +504,18 @@ export default function PatientDetail() {
    * queda nadie. Después se vuelve a la agenda, igual que hace el doctor al
    * guardar: quedarse en la ficha con todo igual se lee como «no pasó nada».
    */
-  const terminarTurnoEnfermeria = async () => {
+  const terminarTurnoEnfermeria = async ({ todos = false } = {}) => {
     if (cerrandoTurno) return;
+    if (todos && !window.confirm('¿Terminar la atención completa? Se cierran también las partes de enfermería que quedan pendientes.')) return;
     setCerrandoTurno(true);
     try {
-      const { data } = await api.post(`/appointments/${appointmentId}/nurse-complete`, {});
+      const { data } = await api.post(
+        `/appointments/${appointmentId}/nurse-complete`,
+        // TERMINAR LA ATENCIÓN (sep-2026): cierra también los pendientes de
+        // enfermería de la cita — el paso es compartido y la cita no puede
+        // quedarse 'asistida' esperando a quien no puede darle a terminar.
+        todos ? { terminarParaTodos: true } : {}
+      );
       // Se dice la verdad sobre lo que pasó: si detrás queda otro profesional, la
       // cita NO está completada y decirlo evita que alguien la dé por cerrada.
       const quedaAlguien = data?.status !== 'completada';
@@ -514,6 +527,16 @@ export default function PatientDetail() {
       setCerrandoTurno(false);
     }
   };
+
+  /**
+   * EL PASO COMPARTIDO (sep-2026): hay otros pendientes de enfermería en la
+   * cita, así que se ofrece cerrar la atención entera — no puede ser
+   * obligatorio que la compañera pulse «Terminar».
+   */
+  const hayOtrosPendientesEnf = enTramite
+    && (aptData?.turns || []).some(
+      (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) !== miId
+    );
 
   const timerStyle = timerSeconds === null ? null
     : timerSeconds >= 19 * 60 ? 'bg-red-50 border-red-300 text-red-600'
@@ -661,6 +684,17 @@ export default function PatientDetail() {
               >
                 <HiOutlineCheck className="w-4 h-4" />
                 {cerrandoTurno ? 'Cerrando…' : 'Terminar mi parte'}
+              </button>
+            )}
+            {enfermeriaMia && !reclameMiTurno && hayOtrosPendientesEnf && (
+              <button
+                type="button"
+                onClick={() => terminarTurnoEnfermeria({ todos: true })}
+                disabled={cerrandoTurno}
+                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 text-white text-xs font-semibold border-none cursor-pointer disabled:opacity-50"
+                title="Cierra tu parte y las partes de enfermería que quedan pendientes — la cita pasa a completada"
+              >
+                {cerrandoTurno ? 'Cerrando…' : 'Terminar la atención completa'}
               </button>
             )}
           </div>

@@ -20,8 +20,9 @@ const {
   turnoVigenteEsEnfermeria,
   filtroCitasDelDoctor,
   filtroCitasDeEnfermeria,
-  sincronizarEspejo,
-  turnoVigente,
+sincronizarEspejo,
+turnoVigente,
+turnosTerminados,
 } = require('../utils/appointmentTurns');
 const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
 const { crearCitaAtencionInmediata } = require('../utils/walkInAppointment');
@@ -614,6 +615,15 @@ function normalizarPasos(steps) {
       return {
         kind: 'enfermeria',
         user: p.user ? String(p.user) : null,
+        /**
+         * UN PASO, VARIOS ENFERMEROS (sep-2026): `users` es la lista de
+         * nombrados del paso — todos atienden al mismo paciente a la vez,
+         * cada uno su parte. `user` queda como el primero para las pantallas
+         * que leen el turno a secas.
+         */
+        users: Array.isArray(p.users)
+          ? p.users.map((u) => String(u || '')).filter(Boolean)
+          : (p.user ? [String(p.user)] : []),
         serviceName: String(p.serviceName || '').trim(),
         serviceItem: p.serviceItem || null,
         serum: suero ? { base: suero.serumBase, components: suero.serumComponents } : undefined,
@@ -3536,7 +3546,9 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
       else emitToRole(clinicId, 'enfermero', 'appointment:assigned', apt);
     }
     // Y los paralelos, siempre.
-    for (const id of otrosNombrados) emitToUser(id, 'appointment:assigned', apt);
+    if (leTocaEnfermeria) {
+      for (const id of otrosNombrados) emitToUser(id, 'appointment:assigned', apt);
+    }
 
     try {
       const { notificarUsuarios: pushUsuarios, notificarRol: pushRol } = require('../utils/pushNotifications');
@@ -3711,12 +3723,9 @@ exports.nurseClaim = async (req, res) => {
      * Solo si a enfermería LE TOCA. Con la cola ordenada, un turno de enfermería
      * puede estar detrás de un doctor; la bandeja ya no lo enseña, pero una
      * pantalla abierta desde antes sí podría mandarlo, y reclamarlo pondría la
-     * cita en manos de enfermería con el paciente aún en consulta.
-     *
-     * EXCEPCIÓN — TURNOS PARALELOS (sep-2026): un turno de enfermería NOMBRADO
-     * a quien reclama vale SIEMPRE, esté la cita con el doctor o con otra
-     * enfermera: la clínica pidió que varios enfermeros atiendan al mismo
-     * paciente a la vez, cada uno su parte.
+     * cita en manos de enfermería con el paciente aún en consulta. La clínica
+     * pidió (sep-2026) que la cita aparezca a los enfermeros recién cuando
+     * mostrador asigna el suero — la cola manda, sin excepciones.
      */
     const miIdStr = String(req.user._id);
     const miTurnoPendiente = (previa.turns || []).find(
@@ -3725,17 +3734,16 @@ exports.nurseClaim = async (req, res) => {
         t.status === 'pendiente' &&
         String(t.user?._id || t.user || '') === miIdStr
     );
-    if (conTurnos && !miTurnoPendiente && previa.currentTurnKind !== 'enfermeria') {
+    if (conTurnos && previa.currentTurnKind !== 'enfermeria') {
       return res.status(409).json({
         message: 'Todavía le toca al doctor. La cita pasará a enfermería cuando él termine.',
         code: 'NOT_YOUR_TURN',
       });
     }
 
-    // Y solo si el turno vigente es SUYO o está abierto. Cuando recepción nombra
-    // a una enfermera concreta, el turno es de ella: que lo tome otra dejaría el
-    // registro diciendo que atendió quien no era. (Con un turno paralelo propio
-    // la regla no aplica: ese turno es suyo aunque otro tenga la pelota.)
+    // Y solo si el turno vigente es SUYO o está abierto, O el paso de enfermería
+    // es COMPARTIDO y uno de los pendientes es suyo — varios enfermeros atienden
+    // al mismo paciente a la vez, cada uno su parte.
     const dueño = previa.currentTurnUser ? String(previa.currentTurnUser) : null;
     if (conTurnos && !miTurnoPendiente && dueño && dueño !== miIdStr) {
       const quien = await require('../models/User').findById(dueño).select('name').lean();
@@ -3921,7 +3929,28 @@ exports.nurseComplete = async (req, res) => {
      * tarde), sin esta ventana el segundo parte repetiría el primero.
      */
     const inicioDelTurno = miTurno?.startedAt || apt.nurseClaimedAt || apt.consultationStartedAt || null;
-    const { cerrado: turnoCerrado, siguiente, terminado } = completarTurno(apt, { userId: req.user._id });
+    let { cerrado: turnoCerrado, siguiente, terminado } = completarTurno(apt, { userId: req.user._id });
+
+    /**
+     * TERMINAR LA ATENCIÓN COMPLETA (sep-2026): el paso de enfermería es
+     * COMPARTIDO — varios enfermeros nombrados atienden al mismo paciente — y
+     * no puede ser obligatorio que TODOS pulsen «Terminar»: si una se va o se
+     * olvida, la cita se quedaba 'asistida' para siempre. Con
+     * `terminarParaTodos`, quien cierra SU parte cierra también los pendientes
+     * de enfermería que quedan (SOLO los de enfermería: un doctor pendiente no
+     * lo toca — la cita sigue siendo suya).
+     */
+    if (req.body?.terminarParaTodos && conTurnos) {
+      for (const t of apt.turns || []) {
+        if (t.kind === 'enfermeria' && t.status === 'pendiente') {
+          t.status = 'completado';
+          t.completedAt = new Date();
+        }
+      }
+      sincronizarEspejo(apt);
+      siguiente = turnoVigente(apt);
+      terminado = turnosTerminados(apt);
+    }
 
     apt.nurseAttendedAt = new Date();
     if (!apt.consultationStartedAt) apt.consultationStartedAt = new Date();
@@ -3985,8 +4014,19 @@ exports.nurseComplete = async (req, res) => {
           }).catch(() => {});
         }
       }
-    }
 
+      /**
+       * EL PASO COMPARTIDO (sep-2026): los demás enfermeros NOMBRADOS del paso
+       * también se enteran — la cita les aparece a todos a la vez, y aquí solo
+       * se refresca su pantalla (la campana ya sonó con la asignación).
+       */
+      for (const t of apt.turns || []) {
+        if (t.kind !== 'enfermeria' || t.status !== 'pendiente' || !t.user) continue;
+        const idT = String(t.user?._id || t.user);
+        if (String(siguiente.user?._id || siguiente.user) === idT) continue;
+        emitToUser(idT, 'appointment:assigned', apt);
+      }
+    }
     // Si la cita quedó COMPLETADA, sus avisos de enfermería sobran: ya no
     // espera a nadie. (En los demás casos el reclamo ya los apagó.)
     if (apt.status === 'completada') {

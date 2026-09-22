@@ -1,4 +1,4 @@
-/**
+﻿/**
  * VARIOS ENFERMEROS EN UNA MISMA CITA.
  *
  * El caso real: un detox lo atiende primero un enfermero y, cuando termina, lo
@@ -165,7 +165,7 @@ test('al segundo enfermero la cita SÍ le aparece en su bandeja cuando le toca',
 test('un turno nombrado es de esa persona: nadie más puede tomarlo', async () => {
   const { clinicId, userId, enf1, enf2, cita } = await seed();
   await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
-    steps: [{ kind: 'enfermeria', user: String(enf1._id), serviceName: 'Detox' }],
+    steps: [{ kind: 'enfermeria', user: String(enf1._id), serviceName: 'Detox', serum: { base: { volumeMl: 250 }, components: [{ name: 'APIMEL 2ML AMP', quantity: 1 }] } }],
   }, params(cita._id)));
 
   const guardada = await Appointment.findById(cita._id).lean();
@@ -182,6 +182,79 @@ test('un turno nombrado es de esa persona: nadie más puede tomarlo', async () =
   assert.equal((await bandeja(clinicId, enf1._id)).includes(String(cita._id)), true);
   const ok = await H.runController(appt.nurseClaim, comoEnfermero(clinicId, enf1._id, cita._id));
   assert.equal(ok.statusCode < 400, true, JSON.stringify(ok.payload));
+});
+
+// ───────────── EL PASO DE ENFERMERÍA COMPARTIDO (sep-2026) ─────────────
+
+test('UN PASO con VARIOS enfermeros: la cita les aparece a los dos a la vez', async () => {
+  const { clinicId, userId, enf1, enf2, cita } = await seed();
+  await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
+    // UN solo paso con DOS nombrados: la lista `users`.
+    steps: [{ kind: 'enfermeria', users: [String(enf1._id), String(enf2._id)], serviceName: 'Detox', serum: { base: { volumeMl: 250 }, components: [{ name: 'APIMEL 2ML AMP', quantity: 1 }] } }],
+  }, params(cita._id)));
+
+  const a = await Appointment.findById(cita._id).lean();
+  assert.equal(a.turns.length, 2, 'dos turnos, una sola posición');
+  assert.equal(a.turns[0].order, a.turns[1].order, 'los dos en el MISMO paso');
+  assert.equal(String(a.turns[0].user), String(enf1._id));
+  assert.equal(String(a.turns[1].user), String(enf2._id));
+
+  // A los dos les aparece cuando le toca a enfermería…
+  assert.equal((await bandeja(clinicId, enf1._id)).includes(String(cita._id)), true);
+  assert.equal((await bandeja(clinicId, enf2._id)).includes(String(cita._id)), true);
+
+  // …y cada uno reclama SU turno, sin bloquearse entre ellos.
+  const r1 = await H.runController(appt.nurseClaim, comoEnfermero(clinicId, enf1._id, cita._id));
+  const r2 = await H.runController(appt.nurseClaim, comoEnfermero(clinicId, enf2._id, cita._id));
+  assert.equal(r1.statusCode < 400, true, JSON.stringify(r1.payload));
+  assert.equal(r2.statusCode < 400, true, JSON.stringify(r2.payload));
+});
+
+test('cada uno cierra su parte, y UNO puede cerrar la atención completa', async () => {
+  const { clinicId, userId, enf1, enf2, cita } = await seed();
+  await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
+    steps: [{ kind: 'enfermeria', users: [String(enf1._id), String(enf2._id)], serviceName: 'Sueroterapia', serum: { base: { volumeMl: 250 }, components: [{ name: 'APIMEL 2ML AMP', quantity: 1 }] } }],
+  }, params(cita._id)));
+
+  await H.runController(appt.nurseClaim, comoEnfermero(clinicId, enf1._id, cita._id));
+  await H.runController(appt.nurseClaim, comoEnfermero(clinicId, enf2._id, cita._id));
+
+  // Enf1 cierra SOLO su parte: la cita sigue viva con el turno de Enf2.
+  const fin1 = await H.runController(appt.nurseComplete, comoEnfermero(clinicId, enf1._id, cita._id));
+  assert.equal(fin1.statusCode < 400, true, JSON.stringify(fin1.payload));
+  let a = await Appointment.findById(cita._id).lean();
+  assert.equal(a.status, 'asistida', 'aún queda el turno de Enf2');
+  assert.equal(a.turns.find((t) => String(t.user) === String(enf1._id)).status, 'completado');
+  assert.equal(a.turns.find((t) => String(t.user) === String(enf2._id)).status, 'pendiente');
+
+  // Enf2 cierra PARA TODOS: cierra los pendientes de enfermería que quedan…
+  const fin2 = await H.runController(appt.nurseComplete, comoEnfermero(clinicId, enf2._id, cita._id, {
+    terminarParaTodos: true,
+  }));
+  assert.equal(fin2.statusCode < 400, true, JSON.stringify(fin2.payload));
+  a = await Appointment.findById(cita._id).lean();
+  assert.equal(a.status, 'completada', 'y la cita pasa a completada');
+  assert.ok(a.turns.every((t) => t.status !== 'pendiente'));
+});
+
+test('terminar para TODOS no toca un doctor pendiente (la cita sigue siendo suya)', async () => {
+  const { clinicId, userId, docA, enf1, cita } = await seed();
+  await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
+    steps: [{
+      kind: 'enfermeria',
+      users: [String(enf1._id)],
+      serum: { base: { volumeMl: 250 }, components: [{ name: 'APIMEL 2ML AMP', quantity: 1 }] },
+    }, { kind: 'doctor', user: String(docA._id) }],  }, params(cita._id)));
+
+  await H.runController(appt.nurseClaim, comoEnfermero(clinicId, enf1._id, cita._id));
+  const fin = await H.runController(appt.nurseComplete, comoEnfermero(clinicId, enf1._id, cita._id, {
+    terminarParaTodos: true,
+  }));
+  assert.equal(fin.statusCode < 400, true, JSON.stringify(fin.payload));
+
+  const a = await Appointment.findById(cita._id).lean();
+  assert.equal(a.currentTurnKind, 'doctor', 'la cita pasa al doctor, no se cierra');
+  assert.equal(a.status, 'asistida', 'NO está completada: el doctor aún no atiende');
 });
 
 test('se pueden mezclar: primero uno nombrado y después quien esté libre', async () => {
@@ -298,25 +371,35 @@ test('un solo paso de enfermería abierto se sigue comportando como siempre', as
   assert.equal(a.status, 'completada');
 });
 
-test('TURNOS PARALELOS: el turno nombrado de enfermería sale aunque el doctor no haya terminado', async () => {
+test('la cita SOLO sale a enfermería cuando le toca (el suero ya decidido)', async () => {
   const { clinicId, userId, docA, enf1, cita } = await seed();
   await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
-    steps: [{ kind: 'doctor', user: String(docA._id) }, { kind: 'enfermeria', user: String(enf1._id) }],
+    steps: [{
+      kind: 'doctor', user: String(docA._id),
+    }, {
+      kind: 'enfermeria', user: String(enf1._id),
+      serum: { base: { volumeMl: 250 }, components: [{ name: 'APIMEL 2ML AMP', quantity: 1 }] },
+    }],
   }, params(cita._id)));
 
-  // SEP-2026, a petición de la clínica: VARIOS enfermeros pueden atender al
-  // mismo paciente a la vez, cada uno su parte. Un turno NOMBRADO aparece ya en
-  // la bandeja de esa persona —aunque la pelota esté con el doctor— y puede
-  // tomarlo sin esperar.
-  assert.equal((await bandeja(clinicId, enf1._id)).includes(String(cita._id)), true);
+  // SEP-2026, corregido: la clínica pidió que la cita SOLO aparezca a los
+  // enfermeros cuando ya le toca a enfermería — si el paciente sigue con el
+  // doctor, no sale para nadie (aunque el turno esté nombrado).
+  assert.equal((await bandeja(clinicId, enf1._id)).includes(String(cita._id)), false);
   const r = await H.runController(appt.nurseClaim, comoEnfermero(clinicId, enf1._id, cita._id));
-  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+  assert.equal(r.statusCode, 409, JSON.stringify(r.payload));
+  assert.equal(r.payload.code, 'NOT_YOUR_TURN');
 
-  // Y el doctor no pierde la pelota: el turno paralelo no le adelanta.
-  const a = await Appointment.findById(cita._id).lean();
-  assert.equal(a.currentTurnKind, 'doctor', 'la cita sigue en manos del doctor');
-  const miTurno = a.turns.find((t) => String(t.user) === String(enf1._id));
-  assert.ok(miTurno.startedAt, 'el turno paralelo quedó reclamado por Enf1');
+  // Y cuando el doctor termina, sí aparece y puede tomarlo.
+  const records = require('../controllers/clinicalRecordController');
+  await H.runController(
+    records.addFollowUp,
+    H.mockReq(clinicId, docA._id, { motivoConsulta: 'Control', appointmentId: String(cita._id) },
+      { role: 'doctor', params: { patientId: String((await Patient.findById(cita.patient))._id) } }),
+  );
+  assert.equal((await bandeja(clinicId, enf1._id)).includes(String(cita._id)), true);
+  const ok = await H.runController(appt.nurseClaim, comoEnfermero(clinicId, enf1._id, cita._id));
+  assert.equal(ok.statusCode < 400, true, JSON.stringify(ok.payload));
 });
 
 // ───────────── el contrato del que depende la agenda ─────────────

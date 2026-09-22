@@ -154,6 +154,9 @@ export default function AssignAttentionModal({
           ? {
               kind: ENFERMERIA,
               user: t.user ? String(t.user?._id || t.user) : '',
+              // UN PASO, VARIOS ENFERMEROS (sep-2026): la lista de nombrados del
+              // paso. Los pendientes existentes cargan como filas sueltas.
+              users: t.user ? [String(t.user?._id || t.user)] : [],
               serviceName: t.serviceName || '',
               // Lo que mostrador le escribió a la enfermera para este paso
               // (sep-2026): viaja con el paso para poder corregirlo aquí.
@@ -374,9 +377,9 @@ export default function AssignAttentionModal({
   const agregarEnfermeria = () =>
     setCola((c) => [
       ...c,
-      // Nace ABIERTO: es como se ha trabajado siempre y como sigue siendo la
-      // mayoría de las veces. Nombrarlo es la excepción, y se hace a mano.
-      { kind: ENFERMERIA, user: '', serviceName: '', nurseInstructions: '', hidroterapia: false, key: `enf-${(contador.current += 1)}` },
+      // Nace ABIERTO (sin nombrar): "cualquier enfermero" sigue siendo el
+      // valor por defecto. En el paso se pueden escoger a VARIOS.
+      { kind: ENFERMERIA, user: '', users: [], serviceName: '', nurseInstructions: '', hidroterapia: false, key: `enf-${(contador.current += 1)}` },
     ]);
   const editarPaso = (idx, patch) =>
     setCola((c) => c.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
@@ -425,7 +428,10 @@ export default function AssignAttentionModal({
           p.kind === ENFERMERIA
             ? {
                 kind: ENFERMERIA,
-                user: p.user || null,
+                user: p.user || (p.users || [])[0] || null,
+                // UN PASO, VARIOS ENFERMEROS (sep-2026): la lista completa de
+                // nombrados del paso.
+                users: (p.users || []).length ? p.users : (p.user ? [p.user] : []),
                 serviceName: (p.serviceName || '').trim(),
                 // Sin ampollas no se manda nada: una bolsa vacía no es un suero.
                 serum: p.serum?.components?.some((c) => c.name?.trim()) ? p.serum : null,
@@ -665,41 +671,81 @@ export default function AssignAttentionModal({
                   {/* Quién y qué, solo en los pasos de enfermería: al doctor se
                       le nombra siempre y su servicio es el de la cita. */}
                   {esEnf && (
-                    <div className="mt-2 pl-8 flex flex-col sm:flex-row gap-2">
-                      {/* Mismo buscador que en los doctores: en enfermería la
-                          lista también crece, y «cualquier enfermero» sigue
-                          siendo la opción por defecto (limpiar). */}
-                      <div className="flex-1 min-w-0">
-                        <SearchableSelect
-                          options={nurses}
-                          value={paso.user || ''}
-                          onChange={(v) => editarPaso(idx, { user: v })}
-                          getLabel={(n) => n.name || ''}
-                          placeholder="Cualquier enfermero"
-                          searchPlaceholder="Buscar enfermero…"
-                          allowClear
-                          size="sm"
-                        />
-                      </div>
-                      <input
-                        type="text"
-                        value={paso.serviceName || ''}
-                        onChange={(e) => editarPaso(idx, { serviceName: e.target.value })}
-                        placeholder="Qué hace (Detox, Sueroterapia…)"
-                        className="input input-sm flex-1 bg-white"
-                      />
-                      <label
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-200 bg-cyan-50 text-xs font-medium text-cyan-900 cursor-pointer shrink-0 self-start sm:self-center"
-                        title="La enfermera verá Hidroterapia en su barra de atención y marcará si la realizó"
-                      >
+                    <div className="mt-2 pl-8 flex flex-col gap-2">
+                      {/**
+                        * EL PASO DE ENFERMERÍA ES COMPARTIDO (sep-2026): en este
+                        * UNICO paso se escogen a TODOS los enfermeros que van a
+                        * atender al paciente. Sin nombrar = "cualquier
+                        * enfermero" (lo toma el primero); con dos o más, todos
+                        * la ven cuando le toca a enfermería y cada uno cierra
+                        * su parte — y cualquiera puede terminar la atención.
+                        */}
+                      {(paso.users || []).length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {paso.users.map((uid) => (
+                            <span
+                              key={uid}
+                              className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full bg-sky-100 text-sky-800 text-xs font-medium"
+                            >
+                              {enfermeroPorId.get(uid)?.name || 'Enfermería'}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const restantes = paso.users.filter((x) => String(x) !== String(uid));
+                                  editarPaso(idx, { users: restantes, user: restantes[0] || '' });
+                                }}
+                                title="Quitar de este paso"
+                                className="p-0.5 rounded-full hover:bg-sky-200 text-sky-700 bg-transparent border-none cursor-pointer leading-none"
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <div className="flex-1 min-w-0">
+                          <SearchableSelect
+                            options={nurses.filter(
+                              (n) => !(paso.users || []).some((u) => String(u) === String(n._id))
+                            )}
+                            value=""
+                            onChange={(v) => {
+                              if (!v) return;
+                              const usuarios = [...(paso.users || []), v];
+                              editarPaso(idx, { users: usuarios, user: usuarios[0] });
+                            }}
+                            getLabel={(n) => n.name || ''}
+                            placeholder={(paso.users || []).length ? '+ Añadir otro enfermero…' : 'Cualquier enfermero (o escoge quien atiende)'}
+                            searchPlaceholder="Buscar enfermero…"
+                            size="sm"
+                          />
+                        </div>
                         <input
-                          type="checkbox"
-                          checked={!!paso.hidroterapia}
-                          onChange={(e) => editarPaso(idx, { hidroterapia: e.target.checked })}
-                          className="w-4 h-4 accent-cyan-600 cursor-pointer"
+                          type="text"
+                          value={paso.serviceName || ''}
+                          onChange={(e) => editarPaso(idx, { serviceName: e.target.value })}
+                          placeholder="Qué hace (Detox, Sueroterapia…)"
+                          className="input input-sm flex-1 bg-white"
                         />
-                        Hidroterapia
-                      </label>
+                        <label
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-200 bg-cyan-50 text-xs font-medium text-cyan-900 cursor-pointer shrink-0 self-start sm:self-center"
+                          title="Los enfermeros verán Hidroterapia en su barra de atención y marcarán si la realizó"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={!!paso.hidroterapia}
+                            onChange={(e) => editarPaso(idx, { hidroterapia: e.target.checked })}
+                            className="w-4 h-4 accent-cyan-600 cursor-pointer"
+                          />
+                          Hidroterapia
+                        </label>
+                      </div>
+                      <span className="block text-[11px] text-sky-700/80">
+                        {(paso.users || []).length > 0
+                          ? `Atienden juntos: ${(paso.users || []).length} enfermero(s) — cada uno cierra su parte, y cualquiera puede cerrar la atención`
+                          : 'La atiende el primer enfermero que la tome'}
+                      </span>
                     </div>
                   )}
 
@@ -976,7 +1022,11 @@ export default function AssignAttentionModal({
             <button
               type="button"
               onClick={agregarEnfermeria}
-              className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl border border-sky-200 bg-sky-50 text-sm font-medium text-sky-800 cursor-pointer hover:bg-sky-100 shrink-0"
+              disabled={cola.some((p) => p.kind === ENFERMERIA)}
+              title={cola.some((p) => p.kind === ENFERMERIA)
+                ? 'Ya hay un paso de enfermería: dentro de él escoge a todos los enfermeros que van a atender'
+                : undefined}
+              className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl border border-sky-200 bg-sky-50 text-sm font-medium text-sky-800 cursor-pointer hover:bg-sky-100 shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <HiOutlineHeart className="w-4 h-4" /> Añadir enfermería
             </button>
