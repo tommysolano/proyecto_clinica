@@ -3236,6 +3236,15 @@ export default function Appointments() {
                             {quienAgendo(apt)}
                           </div>
                         )}
+                        {/**
+                          * QUIÉN REGISTRÓ EL COBRO (sep-2026), junto a quién
+                          * agendó: "agendada por" no dice quién cobró.
+                          */}
+                        {(apt.chargeRegisteredByName || apt.chargeRegisteredBy?.name) && (
+                          <div className="text-[11px] text-emerald-700 mt-0.5">
+                            Cobró: {apt.chargeRegisteredByName || apt.chargeRegisteredBy?.name}
+                          </div>
+                        )}
                         {ultimoReagendamiento(apt) && (
                           <div className="text-[11px] text-amber-600 mt-0.5">
                             Reagendó: {ultimoReagendamiento(apt)}

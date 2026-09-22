@@ -128,6 +128,15 @@ function aplicarValorDeCita(apt, body, req) {
 
   apt.valueSetAt = new Date();
   apt.valueSetBy = req.user._id;
+  /**
+   * QUIÉN REGISTRÓ EL COBRO (sep-2026): cualquier puerta por la que mostrador
+   * pone el dinero de la cita — crear, asignar la atención, marcar asistencia,
+   * corregir el valor, agendar desde el chat — deja dicho quién fue. Antes solo
+   * el modal de los items lo sellaba y "Cobró: …" no aparecía en la agenda.
+   */
+  apt.chargeRegisteredBy = req.user._id;
+  apt.chargeRegisteredByName = req.user.name || '';
+  apt.chargeRegisteredAt = new Date();
   return true;
 }
 

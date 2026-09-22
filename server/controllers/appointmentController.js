@@ -382,6 +382,7 @@ exports.getAppointments = async (req, res) => {
       .populate('room', 'name code')
       .populate('clinic', 'name nombreComercial')
       .populate('services.product', 'name code salePrice category nursingService')
+      .populate('chargeRegisteredBy', 'name')
       .sort({ date: 1, startTime: 1 });
 
     res.json(appointments);
@@ -451,6 +452,7 @@ exports.getAppointment = async (req, res) => {
       .populate('rescheduleHistory.rescheduledBy', 'name email')
       .populate('referral', 'fromDoctor toDoctor specialty reason status')
       .populate('treatmentRef', 'name status')
+      .populate('chargeRegisteredBy', 'name')
       .populate('services.product', 'name code salePrice category nursingService');
 
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
