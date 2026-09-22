@@ -1201,7 +1201,16 @@ export default function Chats() {
             clientId,
             body,
             ...(attachmentDraft
-              ? { mediaUrl: attachmentDraft.url, mediaType: attachmentDraft.type || 'image', mediaName: attachmentDraft.name || '', mediaSize: attachmentDraft.size || 0 }
+              ? {
+                  mediaUrl: attachmentDraft.url,
+                  mediaType: attachmentDraft.type || 'image',
+                  mediaName: attachmentDraft.name || '',
+                  mediaSize: attachmentDraft.size || 0,
+                  // DURACIÓN REAL (medida por el servidor con ffmpeg) del audio.
+                  ...(attachmentDraft.type === 'audio' && attachmentDraft.duration != null
+                    ? { mediaDuration: attachmentDraft.duration }
+                    : {}),
+                }
               : {}),
             ...(replyDraft ? { replyTo: replyDraft._id } : {}),
           };
@@ -1314,7 +1323,10 @@ export default function Chats() {
       } else {
         ({ data } = await api.post('/chats/saved-replies/upload', { name, dataUrl }));
       }
-      setAttachmentDraft({ url: data.url, type: data.type || type, name: data.name || name, size });
+      // DURACIÓN REAL del audio: la midió el SERVIDOR con ffmpeg al convertirlo.
+      // La burbuja la muestra tal cual — el estimo del navegador para los
+      // contenedores de MediaRecorder es absurdo ("4 minutos" por 5 segundos).
+      setAttachmentDraft({ url: data.url, type: data.type || type, name: data.name || name, size, duration: data.duration ?? null });
       return true;
     } catch (err) {
       toast.error(err.response?.data?.message || err.message || 'No se pudo adjuntar');
@@ -3485,11 +3497,13 @@ function readSavedAudioSpeed() {
 
 // Reproductor de nota de voz estilo WhatsApp: botón play/pausa, barra de progreso
 // y duración. Reemplaza al <audio controls> nativo (que se veía pobre).
-function AudioPlayer({ src, isOut, onDownload }) {
+function AudioPlayer({ src, isOut, onDownload, durationSec = null }) {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
-  const [duration, setDuration] = useState(0);
+  // DURACIÓN REAL si el servidor la midió al subir (mediaDuration): el estimo del
+  // navegador para los contenedores de MediaRecorder es absurdo.
+  const [duration, setDuration] = useState(durationSec ?? 0);
   const [rate, setRate] = useState(readSavedAudioSpeed);
   // El navegador no pudo decodificar el audio (Safari/iOS no reproduce ogg/opus,
   // que es el formato de TODAS las notas de voz de WhatsApp). En vez de un botón
@@ -3515,15 +3529,17 @@ function AudioPlayer({ src, isOut, onDownload }) {
     const a = audioRef.current;
     if (!a) return;
     a.playbackRate = rate;
+    // Con la duración del SERVIDOR ya puesta, solo se refina si el navegador
+    // aporta un dato finito distinto (p. ej. audios entrantes de WhatsApp).
     if (a.duration === Infinity || Number.isNaN(a.duration)) {
       const onSeeked = () => {
         a.removeEventListener('seeked', onSeeked);
-        setDuration(Number.isFinite(a.duration) ? a.duration : 0);
+        if (!durationSec) setDuration(Number.isFinite(a.duration) ? a.duration : 0);
         a.currentTime = 0;
       };
       a.addEventListener('seeked', onSeeked);
       try { a.currentTime = 1e6; } catch { /* noop */ }
-    } else {
+    } else if (durationSec == null) {
       setDuration(a.duration || 0);
     }
   };
@@ -3860,7 +3876,9 @@ function MessageMedia({ msg, isOut, onRetryMedia }) {
     );
   }
   if (isAudio) {
-    return <AudioPlayer src={url} isOut={isOut} onDownload={() => downloadChatMedia(msg)} />;
+    // DURACIÓN REAL guardada con el mensaje (la midió el servidor con ffmpeg).
+    // Si el mensaje no la trae (audios anteriores), el navegador la estima.
+    return <AudioPlayer src={url} isOut={isOut} durationSec={msg.mediaDuration ?? null} onDownload={() => downloadChatMedia(msg)} />;
   }
   // Documento: tarjeta con icono, nombre y tamaño (como WhatsApp), no un genérico
   // "Ver adjunto". El nombre real llega en `mediaName`. Al hacer clic se descarga

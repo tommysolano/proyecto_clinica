@@ -4187,7 +4187,21 @@ export default function Appointments() {
                 {veTodaLaOrg && detailModal.itemsValue != null && (
                   <>
                     <p className="text-xs text-violet-600 font-medium pt-1">Valor de los items</p>
-                    <p className="text-sm text-slate-800">${Number(detailModal.itemsValue).toFixed(2)}</p>
+                    <p className="text-sm text-slate-800">
+                      ${Number(detailModal.itemsValue).toFixed(2)}
+                      {detailModal.itemsMethod ? (
+                        <span className="text-[11px] text-slate-500 ml-2">
+                          · {(
+                            {
+                              efectivo: 'efectivo',
+                              transferencia: 'transferencia',
+                              tarjeta_credito: 'tarjeta de crédito',
+                              tarjeta_debito: 'tarjeta de débito',
+                            }[detailModal.itemsMethod] || detailModal.itemsMethod
+                          )}
+                        </span>
+                      ) : null}
+                    </p>
                   </>
                 )}
                 {(detailModal.chargeRegisteredByName || detailModal.chargeRegisteredBy?.name) && (

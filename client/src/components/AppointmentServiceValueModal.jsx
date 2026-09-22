@@ -131,6 +131,7 @@ export default function AppointmentServiceValueModal({
   const [itemsValue, setItemsValue] = useState(
     apt?.itemsValue === null || apt?.itemsValue === undefined ? '' : String(apt.itemsValue)
   );
+  const [itemsMethod, setItemsMethod] = useState(apt?.itemsMethod || '');
 
   useEffect(() => {
     let vivo = true;
@@ -222,6 +223,7 @@ export default function AppointmentServiceValueModal({
             quantity: it.quantity,
           })),
           itemsValue: itemsValue === '' ? null : Number(itemsValue),
+          itemsMethod,
         });
         actualizada = conCobro;
       } catch (e) {
@@ -339,26 +341,44 @@ export default function AppointmentServiceValueModal({
                 </p>
               )}
             </div>
-            <div className="mt-2 max-w-[220px]">
-              <label className="block text-xs font-medium text-slate-600 mb-1">
-                Valor de los items (lo que paga por ellos)
-              </label>
-              <div className="relative">
-                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={itemsValue}
-                  onChange={(e) => setItemsValue(e.target.value)}
-                  placeholder="0.00"
-                  className="w-full pl-7 pr-4 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-violet-500 bg-slate-50/50"
-                />
+            <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Valor de los items (lo que paga por ellos)
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={itemsValue}
+                    onChange={(e) => setItemsValue(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full pl-7 pr-4 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-violet-500 bg-slate-50/50"
+                  />
+                </div>
               </div>
-              <p className="text-[11px] text-slate-400 mt-1">
-                Aparte del valor de la cita. Queda anotado quién registró el cobro.
-              </p>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  ¿Cómo pagó los items?
+                </label>
+                <select
+                  value={itemsMethod}
+                  onChange={(e) => setItemsMethod(e.target.value)}
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white"
+                >
+                  <option value="">No se dijo</option>
+                  <option value="efectivo">Efectivo</option>
+                  <option value="transferencia">Transferencia</option>
+                  <option value="tarjeta_credito">T. crédito</option>
+                  <option value="tarjeta_debito">T. débito</option>
+                </select>
+              </div>
             </div>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Aparte del valor de la cita. Queda anotado quién registró el cobro.
+            </p>
           </div>
         )}
 

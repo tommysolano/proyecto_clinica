@@ -936,6 +936,9 @@ async function send({
   mediaType,
   mediaName,
   mediaSize,
+  // DURACIÓN REAL del adjunto de audio (segundos), leída por el servidor con
+  // ffmpeg al subirlo. La burbuja del CRM la usa tal cual.
+  mediaDuration,
   // Botones configurados en un nodo de workflow. `providerId`/`providerUrl`
   // son valores efímeros preparados por el motor para enrutar el clic.
   buttons = [],
@@ -1175,6 +1178,7 @@ async function send({
       mediaType: mediaType || tplMedia?.type || null,
       mediaName: mediaName || '',
       mediaSize: Number(mediaSize) || 0,
+      mediaDuration: mediaDuration ?? null,
       buttons: botonesDelMensaje.map(({ id, type, text, url }) => ({ id, type, text, url })),
       templateName: templateInfo?.name || '',
       // Por qué número SALIÓ. Sin esto, "¿por qué Meta dice que la ventana está

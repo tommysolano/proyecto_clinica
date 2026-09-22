@@ -1558,6 +1558,9 @@ exports.uploadSavedReplyMedia = async (req, res) => {
     let { name } = req.body;
     let buffer;
     let mimeType;
+    // Duración REAL del audio (solo cuando kind === 'audio'): la devuelve el
+    // conversor leída del fichero convertido con ffmpeg.
+    let audioDuration = null;
     // El chat y workflows mandan multipart. Se conserva el Buffer de multer:
     // antes se inflaba 33% al pasarlo a Base64 y luego se volvía a decodificar,
     // manteniendo varias copias de un video grande en la RAM del VPS.
@@ -1610,6 +1613,10 @@ exports.uploadSavedReplyMedia = async (req, res) => {
       if (!conv.ok) return res.status(400).json({ message: conv.error });
       buffer = conv.buffer;
       mimeType = conv.mimeType;
+      // La DURACIÓN REAL la lee el conversor del fichero (ffmpeg): es la que
+      // muestra el teléfono para la nota de voz y la que la burbuja del CRM
+      // debe usar, sin depender del estimo del navegador.
+      audioDuration = conv.duration ?? null;
     } else if (kind === 'video') {
       // El video se normaliza AQUÍ, al subirlo una vez, y no en cada envío: un
       // MP4 con pista H.265/HEVC (lo que graba cualquier iPhone reciente) lo
@@ -1634,7 +1641,7 @@ exports.uploadSavedReplyMedia = async (req, res) => {
       createdBy: req.user._id,
     });
     if (!stored) return res.status(400).json({ message: 'Archivo inválido' });
-    res.status(201).json({ id: stored.id, url: publicMediaUrl(req, stored.id), type: kind, name: name || `adjunto_${Date.now()}` });
+    res.status(201).json({ id: stored.id, url: publicMediaUrl(req, stored.id), type: kind, name: name || `adjunto_${Date.now()}`, duration: audioDuration });
   } catch (err) {
     res.status(500).json({ message: 'Error al subir adjunto', error: err.message });
   }
@@ -3500,6 +3507,11 @@ exports.sendMessage = async (req, res) => {
       mediaType: req.body.mediaType || null,
       mediaName: req.body.mediaName || '',
       mediaSize: req.body.mediaSize || 0,
+      // La duración la midió el SERVIDOR al subir el audio (ffmpeg): la burbuja
+      // del CRM la muestra tal cual, sin el estimo del navegador.
+      mediaDuration: Number.isFinite(Number(req.body.mediaDuration))
+        ? Number(req.body.mediaDuration)
+        : null,
       replyTo,
       template: templateName
         ? {

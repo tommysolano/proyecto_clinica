@@ -2787,6 +2787,11 @@ exports.updateCobroItems = async (req, res) => {
       }
     }
 
+    if (req.body.itemsMethod !== undefined) {
+      const metodos = ['efectivo', 'transferencia', 'tarjeta_credito', 'tarjeta_debito'];
+      apt.itemsMethod = metodos.includes(req.body.itemsMethod) ? req.body.itemsMethod : '';
+    }
+
     apt.chargeRegisteredBy = req.user._id;
     apt.chargeRegisteredByName = req.user.name || '';
     apt.chargeRegisteredAt = new Date();

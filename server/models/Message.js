@@ -41,6 +41,13 @@ const messageSchema = new mongoose.Schema(
     mediaName: { type: String, trim: true, default: '' },
     // Tamaño del adjunto en bytes (si el proveedor lo informa) para la tarjeta.
     mediaSize: { type: Number, default: 0 },
+    /**
+     * DURACIÓN REAL del adjunto de AUDIO, en segundos (sep-2026). La lee el
+     * servidor con ffmpeg al subirlo — el dato exacto que el teléfono muestra —
+     * porque el navegador estira/estima la duración de los contenedores de
+     * MediaRecorder y un audio de 5 segundos se veía de "4 minutos".
+     */
+    mediaDuration: { type: Number, default: null },
     // Identificador del archivo EN EL PROVEEDOR (media id de Meta). Permite volver
     // a pedirle el archivo si la primera descarga falló, sin esperar a que el
     // contacto lo reenvíe. En números QR no aplica: allí basta el `externalId` del

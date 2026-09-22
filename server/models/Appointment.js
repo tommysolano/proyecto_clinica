@@ -375,6 +375,15 @@ const appointmentSchema = new mongoose.Schema(
     // Lo que se cobra POR LOS ITEMS (independiente del valor de la cita).
     itemsValue: { type: Number, default: null, min: 0 },
     /**
+     * CON QUÉ PAGÓ LOS ITEMS. Mismas formas que el pago adelantado de la cita.
+     * Dato OPERATIVO (no contable), igual que el resto del cobro informativo.
+     */
+    itemsMethod: {
+      type: String,
+      enum: ['', 'efectivo', 'transferencia', 'tarjeta_credito', 'tarjeta_debito'],
+      default: '',
+    },
+    /**
      * QUIÉN REGISTRÓ EL COBRO (valor de la cita y/o de los items). La cita
      * tiene que decir a quién preguntar por un cobro, y "agendada por" no es
      * lo mismo que "cobrada por".
