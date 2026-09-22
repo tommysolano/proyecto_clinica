@@ -79,7 +79,8 @@ export default function ServiceItemPicker({ value, onChange, placeholder = 'Busc
       value={texto}
       onChange={(t) => {
         setTexto(t);
-        // Borrar el texto quita el servicio: la cita puede guardarse sin él.
+        // Borrar el texto quita el servicio: la validación de obligatorio
+        // avisa al guardar (el toast, no un bloqueo mientras se escribe).
         if (!String(t).trim()) onChange(null);
       }}
       onSelect={elegir}

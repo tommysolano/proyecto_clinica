@@ -150,10 +150,15 @@ test('a los demás roles solo les llega «Atendido por terapeuta»', async () =>
     assert.equal(fu.planTratamiento, undefined);
     assert.equal(fu.observaciones, undefined);
 
-    // Y lo de los demás no se toca.
+    // Y lo de los demás no se toca… salvo para ENFERMERÍA (sep-2026): su vista
+    // de la historia va recortada a suero/comentarios, sin consultas ajenas.
     const otro = r.payload.followUps.find((f) => f.createdByRole === 'doctor');
-    assert.equal(otro.descripcion, 'Control de presión', `${rol} sí ve la consulta del doctor`);
-    assert.equal(otro.planTratamiento, 'Seguir con el enalapril');
+    if (rol === 'enfermero') {
+      assert.equal(otro.descripcion, '', 'enfermería ve la historia recortada (ver sueroDeEnfermeria)');
+    } else {
+      assert.equal(otro.descripcion, 'Control de presión', `${rol} sí ve la consulta del doctor`);
+      assert.equal(otro.planTratamiento, 'Seguir con el enalapril');
+    }
   }
 });
 

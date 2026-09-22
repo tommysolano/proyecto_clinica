@@ -1,4 +1,4 @@
-/**
+﻿/**
  * BLOQUEOS DE HORARIO vistos desde las OTRAS puertas de agendamiento.
  *
  * Lo que fijan (sep-2026, a petición del usuario: creó un bloqueo para el día 20
@@ -78,7 +78,7 @@ test('list: un bloqueo del día sale al consultar exactamente ese día', async (
 /* ── 2. El CRM respeta los bloqueos ──────────────────────────────────────── */
 
 test('CRM: un bloqueo GENERAL del día rechaza la tanda entera, sin crear nada', async () => {
-  const { clinicId, userId, conv, patient } = await seed();
+  const { clinicId, userId, conv, patient, s1 } = await seed();
   ok(await H.runController(tb.create, H.mockReq(clinicId, userId, {
     clinic: String(clinicId),
     startDate: manana(), endDate: manana(),
@@ -86,7 +86,7 @@ test('CRM: un bloqueo GENERAL del día rechaza la tanda entera, sin crear nada',
   })));
 
   const r = await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
-    appointments: [{ date: manana(), startTime: '09:00' }],
+    appointments: [{ date: manana(), startTime: '09:00', serviceItem: String(s1._id) }],
   }));
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
   assert.match(r.payload.message, /bloqueado/);
@@ -120,7 +120,7 @@ test('CRM: un bloqueo por SERVICIO solo bloquea ese servicio', async () => {
 });
 
 test('CRM: el bloqueo de OTRA sucursal no afecta a esta sede', async () => {
-  const { clinicId, userId, conv } = await seed();
+  const { clinicId, userId, conv, s1 } = await seed();
   const otra = await Clinic.create({ name: 'Sucursal Norte' });
   ok(await H.runController(tb.create, H.mockReq(clinicId, userId, {
     clinic: String(otra._id),
@@ -129,7 +129,7 @@ test('CRM: el bloqueo de OTRA sucursal no afecta a esta sede', async () => {
   })));
 
   ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
-    appointments: [{ date: manana(), startTime: '09:00', clinic: String(clinicId) }],
+    appointments: [{ date: manana(), startTime: '09:00', clinic: String(clinicId), serviceItem: String(s1._id) }],
   })));
   assert.equal(await Appointment.countDocuments({}), 1);
 });

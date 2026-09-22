@@ -54,6 +54,10 @@ async function seed(datosPaciente = {}) {
 async function agendar(clinicId, userId, patientId, startTime = '10:00') {
   const manana = new Date();
   manana.setDate(manana.getDate() + 1);
+  // El servicio es obligatorio desde sep-2026: los tests lo llevan por defecto.
+  const svc = await require('../models/AppointmentServiceItem').create({
+    clinic: clinicId, name: 'Control', slug: `control-${Date.now()}-${Math.floor(Math.random() * 1e9)}`,
+  });
   const r = await H.runController(
     appt.createAppointment,
     H.mockReq(clinicId, userId, {
@@ -61,6 +65,7 @@ async function agendar(clinicId, userId, patientId, startTime = '10:00') {
       date: manana.toISOString().slice(0, 10),
       startTime,
       reason: 'Control',
+      serviceItem: svc._id,
     }, { role: 'cajero' }),
   );
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));

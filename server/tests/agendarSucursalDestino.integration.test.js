@@ -1,4 +1,4 @@
-/**
+﻿/**
  * AGENDAR EN OTRA SUCURSAL: quién puede y quién no.
  *
  * El call center no trabaja EN una sucursal: agenda para la clínica entera, en
@@ -18,6 +18,7 @@ const H = require('./_integrationHelpers');
 const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient');
 const Conversation = require('../models/Conversation');
+const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const Appointment = require('../models/Appointment');
 const chats = require('../controllers/chatController');
 const clinicCtrl = require('../controllers/clinicController');
@@ -37,7 +38,9 @@ async function seed() {
   const conv = await Conversation.create({
     clinic: matriz, phone: '593999999999', patient: patient._id, contactName: 'Jimmy',
   });
-  return { matriz, extension, userId, conv, patient };
+  // El servicio es obligatorio desde sep-2026: toda cita de estos tests lo lleva.
+  const servicio = await AppointmentServiceItem.create({ clinic: matriz, name: 'Consulta', slug: 'consulta' });
+  return { matriz, extension, userId, conv, patient, servicio };
 }
 
 /** Mañana: agendar hoy a las 09:00 lo rechaza la validación de hora pasada. */
@@ -50,10 +53,10 @@ const manana = () => {
 };
 
 test('el call center agenda en OTRA sucursal desde el chat', async () => {
-  const { matriz, extension, userId, conv } = await seed();
+  const { matriz, extension, userId, conv, servicio } = await seed();
 
   const req = H.mockReq(matriz, userId, {
-    appointments: [{ date: manana(), startTime: '09:00', clinic: String(extension) }],
+    appointments: [{ date: manana(), startTime: '09:00', clinic: String(extension), serviceItem: String(servicio._id) }],
   }, { role: 'call_center', params: { id: String(conv._id) } });
   // Asignado a UNA sola sede, como en la clínica: aun así agenda en la otra.
   req.user.clinics = [{ clinic: matriz, role: 'call_center' }];
@@ -79,10 +82,10 @@ test('y también recibe la lista de sucursales para poder escogerla', async () =
  * CALL_CENTER_ROLES en routes/chats.js) y también tiene que poder escogerla.
  */
 test('cualquiera que pueda agendar escoge la sede, no solo quien ve toda la organización', async () => {
-  const { matriz, extension, userId, conv } = await seed();
+  const { matriz, extension, userId, conv, servicio } = await seed();
 
   const req = H.mockReq(matriz, userId, {
-    appointments: [{ date: manana(), startTime: '09:00', clinic: String(extension) }],
+    appointments: [{ date: manana(), startTime: '09:00', clinic: String(extension), serviceItem: String(servicio._id) }],
   }, { role: 'marketing', params: { id: String(conv._id) } });
   req.user.clinics = [{ clinic: matriz, role: 'marketing' }];
 
@@ -92,11 +95,11 @@ test('cualquiera que pueda agendar escoge la sede, no solo quien ve toda la orga
 });
 
 test('una sucursal inexistente o dada de baja se rechaza', async () => {
-  const { matriz, userId, conv } = await seed();
+  const { matriz, userId, conv, servicio } = await seed();
   const baja = (await Clinic.create({ name: 'Cerrada', active: false }))._id;
 
   const req = H.mockReq(matriz, userId, {
-    appointments: [{ date: manana(), startTime: '09:00', clinic: String(baja) }],
+    appointments: [{ date: manana(), startTime: '09:00', clinic: String(baja), serviceItem: String(servicio._id) }],
   }, { role: 'call_center', params: { id: String(conv._id) } });
   req.user.clinics = [{ clinic: matriz, role: 'call_center' }];
 
@@ -106,9 +109,9 @@ test('una sucursal inexistente o dada de baja se rechaza', async () => {
 });
 
 test('sin sucursal en el cuerpo se sigue agendando en la propia', async () => {
-  const { matriz, userId, conv } = await seed();
+  const { matriz, userId, conv, servicio } = await seed();
   const req = H.mockReq(matriz, userId, {
-    appointments: [{ date: manana(), startTime: '09:00' }],
+    appointments: [{ date: manana(), startTime: '09:00', serviceItem: String(servicio._id) }],
   }, { role: 'call_center', params: { id: String(conv._id) } });
   req.user.clinics = [{ clinic: matriz, role: 'call_center' }];
 
@@ -126,12 +129,12 @@ test('sin sucursal en el cuerpo se sigue agendando en la propia', async () => {
  * donde no lo lee ningún reporte y mostrador no lo ve al recibir al paciente.
  */
 test('el call center agenda cobrando: valor y abono quedan en la cita', async () => {
-  const { matriz, userId, conv } = await seed();
+  const { matriz, userId, conv, servicio } = await seed();
 
   const req = H.mockReq(matriz, userId, {
     appointments: [{
       date: manana(), startTime: '09:00',
-      agreedValue: 90, advancePayment: 'abono', advanceAmount: 25,
+      serviceItem: String(servicio._id), agreedValue: 90, advancePayment: 'abono', advanceAmount: 25,
     }],
   }, { role: 'call_center', params: { id: String(conv._id) } });
   req.user.clinics = [{ clinic: matriz, role: 'call_center' }];
@@ -145,10 +148,10 @@ test('el call center agenda cobrando: valor y abono quedan en la cita', async ()
 });
 
 test('«pagó todo» desde el chat deja pagado el valor de la cita', async () => {
-  const { matriz, userId, conv } = await seed();
+  const { matriz, userId, conv, servicio } = await seed();
 
   const req = H.mockReq(matriz, userId, {
-    appointments: [{ date: manana(), startTime: '09:00', agreedValue: 60, advancePayment: 'total' }],
+    appointments: [{ date: manana(), startTime: '09:00', serviceItem: String(servicio._id), agreedValue: 60, advancePayment: 'total' }],
   }, { role: 'call_center', params: { id: String(conv._id) } });
   req.user.clinics = [{ clinic: matriz, role: 'call_center' }];
   ok(await H.runController(chats.createAppointmentFromChat, req));
@@ -159,10 +162,10 @@ test('«pagó todo» desde el chat deja pagado el valor de la cita', async () =>
 });
 
 test('marketing agenda desde el chat, pero el importe no es suyo', async () => {
-  const { matriz, userId, conv } = await seed();
+  const { matriz, userId, conv, servicio } = await seed();
 
   const req = H.mockReq(matriz, userId, {
-    appointments: [{ date: manana(), startTime: '09:00', agreedValue: 90, advancePayment: 'total' }],
+    appointments: [{ date: manana(), startTime: '09:00', serviceItem: String(servicio._id), agreedValue: 90, advancePayment: 'total' }],
   }, { role: 'marketing', params: { id: String(conv._id) } });
   req.user.clinics = [{ clinic: matriz, role: 'marketing' }];
   ok(await H.runController(chats.createAppointmentFromChat, req));

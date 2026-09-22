@@ -87,7 +87,7 @@ test('un nombre en blanco no crea nada', async () => {
 
 // ───────────────────── la cita ─────────────────────
 
-test('se agenda SIN servicio (antes daba 400 y bloqueaba)', async () => {
+test('se agenda SIN servicio se RECHAZA (sep-2026: el servicio es obligatorio)', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const p = await paciente(clinicId);
 
@@ -99,8 +99,8 @@ test('se agenda SIN servicio (antes daba 400 y bloqueaba)', async () => {
       startTime: '23:30',
     }, { role: 'cajero' }),
   );
-  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
-  assert.equal(r.payload.serviceItem, null);
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /Selecciona un servicio/i);
 });
 
 test('agendar con servicio guarda el nombre como snapshot y suma un uso', async () => {

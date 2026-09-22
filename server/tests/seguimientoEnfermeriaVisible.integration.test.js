@@ -87,8 +87,12 @@ test('la cita sin turnos que reclamó kike muestra el suero recetado ese día', 
   // ANTES: seguimientos vacíos, sin nada que explicara por qué.
   const vista = await seguimientosDe(clinicId, kike._id, cita._id);
   assert.equal(vista.statusCode, 200, JSON.stringify(vista.payload));
+  // SEP-2026 (vista recortada para enfermería): el motivo queda redactado, pero
+  // la línea del suero —que es lo que tiene que aplicar— se ve entera.
   assert.ok(
-    vista.payload.followUps.some((f) => /SUEROTERAPIA/i.test(f.motivoConsulta || '')),
+    vista.payload.followUps.some((f) =>
+      (f.recetaItems || []).some((it) => /SUEROTERAPIA/i.test(it.name || ''))
+    ),
     'el suero recetado ese día tiene que verse desde la cita del enfermero'
   );
   assert.equal(vista.payload.aproximado, true, 'y la pantalla dice que viene por el día');

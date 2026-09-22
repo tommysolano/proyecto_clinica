@@ -66,10 +66,6 @@ export default function Commissions() {
   useEffect(() => {
     api.get('/clinics').then((r) => setClinics(r.data || [])).catch(() => {});
     api.get('/appointment-service-items').then((r) => setServices(r.data || [])).catch(() => {});
-    load();
-    // La carga inicial usa deliberadamente los filtros iniciales; los cambios se
-    // aplican con el botón Calcular.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadDoctors = async () => {
@@ -86,11 +82,17 @@ export default function Commissions() {
     else loadDoctors();
   }, [clinic]);
 
-  const addDoctor = (id) => {
-    if (id && !doctorFilter.some((d) => String(d) === String(id))) {
-      setDoctorFilter([...doctorFilter, id]);
-    }
-  };
+  /**
+   * LA PÁGINA SE ACTUALIZA SOLA. Cualquier cambio de filtro —fechas, sucursal,
+   * doctores, estados o servicios— recalcula el resumen solo, con un cuarto de
+   * segundo de respiro para no disparar una petición por cada tecla. El botón
+   * «Calcular» queda para forzar el recálculo a mano.
+   */
+  useEffect(() => {
+    const t = setTimeout(load, 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [start, end, clinic, doctorFilter, statusFilter, serviceFilter, tab]);
 
   const nameOfService = (sid) =>
     services.find((s) => String(s._id) === String(sid))?.name || 'Servicio';
@@ -120,6 +122,9 @@ export default function Commissions() {
     if (doctorName) params.set('name', doctorName);
     return `/commissions/${doctorId}?${params.toString()}`;
   };
+
+  /** El DETALLE GENERAL: todas las citas de todos los doctores que cumplan los filtros (fechas, sucursal, estados y servicios). */
+  const urlDetalleGeneral = () => urlDetalle('todos');
 
   const openCommissionEditor = (doctor, service) => {
     if (!service.serviceId) {
@@ -312,18 +317,23 @@ export default function Commissions() {
           </label>
           {tab === 'doctores' && clinic !== 'all' && (
             <label className="text-sm">Doctor
-              <select
-                value=""
-                onChange={(e) => addDoctor(e.target.value)}
-                className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm min-w-[200px]"
-              >
-                <option value="">Añadir doctor al filtro...</option>
-                {doctors
-                  .filter((d) => !doctorFilter.some((x) => String(x) === String(d._id)))
-                  .map((d) => (
-                    <option key={d._id} value={d._id}>{doctorOptionLabel(d)}</option>
-                  ))}
-              </select>
+              <div className="mt-1">
+                {/* CON BUSCADOR, igual que el filtro de servicio: se escribe y
+                    el resultado se añade como chip. La especialidad va como
+                    «categoría» para que el buscador la encuentre y las
+                    sugerencias la muestren. Los doctores ya filtrados
+                    desaparecen de las sugerencias. */}
+                <ProductAutocomplete
+                  products={doctors.map((d) => ({ ...d, category: d.specialty || '' }))}
+                  value=""
+                  onSelect={(p) => {
+                    if (p && !doctorFilter.some((x) => String(x) === String(p._id))) {
+                      setDoctorFilter([...doctorFilter, p._id]);
+                    }
+                  }}
+                  placeholder="Filtrar por doctor..."
+                />
+              </div>
             </label>
           )}
           {tab === 'doctores' && (
@@ -415,8 +425,19 @@ export default function Commissions() {
           <p className="text-sm text-slate-500">
             Total de citas en el filtro: <b>{data.totals?.total ?? 0}</b>
             {data.statuses && data.statuses.length > 0 && (
-              <span className="text-slate-400"> · {data.statuses.join(', ')}</span>
+              <span className="text-slate-400"> — {data.statuses.join(', ')}</span>
             )}
+            {/* EL DETALLE GENERAL: la misma información del detalle por doctor
+                —fecha, paciente, servicios, estado, pago, seguimientos— pero de
+                TODOS los doctores que cumplan los filtros. */}
+            <a
+              href={urlDetalleGeneral()}
+              target="_blank"
+              rel="noreferrer"
+              className="ml-3 text-xs text-emerald-600 hover:underline"
+            >
+              Ver todas las citas
+            </a>
           </p>
 
           <div className="space-y-3">

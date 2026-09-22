@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Integración del CRM: dispara workflows reales desde los controllers (cita
  * agendada) contra un Mongo en memoria, y valida el bloqueo de agenda por cupo
  * de servicio con catálogo compartido entre sucursales.
@@ -20,6 +20,23 @@ const H = require('./_integrationHelpers');
 const appointmentCtrl = require('../controllers/appointmentController');
 const workflowEngine = require('../utils/workflowEngine');
 const { clearCache } = require('../utils/callCenterClinic');
+
+/**
+ * El servicio es obligatorio desde sep-2026. Las citas de estos tests prueban
+ * workflows, no el catálogo: si el body no trae serviceItem, se lo ponemos.
+ */
+const createAppointmentConServicio = async (req, res) => {
+  if (req.body.serviceItem === undefined) {
+    req.body.serviceItem = (
+      await require('../models/AppointmentServiceItem').create({
+        clinic: req.clinicId,
+        name: 'Consulta',
+        slug: `consulta-${Date.now()}-${Math.floor(Math.random() * 1e9)}`,
+      })
+    )._id;
+  }
+  return appointmentCtrl.createAppointment(req, res);
+};
 
 const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient');
@@ -78,7 +95,7 @@ test('Trigger "cita agendada" (grafo): inscribe, registra el fallo de envío y s
   const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true, name: 'Limpieza' });
   const wf = await graphWorkflow(clinic._id);
 
-  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
+  const r = await H.runController(createAppointmentConServicio, H.mockReq(clinic._id, userId, {
     // Fecha futura (no hoy): así el guard "no agendar en hora pasada" no vuelve la prueba
     // dependiente del reloj de la máquina.
     patient: patient._id, services: [String(prod._id)], date: futureDate(1), startTime: '10:00',
@@ -114,7 +131,7 @@ test('Trigger "cita agendada": paciente SIN teléfono también se inscribe (el f
   const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true });
   const wf = await graphWorkflow(clinic._id);
 
-  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
+  const r = await H.runController(createAppointmentConServicio, H.mockReq(clinic._id, userId, {
     patient: patient._id, services: [String(prod._id)], date: futureDate(), startTime: '09:00',
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -148,7 +165,7 @@ test('Trigger "cita agendada" con contacto de número oculto (LID): el mensaje v
   const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true });
   const wf = await graphWorkflow(clinic._id);
 
-  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
+  const r = await H.runController(createAppointmentConServicio, H.mockReq(clinic._id, userId, {
     patient: patient._id, services: [String(prod._id)], date: futureDate(), startTime: '09:00',
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -208,13 +225,17 @@ test('Cita creada DESDE EL CHAT (createAppointmentFromChat) también dispara el 
     patient: patient._id,
   });
   const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true, name: 'Botox' });
+  // El servicio de la agenda es obligatorio desde sep-2026.
+  const agendaSvc = await require('../models/AppointmentServiceItem').create({
+    clinic: clinic._id, name: 'Botox', slug: 'botox-trigger',
+  });
   const wf = await graphWorkflow(clinic._id);
 
   const r = await H.runController(
     chatCtrl.createAppointmentFromChat,
     H.mockReq(clinic._id, userId, {
       appointments: [
-        { date: futureDate(), startTime: '11:00', services: [{ product: String(prod._id), quantity: 1 }] },
+        { date: futureDate(), startTime: '11:00', serviceItem: String(agendaSvc._id), services: [{ product: String(prod._id), quantity: 1 }] },
       ],
     }, { params: { id: String(conv._id) } })
   );
@@ -586,7 +607,7 @@ test('Nodo "API de conversión de Meta" (meta_capi): se ejecuta y registra que C
   const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true });
   const wf = await metaNodeWorkflow(clinic._id, { type: 'meta_capi', data: { metaEventName: 'Schedule' } });
 
-  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
+  const r = await H.runController(createAppointmentConServicio, H.mockReq(clinic._id, userId, {
     patient: patient._id, services: [String(prod._id)], date: futureDate(3), startTime: '10:00',
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -606,7 +627,7 @@ test('Nodo "Añadir a público de Facebook" (fb_audience_add): se ejecuta y regi
   const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true });
   const wf = await metaNodeWorkflow(clinic._id, { type: 'fb_audience_add', data: { audienceId: '2384812345' } });
 
-  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
+  const r = await H.runController(createAppointmentConServicio, H.mockReq(clinic._id, userId, {
     patient: patient._id, services: [String(prod._id)], date: futureDate(3), startTime: '11:00',
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -638,7 +659,7 @@ test('Botón "No asistió" (markNoShow) dispara el workflow de no-show', async (
   const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true });
   const wf = await graphWorkflow(clinic._id, { triggerType: 'appointment_no_show', body: 'Te extrañamos {{nombre}}' });
 
-  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
+  const r = await H.runController(createAppointmentConServicio, H.mockReq(clinic._id, userId, {
     patient: patient._id, services: [String(prod._id)], date: futureDate(3), startTime: '10:00',
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -715,7 +736,7 @@ test('Filtro por sucursal en el disparador: cada sede corre SOLO su flujo (un vi
   });
 
   // Cita agendada en la sucursal B (Extensión) → solo el flujo B debe correr.
-  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinicB._id, userId, {
+  const r = await H.runController(createAppointmentConServicio, H.mockReq(clinicB._id, userId, {
     patient: patient._id, services: [String(prod._id)], date: futureDate(4), startTime: '10:00',
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -808,7 +829,7 @@ test('"Esperar hasta la cita" espera a la hora REAL; reagendar mueve la espera y
   });
 
   const day = futureDate(5);
-  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
+  const r = await H.runController(createAppointmentConServicio, H.mockReq(clinic._id, userId, {
     patient: patient._id, services: [String(prod._id)], date: day, startTime: '10:00',
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -905,20 +926,20 @@ test('Cupo por servicio: bloquea la 2ª cita en el mismo horario aunque el servi
     category: 'servicio', unlimited: true, name: 'Ecografía', maxAppointmentsPerDay: 1,
   });
 
-  const r1 = await H.runController(appointmentCtrl.createAppointment, H.mockReq(branch._id, userId, {
+  const r1 = await H.runController(createAppointmentConServicio, H.mockReq(branch._id, userId, {
     patient: p1._id, services: [String(serv._id)], date: futureDate(), startTime: '10:00',
   }));
   assert.equal(r1.statusCode, 201, JSON.stringify(r1.payload));
 
   // Misma fecha y hora → cupo (1) agotado, aunque el producto pertenezca a Matriz.
-  const r2 = await H.runController(appointmentCtrl.createAppointment, H.mockReq(branch._id, userId, {
+  const r2 = await H.runController(createAppointmentConServicio, H.mockReq(branch._id, userId, {
     patient: p2._id, services: [String(serv._id)], date: futureDate(), startTime: '10:00',
   }));
   assert.equal(r2.statusCode, 400, 'el cupo no bloqueó la segunda cita');
   assert.match(String(r2.payload.message), /Cupo agotado/);
 
   // Otra hora del mismo día sí se permite (el cupo es por horario).
-  const r3 = await H.runController(appointmentCtrl.createAppointment, H.mockReq(branch._id, userId, {
+  const r3 = await H.runController(createAppointmentConServicio, H.mockReq(branch._id, userId, {
     patient: p2._id, services: [String(serv._id)], date: futureDate(), startTime: '11:00',
   }));
   assert.equal(r3.statusCode, 201, JSON.stringify(r3.payload));
@@ -926,7 +947,7 @@ test('Cupo por servicio: bloquea la 2ª cita en el mismo horario aunque el servi
   // Cancelar la primera libera el cupo de las 10:00.
   const Appointment = require('../models/Appointment');
   await Appointment.updateOne({ _id: r1.payload._id }, { status: 'cancelada' });
-  const r4 = await H.runController(appointmentCtrl.createAppointment, H.mockReq(branch._id, userId, {
+  const r4 = await H.runController(createAppointmentConServicio, H.mockReq(branch._id, userId, {
     patient: p2._id, services: [String(serv._id)], date: futureDate(), startTime: '10:00',
   }));
   assert.equal(r4.statusCode, 201, 'una cita cancelada debe liberar su cupo');

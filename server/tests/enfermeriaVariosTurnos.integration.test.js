@@ -298,17 +298,25 @@ test('un solo paso de enfermería abierto se sigue comportando como siempre', as
   assert.equal(a.status, 'completada');
 });
 
-test('enfermería detrás de un doctor sigue sin salir hasta que él termina', async () => {
+test('TURNOS PARALELOS: el turno nombrado de enfermería sale aunque el doctor no haya terminado', async () => {
   const { clinicId, userId, docA, enf1, cita } = await seed();
   await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
     steps: [{ kind: 'doctor', user: String(docA._id) }, { kind: 'enfermeria', user: String(enf1._id) }],
   }, params(cita._id)));
 
-  // Aunque el turno esté NOMBRADO a Enf1, todavía no es suyo: manda la cola.
-  assert.equal((await bandeja(clinicId, enf1._id)).includes(String(cita._id)), false);
+  // SEP-2026, a petición de la clínica: VARIOS enfermeros pueden atender al
+  // mismo paciente a la vez, cada uno su parte. Un turno NOMBRADO aparece ya en
+  // la bandeja de esa persona —aunque la pelota esté con el doctor— y puede
+  // tomarlo sin esperar.
+  assert.equal((await bandeja(clinicId, enf1._id)).includes(String(cita._id)), true);
   const r = await H.runController(appt.nurseClaim, comoEnfermero(clinicId, enf1._id, cita._id));
-  assert.equal(r.statusCode, 409, JSON.stringify(r.payload));
-  assert.equal(r.payload.code, 'NOT_YOUR_TURN');
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+
+  // Y el doctor no pierde la pelota: el turno paralelo no le adelanta.
+  const a = await Appointment.findById(cita._id).lean();
+  assert.equal(a.currentTurnKind, 'doctor', 'la cita sigue en manos del doctor');
+  const miTurno = a.turns.find((t) => String(t.user) === String(enf1._id));
+  assert.ok(miTurno.startedAt, 'el turno paralelo quedó reclamado por Enf1');
 });
 
 // ───────────── el contrato del que depende la agenda ─────────────

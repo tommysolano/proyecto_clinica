@@ -185,6 +185,11 @@ function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, p
       // Lo que mostrador le escribió a enfermería para este paso (sep-2026):
       // la enfermera lo lee en su barra de atención, junto al suero.
       nurseInstructions: String(paso?.nurseInstructions || '').trim(),
+      // HIDROTERAPIA (sep-2026): la marca mostrador al asignar; la enfermera
+      // la ve en su barra de atención y da fe de si la realizó.
+      hidroterapia: paso?.hidroterapia
+        ? { solicitada: true, realizada: false, realizadaAt: null, realizadaBy: null }
+        : undefined,
     });
   }
 
@@ -323,10 +328,17 @@ function turnoEnfermeriaParaUsuario(apt, userId) {
 /**
  * Condición de Mongo con las citas que un enfermero debe ver en su bandeja.
  *
- * Dos casos, y ambos requieren una asignación explícita de enfermería:
+ * Tres casos, y los tres hacen falta:
  *  1. La que puede tomar AHORA: el turno vigente es de enfermería y está libre
  *     (`currentTurnUser: null`) o es suyo.
- *  2. Las que YA atendió, para que no se le caigan de la lista al pasar el turno
+ *  2. TURNOS PARALELOS (sep-2026): un turno de enfermería con SU nombre sigue
+ *     pendiente, aunque la cita esté con un doctor o con otra enfermera. La
+ *     clínica pidió que VARIOS enfermeros puedan atender al mismo paciente a la
+ *     vez —cada uno su parte—, no que el segundo esperara a que el primero
+ *     cerrara. Solo los NOMBRADOS van aquí: los abiertos siguen saliendo por
+ *     su orden en la cola, para no ofertar a todos el paso de un momento que
+ *     todavía no llegó.
+ *  3. Las que YA atendió, para que no se le caigan de la lista al pasar el turno
  *     a la siguiente compañera.
  *
  * NO se mira `attendedByNurse`: ese campo es ahora un espejo del último turno de
@@ -347,6 +359,11 @@ function filtroCitasDeEnfermeria(userId) {
       {
         currentTurnKind: 'enfermeria',
         $or: [{ currentTurnUser: null }, { currentTurnUser: userId }],
+      },
+      {
+        turns: {
+          $elemMatch: { kind: 'enfermeria', user: userId, status: 'pendiente' },
+        },
       },
       // Solo las COMPLETADAS. Sin el estado, un turno suyo que todavía está
       // detrás de un doctor le saldría ya en la bandeja, y la cola dejaría de

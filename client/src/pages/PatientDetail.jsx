@@ -46,6 +46,7 @@ import ObservacionesTab from '../components/ObservacionesTab';
 // el que se indica al agendar una cita.
 import SueroComposicionEditor from '../components/SueroComposicionEditor';
 import SuggestInput from '../components/SuggestInput';
+import SearchableSelect from '../components/SearchableSelect';
 import {
   CARDIOLOGIA_ANTECEDENTES,
   CARDIOLOGIA_ESTUDIOS,
@@ -189,6 +190,9 @@ const TABS = [
 const filaConDatos = (it) =>
   ['dose', 'frequency', 'duration', 'instructions'].some((k) => String(it?.[k] || '').trim()) ||
   (String(it?.quantity ?? '').trim() !== '' && Number(it.quantity) !== 1) ||
+  // Una derivación escogida del catálogo de la agenda tampoco está vacía,
+  // aunque su snapshot de nombre viniera vacío.
+  !!it?.serviceItem ||
   // Un suero al que ya se le puso el cloruro o una ampolla NO es una línea en
   // blanco: descartarlo en silencio borraría una preparación de la historia.
   //
@@ -375,9 +379,21 @@ export default function PatientDetail() {
    * igual).
    */
   const retenidaPorSuero = !!aptData?.serumStatus;
+  /**
+   * MI TURNO de enfermería, pendiente y a mi nombre. Con TURNOS PARALELOS
+   * (sep-2026) puede existir aunque la pelota esté con un doctor o con otra
+   * compañera: varios enfermeros atienden al mismo paciente a la vez, cada uno
+   * su parte.
+   */
+  const miTurnoParalelo = enTramite
+    ? (aptData?.turns || []).find(
+        (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) === miId
+      )
+    : null;
   const enfermeriaLibre = enTramite && !retenidaPorSuero && (
     (aptData.turns || []).length
-      ? aptData.currentTurnKind === 'enfermeria' && !aptData.currentTurnUser
+      ? (aptData.currentTurnKind === 'enfermeria' && !aptData.currentTurnUser)
+        || (!!miTurnoParalelo && !miTurnoParalelo.startedAt)
       : !aptData.attendedByNurse
   );
   // Ya es SUYA: es la única situación en la que puede cerrar su parte. Antes el
@@ -386,13 +402,8 @@ export default function PatientDetail() {
   const enfermeriaMia = enTramite && !retenidaPorSuero && (
     (aptData.turns || []).length
       ? (
-          aptData.currentTurnKind === 'enfermeria' && idDe(aptData.currentTurnUser) === miId
-          || (aptData.turns || []).some(
-            (t) => t.kind === 'enfermeria'
-              && t.status === 'pendiente'
-              && idDe(t.user) === miId
-              && !!t.startedAt
-          )
+          !!miTurnoParalelo
+          || (aptData.currentTurnKind === 'enfermeria' && idDe(aptData.currentTurnUser) === miId)
         )
       : idDe(aptData.attendedByNurse) === miId
   );
@@ -434,6 +445,28 @@ export default function PatientDetail() {
   const indicacionesEnfermeria = enfermeriaLibre || enfermeriaMia
     ? String(miTurnoVigente?.nurseInstructions || pasoEnfermeriaPendiente?.nurseInstructions || '').trim()
     : '';
+  /**
+   * HIDROTERAPIA (sep-2026): la marcó mostrador al asignar MI paso. Aparece en
+   * la barra junto al suero, con un botón para dejar constancia de que se
+   * realizó — el mismo gesto que administrar una dosis, sin inventario.
+   */
+  const hidroterapiaDelPaso = enfermeriaLibre || enfermeriaMia
+    ? (miTurnoVigente?.hidroterapia || null)
+    : null;
+  const [marcandoHidro, setMarcandoHidro] = useState(false);
+  const marcarHidroterapia = async (realizada) => {
+    if (marcandoHidro) return;
+    setMarcandoHidro(true);
+    try {
+      const { data } = await api.post(`/appointments/${appointmentId}/hidroterapia`, { realizada });
+      setAptData(data);
+      toast.success(realizada ? 'Hidroterapia registrada como realizada' : 'Hidroterapia desmarcada');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo marcar la hidroterapia');
+    } finally {
+      setMarcandoHidro(false);
+    }
+  };
   const [reclamando, setReclamando] = useState(false);
   const [cerrandoTurno, setCerrandoTurno] = useState(false);
   /**
@@ -567,6 +600,45 @@ export default function PatientDetail() {
               {indicacionesEnfermeria && (
                 <span className="block mt-1 text-amber-900">
                   <b>Indicaciones:</b> {indicacionesEnfermeria}
+                </span>
+              )}
+              {/**
+                * HIDROTERAPIA (sep-2026): marcada por mostrador al asignar.
+                * La enfermera la ve aquí, junto al suero, y marca si la realizó.
+                */}
+              {hidroterapiaDelPaso?.solicitada && (
+                <span className="flex items-center gap-2 mt-1">
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-white border border-cyan-300 text-cyan-900 font-semibold">
+                    💦 Hidroterapia
+                    {hidroterapiaDelPaso.realizada && (
+                      <HiOutlineCheck className="w-3.5 h-3.5 text-cyan-600" />
+                    )}
+                  </span>
+                  {hidroterapiaDelPaso.realizada ? (
+                    <span className="text-[11px] text-cyan-800">
+                      La marcaste como realizada
+                      {hidroterapiaDelPaso.realizadaAt
+                        ? ` · ${new Date(hidroterapiaDelPaso.realizadaAt).toLocaleString('es-EC', { dateStyle: 'short', timeStyle: 'short' })}`
+                        : ''}
+                      <button
+                        type="button"
+                        onClick={() => marcarHidroterapia(false)}
+                        disabled={marcandoHidro}
+                        className="ml-1.5 underline text-cyan-700 hover:text-cyan-900 bg-transparent border-none cursor-pointer p-0"
+                      >
+                        Desmarcar
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => marcarHidroterapia(true)}
+                      disabled={marcandoHidro}
+                      className="text-[11px] font-semibold px-2 py-1 rounded-lg bg-cyan-600 text-white hover:bg-cyan-700 cursor-pointer border-none disabled:opacity-50"
+                    >
+                      {marcandoHidro ? 'Guardando…' : 'La realicé'}
+                    </button>
+                  )}
                 </span>
               )}
             </span>
@@ -2009,8 +2081,9 @@ function DiagnosticosEditor({ value = [], onChange }) {
  * sin filas: borrar la última la deja en blanco en vez de hacer desaparecer la
  * tabla.
  */
-function ItemsTable({ variant, items, onAdd, onUpdate, onRemove, titulo, ayuda, etiquetas }) {
+function ItemsTable({ variant, items, onAdd, onUpdate, onUpdateMany, onRemove, titulo, ayuda, etiquetas }) {
   const isReceta = variant === 'receta';
+  const isDerivacion = variant === 'derivacion';
   // Cómo se llama la primera columna de la receta. El terapeuta no receta
   // fármacos —manda suplementos, naturales y homeopáticos— y en su pantalla
   // tiene que poner eso. El dato guardado es el mismo (ver RECETA_ETIQUETAS).
@@ -2031,7 +2104,71 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove, titulo, ayuda, 
   const [selectorFila, setSelectorFila] = useState(null);
   const hint = ayuda || (isReceta
     ? rotulos.ayuda
-    : 'servicios o programas a los que se deriva');
+    : 'escógelos del catálogo con el que se agenda — así la cita derivada queda enlazada');
+  /**
+   * EL CATÁLOGO DE SERVICIOS DE LA AGENDA (sep-2026). Las derivaciones ya no se
+   * escriben a mano: el doctor las escoge del MISMO buscador con el que mostrador
+   * agenda una cita. Con la referencia, mostrador puede agendar la cita derivada
+   * con un clic y queda enlazada al doctor que derivó.
+   */
+  const [serviciosAgenda, setServiciosAgenda] = useState([]);
+  useEffect(() => {
+    if (!isDerivacion) return undefined;
+    let vivo = true;
+    api
+      .get('/appointment-service-items')
+      .then((r) => { if (vivo) setServiciosAgenda(Array.isArray(r.data) ? r.data : []); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [isDerivacion]);
+
+  const escogerServicio = (idx, id) => {
+    const svc = serviciosAgenda.find((s) => String(s._id) === String(id));
+    onUpdateMany(idx, {
+      serviceItem: id || null,
+      name: svc?.name || '',
+    });
+  };
+
+  /**
+   * EL INVENTARIO VUELVE A LA RECETA (sep-2026). El doctor puede escribir el
+   * medicamento a mano —como desde el rediseño— o ESCOGERLO del inventario con
+   * el buscador. Con producto, la línea queda vinculada (name es el snapshot) y
+   * SIN CHECK DEL SUERO: un ítem de inventario no se administra por dosis, así
+   * que la casilla se apaga y se limpia cualquier composición previa.
+   */
+  const [productosInv, setProductosInv] = useState([]);
+  useEffect(() => {
+    if (!isReceta) return undefined;
+    let vivo = true;
+    api
+      .get('/products')
+      .then((r) => { if (vivo) setProductosInv(Array.isArray(r.data) ? r.data : []); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [isReceta]);
+  // Los servicios/programas del inventario no se recetan: eso son las
+  // derivaciones, y ya tienen su propio buscador.
+  const opcionesInventario = productosInv.filter(
+    (p) => !['servicio', 'programa'].includes(p.category)
+  );
+
+  const escogerProducto = (idx, id) => {
+    const previo = items[idx] || {};
+    const p = id ? productosInv.find((x) => String(x._id) === String(id)) : null;
+    if (p) {
+      onUpdateMany(idx, {
+        product: p._id,
+        name: p.name || previo.name || '',
+        isSerum: false,
+        serumBase: { name: SUERO_CLORURO_NOMBRE, volumeMl: null },
+        serumComponents: [],
+      });
+    } else {
+      // Quitar el vínculo vuelve a dejar la línea manual, con su texto.
+      onUpdateMany(idx, { product: null });
+    }
+  };
 
   // Columnas por variante. En Derivaciones manda el orden de trabajo: cuántas
   // sesiones, de qué, y con qué indicaciones.
@@ -2056,7 +2193,7 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove, titulo, ayuda, 
       ]
     : [
         { key: 'quantity', label: 'Cant.', numero: true, ancho: 'w-16' },
-        { key: 'name', label: 'Servicio / Programa', placeholder: 'Fisioterapia, ecografía, laboratorio…', ancho: 'min-w-[240px]' },
+        { key: 'name', label: 'Servicio / Programa', derivacion: true, ancho: 'min-w-[240px]' },
       ];
 
   const placeholderIndicaciones = isReceta
@@ -2094,15 +2231,23 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove, titulo, ayuda, 
   // las tarjetas del móvil comparten los mismos controles.
   const campo = (c, row, idx) =>
     c.check ? (
-      <label className="flex items-center gap-1.5 cursor-pointer" title={c.ayuda || ''}>
-        <input
-          type="checkbox"
-          checked={!!row[c.key]}
-          onChange={(e) => onUpdate(idx, c.key, e.target.checked)}
-          className="w-4 h-4 accent-emerald-600 cursor-pointer"
-        />
-        <span className="md:hidden text-xs text-slate-500">{c.ayuda}</span>
-      </label>
+      row.product && isReceta && c.key === 'isSerum' ? (
+        /**
+         * SIN CHECK DEL SUERO en las líneas de inventario (sep-2026): lo que se
+         * escoge del catálogo se vende, no se administra por dosis.
+         */
+        <span className="text-slate-300 select-none" title="Ítem de inventario: no se administra por dosis">—</span>
+      ) : (
+        <label className="flex items-center gap-1.5 cursor-pointer" title={c.ayuda || ''}>
+          <input
+            type="checkbox"
+            checked={!!row[c.key]}
+            onChange={(e) => onUpdate(idx, c.key, e.target.checked)}
+            className="w-4 h-4 accent-emerald-600 cursor-pointer"
+          />
+          <span className="md:hidden text-xs text-slate-500">{c.ayuda}</span>
+        </label>
+      )
     ) : c.numero ? (
       <NumericInput
         min={1}
@@ -2110,6 +2255,49 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onRemove, titulo, ayuda, 
         onChange={(e) => onUpdate(idx, c.key, e.target.value === '' ? '' : Number(e.target.value))}
         className="input text-xs py-1"
       />
+    ) : c.derivacion ? (
+      /**
+       * LA DERIVACIÓN SE ESCOGE, NO SE ESCRIBE (sep-2026). Mismo catálogo que
+       * el buscador de servicios de la agenda: sin tildes ni duplicados, y la
+       * cita derivada se agenda con el servicio exacto que el doctor marcó.
+       */
+      <SearchableSelect
+        options={serviciosAgenda}
+        value={row.serviceItem ? String(row.serviceItem) : ''}
+        onChange={(v) => escogerServicio(idx, v)}
+        getLabel={(s) => s.name || ''}
+        placeholder="Escoge el servicio derivado…"
+        searchPlaceholder="Buscar servicio…"
+        allowClear
+        size="sm"
+        menuMinWidth={220}
+      />
+    ) : isReceta && c.key === 'name' ? (
+      /**
+       * EL MEDICAMENTO, A MANO O DEL INVENTARIO (sep-2026). El texto libre
+       * sigue mandando —se receta lo que sea— y debajo queda el buscador para
+       * vincularlo con lo que la clínica vende.
+       */
+      <div className="space-y-1">
+        <input
+          type="text"
+          value={row[c.key] || ''}
+          onChange={(e) => onUpdate(idx, c.key, e.target.value)}
+          placeholder={c.placeholder}
+          className="input text-xs py-1"
+        />
+        <SearchableSelect
+          options={opcionesInventario}
+          value={row.product ? String(row.product) : ''}
+          onChange={(v) => escogerProducto(idx, v)}
+          getLabel={(p) => p.name || ''}
+          placeholder="…o escógelo del inventario"
+          searchPlaceholder="Buscar en inventario…"
+          allowClear
+          size="sm"
+          menuMinWidth={220}
+        />
+      </div>
     ) : (
       <input
         type="text"
@@ -2396,6 +2584,8 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
   const fileInputRef = useRef(null);
   const emptyRow = () => ({
     name: '',
+    // Referencia al servicio de la agenda (derivaciones escogidas del buscador).
+    serviceItem: null,
     quantity: 1,
     dose: '',
     frequency: '',
@@ -2714,6 +2904,48 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
   const [purchases, setPurchases] = useState([]);
   const [treatmentProgress, setTreatmentProgress] = useState([]);
 
+  /**
+   * ODONTOGRAMA PRECARGADO (sep-2026, a petición de los odontólogos).
+   *
+   * El paciente que vuelve la semana siguiente abre un formulario en blanco y
+   * el odontólogo tenía que volver a pintar el esquema entero — aunque de la
+   * visita anterior se repitiera casi todo. Al empezar un seguimiento NUEVO, la
+   * ficha de odontología nace con la del ÚLTIMO seguimiento que la trajo: solo
+   * la ficha (odontograma, higiene, índices CPO/CEO…), que es lo que se repite.
+   * Lo demás —motivo, diagnósticos, receta— nace en blanco, y la OBSERVACIÓN
+   * tampoco viaja: es de la visita de aquella semana.
+   *
+   * Va UNA vez por paciente: se guarda quién fue el último paciente precargado,
+   * y una recarga de la ficha (p.ej. al guardar) no vuelve a llenarlo.
+   */
+  const prefilOdontoRef = useRef(null);
+  const prefilarOdontograma = (data) => {
+    if (!isOdonto) return;
+    if (prefilOdontoRef.current === patientId) return;
+    prefilOdontoRef.current = patientId;
+    const ultimo = [...(data?.followUps || [])]
+      .filter((fu) => odontologiaHasData(fu.odontologia))
+      .sort(
+        (a, b) =>
+          new Date(b.fecha || b.createdAt || 0) - new Date(a.fecha || a.createdAt || 0)
+      )[0];
+    if (!ultimo?.odontologia) return;
+    const fechaUltimo = ultimo.fecha || ultimo.createdAt;
+    setForm((f) => {
+      // Solo en un formulario virgen: una consulta a medio escribir (o el
+      // borrador que se recuperó) no se pisa por nada.
+      if (formTieneAlgo(f, emptyForm())) return f;
+      const { observaciones: _obsDeLaVisitaAnterior, ...resto } = ultimo.odontologia;
+      return { ...f, odontologia: { ...emptyOdontologia(), ...resto } };
+    });
+    toast(
+      `Odontograma precargado con el seguimiento del ${
+        fechaUltimo ? new Date(fechaUltimo).toLocaleDateString('es-EC') : 'último seguimiento'
+      } — ajusta solo lo que cambió`,
+      { icon: '🦷', duration: 7000 }
+    );
+  };
+
   const loadPurchases = async () => {
     // Solo administración y contabilidad: el bloque muestra lo que el paciente
     // compró y pagó. El servidor devuelve 403 al resto (ver routes/patients.js).
@@ -2742,6 +2974,7 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
         const res = await api.get(`/clinical-records/${patientId}`);
         setRecord(res.data);
         loadPurchases();
+        prefilarOdontograma(res.data);
       }
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error');
@@ -2762,6 +2995,16 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
     setForm((f) => {
       const items = [...f[listKey]];
       items[idx] = { ...items[idx], [key]: val };
+      return { ...f, [listKey]: items };
+    });
+  };
+
+  // Varios campos de la MISMA fila de una vez: la derivación escoge el servicio
+  // (serviceItem) y su nombre se rellena solo con el del catálogo.
+  const updateRowMany = (listKey, idx, patch) => {
+    setForm((f) => {
+      const items = [...f[listKey]];
+      items[idx] = { ...items[idx], ...patch };
       return { ...f, [listKey]: items };
     });
   };
@@ -3719,6 +3962,7 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
           items={form.recetaItems}
           onAdd={() => addRow('recetaItems')}
           onUpdate={(idx, key, val) => updateRow('recetaItems', idx, key, val)}
+          onUpdateMany={(idx, patch) => updateRowMany('recetaItems', idx, patch)}
           onRemove={(idx) => removeRow('recetaItems', idx)}
         />
 
@@ -3749,6 +3993,7 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
           items={form.derivacionItems}
           onAdd={() => addRow('derivacionItems')}
           onUpdate={(idx, key, val) => updateRow('derivacionItems', idx, key, val)}
+          onUpdateMany={(idx, patch) => updateRowMany('derivacionItems', idx, patch)}
           onRemove={(idx) => removeRow('derivacionItems', idx)}
         />
         </>)}

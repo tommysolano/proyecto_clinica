@@ -5603,6 +5603,7 @@ exports.createAppointmentFromChat = async (req, res) => {
           date: req.body.date,
           startTime: req.body.startTime,
           reason: req.body.reason,
+          serviceItem: req.body.serviceItem,
           services: req.body.services || [],
           clinic: req.body.clinic,
         }];
@@ -5772,6 +5773,41 @@ exports.createAppointmentFromChat = async (req, res) => {
           { new: true }
         ).catch(() => null);
       }
+      // El servicio vuelve a ser obligatorio, también desde el CRM.
+      if (!servicioAgenda) {
+        return res.status(400).json({
+          message: `Cita #${filas.indexOf(a) + 1}: selecciona un servicio`,
+        });
+      }
+
+      /**
+       * OTROS SERVICIOS DE LA CITA (sep-2026): agendar con VARIOS. Llegan como
+       * ids del catálogo de la agenda y aquí se resuelven — con `serviceItem`,
+       * el snapshot del nombre y quién los añadió —; el principal no se repite y
+       * un id que ya no exista rechaza la tanda entera (se comprueba ANTES de
+       * crear nada, igual que el resto de las validaciones).
+       */
+      const extrasDeCita = [];
+      const vistosEnLaCita = new Set([String(servicioAgenda._id)]);
+      for (const bruto of (Array.isArray(a.additionalServices) ? a.additionalServices : [])) {
+        const id = typeof bruto === 'string' ? bruto : (bruto?.serviceItem || bruto?._id || '');
+        if (!id) continue;
+        // eslint-disable-next-line no-await-in-loop
+        const svcExtra = await require('../models/AppointmentServiceItem').findById(id).lean();
+        if (!svcExtra) {
+          return res.status(400).json({
+            message: `Cita #${filas.indexOf(a) + 1}: uno de los servicios adicionales ya no existe`,
+          });
+        }
+        if (vistosEnLaCita.has(String(svcExtra._id))) continue;
+        vistosEnLaCita.add(String(svcExtra._id));
+        extrasDeCita.push({
+          serviceItem: svcExtra._id,
+          name: svcExtra.name || '',
+          addedAt: new Date(),
+          addedBy: req.user._id,
+        });
+      }
 
       /**
        * La sucursal destino se comprueba igual que en el alta normal de citas,
@@ -5798,7 +5834,15 @@ exports.createAppointmentFromChat = async (req, res) => {
         date: localDate,
         startTime: a.startTime,
         endTime: a.endTime || null,
-        serviceIds: [a.serviceItem, ...(a.services || []).map((s) => s.product)],
+        // Los OTROS SERVICIOS (sep-2026): el bloqueo por servicio también casa
+        // con los que la cita lleva como adicionales.
+        serviceIds: [
+          a.serviceItem,
+          ...(Array.isArray(a.additionalServices) ? a.additionalServices : [])
+            .map((s) => (typeof s === 'string' ? s : (s?.serviceItem || s?._id)))
+            .filter(Boolean),
+          ...(a.services || []).map((s) => s.product),
+        ],
         serviceNames: [
           a.serviceName,
           ...(a.services || []).map((s) => s?.name),
@@ -5849,6 +5893,8 @@ exports.createAppointmentFromChat = async (req, res) => {
         services: serviceItems,
         serviceItem: servicioAgenda?._id || null,
         serviceName: servicioAgenda?.name || '',
+        // Los OTROS SERVICIOS, ya resueltos contra el catálogo (ver arriba).
+        additionalServices: extrasDeCita,
         status: 'pendiente',
         isFirstVisit: primerasVisitas.get(String(patientId)) || false,
         // A nombre de quién queda (normalmente quien la escribe; el call center

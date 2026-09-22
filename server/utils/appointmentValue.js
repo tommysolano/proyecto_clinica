@@ -63,15 +63,20 @@ function aplicarValorDeCita(apt, body, req) {
   if (!traeCanje && !traeValor && !traeAdelanto) return false;
 
   /**
-   * PAGO POR ADELANTADO. `advancePayment` manda ('' | 'abono' | 'total') y
-   * `paidInAdvance` es su espejo, que se conserva porque ya lo leía el Excel de
-   * citas — nadie debe escribirlo por su cuenta.
+   * PAGO POR ADELANTADO. `advancePayment` manda ('' | 'abono' | 'total' |
+   * 'prepagado') y `paidInAdvance` es su espejo, que se conserva porque ya lo
+   * leía el Excel de citas — nadie debe escribirlo por su cuenta.
    *
    * «Total» no necesita importe aparte: lo pagado es el valor de la cita, y
    * duplicarlo en dos campos es la forma segura de que un día no cuadren.
+   * «Prepagado» (sep-2026) es lo mismo de pagado, pero dicho ANTES de la
+   * visita: el paciente ya dejó el pago completo por adelantado. Se resuelve
+   * abajo, igual que 'total'.
    */
   if (traeAdelanto) {
-    const modo = ['abono', 'total'].includes(body.advancePayment) ? body.advancePayment : '';
+    const modo = ['abono', 'total', 'prepagado'].includes(body.advancePayment)
+      ? body.advancePayment
+      : '';
     apt.advancePayment = modo;
     apt.paidInAdvance = modo !== '';
     /**
@@ -117,7 +122,7 @@ function aplicarValorDeCita(apt, body, req) {
     apt.paidInAdvance = false;
     apt.advanceAmount = 0;
     apt.advanceMethod = '';
-  } else if (apt.advancePayment === 'total') {
+  } else if (apt.advancePayment === 'total' || apt.advancePayment === 'prepagado') {
     apt.advanceAmount = Number(apt.agreedValue) > 0 ? Number(apt.agreedValue) : 0;
   }
 

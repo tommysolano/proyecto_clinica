@@ -18,6 +18,7 @@ import PatientFields, {
   Field,
 } from '../components/PatientFields';
 import { nombreSucursal } from '../utils/clinicName';
+import ProductAutocomplete from '../components/ProductAutocomplete';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -54,6 +55,8 @@ const emptyApt = {
   reason: '',
   // Servicio del catálogo propio de la agenda: { _id, name } o null.
   serviceItem: null,
+  // OTROS SERVICIOS de la misma cita (sep-2026): [{ _id, name }].
+  additionalServices: [],
   /**
    * Valor acordado y canje, igual que en la agenda: esta cita se agenda desde
    * mostrador y ahí es donde se sabe lo que va a pagar el paciente. Solo lo ve
@@ -96,6 +99,16 @@ export default function Patients() {
     return () => { vivo = false; };
   }, []);
   const showClinicSelector = (sedes?.length || 0) > 1;
+  // EL CATÁLOGO DE LA AGENDA para los OTROS SERVICIOS de la cita (sep-2026):
+  // el mismo que el buscador de la agenda.
+  const [serviciosAgenda, setServiciosAgenda] = useState([]);
+  useEffect(() => {
+    let vivo = true;
+    api.get('/appointment-service-items')
+      .then((r) => { if (vivo) setServiciosAgenda(Array.isArray(r.data) ? r.data : []); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, []);
   // 'doctor' entra aquí porque expande a las especialidades: en óptica el
   // paciente llega sin cita y quien lo registra es el propio optómetra.
   //
@@ -262,6 +275,11 @@ export default function Patients() {
         toast.error('Completa los datos de la cita (fecha y hora)');
         return;
       }
+      // El servicio vuelve a ser obligatorio: cada cita dice a qué viene.
+      if (!aptForm.serviceItem) {
+        toast.error('Selecciona un servicio para la cita');
+        return;
+      }
       // Con varias sedes, la sucursal es obligatoria y ya no se hereda de la
       // activa: agendar en la equivocada no se descubre hasta que el paciente
       // llega a la otra puerta.
@@ -306,6 +324,8 @@ export default function Patients() {
             reason: aptForm.reason,
             status: 'pendiente',
             serviceItem: aptForm.serviceItem?._id || null,
+            // OTROS SERVICIOS (sep-2026): ids del catálogo de la agenda.
+            additionalServices: (aptForm.additionalServices || []).map((s) => s._id || s),
             // A nombre de quién queda (vacío = de quien la escribe).
             bookedBy: aptForm.bookedBy || undefined,
             // Quién atiende, enfermería y el suero, por la misma función que la
@@ -698,12 +718,52 @@ export default function Patients() {
                       />
                     </Field>
                   </div>
-                  <Field label="Servicio">
+                  <Field label="Servicio *">
                     <ServiceItemPicker
                       value={aptForm.serviceItem}
                       onChange={(item) => setAptForm({ ...aptForm, serviceItem: item })}
                     />
                   </Field>
+                  {/* OTROS SERVICIOS de la misma cita (sep-2026): igual que en
+                      la agenda, la cita puede llevar varios. */}
+                  {!aptForm.ahora && (
+                    <Field label="Otros servicios">
+                      <ProductAutocomplete
+                        products={serviciosAgenda}
+                        value=""
+                        onSelect={(p) => {
+                          if (!p) return;
+                          if (aptForm.serviceItem && String(p._id) === String(aptForm.serviceItem._id)) return;
+                          if ((aptForm.additionalServices || []).some((s) => String(s._id) === String(p._id))) return;
+                          setAptForm({ ...aptForm, additionalServices: [...(aptForm.additionalServices || []), { _id: p._id, name: p.name }] });
+                        }}
+                        placeholder="Añade otro servicio a la cita…"
+                      />
+                      {(aptForm.additionalServices || []).length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mt-1.5">
+                          {aptForm.additionalServices.map((s) => (
+                            <span
+                              key={s._id}
+                              className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full bg-violet-100 text-violet-800 text-xs font-medium"
+                            >
+                              {s.name || 'Servicio'}
+                              <button
+                                type="button"
+                                onClick={() => setAptForm({
+                                  ...aptForm,
+                                  additionalServices: aptForm.additionalServices.filter((x) => String(x._id) !== String(s._id)),
+                                })}
+                                title={`Quitar ${s.name || 'el servicio'}`}
+                                className="p-0.5 rounded-full hover:bg-violet-200 text-violet-600 bg-transparent border-none cursor-pointer leading-none"
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </Field>
+                  )}
                   <Field label="Motivo">
                     <textarea
                       value={aptForm.reason}

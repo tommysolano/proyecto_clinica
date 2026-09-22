@@ -62,8 +62,17 @@ const manana = () => {
   return d.toISOString().slice(0, 10);
 };
 
-const agendar = (clinicId, userId, body, role = 'cajero') =>
-  H.runController(appt.createAppointment, H.mockReq(clinicId, userId, body, { role }));
+const agendar = async (clinicId, userId, body, role = 'cajero') => {
+  // El servicio es obligatorio desde sep-2026: los tests que no lo mandan
+  // llevan uno por defecto (los que prueban otra cosa lo pisan en el body).
+  if (body.serviceItem === undefined) {
+    const svc = await AppointmentServiceItem.create({
+      clinic: clinicId, name: 'Consulta', slug: `consulta-${Date.now()}-${Math.floor(Math.random() * 1e9)}`,
+    });
+    body.serviceItem = svc._id;
+  }
+  return H.runController(appt.createAppointment, H.mockReq(clinicId, userId, body, { role }));
+};
 
 const sueroDeLaFicha = async (patientId) => {
   const rec = await ClinicalRecord.findOne({ patient: patientId }).lean();
@@ -437,8 +446,12 @@ test('T16) quitar el servicio y volver a ponerlo NO escribe una segunda bolsa', 
       H.mockReq(clinicId, userId, body, { role: 'cajero', params: { id: String(cita._id) } })
     );
 
-  // Mostrador se equivoca, lo quita…
-  ok(await editar({ serviceItem: null }));
+  // Mostrador se equivoca y lo quiere quitar… YA NO SE PUEDE (sep-2026): el
+  // servicio es obligatorio y la edición lo rechaza.
+  const r = await editar({ serviceItem: null });
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.equal((await sueroDeLaFicha(patient._id)).items.length, 1);
+
   // …y lo vuelve a poner. Es el MISMO servicio: la bolsa ya está escrita.
   ok(await editar({ serviceItem: String(detox._id) }));
   assert.equal(

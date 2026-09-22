@@ -631,6 +631,11 @@ function normalizarPasos(steps) {
          */
         nurseInstructions: String(p.nurseInstructions || '').trim(),
         /**
+         * HIDROTERAPIA (sep-2026): la marca mostrador en el paso de enfermería.
+         * La enfermera la ve en su barra y da fe de si la realizó.
+         */
+        hidroterapia: !!p.hidroterapia,
+        /**
          * SEÑAL DE LA PANTALLA, no un campo del turno: `asignarTurnos` copia
          * campos concretos y este no está, así que no se guarda en la cita.
          *
@@ -911,8 +916,16 @@ exports.createAppointment = async (req, res) => {
       clinicId: targetClinicId,
       date: localDate,
       // El servicio del catálogo de la agenda y el legado del inventario: el
-      // bloqueo por servicio casa con cualquiera de las dos formas.
-      serviceIds: [req.body.serviceItem, ...serviciosLegacy],
+      // bloqueo por servicio casa con cualquiera de las dos formas. Y los OTROS
+      // SERVICIOS de la cita (sep-2026): un bloqueo de «Ecografía» también
+      // aplica a la cita que la lleva como servicio adicional.
+      serviceIds: [
+        req.body.serviceItem,
+        ...(Array.isArray(req.body.additionalServices) ? req.body.additionalServices : [])
+          .map((s) => (typeof s === 'string' ? s : (s?.serviceItem || s?._id)))
+          .filter(Boolean),
+        ...serviciosLegacy,
+      ],
       serviceNames: [
         req.body.serviceName,
         ...(Array.isArray(services) ? services : []).map((s) => s?.name),
@@ -1038,6 +1051,40 @@ exports.createAppointment = async (req, res) => {
     if (cleanBody.treatmentRef === '') delete cleanBody.treatmentRef;
 
     const servicioAgenda = await resolverServicioAgenda(req.body.serviceItem);
+    // El servicio vuelve a ser obligatorio: sin él, la cita se rechaza.
+    if (!servicioAgenda) {
+      return res.status(400).json({ message: 'Selecciona un servicio para la cita' });
+    }
+
+    /**
+     * OTROS SERVICIOS DE LA CITA (sep-2026): agendar con VARIOS servicios.
+     *
+     * Llegan como ids (u objetos con su id) del catálogo de la agenda y aquí se
+     * resuelven contra él — igual que hace «Cambiar servicio y valor» al
+     * corregirlos después —: con `serviceItem`, el snapshot del nombre y quién
+     * los añadió. El principal no se repite y un id que ya no exista rechaza el
+     * agendamiento, para que no se cuele un servicio fantasma.
+     */
+    delete cleanBody.additionalServices;
+    const extrasDeCita = [];
+    const vistosEnLaCita = new Set([String(servicioAgenda._id)]);
+    for (const bruto of (Array.isArray(req.body.additionalServices) ? req.body.additionalServices : [])) {
+      const id = typeof bruto === 'string' ? bruto : (bruto?.serviceItem || bruto?._id || '');
+      if (!id) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const svc = await resolverServicioAgenda(id);
+      if (!svc) {
+        return res.status(400).json({ message: 'Uno de los servicios adicionales ya no existe' });
+      }
+      if (vistosEnLaCita.has(String(svc._id))) continue;
+      vistosEnLaCita.add(String(svc._id));
+      extrasDeCita.push({
+        serviceItem: svc._id,
+        name: svc.name || '',
+        addedAt: new Date(),
+        addedBy: req.user._id,
+      });
+    }
 
     /**
      * QUIÉN ATIENDE, ELEGIDO YA AL AGENDAR.
@@ -1078,6 +1125,8 @@ exports.createAppointment = async (req, res) => {
       date: localDate,
       services: servicesSnapshot,
       serviceItem: servicioAgenda?._id || null,
+      // Los OTROS SERVICIOS, ya resueltos contra el catálogo (ver arriba).
+      additionalServices: extrasDeCita,
       // Snapshot: la lista, los reportes y el recordatorio de WhatsApp leen el
       // nombre sin populate y sin romperse si mañana se renombra el servicio.
       serviceName: servicioAgenda?.name || '',
@@ -1160,6 +1209,47 @@ exports.createAppointment = async (req, res) => {
         );
       } catch (e) {
         console.warn('No se pudo sincronizar derivación al crear cita:', e.message);
+      }
+    }
+
+    /**
+     * CITA DERIVADA POR UN DOCTOR (sep-2026).
+     *
+     * Llega `derivationOf` con el id de la cita donde el doctor atendió al
+     * paciente y marcó la derivación (un servicio del catálogo de la agenda).
+     * Aquí se hace el enlace en las dos direcciones:
+     *  · la cita nueva guarda `derivationSource` (y `origin: 'referral'`);
+     *  · se crea el registro en la colección Referral — fromDoctor es EL DOCTOR
+     *    DE LA CITA ORIGEN, que es quien derivó—, de modo que la página
+     *    Derivaciones y las comisiones por derivación lo acreditan.
+     *
+     * El doctor que deriva SOLO escoge el servicio (lo hace desde su seguimiento);
+     * el resto —a qué hora, con quién— lo decide mostrador al agendar.
+     */
+    if (req.body.derivationOf) {
+      try {
+        const origen = await Appointment.findOne({
+          _id: req.body.derivationOf,
+          ...filtroSucursalCita(req),
+        }).select('doctor createdBy clinic patient');
+        if (origen) {
+          const Referral = require('../models/Referral');
+          const referral = await Referral.create({
+            clinic: targetClinicId,
+            patient: patient,
+            fromDoctor: origen.doctor || origen.createdBy || req.user._id,
+            specialty: servicioAgenda.name || '',
+            reason: `Derivación del doctor: ${servicioAgenda.name || 'servicio de agenda'}`,
+            appointment: appointment._id,
+            status: 'agendada',
+          });
+          appointment.referral = referral._id;
+          appointment.origin = 'referral';
+          appointment.derivationSource = origen._id;
+          await appointment.save();
+        }
+      } catch (e) {
+        console.warn('No se pudo registrar la derivación de la cita:', e.message);
       }
     }
 
@@ -1247,6 +1337,46 @@ exports.updateAppointment = async (req, res) => {
     }
 
     const update = { ...req.body };
+
+    /**
+     * OTROS SERVICIOS DE LA CITA, resueltos contra el catálogo (sep-2026).
+     *
+     * Llegan como ids (u objetos con su id) del buscador; sin esta resolución el
+     * arreglo crudo no hace cast al sub-esquema y el guardado entero reventaba
+     * con un CastError. El servicio principal no se repite y los que ya estaban
+     * conservan quién los añadió y cuándo.
+     */
+    if (update.additionalServices !== undefined) {
+      const servicioPrincipalNuevo = update.serviceItem !== undefined
+        ? (typeof update.serviceItem === 'object' ? (update.serviceItem?._id || null) : (update.serviceItem || null))
+        : (existing.serviceItem?._id || existing.serviceItem || null);
+      const listaExtras = Array.isArray(update.additionalServices) ? update.additionalServices : [];
+      const previos = new Map(
+        (existing.additionalServices || []).map((s) => [String(s.serviceItem?._id || s.serviceItem), s])
+      );
+      const vistos = new Set(servicioPrincipalNuevo ? [String(servicioPrincipalNuevo)] : []);
+      const hidratados = [];
+      for (const bruto of listaExtras) {
+        const id = typeof bruto === 'string' ? bruto : (bruto?.serviceItem || bruto?._id || '');
+        if (!id) continue;
+        if (vistos.has(String(id))) continue;
+        // eslint-disable-next-line no-await-in-loop
+        const svc = await resolverServicioAgenda(id);
+        if (!svc) {
+          return res.status(400).json({ message: 'Uno de los servicios adicionales ya no existe' });
+        }
+        if (servicioPrincipalNuevo && String(svc._id) === String(servicioPrincipalNuevo)) continue;
+        vistos.add(String(svc._id));
+        const previo = previos.get(String(svc._id));
+        hidratados.push({
+          serviceItem: svc._id,
+          name: svc.name || '',
+          addedAt: previo?.addedAt || new Date(),
+          addedBy: previo?.addedBy || req.user._id,
+        });
+      }
+      update.additionalServices = hidratados;
+    }
 
     /**
      * Una cita completada no se reescribe por esta puerta: mover su fecha, su
@@ -1411,6 +1541,11 @@ exports.updateAppointment = async (req, res) => {
     let servicioNuevoConSuero = null;
     if (update.serviceItem !== undefined) {
       const svc = await resolverServicioAgenda(update.serviceItem);
+      // El servicio sigue siendo obligatorio también al editar: no se permite
+      // dejar la cita sin él (null/'' o un id que no exista).
+      if (!svc) {
+        return res.status(400).json({ message: 'Selecciona un servicio para la cita' });
+      }
       // La pregunta la contesta `faltaElSueroDelServicio`, la MISMA que usan las
       // otras dos puertas. Antes se comparaba contra `existing.serviceItem`, y
       // por eso quitar el servicio y volver a ponerlo se leía como un cambio:
@@ -1468,10 +1603,16 @@ exports.updateAppointment = async (req, res) => {
         ? (Array.isArray(update.services) ? update.services : [])
         : (existing.services || [])
       ).map((s) => (typeof s === 'string' ? s : s?.product)).filter(Boolean);
+      // Los OTROS SERVICIOS (sep-2026): el bloqueo por servicio también casa
+      // con los que ya están en la cita o los que se acaban de añadir.
+      const extrasParaBloqueo = (update.additionalServices !== undefined
+        ? update.additionalServices
+        : existing.additionalServices
+      ).map((s) => s?.serviceItem).filter(Boolean);
       const bloqueos = await bloqueosQueAplican({
         clinicId: clinicScope,
         date: finalDate,
-        serviceIds: [servicioFinal, ...serviciosLegacy],
+        serviceIds: [servicioFinal, ...extrasParaBloqueo, ...serviciosLegacy],
         serviceNames: [
           update.serviceName !== undefined ? update.serviceName : existing.serviceName,
           ...(update.services !== undefined
@@ -2481,6 +2622,179 @@ exports.setSerumStatus = async (req, res) => {
 };
 
 /**
+ * HIDROTERAPIA (sep-2026): la enfermera da fe de si la realizó.
+ *
+ * Mostrador la marca al asignar el paso (`turns[].hidroterapia.solicitada`) y
+ * aquí se cierra el círculo: `realizada` a true con quién y cuándo, o se
+ * desmarca. Es el mismo gesto que administrar un suero, sin inventario.
+ *
+ * El enfermero marca SU turno (el pendiente a su nombre, o el vigente si es
+ * abierto que él reclamó); administración y mostrador pueden marcar cualquier
+ * turno enviando `turnId`.
+ */
+exports.marcarHidroterapia = async (req, res) => {
+  try {
+    const realizada = !!req.body?.realizada;
+    const apt = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) });
+    if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+
+    const esMostrador = req.user.isSuperAdmin || req.role === 'admin' || req.role === 'cajero';
+    const miIdStr = String(req.user._id);
+    let turno = null;
+    if (req.body?.turnId && esMostrador) {
+      turno = (apt.turns || []).find((t) => String(t._id) === String(req.body.turnId));
+    } else {
+      // El suyo: un turno de enfermería pendiente a su nombre (reclamado o no).
+      turno = (apt.turns || []).find(
+        (t) =>
+          t.kind === 'enfermeria' &&
+          t.status === 'pendiente' &&
+          String(t.user?._id || t.user || '') === miIdStr
+      );
+    }
+    if (!turno) {
+      return res.status(403).json({ message: 'No tienes un paso de enfermería que marcar en esta cita' });
+    }
+    if (!turno.hidroterapia?.solicitada) {
+      return res.status(400).json({ message: 'Este paso no tiene hidroterapia marcada' });
+    }
+
+    turno.hidroterapia.realizada = realizada;
+    turno.hidroterapia.realizadaAt = realizada ? new Date() : null;
+    turno.hidroterapia.realizadaBy = realizada ? req.user._id : null;
+    apt.markModified('turns');
+    await apt.save();
+
+    const populated = await Appointment.findById(apt._id)
+      .populate('patient', POPULATE_PATIENT)
+      .populate('doctor', POPULATE_DOCTOR)
+      .populate('turns.user', POPULATE_DOCTOR)
+      .populate('turns.hidroterapia.realizadaBy', 'name')
+      .populate('serviceItem', POPULATE_SERVICE_ITEM)
+      .populate('services.product', 'name code salePrice category');
+    emitToClinic(apt.clinic, 'appointment:updated', populated);
+    res.json(populated);
+  } catch (error) {
+    res.status(500).json({ message: 'No se pudo marcar la hidroterapia', error: error.message });
+  }
+};
+
+/**
+ * LAS DERIVACIONES DEL DOCTOR, para mostrador (sep-2026).
+ *
+ * El doctor ya no escribe la derivación a mano: la escoge del MISMO catálogo
+ * con el que se agenda una cita. Esta puerta devuelve las derivaciones del
+ * seguimiento de ESTA cita (servicio, cantidad, indicaciones), y dice cuáles ya
+ * tienen su cita agendada — así mostrador sabe qué queda por agendar y la cita
+ * nueva queda enlazada al doctor que derivó.
+ */
+exports.getDerivacionesDeCita = async (req, res) => {
+  try {
+    const apt = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) })
+      .select('clinic patient turns doctor attendedByNurse status')
+      .lean();
+    if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+
+    const ClinicalRecord = require('../models/ClinicalRecord');
+    const record = await ClinicalRecord.findOne({ patient: apt.patient }).lean();
+    const sellados = new Set(
+      (apt.turns || []).map((t) => t.followUp).filter(Boolean).map(String)
+    );
+
+    const derivaciones = [];
+    const vistas = new Set();
+    for (const fu of record?.followUps || []) {
+      if (!sellados.has(String(fu._id))) continue;
+      for (const it of fu.recetaItems || []) {
+        if (!it.isService || !it.serviceItem) continue;
+        const clave = String(it.serviceItem);
+        if (vistas.has(clave)) continue;
+        vistas.add(clave);
+        // eslint-disable-next-line no-await-in-loop
+        const usada = await Appointment.exists({
+          derivationSource: apt._id,
+          serviceItem: it.serviceItem,
+          status: { $ne: 'cancelada' },
+        });
+        derivaciones.push({
+          serviceItem: it.serviceItem,
+          name: it.name || '',
+          quantity: it.quantity || 1,
+          instructions: it.instructions || '',
+          derivadaEn: fu.fecha || fu.createdAt || null,
+          agendada: !!usada,
+        });
+      }
+    }
+    res.json({ derivaciones });
+  } catch (error) {
+    res.status(500).json({ message: 'No se pudieron leer las derivaciones de la cita', error: error.message });
+  }
+};
+
+/**
+ * EL COBRO DE LA CITA, registrado por mostrador (sep-2026).
+ *
+ * Dos partes que antes se mezclaban y ahora quedan separadas:
+ *  · el VALOR DE LA CITA, que ya tenía su sitio (`agreedValue`);
+ *  · LO QUE EL PACIENTE PAGA POR LOS ITEMS que el doctor recetó — mostrador los
+ *    escoge con checks (`prescribedItems`) y anota el total (`itemsValue`).
+ *
+ * Y queda QUIÉN registró el cobro: "agendada por" no dice quién cobró.
+ * Dato OPERATIVO: no genera venta, factura ni asiento.
+ */
+exports.updateCobroItems = async (req, res) => {
+  try {
+    if (!puedeFijarValor(req)) {
+      return res.status(403).json({ message: 'Solo mostrador puede registrar el cobro' });
+    }
+    const apt = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) });
+    if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+
+    if (req.body.items !== undefined) {
+      const lista = Array.isArray(req.body.items) ? req.body.items : [];
+      apt.prescribedItems = lista
+        .filter((it) => it && (it.item || it.name))
+        .map((it) => ({
+          followUp: it.followUp || undefined,
+          item: it.item || undefined,
+          name: String(it.name || '').trim(),
+          quantity: Number(it.quantity) > 0 ? Number(it.quantity) : 1,
+          price: it.price == null || it.price === '' ? null : Math.max(0, Number(it.price) || 0),
+        }));
+    }
+    if (req.body.itemsValue !== undefined) {
+      if (req.body.itemsValue === null || req.body.itemsValue === '') {
+        apt.itemsValue = null;
+      } else {
+        const num = Number(req.body.itemsValue);
+        if (!Number.isFinite(num) || num < 0) {
+          return res.status(400).json({ message: 'El valor de los items no es válido' });
+        }
+        apt.itemsValue = num;
+      }
+    }
+
+    apt.chargeRegisteredBy = req.user._id;
+    apt.chargeRegisteredByName = req.user.name || '';
+    apt.chargeRegisteredAt = new Date();
+
+    await apt.save();
+    const populated = await Appointment.findById(apt._id)
+      .populate('patient', POPULATE_PATIENT)
+      .populate('doctor', POPULATE_DOCTOR)
+      .populate('turns.user', POPULATE_DOCTOR)
+      .populate('serviceItem', POPULATE_SERVICE_ITEM)
+      .populate('chargeRegisteredBy', 'name')
+      .populate('services.product', 'name code salePrice category');
+    emitToClinic(apt.clinic, 'appointment:updated', populated);
+    res.json(populated);
+  } catch (error) {
+    res.status(500).json({ message: 'No se pudo registrar el cobro', error: error.message });
+  }
+};
+
+/**
  * CORREGIR EL SERVICIO Y EL VALOR de una cita — también después de atenderla.
  *
  * Es una puerta propia, y no un `PUT /:id`, por lo que NO deja hacer: ahí viven
@@ -3164,6 +3478,8 @@ exports.assignDoctor = async (req, res) => {
  * abierto, va al rol entero y la toma el primero que pueda.
  */
 async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores = [] }) {
+  /** Id que puede venir poblado (socket) o en crudo (ObjectId). */
+  const idDeTurno = (v) => (v && typeof v === 'object' && v._id ? String(v._id) : v ? String(v) : null);
   /**
    * La sucursal es la DE LA CITA, no la activa de quien asigna. Caja agenda y
    * asigna para otra sede desde su mostrador: con `req.clinicId` el turno de
@@ -3193,6 +3509,19 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
   const leTocaEnfermeria = enfermeria && !enTurno && turnoVigenteEsEnfermeria(apt) && !apt.serumStatus;
   // Nombrado, o abierto a todos. `null` = a todos.
   const enfermeroNombrado = leTocaEnfermeria ? enfermeroEnTurno(apt) : null;
+  /**
+   * TURNOS PARALELOS (sep-2026): los demás enfermeros NOMBRADOS con turno
+   * pendiente también se enteran, aunque la pelota esté en otra parte — la
+   * clínica pidió que varios atiendan al mismo paciente a la vez, y su bandeja
+   * ya les muestra la cita.
+   */
+  const otrosNombrados = [
+    ...new Set(
+      (apt.turns || [])
+        .filter((t) => t.kind === 'enfermeria' && t.status === 'pendiente' && t.user)
+        .map((t) => idDeTurno(t.user))
+    ),
+  ].filter((id) => id !== enfermeroNombrado);
 
   if (enTurno) emitToUser(enTurno, 'appointment:assigned', apt);
   // Quien deja de tenerla —o quien sigue en la cola— también se entera, para que
@@ -3204,6 +3533,8 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
       if (enfermeroNombrado) emitToUser(enfermeroNombrado, 'appointment:assigned', apt);
       else emitToRole(clinicId, 'enfermero', 'appointment:assigned', apt);
     }
+    // Y los paralelos, siempre.
+    for (const id of otrosNombrados) emitToUser(id, 'appointment:assigned', apt);
 
     try {
       const { notificarUsuarios: pushUsuarios, notificarRol: pushRol } = require('../utils/pushNotifications');
@@ -3379,8 +3710,20 @@ exports.nurseClaim = async (req, res) => {
      * puede estar detrás de un doctor; la bandeja ya no lo enseña, pero una
      * pantalla abierta desde antes sí podría mandarlo, y reclamarlo pondría la
      * cita en manos de enfermería con el paciente aún en consulta.
+     *
+     * EXCEPCIÓN — TURNOS PARALELOS (sep-2026): un turno de enfermería NOMBRADO
+     * a quien reclama vale SIEMPRE, esté la cita con el doctor o con otra
+     * enfermera: la clínica pidió que varios enfermeros atiendan al mismo
+     * paciente a la vez, cada uno su parte.
      */
-    if (conTurnos && previa.currentTurnKind !== 'enfermeria') {
+    const miIdStr = String(req.user._id);
+    const miTurnoPendiente = (previa.turns || []).find(
+      (t) =>
+        t.kind === 'enfermeria' &&
+        t.status === 'pendiente' &&
+        String(t.user?._id || t.user || '') === miIdStr
+    );
+    if (conTurnos && !miTurnoPendiente && previa.currentTurnKind !== 'enfermeria') {
       return res.status(409).json({
         message: 'Todavía le toca al doctor. La cita pasará a enfermería cuando él termine.',
         code: 'NOT_YOUR_TURN',
@@ -3389,9 +3732,10 @@ exports.nurseClaim = async (req, res) => {
 
     // Y solo si el turno vigente es SUYO o está abierto. Cuando recepción nombra
     // a una enfermera concreta, el turno es de ella: que lo tome otra dejaría el
-    // registro diciendo que atendió quien no era.
+    // registro diciendo que atendió quien no era. (Con un turno paralelo propio
+    // la regla no aplica: ese turno es suyo aunque otro tenga la pelota.)
     const dueño = previa.currentTurnUser ? String(previa.currentTurnUser) : null;
-    if (conTurnos && dueño && dueño !== String(req.user._id)) {
+    if (conTurnos && !miTurnoPendiente && dueño && dueño !== miIdStr) {
       const quien = await require('../models/User').findById(dueño).select('name').lean();
       return res.status(409).json({
         message: `Este turno es de ${quien?.name || 'otro enfermero/a'}.`,
@@ -3411,12 +3755,21 @@ exports.nurseClaim = async (req, res) => {
        *
        * Va sobre el TURNO y no sobre la cita porque un detox lleva dos turnos de
        * enfermería seguidos: bloquear la cita entera dejaba fuera a la segunda.
+       * Con turnos paralelos, el propio va PRIMERO: es el turno que le toca a él,
+       * aunque el vigente sea de otro profesional.
        */
-      const idTurno = previa.turns.find(
-        (t) => t.kind === 'enfermeria' && t.status === 'pendiente'
+      const idTurno = (
+        miTurnoPendiente ||
+        previa.turns.find((t) => t.kind === 'enfermeria' && t.status === 'pendiente')
       )?._id;
       apt = await Appointment.findOneAndUpdate(
-        { _id: req.params.id, clinic: previa.clinic, currentTurnKind: 'enfermeria' },
+        {
+          _id: req.params.id,
+          clinic: previa.clinic,
+          // Reclamar un turno PROPIO no exige que la cita esté en manos de
+          // enfermería (puede estar con el doctor o con otra enfermera).
+          ...(miTurnoPendiente ? {} : { currentTurnKind: 'enfermeria' }),
+        },
         {
           $set: {
             'turns.$[t].user': req.user._id,
@@ -3677,6 +4030,14 @@ exports.nurseComplete = async (req, res) => {
       // El detalle va DENTRO de las observaciones además de en `aplicaciones`:
       // los PDF y la hoja MSP leen texto, no el arreglo nuevo.
       const detalle = aplicaciones.map(resumenAplicacion).filter(Boolean);
+      /**
+       * HIDROTERAPIA (sep-2026): si mostrador la marcó en este paso, el parte
+       * deja dicho si se realizó — es el "tal y como el suero" que pidió la
+       * clínica, y queda en la historia aunque nadie escriba nada.
+       */
+      const hidro = miTurno?.hidroterapia?.solicitada
+        ? ` Hidroterapia: ${miTurno.hidroterapia.realizada ? 'realizada' : 'NO realizada'}.`
+        : '';
       const vs = req.body.vitalSigns || {};
       record.followUps.push({
         fecha: new Date(),
@@ -3686,7 +4047,7 @@ exports.nurseComplete = async (req, res) => {
         aplicaciones,
         observaciones:
           req.body.note
-          || (detalle.length ? `Se aplicó: ${detalle.join(' · ')}.` : 'Servicio aplicado por enfermería.'),
+          || (`${detalle.length ? `Se aplicó: ${detalle.join(' · ')}.` : 'Servicio aplicado por enfermería.'}${hidro}`),
         vitalSigns: {
           // La hora de la toma la sella el sistema, no se digita.
           hora: nowHHMM(),

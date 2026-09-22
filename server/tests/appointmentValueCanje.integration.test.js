@@ -1,4 +1,4 @@
-/**
+﻿/**
  * VALOR DE LA CITA Y CANJE, y la corrección del servicio después de atender.
  *
  * Lo que se prueba aquí es la separación entre lo OPERATIVO y lo contable: el
@@ -236,12 +236,14 @@ test('un valor negativo no se guarda', async () => {
 test('al crear la cita, caja puede dejar anotado el valor', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const patient = await Patient.create({ clinic: clinicId, firstName: 'Ana', lastName: 'P' });
+  // El servicio es obligatorio desde sep-2026.
+  const svc = await AppointmentServiceItem.create({ clinic: clinicId, name: 'Consulta', slug: `consulta-${Date.now()}-${Math.floor(Math.random() * 1e9)}` });
 
   const r = await H.runController(
     appt.createAppointment,
     H.mockReq(
       clinicId, userId,
-      { patient: patient._id, date: ymd(new Date(Date.now() + 86400000)), startTime: '09:00', agreedValue: 30 },
+      { patient: patient._id, date: ymd(new Date(Date.now() + 86400000)), startTime: '09:00', serviceItem: String(svc._id), agreedValue: 30 },
       { role: 'cajero' }
     )
   );
@@ -255,12 +257,14 @@ test('al crear la cita, caja puede dejar anotado el valor', async () => {
 test('al crear la cita, el canje deja el importe en 0 aunque venga uno', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const patient = await Patient.create({ clinic: clinicId, firstName: 'Ana', lastName: 'P' });
+  // El servicio es obligatorio desde sep-2026.
+  const svc = await AppointmentServiceItem.create({ clinic: clinicId, name: 'Consulta', slug: `consulta-${Date.now()}-${Math.floor(Math.random() * 1e9)}` });
 
   const r = await H.runController(
     appt.createAppointment,
     H.mockReq(
       clinicId, userId,
-      { patient: patient._id, date: ymd(new Date(Date.now() + 86400000)), startTime: '09:00', agreedValue: 30, isCanje: true },
+      { patient: patient._id, date: ymd(new Date(Date.now() + 86400000)), startTime: '09:00', serviceItem: String(svc._id), agreedValue: 30, isCanje: true },
       { role: 'admin' }
     )
   );
@@ -274,12 +278,14 @@ test('al crear la cita, el canje deja el importe en 0 aunque venga uno', async (
 test('quien atiende NO puede colar el valor al crear la cita', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const patient = await Patient.create({ clinic: clinicId, firstName: 'Ana', lastName: 'P' });
+  // El servicio es obligatorio desde sep-2026.
+  const svc = await AppointmentServiceItem.create({ clinic: clinicId, name: 'Consulta', slug: `consulta-${Date.now()}-${Math.floor(Math.random() * 1e9)}` });
 
   const r = await H.runController(
     appt.createAppointment,
     H.mockReq(
       clinicId, userId,
-      { patient: patient._id, date: ymd(new Date(Date.now() + 86400000)), startTime: '09:00', agreedValue: 99, isCanje: true },
+      { patient: patient._id, date: ymd(new Date(Date.now() + 86400000)), startTime: '09:00', serviceItem: String(svc._id), agreedValue: 99, isCanje: true },
       { role: 'doctor' }
     )
   );

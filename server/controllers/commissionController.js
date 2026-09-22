@@ -669,9 +669,24 @@ function summarize(detail) {
 }
 
 const parseRange = (start, end) => {
-  const startDate = start ? new Date(start) : new Date(Date.now() - 30 * 86400000);
+  /**
+   * 'YYYY-MM-DD' SE LEE EN HORA LOCAL, no con `new Date(v)` a secas.
+   *
+   * Ese constructor parsea la fecha como medianoche UTC, y en Ecuador (UTC-5)
+   * eso cae el DÍA ANTERIOR a las 19:00: al pedir del 7 al 12, el extremo
+   * terminaba siendo el 11 a las 19:00 y el día 12 quedaba fuera del filtro.
+   * Aquí se construye la fecha por PARTES en el calendario local, y luego se
+   * lleva a los extremos del día local (00:00 / 23:59:59.999).
+   */
+  const dia = (v) => {
+    if (!v) return null;
+    const m = String(v).match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return new Date(v);
+  };
+  const startDate = dia(start) || new Date(Date.now() - 30 * 86400000);
   startDate.setHours(0, 0, 0, 0);
-  const endDate = end ? new Date(end) : new Date();
+  const endDate = dia(end) || new Date();
   endDate.setHours(23, 59, 59, 999);
   return { startDate, endDate };
 };
@@ -1181,6 +1196,7 @@ exports.doctorAppointments = async (req, res) => {
       if (query.clinic) filtroDeriva.clinic = query.clinic;
       derivaciones = await Referral.find(filtroDeriva)
         .populate('patient', 'firstName lastName')
+        .populate('fromDoctor', 'name')
         .populate('toDoctor', 'name')
         .select('fromDoctor patient toDoctor specialty status date reason')
         .lean();
@@ -1192,6 +1208,9 @@ exports.doctorAppointments = async (req, res) => {
       derivacionesPorDoctor.get(did).push({
         id: String(d._id),
         patient: d.patient ? `${d.patient.firstName} ${d.patient.lastName}` : '—',
+        // Quien derivó: en el detalle GENERAL —de todos los doctores— la tabla
+        // tiene que decir de qué doctor fue cada derivación.
+        fromDoctor: d.fromDoctor?.name || '',
         toDoctor: d.toDoctor?.name || '',
         specialty: d.specialty || '',
         status: d.status,
@@ -1228,6 +1247,9 @@ exports.doctorAppointments = async (req, res) => {
         patient: a.patient ? `${a.patient.firstName} ${a.patient.lastName}` : '—',
         status: a.status,
         clinic: a.clinic?.nombreComercial || a.clinic?.name || '',
+        // El doctor de la CITA (el espejo). En el detalle general —todas las
+        // citas de todos los doctores— es lo que dice de quién era cada fila.
+        doctorName: a.doctor?.name || '',
         services: [
           a.serviceName,
           ...(a.additionalServices || []).map((s) => s.name),

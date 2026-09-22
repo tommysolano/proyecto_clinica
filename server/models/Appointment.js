@@ -151,6 +151,18 @@ const appointmentTurnSchema = new mongoose.Schema(
      * junto al suero que le toca poner.
      */
     nurseInstructions: { type: String, trim: true, default: '' },
+    /**
+     * HIDROTERAPIA (sep-2026): mostrador la marca al asignar el paso de
+     * enfermería y la enfermera la ve en su barra de atención, junto al suero,
+     * con un botón para dejar constancia de que la realizó — igual que el
+     * suero, pero sin inventario.
+     */
+    hidroterapia: {
+      solicitada: { type: Boolean, default: false },
+      realizada: { type: Boolean, default: false },
+      realizadaAt: { type: Date, default: null },
+      realizadaBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    },
     order: { type: Number, default: 0 },
     status: {
       type: String,
@@ -293,7 +305,7 @@ const appointmentSchema = new mongoose.Schema(
      */
     advancePayment: {
       type: String,
-      enum: ['', 'abono', 'total'],
+      enum: ['', 'abono', 'total', 'prepagado'],
       default: '',
     },
     paidInAdvance: { type: Boolean, default: false },
@@ -336,6 +348,40 @@ const appointmentSchema = new mongoose.Schema(
     // la cita ya atendida, así que sin esto no hay forma de saber quién lo tocó.
     valueSetAt: { type: Date, default: null },
     valueSetBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    /**
+     * LO QUE EL PACIENTE VA A COMPRAR de lo que el doctor recetó (sep-2026).
+     *
+     * Mostrador ve los items de la receta como CHECKS —igual que las ampollas
+     * del suero—, escoge los que el paciente se lleva y anota lo que paga por
+     * ellos, aparte del valor de la cita. Dato OPERATIVO: no genera venta ni
+     * asiento, la contabilidad sigue por su lado.
+     */
+    prescribedItems: {
+      type: [
+        new mongoose.Schema(
+          {
+            // El seguimiento y la línea de la receta de donde salió.
+            followUp: { type: mongoose.Schema.Types.ObjectId, ref: 'ClinicalRecord' },
+            item: { type: mongoose.Schema.Types.ObjectId },
+            name: { type: String, trim: true, default: '' },
+            quantity: { type: Number, default: 1, min: 0 },
+            price: { type: Number, default: null, min: 0 },
+          },
+          { _id: true }
+        ),
+      ],
+      default: [],
+    },
+    // Lo que se cobra POR LOS ITEMS (independiente del valor de la cita).
+    itemsValue: { type: Number, default: null, min: 0 },
+    /**
+     * QUIÉN REGISTRÓ EL COBRO (valor de la cita y/o de los items). La cita
+     * tiene que decir a quién preguntar por un cobro, y "agendada por" no es
+     * lo mismo que "cobrada por".
+     */
+    chargeRegisteredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    chargeRegisteredByName: { type: String, trim: true, default: '' },
+    chargeRegisteredAt: { type: Date, default: null },
     reason: { type: String, trim: true },
     notes: { type: String, trim: true },
     diagnosis: { type: String, trim: true },
@@ -463,6 +509,14 @@ const appointmentSchema = new mongoose.Schema(
     },
     referral: { type: mongoose.Schema.Types.ObjectId, ref: 'Referral', default: null },
     treatmentRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment', default: null },
+    /**
+     * DERIVACIÓN DEL DOCTOR (sep-2026): la cita de la que salió esta. El doctor
+     * marca la derivación como un SERVICIO del catálogo de la agenda dentro de
+     * su seguimiento; mostrador la ve desde esta cita y al agendar la nueva cita
+     * con ese servicio queda aquí el enlace — así se sabe si la derivación se
+     * usó y quién la derivó (el doctor queda en el registro de Referral).
+     */
+    derivationSource: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', default: null, index: true },
   },
   { timestamps: true }
 );

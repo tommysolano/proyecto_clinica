@@ -206,8 +206,13 @@ test('la etapa "agendado" queda escrita ANTES de que corran los flujos del event
   });
 
   const d = new Date(); d.setDate(d.getDate() + 1);
+  // El servicio es obligatorio desde sep-2026.
+  const svc = await require('../models/AppointmentServiceItem').create({
+    clinic: clinicId, name: 'Consulta', slug: `consulta-${Date.now()}`,
+  });
   const req = H.mockReq(clinicId, userId, {
     patient: String(patient._id), date: d.toISOString().slice(0, 10), startTime: '10:00',
+    serviceItem: String(svc._id),
   }, { role: 'call_center' });
   req.user.name = 'Call';
   const r = await H.runController(appt.createAppointment, req);

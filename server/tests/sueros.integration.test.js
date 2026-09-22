@@ -156,11 +156,11 @@ test('deshacer quita la última, y solo puede quien la puso (o un admin)', async
 
 // ───────────────────── qué ve enfermería ─────────────────────
 
-test('al enfermero le llega la consulta ENTERA, no solo la receta', async () => {
-  // Cambio de criterio (ago-2026). Antes el servidor le recortaba la ficha a la
-  // receta. Quien canaliza una vía y mete tres ampollas es justo quien necesita
-  // el diagnóstico, la enfermedad actual y el plan: el recorte no protegía nada
-  // —misma clínica, mismo paciente— y escondía lo que evita una reacción.
+test('al enfermero le llega SOLO el recorte de enfermería (sep-2026)', async () => {
+  // Tercer cambio de criterio (sep-2026). Después de abrirle la consulta entera
+  // (ago-2026), la clínica lo dio marcha atrás: en los seguimientos, enfermería
+  // ve el SUERO que va a aplicar, lo que ya aplicó y los comentarios de
+  // mostrador — sin nombres de doctores, sin diagnósticos ni plan.
   const { clinicId, patient, doctor, enfermero } = await seed();
   await H.runController(
     ctrl.addFollowUp,
@@ -180,12 +180,14 @@ test('al enfermero le llega la consulta ENTERA, no solo la receta', async () => 
   assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
 
   const fu = r.payload.followUps[0];
-  assert.equal(fu.recetaItems.length, 1, 'la receta');
+  assert.equal(fu.soloEnfermeria, true, 'la pantalla sabe que es una vista recortada');
+  assert.equal(fu.recetaItems.length, 1, 'el suero que va a aplicar');
   assert.equal(fu.recetaItems[0].name, 'Suero fisiológico');
-  assert.equal(fu.descripcion, 'Dolor abdominal', 'y el motivo');
-  assert.equal(fu.enfermedadActual, 'Cuadro clínico detallado', 'y la enfermedad actual');
-  assert.equal(fu.planTratamiento, 'Plan del médico', 'y el plan');
-  assert.equal(fu.diagnosticos?.[0]?.cie, 'A09', 'y el diagnóstico');
+  assert.equal(fu.descripcion, '', 'sin motivo de la consulta');
+  assert.equal(fu.enfermedadActual, undefined, 'sin enfermedad actual');
+  assert.equal(fu.planTratamiento, undefined, 'sin plan');
+  assert.equal(fu.diagnosticos, undefined, 'sin diagnósticos');
+  assert.equal(fu.createdBy, null, 'y SIN el nombre del doctor');
 });
 
 test('los datos de CONTACTO siguen siendo solo del administrador', async () => {
@@ -228,9 +230,9 @@ test('el doctor sigue recibiendo la consulta entera', async () => {
   assert.equal(fu.planTratamiento, 'Plan del médico');
 });
 
-test('las derivaciones también le llegan a enfermería', async () => {
-  // También cambió: la derivación no es algo que enfermería aplique, pero saber
-  // que al paciente lo mandan a fisioterapia es parte de su cuadro.
+test('las derivaciones NO le llegan a enfermería (sep-2026)', async () => {
+  // La derivación se AGENDA (mostrador), no se aplica: en el recorte de
+  // enfermería solo caben los sueros, las aplicaciones y los comentarios.
   const { clinicId, patient, doctor, enfermero } = await seed();
   await H.runController(
     ctrl.addFollowUp,
@@ -246,13 +248,13 @@ test('las derivaciones también le llegan a enfermería', async () => {
     H.mockReq(clinicId, enfermero._id, {}, { role: 'enfermero', params: { patientId: String(patient._id) } }),
   );
   const items = r.payload.followUps[0].recetaItems;
-  assert.equal(items.length, 2, 'la receta y la derivación');
-  assert.deepEqual(items.map((it) => [it.name, it.isService]), [['Suero', false], ['Fisioterapia', true]]);
+  assert.equal(items.length, 1, 'solo el suero');
+  assert.equal(items[0].name, 'Suero');
 });
 
-test('una consulta SIN receta también le llega a enfermería', async () => {
-  // Antes se le escondían las consultas que no recetaban nada. Ahora que lee la
-  // historia, un control sin receta le sigue diciendo algo.
+test('una consulta SIN receta también le llega a enfermería (vacía)', async () => {
+  // La tarjeta aparece —la historia sigue contando que ese día hubo atención—
+  // pero recortada: sin detalle clínico ninguno.
   const { clinicId, patient, doctor, enfermero } = await seed();
   await H.runController(
     ctrl.addFollowUp,
@@ -267,7 +269,8 @@ test('una consulta SIN receta también le llega a enfermería', async () => {
     H.mockReq(clinicId, enfermero._id, {}, { role: 'enfermero', params: { patientId: String(patient._id) } }),
   );
   assert.equal(r.payload.followUps.length, 1);
-  assert.equal(r.payload.followUps[0].descripcion, 'Control sin receta');
+  assert.equal(r.payload.followUps[0].soloEnfermeria, true);
+  assert.equal(r.payload.followUps[0].descripcion, '', 'sin el detalle clínico');
 });
 
 test('enfermería SÍ puede escribir un seguimiento (sep-2026)', async () => {

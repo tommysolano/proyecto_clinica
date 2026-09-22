@@ -158,6 +158,9 @@ export default function AssignAttentionModal({
               // Lo que mostrador le escribió a la enfermera para este paso
               // (sep-2026): viaja con el paso para poder corregirlo aquí.
               nurseInstructions: t.nurseInstructions || '',
+              // HIDROTERAPIA (sep-2026): la marcó mostrador al asignar; vuelve
+              // a viajar con el paso para poder quitarla aquí.
+              hidroterapia: !!t.hidroterapia?.solicitada,
               // El suero que ya se indicó, y DÓNDE quedó escrito. Los dos viajan
               // de vuelta: sin el segundo, reordenar la cola volvería a
               // escribirlo en la ficha (ver Appointment.turns[].serumFollowUp).
@@ -373,7 +376,7 @@ export default function AssignAttentionModal({
       ...c,
       // Nace ABIERTO: es como se ha trabajado siempre y como sigue siendo la
       // mayoría de las veces. Nombrarlo es la excepción, y se hace a mano.
-      { kind: ENFERMERIA, user: '', serviceName: '', nurseInstructions: '', key: `enf-${(contador.current += 1)}` },
+      { kind: ENFERMERIA, user: '', serviceName: '', nurseInstructions: '', hidroterapia: false, key: `enf-${(contador.current += 1)}` },
     ]);
   const editarPaso = (idx, patch) =>
     setCola((c) => c.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
@@ -445,6 +448,9 @@ export default function AssignAttentionModal({
                 // Indicaciones para la enfermera de este paso: le aparecen en su
                 // barra de atención, junto al suero que va a aplicar.
                 nurseInstructions: (p.nurseInstructions || '').trim(),
+                // HIDROTERAPIA (sep-2026): la marca mostrador; la enfermera la
+                // ve en su barra y da fe de si la realizó.
+                hidroterapia: !!p.hidroterapia,
               }
             : { kind: 'doctor', user: p.user }
         ),
@@ -577,7 +583,7 @@ export default function AssignAttentionModal({
             cerró por teléfono con un «ya veremos» y el paciente está delante. */}
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1.5">
-            Servicio de la cita <span className="font-normal text-slate-400">(opcional)</span>
+            Servicio de la cita
           </label>
           <ServiceItemPicker value={servicio} onChange={setServicio} />
           <p className="text-[11px] text-slate-400 mt-1">
@@ -682,6 +688,18 @@ export default function AssignAttentionModal({
                         placeholder="Qué hace (Detox, Sueroterapia…)"
                         className="input input-sm flex-1 bg-white"
                       />
+                      <label
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-200 bg-cyan-50 text-xs font-medium text-cyan-900 cursor-pointer shrink-0 self-start sm:self-center"
+                        title="La enfermera verá Hidroterapia en su barra de atención y marcará si la realizó"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!!paso.hidroterapia}
+                          onChange={(e) => editarPaso(idx, { hidroterapia: e.target.checked })}
+                          className="w-4 h-4 accent-cyan-600 cursor-pointer"
+                        />
+                        Hidroterapia
+                      </label>
                     </div>
                   )}
 

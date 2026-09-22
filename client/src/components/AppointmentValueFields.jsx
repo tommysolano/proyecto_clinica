@@ -24,6 +24,7 @@ const OPCIONES_ADELANTO = [
   { valor: '', etiqueta: 'No pagó aún' },
   { valor: 'abono', etiqueta: 'Abonó una parte' },
   { valor: 'total', etiqueta: 'Pagó todo' },
+  { valor: 'prepagado', etiqueta: 'Prepagado' },
 ];
 
 /**
@@ -139,9 +140,11 @@ export default function AppointmentValueFields({
               />
             </div>
           )}
-          {advancePayment === 'total' && (
+          {(advancePayment === 'total' || advancePayment === 'prepagado') && (
             <p className="text-[11px] text-emerald-700 mt-1.5">
-              Al llegar no hay que cobrarle nada.
+              {advancePayment === 'prepagado'
+                ? 'El paciente dejó el pago completo por adelantado: al llegar no hay que cobrarle nada.'
+                : 'Al llegar no hay que cobrarle nada.'}
             </p>
           )}
 

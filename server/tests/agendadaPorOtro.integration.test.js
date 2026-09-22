@@ -19,6 +19,7 @@ const assert = require('node:assert/strict');
 const H = require('./_integrationHelpers');
 
 const Appointment = require('../models/Appointment');
+const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const Patient = require('../models/Patient');
 const User = require('../models/User');
 const appt = require('../controllers/appointmentController');
@@ -33,6 +34,10 @@ async function seed() {
   const patient = await Patient.create({
     clinic: clinicId, firstName: 'Ana', lastName: 'Pérez', cedula: '0102030405',
   });
+  // El servicio es obligatorio desde sep-2026: toda cita de estos tests lo lleva.
+  const servicio = await AppointmentServiceItem.create({
+    clinic: clinicId, name: 'Consulta', slug: 'consulta',
+  });
   const crear = (name, role) =>
     User.create({
       name, email: `${name.toLowerCase()}@t.com`, password: 'secreto123',
@@ -43,7 +48,7 @@ async function seed() {
   const mk = await crear('Mkt', 'marketing');          // también aparece en la lista
   const caja = await crear('Caja', 'cajero');          // ya NO aparece (sep-2026)
   const doc = await crear('DocA', 'doctor');           // no agenda
-  return { clinicId, userId, patient, sofia, jaime, mk, caja, doc };
+  return { clinicId, userId, patient, servicio, sofia, jaime, mk, caja, doc };
 }
 
 /**
@@ -62,15 +67,20 @@ const cuerpoCita = (patient, extra = {}) => ({
   patient: String(patient._id),
   date: manana(),
   startTime: '10:00',
+  // El servicio es obligatorio: cada cita de estos tests dice a qué viene.
+  serviceItem: extra.serviceItem ?? undefined,
   ...extra,
 });
 
 test('la cita se acredita a quien la cerró, y consta quién la escribió', async () => {
-  const { clinicId, patient, sofia, jaime } = await seed();
+  const { clinicId, patient, servicio, sofia, jaime } = await seed();
 
-  const req = H.mockReq(clinicId, jaime._id, cuerpoCita(patient, { bookedBy: String(sofia._id) }), {
-    role: 'call_center',
-  });
+  const req = H.mockReq(
+    clinicId,
+    jaime._id,
+    cuerpoCita(patient, { bookedBy: String(sofia._id), serviceItem: String(servicio._id) }),
+    { role: 'call_center' }
+  );
   // En producción `req.user` es el usuario entero (lo pone `auth`); el arnés solo
   // pone el id, y el nombre es justo lo que se guarda de sello.
   req.user.name = 'Jaime';
@@ -86,11 +96,11 @@ test('la cita se acredita a quien la cerró, y consta quién la escribió', asyn
 });
 
 test('sin `bookedBy` todo sigue igual: la cita es de quien la escribe', async () => {
-  const { clinicId, patient, jaime } = await seed();
+  const { clinicId, patient, servicio, jaime } = await seed();
 
   const r = await H.runController(
     appt.createAppointment,
-    H.mockReq(clinicId, jaime._id, cuerpoCita(patient), { role: 'call_center' })
+    H.mockReq(clinicId, jaime._id, cuerpoCita(patient, { serviceItem: String(servicio._id) }), { role: 'call_center' })
   );
   assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
 
@@ -101,11 +111,11 @@ test('sin `bookedBy` todo sigue igual: la cita es de quien la escribe', async ()
 });
 
 test('no se acredita a quien no agenda (un doctor no cierra citas por teléfono)', async () => {
-  const { clinicId, patient, jaime, doc } = await seed();
+  const { clinicId, patient, servicio, jaime, doc } = await seed();
 
   const r = await H.runController(
     appt.createAppointment,
-    H.mockReq(clinicId, jaime._id, cuerpoCita(patient, { bookedBy: String(doc._id) }), {
+    H.mockReq(clinicId, jaime._id, cuerpoCita(patient, { bookedBy: String(doc._id), serviceItem: String(servicio._id) }), {
       role: 'call_center',
     })
   );
@@ -114,11 +124,11 @@ test('no se acredita a quien no agenda (un doctor no cierra citas por teléfono)
 });
 
 test('quien no agenda tampoco puede acreditar la cita a otro', async () => {
-  const { clinicId, patient, sofia, doc } = await seed();
+  const { clinicId, patient, servicio, sofia, doc } = await seed();
 
   const r = await H.runController(
     appt.createAppointment,
-    H.mockReq(clinicId, doc._id, cuerpoCita(patient, { bookedBy: String(sofia._id) }), {
+    H.mockReq(clinicId, doc._id, cuerpoCita(patient, { bookedBy: String(sofia._id), serviceItem: String(servicio._id) }), {
       role: 'doctor',
     })
   );
@@ -146,11 +156,12 @@ test('el selector de «agendada por» ofrece SOLO call center y marketing (sep-2
 // ─────────────────── Cómo pagó el adelanto ───────────────────
 
 test('el adelanto guarda CON QUÉ se pagó', async () => {
-  const { clinicId, patient, jaime } = await seed();
+  const { clinicId, patient, servicio, jaime } = await seed();
 
   const r = await H.runController(
     appt.createAppointment,
     H.mockReq(clinicId, jaime._id, cuerpoCita(patient, {
+      serviceItem: String(servicio._id),
       agreedValue: 80,
       advancePayment: 'abono',
       advanceAmount: 20,
@@ -166,11 +177,12 @@ test('el adelanto guarda CON QUÉ se pagó', async () => {
 });
 
 test('sin adelanto no queda forma de pago colgando', async () => {
-  const { clinicId, patient, jaime } = await seed();
+  const { clinicId, patient, servicio, jaime } = await seed();
 
   const creada = await H.runController(
     appt.createAppointment,
     H.mockReq(clinicId, jaime._id, cuerpoCita(patient, {
+      serviceItem: String(servicio._id),
       agreedValue: 80, advancePayment: 'total', advanceMethod: 'efectivo',
     }), { role: 'call_center' })
   );
@@ -193,10 +205,11 @@ test('sin adelanto no queda forma de pago colgando', async () => {
 });
 
 test('una forma de pago inventada no se guarda', async () => {
-  const { clinicId, patient, jaime } = await seed();
+  const { clinicId, patient, servicio, jaime } = await seed();
   const r = await H.runController(
     appt.createAppointment,
     H.mockReq(clinicId, jaime._id, cuerpoCita(patient, {
+      serviceItem: String(servicio._id),
       agreedValue: 50, advancePayment: 'total', advanceMethod: 'criptomonedas',
     }), { role: 'call_center' })
   );

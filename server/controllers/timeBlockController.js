@@ -65,6 +65,23 @@ function resuelveClinicas(req) {
 const filtroClinicas = (clinicas) =>
   clinicas === null ? { $exists: true } : { $in: clinicas.map(String) };
 
+/**
+ * EL ALCANCE AL EDITAR O BORRAR (sep-2026, corrección del 404 al eliminar).
+ *
+ * El listado se pide con `?clinic=all` y enseña bloqueos de TODAS las sedes que
+ * el usuario alcanza; las escrituras, en cambio, caían a la SUCURSAL ACTIVA —
+ * `resuelveClinicas` sin `?clinic` devuelve solo esa—. Resultado: un bloqueo de
+ * otra sede se veía en la tabla pero al pulsar el borrar el sistema respondía
+ * «Bloqueo no encontrado», porque lo buscaba en la sede equivocada.
+ *
+ * La escritura respeta EL MISMO alcance que la lectura: si la petición no dice
+ * sucursal, se toma el alcance completo del usuario (que para administración y
+ * marketing es toda la organización, y para el resto sus sucursales). Nunca
+ * abre nada que el usuario no alcance.
+ */
+const alcanceDeEscritura = (req) =>
+  resuelveClinicas({ ...req, query: { ...req.query, clinic: req.query.clinic || 'all' } });
+
 exports.list = async (req, res) => {
   try {
     const { startDate, endDate, doctor } = req.query;
@@ -154,7 +171,7 @@ exports.update = async (req, res) => {
     // (la misma regla del listado), así que la escritura también respeta el
     // alcance y no solo la sucursal activa.
     const block = await TimeBlock.findOneAndUpdate(
-      { _id: req.params.id, clinic: filtroClinicas(resuelveClinicas(req)) },
+      { _id: req.params.id, clinic: filtroClinicas(alcanceDeEscritura(req)) },
       update,
       { new: true }
     );
@@ -170,7 +187,7 @@ exports.remove = async (req, res) => {
   try {
     const block = await TimeBlock.findOneAndDelete({
       _id: req.params.id,
-      clinic: filtroClinicas(resuelveClinicas(req)),
+      clinic: filtroClinicas(alcanceDeEscritura(req)),
     });
     if (!block) return res.status(404).json({ message: 'Bloqueo no encontrado' });
     notificarCambioBloqueo(block, 'deleted');

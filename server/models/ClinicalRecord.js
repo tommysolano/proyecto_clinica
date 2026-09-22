@@ -76,6 +76,14 @@ const recetaItemSchema = new mongoose.Schema(
   {
     // Referencia al producto/medicamento del inventario (categoría 'medicamento' o 'servicio'/'programa').
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    /**
+     * SERVICIO DE LA AGENDA (sep-2026): en las DERIVACIONES, el doctor ya no
+     * escribe el servicio a mano — lo escoge del MISMO catálogo con el que se
+     * agenda una cita (`AppointmentServiceItem`). Con la referencia, mostrador
+     * puede agendar la cita derivada con un clic y queda enlazada al doctor que
+     * derivó; el `name` sigue siendo el snapshot por si el servicio se renombra.
+     */
+    serviceItem: { type: mongoose.Schema.Types.ObjectId, ref: 'AppointmentServiceItem', default: null },
     name: { type: String, trim: true }, // snapshot del nombre por si el producto cambia
     quantity: { type: Number, default: 1, min: 0 },
     dose: { type: String, trim: true, default: '' },         // ej: 500mg

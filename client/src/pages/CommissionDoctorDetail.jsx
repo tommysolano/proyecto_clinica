@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
-import { HiOutlineArrowLeft, HiOutlineCurrencyDollar } from 'react-icons/hi2';
+import { HiOutlineArrowLeft, HiOutlineCurrencyDollar, HiOutlineUserGroup } from 'react-icons/hi2';
 import { fmtDate } from '../utils/date';
 import {
   STATUS_COLORS,
@@ -15,6 +15,13 @@ import {
 export default function CommissionDoctorDetail() {
   const { doctorId } = useParams();
   const [searchParams] = useSearchParams();
+  /**
+   * EL DETALLE GENERAL (sep-2026): `/commissions/todos` enseña TODAS las citas
+   * de todos los doctores —la misma información del detalle de un doctor, pero
+   * sin el corte por profesional—, respetando los demás filtros (fechas,
+   * sucursal, estados y servicios).
+   */
+  const esGeneral = doctorId === 'todos';
   const doctorName = searchParams.get('name') || 'Doctor';
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -27,7 +34,9 @@ export default function CommissionDoctorDetail() {
         ['start', 'end', 'clinic', 'status', 'service'].forEach((k) => {
           if (searchParams.get(k)) params[k] = searchParams.get(k);
         });
-        params.doctor = doctorId;
+        // El corte por doctor SOLO cuando hay doctor; en el modo general el
+        // servidor devuelve las citas de todos los que cumplan los filtros.
+        if (!esGeneral) params.doctor = doctorId;
         const res = await api.get('/commissions/doctor-appointments', { params });
         setData(res.data);
       } catch (err) {
@@ -40,7 +49,13 @@ export default function CommissionDoctorDetail() {
   }, [doctorId]);
 
   const citas = data?.appointments || [];
-  const derivaciones = data?.referralsByDoctor?.[doctorId] || [];
+  /**
+   * Las derivaciones: del doctor en el modo individual; TODAS, aplanadas, en el
+   * general (cada fila lleva quién derivó en su columna nueva).
+   */
+  const derivaciones = esGeneral
+    ? Object.values(data?.referralsByDoctor || {}).flat()
+    : data?.referralsByDoctor?.[doctorId] || [];
   const nombreReal = data?.doctorNames?.[doctorId] || doctorName;
   const totalPagos = Number(data?.totals?.payments || 0);
 
@@ -56,7 +71,15 @@ export default function CommissionDoctorDetail() {
       </div>
 
       <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-        <HiOutlineCurrencyDollar className="text-emerald-600" /> Citas de {nombreReal}
+        {esGeneral ? (
+          <>
+            <HiOutlineUserGroup className="text-emerald-600" /> Citas de todos los doctores
+          </>
+        ) : (
+          <>
+            <HiOutlineCurrencyDollar className="text-emerald-600" /> Citas de {nombreReal}
+          </>
+        )}
       </h1>
       {data && (
         <div className="flex flex-wrap items-center gap-3">
@@ -114,6 +137,14 @@ export default function CommissionDoctorDetail() {
                       </td>
                       <td className="px-3 py-2 text-slate-600">
                         {fmtAtendientes(a) || '—'}
+                        {/* En el detalle GENERAL la fila dice de quién era la
+                            cita: es lo que sin esto no se sabría al mezclar
+                            doctores. */}
+                        {esGeneral && a.doctorName && (
+                          <span className="block text-[10px] text-emerald-700 font-semibold mt-0.5">
+                            Dr. {a.doctorName}
+                          </span>
+                        )}
                         {a.multiprofesional && (
                           <span className="block text-[10px] text-amber-700 font-semibold mt-0.5">
                             Atendida por {a.atendientes.filter((t) => t.kind === 'doctor').length} doctores
@@ -178,6 +209,7 @@ export default function CommissionDoctorDetail() {
                 <table className="w-full text-xs">
                   <thead className="text-slate-500">
                     <tr>
+                      {esGeneral && <th className="text-left px-2 py-1">Doctor que derivó</th>}
                       <th className="text-left px-2 py-1">Paciente</th>
                       <th className="text-left px-2 py-1">Derivado a</th>
                       <th className="text-left px-2 py-1">Motivo</th>
@@ -188,6 +220,9 @@ export default function CommissionDoctorDetail() {
                   <tbody>
                     {derivaciones.map((r) => (
                       <tr key={r.id} className="border-t border-slate-100">
+                        {esGeneral && (
+                          <td className="px-2 py-1.5 text-slate-800 font-medium">{r.fromDoctor || '—'}</td>
+                        )}
                         <td className="px-2 py-1.5 text-slate-800">{r.patient}</td>
                         <td className="px-2 py-1.5 text-slate-600">{r.toDoctor || r.specialty || '—'}</td>
                         <td className="px-2 py-1.5 text-slate-500">{r.reason || '—'}</td>

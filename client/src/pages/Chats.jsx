@@ -6277,6 +6277,14 @@ function EditApptModal({ appt, onClose, onSaved }) {
   const [serviceItem, setServiceItem] = useState(() =>
     appt.serviceItem?._id ? { _id: appt.serviceItem._id, name: appt.serviceItem.name } : null
   );
+  // OTROS SERVICIOS de la cita (sep-2026): se cargan para que editar y guardar
+  // no los borre, y se pueden añadir o quitar aquí.
+  const [extras, setExtras] = useState(() =>
+    (appt.additionalServices || [])
+      .map((s) => ({ _id: String(s.serviceItem?._id || s.serviceItem || ''), name: s.name || s.serviceItem?.name || '' }))
+      .filter((s) => s._id)
+  );
+  const [serviciosAgenda, setServiciosAgenda] = useState([]);
   const [agreedValue, setAgreedValue] = useState(appt.isCanje ? '' : (appt.agreedValue ?? ''));
   const [isCanje, setIsCanje] = useState(!!appt.isCanje);
   const [advancePayment, setAdvancePayment] = useState(appt.advancePayment || '');
@@ -6300,6 +6308,11 @@ function EditApptModal({ appt, onClose, onSaved }) {
         if (vivo && lista.length) setSedes(lista);
       })
       .catch(() => {});
+    // EL CATÁLOGO DE LA AGENDA para los OTROS SERVICIOS (sep-2026).
+    api
+      .get('/appointment-service-items')
+      .then((r) => { if (vivo) setServiciosAgenda(Array.isArray(r.data) ? r.data : []); })
+      .catch(() => {});
     return () => { vivo = false; };
   }, []);
   const unaSolaSede = (sedes?.length || 0) <= 1;
@@ -6322,6 +6335,8 @@ function EditApptModal({ appt, onClose, onSaved }) {
   const save = async () => {
     if (!date || !startTime) return toast.error('Fecha y hora requeridas');
     if (!clinicId) return toast.error('Escoge la sucursal');
+    // El servicio vuelve a ser obligatorio (el servidor lo exige al guardar).
+    if (!serviceItem) return toast.error('Escoge el servicio de la cita');
     setSaving(true);
     try {
       // Mantener la duración original: si la cita tenía hora de fin, se desplaza.
@@ -6338,6 +6353,8 @@ function EditApptModal({ appt, onClose, onSaved }) {
         clinic: clinicId,
         reason,
         serviceItem: serviceItem?._id || null,
+        // OTROS SERVICIOS (sep-2026): ids del catálogo de la agenda.
+        additionalServices: (extras || []).map((s) => s._id),
         // El servidor decide si este rol puede fijarlos (aplicarValorDeCita).
         agreedValue: isCanje ? 0 : agreedValue,
         isCanje,
@@ -6444,6 +6461,23 @@ function EditApptModal({ appt, onClose, onSaved }) {
           serviceItemId={serviceItem?._id || null}
           compact
         />
+
+        {/* OTROS SERVICIOS de la cita (sep-2026): añadir o quitar aquí */}
+        <div>
+          <label className="text-xs font-medium text-slate-600 block mb-1">Otros servicios (opcional)</label>
+          <ChatServicePicker
+            services={serviciosAgenda}
+            selectedIds={(extras || []).map((s) => s._id)}
+            onAdd={(id) => {
+              if (serviceItem && String(id) === String(serviceItem._id)) return;
+              if ((extras || []).some((s) => String(s._id) === String(id))) return;
+              const svc = serviciosAgenda.find((s) => String(s._id) === String(id));
+              if (!svc) return;
+              setExtras([...(extras || []), { _id: String(svc._id), name: svc.name || '' }]);
+            }}
+            onRemove={(id) => setExtras((extras || []).filter((s) => String(s._id) !== String(id)))}
+          />
+        </div>
 
         {['cancelada', 'no_asistio'].includes(appt.status) && (
           <p className="text-[11px] text-slate-400">
@@ -6804,6 +6838,18 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
    */
   const isWhatsapp = (conv.channel || 'whatsapp') === 'whatsapp';
 
+  // EL CATÁLOGO DE LA AGENDA, para los OTROS SERVICIOS de cada cita de la
+  // tanda (sep-2026): es el mismo catálogo con el que se agenda desde Citas.
+  const [serviciosAgenda, setServiciosAgenda] = useState([]);
+  useEffect(() => {
+    let vivo = true;
+    api
+      .get('/appointment-service-items')
+      .then((r) => { if (vivo) setServiciosAgenda(Array.isArray(r.data) ? r.data : []); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, []);
+
   // ─────────────────────────── Alta del contacto ───────────────────────────
   /**
    * El nombre arranca con el que trae el chat y el correo con el que el propio
@@ -6852,6 +6898,8 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
     clinicId: '',
     // Servicio del catálogo propio de la agenda: { _id, name } o null.
     serviceItem: null,
+    // OTROS SERVICIOS de ESTA cita (sep-2026): agendar con varios a la vez.
+    additionalServices: [],
     /**
      * Lo que se acuerda por teléfono: cuánto vale la visita y si el paciente
      * pagó algo ya. El call center cierra la cita y cobra en el momento, y
@@ -6972,7 +7020,10 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
         if (!unaSolaSede && !it.clinicId) {
           return toast.error(`La cita #${i + 1}: escoge la sucursal.`);
         }
-        // El servicio ya no bloquea: se puede agendar y decidir después a qué viene.
+        // El servicio vuelve a ser obligatorio: cada cita dice a qué viene.
+        if (!it.serviceItem) {
+          return toast.error(`La cita #${i + 1}: escoge el servicio.`);
+        }
       }
     }
 
@@ -7004,7 +7055,7 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
       const r = await api.post(`/chats/${conv._id}/appointment`, {
         // A quién se le acredita la tanda entera ('' = a quien la escribe).
         bookedBy: agendadoPor || undefined,
-        appointments: items.map((it) => ({
+        appointments:         items.map((it) => ({
           // Sin `patientId` la cita es del paciente del chat, como siempre.
           patientId: it.paraOtro ? it.otroPaciente._id : undefined,
           date: it.date,
@@ -7012,6 +7063,8 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
           reason: it.reason,
           clinic: it.clinicId || undefined,
           serviceItem: it.serviceItem?._id || null,
+          // OTROS SERVICIOS (sep-2026): ids del catálogo de la agenda.
+          additionalServices: (it.additionalServices || []).map((s) => s._id || s),
           // El servidor decide si este rol puede fijarlos (aplicarValorDeCita).
           agreedValue: it.isCanje ? 0 : (it.agreedValue ?? ''),
           isCanje: !!it.isCanje,
@@ -7230,10 +7283,26 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
                     <input value={it.reason} onChange={(e) => updateItem(idx, { reason: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
                   </div>
                   <div>
-                    <label className="text-xs font-medium text-slate-600">Servicio</label>
+                    <label className="text-xs font-medium text-slate-600">Servicio *</label>
                     <ServiceItemPicker
                       value={it.serviceItem || null}
                       onChange={(item) => updateItem(idx, { serviceItem: item })}
+                    />
+                  </div>
+                  {/* OTROS SERVICIOS de ESTA cita (sep-2026): agendar con
+                      varios a la vez, igual que desde la página de Citas. */}
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 block mb-1">Otros servicios (opcional)</label>
+                    <ChatServicePicker
+                      services={serviciosAgenda}
+                      selectedIds={(it.additionalServices || []).map((s) => s._id || s)}
+                      onAdd={(id) => {
+                        if (it.serviceItem && String(id) === String(it.serviceItem._id)) return;
+                        updateItem(idx, { additionalServices: [...(it.additionalServices || []).map((s) => s._id || s), id] });
+                      }}
+                      onRemove={(id) => updateItem(idx, {
+                        additionalServices: (it.additionalServices || []).map((s) => s._id || s).filter((x) => String(x) !== String(id)),
+                      })}
                     />
                   </div>
                   {puedeFijarValor && (

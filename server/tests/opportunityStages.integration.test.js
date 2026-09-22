@@ -76,13 +76,16 @@ test('agendar desde el chat deja la etapa "agendado" en la oportunidad de verdad
   });
 
   const servicio = await H.makeProduct(clinicId, { category: 'servicio', unlimited: true, name: 'Botox' });
+  // El servicio de la agenda es obligatorio desde sep-2026.
+  const AppointmentServiceItem = require('../models/AppointmentServiceItem');
+  const agendaSvc = await AppointmentServiceItem.create({ clinic: clinicId, name: 'Botox', slug: 'botox-stage' });
   const d = H.docDate(1);
   const fecha = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const { statusCode, payload } = await H.runController(
     chatController.createAppointmentFromChat,
     H.mockReq(
       clinicId, userId,
-      { appointments: [{ date: fecha, startTime: '10:00', services: [{ product: String(servicio._id), quantity: 1 }] }] },
+      { appointments: [{ date: fecha, startTime: '10:00', serviceItem: String(agendaSvc._id), services: [{ product: String(servicio._id), quantity: 1 }] }] },
       { params: { id: String(conv._id) } }
     )
   );

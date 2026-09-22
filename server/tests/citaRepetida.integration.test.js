@@ -1,4 +1,4 @@
-/**
+﻿/**
  * LA MISMA CITA, DOS VECES (7-sep-2026).
  *
  * En la agenda de mañana aparecían pacientes repetidos: KARINA ARIAS con dos
@@ -24,6 +24,7 @@ const H = require('./_integrationHelpers');
 const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient');
 const Conversation = require('../models/Conversation');
+const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const Appointment = require('../models/Appointment');
 const appt = require('../controllers/appointmentController');
 const chats = require('../controllers/chatController');
@@ -33,6 +34,9 @@ test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
 
 const ok = (r) => { assert.ok(r.statusCode < 400, JSON.stringify(r.payload)); return r.payload; };
+
+/** El servicio obligatorio que crea cada seed (lo usan los dos helpers de abajo). */
+let servicioActual = null;
 
 /** Mañana: agendar hoy a las 11:30 lo rechazaría la validación de hora pasada. */
 const manana = (masDias = 1) => {
@@ -51,7 +55,9 @@ async function seed() {
   const conv = await Conversation.create({
     clinic: matriz, phone: '593982201838', patient: patient._id, contactName: 'Karina',
   });
-  return { matriz, extension, userId, patient, otro, conv };
+  // El servicio es obligatorio desde sep-2026: toda cita de estos tests lo lleva.
+  servicioActual = await AppointmentServiceItem.create({ clinic: matriz, name: 'Laboratorio', slug: 'laboratorio' });
+  return { matriz, extension, userId, patient, otro, conv, servicio: servicioActual };
 }
 
 /** Alta de cita por la página de Citas. */
@@ -62,6 +68,8 @@ const crear = (matriz, userId, patient, extra = {}) =>
       patient: String(patient._id),
       date: manana(),
       startTime: '11:30',
+      // El servicio es obligatorio; los tests que prueban otro lo pisan en `extra`.
+      serviceItem: extra.serviceItem ?? (servicioActual && String(servicioActual._id)),
       ...extra,
     })
   );
@@ -70,7 +78,9 @@ const crear = (matriz, userId, patient, extra = {}) =>
 const crearDesdeChat = (matriz, userId, conv, filas) =>
   H.runController(
     chats.createAppointmentFromChat,
-    H.mockReq(matriz, userId, { appointments: filas }, {
+    H.mockReq(matriz, userId, {
+      appointments: filas.map((f) => ({ serviceItem: servicioActual && String(servicioActual._id), ...f })),
+    }, {
       role: 'call_center',
       params: { id: String(conv._id) },
     })
@@ -79,7 +89,7 @@ const crearDesdeChat = (matriz, userId, conv, filas) =>
 // ─────────────────────── 1. la puerta de la página de Citas ───────────────────
 
 test('no se agenda al mismo paciente dos veces en la misma hora', async () => {
-  const { matriz, userId, patient } = await seed();
+  const { matriz, userId, patient, servicio } = await seed();
 
   ok(await crear(matriz, userId, patient));
   const segunda = await crear(matriz, userId, patient);
@@ -91,7 +101,7 @@ test('no se agenda al mismo paciente dos veces en la misma hora', async () => {
 });
 
 test('el aviso dice CUÁL es la cita que ya existe (día, hora y servicio)', async () => {
-  const { matriz, userId, patient } = await seed();
+  const { matriz, userId, patient, servicio } = await seed();
 
   const primera = ok(await crear(matriz, userId, patient));
   await Appointment.updateOne({ _id: primera._id }, { $set: { serviceName: 'Biorresonancia' } });
@@ -103,7 +113,7 @@ test('el aviso dice CUÁL es la cita que ya existe (día, hora y servicio)', asy
 });
 
 test('otra hora del mismo día sí se agenda: no se está bloqueando el día entero', async () => {
-  const { matriz, userId, patient } = await seed();
+  const { matriz, userId, patient, servicio } = await seed();
 
   ok(await crear(matriz, userId, patient));
   ok(await crear(matriz, userId, patient, { startTime: '12:00' }));
@@ -111,7 +121,7 @@ test('otra hora del mismo día sí se agenda: no se está bloqueando el día ent
 });
 
 test('y a OTRO paciente a la misma hora también: el hueco no es exclusivo', async () => {
-  const { matriz, userId, patient, otro } = await seed();
+  const { matriz, userId, patient, otro, servicio } = await seed();
 
   ok(await crear(matriz, userId, patient));
   ok(await crear(matriz, userId, otro));
@@ -119,7 +129,7 @@ test('y a OTRO paciente a la misma hora también: el hueco no es exclusivo', asy
 });
 
 test('tampoco cabe en OTRA sucursal: el paciente no está en dos sedes a la vez', async () => {
-  const { matriz, extension, userId, patient } = await seed();
+  const { matriz, extension, userId, patient, servicio } = await seed();
 
   ok(await crear(matriz, userId, patient));
   const segunda = await crear(matriz, userId, patient, { clinic: String(extension) });
@@ -129,7 +139,7 @@ test('tampoco cabe en OTRA sucursal: el paciente no está en dos sedes a la vez'
 });
 
 test('una cita CANCELADA libera el hueco', async () => {
-  const { matriz, userId, patient } = await seed();
+  const { matriz, userId, patient, servicio } = await seed();
 
   const primera = ok(await crear(matriz, userId, patient));
   await Appointment.updateOne({ _id: primera._id }, { $set: { status: 'cancelada' } });
@@ -141,7 +151,7 @@ test('una cita CANCELADA libera el hueco', async () => {
 // ─────────────────────── 2. la puerta del chat (el caso real) ─────────────────
 
 test('la tanda del chat no se puede guardar dos veces (KARINA ARIAS)', async () => {
-  const { matriz, userId, conv } = await seed();
+  const { matriz, userId, conv, servicio } = await seed();
   const filas = [
     { date: manana(), startTime: '11:30' },
     { date: manana(), startTime: '12:00' },
@@ -162,7 +172,7 @@ test('la tanda del chat no se puede guardar dos veces (KARINA ARIAS)', async () 
 });
 
 test('si UNA fila de la tanda ya existe, no se crea NINGUNA', async () => {
-  const { matriz, userId, conv } = await seed();
+  const { matriz, userId, conv, servicio } = await seed();
 
   ok(await crearDesdeChat(matriz, userId, conv, [{ date: manana(), startTime: '11:30' }]));
 
@@ -180,7 +190,7 @@ test('si UNA fila de la tanda ya existe, no se crea NINGUNA', async () => {
 });
 
 test('dos filas iguales dentro de la MISMA tanda se rechazan', async () => {
-  const { matriz, userId, conv } = await seed();
+  const { matriz, userId, conv, servicio } = await seed();
 
   const r = await crearDesdeChat(matriz, userId, conv, [
     { date: manana(), startTime: '14:00' },
@@ -193,7 +203,7 @@ test('dos filas iguales dentro de la MISMA tanda se rechazan', async () => {
 });
 
 test('la tanda con horas distintas se crea entera (HUMBERTO: 14:00 y 14:20)', async () => {
-  const { matriz, userId, conv } = await seed();
+  const { matriz, userId, conv, servicio } = await seed();
 
   ok(await crearDesdeChat(matriz, userId, conv, [
     { date: manana(), startTime: '14:00' },
@@ -205,7 +215,7 @@ test('la tanda con horas distintas se crea entera (HUMBERTO: 14:00 y 14:20)', as
 // ─────────────────────── 3. reagendar ─────────────────────────────────────────
 
 test('reagendar no puede pisar otra cita del mismo paciente', async () => {
-  const { matriz, userId, patient } = await seed();
+  const { matriz, userId, patient, servicio } = await seed();
 
   ok(await crear(matriz, userId, patient));                                // 11:30
   const doce = ok(await crear(matriz, userId, patient, { startTime: '12:00' }));
@@ -221,7 +231,7 @@ test('reagendar no puede pisar otra cita del mismo paciente', async () => {
 });
 
 test('guardar otra cosa de la cita no la hace chocar consigo misma', async () => {
-  const { matriz, userId, patient } = await seed();
+  const { matriz, userId, patient, servicio } = await seed();
 
   const cita = ok(await crear(matriz, userId, patient));
   const r = await H.runController(
@@ -234,7 +244,7 @@ test('guardar otra cosa de la cita no la hace chocar consigo misma', async () =>
 });
 
 test('mover una cita a un hueco libre sigue funcionando', async () => {
-  const { matriz, userId, patient } = await seed();
+  const { matriz, userId, patient, servicio } = await seed();
 
   const cita = ok(await crear(matriz, userId, patient));
   const r = await H.runController(

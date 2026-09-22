@@ -7,7 +7,7 @@ import AppointmentValueFields from './AppointmentValueFields';
 import SearchableSelect from './SearchableSelect';
 import { useAuth } from '../context/AuthContext';
 import { doctorOptionLabel } from '../utils/roles';
-import { HiOutlineCheck, HiOutlineLockClosed, HiOutlineXMark, HiOutlinePlus } from 'react-icons/hi2';
+import { HiOutlineCheck, HiOutlineLockClosed, HiOutlineXMark, HiOutlinePlus, HiOutlineBeaker } from 'react-icons/hi2';
 
 /**
  * CORREGIR EL SERVICIO Y EL VALOR de una cita, también después de atenderla.
@@ -22,6 +22,11 @@ import { HiOutlineCheck, HiOutlineLockClosed, HiOutlineXMark, HiOutlinePlus } fr
  * puerta por la que mostrador arregla una cita que se cerró mal: asignaron solo
  * a enfermería y el doctor que la vio quedó fuera, o quedó otro. Lo que no se
  * toca nunca: el enfermero que atendió y lo que hizo cada uno en su turno.
+ *
+ * Y, desde sep-2026, también contra `PATCH /appointments/:id/cobro-items`: los
+ * MEDICAMENTOS que el doctor recetó se escogen con CHECKS —igual que las
+ * ampollas del suero— y se anota lo que el paciente paga por ellos, aparte del
+ * valor de la cita. Ahí queda también quién registró el cobro.
  *
  * Props: appointment, doctors (de la sucursal activa), onClose, onDone(citaActualizada)
  */
@@ -113,6 +118,58 @@ export default function AppointmentServiceValueModal({
    */
   const [llaveSelector, setLlaveSelector] = useState(0);
 
+  /**
+   * LO QUE EL DOCTOR RECETÓ, en checks (sep-2026). Sale de los seguimientos
+   * sellados a esta cita: cada medicamento/insumo de la receta es una casilla,
+   * y mostrador marca los que el paciente se lleva. Lo elegido va a la cita
+   * (`prescribedItems`) con su valor aparte (`itemsValue`).
+   */
+  const [itemsRecetados, setItemsRecetados] = useState([]);
+  const [elegidos, setElegidos] = useState(() =>
+    new Set((apt?.prescribedItems || []).map((it) => String(it.item || it.name || '')))
+  );
+  const [itemsValue, setItemsValue] = useState(
+    apt?.itemsValue === null || apt?.itemsValue === undefined ? '' : String(apt.itemsValue)
+  );
+
+  useEffect(() => {
+    let vivo = true;
+    api
+      .get(`/clinical-records/by-appointment/${apt._id}`)
+      .then(({ data }) => {
+        if (!vivo) return;
+        const lista = [];
+        for (const fu of data?.followUps || []) {
+          for (const it of fu.recetaItems || []) {
+            if (it.isService || it.isSerum) continue;
+            lista.push({
+              followUp: fu._id,
+              item: it._id,
+              name: it.name || '',
+              quantity: it.quantity || 1,
+            });
+          }
+        }
+        setItemsRecetados(lista);
+      })
+      .catch(() => {
+        if (vivo) setItemsRecetados([]);
+      });
+    return () => { vivo = false; };
+  }, [apt._id]);
+
+  const claveDe = (it) => String(it.item || it.name || '');
+  const toggleItem = (it) => {
+    const clave = claveDe(it);
+    setElegidos((prev) => {
+      const next = new Set(prev);
+      if (next.has(clave)) next.delete(clave);
+      else next.add(clave);
+      return next;
+    });
+  };
+  const itemsElegidos = itemsRecetados.filter((it) => elegidos.has(claveDe(it)));
+
   const agregarExtra = (item) => {
     if (!item?._id) return;
     const id = String(item._id);
@@ -150,8 +207,28 @@ export default function AppointmentServiceValueModal({
           ? { attendedDoctor: atendido }
           : {}),
       });
+      /**
+       * EL COBRO DE LOS ITEMS, por su propia puerta. Va en el mismo guardar para
+       * que sea UN gesto: marcó los checks, puso el valor, guardó. El servidor
+       * deja anotado quién registró el cobro.
+       */
+      let actualizada = data;
+      try {
+        const { data: conCobro } = await api.patch(`/appointments/${apt._id}/cobro-items`, {
+          items: itemsElegidos.map((it) => ({
+            followUp: it.followUp,
+            item: it.item,
+            name: it.name,
+            quantity: it.quantity,
+          })),
+          itemsValue: itemsValue === '' ? null : Number(itemsValue),
+        });
+        actualizada = conCobro;
+      } catch (e) {
+        toast.error(e.response?.data?.message || 'La cita se guardó, pero el cobro de los items no');
+      }
       toast.success('Servicio y valor actualizados');
-      onDone?.(data);
+      onDone?.(actualizada);
       onClose?.();
     } catch (err) {
       toast.error(err.response?.data?.message || 'No se pudo actualizar la cita');
@@ -219,6 +296,71 @@ export default function AppointmentServiceValueModal({
             estos incluidos.
           </p>
         </div>
+
+        {/**
+          * LO QUE EL DOCTOR RECETÓ, EN CHECKS (sep-2026). Igual que las
+          * ampollas del suero: una casilla por línea, y mostrador marca lo que
+          * el paciente se lleva. El valor de lo marcado va en SU cuadro, aparte
+          * del valor de la cita.
+          */}
+        {(itemsRecetados.length > 0 || (apt?.prescribedItems || []).length > 0) && (
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              <HiOutlineBeaker className="inline w-4 h-4 mr-1 -mt-0.5 text-violet-600" />
+              Receta del doctor — marca lo que el paciente va a comprar
+            </label>
+            <div className="rounded-xl border border-violet-200 bg-violet-50/60 p-2.5 space-y-1 max-h-60 overflow-y-auto">
+              {itemsRecetados.map((it) => {
+                const clave = claveDe(it);
+                const marcado = elegidos.has(clave);
+                return (
+                  <label
+                    key={clave}
+                    className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 cursor-pointer transition-colors ${
+                      marcado ? 'border-violet-500 bg-white ring-2 ring-violet-200' : 'border-violet-200 bg-white hover:border-violet-400'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={marcado}
+                      onChange={() => toggleItem(it)}
+                      className="w-4 h-4 accent-violet-600 cursor-pointer shrink-0"
+                    />
+                    <span className="text-sm text-slate-800 min-w-0 truncate flex-1">
+                      {it.name}
+                      {it.quantity > 1 ? ` × ${it.quantity}` : ''}
+                    </span>
+                  </label>
+                );
+              })}
+              {itemsRecetados.length === 0 && (apt?.prescribedItems || []).length > 0 && (
+                <p className="text-xs text-violet-800 m-0">
+                  {(apt.prescribedItems || []).map((it) => `${it.name}${it.quantity > 1 ? ` ×${it.quantity}` : ''}`).join(', ')}
+                </p>
+              )}
+            </div>
+            <div className="mt-2 max-w-[220px]">
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                Valor de los items (lo que paga por ellos)
+              </label>
+              <div className="relative">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={itemsValue}
+                  onChange={(e) => setItemsValue(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full pl-7 pr-4 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-violet-500 bg-slate-50/50"
+                />
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1">
+                Aparte del valor de la cita. Queda anotado quién registró el cobro.
+              </p>
+            </div>
+          </div>
+        )}
 
         <AppointmentValueFields
           value={valor}

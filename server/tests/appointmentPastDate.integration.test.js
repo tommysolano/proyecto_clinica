@@ -41,6 +41,12 @@ async function seedService(clinicId) {
   return Product.create({ clinic: clinicId, code: `S${Date.now()}`, name: 'Consulta', category: 'servicio', salePrice: 50 });
 }
 
+/** Servicio del catálogo de la agenda (obligatorio desde sep-2026). */
+async function seedAgendaService(clinicId) {
+  const AppointmentServiceItem = require('../models/AppointmentServiceItem');
+  return AppointmentServiceItem.create({ clinic: clinicId, name: 'Consulta agenda', slug: `consulta-agenda-${Date.now()}-${Math.floor(Math.random() * 1e6)}` });
+}
+
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
@@ -49,9 +55,10 @@ test.beforeEach(async () => { await H.resetDb(); });
 test('createAppointment rechaza fecha de ayer y hora pasada de HOY; acepta hora futura y mañana', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const svc = await seedService(clinicId);
+  const agendaSvc = await seedAgendaService(clinicId);
   const patient = await Patient.create({ clinic: clinicId, firstName: 'Ana', lastName: 'P' });
 
-  const body = (date, startTime) => ({ patient: patient._id, date, startTime, services: [{ product: svc._id }] });
+  const body = (date, startTime) => ({ patient: patient._id, date, startTime, serviceItem: agendaSvc._id, services: [{ product: svc._id }] });
 
   const past = await H.runController(appt.createAppointment, H.mockReq(clinicId, userId, body(YESTERDAY, '09:00')));
   assert.equal(past.statusCode, 400, JSON.stringify(past.payload));
@@ -83,6 +90,7 @@ test('caja agenda en otra sucursal y se respetan los espacios de la sucursal des
     appointmentSlotMinutes: 30,
   });
   const userId = new H.mongoose.Types.ObjectId();
+  const agendaSvc = await seedAgendaService(activeClinic._id);
   const patient = await Patient.create({
     clinic: activeClinic._id,
     firstName: 'Ana',
@@ -93,6 +101,7 @@ test('caja agenda en otra sucursal y se respetan los espacios de la sucursal des
     clinic: targetClinic._id,
     date: TOMORROW,
     startTime,
+    serviceItem: agendaSvc._id,
     agreedValue: 42,
     isCanje: false,
   });
@@ -240,12 +249,13 @@ test('PUT /appointments/:id reagenda una cita de OTRA sucursal según el rol', a
 test('createAppointmentFromChat rechaza fecha pasada y hora pasada de HOY', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const svc = await seedService(clinicId);
+  const agendaSvc = await seedAgendaService(clinicId);
   const patient = await Patient.create({ clinic: clinicId, firstName: 'Tom', lastName: 'S', phone: '0999999999' });
   const conv = await Conversation.create({ clinic: clinicId, phone: '593999999999', channel: 'whatsapp', patient: patient._id, lastMessageAt: new Date() });
 
   const past = await H.runController(
     chat.createAppointmentFromChat,
-    H.mockReq(clinicId, userId, { date: YESTERDAY, startTime: '09:00', services: [{ product: svc._id }] }, { params: { id: String(conv._id) } }),
+    H.mockReq(clinicId, userId, { date: YESTERDAY, startTime: '09:00', serviceItem: agendaSvc._id, services: [{ product: svc._id }] }, { params: { id: String(conv._id) } }),
   );
   assert.equal(past.statusCode, 400, JSON.stringify(past.payload));
   assert.match(past.payload.message, /anterior a hoy/);
@@ -254,7 +264,7 @@ test('createAppointmentFromChat rechaza fecha pasada y hora pasada de HOY', asyn
   if (pastTime) {
     const r = await H.runController(
       chat.createAppointmentFromChat,
-      H.mockReq(clinicId, userId, { date: TODAY, startTime: pastTime, services: [{ product: svc._id }] }, { params: { id: String(conv._id) } }),
+      H.mockReq(clinicId, userId, { date: TODAY, startTime: pastTime, serviceItem: agendaSvc._id, services: [{ product: svc._id }] }, { params: { id: String(conv._id) } }),
     );
     assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
     assert.match(r.payload.message, /ya pasó/);
@@ -262,7 +272,7 @@ test('createAppointmentFromChat rechaza fecha pasada y hora pasada de HOY', asyn
 
   const ok = await H.runController(
     chat.createAppointmentFromChat,
-    H.mockReq(clinicId, userId, { date: TOMORROW, startTime: '09:00', services: [{ product: svc._id }] }, { params: { id: String(conv._id) } }),
+    H.mockReq(clinicId, userId, { date: TOMORROW, startTime: '09:00', serviceItem: agendaSvc._id, services: [{ product: svc._id }] }, { params: { id: String(conv._id) } }),
   );
   assert.equal(ok.statusCode, 201, JSON.stringify(ok.payload));
 });

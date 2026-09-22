@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
@@ -126,10 +126,10 @@ export default function Blocks() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-            <HiOutlineNoSymbol className="text-rose-600" /> Bloqueos de horarios
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-xl sm:text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
+            <HiOutlineNoSymbol className="text-rose-600 shrink-0" /> Bloqueos de horarios
           </h1>
           <p className="text-sm text-slate-500">
             Impide agendar citas en fechas u horarios concretos. General, por
@@ -137,55 +137,71 @@ export default function Blocks() {
             formulario.
           </p>
         </div>
-        <button onClick={abrirModal} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700">
+        <button onClick={abrirModal} className="shrink-0 px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center justify-center gap-2 hover:bg-emerald-700">
           <HiOutlinePlus className="w-4 h-4" /> Nuevo bloqueo
         </button>
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <table className="tbl">
-          <thead className="bg-slate-50 text-slate-600">
-            <tr>
-              <th className="text-left px-3 py-2">Inicio</th>
-              <th className="text-left px-3 py-2">Fin</th>
-              <th className="text-left px-3 py-2">Horario</th>
-              <th className="text-left px-3 py-2">Sucursal</th>
-              <th className="text-left px-3 py-2">Alcance</th>
-              <th className="text-left px-3 py-2">Motivo</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && <tr><td colSpan={7} className="text-center py-4 text-slate-400">Cargando...</td></tr>}
-            {list.map((b) => (
-              <tr key={b._id} className="border-t border-slate-100">
-                <td className="px-3 py-2">{fmtDate(b.startDate)}</td>
-                <td className="px-3 py-2">{fmtDate(b.endDate)}</td>
-                <td className="px-3 py-2">{b.allDay ? 'Todo el día' : `${b.startTime} – ${b.endTime}`}</td>
-                <td className="px-3 py-2">
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
-                    {nombreDeSucursal(b) || '—'}
-                  </span>
-                </td>
-                <td className="px-3 py-2">
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
-                    {alcanceDe(b)}
-                  </span>
-                </td>
-                <td className="px-3 py-2 text-slate-600">{b.reason}</td>
-                <td className="px-3 py-2">
-                  <button onClick={() => remove(b)} className="p-1 text-rose-600 hover:bg-rose-50 rounded"><HiOutlineTrash className="w-4 h-4" /></button>
-                </td>
+      {/**
+        * EN EL MÓVIL, TARJETAS (como la agenda). Siete columnas solo se leen
+        * arrastrando; con `tbl-cards` cada fila se recompone como tarjeta:
+        * el rango de fechas arriba con su horario, la sucursal a la derecha,
+        * el alcance debajo y el motivo con la acción al pie. La lógica es la
+        * MISMA para los dos tamaños — el recompuesto lo hace el CSS.
+        */}
+      <div className="tbl-wrap">
+        <div className="tbl-scroll">
+          <table className="tbl tbl-cards">
+            <thead className="bg-slate-50 text-slate-600">
+              <tr>
+                <th className="text-left px-3 py-2">Inicio</th>
+                <th className="text-left px-3 py-2">Fin</th>
+                <th className="text-left px-3 py-2">Fechas y horario</th>
+                <th className="text-left px-3 py-2">Sucursal</th>
+                <th className="text-left px-3 py-2">Alcance</th>
+                <th className="text-left px-3 py-2">Motivo</th>
+                <th></th>
               </tr>
-            ))}
-            {!loading && list.length === 0 && <tr><td colSpan={7} className="text-center py-6 text-slate-400">Sin bloqueos</td></tr>}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {loading && <tr><td colSpan={7} className="text-center py-4 text-slate-400">Cargando...</td></tr>}
+              {list.map((b) => (
+                <tr key={b._id} className="border-t border-slate-100">
+                  <td data-cell="fecha" className="px-3 py-2 whitespace-nowrap">{fmtDate(b.startDate)}</td>
+                  <td data-cell="fecha" className="px-3 py-2 whitespace-nowrap">{fmtDate(b.endDate)}</td>
+                  <td data-cell="hora" className="px-3 py-2">
+                    <div className="md:hidden text-sm font-semibold text-slate-800">
+                      {fmtDate(b.startDate)}{b.endDate !== b.startDate ? ` – ${fmtDate(b.endDate)}` : ''}
+                    </div>
+                    <div className="text-sm text-slate-700">
+                      {b.allDay ? 'Todo el día' : `${b.startTime} – ${b.endTime}`}
+                    </div>
+                  </td>
+                  <td data-cell="estado" className="px-3 py-2">
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100 whitespace-nowrap">
+                      {nombreDeSucursal(b) || '—'}
+                    </span>
+                  </td>
+                  <td data-cell="principal" className="px-3 py-2">
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
+                      {alcanceDe(b)}
+                    </span>
+                  </td>
+                  <td data-cell="detalle" className="px-3 py-2 text-slate-600 break-words">{b.reason}</td>
+                  <td data-cell="acciones" className="px-3 py-2 text-right">
+                    <button onClick={() => remove(b)} title="Eliminar bloqueo" className="p-1 text-rose-600 hover:bg-rose-50 rounded cursor-pointer"><HiOutlineTrash className="w-4 h-4" /></button>
+                  </td>
+                </tr>
+              ))}
+              {!loading && list.length === 0 && <tr><td colSpan={7} className="text-center py-6 text-slate-400">Sin bloqueos</td></tr>}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nuevo bloqueo">
         <form onSubmit={submit} className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Desde</span>
               <DateInput required value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
@@ -200,7 +216,7 @@ export default function Blocks() {
             Todo el día
           </label>
           {!form.allDay && (
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <label className="block">
                 <span className="text-xs font-medium text-slate-600">Hora inicio</span>
                 <input type="time" value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
@@ -226,7 +242,7 @@ export default function Blocks() {
               bloquea el agendamiento de ese servicio.
             </p>
           </label>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Doctor (opcional)</span>
               <select value={form.doctor} onChange={(e) => setForm({ ...form, doctor: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">

@@ -329,6 +329,57 @@ const hideTherapyNotes = (record, req, { conReceta = false } = {}) => {
 const esDelTerapeuta = (fu) => fu?.createdByRole === THERAPIST_ROLE;
 
 /**
+ * REDACTADO PARA ENFERMERÍA (sep-2026, a petición de la clínica).
+ *
+ * En los seguimientos, enfermería veía los nombres de los doctores que
+ * atendieron al paciente — y no le toca: su trabajo es el suero que va a
+ * poner, la hidroterapia marcada por mostrador y los comentarios que
+ * recepción dejó escritos. Nada más.
+ *
+ * Con la redacción activa, cada seguimiento llega recortado a eso:
+ *  · las líneas `isSerum` de la receta (con su cuenta de dosis y sus
+ *    administraciones, que es donde enfermería anota lo que pone);
+ *  · lo que enfermería ya aplicó (`aplicaciones`);
+ *  · `observaciones`, que es donde escribieron mostrador/administración;
+ *  · su PROPIO parte (kind 'enfermería'), que sale tal cual.
+ *
+ * Los NOMBRES se van: `createdBy` a null en las consultas médicas, para que la
+ * tarjeta diga «Profesional» y no «Dr. Fulano». Es un recorte de SALIDA, igual
+ * que `hideTherapyNotes`: lo que no se manda no se puede filtrar.
+ */
+const esLecturaDeEnfermero = (req) => req?.role === 'enfermero' && !req?.user?.isSuperAdmin;
+
+const redactarParaEnfermero = (record, req) => {
+  if (!record || !esLecturaDeEnfermero(req)) return record;
+  const obj = record.toObject ? record.toObject() : { ...record };
+  obj.followUps = (obj.followUps || []).map((fu) => {
+    // El TOCÓN del terapeuta ya es exactamente lo que hay que ver: no se toca.
+    if (fu.redacted) return fu;
+    const esSuParte = fu.kind === 'enfermeria' || fu.createdByRole === 'enfermero';
+    return {
+      _id: fu._id,
+      fecha: fu.fecha,
+      createdAt: fu.createdAt,
+      kind: fu.kind,
+      createdByRole: fu.createdByRole,
+      // El nombre SOLO en el parte de enfermería; en las consultas médicas,
+      // ni el del doctor ni su especialidad.
+      createdBy: esSuParte ? fu.createdBy : null,
+      editedAt: esSuParte ? fu.editedAt : undefined,
+      updatedBy: esSuParte ? fu.updatedBy : undefined,
+      motivoConsulta: esSuParte ? (fu.motivoConsulta || fu.descripcion || '') : '',
+      descripcion: esSuParte ? (fu.descripcion || '') : '',
+      recetaItems: (fu.recetaItems || []).filter((it) => it.isSerum),
+      aplicaciones: fu.aplicaciones || [],
+      observaciones: fu.observaciones || '',
+      // Bandera para que la pantalla sepa que es una vista recortada a propósito.
+      soloEnfermeria: true,
+    };
+  });
+  return obj;
+};
+
+/**
  * FECHA DE UN SEGUIMIENTO PARA IMPRIMIRLA (dd/mm/aaaa).
  *
  * El día se lee en UTC, no en hora local. `addFollowUp` guarda `new Date(fecha)`
@@ -625,7 +676,15 @@ exports.getOrCreateByPatient = async (req, res) => {
       record = await ClinicalRecord.create(enBlanco);
     }
 
-    res.json(hideContactData(hideTherapyNotes(record, req, { conReceta: req.query?.conReceta === 'true' }), req));
+    res.json(
+      hideContactData(
+        redactarParaEnfermero(
+          hideTherapyNotes(record, req, { conReceta: req.query?.conReceta === 'true' }),
+          req
+        ),
+        req
+      )
+    );
   } catch (error) {
     res
       .status(500)
@@ -1681,7 +1740,9 @@ exports.addFollowUp = async (req, res) => {
     // --- Hidratar recetaItems con snapshot de nombre/categoría y marcar servicios ---
     // Se descartan filas totalmente vacías. Un ítem manual (medicamento que la
     // clínica no vende) llega sin `product` pero con `name`, y es válido.
-    const items = itemsRaw.filter((it) => it.product || (it.name && it.name.trim()));
+    // Una DERIVACIÓN escogida del catálogo de la agenda llega con `serviceItem`
+    // (y sin producto de inventario): también es válida.
+    const items = itemsRaw.filter((it) => it.product || it.serviceItem || (it.name && it.name.trim()));
     const productIds = items.map((it) => it.product).filter(Boolean);
     let productsById = {};
     if (productIds.length) {
@@ -1691,11 +1752,28 @@ exports.addFollowUp = async (req, res) => {
         return acc;
       }, {});
     }
+    // El catálogo de servicios de la agenda, para derivaciones escogidas del
+    // buscador (mismo catálogo con el que se agenda una cita).
+    const serviceItemIds = items.map((it) => it.serviceItem).filter(Boolean);
+    let agendaServicesById = {};
+    if (serviceItemIds.length) {
+      const svcItems = await require('../models/AppointmentServiceItem')
+        .find({ _id: { $in: serviceItemIds } })
+        .lean();
+      agendaServicesById = svcItems.reduce((acc, s) => {
+        acc[String(s._id)] = s;
+        return acc;
+      }, {});
+    }
     const hydratedItems = items.map((it) => {
       const p = it.product ? productsById[String(it.product)] : null;
-      // Con producto manda su categoría (comportamiento de siempre); sin él,
-      // manda de qué lista vino. Ver el comentario de `fromDerivacion` arriba.
-      const isService = p ? ['servicio', 'programa'].includes(p.category) : Boolean(it.fromDerivacion);
+      const servicioAgenda = it.serviceItem ? agendaServicesById[String(it.serviceItem)] : null;
+      // Con producto manda su categoría (comportamiento de siempre); con
+      // servicio de la agenda o viniendo de la lista de derivaciones, es un
+      // servicio. Ver el comentario de `fromDerivacion` arriba.
+      const isService = p
+        ? ['servicio', 'programa'].includes(p.category)
+        : Boolean(it.fromDerivacion || servicioAgenda);
       // Suero: lo marca el doctor a mano en la receta. Solo tiene sentido en la
       // receta, no en las derivaciones — un servicio no se "administra" por
       // dosis, se agenda.
@@ -1717,7 +1795,10 @@ exports.addFollowUp = async (req, res) => {
       }
       return {
         product: it.product || undefined,
-        name: it.name || p?.name || '',
+        // La referencia al servicio de la agenda SOLO en derivaciones: una
+        // línea de receta no agenda citas.
+        serviceItem: isService ? (it.serviceItem || null) : null,
+        name: it.name || servicioAgenda?.name || p?.name || '',
         quantity: Number(it.quantity || 1),
         dose: it.dose || '',
         frequency: it.frequency || '',
@@ -2195,17 +2276,32 @@ exports.updateFollowUp = async (req, res) => {
       ...(Array.isArray(recetaItems) ? recetaItems : []).map((it) => ({ ...it, fromDerivacion: false })),
       ...(Array.isArray(derivacionItems) ? derivacionItems : []).map((it) => ({ ...it, fromDerivacion: true })),
     ];
-    const items = itemsRaw.filter((it) => it.product || (it.name && it.name.trim()));
+    const items = itemsRaw.filter((it) => it.product || it.serviceItem || (it.name && it.name.trim()));
     const productIds = items.map((it) => it.product).filter(Boolean);
     let productsById = {};
     if (productIds.length) {
       const prods = await Product.find({ _id: { $in: productIds }, clinic: req.clinicId });
       productsById = prods.reduce((acc, p) => { acc[String(p._id)] = p; return acc; }, {});
     }
+    // Catálogo de servicios de la agenda, para derivaciones escogidas del buscador.
+    const serviceItemIds = items.map((it) => it.serviceItem).filter(Boolean);
+    let agendaServicesById = {};
+    if (serviceItemIds.length) {
+      const svcItems = await require('../models/AppointmentServiceItem')
+        .find({ _id: { $in: serviceItemIds } })
+        .lean();
+      agendaServicesById = svcItems.reduce((acc, s) => {
+        acc[String(s._id)] = s;
+        return acc;
+      }, {});
+    }
     const hydratedItems = items.map((it) => {
       const previo = it._id ? previosPorId.get(String(it._id)) : null;
       const p = it.product ? productsById[String(it.product)] : null;
-      const isService = p ? ['servicio', 'programa'].includes(p.category) : Boolean(it.fromDerivacion);
+      const servicioAgenda = it.serviceItem ? agendaServicesById[String(it.serviceItem)] : null;
+      const isService = p
+        ? ['servicio', 'programa'].includes(p.category)
+        : Boolean(it.fromDerivacion || servicioAgenda);
       const isSerum = !isService && Boolean(it.isSerum);
       const { serumBase, serumComponents } = isSerum
         ? saneaComposicionSuero(it)
@@ -2223,7 +2319,8 @@ exports.updateFollowUp = async (req, res) => {
         // su línea y para que el enlace del suero no se rompa al editar.
         ...(previo ? { _id: previo._id } : {}),
         product: it.product || undefined,
-        name: it.name || p?.name || '',
+        serviceItem: isService ? (it.serviceItem || null) : null,
+        name: it.name || servicioAgenda?.name || p?.name || '',
         quantity: Number(it.quantity || 1),
         dose: it.dose || '',
         frequency: it.frequency || '',
@@ -2816,6 +2913,16 @@ exports.getFollowUpsByAppointment = async (req, res) => {
         return esEnfermero && sueroPendiente(f);
       });
       aproximado = followUps.length > 0;
+    }
+
+    /**
+     * ENFERMERÍA VE SU RECORTADO (sep-2026): suero, hidroterapia pendiente,
+     * comentarios de mostrador y su propio parte — sin nombres de doctores.
+     * Va al FINAL, después de la selección: el filtro de suero pendiente del
+     * respaldo lee `recetaItems` y `createdBy`, que aquí aún están enteros.
+     */
+    if (esLecturaDeEnfermero(req)) {
+      followUps = redactarParaEnfermero({ followUps }, req).followUps;
     }
 
     res.json({

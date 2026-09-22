@@ -228,3 +228,89 @@ test('sin mandar la lista, los adicionales que ya había se quedan', async () =>
 
   assert.deepEqual(nombres(await Appointment.findById(apt._id)), ['Ecografía']);
 });
+
+// ───────────────── AGENDAR CON VARIOS SERVICIOS (sep-2026) ─────────────────
+
+const mananaYmd = () => ymd(new Date(Date.now() + 86400000));
+
+test('AGENDAR con varios servicios: nacen resueltos contra el catálogo', async () => {
+  const { clinicId, userId, consulta, eco, curacion } = await seedCase();
+  const patient = await Patient.create({ clinic: clinicId, firstName: 'Beto', lastName: 'Q' });
+
+  const r = await H.runController(
+    appt.createAppointment,
+    H.mockReq(clinicId, userId, {
+      patient: String(patient._id),
+      date: mananaYmd(),
+      startTime: '10:00',
+      serviceItem: String(consulta._id),
+      additionalServices: [String(eco._id), String(curacion._id)],
+    }, { role: 'cajero' }),
+  );
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  const enBase = await Appointment.findById(r.payload._id);
+  assert.equal(enBase.serviceName, 'Consulta');
+  assert.deepEqual(nombres(enBase), ['Ecografía', 'Curación']);
+  const vinculados = enBase.additionalServices.map((s) => String(s.serviceItem));
+  assert.deepEqual(vinculados, [String(eco._id), String(curacion._id)], 'quedan enlazados al catálogo');
+  assert.ok(enBase.additionalServices[0].addedBy, 'y consta quién los añadió');
+});
+
+test('AGENDAR: el principal no se repite abajo y un id fantasma rechaza', async () => {
+  const { clinicId, userId, consulta, eco } = await seedCase();
+  const patient = await Patient.create({ clinic: clinicId, firstName: 'Cata', lastName: 'R' });
+
+  // Principal repetido entre los adicionales: se descarta en silencio.
+  const r1 = await H.runController(
+    appt.createAppointment,
+    H.mockReq(clinicId, userId, {
+      patient: String(patient._id),
+      date: mananaYmd(),
+      startTime: '10:00',
+      serviceItem: String(consulta._id),
+      additionalServices: [String(consulta._id)],
+    }, { role: 'cajero' }),
+  );
+  assert.equal(r1.statusCode, 201, JSON.stringify(r1.payload));
+  assert.deepEqual(nombres(await Appointment.findById(r1.payload._id)), []);
+
+  // Un id que ya no existe: 400 y sin cita a medias.
+  const fantasma = String(new (require('mongoose').Types.ObjectId)());
+  const r2 = await H.runController(
+    appt.createAppointment,
+    H.mockReq(clinicId, userId, {
+      patient: String(patient._id),
+      date: mananaYmd(),
+      startTime: '11:00',
+      serviceItem: String(consulta._id),
+      additionalServices: [String(eco._id), fantasma],
+    }, { role: 'cajero' }),
+  );
+  assert.equal(r2.statusCode, 400, JSON.stringify(r2.payload));
+  assert.match(r2.payload.message, /servicios adicionales/);
+  assert.equal(await Appointment.countDocuments({ patient: patient._id }), 1, 'la fantasma no dejó nada');
+});
+
+test('EDITAR la cita ajusta los otros servicios sin borrar quién los añadió', async () => {
+  const { clinicId, userId, consulta, eco, curacion, cerrada } = await seedCase();
+  const apt = await cerrada();
+  ok(await guardar(clinicId, userId, apt._id, { additionalServices: [String(eco._id)] }));
+  const primera = (await Appointment.findById(apt._id)).additionalServices[0];
+
+  // La pantalla de edición manda la lista entera como ids: se añade la curación.
+  const r = await H.runController(
+    appt.updateAppointment,
+    H.mockReq(clinicId, userId, {
+      reason: 'Vino por todo',
+      additionalServices: [String(eco._id), String(curacion._id)],
+    }, { role: 'admin', params: { id: String(apt._id) } }),
+  );
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+
+  const enBase = await Appointment.findById(apt._id);
+  assert.deepEqual(nombres(enBase), ['Ecografía', 'Curación']);
+  const [linea] = enBase.additionalServices;
+  assert.equal(linea.addedAt.getTime(), linea.addedAt.getTime(), 'la línea ya existente conserva su fecha');
+  assert.equal(String(linea.addedBy), String(userId), 'y su autor');
+});

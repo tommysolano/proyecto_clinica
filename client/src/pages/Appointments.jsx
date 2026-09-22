@@ -26,7 +26,7 @@ import AgendadoPorSelect from '../components/AgendadoPorSelect';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
-import { fmtDateTime, fmtTimeEc, todayEc, nowEcHHMM } from '../utils/date';
+import { fmtDate, fmtDateTime, fmtTimeEc, todayEc, nowEcHHMM } from '../utils/date';
 import NumericInput from '../components/NumericInput';
 import {
   HiOutlinePlus,
@@ -49,6 +49,7 @@ import {
   HiOutlineNoSymbol,
   HiOutlineClipboardDocumentList,
   HiOutlineLockClosed,
+  HiOutlineArrowRightCircle,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import TimeSlotInput from '../components/TimeSlotInput';
@@ -181,6 +182,9 @@ const emptyForm = {
   treatment: '',
   // Servicio del catálogo propio de la agenda: { _id, name } o null.
   serviceItem: null,
+  // OTROS SERVICIOS de la misma cita (sep-2026): el usuario puede agendar con
+  // varios a la vez — el principal más estos. [{ _id, name }]
+  additionalServices: [],
   clinic: '',
   // Dato operativo de mostrador: no genera cobro ni factura.
   agreedValue: '',
@@ -318,6 +322,7 @@ function textoAdelanto(apt) {
   const como = FORMA_PAGO_ADELANTO[apt.advanceMethod];
   const forma = como ? ` en ${como}` : '';
   if (apt.advancePayment === 'total') return `Pagó todo${forma}`;
+  if (apt.advancePayment === 'prepagado') return `Prepagado${forma}`;
   const abonado = Number(apt.advanceAmount) || 0;
   return abonado > 0 ? `Abonó $${abonado.toFixed(2)}${forma}` : `Abonó${forma}`;
 }
@@ -643,6 +648,14 @@ export default function Appointments() {
   // { patientId, nombre } | null.
   const [observacionesDe, setObservacionesDe] = useState(null);
   /**
+   * AGENDAR LA CITA DERIVADA (sep-2026). El doctor marcó derivaciones (servicios
+   * del catálogo) en su seguimiento; mostrador las ve con checks desde la cita y
+   * aquí agenda la nueva — que queda enlazada a esta cita (`derivationOf`) y al
+   * doctor que derivó (registro en Derivaciones + comisión).
+   */
+  const [derivacionModal, setDerivacionModal] = useState(null); // cita origen
+  const [derivationOf, setDerivationOf] = useState(null); // id de la cita origen
+  /**
    * EL MENÚ DE ACCIONES DE LA CITA.
    *
    * La fila tenía hasta diez botones a la vez y ninguno decía qué hace: uno
@@ -867,13 +880,19 @@ export default function Appointments() {
         // BLOQUEOS DEL PERÍODO (también en calendario): para el banner de
         // bloqueos activos y los marcadores por día. Antes solo la vista lista
         // los pedía y en calendario un bloqueo nuevo era invisible.
-        try {
-          const rb = await api.get('/time-blocks', {
-            params: { startDate: toYmd(first), endDate: toYmd(last), clinic: 'all' },
-          });
-          if (miTurno === peticionRef.current) setBloquesDia(rb.data || []);
-        } catch {
-          if (miTurno === peticionRef.current) setBloquesDia([]);
+        // A ENFERMERÍA NO LE IMPORTAN (sep-2026): ella no agenda, no le toca
+        // decidir dónde cabe una cita — los avisos de bloqueo eran ruido.
+        if (!isNurse) {
+          try {
+            const rb = await api.get('/time-blocks', {
+              params: { startDate: toYmd(first), endDate: toYmd(last), clinic: 'all' },
+            });
+            if (miTurno === peticionRef.current) setBloquesDia(rb.data || []);
+          } catch {
+            if (miTurno === peticionRef.current) setBloquesDia([]);
+          }
+        } else if (miTurno === peticionRef.current) {
+          setBloquesDia([]);
         }
         return;
       }
@@ -895,13 +914,18 @@ export default function Appointments() {
       // BLOQUEOS DEL DÍA: los recuadros de la vista por día (mismo refresco
       // que las citas, sockets incluidos). clinic=all: el día puede tener
       // citas de varias sedes y cada bloqueo es de SU sucursal.
-      try {
-        const rb = await api.get('/time-blocks', {
-          params: { startDate: listDay, endDate: listDay, clinic: 'all' },
-        });
-        if (miTurno === peticionRef.current) setBloquesDia(rb.data || []);
-      } catch {
-        if (miTurno === peticionRef.current) setBloquesDia([]);
+      // A ENFERMERÍA tampoco: los avisos de bloqueo son cosa de quien agenda.
+      if (!isNurse) {
+        try {
+          const rb = await api.get('/time-blocks', {
+            params: { startDate: listDay, endDate: listDay, clinic: 'all' },
+          });
+          if (miTurno === peticionRef.current) setBloquesDia(rb.data || []);
+        } catch {
+          if (miTurno === peticionRef.current) setBloquesDia([]);
+        }
+      } else if (miTurno === peticionRef.current) {
+        setBloquesDia([]);
       }
     } catch {
       if (miTurno !== peticionRef.current) return;
@@ -1171,6 +1195,7 @@ export default function Appointments() {
 
   const openNew = () => {
     setEditing(null);
+    setDerivationOf(null);
     /**
      * LA SUCURSAL SE ESCOGE, NO SE HEREDA.
      *
@@ -1212,6 +1237,37 @@ export default function Appointments() {
     setAssignModal({ appointment: apt });
   };
 
+  /**
+   * AGENDAR UNA CITA DERIVADA (sep-2026): abre el formulario NUEVO ya lleno con
+   * el paciente de la cita origen y el servicio que el doctor derivó. Al guardar
+   * viaja `derivationOf`, con el que el servidor enlaza la cita nueva con la
+   * derivación y acredita al doctor que la hizo.
+   */
+  const agendarDerivada = (aptOrigen, servicio) => {
+    setEditing(null);
+    setDerivationOf(aptOrigen._id);
+    setForm({
+      ...emptyForm,
+      patient: aptOrigen.patient?._id || aptOrigen.patient || '',
+      serviceItem: servicio?.serviceItem
+        ? { _id: servicio.serviceItem, name: servicio.name || '' }
+        : null,
+    });
+    setPatients([]);
+    setPatientSearch(
+      aptOrigen.patient
+        ? [`${aptOrigen.patient.firstName} ${aptOrigen.patient.lastName}`, aptOrigen.patient.cedula].filter(Boolean).join(' - ')
+        : ''
+    );
+    setShowPatientList(false);
+    setPatientSearchError(false);
+    setPacienteNuevo(false);
+    setPatientForm(emptyPatientForm);
+    setPatientTelefonos('');
+    setDerivacionModal(null);
+    setModalOpen(true);
+  };
+
   const openEdit = (apt) => {
     if (!canEdit(apt)) {
       toast.error('Solo el creador o un administrador puede editar esta cita.');
@@ -1250,6 +1306,12 @@ export default function Appointments() {
       serviceItem: apt.serviceItem
         ? { _id: apt.serviceItem._id || apt.serviceItem, name: apt.serviceItem.name || apt.serviceName || '' }
         : null,
+      // OTROS SERVICIOS de la cita: se cargan para que editar y guardar no los
+      // borre, y se pueden añadir o quitar aquí.
+      additionalServices: (apt.additionalServices || []).map((s) => ({
+        _id: String(s.serviceItem?._id || s.serviceItem || ''),
+        name: s.name || s.serviceItem?.name || '',
+      })).filter((s) => s._id),
       clinic: apt.clinic?._id || apt.clinic || activeClinic?._id || '',
     });
     setPatientSearch(
@@ -1283,8 +1345,11 @@ export default function Appointments() {
         return;
       }
     }
-    // El servicio dejó de ser obligatorio para poder agendar: se puede citar a
-    // alguien y decidir después a qué viene.
+    // El servicio vuelve a ser obligatorio: cada cita debe decir a qué viene.
+    if (!form.serviceItem) {
+      toast.error('Selecciona un servicio');
+      return;
+    }
 
     /**
      * DOS FILAS EN LA MISMA HORA, ANTES DE MANDAR NADA. Las citas adicionales
@@ -1340,6 +1405,9 @@ export default function Appointments() {
         serviceItem: form.serviceItem?._id || null,
         // La cola, por la misma función que el alta de paciente.
         steps: pasosDeAtencion(form, { doctors, nurses }),
+        // CITA DERIVADA (sep-2026): de qué cita salió, para enlazarla al doctor
+        // que derivó. Va limpio cuando el alta es normal.
+        ...(derivationOf ? { derivationOf } : {}),
       };
       // Del formulario y solo del formulario: el servidor no los conoce, y
       // colarlos en el cuerpo es como se acaban guardando campos fantasma.
@@ -1377,6 +1445,9 @@ export default function Appointments() {
             // Cada cita adicional puede llevar su propio servicio; si no se
             // eligió, hereda el de la principal.
             serviceItem: it.serviceItem?._id || basePayload.serviceItem || null,
+            // Los OTROS SERVICIOS son de la principal: cada cita adicional dice
+            // lo suyo con su propio servicio, no hereda la lista de la primera.
+            additionalServices: [],
             ...(canCharge
               ? {
                   agreedValue: it.isCanje ? 0 : (it.agreedValue ?? ''),
@@ -1401,6 +1472,7 @@ export default function Appointments() {
         }
       }
       setModalOpen(false);
+      setDerivationOf(null);
       fetchAppointments();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al guardar');
@@ -1901,6 +1973,22 @@ export default function Appointments() {
         // bandeja no tiene dónde enseñarla, no la cuenta como pendiente.
         return !apt.currentTurnUser ? 'pendiente' : 'finalizado';
       }
+      /**
+       * TURNOS PARALELOS (sep-2026): aunque la pelota esté con un doctor o con
+       * otra compañera, un turno de enfermería NOMBRADO a esta persona sigue
+       * pendiente y le aparece — la clínica pidió que varios enfermeros puedan
+       * atender al mismo paciente a la vez, cada uno su parte.
+       */
+      const miTurnoParalelo = (apt.turns || []).find(
+        (t) =>
+          t.kind === 'enfermeria'
+          && t.status === 'pendiente'
+          && idDeCampo(t.user) === miId
+      );
+      if (miTurnoParalelo) {
+        if (apt.serumStatus) return null;
+        return miTurnoParalelo.startedAt ? 'atendido' : 'pendiente';
+      }
       // Su turno ya se cerró y la cita siguió con otro profesional (o terminó):
       // lo suyo aquí terminó, aunque la cita no.
       return 'finalizado';
@@ -1967,7 +2055,8 @@ export default function Appointments() {
    */
   const filasDelDia = useMemo(() => {
     const citas = filteredAppointments.map((apt, idx) => ({ tipo: 'cita', apt, idx }));
-    const bloqueos = (bloquesDia || []).map((b) => ({
+    // Enfermería no ve bloqueos: su agenda va solo de las citas que le tocan.
+    const bloqueos = (isNurse ? [] : bloquesDia || []).map((b) => ({
       tipo: 'bloqueo',
       b,
       // Un bloqueo de día completo va al tope de la lista.
@@ -2110,14 +2199,14 @@ export default function Appointments() {
         </div>
       </div>
 
-      {/**
-        * BANNER DE BLOQUEOS del período visible (día en lista, mes en
+      {/** BANNER DE BLOQUEOS del período visible (día en lista, mes en
         * calendario). Antes el bloqueo era solo una fila rosa dentro de la lista
         * del día — y en calendario no se veía en ninguna parte. Ahora cualquier
         * usuario de la agenda ve, de un vistazo, que hay horarios bloqueados y
         * por qué (llega en vivo por socket: ver `timeblock:changed`).
+        * A ENFERMERÍA NO: ella no agenda — es un mensaje que no le toca.
         */}
-      {(bloquesDia || []).length > 0 && (
+      {!isNurse && (bloquesDia || []).length > 0 && (
         <div className="mb-2 sm:mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5">
           <p className="text-xs font-semibold text-rose-700 uppercase tracking-wide flex items-center gap-1.5">
             <HiOutlineLockClosed className="w-4 h-4" />
@@ -2673,9 +2762,21 @@ export default function Appointments() {
                   const enfermeriaLibre = conTurnos
                     ? apt.currentTurnKind === 'enfermeria' && !apt.currentTurnUser && !retenidaPorSuero
                     : !apt.attendedByNurse;
-                  // Ya es suyo: puede ver la receta y cerrar su parte.
+                  // Ya es suyo: puede ver la receta y cerrar su parte. Además del
+                  // turno vigente, un turno de enfermería NOMBRADO a esta persona
+                  // cuenta — TURNOS PARALELOS (sep-2026): varios enfermeros
+                  // atienden al mismo paciente a la vez, cada uno su parte.
+                  const miTurnoParalelo = conTurnos
+                    ? (apt.turns || []).find(
+                        (t) =>
+                          t.kind === 'enfermeria'
+                          && t.status === 'pendiente'
+                          && idDe(t.user) === String(user?.id)
+                      )
+                    : null;
                   const enfermeriaMia = conTurnos
-                    ? apt.currentTurnKind === 'enfermeria' && esMiTurno && !retenidaPorSuero
+                    ? (apt.currentTurnKind === 'enfermeria' && esMiTurno && !retenidaPorSuero)
+                      || (!!miTurnoParalelo && !retenidaPorSuero)
                     : idDe(apt.attendedByNurse) === String(user?.id);
                   /**
                    * ¿PUEDO VOLVER A ENTRAR A CORREGIR LO QUE ESCRIBÍ?
@@ -2924,13 +3025,28 @@ export default function Appointments() {
                       });
                     }
                     /**
-                      * VER LA RECETA de una visita ya atendida, sin salir de
-                      * la agenda. Antes había que abrir la ficha del paciente
-                      * y buscar el seguimiento por fecha entre todos los
-                      * suyos; con dos consultas el mismo día eso es adivinar.
-                      * Es de solo lectura: corregir sigue siendo cosa de su
-                      * autor, por «Ver / corregir».
-                      */
+                     * AGENDAR LA DERIVACIÓN DEL DOCTOR (sep-2026): la cita tiene
+                     * seguimiento del doctor con derivaciones escogidas del
+                     * catálogo; mostrador las ve con checks y agenda la cita con
+                     * el servicio derivado — queda enlazada a esta cita y al
+                     * doctor que derivó.
+                     */
+                    if (canCharge && ['asistida', 'completada'].includes(apt.status)) {
+                      opciones.push({
+                        id: 'agendar_derivacion',
+                        label: 'Agendar derivación',
+                        icon: HiOutlineArrowRightCircle,
+                        fn: () => setDerivacionModal(apt),
+                      });
+                    }
+                    /**
+                     * VER LA RECETA de una visita ya atendida, sin salir de
+                     * la agenda. Antes había que abrir la ficha del paciente
+                     * y buscar el seguimiento por fecha entre todos los suyos;
+                     * con dos consultas el mismo día eso es adivinar.
+                     * Es de solo lectura: corregir sigue siendo cosa de su
+                     * autor, por «Ver / corregir».
+                     */
                     if (puedeVerConsulta(apt)) {
                       opciones.push({
                         id: 'consulta',
@@ -3543,7 +3659,7 @@ export default function Appointments() {
               cambio (lo segundo es cobro, y eso va por contabilidad). */}
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
-              Servicio <span className="font-normal text-slate-400">(opcional)</span>
+              Servicio <span className="text-rose-500">*</span>
             </label>
             <ServiceItemPicker
               value={form.serviceItem}
@@ -3552,6 +3668,54 @@ export default function Appointments() {
             <p className="text-[11px] text-slate-400 mt-1">
               Pincha para ver la lista. Si no está, escríbelo y se crea para todos.
             </p>
+          </div>
+
+          {/**
+            * VARIOS SERVICIOS EN LA MISMA CITA (sep-2026). El principal es el
+            * obligatorio; estos se suman como servicios adicionales y quedan en
+            * la agenda, en el bloqueo de horario y en los cobros de la visita.
+            */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              Otros servicios <span className="font-normal text-slate-400">(opcional)</span>
+            </label>
+            <ProductAutocomplete
+              products={services}
+              value=""
+              onSelect={(p) => {
+                if (!p) return;
+                if (form.serviceItem && String(p._id) === String(form.serviceItem._id)) return;
+                if (form.additionalServices.some((s) => String(s._id) === String(p._id))) return;
+                setForm((f) => ({
+                  ...f,
+                  additionalServices: [...(f.additionalServices || []), { _id: p._id, name: p.name }],
+                }));
+              }}
+              placeholder="Añade otro servicio a la cita…"
+            />
+            {(form.additionalServices || []).length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                {form.additionalServices.map((s) => (
+                  <span
+                    key={s._id}
+                    className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full bg-violet-100 text-violet-800 text-xs font-medium"
+                  >
+                    {s.name || 'Servicio'}
+                    <button
+                      type="button"
+                      onClick={() => setForm((f) => ({
+                        ...f,
+                        additionalServices: f.additionalServices.filter((x) => String(x._id) !== String(s._id)),
+                      }))}
+                      title={`Quitar ${s.name || 'el servicio'}`}
+                      className="p-0.5 rounded-full hover:bg-violet-200 text-violet-600 bg-transparent border-none cursor-pointer leading-none"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* QUIÉN ATIENDE, ya al agendar. Solo al crear: una cita existente se
@@ -3978,6 +4142,40 @@ export default function Appointments() {
                   <>
                     <p className="text-xs text-emerald-600 font-medium pt-1">Pago adelantado</p>
                     <p className="text-sm text-slate-800">{textoAdelanto(detailModal)}</p>
+                  </>
+                )}
+                {/**
+                  * EL COBRO DE LOS ITEMS RECETADOS (sep-2026): lo que el paciente
+                  * paga por lo que se lleva de la receta, aparte del valor de la
+                  * cita — y QUIÉN registró el cobro, que no es quien agendó.
+                  */}
+                {veTodaLaOrg && Array.isArray(detailModal.prescribedItems) && detailModal.prescribedItems.length > 0 && (
+                  <>
+                    <p className="text-xs text-violet-600 font-medium pt-1">Items de la receta (a comprar)</p>
+                    <ul className="text-sm text-slate-800 list-disc list-inside">
+                      {detailModal.prescribedItems.map((it, i) => (
+                        <li key={it.item || i}>
+                          {it.name}{it.quantity > 1 ? ` × ${it.quantity}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {veTodaLaOrg && detailModal.itemsValue != null && (
+                  <>
+                    <p className="text-xs text-violet-600 font-medium pt-1">Valor de los items</p>
+                    <p className="text-sm text-slate-800">${Number(detailModal.itemsValue).toFixed(2)}</p>
+                  </>
+                )}
+                {(detailModal.chargeRegisteredByName || detailModal.chargeRegisteredBy?.name) && (
+                  <>
+                    <p className="text-xs text-emerald-600 font-medium pt-1">Cobro registrado por</p>
+                    <p className="text-sm text-slate-800">
+                      {detailModal.chargeRegisteredByName || detailModal.chargeRegisteredBy?.name}
+                      {detailModal.chargeRegisteredAt
+                        ? ` · ${new Date(detailModal.chargeRegisteredAt).toLocaleString('es-EC', { dateStyle: 'short', timeStyle: 'short' })}`
+                        : ''}
+                    </p>
                   </>
                 )}
                 {quienAgendo(detailModal) && (
@@ -4435,6 +4633,19 @@ export default function Appointments() {
         />
       )}
 
+      {/**
+        * LAS DERIVACIONES DEL DOCTOR, en checks (sep-2026). Mostrador ve los
+        * servicios que el doctor marcó en su seguimiento y agenda la cita con
+        * el que toque — queda enlazada a esta cita y al doctor que derivó.
+        */}
+      {derivacionModal && (
+        <DerivacionesCitaModal
+          appointment={derivacionModal}
+          onClose={() => setDerivacionModal(null)}
+          onAgendar={(servicio) => agendarDerivada(derivacionModal, servicio)}
+        />
+      )}
+
       {seguimientosPaciente && (
         <SeguimientosPacienteModal
           patientId={seguimientosPaciente.patientId}
@@ -4682,6 +4893,108 @@ function MenuAccionesCita({ opciones, bottom, right, btn, onClose }) {
 }
 
 /**
+ * LAS DERIVACIONES DEL DOCTOR, EN CHECKS (sep-2026).
+ *
+ * El doctor ya no escribe la derivación a mano: la escoge del MISMO catálogo
+ * con el que se agenda una cita. Este modal las lee del seguimiento de ESTA
+ * cita, dice cuáles ya tienen su cita agendada y deja abrir el formulario de
+ * alta con el servicio derivado — el servidor enlaza la cita nueva con esta y
+ * acredita al doctor que derivó (registro en Derivaciones + comisión).
+ */
+function DerivacionesCitaModal({ appointment, onClose, onAgendar }) {
+  const apt = appointment;
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const paciente =
+    `${apt.patient?.firstName || ''} ${apt.patient?.lastName || ''}`.trim() || 'Paciente';
+
+  useEffect(() => {
+    let vivo = true;
+    api
+      .get(`/appointments/${apt._id}/derivaciones`)
+      .then((r) => { if (vivo) setData(r.data); })
+      .catch((e) => {
+        if (vivo) setError(e.response?.data?.message || 'No se pudieron cargar las derivaciones');
+      });
+    return () => { vivo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apt._id]);
+
+  return (
+    <Modal isOpen onClose={onClose} title="Derivaciones del doctor" size="md">
+      <div className="space-y-4">
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-3">
+          <p className="font-semibold text-slate-800">{paciente}</p>
+          <p className="text-sm text-slate-500">
+            Servicios que el doctor derivó en la consulta de {fmtDate(apt.date)} {apt.startTime}
+          </p>
+        </div>
+
+        {!data && !error && (
+          <div className="py-10 flex justify-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-600" />
+          </div>
+        )}
+
+        {error && (
+          <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+            {error}
+          </p>
+        )}
+
+        {data && data.derivaciones.length === 0 && (
+          <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-3">
+            El doctor no dejó derivaciones con servicio en esta consulta.
+          </p>
+        )}
+
+        {data && data.derivaciones.map((d, i) => (
+          <div
+            key={String(d.serviceItem) || i}
+            className={`rounded-xl border px-3 py-2.5 ${d.agendada ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200'}`}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-slate-800 m-0">
+                  {d.name}{d.quantity > 1 ? ` × ${d.quantity}` : ''}
+                </p>
+                {d.instructions && (
+                  <p className="text-xs text-slate-500 mt-0.5 whitespace-pre-wrap m-0">{d.instructions}</p>
+                )}
+              </div>
+              {d.agendada ? (
+                <span className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-100 text-emerald-700">
+                  <HiOutlineCheck className="w-3.5 h-3.5" /> Ya agendada
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onAgendar(d)}
+                  className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer border-none"
+                >
+                  <HiOutlineArrowRightCircle className="w-4 h-4" />
+                  Agendar cita
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+
+        <div className="flex justify-end pt-1">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm text-slate-600 cursor-pointer"
+          >
+            Cerrar
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/**
  * MODAL DE ACCIONES DE ENFERMERÍA.
  *
  * Enfermería trabaja desde el móvil y los botones pequeños de la fila no le
@@ -4700,21 +5013,26 @@ function NurseActionModal({ appointment, working = false, onClose, onAtender, on
    * libre o nombrado a una sin reclamar se ATIENDE; el ya reclamado se TERMINA.
    * Con los nombres de recepción esto importa: el turno nombrado a otra persona
    * no ofrece nada, ni aunque la pantalla traiga la cita vieja.
+   *
+   * TURNOS PARALELOS (sep-2026): un turno nombrado a esta persona cuenta aunque
+   * la pelota esté con un doctor o con otra compañera — varios enfermeros
+   * atienden al mismo paciente a la vez, cada uno su parte.
    */
-  const vigenteEnfermeria = conTurnos && apt.currentTurnKind === 'enfermeria';
-  const esMio = vigenteEnfermeria && idDe(apt.currentTurnUser) === miId;
-  const miTurnoPendiente = vigenteEnfermeria
+  const miTurnoPendiente = conTurnos
     ? (apt.turns || []).find(
         (t) => t.kind === 'enfermeria' && t.status === 'pendiente' && idDe(t.user) === miId
       )
     : null;
+  const vigenteEnfermeria = conTurnos && apt.currentTurnKind === 'enfermeria';
   const libre = vigenteEnfermeria && !apt.currentTurnUser;
-  const puedeAtender = conTurnos
-    ? libre || (esMio && miTurnoPendiente && !miTurnoPendiente.startedAt)
-    : !apt.attendedByNurse;
-  const puedeTerminar = conTurnos
-    ? esMio && (!miTurnoPendiente || miTurnoPendiente.startedAt)
-    : idDe(apt.attendedByNurse) === miId;
+  const puedeAtender = !apt.serumStatus && (conTurnos
+    ? !!miTurnoPendiente && !miTurnoPendiente.startedAt
+      ? true
+      : libre
+    : !apt.attendedByNurse);
+  const puedeTerminar = !apt.serumStatus && (conTurnos
+    ? !!miTurnoPendiente && !!miTurnoPendiente.startedAt
+    : idDe(apt.attendedByNurse) === miId);
   const nombre = `${apt.patient?.firstName || ''} ${apt.patient?.lastName || ''}`.trim() || 'el paciente';
   const servicio = apt.serviceName || (apt.turns || []).map((t) => t.serviceName).filter(Boolean)[0] || '';
 

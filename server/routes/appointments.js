@@ -22,6 +22,9 @@ const {
   nurseClaim,
   nurseComplete,
   appointmentsByService,
+  marcarHidroterapia,
+  getDerivacionesDeCita,
+  updateCobroItems,
 } = require('../controllers/appointmentController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
@@ -117,6 +120,21 @@ router.patch('/:id/service-value', requireRole('admin', 'cajero'), updateService
  * tiene la palabra: es quien recibe al paciente y a quien va a cobrar.
  */
 router.patch('/:id/serum-status', requireRole('admin', 'cajero'), setSerumStatus);
+/**
+ * HIDROTERAPIA (sep-2026): mostrador la marca al asignar y la enfermera da fe
+ * de si la realizó, igual que un suero pero sin inventario.
+ */
+router.post('/:id/hidroterapia', requireRole('admin', 'cajero', 'enfermero'), marcarHidroterapia);
+/**
+ * LAS DERIVACIONES DEL DOCTOR (sep-2026): para mostrador, que las ve con
+ * checks y desde aquí agenda la cita con el servicio derivado.
+ */
+router.get('/:id/derivaciones', requireRole('admin', 'cajero'), getDerivacionesDeCita);
+/**
+ * EL COBRO (sep-2026): los items recetados que el paciente va a comprar (con
+ * sus checks), lo que se cobra por ellos y quién registró el cobro.
+ */
+router.patch('/:id/cobro-items', requireRole('admin', 'cajero'), updateCobroItems);
 /**
  * ODONTOLOGÍA ATENDE DIRECTO (sep-2026): se suma a la cola de recepción.
  * El controlador solo le acepta la cita asignada a SÍ MISMO — no puede

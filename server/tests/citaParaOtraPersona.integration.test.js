@@ -1,4 +1,4 @@
-/**
+﻿/**
  * AGENDAR DESDE EL CHAT PARA OTRA PERSONA (sep-2026).
  *
  * Pasa a diario en el call center: la paciente de siempre escribe para pedir
@@ -23,6 +23,7 @@ const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient');
 const Conversation = require('../models/Conversation');
 const Appointment = require('../models/Appointment');
+const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const ClinicalRecord = require('../models/ClinicalRecord');
 const chats = require('../controllers/chatController');
 
@@ -31,6 +32,9 @@ test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
 
 const ok = (r) => { assert.ok(r.statusCode < 400, JSON.stringify(r.payload)); return r.payload; };
+
+/** El servicio obligatorio que crea el seed; lo usan todas las filas. */
+let SERVICIO = null;
 
 /** Mañana: agendar hoy a las 09:00 lo rechaza la validación de hora pasada. */
 const manana = () => {
@@ -47,6 +51,8 @@ async function seed() {
   const conv = await Conversation.create({
     clinic: clinicId, phone: '593999999999', patient: contacto._id, contactName: 'Maria',
   });
+  // El servicio es obligatorio desde sep-2026: toda cita de estos tests lo lleva.
+  SERVICIO = await AppointmentServiceItem.create({ clinic: clinicId, name: 'Consulta', slug: 'consulta' });
   return { clinicId, userId, contacto, esposo, conv };
 }
 
@@ -58,7 +64,7 @@ test('la cita queda a nombre de la otra persona, no de quien escribe', async () 
 
   ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
     patientId: String(esposo._id),
-    appointments: [{ date: manana(), startTime: '09:00' }],
+    appointments: [{ date: manana(), startTime: '09:00', serviceItem: String(SERVICIO._id) }],
   })));
 
   const cita = await Appointment.findOne({}).lean();
@@ -72,7 +78,7 @@ test('sin `patientId` se sigue agendando para el contacto, como siempre', async 
   const { clinicId, userId, contacto, conv } = await seed();
 
   ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
-    appointments: [{ date: manana(), startTime: '10:00' }],
+    appointments: [{ date: manana(), startTime: '10:00', serviceItem: String(SERVICIO._id) }],
   })));
 
   const cita = await Appointment.findOne({}).lean();
@@ -91,7 +97,7 @@ test('«paciente nuevo» se decide sobre quien viene, no sobre quien escribe', a
 
   ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
     patientId: String(esposo._id),
-    appointments: [{ date: manana(), startTime: '11:00' }],
+    appointments: [{ date: manana(), startTime: '11:00', serviceItem: String(SERVICIO._id) }],
   })));
 
   const cita = await Appointment.findOne({}).lean();
@@ -104,7 +110,7 @@ test('un paciente que no existe no cuela', async () => {
 
   const r = await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
     patientId: String(inventado),
-    appointments: [{ date: manana(), startTime: '12:00' }],
+    appointments: [{ date: manana(), startTime: '12:00', serviceItem: String(SERVICIO._id) }],
   }));
 
   assert.equal(r.statusCode, 404, JSON.stringify(r.payload));
@@ -119,7 +125,7 @@ test('se puede agendar para otra persona aunque el chat no esté vinculado a nad
 
   ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, suelto, {
     patientId: String(esposo._id),
-    appointments: [{ date: manana(), startTime: '13:00' }],
+    appointments: [{ date: manana(), startTime: '13:00', serviceItem: String(SERVICIO._id) }],
   })));
 
   const cita = await Appointment.findOne({}).lean();
@@ -127,7 +133,7 @@ test('se puede agendar para otra persona aunque el chat no esté vinculado a nad
 
   // Y sin paciente ninguno sigue sin poderse: no hay a quién agendar.
   const r = await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, suelto, {
-    appointments: [{ date: manana(), startTime: '14:00' }],
+    appointments: [{ date: manana(), startTime: '14:00', serviceItem: String(SERVICIO._id) }],
   }));
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
 });
@@ -147,9 +153,9 @@ test('una tanda puede repartirse entre el contacto y otra persona', async () => 
   ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
     appointments: [
       // Sin `patientId`: para quien escribe.
-      { date: manana(), startTime: '09:00' },
+      { date: manana(), startTime: '09:00', serviceItem: String(SERVICIO._id) },
       // Con `patientId`: para el marido, en la misma llamada.
-      { date: manana(), startTime: '09:30', patientId: String(esposo._id) },
+      { date: manana(), startTime: '09:30', serviceItem: String(SERVICIO._id), patientId: String(esposo._id) },
     ],
   })));
 
@@ -176,8 +182,8 @@ test('«paciente nuevo» se resuelve por persona, no una vez para la tanda', asy
 
   ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
     appointments: [
-      { date: manana(), startTime: '09:00' },
-      { date: manana(), startTime: '09:30', patientId: String(esposo._id) },
+      { date: manana(), startTime: '09:00', serviceItem: String(SERVICIO._id) },
+      { date: manana(), startTime: '09:30', serviceItem: String(SERVICIO._id), patientId: String(esposo._id) },
     ],
   })));
 
@@ -191,10 +197,10 @@ test('la primera de cada persona es la única «nueva» de esa persona', async (
 
   ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
     appointments: [
-      { date: manana(), startTime: '09:00' },
-      { date: manana(), startTime: '09:30', patientId: String(esposo._id) },
-      { date: manana(), startTime: '10:00' },
-      { date: manana(), startTime: '10:30', patientId: String(esposo._id) },
+      { date: manana(), startTime: '09:00', serviceItem: String(SERVICIO._id) },
+      { date: manana(), startTime: '09:30', serviceItem: String(SERVICIO._id), patientId: String(esposo._id) },
+      { date: manana(), startTime: '10:00', serviceItem: String(SERVICIO._id) },
+      { date: manana(), startTime: '10:30', serviceItem: String(SERVICIO._id), patientId: String(esposo._id) },
     ],
   })));
 
@@ -213,8 +219,8 @@ test('cada cita va a SU sucursal', async () => {
 
   ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
     appointments: [
-      { date: manana(), startTime: '09:00', clinic: String(clinicId) },
-      { date: manana(), startTime: '09:30', patientId: String(esposo._id), clinic: String(otraSede._id) },
+      { date: manana(), startTime: '09:00', serviceItem: String(SERVICIO._id), clinic: String(clinicId) },
+      { date: manana(), startTime: '09:30', serviceItem: String(SERVICIO._id), patientId: String(esposo._id), clinic: String(otraSede._id) },
     ],
   })));
 
@@ -229,8 +235,8 @@ test('dos personas distintas SÍ caben en la misma hora; la misma persona no', a
   // Madre e hijo a la misma hora: son dos personas, es normal.
   ok(await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
     appointments: [
-      { date: manana(), startTime: '09:00' },
-      { date: manana(), startTime: '09:00', patientId: String(esposo._id) },
+      { date: manana(), startTime: '09:00', serviceItem: String(SERVICIO._id) },
+      { date: manana(), startTime: '09:00', serviceItem: String(SERVICIO._id), patientId: String(esposo._id) },
     ],
   })));
   assert.equal(await Appointment.countDocuments({}), 2);
@@ -238,8 +244,8 @@ test('dos personas distintas SÍ caben en la misma hora; la misma persona no', a
   // La MISMA persona dos veces en el mismo hueco sigue bloqueada.
   const r = await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
     appointments: [
-      { date: manana(), startTime: '15:00', patientId: String(esposo._id) },
-      { date: manana(), startTime: '15:00', patientId: String(esposo._id) },
+      { date: manana(), startTime: '15:00', serviceItem: String(SERVICIO._id), patientId: String(esposo._id) },
+      { date: manana(), startTime: '15:00', serviceItem: String(SERVICIO._id), patientId: String(esposo._id) },
     ],
   }));
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
@@ -253,8 +259,8 @@ test('un id inventado en UNA fila tumba la tanda entera, sin crear nada', async 
 
   const r = await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
     appointments: [
-      { date: manana(), startTime: '09:00' },
-      { date: manana(), startTime: '09:30', patientId: String(inventado) },
+      { date: manana(), startTime: '09:00', serviceItem: String(SERVICIO._id) },
+      { date: manana(), startTime: '09:30', serviceItem: String(SERVICIO._id), patientId: String(inventado) },
     ],
   }));
 
