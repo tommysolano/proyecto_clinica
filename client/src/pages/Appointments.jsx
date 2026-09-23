@@ -989,6 +989,19 @@ export default function Appointments() {
      * el comportamiento: quien trabaja en una sede entra mirando su sede.
      */
     if (isCallCenter || isMarketing) return;
+    /**
+     * LOS DOCTORES TAMPOCO (sep-2026, reporte real): a las doctoras de
+     * cosmetología —que atienden en varias sedes— el sistema les ponía la
+     * sucursal activa en el filtro, pero el desplegable de sucursal NO SE LES
+     * MUESTRA (los filtros de sucursal/servicio/doctor son de quien agenda).
+     * Resultado: un filtro INVISIBLE. Las citas que les agendaban con
+     * «sucursal destino» distinta no aparecían en su agenda, y el único
+     * arreglo era «Limpiar filtros» — que el usuario no sabía para qué
+     * servía, porque los desplegables que veía decían «todas». La agenda del
+     * doctor ya trae solo SUS citas (filtroCitasDelDoctor en el servidor);
+     * recortarlas por sede solo las esconde.
+     */
+    if (isDoctor) return;
     const propia = activeClinic?._id;
     if (!propia) return;
     setFilter((f) => (String(f.clinic) === String(propia) ? f : { ...f, clinic: propia }));
@@ -2051,8 +2064,11 @@ export default function Appointments() {
    */
   const filasDelDia = useMemo(() => {
     const citas = filteredAppointments.map((apt, idx) => ({ tipo: 'cita', apt, idx }));
-    // Enfermería no ve bloqueos: su agenda va solo de las citas que le tocan.
-    const bloqueos = (isNurse ? [] : bloquesDia || []).map((b) => ({
+    // Bloqueos: SOLO para quien agenda (mostrador y administración). Enfermería
+    // no ve bloqueos — su agenda va solo de las citas que le tocan — y los
+    // DOCTORES TAMPOCO (sep-2026, a pedido de la clínica): no agendan, y las
+    // filas rosas y el banner solo les llenaban la agenda de avisos.
+    const bloqueos = (isNurse || isDoctor ? [] : bloquesDia || []).map((b) => ({
       tipo: 'bloqueo',
       b,
       // Un bloqueo de día completo va al tope de la lista.
@@ -2066,7 +2082,7 @@ export default function Appointments() {
       if (x.tipo !== y.tipo) return x.tipo === 'bloqueo' ? -1 : 1;
       return 0;
     });
-  }, [filteredAppointments, bloquesDia]);
+  }, [filteredAppointments, bloquesDia, isNurse, isDoctor]);
 
   /**
    * Cuántos filtros SECUNDARIOS están puestos. Es lo que lleva el globito del
@@ -2197,12 +2213,14 @@ export default function Appointments() {
 
       {/** BANNER DE BLOQUEOS del período visible (día en lista, mes en
         * calendario). Antes el bloqueo era solo una fila rosa dentro de la lista
-        * del día — y en calendario no se veía en ninguna parte. Ahora cualquier
-        * usuario de la agenda ve, de un vistazo, que hay horarios bloqueados y
-        * por qué (llega en vivo por socket: ver `timeblock:changed`).
+        * del día — y en calendario no se veía en ninguna parte. Ahora quien
+        * agenda ve, de un vistazo, que hay horarios bloqueados y por qué (llega
+        * en vivo por socket: ver `timeblock:changed`).
         * A ENFERMERÍA NO: ella no agenda — es un mensaje que no le toca.
+        * A LOS DOCTORES TAMPOCO (sep-2026, a pedido de la clínica): no agendan,
+        * y el aviso solo les llenaba su agenda.
         */}
-      {!isNurse && (bloquesDia || []).length > 0 && (
+      {!isNurse && !isDoctor && (bloquesDia || []).length > 0 && (
         <div className="mb-2 sm:mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5">
           <p className="text-xs font-semibold text-rose-700 uppercase tracking-wide flex items-center gap-1.5">
             <HiOutlineLockClosed className="w-4 h-4" />
