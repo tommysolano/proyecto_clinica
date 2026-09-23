@@ -330,3 +330,50 @@ test('paso de enfermería SIN suero decidido y SIN receta en la ficha: la cita T
     'con el suero decidido, la cita ya sale en la bandeja',
   );
 });
+
+test('paso con SOLO hidroterapia o solo indicaciones: la asignación sale a la bandeja sin exigir suero', async () => {
+  /**
+   * Sep-2026, a pedido de la clínica: mostrador marca el check de hidroterapia
+   * (o escribe indicaciones para la enfermera) y NO escoge suero porque el
+   * paciente no se lo pone. Antes la cita quedaba retenida igual —la retención
+   * solo miraba el suero— y la asignación nunca llegaba a la bandeja: el
+   * usuario no podía enviar «solo hidroterapia». La retención existe para el
+   * suero; un paso sin suero pero con trabajo propio no tiene nada que decidir.
+   */
+  const { clinicId, userId, enf, cita } = await seed();
+
+  // Solo hidroterapia, sin suero.
+  await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
+    steps: [{ kind: 'enfermeria', hidroterapia: true }],
+  }, { params: { id: String(cita._id) } }));
+  const conHidro = await Appointment.findById(cita._id).lean();
+  assert.equal(conHidro.serumStatus, null, 'con hidroterapia no se retiene');
+  assert.equal(
+    (await bandeja(clinicId, enf._id, 'enfermero')).includes(String(cita._id)),
+    true,
+    'la asignación de solo hidroterapia sale en la bandeja',
+  );
+  assert.equal(conHidro.turns[0].hidroterapia?.solicitada, true);
+  assert.equal(conHidro.turns[0].nurseInstructions, '');
+
+  // Solo indicaciones, sin suero.
+  await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
+    steps: [{ kind: 'enfermeria', nurseInstructions: 'Tomar signos antes de aplicar' }],
+  }, { params: { id: String(cita._id) } }));
+  const conIndicaciones = await Appointment.findById(cita._id).lean();
+  assert.equal(conIndicaciones.serumStatus, null, 'con indicaciones no se retiene');
+  assert.equal(
+    (await bandeja(clinicId, enf._id, 'enfermero')).includes(String(cita._id)),
+    true,
+    'la asignación con indicaciones sale en la bandeja',
+  );
+  assert.equal(conIndicaciones.turns[0].nurseInstructions, 'Tomar signos antes de aplicar',
+    'las indicaciones de mostrador quedan escritas en el turno');
+
+  // Un paso SIN suero y sin nada propio sí sigue retenido (FAUSTO MALLA).
+  await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
+    steps: [{ kind: 'enfermeria', serviceName: 'SUERO TRAPIA' }],
+  }, { params: { id: String(cita._id) } }));
+  const sinNada = await Appointment.findById(cita._id).lean();
+  assert.equal(sinNada.serumStatus, 'por_asignar', 'sin suero ni trabajo propio sigue retenida');
+});

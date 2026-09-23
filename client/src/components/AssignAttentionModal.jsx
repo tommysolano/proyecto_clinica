@@ -580,8 +580,8 @@ export default function AssignAttentionModal({
         {apt?.serumStatus && (
           <div className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2">
             {apt.serumStatus === 'aplazado'
-              ? 'Esta cita quedó con SUERO PENDIENTE: el paciente decidió no aplicárselo en esa visita. Al guardar con el suero que corresponda la liberas para enfermería; guardando sin suero sigue pendiente.'
-              : 'Esta cita está esperando que asignes el SUERO de enfermería: lo que recetó el doctor no siempre es lo que toca aplicar ahora. Escoge el suero en su paso de enfermería y guarda para liberar la cita; guardando sin suero, la cita no sale a la bandeja.'}
+              ? 'Esta cita quedó con SUERO PENDIENTE: el paciente decidió no aplicárselo en esa visita. Al guardar con el suero que corresponda la liberas para enfermería; guardando sin suero sigue pendiente — salvo que el paso lleve solo hidroterapia o solo indicaciones: entonces sale a la bandeja igual.'
+              : 'Esta cita está esperando que asignes el SUERO de enfermería: lo que recetó el doctor no siempre es lo que toca aplicar ahora. Escoge el suero en su paso de enfermería y guarda para liberar la cita. Si no le van a poner suero —solo hidroterapia o solo indicaciones—, guarda tal cual y la cita sale a la bandeja.'}
           </div>
         )}
 
@@ -721,13 +721,6 @@ export default function AssignAttentionModal({
                             size="sm"
                           />
                         </div>
-                        <input
-                          type="text"
-                          value={paso.serviceName || ''}
-                          onChange={(e) => editarPaso(idx, { serviceName: e.target.value })}
-                          placeholder="Qué hace (Detox, Sueroterapia…)"
-                          className="input input-sm flex-1 bg-white"
-                        />
                         <label
                           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-200 bg-cyan-50 text-xs font-medium text-cyan-900 cursor-pointer shrink-0 self-start sm:self-center"
                           title="Los enfermeros verán Hidroterapia en su barra de atención y marcarán si la realizó"
@@ -750,14 +743,14 @@ export default function AssignAttentionModal({
                   )}
 
                   {/**
-                    * EL SUERO, ESCOGIDO DEL CATÁLOGO — no escrito en el rótulo.
+                    * EL SUERO, ESCOGIDO DEL CATÁLOGO.
                     *
-                    * El campo de arriba es solo el NOMBRE del paso: escribir ahí
-                    * «suero ala 20 ml» no le deja a enfermería nada que aplicar,
-                    * porque lo que se aplica es una línea de receta en la ficha,
-                    * con su «Administrar» y su descuento de inventario. Aquí se
-                    * escogen las ampollas igual que en la receta del médico, y
-                    * al guardar se escriben en los seguimientos.
+                    * Escribir «suero ala 20 ml» a mano en un rótulo no le deja a
+                    * enfermería nada que aplicar, porque lo que se aplica es una
+                    * línea de receta en la ficha, con su «Administrar» y su
+                    * descuento de inventario. Aquí se escogen las ampollas igual
+                    * que en la receta del médico, y al guardar se escriben en los
+                    * seguimientos.
                     */}
                   {esEnf && (
                     <div className="mt-2 pl-8 space-y-2">

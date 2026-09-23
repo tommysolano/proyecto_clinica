@@ -248,12 +248,19 @@ async function fichaTieneSueroPendiente(patientId) {
 /**
  * ¿ESTA CITA QUEDA RETENIDA al pasar el turno a enfermería?
  *
- * El doctor cerró SU turno y el vigente es de enfermería: la cita solo se le
- * entrega a enfermería si el suero que va a aplicar ya está decidido —lo escogió
+ * El doctor cerró SU turno y el vigente es de enfermería: la cita solo se
+ * le entrega a enfermería si el suero que va a aplicar ya está decidido —lo escogió
  * mostrador en el paso (`turn.serum`/`serumFollowUp`)—. En los demás casos la
  * cita se retiene: `serumStatus = 'por_asignar'` y mostrador decide en
  * «Asignar atención» (escoge el suero, o lo deja sin él si el paciente no se lo
  * pondrá — eso es el «suero pendiente»).
+ *
+ * UN PASO SIN SUERO PERO CON TRABAJO PROPIO (sep-2026) NO SE RETIENE: la
+ * retención existe para que el suero no llegue «de receta» sin que mostrador
+ * decida; si el paso NO lleva suero pero sí lleva lo suyo —indicaciones escritas
+ * para la enfermera, o la hidroterapia marcada— es un paso de enfermería que
+ * no pone nada por vía, y retenerlo bloqueaba enviar la asignación de
+ * «solo hidroterapia»: el check se marcaba y la cita nunca salía a la bandeja.
  *
  * NO se pregunta si la ficha tiene un suero recetado pendiente. Así se hizo la
  * primera vez (17-sep) y se coló el caso de FAUSTO MALLA UVACO (18-sep): el paso
@@ -269,6 +276,10 @@ async function leFaltaElSueroDeEnfermeria(apt) {
   if (!vigente || vigente.kind !== 'enfermeria') return false;
   if (vigente.serumFollowUp) return false;
   if ((vigente.serum?.components || []).some((c) => String(c?.name || '').trim())) return false;
+  // Paso sin suero pero con instrucciones o hidroterapia: no hay nada que
+  // decidir de suero — mostrador ya dijo qué se hace en el paso.
+  if (String(vigente.nurseInstructions || '').trim()) return false;
+  if (vigente.hidroterapia?.solicitada) return false;
   return true;
 }
 
