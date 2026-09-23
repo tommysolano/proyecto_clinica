@@ -484,9 +484,14 @@ fi
 # cambia el adjunto por la primera pagina y se les crea la observacion que faltaba.
 # Despues la tanda grande. En serie y en el mismo proceso de fondo: las dos abren un
 # Chromium y compiten por la memoria del droplet si van a la vez.
+#
+# Tercera tanda (23-sep-2026): las 228 fichas escaneadas entre el 3 y el 22 de
+# septiembre. Va DETRAS de las dos anteriores y con su propia marca, asi que es la
+# unica que hara algo; son pocas y terminan en minutos, no en horas.
 CMD_FICHAS="cd $APP_DIR/server \
   && node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas.json --key=convertir-fichas-escaneadas-2026-08-16-v2 --once --commit \
-  ; node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas-2026-08-31.json --key=importar-fichas-escaneadas-2026-09-03 --once --commit"
+  ; node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas-2026-08-31.json --key=importar-fichas-escaneadas-2026-09-03 --once --commit \
+  ; node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas-2026-09-23.json --key=importar-fichas-escaneadas-2026-09-23 --once --commit"
 if [ "$(id -un)" = "clinica" ]; then
   nohup bash -lc "$CMD_FICHAS" >> "$LOG_FICHAS" 2>&1 &
 else

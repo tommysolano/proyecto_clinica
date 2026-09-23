@@ -1,0 +1,3176 @@
+{
+ "generadoEl": "2026-09-23T13:40:32.873Z",
+ "fichas": [
+  {
+   "documento": "Escaneo 03-09-2026 (18)",
+   "fecha": "01/09/2026",
+   "nombres": "Maura",
+   "apellidos": "Mosquera Véliz",
+   "cedula": "0909007422",
+   "edad": "61",
+   "celular": "0997464355",
+   "correo": "frigorificomosquerita@gmail.com",
+   "direccion": "Barzola",
+   "dudosos": [
+    "celular",
+    "correo",
+    "direccion",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (19)",
+   "fecha": "01/09/2026",
+   "nombres": "Juan",
+   "apellidos": "Zambrano Bravo",
+   "cedula": "0926464033",
+   "edad": "38",
+   "celular": "0941090675",
+   "correo": "negrojuanjose@hotmail.com",
+   "direccion": "La Fragata",
+   "dudosos": [
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (20)",
+   "fecha": "07/09/2026",
+   "nombres": "Marla",
+   "apellidos": "Manzaba Roldán",
+   "cedula": "1308088325",
+   "edad": "49",
+   "celular": "0947291906",
+   "correo": "ingmarcosceballos.1975@gmail.com",
+   "direccion": "Aurora",
+   "dudosos": [
+    "nombres",
+    "cedula",
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (21)",
+   "fecha": "01/09/2026",
+   "nombres": "José",
+   "apellidos": "Fernández Mora",
+   "cedula": "0917774598",
+   "edad": "48",
+   "celular": "0986244948",
+   "correo": "sfernan678@gmail.com",
+   "direccion": "Norte",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (22)",
+   "fecha": "01/09/2026",
+   "nombres": "Washington",
+   "apellidos": "Chonillo Rendón",
+   "cedula": "0910967595",
+   "edad": "58",
+   "celular": "0991973717",
+   "correo": "wacho-250568@hotmail.com",
+   "direccion": "Cdla. Guangala",
+   "dudosos": [
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (23)",
+   "fecha": "01/09/2026",
+   "nombres": "Erika",
+   "apellidos": "Choez Choez",
+   "cedula": "0950386912",
+   "edad": "27",
+   "celular": "0959673755",
+   "correo": "erickaxio1998@gmail.com",
+   "direccion": "Lomas de la Florida",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (24)",
+   "fecha": "01/09/2026",
+   "nombres": "Carlos",
+   "apellidos": "Sevilla Arroyo",
+   "cedula": "0904893302",
+   "edad": "71",
+   "celular": "0968527443",
+   "correo": "famyleon44@gmail.com",
+   "direccion": "Suburbio",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (25)",
+   "fecha": "01/09/2026",
+   "nombres": "Edgar",
+   "apellidos": "Campoverde Campoverde",
+   "cedula": "0917763252",
+   "edad": "48",
+   "celular": "0963852345",
+   "correo": "campoverdeedgar409@gmail.com",
+   "direccion": "Juan Montalvo",
+   "dudosos": [
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (26)",
+   "fecha": "01/09/2026",
+   "nombres": "Jonathan",
+   "apellidos": "Yuquilema Cajilema",
+   "cedula": "1719959551",
+   "edad": "41",
+   "celular": "0987854313",
+   "correo": "secondyc-59@hotmail.com",
+   "direccion": "Cdla. Montebello",
+   "dudosos": [
+    "edad"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (27)",
+   "fecha": "01/09/2026",
+   "nombres": "Jonathan",
+   "apellidos": "Yuquilema Cajilema",
+   "cedula": "1719959551",
+   "edad": "41",
+   "celular": "0987854313",
+   "correo": "secondyc-59@hotmail.com",
+   "direccion": "Cdla. Montebello",
+   "dudosos": [
+    "edad"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (28)",
+   "fecha": "01/09/2026",
+   "nombres": "Mónica",
+   "apellidos": "Guaranda Solórzano",
+   "cedula": "0915627492",
+   "edad": "54",
+   "celular": "0998143729",
+   "correo": "guarandasolorzano@gmail.com",
+   "direccion": "Prosperina",
+   "dudosos": [
+    "correo",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (29)",
+   "fecha": "01/09/2026",
+   "nombres": "Washington",
+   "apellidos": "Zambrano Baquerizo",
+   "cedula": "0923920649",
+   "edad": "43",
+   "celular": "0994143729",
+   "correo": "guarandasolorzano@gmail.com",
+   "direccion": "Prosperina",
+   "dudosos": [
+    "celular",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (30)",
+   "fecha": "01/09/2026",
+   "nombres": "Jorge",
+   "apellidos": "Torres Nieto",
+   "cedula": "0910835057",
+   "edad": "58",
+   "celular": "0984031695",
+   "correo": "jtorres.nieto@hotmail.com",
+   "direccion": "Atarazana",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (31)",
+   "fecha": "01/09/2026",
+   "nombres": "Jorge",
+   "apellidos": "Lombeida Vélez",
+   "cedula": "0909577801",
+   "edad": "61",
+   "celular": "0997918055",
+   "correo": "jflv2209@gmail.com",
+   "direccion": "Sur",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (32)",
+   "fecha": "01/09/2026",
+   "nombres": "Clara",
+   "apellidos": "Romero Maya",
+   "cedula": "0903460863",
+   "edad": "85",
+   "celular": "0986427616",
+   "correo": "ramenyfood@gmail.com",
+   "direccion": "Cristo del Consuelo",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (33)",
+   "fecha": "29/08/2026",
+   "nombres": "Víctor",
+   "apellidos": "Onofre Tomalá",
+   "cedula": "0910594379",
+   "edad": "57",
+   "celular": "0999496457",
+   "correo": "victoronofretomala@gmail.com",
+   "direccion": "Mucho Lote 2",
+   "dudosos": [
+    "edad",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (34)",
+   "fecha": "31/08/2026",
+   "nombres": "Samael",
+   "apellidos": "Cevallos Campos",
+   "cedula": "0955893775",
+   "edad": "28",
+   "celular": "0987024488",
+   "correo": "ramenyfood@gmail.com",
+   "direccion": "Cristo del Consuelo",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (35)",
+   "fecha": "31/08/2026",
+   "nombres": "Melany",
+   "apellidos": "Plaza Villao",
+   "cedula": "0954643342",
+   "edad": "27",
+   "celular": "0987024488",
+   "correo": "ramenyfood@gmail.com",
+   "direccion": "Cristo del Consuelo",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (36)",
+   "fecha": "31/08/2026",
+   "nombres": "Mario",
+   "apellidos": "Quispe Sandoval",
+   "cedula": "1201678636",
+   "edad": "62",
+   "celular": "0990874810",
+   "correo": "materquis4@hotmail.com",
+   "direccion": "Babahoyo",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (37)",
+   "fecha": "31/08/2026",
+   "nombres": "Abraham",
+   "apellidos": "González Zambrano",
+   "cedula": "0921277562",
+   "edad": "51",
+   "celular": "0963869076",
+   "correo": "gene03gonzalez14@gmail.com",
+   "direccion": "Km 14 vía Daule",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (38)",
+   "fecha": "31/08/2026",
+   "nombres": "Hamilton",
+   "apellidos": "Intriago Coello",
+   "cedula": "0957620800",
+   "edad": "21",
+   "celular": "0962178233",
+   "correo": "stuardintriago09@gmail.com",
+   "direccion": "Francisco Jácome",
+   "dudosos": [
+    "nombres"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (39)",
+   "fecha": "31/08/2026",
+   "nombres": "Hermin",
+   "apellidos": "Chumo Martínez",
+   "cedula": "0912517484",
+   "edad": "56",
+   "celular": "0980293560",
+   "correo": "chumohermin@gmail.com",
+   "direccion": "El Coca",
+   "dudosos": [
+    "nombres",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (40)",
+   "fecha": "31/08/2026",
+   "nombres": "Juan",
+   "apellidos": "Sánchez Carrión",
+   "cedula": "1106043478",
+   "edad": "27",
+   "celular": "0959627688",
+   "correo": "juanhttpsanchez@gmail.com",
+   "direccion": "La FAE",
+   "dudosos": [
+    "correo",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (41)",
+   "fecha": "31/08/2026",
+   "nombres": "Jorge",
+   "apellidos": "Albán Loor",
+   "cedula": "0924037328",
+   "edad": "41",
+   "celular": "0996581698",
+   "correo": "jorgealban94@gmail.com",
+   "direccion": "Sauces 2",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (42)",
+   "fecha": "31/08/2026",
+   "nombres": "Juan",
+   "apellidos": "Méndez Hidalgo",
+   "cedula": "0905609822",
+   "edad": "69",
+   "celular": "0939819013",
+   "correo": "juanvict_59@outlook.com",
+   "direccion": "Villa Club",
+   "dudosos": [
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (43)",
+   "fecha": "31/08/2026",
+   "nombres": "Christhian",
+   "apellidos": "López Vásquez",
+   "cedula": "0704221365",
+   "edad": "44",
+   "celular": "0962226246",
+   "correo": "crissh02@hotmail.com",
+   "direccion": "Alborada",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (44)",
+   "fecha": "31/08/2026",
+   "nombres": "César",
+   "apellidos": "Merchán Flores",
+   "cedula": "0906206693",
+   "edad": "67",
+   "celular": "0994945077",
+   "correo": "db9_cesar_merchan@hotmail.com",
+   "direccion": "Colinas de la Alborada",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (45)",
+   "fecha": "31/08/2026",
+   "nombres": "Vicente",
+   "apellidos": "Loor Vélez",
+   "cedula": "1310671472",
+   "edad": "45",
+   "celular": "0999147264",
+   "correo": "vicenteloorvelez@outlook.com",
+   "direccion": "Fortín",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (46)",
+   "fecha": "29/08/2026",
+   "nombres": "Marjorie",
+   "apellidos": "Anguieta Gordón",
+   "cedula": "0916123714",
+   "edad": "51",
+   "celular": "0993618284",
+   "correo": "m.anguieta.gordon@yahoo.es",
+   "direccion": "Lomas de la Florida",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (47)",
+   "fecha": "29/08/2026",
+   "nombres": "Jairo",
+   "apellidos": "Salazar Merelo",
+   "cedula": "0929808913",
+   "edad": "38",
+   "celular": "0963186931",
+   "correo": "jairo88salazar@hotmail.com",
+   "direccion": "Monte Sinaí",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (48)",
+   "fecha": "29/08/2026",
+   "nombres": "Carlos",
+   "apellidos": "Alvarado Castro",
+   "cedula": "0912418076",
+   "edad": "50",
+   "celular": "0967157930",
+   "correo": "jcharlesbusiness2020@gmail.com",
+   "direccion": "Alborada 6ta Etapa",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (49)",
+   "fecha": "29/08/2026",
+   "nombres": "Gina",
+   "apellidos": "Moncayo Flores",
+   "cedula": "0907686052",
+   "edad": "66",
+   "celular": "0948639053",
+   "correo": "ginamt2019@gmail.com",
+   "direccion": "Cdla. Los Almendros",
+   "dudosos": [
+    "celular",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (50)",
+   "fecha": "29/08/2026",
+   "nombres": "Gina",
+   "apellidos": "Moncayo Flores",
+   "cedula": "0907686052",
+   "edad": "66",
+   "celular": "0948639053",
+   "correo": "ginamt2019@gmail.com",
+   "direccion": "Cdla. Los Almendros",
+   "dudosos": [
+    "celular",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (51)",
+   "fecha": "29/08/2026",
+   "nombres": "Sergio",
+   "apellidos": "Mermillo Zambello",
+   "cedula": "1724313455",
+   "edad": "59",
+   "celular": "0990872272",
+   "correo": "sergiojuan2114@gmail.com",
+   "direccion": "Cdla. Simón Bolívar",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (52)",
+   "fecha": "29/08/2026",
+   "nombres": "Manuel Carlos",
+   "apellidos": "Santillán Canales",
+   "cedula": "0913493433",
+   "edad": "56",
+   "celular": "0994435108",
+   "correo": "carma-2224@hotmail.com",
+   "direccion": "Fragata 22 Solar 10B",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (53)",
+   "fecha": "29/08/2026",
+   "nombres": "Javier",
+   "apellidos": "Arroca Palacios",
+   "cedula": "0916156557",
+   "edad": "48",
+   "celular": "0990965410",
+   "correo": "soporte@serviaireecuador.com",
+   "direccion": "Urdesa",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (54)",
+   "fecha": "29/08/2026",
+   "nombres": "Patricia",
+   "apellidos": "Novillo Zambrano",
+   "cedula": "0951462638",
+   "edad": "31",
+   "celular": "0980086330",
+   "correo": "patricia0roxana@gmail.com",
+   "direccion": "Sur",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (55)",
+   "fecha": "01/09/2026",
+   "nombres": "Aldo",
+   "apellidos": "Palas Manzo",
+   "cedula": "0702160225",
+   "edad": "61",
+   "celular": "0962049615",
+   "correo": "molinanathalia.2024@gmail.com",
+   "direccion": "Fertiza",
+   "dudosos": [
+    "edad",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (56)",
+   "fecha": "01/09/2026",
+   "nombres": "Lourdes",
+   "apellidos": "Orozco González",
+   "cedula": "1708166719",
+   "edad": "62",
+   "celular": "0964224947",
+   "correo": "lulita1964orozco@gmail.com",
+   "direccion": "Ciudad Celeste",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (57)",
+   "fecha": "29/08/2026",
+   "nombres": "Luis",
+   "apellidos": "Reátegui Pozo",
+   "cedula": "0926247316",
+   "edad": "39",
+   "celular": "0985514209",
+   "correo": "luis.reateguip@gmail.com",
+   "direccion": "Coop. Independencia",
+   "dudosos": [
+    "fecha",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (58)",
+   "fecha": "02/09/2026",
+   "nombres": "Xavier",
+   "apellidos": "Rivera Mendieta",
+   "cedula": "0905857157",
+   "edad": "70",
+   "celular": "0994845220",
+   "correo": "porfirio.rivera56@gmail.com",
+   "direccion": "Mucho Lote 1",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (59)",
+   "fecha": "02/09/2026",
+   "nombres": "María",
+   "apellidos": "Romero Maya",
+   "cedula": "",
+   "edad": "",
+   "celular": "",
+   "correo": "paladinesvictor9@gmail.com",
+   "direccion": "Cdla. Progresista",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (60)",
+   "fecha": "02/09/2026",
+   "nombres": "Roberto",
+   "apellidos": "Morales Ramírez",
+   "cedula": "0917201030",
+   "edad": "44",
+   "celular": "0984892602",
+   "correo": "robertomorales16@gmail.com",
+   "direccion": "Los Ceibos",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (61)",
+   "fecha": "29/08/2026",
+   "nombres": "Ana",
+   "apellidos": "Muñoz Pilco",
+   "cedula": "0920538707",
+   "edad": "45",
+   "celular": "0992064487",
+   "correo": "jorgeibannegretejami@hotmail.com",
+   "direccion": "Las Acacias",
+   "dudosos": [
+    "correo",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (62)",
+   "fecha": "28/08/2026",
+   "nombres": "Andrea",
+   "apellidos": "Pacheco Iza",
+   "cedula": "0923160378",
+   "edad": "40",
+   "celular": "0959871891",
+   "correo": "teofilozapata87@gmail.com",
+   "direccion": "Suroeste",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (63)",
+   "fecha": "29/08/2026",
+   "nombres": "José",
+   "apellidos": "Martillo Casquete",
+   "cedula": "1201922273",
+   "edad": "59",
+   "celular": "0989057323",
+   "correo": "bmartillo67@hotmail.com",
+   "direccion": "Norte",
+   "dudosos": [
+    "nombres",
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (64)",
+   "fecha": "29/08/2026",
+   "nombres": "Erika",
+   "apellidos": "Marriott Bayas",
+   "cedula": "",
+   "edad": "49",
+   "celular": "",
+   "correo": "erika-marriott@hotmail.com",
+   "direccion": "Vía la Costa",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (65)",
+   "fecha": "02/09/2026",
+   "nombres": "Wilfrido",
+   "apellidos": "Mata Tutivén",
+   "cedula": "0903622424",
+   "edad": "77",
+   "celular": "0991483694",
+   "correo": "aracelymayensimata@gmail.com",
+   "direccion": "Daule",
+   "dudosos": [
+    "correo",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 03-09-2026 (66)",
+   "fecha": "02/09/2026",
+   "nombres": "Luis",
+   "apellidos": "Moncayo Agua",
+   "cedula": "0905598785",
+   "edad": "71",
+   "celular": "0994486869",
+   "correo": "luisanibalmoncayo@outlook.com",
+   "direccion": "Sauces 9",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026",
+   "fecha": "02/09/2026",
+   "nombres": "Gabriela",
+   "apellidos": "Hurtado Ríos",
+   "cedula": "0941477257",
+   "edad": "27",
+   "celular": "0980622602",
+   "correo": "miayolice-11@outlook.es",
+   "direccion": "Guasmo Sur",
+   "dudosos": [
+    "apellidos",
+    "correo",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (10)",
+   "fecha": "09/06/2026",
+   "nombres": "Duordi",
+   "apellidos": "Cedeño Zambrano",
+   "cedula": "0920045598",
+   "edad": "46",
+   "celular": "0993440921",
+   "correo": "duordicedenoz@gmail.com",
+   "direccion": "Coop. Ener Paredes",
+   "dudosos": [
+    "nombres",
+    "direccion",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (11)",
+   "fecha": "02/09/2026",
+   "nombres": "Patricia",
+   "apellidos": "Lucas Santana",
+   "cedula": "0905164331",
+   "edad": "69",
+   "celular": "0996324959",
+   "correo": "patricialucass@hotmail.com",
+   "direccion": "Urb. Girasol",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (12)",
+   "fecha": "27/07/2026",
+   "nombres": "Shellyn",
+   "apellidos": "Camacho Condo",
+   "cedula": "0921500935",
+   "edad": "44",
+   "celular": "0980990280",
+   "correo": "shelycamacho7@gmail.com",
+   "direccion": "Cdla. Rosa María",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (13)",
+   "fecha": "02/09/2026",
+   "nombres": "Julia",
+   "apellidos": "Salas Magutón",
+   "cedula": "0910176817",
+   "edad": "62",
+   "celular": "0996440096",
+   "correo": "lulymirella64@gmail.com",
+   "direccion": "Valle del Norte",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (14)",
+   "fecha": "02/09/2026",
+   "nombres": "Rosa",
+   "apellidos": "Rodríguez González",
+   "cedula": "13034464",
+   "edad": "49",
+   "celular": "0996676465",
+   "correo": "elextra3000@gmail.com",
+   "direccion": "Fortín",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (15)",
+   "fecha": "03/07/2026",
+   "nombres": "Betsy",
+   "apellidos": "Pincay Pihuave",
+   "cedula": "0920014180",
+   "edad": "45",
+   "celular": "0985034192",
+   "correo": "milkajarleth@gmail.com",
+   "direccion": "Fortín",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (16)",
+   "fecha": "28/07/2026",
+   "nombres": "Jazmín",
+   "apellidos": "Montiel Coello",
+   "cedula": "0952645414",
+   "edad": "27",
+   "celular": "0969062166",
+   "correo": "j.montiel.dpfbc1@gmail.com",
+   "direccion": "Colinas del Maestro",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (17)",
+   "fecha": "02/09/2026",
+   "nombres": "Gina",
+   "apellidos": "Herrera Castillo",
+   "cedula": "0924364805",
+   "edad": "41",
+   "celular": "0989630113",
+   "correo": "herreragnc.2@gmail.com",
+   "direccion": "Norte",
+   "dudosos": [
+    "nombres",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (18)",
+   "fecha": "02/09/2026",
+   "nombres": "Gina",
+   "apellidos": "Chiquito Baque",
+   "cedula": "0919265769",
+   "edad": "47",
+   "celular": "0961168875",
+   "correo": "maricela.chaft@gmail.com",
+   "direccion": "Mapasingue",
+   "dudosos": [
+    "celular",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (19)",
+   "fecha": "02/09/2026",
+   "nombres": "Miguel",
+   "apellidos": "Chávez Chele",
+   "cedula": "0912798881",
+   "edad": "58",
+   "celular": "0985348898",
+   "correo": "",
+   "direccion": "Mapasingue",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (2)",
+   "fecha": "22/08/2026",
+   "nombres": "Xiomara",
+   "apellidos": "Bravo Vaca",
+   "cedula": "0922979984",
+   "edad": "38",
+   "celular": "0968930991",
+   "correo": "xiomyv@live.com.ar",
+   "direccion": "Km 24 1/2 vía a la Costa",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (20)",
+   "fecha": "27/08/2026",
+   "nombres": "Ambrocio",
+   "apellidos": "Moreira Chica",
+   "cedula": "1301824052",
+   "edad": "77",
+   "celular": "0992333452",
+   "correo": "gerencia@coscointoindustrial.com",
+   "direccion": "La Rioja",
+   "dudosos": [
+    "celular",
+    "correo",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (21)",
+   "fecha": "21/08/2026",
+   "nombres": "Edilma",
+   "apellidos": "Muñiz Blanco",
+   "cedula": "1305968255",
+   "edad": "57",
+   "celular": "0988024053",
+   "correo": "j.denisse_18@hotmail.com",
+   "direccion": "Mapasingue Este",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (22)",
+   "fecha": "02/09/2026",
+   "nombres": "Diana",
+   "apellidos": "Condo Villacreces",
+   "cedula": "0930631304",
+   "edad": "33",
+   "celular": "0991898278",
+   "correo": "diana.esc2008@gmail.com",
+   "direccion": "Norte",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (23)",
+   "fecha": "02/09/2026",
+   "nombres": "Blanca",
+   "apellidos": "Caiza Huamangallo",
+   "cedula": "1801740572",
+   "edad": "64",
+   "celular": "0986353747",
+   "correo": "bc1609587@gmail.com",
+   "direccion": "Centro",
+   "dudosos": [
+    "apellidos",
+    "correo",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (24)",
+   "fecha": "21/07/2026",
+   "nombres": "Allison",
+   "apellidos": "Vera Peredo",
+   "cedula": "0955293717",
+   "edad": "26",
+   "celular": "0987450917",
+   "correo": "avera.ineval@gmail.com",
+   "direccion": "Guasmo Central",
+   "dudosos": [
+    "fecha",
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (25)",
+   "fecha": "31/08/2026",
+   "nombres": "Diana",
+   "apellidos": "Barrezueta Vinces",
+   "cedula": "1317783205",
+   "edad": "24",
+   "celular": "0998961506",
+   "correo": "dianitakarolina22bv@gmail.com",
+   "direccion": "Pascuales",
+   "dudosos": [
+    "cedula",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (26)",
+   "fecha": "02/09/2026",
+   "nombres": "Karina",
+   "apellidos": "Mite Manna",
+   "cedula": "0920249141",
+   "edad": "47",
+   "celular": "0961120739",
+   "correo": "ahilys_96@hotmail.com",
+   "direccion": "Isla Trinitaria",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (27)",
+   "fecha": "28/07/2026",
+   "nombres": "Jessica",
+   "apellidos": "Valencia Vimos",
+   "cedula": "0925376774",
+   "edad": "39",
+   "celular": "0991574096",
+   "correo": "jesivalenciavimos@gmail.com",
+   "direccion": "Esteros",
+   "dudosos": [
+    "direccion"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (28)",
+   "fecha": "02/09/2026",
+   "nombres": "Génesis",
+   "apellidos": "Ortega Zambrano",
+   "cedula": "0920444795",
+   "edad": "36",
+   "celular": "0988431379",
+   "correo": "navaskelvis22@gmail.com",
+   "direccion": "Mucho Lote 1",
+   "dudosos": [
+    "cedula",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (29)",
+   "fecha": "15/08/2026",
+   "nombres": "Mario",
+   "apellidos": "Moreno Candos",
+   "cedula": "0922903257",
+   "edad": "43",
+   "celular": "0981177503",
+   "correo": "krystelsaltos525@gmail.com",
+   "direccion": "Orquídeas",
+   "dudosos": [
+    "apellidos",
+    "edad"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (3)",
+   "fecha": "18/08/2026",
+   "nombres": "Magaly",
+   "apellidos": "Angulo Jama",
+   "cedula": "0922025291",
+   "edad": "45",
+   "celular": "0991392141",
+   "correo": "angulomagali378@gmail.com",
+   "direccion": "Guasmo Sur",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (30)",
+   "fecha": "02/09/2026",
+   "nombres": "Dominique",
+   "apellidos": "Figueroa Bedoya",
+   "cedula": "0954247664",
+   "edad": "23",
+   "celular": "0997430093",
+   "correo": "faduaruiz464@gmail.com",
+   "direccion": "Cdla. Guangala",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (31)",
+   "fecha": "12/08/2026",
+   "nombres": "Martha",
+   "apellidos": "Sánchez Márquez",
+   "cedula": "0947576295",
+   "edad": "72",
+   "celular": "0975762295",
+   "correo": "martha.sanchez54@outlook.com",
+   "direccion": "Alborada 5ta Etapa",
+   "dudosos": [
+    "cedula",
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (32)",
+   "fecha": "12/08/2026",
+   "nombres": "Jorge",
+   "apellidos": "Villaus Mata",
+   "cedula": "0901757500",
+   "edad": "74",
+   "celular": "0997276295",
+   "correo": "martita.sanchez54@outlook.com",
+   "direccion": "Alborada 5ta Etapa",
+   "dudosos": [
+    "apellidos",
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (33)",
+   "fecha": "02/09/2026",
+   "nombres": "Carmen",
+   "apellidos": "Robins Santos",
+   "cedula": "0922712955",
+   "edad": "45",
+   "celular": "0989163988",
+   "correo": "carmenrobins63@gmail.com",
+   "direccion": "Batallón del Suburbio",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (34)",
+   "fecha": "08/05/2026",
+   "nombres": "Ana",
+   "apellidos": "Sotomayor Tapia",
+   "cedula": "0916405723",
+   "edad": "37",
+   "celular": "0989601138",
+   "correo": "aanaismari@hotmail.com",
+   "direccion": "Vistana 1000",
+   "dudosos": [
+    "direccion"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (35)",
+   "fecha": "19/08/2026",
+   "nombres": "Rosa",
+   "apellidos": "Cabeza Nazareno",
+   "cedula": "0924446586",
+   "edad": "40",
+   "celular": "0961335806",
+   "correo": "juanortizruiz1608@gmail.com",
+   "direccion": "Urdesa Central",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (36)",
+   "fecha": "01/09/2026",
+   "nombres": "Virginia",
+   "apellidos": "García Anzoate",
+   "cedula": "0915842447",
+   "edad": "54",
+   "celular": "0994068710",
+   "correo": "mangelesperez1993@gmail.com",
+   "direccion": "Centenario",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (37)",
+   "fecha": "02/09/2026",
+   "nombres": "Fadua",
+   "apellidos": "Ruiz Ludeña",
+   "cedula": "0905279899",
+   "edad": "74",
+   "celular": "0991533759",
+   "correo": "faduaruiz464@gmail.com",
+   "direccion": "Cdla. Guangala",
+   "dudosos": [
+    "fecha"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (38)",
+   "fecha": "01/09/2026",
+   "nombres": "Luis",
+   "apellidos": "Ollague Segovia",
+   "cedula": "0930758279",
+   "edad": "38",
+   "celular": "0998758075",
+   "correo": "israel_210@hotmail.es",
+   "direccion": "Alborada",
+   "dudosos": [
+    "celular",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (39)",
+   "fecha": "01/09/2026",
+   "nombres": "Julia",
+   "apellidos": "Pincay Madrid",
+   "cedula": "0927216036",
+   "edad": "37",
+   "celular": "0986714127",
+   "correo": "lolapincay34@gmail.com",
+   "direccion": "Mapasingue Este",
+   "dudosos": [
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (40)",
+   "fecha": "07/08/2026",
+   "nombres": "Joseline",
+   "apellidos": "Calderón Espinoza",
+   "cedula": "0925109345",
+   "edad": "34",
+   "celular": "0986938240",
+   "correo": "gabrielacalderon1992@hotmail.com",
+   "direccion": "Centro",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (41)",
+   "fecha": "03/09/2026",
+   "nombres": "Karina",
+   "apellidos": "Carrasco Puttan",
+   "cedula": "0916214695",
+   "edad": "51",
+   "celular": "0969240651",
+   "correo": "karinaputtan160@gmail.com",
+   "direccion": "Guasmo Sur",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (42)",
+   "fecha": "17/08/2026",
+   "nombres": "Luis",
+   "apellidos": "Zúñiga León",
+   "cedula": "0907581367",
+   "edad": "65",
+   "celular": "0997970870",
+   "correo": "luisenrizuniga1960@gmail.com",
+   "direccion": "Samanes",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (43)",
+   "fecha": "03/09/2026",
+   "nombres": "María",
+   "apellidos": "Vera Vásquez",
+   "cedula": "0915998991",
+   "edad": "46",
+   "celular": "0995305671",
+   "correo": "mariuxiverav@hotmail.com",
+   "direccion": "Cdla. La FAE",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (44)",
+   "fecha": "12/08/2026",
+   "nombres": "Carlos",
+   "apellidos": "Suárez Ramos",
+   "cedula": "0919198309",
+   "edad": "46",
+   "celular": "0984934326",
+   "correo": "",
+   "direccion": "Jardines del Salado",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (45)",
+   "fecha": "20/08/2026",
+   "nombres": "Andrea",
+   "apellidos": "Copo Guamán",
+   "cedula": "0989244805",
+   "edad": "45",
+   "celular": "0989244405",
+   "correo": "andreacopo@hotmail.com",
+   "direccion": "Jardines del Salado",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (46)",
+   "fecha": "11/08/2026",
+   "nombres": "Adriana",
+   "apellidos": "Vera Bellodares",
+   "cedula": "0908246374",
+   "edad": "65",
+   "celular": "0994754714",
+   "correo": "adrianaverab46@gmail.com",
+   "direccion": "Centro - Sur",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (47)",
+   "fecha": "10/08/2026",
+   "nombres": "Miriam",
+   "apellidos": "Martinetti Iturralde",
+   "cedula": "0908120413",
+   "edad": "66",
+   "celular": "0991608444",
+   "correo": "mirmatecu@gmail.com",
+   "direccion": "Acuarela del Río",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (48)",
+   "fecha": "16/06/2026",
+   "nombres": "Grecia",
+   "apellidos": "Pique Delgado",
+   "cedula": "0922698506",
+   "edad": "43",
+   "celular": "0990300709",
+   "correo": "greciapique@hotmail.com",
+   "direccion": "Sur Oeste",
+   "dudosos": [
+    "nombres",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (49)",
+   "fecha": "01/09/2026",
+   "nombres": "Elsy",
+   "apellidos": "Ollague Segovia",
+   "cedula": "0919514125",
+   "edad": "47",
+   "celular": "0992988610",
+   "correo": "elsyollague@gmail.com",
+   "direccion": "Cdla. Las Garzas",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (5)",
+   "fecha": "01/09/2026",
+   "nombres": "Cristina",
+   "apellidos": "Larreyen Segovia",
+   "cedula": "0922926068",
+   "edad": "46",
+   "celular": "0990123695",
+   "correo": "israel_210@hotmail.es",
+   "direccion": "Alborada",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (50)",
+   "fecha": "13/08/2026",
+   "nombres": "Vania",
+   "apellidos": "David Mora",
+   "cedula": "1308826047",
+   "edad": "34",
+   "celular": "0991809044",
+   "correo": "vaniadavidmora@gmail.com",
+   "direccion": "Centro",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (51)",
+   "fecha": "03/07/2026",
+   "nombres": "María",
+   "apellidos": "Cruz Medina",
+   "cedula": "0920288461",
+   "edad": "43",
+   "celular": "0939340884",
+   "correo": "cruzmedinasmarw35@gmail.com",
+   "direccion": "Reinaldo Quiñónez",
+   "dudosos": [
+    "correo",
+    "direccion",
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (52)",
+   "fecha": "03/09/2026",
+   "nombres": "Irene",
+   "apellidos": "Coque Mortillo",
+   "cedula": "0918516873",
+   "edad": "44",
+   "celular": "0968815000",
+   "correo": "irenecoque1931@gmail.com",
+   "direccion": "Cdla. Kennedy",
+   "dudosos": [
+    "apellidos",
+    "direccion"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (53)",
+   "fecha": "12/08/2026",
+   "nombres": "Yajaira",
+   "apellidos": "Salvatierra Aguilera",
+   "cedula": "0940555329",
+   "edad": "32",
+   "celular": "0987945100",
+   "correo": "lissalvatierra1993@gmail.com",
+   "direccion": "Sur Oeste",
+   "dudosos": [
+    "cedula",
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (54)",
+   "fecha": "03/07/2026",
+   "nombres": "María",
+   "apellidos": "Cruz Medina",
+   "cedula": "0920288461",
+   "edad": "43",
+   "celular": "0939340884",
+   "correo": "cruzmedinasmarw35@gmail.com",
+   "direccion": "Reinaldo Quiñónez",
+   "dudosos": [
+    "correo",
+    "direccion",
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (55)",
+   "fecha": "01/09/2026",
+   "nombres": "Wilmer",
+   "apellidos": "Castro Borja",
+   "cedula": "0908374598",
+   "edad": "64",
+   "celular": "0959243744",
+   "correo": "wiloc1962@gmail.com",
+   "direccion": "Urb. Milán",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (56)",
+   "fecha": "03/09/2026",
+   "nombres": "Ivonne",
+   "apellidos": "Gómez Germán",
+   "cedula": "0913708335",
+   "edad": "55",
+   "celular": "0995862145",
+   "correo": "yvonnegerman4@gmail.com",
+   "direccion": "Durán",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (57)",
+   "fecha": "03/08/2026",
+   "nombres": "Piedad",
+   "apellidos": "Arrata Soriano",
+   "cedula": "0920287802",
+   "edad": "45",
+   "celular": "0986690149",
+   "correo": "sisideban@gmail.com",
+   "direccion": "Santa Elena",
+   "dudosos": [
+    "fecha",
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (58)",
+   "fecha": "21/07/2026",
+   "nombres": "Ammy",
+   "apellidos": "Vinces Briones",
+   "cedula": "0958458861",
+   "edad": "21",
+   "celular": "0981817990",
+   "correo": "ammy.14@gmail.com",
+   "direccion": "Bastión Popular",
+   "dudosos": [
+    "nombres"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (59)",
+   "fecha": "31/08/2026",
+   "nombres": "Susana",
+   "apellidos": "Márquez Villagómez",
+   "cedula": "0917942007",
+   "edad": "52",
+   "celular": "0992056942",
+   "correo": "evanmayumi973@gmail.com",
+   "direccion": "Km 26 Virgen de Fátima",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (6)",
+   "fecha": "16/07/2026",
+   "nombres": "Ángela",
+   "apellidos": "Avelino Quimi",
+   "cedula": "0914673363",
+   "edad": "57",
+   "celular": "0964052649",
+   "correo": "avelinoangela11@gmail.com",
+   "direccion": "Las Malvinas",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (60)",
+   "fecha": "03/09/2026",
+   "nombres": "Miguel",
+   "apellidos": "Tello Panta",
+   "cedula": "0907210405",
+   "edad": "68",
+   "celular": "0982344397",
+   "correo": "f.tello58@hotmail.com",
+   "direccion": "Mucho Lote 2",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (61)",
+   "fecha": "03/09/2026",
+   "nombres": "Génesis",
+   "apellidos": "Barahona Baquedano",
+   "cedula": "0960268035",
+   "edad": "21",
+   "celular": "0983313685",
+   "correo": "barahonagenesis37@gmail.com",
+   "direccion": "Alborada 14 Etapa",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (62)",
+   "fecha": "03/09/2026",
+   "nombres": "Jeanneth",
+   "apellidos": "Lucas Viver",
+   "cedula": "0904079530",
+   "edad": "76",
+   "celular": "0991716922",
+   "correo": "lucas.jeanneth1950@gmail.com",
+   "direccion": "Ceibos",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (63)",
+   "fecha": "03/09/2026",
+   "nombres": "Wendy",
+   "apellidos": "Vargas Solórzano",
+   "cedula": "0926740580",
+   "edad": "40",
+   "celular": "0992241365",
+   "correo": "wenduda@hotmail.com",
+   "direccion": "Sur",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (64)",
+   "fecha": "12/08/2026",
+   "nombres": "Emperatriz",
+   "apellidos": "Serrano Rodríguez",
+   "cedula": "0917673931",
+   "edad": "49",
+   "celular": "0917673931",
+   "correo": "emperatrizrodriguez76@gmail.com",
+   "direccion": "Colinas de la Alborada",
+   "dudosos": [
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (65)",
+   "fecha": "11/08/2026",
+   "nombres": "Meris",
+   "apellidos": "Baquedano Navarrete",
+   "cedula": "0914882758",
+   "edad": "56",
+   "celular": "0983313685",
+   "correo": "meribaquedano10@gmail.com",
+   "direccion": "Alborada 14 Etapa",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (66)",
+   "fecha": "03/09/2026",
+   "nombres": "Yanine",
+   "apellidos": "Vargas Salazar",
+   "cedula": "0920248259",
+   "edad": "46",
+   "celular": "0993734258",
+   "correo": "yaninevargas@hotmail.com",
+   "direccion": "Las Orquídeas",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (67)",
+   "fecha": "06/08/2026",
+   "nombres": "Gabriela",
+   "apellidos": "Zambrano Delgado",
+   "cedula": "0931923346",
+   "edad": "30",
+   "celular": "0958943522",
+   "correo": "gazambranod@hotmail.com",
+   "direccion": "Norte",
+   "dudosos": [
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (68)",
+   "fecha": "31/08/2026",
+   "nombres": "Mike",
+   "apellidos": "Rodríguez Litardo",
+   "cedula": "0913394029",
+   "edad": "56",
+   "celular": "0958802345",
+   "correo": "mrolit@hotmail.com",
+   "direccion": "Sur",
+   "dudosos": [
+    "fecha"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (69)",
+   "fecha": "08/09/2026",
+   "nombres": "Vicente",
+   "apellidos": "Palma Sánchez",
+   "cedula": "0908051584",
+   "edad": "63",
+   "celular": "0984094292",
+   "correo": "antonio.2017palma@gmail.com",
+   "direccion": "Guasmo Central",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (7)",
+   "fecha": "07/09/2026",
+   "nombres": "Manuel",
+   "apellidos": "Jiménez Larreyen",
+   "cedula": "0912682697",
+   "edad": "56",
+   "celular": "0988431379",
+   "correo": "manueljimenezlarreyen@gmail.com",
+   "direccion": "Samborondón",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (70)",
+   "fecha": "03/09/2026",
+   "nombres": "Marlon",
+   "apellidos": "Ayosa Lastra",
+   "cedula": "0923858529",
+   "edad": "42",
+   "celular": "0958918262",
+   "correo": "marlonayosa84@gmail.com",
+   "direccion": "Villa Bonita",
+   "dudosos": [
+    "apellidos",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (71)",
+   "fecha": "03/09/2026",
+   "nombres": "Jessica",
+   "apellidos": "Pilozo Bajaña",
+   "cedula": "0916338056",
+   "edad": "48",
+   "celular": "0988634518",
+   "correo": "jessica.lorena.pilozo@gmail.com",
+   "direccion": "Fortín",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (72)",
+   "fecha": "03/09/2026",
+   "nombres": "Ruth",
+   "apellidos": "Bravo Chiriboga",
+   "cedula": "0906679873",
+   "edad": "68",
+   "celular": "0991439466",
+   "correo": "ruth_bra@live.com",
+   "direccion": "Norte",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (73)",
+   "fecha": "03/09/2026",
+   "nombres": "Fernando",
+   "apellidos": "Moreira Arcentales",
+   "cedula": "0908243785",
+   "edad": "63",
+   "celular": "0993040652",
+   "correo": "f.moreira3012@hotmail.com",
+   "direccion": "Durán",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (74)",
+   "fecha": "28/08/2026",
+   "nombres": "Bolívar",
+   "apellidos": "Hurtado Villacreses",
+   "cedula": "0919094854",
+   "edad": "47",
+   "celular": "0939792860",
+   "correo": "hurtadobolivar0@gmail.com",
+   "direccion": "Vía la Costa",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (75)",
+   "fecha": "03/09/2026",
+   "nombres": "Damaris",
+   "apellidos": "Veas Bustamante",
+   "cedula": "1709659914",
+   "edad": "58",
+   "celular": "0948792402",
+   "correo": "eugenio.zurita72@gmail.com",
+   "direccion": "Km 14 1/2 vía Daule",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (76)",
+   "fecha": "03/09/2026",
+   "nombres": "Eugenio",
+   "apellidos": "Zurita Zurita",
+   "cedula": "1712372034",
+   "edad": "53",
+   "celular": "0988792402",
+   "correo": "eugenio.zurita72@gmail.com",
+   "direccion": "Vía Daule",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (77)",
+   "fecha": "03/09/2026",
+   "nombres": "Alfonso Ernesto",
+   "apellidos": "Castillo",
+   "cedula": "1100602760",
+   "edad": "75",
+   "celular": "0968504699",
+   "correo": "alfonsocastillo08@yahoo.es",
+   "direccion": "Vía a la Costa",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (78)",
+   "fecha": "31/08/2026",
+   "nombres": "Wilson",
+   "apellidos": "Pacheco Montesdeoca",
+   "cedula": "0908017015",
+   "edad": "69",
+   "celular": "0982240482",
+   "correo": "wilson.pacheco1959@gmail.com",
+   "direccion": "Sur",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (79)",
+   "fecha": "20/08/2026",
+   "nombres": "Hugo",
+   "apellidos": "Oña Niacato",
+   "cedula": "1708243058",
+   "edad": "62",
+   "celular": "0999600512",
+   "correo": "hugohernan64@hotmail.com",
+   "direccion": "Durán",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (8)",
+   "fecha": "02/09/2026",
+   "nombres": "Yadira",
+   "apellidos": "Yunga León",
+   "cedula": "0954696605",
+   "edad": "27",
+   "celular": "0979370385",
+   "correo": "lissette.leon998@gmail.com",
+   "direccion": "Vía la Costa",
+   "dudosos": [
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (80)",
+   "fecha": "22/08/2026",
+   "nombres": "Santiago",
+   "apellidos": "Olivares Gott Coll",
+   "cedula": "0923030647",
+   "edad": "39",
+   "celular": "0987940552",
+   "correo": "liliquel_18@hotmail.com",
+   "direccion": "Casa Laguna",
+   "dudosos": [
+    "apellidos",
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (81)",
+   "fecha": "21/05/2026",
+   "nombres": "Raquel",
+   "apellidos": "Cevallos Guamán",
+   "cedula": "0928100205",
+   "edad": "36",
+   "celular": "0987290552",
+   "correo": "liliquel_18@hotmail.com",
+   "direccion": "Plaza Laguna",
+   "dudosos": [
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 04-09-2026 (9)",
+   "fecha": "02/09/2026",
+   "nombres": "Evelin",
+   "apellidos": "Alcívar García",
+   "cedula": "0503811481",
+   "edad": "34",
+   "celular": "0968296434",
+   "correo": "",
+   "direccion": "Florida Norte",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 07-09-2026",
+   "fecha": "07/09/2026",
+   "nombres": "Fiorella",
+   "apellidos": "Collazo Pérez",
+   "cedula": "0952124451",
+   "edad": "19",
+   "celular": "0983899511",
+   "correo": "cdepaolba@hotmail.com",
+   "direccion": "Guangala",
+   "dudosos": [
+    "correo",
+    "direccion"
+   ]
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (10)",
+   "fecha": "04/09/2026",
+   "nombres": "Natividad",
+   "apellidos": "Mendoza Castillo",
+   "cedula": "0909625048",
+   "edad": "64",
+   "celular": "0985338398",
+   "correo": "nnati62@hotmail.com",
+   "direccion": "Pascuales",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (11)",
+   "fecha": "04/09/2026",
+   "nombres": "Rosa",
+   "apellidos": "Ramírez Reinoso",
+   "cedula": "0924660608",
+   "edad": "45",
+   "celular": "0985978794",
+   "correo": "ramirezramirezrosa1931@gmail.com",
+   "direccion": "Sur",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (12)",
+   "fecha": "04/09/2026",
+   "nombres": "Domenica",
+   "apellidos": "Ayala Moran",
+   "cedula": "0952565552",
+   "edad": "23",
+   "celular": "0969392942",
+   "correo": "domenicaayala10@gmail.com",
+   "direccion": "Sur",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (13)",
+   "fecha": "04/09/2026",
+   "nombres": "Taylor",
+   "apellidos": "Guambo Molina",
+   "cedula": "0932267784",
+   "edad": "13",
+   "celular": "0968653784",
+   "correo": "damolinav1979@gmail.com",
+   "direccion": "Durán",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (14)",
+   "fecha": "04/09/2026",
+   "nombres": "Magaly",
+   "apellidos": "Coello Zambrano",
+   "cedula": "0914847199",
+   "edad": "55",
+   "celular": "0993503013",
+   "correo": "",
+   "direccion": "Sur",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (15)",
+   "fecha": "04/09/2026",
+   "nombres": "Sixto",
+   "apellidos": "Solís Magallanes",
+   "cedula": "0923300073",
+   "edad": "35",
+   "celular": "0992468330",
+   "correo": "ensolsi091@gmail.com",
+   "direccion": "Pascuales",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (16)",
+   "fecha": "04/09/2026",
+   "nombres": "Manuela",
+   "apellidos": "Murillo Rodríguez",
+   "cedula": "0926715665",
+   "edad": "36",
+   "celular": "0986957645",
+   "correo": "murillomanuela161990@gmail.com",
+   "direccion": "El Triunfo",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (2)",
+   "fecha": "07/09/2026",
+   "nombres": "Epifania",
+   "apellidos": "Navas Vernaza",
+   "cedula": "1305855924",
+   "edad": "64",
+   "celular": "0990667449",
+   "correo": "navasepifania@gmail.com",
+   "direccion": "Coop. La Ladrillera - Flor de Bastión",
+   "dudosos": [
+    "fecha"
+   ]
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (3)",
+   "fecha": "05/09/2026",
+   "nombres": "Jimmy",
+   "apellidos": "Toala Villanzaca",
+   "cedula": "0955899547",
+   "edad": "29",
+   "celular": "0995768681",
+   "correo": "kellinquinn036@gmail.com",
+   "direccion": "24 y Sedalana",
+   "dudosos": [
+    "apellidos",
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (4)",
+   "fecha": "05/09/2026",
+   "nombres": "Karina Denisse",
+   "apellidos": "Hernández Vera",
+   "cedula": "0909536963",
+   "edad": "52",
+   "celular": "0939040584",
+   "correo": "karidenihv@gmail.com",
+   "direccion": "Bellavista",
+   "dudosos": [
+    "nombres",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (5)",
+   "fecha": "05/09/2026",
+   "nombres": "Sofía",
+   "apellidos": "Villacís Hurtado",
+   "cedula": "0915262554",
+   "edad": "47",
+   "celular": "098568892",
+   "correo": "sofiavillacis79@gmail.com",
+   "direccion": "Vía a la Costa",
+   "dudosos": [
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (6)",
+   "fecha": "05/09/2026",
+   "nombres": "Johana",
+   "apellidos": "Rodríguez Tambaco",
+   "cedula": "0920852712",
+   "edad": "43",
+   "celular": "0997694262",
+   "correo": "jr788742@gmail.com",
+   "direccion": "Gallegos Lara",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (7)",
+   "fecha": "05/09/2026",
+   "nombres": "Sofía",
+   "apellidos": "Villacís Hurtado",
+   "cedula": "0915262554",
+   "edad": "47",
+   "celular": "098568892",
+   "correo": "sofiavillacis79@gmail.com",
+   "direccion": "Vía a la Costa",
+   "dudosos": [
+    "celular"
+   ]
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (8)",
+   "fecha": "05/09/2026",
+   "nombres": "Eduardo Patricio",
+   "apellidos": "Argudo Vincent",
+   "cedula": "0909226094",
+   "edad": "60",
+   "celular": "0999421175",
+   "correo": "eduardo.argudos@gmail.com",
+   "direccion": "Urb. Polaris",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 07-09-2026 (9)",
+   "fecha": "05/09/2026",
+   "nombres": "Nelly",
+   "apellidos": "Parra Saltos",
+   "cedula": "0918062571",
+   "edad": "48",
+   "celular": "0969319663",
+   "correo": "nellyparrasaltos@gmail.com",
+   "direccion": "Girasoles",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 10-09-2026",
+   "fecha": "09/09/2026",
+   "nombres": "Luis",
+   "apellidos": "Sisa Ruiz",
+   "cedula": "0605971308",
+   "edad": "20",
+   "celular": "0999687523",
+   "correo": "andersonsisa321@gmail.com",
+   "direccion": "Durán",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 10-09-2026 (10)",
+   "fecha": "10/09/2026",
+   "nombres": "Mercy",
+   "apellidos": "Coello Ramírez",
+   "cedula": "0909069767",
+   "edad": "65",
+   "celular": "0997294664",
+   "correo": "mercyta_cr@hotmail.com",
+   "direccion": "Alborada",
+   "dudosos": [
+    "nombres",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 10-09-2026 (11)",
+   "fecha": "10/09/2026",
+   "nombres": "José",
+   "apellidos": "Granja Sabedipa",
+   "cedula": "0950454736",
+   "edad": "18",
+   "celular": "0993937323",
+   "correo": "marlposabdipa2t@hotmail.com",
+   "direccion": "Centiza",
+   "dudosos": [
+    "apellidos",
+    "correo",
+    "direccion"
+   ]
+  },
+  {
+   "documento": "Escaneo 10-09-2026 (2)",
+   "fecha": "09/09/2026",
+   "nombres": "Angelina",
+   "apellidos": "Coloma Castillo",
+   "cedula": "0923347181",
+   "edad": "16",
+   "celular": "0987236315",
+   "correo": "rafaelaveronicacastilloplus@gmail.com",
+   "direccion": "Norte - Kilómetro 10.5",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 10-09-2026 (3)",
+   "fecha": "09/09/2026",
+   "nombres": "Nathaly",
+   "apellidos": "Coloma Castillo",
+   "cedula": "0952508661",
+   "edad": "15",
+   "celular": "0987236315",
+   "correo": "rafaelaveronicacastilloplus@gmail.com",
+   "direccion": "Kilómetro 10.5",
+   "dudosos": [
+    "fecha",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 10-09-2026 (4)",
+   "fecha": "09/09/2026",
+   "nombres": "Huila",
+   "apellidos": "Sáenz Flonel",
+   "cedula": "0958190571",
+   "edad": "12",
+   "celular": "0994005271",
+   "correo": "sandy.saenz-b@outlook.es",
+   "direccion": "Samanes 1",
+   "dudosos": [
+    "nombres",
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 10-09-2026 (5)",
+   "fecha": "07/09/2026",
+   "nombres": "Aylin",
+   "apellidos": "Guaranda Pacheco",
+   "cedula": "0954682118",
+   "edad": "13",
+   "celular": "0992674202",
+   "correo": "vilmapachecho83@gmail.com",
+   "direccion": "Mapasingue",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 10-09-2026 (6)",
+   "fecha": "07/09/2026",
+   "nombres": "Mixy",
+   "apellidos": "Castillo Rosado",
+   "cedula": "1206941518",
+   "edad": "22",
+   "celular": "0991984929",
+   "correo": "castillomixy8@gmail.com",
+   "direccion": "Valdivia Estoria",
+   "dudosos": [
+    "direccion",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 10-09-2026 (7)",
+   "fecha": "",
+   "nombres": "Isaac",
+   "apellidos": "Piña Martínez",
+   "cedula": "0966476194",
+   "edad": "36",
+   "celular": "0968425680",
+   "correo": "isaacpina675@gmail.com",
+   "direccion": "29 y Bolivia",
+   "dudosos": [
+    "fecha",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 10-09-2026 (8)",
+   "fecha": "08/09/2026",
+   "nombres": "Lady",
+   "apellidos": "Cárdenas Ávila",
+   "cedula": "0953454584",
+   "edad": "18",
+   "celular": "0990096376",
+   "correo": "mamakatherine0103@gmail.com",
+   "direccion": "Rancho Jácome Solar 2",
+   "dudosos": [
+    "correo",
+    "direccion"
+   ]
+  },
+  {
+   "documento": "Escaneo 10-09-2026 (9)",
+   "fecha": "08/09/2026",
+   "nombres": "Ruth",
+   "apellidos": "Sola Suárez",
+   "cedula": "2351132036",
+   "edad": "23",
+   "celular": "0993471252",
+   "correo": "salassusy88@gmail.com",
+   "direccion": "El Fortín",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026",
+   "fecha": "07/09/2026",
+   "nombres": "Andrea",
+   "apellidos": "Martínez Brito",
+   "cedula": "0951207117",
+   "edad": "28",
+   "celular": "",
+   "correo": "segundon-1993@hotmail.com",
+   "direccion": "4 de Noviembre y la 11",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (10)",
+   "fecha": "11/09/2026",
+   "nombres": "Dante",
+   "apellidos": "Vélez Almunado",
+   "cedula": "0932013972",
+   "edad": "14",
+   "celular": "0985218768",
+   "correo": "ivelez85@hotmail.com",
+   "direccion": "Kilómetro 16 1/2 Vía Daule",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (11)",
+   "fecha": "11/09/2026",
+   "nombres": "Jairo",
+   "apellidos": "Nastacuas",
+   "cedula": "2250181233",
+   "edad": "21",
+   "celular": "0959781499",
+   "correo": "jairotacuales@icloud.com",
+   "direccion": "Juan Montalvo (Norte)",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (12)",
+   "fecha": "12/09/2026",
+   "nombres": "Anita",
+   "apellidos": "Mejía Salavterra",
+   "cedula": "0904791738",
+   "edad": "73",
+   "celular": "0984640293",
+   "correo": "anita.mejia@hotmail.com",
+   "direccion": "Guayaquil",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (13)",
+   "fecha": "12/09/2026",
+   "nombres": "Verónica",
+   "apellidos": "Morales Choez",
+   "cedula": "0915427942",
+   "edad": "53",
+   "celular": "0960751966",
+   "correo": "veronicalunes00@gmail.com",
+   "direccion": "Monte Sinaí",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (14)",
+   "fecha": "12/09/2026",
+   "nombres": "Madelaina",
+   "apellidos": "Zabala Granada",
+   "cedula": "0967808973",
+   "edad": "1",
+   "celular": "0985756949",
+   "correo": "",
+   "direccion": "Colinas de la Florida",
+   "dudosos": [
+    "nombres",
+    "direccion",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (15)",
+   "fecha": "12/09/2026",
+   "nombres": "Franklin",
+   "apellidos": "Rivas Mendoza",
+   "cedula": "0930828252",
+   "edad": "13",
+   "celular": "0980730977",
+   "correo": "vivardoxyum2124@gmail.com",
+   "direccion": "Fortín",
+   "dudosos": [
+    "nombres",
+    "correo",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (16)",
+   "fecha": "12/09/2026",
+   "nombres": "Gabriel",
+   "apellidos": "Borja Mora",
+   "cedula": "0914172648",
+   "edad": "54",
+   "celular": "0990488113",
+   "correo": "gabo0914@hotmail.com",
+   "direccion": "Guayaquil",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (17)",
+   "fecha": "11/09/2026",
+   "nombres": "Marta Guadalupe",
+   "apellidos": "Oraña",
+   "cedula": "0910291962",
+   "edad": "61",
+   "celular": "0980317872",
+   "correo": "guadalupemarta1965@gmail.com",
+   "direccion": "El Triunfo",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (18)",
+   "fecha": "12/09/2026",
+   "nombres": "Diana",
+   "apellidos": "Aguilera Pacheco",
+   "cedula": "0924097991",
+   "edad": "40",
+   "celular": "0961315827",
+   "correo": "dianaprisilaaguilerapacheco@gmail.com",
+   "direccion": "Callejón Dona y la 28",
+   "dudosos": [
+    "direccion"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (19)",
+   "fecha": "12/09/2026",
+   "nombres": "María Fernanda",
+   "apellidos": "Seminario León",
+   "cedula": "0924879893",
+   "edad": "39",
+   "celular": "0939937106",
+   "correo": "mseminarioleon@yahoo.com",
+   "direccion": "Mucho Lote 1",
+   "dudosos": [
+    "fecha"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (2)",
+   "fecha": "",
+   "nombres": "Esperanza",
+   "apellidos": "Verduga Sánchez",
+   "cedula": "1307477289",
+   "edad": "54",
+   "celular": "0981290967",
+   "correo": "esperanza-verduga@hotmail.com",
+   "direccion": "Km 20 - Vía a la Costa",
+   "dudosos": [
+    "fecha"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (20)",
+   "fecha": "12/09/2026",
+   "nombres": "Steven",
+   "apellidos": "Vera Vera",
+   "cedula": "0951783653",
+   "edad": "27",
+   "celular": "0997686924",
+   "correo": "stevenlo2dam@gmail.com",
+   "direccion": "Alborada",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (21)",
+   "fecha": "12/09/2026",
+   "nombres": "María de los Ángeles",
+   "apellidos": "Vera Seminario",
+   "cedula": "1703738483",
+   "edad": "23",
+   "celular": "0991128063",
+   "correo": "mveraseminario10@gmail.com",
+   "direccion": "Mucho Lote 1 Etapa 6",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (22)",
+   "fecha": "12/09/2026",
+   "nombres": "Edison",
+   "apellidos": "Lucas Figueroa",
+   "cedula": "0925761603",
+   "edad": "36",
+   "celular": "0981442834",
+   "correo": "edielukas-90@outlook.com",
+   "direccion": "Coop. Sergio Toral",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (23)",
+   "fecha": "12/09/2026",
+   "nombres": "Wilson",
+   "apellidos": "Maype Aguirre",
+   "cedula": "0919914887",
+   "edad": "41",
+   "celular": "0997503860",
+   "correo": "jrplan@hotmail.com",
+   "direccion": "Cdla. Simón Bolívar",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (24)",
+   "fecha": "12/09/2026",
+   "nombres": "Tomasa",
+   "apellidos": "Chiquito Quimis",
+   "cedula": "0914917844",
+   "edad": "54",
+   "celular": "0978691414",
+   "correo": "sochilopez1973@gmail.com",
+   "direccion": "Km 8 1/2 Vía Daule",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (3)",
+   "fecha": "10/09/2026",
+   "nombres": "Cristian",
+   "apellidos": "Lita Rivera",
+   "cedula": "0950485680",
+   "edad": "18",
+   "celular": "0958650107",
+   "correo": "nanakeny@gmail.com",
+   "direccion": "Huancavilca Norte",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (4)",
+   "fecha": "10/09/2026",
+   "nombres": "Ana",
+   "apellidos": "Figueroa Vidal",
+   "cedula": "0955828330",
+   "edad": "22",
+   "celular": "0991178929",
+   "correo": "anamariafigu2020@gmail.com",
+   "direccion": "Ciudadela La Paz",
+   "dudosos": [
+    "direccion",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (5)",
+   "fecha": "10/09/2026",
+   "nombres": "Jeannett",
+   "apellidos": "Quindo Ávila",
+   "cedula": "0914366851",
+   "edad": "55",
+   "celular": "0997710425",
+   "correo": "jeannettequindo@gmail.com",
+   "direccion": "Sur",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (6)",
+   "fecha": "11/09/2026",
+   "nombres": "José",
+   "apellidos": "Limones García",
+   "cedula": "11317216",
+   "edad": "52",
+   "celular": "0984775489",
+   "correo": "jls199902@gmail.com",
+   "direccion": "Guasmo",
+   "dudosos": [
+    "cedula",
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (7)",
+   "fecha": "11/09/2026",
+   "nombres": "Marita",
+   "apellidos": "Fernández Ronquillo",
+   "cedula": "0901600205",
+   "edad": "70",
+   "celular": "0999614265",
+   "correo": "maritafernandezdc@gmail.com",
+   "direccion": "Urbanización Guayaquil Tennis",
+   "dudosos": [
+    "nombres",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (8)",
+   "fecha": "12/09/2026",
+   "nombres": "Diana",
+   "apellidos": "Rosa Huayamave",
+   "cedula": "0954731683",
+   "edad": "31",
+   "celular": "0967154238",
+   "correo": "dianarosahuayamave@gmail.com",
+   "direccion": "Mapasingue",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 14-09-2026 (9)",
+   "fecha": "12/09/2026",
+   "nombres": "Jean Pino",
+   "apellidos": "Quezada Espinoza",
+   "cedula": "",
+   "edad": "16",
+   "celular": "0998146250",
+   "correo": "",
+   "direccion": "Guayaquil",
+   "dudosos": [
+    "nombres"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026",
+   "fecha": "12/09/2026",
+   "nombres": "Rosa",
+   "apellidos": "Tenorio Bastidas",
+   "cedula": "0923273932",
+   "edad": "44",
+   "celular": "0994009233",
+   "correo": "rosita-st61482@hotmail.com",
+   "direccion": "Atarazana",
+   "dudosos": [
+    "fecha",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (10)",
+   "fecha": "16/09/2026",
+   "nombres": "Josué",
+   "apellidos": "Mendoza Fuentes",
+   "cedula": "1250260807",
+   "edad": "20",
+   "celular": "0991031435",
+   "correo": "josueismaelfuentes@gmail.com",
+   "direccion": "Ciudadela Tetet",
+   "dudosos": [
+    "cedula",
+    "direccion"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (11)",
+   "fecha": "16/09/2026",
+   "nombres": "Nelly",
+   "apellidos": "Alavan Minchan",
+   "cedula": "0919778365",
+   "edad": "46",
+   "celular": "",
+   "correo": "nellyrocioalavan@hotmail.com",
+   "direccion": "Orquídeas",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (12)",
+   "fecha": "19/09/2026",
+   "nombres": "Noema",
+   "apellidos": "Flores Albán",
+   "cedula": "0904118536",
+   "edad": "74",
+   "celular": "0961501527",
+   "correo": "",
+   "direccion": "Urdesa Norte",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (13)",
+   "fecha": "14/09/2026",
+   "nombres": "Mónica",
+   "apellidos": "Quevedo Palacios",
+   "cedula": "0913294955",
+   "edad": "57",
+   "celular": "0987139247",
+   "correo": "mitutivia@hotmail.com",
+   "direccion": "Luis Vernaza Centro",
+   "dudosos": [
+    "correo",
+    "direccion"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (14)",
+   "fecha": "14/09/2026",
+   "nombres": "Génesis",
+   "apellidos": "Almagro Caicedo",
+   "cedula": "0850021627",
+   "edad": "24",
+   "celular": "0969509373",
+   "correo": "genesisalmagro020@hotmail.com",
+   "direccion": "Alborada",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (15)",
+   "fecha": "15/09/2026",
+   "nombres": "Martha",
+   "apellidos": "Connujel Schnabel",
+   "cedula": "1209431060",
+   "edad": "48",
+   "celular": "0930860401",
+   "correo": "marthaelena73@gmail.com",
+   "direccion": "Alborada",
+   "dudosos": [
+    "apellidos",
+    "correo",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (16)",
+   "fecha": "14/09/2026",
+   "nombres": "María",
+   "apellidos": "Briones Pepper",
+   "cedula": "0905624458",
+   "edad": "70",
+   "celular": "0980111377",
+   "correo": "mbriones-pepper@hotmail.com",
+   "direccion": "Ciudadela Guayacanes",
+   "dudosos": [
+    "fecha"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (17)",
+   "fecha": "12/09/2026",
+   "nombres": "María Adelita",
+   "apellidos": "Pérez Miranda",
+   "cedula": "0904942802",
+   "edad": "72",
+   "celular": "0991563990",
+   "correo": "",
+   "direccion": "Aurora - Salitre",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (18)",
+   "fecha": "15/09/2026",
+   "nombres": "José",
+   "apellidos": "Yumbo Shiguango",
+   "cedula": "1500128457",
+   "edad": "",
+   "celular": "",
+   "correo": "tecniservicio71@hotmail.com",
+   "direccion": "Galápagos",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (19)",
+   "fecha": "14/09/2026",
+   "nombres": "María Elena",
+   "apellidos": "Flores Albán",
+   "cedula": "0903393056",
+   "edad": "76",
+   "celular": "0995753027",
+   "correo": "floresalbanmariaelena50@gmail.com",
+   "direccion": "Vernaza Norte MZ23 Villa 26",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (2)",
+   "fecha": "15/09/2026",
+   "nombres": "Glenda",
+   "apellidos": "Malios Minchim",
+   "cedula": "0921721643",
+   "edad": "46",
+   "celular": "0983408707",
+   "correo": "glenda.2012apriesbellezax@hotmail.com",
+   "direccion": "Urbano",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (20)",
+   "fecha": "15/09/2026",
+   "nombres": "Jorge",
+   "apellidos": "Kohashi Kawa Maguiña",
+   "cedula": "0961841459",
+   "edad": "33",
+   "celular": "0969214654",
+   "correo": "jlkohashikawa92@gmail.com",
+   "direccion": "Urdesa Central",
+   "dudosos": [
+    "fecha",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (21)",
+   "fecha": "14/09/2026",
+   "nombres": "Viviana",
+   "apellidos": "Sánchez Mendoza",
+   "cedula": "0931711283",
+   "edad": "33",
+   "celular": "0997673466",
+   "correo": "cateringsdiamond@hotmail.com",
+   "direccion": "Norte",
+   "dudosos": [
+    "correo",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (22)",
+   "fecha": "15/09/2026",
+   "nombres": "Kristel",
+   "apellidos": "Sarco Alvarado",
+   "cedula": "0941944019",
+   "edad": "18",
+   "celular": "0988410034",
+   "correo": "sarcok17@outlook.com",
+   "direccion": "Guasmo Sur",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (3)",
+   "fecha": "14/09/2026",
+   "nombres": "Allison",
+   "apellidos": "Cornelio García",
+   "cedula": "0922710900",
+   "edad": "30",
+   "celular": "0983387931",
+   "correo": "pedrojitap96@hotmail.com",
+   "direccion": "Francisco Jácome",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (4)",
+   "fecha": "14/09/2026",
+   "nombres": "Gloria",
+   "apellidos": "León Pallazhco",
+   "cedula": "0300963493",
+   "edad": "62",
+   "celular": "0989632521",
+   "correo": "",
+   "direccion": "Guayaquil",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (5)",
+   "fecha": "17/09/2026",
+   "nombres": "Priscila",
+   "apellidos": "Tomalá",
+   "cedula": "0921729414",
+   "edad": "43",
+   "celular": "0989126844",
+   "correo": "priscilatomala@hotmail.com",
+   "direccion": "Guayaquil",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (6)",
+   "fecha": "17/09/2026",
+   "nombres": "Lucrecia",
+   "apellidos": "Nieto Scparovich",
+   "cedula": "0908630346",
+   "edad": "65",
+   "celular": "0984519757",
+   "correo": "lucrecianohemínieto@hotmail.com",
+   "direccion": "Renacer",
+   "dudosos": [
+    "apellidos",
+    "correo",
+    "direccion"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (7)",
+   "fecha": "17/09/2026",
+   "nombres": "Jefferson",
+   "apellidos": "Intriago Faicán",
+   "cedula": "0941659526",
+   "edad": "29",
+   "celular": "0961126196",
+   "correo": "",
+   "direccion": "Álamos Norte",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (8)",
+   "fecha": "16/09/2026",
+   "nombres": "Daniela Cecilia",
+   "apellidos": "Hidalgo",
+   "cedula": "0957071756",
+   "edad": "22",
+   "celular": "0969615798",
+   "correo": "danielgaac2004@gmail.com",
+   "direccion": "Isla Trinitaria",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 17-09-2026 (9)",
+   "fecha": "16/09/2026",
+   "nombres": "Diana",
+   "apellidos": "Gonzón Mena",
+   "cedula": "0943913858",
+   "edad": "26",
+   "celular": "0960647787",
+   "correo": "diana-gonzon15@hotmail.com",
+   "direccion": "Urbanización Renacer",
+   "dudosos": [
+    "apellidos",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026",
+   "fecha": "19/09/2026",
+   "nombres": "Richard",
+   "apellidos": "Egas Poveda",
+   "cedula": "0909115032",
+   "edad": "65",
+   "celular": "0984391533",
+   "correo": "",
+   "direccion": "Bellavista",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (10)",
+   "fecha": "19/09/2026",
+   "nombres": "Tanya",
+   "apellidos": "Salazar Vélez",
+   "cedula": "0907429302",
+   "edad": "63",
+   "celular": "0986304931",
+   "correo": "m.salazar@es.edu.ec",
+   "direccion": "Norte",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (11)",
+   "fecha": "25/08/2026",
+   "nombres": "Sara",
+   "apellidos": "Sotomayor Acosta",
+   "cedula": "0918871583",
+   "edad": "47",
+   "celular": "0967663772",
+   "correo": "magalysotomayor@hotmail.com",
+   "direccion": "Durán",
+   "dudosos": [
+    "nombres"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (12)",
+   "fecha": "19/09/2026",
+   "nombres": "Diego",
+   "apellidos": "Goma Hinojosa",
+   "cedula": "0959143202",
+   "edad": "23",
+   "celular": "0939566333",
+   "correo": "frankdiegogomahinojosa@gmail.com",
+   "direccion": "Daule",
+   "dudosos": [
+    "apellidos",
+    "correo",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (13)",
+   "fecha": "19/09/2026",
+   "nombres": "Diego",
+   "apellidos": "Goma Hinojosa",
+   "cedula": "0959143202",
+   "edad": "23",
+   "celular": "0939566333",
+   "correo": "frankdiegogomahinojosa@gmail.com",
+   "direccion": "Daule",
+   "dudosos": [
+    "apellidos",
+    "correo",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (15)",
+   "fecha": "19/09/2026",
+   "nombres": "John",
+   "apellidos": "Espinoza López",
+   "cedula": "0909144099",
+   "edad": "60",
+   "celular": "0999402187",
+   "correo": "siffeservicios@gmail.com",
+   "direccion": "City Office",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (16)",
+   "fecha": "19/09/2026",
+   "nombres": "Inés",
+   "apellidos": "Bermúdez Mora",
+   "cedula": "1202627475",
+   "edad": "54",
+   "celular": "0982842346",
+   "correo": "ovadrauim@yahoo.com",
+   "direccion": "Villas del Rey",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (17)",
+   "fecha": "19/09/2026",
+   "nombres": "Elian",
+   "apellidos": "Quishpi Tomalá",
+   "cedula": "2451676759",
+   "edad": "",
+   "celular": "0999791535",
+   "correo": "",
+   "direccion": "Colinas de la Florida",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (18)",
+   "fecha": "17/09/2026",
+   "nombres": "Sebastián",
+   "apellidos": "Pincay García",
+   "cedula": "0951456813",
+   "edad": "15",
+   "celular": "0997825075",
+   "correo": "",
+   "direccion": "Villa España",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (19)",
+   "fecha": "17/09/2026",
+   "nombres": "Euclides",
+   "apellidos": "Pincay Pérez",
+   "cedula": "1308016953",
+   "edad": "50",
+   "celular": "0997825075",
+   "correo": "euclidespincayperez@gmail.com",
+   "direccion": "Villa España",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (2)",
+   "fecha": "09/09/2026",
+   "nombres": "Israel",
+   "apellidos": "Guerrero Alvarado",
+   "cedula": "1721265583",
+   "edad": "37",
+   "celular": "",
+   "correo": "",
+   "direccion": "Quito",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (20)",
+   "fecha": "18/09/2026",
+   "nombres": "Soraya",
+   "apellidos": "Borja Jácome",
+   "cedula": "090607103",
+   "edad": "56",
+   "celular": "0963506293",
+   "correo": "sory1470@gmail.com",
+   "direccion": "Milagro",
+   "dudosos": [
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (21)",
+   "fecha": "19/09/2026",
+   "nombres": "Gustavo",
+   "apellidos": "Muñiz Chigua",
+   "cedula": "1310524044",
+   "edad": "43",
+   "celular": "0964915587",
+   "correo": "ivan19310601@gmail.com",
+   "direccion": "Flor de Bastión",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (22)",
+   "fecha": "19/09/2026",
+   "nombres": "Elvia",
+   "apellidos": "Andaluz Vanegas",
+   "cedula": "1205253030",
+   "edad": "42",
+   "celular": "0990062646",
+   "correo": "manuelblantos1933@gmail.com",
+   "direccion": "Durán",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (23)",
+   "fecha": "19/09/2026",
+   "nombres": "Valeska",
+   "apellidos": "Choez Rivas",
+   "cedula": "0955888714",
+   "edad": "14",
+   "celular": "0997392815",
+   "correo": "valeskaelizabethchoezrivas@gmail.com",
+   "direccion": "Calle 42 y El Sun",
+   "dudosos": [
+    "direccion"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (26)",
+   "fecha": "19/09/2026",
+   "nombres": "Johan Manuel",
+   "apellidos": "Cedeño Chiquito",
+   "cedula": "1205785866",
+   "edad": "25",
+   "celular": "0998945289",
+   "correo": "manuel301272@gmail.com",
+   "direccion": "Vista Alegre",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (27)",
+   "fecha": "18/09/2026",
+   "nombres": "Lady Gabriela",
+   "apellidos": "Salazar",
+   "cedula": "0952248581",
+   "edad": "15",
+   "celular": "0992255209",
+   "correo": "noritjoma@gmail.com",
+   "direccion": "Coop. Los Palestinos Mz C Villa 23",
+   "dudosos": [
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (28)",
+   "fecha": "21/09/2026",
+   "nombres": "Isabel",
+   "apellidos": "Bolaños Carranza",
+   "cedula": "1103050985",
+   "edad": "53",
+   "celular": "0967320322",
+   "correo": "eduardosebastianoba@hotmail.com",
+   "direccion": "Ciudadela Quisquis",
+   "dudosos": [
+    "apellidos",
+    "correo",
+    "direccion",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (29)",
+   "fecha": "21/09/2026",
+   "nombres": "Raquel",
+   "apellidos": "Pamazay Pesantes",
+   "cedula": "0930035571",
+   "edad": "19",
+   "celular": "0990139973",
+   "correo": "vappemzantes2@gmail.com",
+   "direccion": "San Vicente",
+   "dudosos": [
+    "apellidos",
+    "cedula",
+    "correo",
+    "direccion"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (3)",
+   "fecha": "21/09/2026",
+   "nombres": "Kalim",
+   "apellidos": "Blacio Santana",
+   "cedula": "0931261747",
+   "edad": "25",
+   "celular": "0994457017",
+   "correo": "kalm.blacio@gmail.com",
+   "direccion": "Mapasingue",
+   "dudosos": [
+    "nombres",
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (4)",
+   "fecha": "19/09/2026",
+   "nombres": "Magaly",
+   "apellidos": "Velasco Mora",
+   "cedula": "1204886269",
+   "edad": "46",
+   "celular": "0987261195",
+   "correo": "vidda-06@hotmail.com",
+   "direccion": "Prosperina",
+   "dudosos": []
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (5)",
+   "fecha": "16/09/2026",
+   "nombres": "Vladimir",
+   "apellidos": "Rueda Minuayo",
+   "cedula": "0904223435",
+   "edad": "75",
+   "celular": "0984885261",
+   "correo": "vladimir.rueda0950@gmail.com",
+   "direccion": "Vía a la Costa",
+   "dudosos": [
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (6)",
+   "fecha": "18/09/2026",
+   "nombres": "Joselin Cristina",
+   "apellidos": "Menéndez Pozo",
+   "cedula": "0950630817",
+   "edad": "32",
+   "celular": "0986782077",
+   "correo": "cmenendezp@hotmail.com",
+   "direccion": "27 y La F.",
+   "dudosos": [
+    "edad",
+    "correo",
+    "cedula"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (7)",
+   "fecha": "18/09/2026",
+   "nombres": "Roberto",
+   "apellidos": "Álvez Posligua",
+   "cedula": "0941657124",
+   "edad": "33",
+   "celular": "0983387534",
+   "correo": "roberto093@hotmail.es",
+   "direccion": "Durán",
+   "dudosos": [
+    "edad",
+    "apellidos"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (8)",
+   "fecha": "18/09/2026",
+   "nombres": "Josymar",
+   "apellidos": "Anzamaria Gench",
+   "cedula": "0943527465",
+   "edad": "21",
+   "celular": "0992187026",
+   "correo": "venmar4023@gmail.com",
+   "direccion": "Flor de Bastión",
+   "dudosos": [
+    "apellidos",
+    "correo"
+   ]
+  },
+  {
+   "documento": "Escaneo 22-09-2026 (9)",
+   "fecha": "19/09/2026",
+   "nombres": "Ericka",
+   "apellidos": "Solórzano Plaza",
+   "cedula": "0956192637",
+   "edad": "28",
+   "celular": "0969275186",
+   "correo": "martha.plaza@outlook.es",
+   "direccion": "Sur",
+   "dudosos": []
+  }
+ ]
+}
