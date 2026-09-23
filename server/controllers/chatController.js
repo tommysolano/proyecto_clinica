@@ -284,7 +284,7 @@ exports.listConversations = async (req, res) => {
         // `externalUserId`: identifica los chats de «número oculto» (@lid), que NO
         // se desvían a otro número (ver gateway.destinationIsLid). Sin él, la
         // bandeja anunciaba un desvío que el envío no iba a hacer.
-        '_id clinic channel phone externalUserId contactName patient assignedTo assignedToName workflowRestrictedTo workflowRestrictionActive ' +
+        '_id clinic channel phone externalUserId contactName contactEmail patient assignedTo assignedToName workflowRestrictedTo workflowRestrictionActive ' +
           'status isFeatured featuredNote blocked window24hExpiresAt lastInboundAt ' +
           'lastInboundAccount lastMessageAt lastMessagePreview lastMessageDirection unreadCount tags ' +
           // Quién atendió por última vez: es lo que la fila y la cabecera muestran
@@ -837,6 +837,15 @@ exports.updateConversation = async (req, res) => {
     if (req.body.contactName !== undefined) {
       conv.contactNameEditedAt = new Date();
       conv.contactNameSource = 'manual';
+    }
+    // CORREO DEL CONTACTO (sep-2026): el agente lo corrige a mano cuando la
+    // detección del chat lo corta (la gente escribe el correo con un espacio de
+    // más y la detección se queda con la mitad). Se guarda tal cual — trim — y
+    // con su sello, por si el correo detectado en un mensaje futuro intenta
+    // retomar el mando.
+    if (req.body.contactEmail !== undefined) {
+      conv.contactEmail = String(req.body.contactEmail || '').trim();
+      conv.contactEmailEditedAt = new Date();
     }
     await conv.save();
     // Etiquetar desde el chat también dispara los workflows de 'tag_added'

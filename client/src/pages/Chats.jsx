@@ -1024,8 +1024,10 @@ export default function Chats() {
       opportunity: detail.opportunity,
       opportunities: detail.opportunities,
       featuredBy: detail.featuredBy,
-      // Correo que el contacto escribió en el chat: solo viene en el detalle.
+      // Correo que el contacto escribió en el chat (y el que el agente corrigió
+      // a mano): solo viene completo en el detalle.
       detectedEmail: detail.detectedEmail,
+      contactEmail: detail.contactEmail,
       // Otros chats del MISMO contacto (whatsapp/messenger/instagram): alimenta
       // las pestañas de canal del compositor. Solo viene en el detalle.
       linkedConversations: detail.linkedConversations,
@@ -4211,14 +4213,20 @@ function CopyRow({ icon: Icon, label, value, empty }) {
 /**
  * Teléfono y correo del contacto, listos para copiar.
  *
- * El correo NO se pide en ningún formulario: sale de lo que el propio contacto
- * escribió en la conversación (lo detecta el backend al abrir el chat, ver
- * `findEmailInConversation`). Si el contacto ya es paciente y tiene correo en su
- * ficha, ese vale como respaldo.
+ * El correo sale de tres sitios, en este orden:
+ *   1. el que el AGENTE corrigió a mano (`contactEmail`);
+ *   2. el que el contacto escribió en el chat (`detectedEmail`, lo detecta el
+ *      backend al abrir el chat);
+ *   3. el de la ficha del paciente, si el chat está vinculado a uno.
+ *
+ * POR QUÉ SE PUEDE EDITAR (sep-2026, reporte del call center): la gente dicta
+ * el correo mal — «tommysolano 18@hotmail.com», con un espacio de más — y la
+ * detección se queda con la mitad («18@hotmail.com»). El agente corrige el
+ * correo aquí mismo y queda guardado en el chat.
  */
 function ContactDataBlock({ conv, onUpdated }) {
   const hidden = isHiddenNumber(conv);
-  const email = conv.detectedEmail || conv.patient?.email || '';
+  const email = conv.contactEmail || conv.detectedEmail || conv.patient?.email || '';
 
   return (
     <div className="border border-slate-200 rounded-xl p-2.5 space-y-2 bg-slate-50/50">
@@ -4229,11 +4237,162 @@ function ContactDataBlock({ conv, onUpdated }) {
         value={hidden ? '' : conv.phone}
         empty="WhatsApp aún no comparte su número"
       />
+      <ContactEmailRow conv={conv} onUpdated={onUpdated} email={email} />
+      {conv.patient?.email && <EmailVsFicha conv={conv} email={email} />}
+    </div>
+  );
+}
+
+/**
+ * CORREO DEL CONTACTO, editable (sep-2026). Mismo patrón que el nombre: el
+ * lápiz abre el campo, Enter guarda, Escape cancela. El correo corregido queda
+ * en el chat (`contactEmail`) y manda sobre el detectado del mensaje.
+ */
+function ContactEmailRow({ conv, onUpdated, email }) {
+  const [correo, setCorreo] = useState(conv.contactEmail || '');
+  const [editando, setEditando] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+  const [copiado, setCopiado] = useState(false);
+
+  const copiar = () => {
+    navigator.clipboard.writeText(email).then(
+      () => {
+        setCopiado(true);
+        setTimeout(() => setCopiado(false), 1200);
+        toast.success('Correo electrónico copiado');
+      },
+      () => toast.error('No se pudo copiar')
+    );
+  };
+
+  // Al cambiar de chat el componente se reutiliza: resincronizar solo por id,
+  // igual que el nombre, para no cerrar el editor con cada recarga de la
+  // bandeja.
+  useEffect(() => {
+    setCorreo(conv.contactEmail || '');
+    setEditando(false);
+  }, [conv._id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const guardar = async () => {
+    const limpio = correo.trim();
+    if (limpio === (conv.contactEmail || '').trim()) {
+      setEditando(false);
+      return;
+    }
+    setGuardando(true);
+    try {
+      const r = await api.put(`/chats/${conv._id}`, { contactEmail: limpio });
+      onUpdated?.(r.data);
+      setEditando(false);
+      toast.success(limpio ? 'Correo actualizado' : 'Correo borrado del chat');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo guardar el correo');
+      setCorreo(conv.contactEmail || '');
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  if (editando) {
+    return (
+      <div className="flex items-center gap-2 min-w-0">
+        <HiOutlineEnvelopeOpen className="w-4 h-4 text-slate-400 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] text-slate-400 leading-tight">Correo electrónico</div>
+          <input
+            autoFocus
+            value={correo}
+            onChange={(e) => setCorreo(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') guardar();
+              if (e.key === 'Escape') { setCorreo(conv.contactEmail || ''); setEditando(false); }
+            }}
+            placeholder="correo@dominio.com"
+            className="w-full text-xs text-slate-700 border border-slate-300 rounded px-1.5 py-1 outline-none focus:border-emerald-500"
+          />
+        </div>
+        <button
+          onClick={guardar}
+          disabled={guardando}
+          title="Guardar correo"
+          aria-label="Guardar correo"
+          className="shrink-0 p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 bg-transparent border-none cursor-pointer disabled:opacity-50"
+        >
+          <HiOutlineCheck className="w-4 h-4" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <HiOutlineEnvelopeOpen className="w-4 h-4 text-slate-400 shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[10px] text-slate-400 leading-tight">Correo electrónico</div>
+        {email ? (
+          <div className="text-xs text-slate-700 truncate break-all" title={email}>{email}</div>
+        ) : (
+          <div className="text-xs text-slate-400 italic">Aún no lo ha escrito en el chat</div>
+        )}
+        {conv.contactEmail && (
+          <div className="text-[10px] text-emerald-600">Corregido a mano por el equipo</div>
+        )}
+      </div>
+      <button
+        onClick={() => { setCorreo(conv.contactEmail || ''); setEditando(true); }}
+        title={email ? 'Editar el correo' : 'Escribir el correo a mano'}
+        aria-label={email ? 'Editar el correo' : 'Escribir el correo a mano'}
+        className="shrink-0 p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 bg-transparent border-none cursor-pointer"
+      >
+        <HiOutlinePencilSquare className="w-4 h-4" />
+      </button>
+      {email && (
+        <button
+          onClick={copiar}
+          title="Copiar correo electrónico"
+          aria-label="Copiar correo electrónico"
+          className="shrink-0 p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 bg-transparent border-none cursor-pointer"
+        >
+          {copiado ? (
+            <HiOutlineCheck className="w-4 h-4 text-emerald-600" />
+          ) : (
+            <HiOutlineDocumentDuplicate className="w-4 h-4" />
+          )}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * LA COMPROBACIÓN QUE PIDIÓ MOSTRADOR (sep-2026): cuando el chat está vinculado
+ * a un paciente, decir si el correo del chat es el mismo que tiene su ficha.
+ * Si difiere, se enseña el de la ficha — copiable — para que el agente decida
+ * cuál es el bueno y corrija donde corresponda.
+ */
+function EmailVsFicha({ conv, email }) {
+  const ficha = String(conv.patient?.email || '').trim();
+  const chat = String(email || '').trim();
+  if (!ficha) return null;
+  const coincide = chat.toLowerCase() === ficha.toLowerCase();
+  if (coincide) {
+    return (
+      <div className="flex items-center gap-1.5 text-[10px] text-emerald-600">
+        <HiOutlineCheck className="w-3.5 h-3.5" />
+        Coincide con el correo de la ficha del paciente
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1">
+      <div className="flex items-start gap-1.5 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+        <span className="shrink-0 mt-0.5">⚠</span>
+        <span>Este correo es distinto del que tiene la ficha del paciente ({conv.patient.firstName}).</span>
+      </div>
       <CopyRow
-        icon={HiOutlineEnvelopeOpen}
-        label="Correo electrónico"
-        value={email}
-        empty="Aún no lo ha escrito en el chat"
+        icon={HiOutlineUserCircle}
+        label={`Correo en la ficha de ${conv.patient.firstName || 'la ficha'}`}
+        value={ficha}
       />
     </div>
   );
@@ -6871,13 +7030,13 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
   // ─────────────────────────── Alta del contacto ───────────────────────────
   /**
    * El nombre arranca con el que trae el chat y el correo con el que el propio
-   * contacto ESCRIBIÓ en la conversación (`detectedEmail`, que el servidor saca
-   * del último mensaje entrante que contenga uno): es justo el dato que el
-   * agente iba a copiar a mano.
+   * contacto ESCRIBIÓ en la conversación — o el que el agente CORRIGIÓ a mano
+   * en el panel (`contactEmail`, que manda sobre el detectado): es justo el
+   * dato que el agente iba a copiar a mano.
    */
   const [datos, setDatos] = useState({
     fullName: (conv.contactName || '').trim(),
-    email: conv.detectedEmail || '',
+    email: conv.contactEmail || conv.detectedEmail || '',
     phone: '',
   });
 

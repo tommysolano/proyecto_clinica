@@ -79,6 +79,16 @@ const conversationSchema = new mongoose.Schema(
     // el del PERFIL del contacto ("Yo…!!!", emojis, apodos), casi nunca el real;
     // cuando alguien lo corrige a mano, ninguna vía automática puede pisarlo.
     contactNameEditedAt: { type: Date, default: null },
+    // CORREO DEL CONTACTO, escrito por el AGENTE (sep-2026).
+    //
+    // El correo que el contacto ESCRIBE en el chat se detecta solo
+    // (`findEmailInConversation`), pero la gente lo dicta mal: «tommysolano
+    // 18@hotmail.com» — con un espacio de más — y la detección se lleva solo
+    // «18@hotmail.com». El agente corrige el correo AQUÍ (panel del chat), y
+    // este campo manda sobre lo detectado. El sello es el mismo del nombre:
+    // una vez editado a mano, es el que se muestra.
+    contactEmail: { type: String, trim: true, default: '' },
+    contactEmailEditedAt: { type: Date, default: null },
     // DE DÓNDE salió el nombre que se está mostrando. Antes solo se distinguía
     // "escrito a mano" de "lo demás", y lo demás no se pisaba nunca: un chat que
     // nacía con el apodo del perfil de WhatsApp ("Yo…!!!") se quedaba con él para
