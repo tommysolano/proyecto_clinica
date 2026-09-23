@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Patient = require('../models/Patient');
+const { patientIdentificationFilter } = require('../utils/patientIdentity');
 const User = require('../models/User');
 const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
@@ -5498,7 +5499,7 @@ exports.registerPatientFromChat = async (req, res) => {
       });
     }
     let patient = null;
-    if (cedula) patient = await Patient.findOne({ cedula });
+    if (cedula) patient = await Patient.findOne(patientIdentificationFilter(cedula));
     if (!patient && phone) {
       patient = await Patient.findOne({ phone: { $regex: phone.slice(-9) + '$' } });
     }

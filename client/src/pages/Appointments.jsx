@@ -4685,6 +4685,7 @@ export default function Appointments() {
         <AppointmentFollowUpModal
           appointment={consultaModal}
           onClose={() => setConsultaModal(null)}
+          onPurchaseSaved={fetchAppointments}
         />
       )}
 

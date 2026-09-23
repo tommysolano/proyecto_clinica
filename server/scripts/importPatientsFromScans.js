@@ -102,6 +102,7 @@ const crypto = require('crypto');
 
 const { connect, disconnect } = require('./_common');
 const Patient = require('../models/Patient');
+const { patientIdentificationFilter } = require('../utils/patientIdentity');
 const ClinicalRecord = require('../models/ClinicalRecord');
 const ScannedDocument = require('../models/ScannedDocument');
 const PatientObservation = require('../models/PatientObservation');
@@ -563,7 +564,10 @@ async function completarPaciente(paciente, datos, doc, { fecha, dudas, crudo, co
 
     if (vacío) {
       if (campo === 'cedula') {
-        const choque = await Patient.findOne({ cedula: String(valor), _id: { $ne: paciente._id } })
+        const choque = await Patient.findOne({
+          _id: { $ne: paciente._id },
+          ...patientIdentificationFilter(String(valor)),
+        })
           .select('_id').lean();
         if (choque) {
           alternos.push({ campo, valor: String(valor), scan: doc._id, fecha });

@@ -3,6 +3,7 @@ const Clinic = require('../models/Clinic');
 const Appointment = require('../models/Appointment');
 const TimeBlock = require('../models/TimeBlock');
 const Patient = require('../models/Patient');
+const { patientIdentificationFilter } = require('../utils/patientIdentity');
 const { emitToClinic } = require('../realtime');
 const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
 const {
@@ -217,7 +218,10 @@ exports.book = async (req, res) => {
 
     // Buscar/crear paciente por cédula o teléfono.
     let patient = null;
-    if (cedula) patient = await Patient.findOne({ clinic: cfg.clinic, cedula });
+    if (cedula) patient = await Patient.findOne({
+      clinic: cfg.clinic,
+      ...patientIdentificationFilter(cedula),
+    });
     if (!patient && cleanPhone) {
       patient = await Patient.findOne({ clinic: cfg.clinic, phone: { $regex: cleanPhone.slice(-9) + '$' } });
     }

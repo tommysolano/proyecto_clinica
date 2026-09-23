@@ -372,8 +372,8 @@ class Projector {
   async persons() {
     const stage = this.stage('persons'); const records = await this.records('person'); stage.source = records.length;
     const ids = [...new Set(records.map((record) => identification(record.payload)).filter(Boolean))];
-    const oldSuppliers = await Supplier.find({ clinic: this.clinic._id, ruc: { $in: ids } }).lean(); const oldPatients = await Patient.find({ cedula: { $in: ids } }).lean();
-    const oldSupplierIds = new Set(oldSuppliers.map((row) => String(row.ruc))), oldPatientIds = new Set(oldPatients.map((row) => String(row.cedula)));
+    const oldSuppliers = await Supplier.find({ clinic: this.clinic._id, ruc: { $in: ids } }).lean(); const oldPatients = await Patient.find({ $or: [{ cedula: { $in: ids } }, { identificationAliases: { $in: ids } }] }).lean();
+    const oldSupplierIds = new Set(oldSuppliers.map((row) => String(row.ruc))), oldPatientIds = new Set(oldPatients.flatMap((row) => [row.cedula, ...(row.identificationAliases || [])].map(String)));
     if (this.commit) {
       const supplierOps = [], patientOps = [];
       for (const record of records) {
@@ -381,14 +381,14 @@ class Projector {
         const roles = [['es_cliente', 'CLIENTE'], ['es_proveedor', 'PROVEEDOR'], ['es_empleado', 'EMPLEADO'], ['es_vendedor', 'VENDEDOR']].filter(([field]) => row[field]).map(([, role]) => role);
         const needsSupplier = row.es_proveedor || row.es_empleado || row.es_vendedor || !row.es_cliente;
         if (needsSupplier) supplierOps.push({ updateOne: { filter: { clinic: this.clinic._id, ruc: id }, update: { $setOnInsert: { clinic: this.clinic._id, ruc: id, tipoIdentificacion: idType(id), razonSocial: String(row.razon_social || row.nombre_comercial || id), nombreComercial: String(row.nombre_comercial || ''), roles: roles.length ? roles : ['CLIENTE'], address: String(row.direccion || ''), phone: String(row.telefonos || ''), email: String(row.email || ''), creditDays: num(row.dias_credito), active: true, notes: `Contifico ${record.externalId}` } }, upsert: true } });
-        if (row.es_cliente) { const names = splitName(row.razon_social || row.nombre_comercial || id); patientOps.push({ updateOne: { filter: { cedula: id }, update: { $setOnInsert: { clinic: this.clinic._id, cedula: id, ...names, email: String(row.email || ''), phone: String(row.telefonos || ''), address: String(row.direccion || ''), notes: `Contifico ${record.externalId}`, active: true } }, upsert: true } }); }
+        if (row.es_cliente) { const names = splitName(row.razon_social || row.nombre_comercial || id); patientOps.push({ updateOne: { filter: { $or: [{ cedula: id }, { identificationAliases: id }] }, update: { $setOnInsert: { clinic: this.clinic._id, cedula: id, ...names, email: String(row.email || ''), phone: String(row.telefonos || ''), address: String(row.direccion || ''), notes: `Contifico ${record.externalId}`, active: true } }, upsert: true } }); }
       }
       for (let i = 0; i < supplierOps.length; i += 1000) await Supplier.bulkWrite(supplierOps.slice(i, i + 1000), { ordered: false });
       for (let i = 0; i < patientOps.length; i += 1000) await Patient.bulkWrite(patientOps.slice(i, i + 1000), { ordered: false });
     }
     const suppliers = this.commit ? await Supplier.find({ clinic: this.clinic._id, ruc: { $in: ids } }).lean() : oldSuppliers;
-    const patients = this.commit ? await Patient.find({ cedula: { $in: ids } }).lean() : oldPatients;
-    const supplierById = new Map(suppliers.map((row) => [String(row.ruc), row])), patientById = new Map(patients.map((row) => [String(row.cedula), row])); const marks = [];
+    const patients = this.commit ? await Patient.find({ $or: [{ cedula: { $in: ids } }, { identificationAliases: { $in: ids } }] }).lean() : oldPatients;
+    const supplierById = new Map(suppliers.map((row) => [String(row.ruc), row])), patientById = new Map(patients.flatMap((row) => [row.cedula, ...(row.identificationAliases || [])].filter(Boolean).map((id) => [String(id), row]))); const marks = [];
     for (const record of records) {
       const id = identification(record.payload); if (!id) { stage.skipped++; continue; }
       const needsSupplier = record.payload.es_proveedor || record.payload.es_empleado || record.payload.es_vendedor || !record.payload.es_cliente;

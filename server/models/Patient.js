@@ -14,6 +14,14 @@ const patientSchema = new mongoose.Schema(
       default: '',
     },
     /**
+     * Otras identificaciones que pertenecían a fichas duplicadas absorbidas.
+     *
+     * El caso normal es una ficha con cédula y otra con RUC. La identificación
+     * del perfil que se conserva sigue en `cedula`, pero la otra no se pierde y
+     * continúa sirviendo para encontrar al paciente en el buscador.
+     */
+    identificationAliases: { type: [String], default: [] },
+    /**
      * NOMBRE Y APELLIDO NO SON OBLIGATORIOS. Al paciente se le registra con lo
      * que se tiene en el momento —a veces solo el teléfono de quien llamó, o la
      * cédula que trae en la mano— y se completa después. Exigirlos obligaba a
@@ -124,6 +132,11 @@ const patientSchema = new mongoose.Schema(
       firstTouchAt: { type: Date, default: null },
     },
     active: { type: Boolean, default: true },
+    // Trazabilidad de una ficha absorbida por otra. No se borra físicamente:
+    // queda fuera de los listados, pero permite auditar y diagnosticar la fusión.
+    mergedInto: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', default: null, index: true },
+    mergedAt: { type: Date, default: null },
+    mergedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   },
   { timestamps: true }
 );
@@ -133,6 +146,7 @@ patientSchema.index(
   { cedula: 1 },
   { unique: true, partialFilterExpression: { cedula: { $type: 'string', $ne: '' } } }
 );
+patientSchema.index({ identificationAliases: 1 });
 
 // Nombre y apellido pueden faltar (ver arriba): sin el trim, un paciente sin
 // apellido se leía como "MARÍA " y uno sin ninguno de los dos como " ", que en

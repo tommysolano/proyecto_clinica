@@ -1,6 +1,7 @@
 const Patient = require('../models/Patient');
 const { lookupTaxId } = require('../utils/cedulaLookup');
 const { checkEmail } = require('../utils/emailValidation');
+const { patientIdentificationFilter } = require('../utils/patientIdentity');
 
 /**
  * Consulta genérica de cédula/RUC contra el SRI para autocompletar formularios
@@ -15,7 +16,7 @@ exports.taxIdLookup = async (req, res) => {
   try {
     const [result, existing] = await Promise.all([
       lookupTaxId(id),
-      Patient.exists({ cedula: id, active: true }),
+      Patient.exists({ active: true, ...patientIdentificationFilter(id) }),
     ]);
     res.json({ ...result, alreadyExists: !!existing });
   } catch (error) {

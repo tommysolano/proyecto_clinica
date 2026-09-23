@@ -148,12 +148,11 @@ router.get(
   rolesQueLeen,
   downloadFollowUpAttachment
 );
-// Borrar un adjunto va con el mismo criterio que borrar el seguimiento: es parte
-// de la historia clínica (una ecografía, un examen) y solo el admin la retira.
-// El botón ya se enseñaba únicamente al admin; la ruta estaba abierta.
+// El administrador puede retirar cualquiera. Cada profesional también puede
+// retirar los que él mismo subió; el controlador comprueba `uploadedBy`.
 router.delete(
   '/:patientId/follow-ups/:followUpId/attachments/:attachmentId',
-  requireRole('admin'),
+  allRoles,
   deleteFollowUpAttachment
 );
 

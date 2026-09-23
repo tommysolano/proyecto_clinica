@@ -896,6 +896,12 @@ function DatosTab({ patient, onSaved }) {
       />
       <dl className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
         {showCedula && <Item label="Cédula" value={patient.cedula} otros={otros('cedula')} />}
+        {showCedula && (patient.identificationAliases || []).length > 0 && (
+          <Item
+            label="Otras identificaciones"
+            value={patient.identificationAliases.join(' · ')}
+          />
+        )}
         <Item label="Nombre completo" value={`${patient.firstName} ${patient.lastName}`} />
         {showEmail && <Item label="Email" value={patient.email} otros={otros('correo')} />}
         {showContact && <Item label="Teléfono" value={patient.phone} otros={otros('celular')} />}
@@ -2598,6 +2604,13 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
    * la aplica el servidor; esto solo evita enseñar un botón que dará 403.
    */
   const miId = String(user?.id || user?._id || '');
+  const puedeGestionarAdjuntos = hasRole('admin', 'cajero', 'doctor', 'optica', 'enfermero');
+  // Un adjunto sí puede retirarlo quien lo subió. Es independiente del autor
+  // del seguimiento: un doctor puede adjuntar un resultado a una consulta de
+  // otro profesional y sigue siendo dueño únicamente de ese archivo.
+  const canDeleteAttachment = (att) =>
+    isAdmin || (puedeGestionarAdjuntos
+      && miId && String(att?.uploadedBy?._id || att?.uploadedBy || '') === miId);
   /**
    * Los mismos roles que acepta la ruta PUT (ver routes/clinicalRecords.js).
    * Mostrador puede REGISTRAR por otro, pero no reescribir una consulta médica:
@@ -2608,7 +2621,7 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
   const canEditFollowUp = (fu) =>
     puedeEditarSeguimientos
     && (isAdmin || (miId && String(fu?.createdBy?._id || fu?.createdBy || '') === miId));
-  const canUpload = hasRole('admin', 'cajero', 'doctor', 'optica', 'enfermero');
+  const canUpload = puedeGestionarAdjuntos;
   // «Compras y aplicaciones» dice qué compró el paciente y cuánto pagó: es
   // información económica, solo para administración y contabilidad. El servidor
   // devuelve 403 al resto (ver routes/patients.js).
@@ -4563,7 +4576,7 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
                           >
                             <HiOutlineArrowDownTray className="w-3.5 h-3.5" />
                           </button>
-                          {canDelete && (
+                          {canDeleteAttachment(att) && (
                             <button
                               type="button"
                               onClick={() => deleteAttachment(fu._id, att._id)}
@@ -4708,6 +4721,10 @@ function ArchivosTab({ patientId, appointmentId }) {
   const { hasRole, user } = useAuth();
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
   const miId = String(user?.id || user?._id || '');
+  const puedeGestionarAdjuntos = hasRole('admin', 'cajero', 'doctor', 'optica', 'enfermero');
+  const puedeBorrarAdjunto = (att) =>
+    isAdmin || (puedeGestionarAdjuntos
+      && miId && String(att?.uploadedBy?._id || att?.uploadedBy || '') === miId);
   // Mismos roles que acepta el PUT (ver routes/clinicalRecords.js): mostrador no
   // reescribe un acto médico, aunque pueda registrarlo.
   const puedeCorregir = hasRole('admin', 'doctor', 'enfermero', 'optica');
@@ -5090,7 +5107,7 @@ function ArchivosTab({ patientId, appointmentId }) {
                       >
                         <HiOutlineArrowDownTray className="w-3.5 h-3.5" />
                       </button>
-                      {isAdmin && (
+                      {puedeBorrarAdjunto(att) && (
                         <button
                           type="button"
                           onClick={() => borrarAdjunto(fu._id, att._id)}

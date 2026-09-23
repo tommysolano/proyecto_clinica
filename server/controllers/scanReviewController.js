@@ -16,6 +16,7 @@
  * aplica a los dos sitios en la misma operación.
  */
 const Patient = require('../models/Patient');
+const { patientIdentificationFilter } = require('../utils/patientIdentity');
 const ClinicalRecord = require('../models/ClinicalRecord');
 const ScannedDocument = require('../models/ScannedDocument');
 const { emitToClinic } = require('../realtime');
@@ -124,7 +125,10 @@ exports.saveScanReview = async (req, res) => {
     // pantalla de revisión —donde se corrigen justo cédulas mal leídas— chocar con
     // otro paciente es un caso normal, no un fallo técnico.
     if ('cedula' in cambios && txt(cambios.cedula)) {
-      const choque = await Patient.findOne({ cedula: txt(cambios.cedula), _id: { $ne: paciente._id } })
+      const choque = await Patient.findOne({
+        _id: { $ne: paciente._id },
+        ...patientIdentificationFilter(txt(cambios.cedula)),
+      })
         .select('firstName lastName').lean();
       if (choque) {
         return res.status(400).json({

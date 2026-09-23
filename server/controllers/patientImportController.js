@@ -18,6 +18,7 @@
  */
 const multer = require('multer');
 const Patient = require('../models/Patient');
+const { patientIdentificationFilter } = require('../utils/patientIdentity');
 const ClinicalRecord = require('../models/ClinicalRecord');
 const {
   ANTECEDENTES_CATEGORIAS,
@@ -388,7 +389,7 @@ exports.importPatients = async (req, res) => {
 
       try {
         // La cédula de paciente es única GLOBAL (no por clínica).
-        const prev = cedula ? await Patient.findOne({ cedula }) : null;
+        const prev = cedula ? await Patient.findOne(patientIdentificationFilter(cedula)) : null;
         if (prev) {
           Object.assign(prev, fields);
           await prev.save();
@@ -414,7 +415,7 @@ exports.importPatients = async (req, res) => {
       }
       if (index.has(key)) return index.get(key);
       let p = null;
-      if (key.startsWith('C:')) p = await Patient.findOne({ cedula: key.slice(2) });
+      if (key.startsWith('C:')) p = await Patient.findOne(patientIdentificationFilter(key.slice(2)));
       else {
         const first = String(r.firstName ?? '').trim();
         const last = String(r.lastName ?? '').trim();

@@ -21,6 +21,7 @@ const PayrollPosition = require('../models/PayrollPosition');
 const CostCenter = require('../models/CostCenter');
 const Supplier = require('../models/Supplier');
 const Patient = require('../models/Patient');
+const { patientIdentificationFilter } = require('../utils/patientIdentity');
 const FixedAsset = require('../models/FixedAsset');
 const { normalizeAssetConfig } = require('../utils/fixedAssetConfig');
 
@@ -585,7 +586,7 @@ async function importClientes(req, rows) {
     if (r.notes) fields.notes = String(r.notes).trim();
     try {
       // La cédula de paciente es única GLOBAL (no por clínica): buscar sin filtro de clínica.
-      const prev = cedula ? await Patient.findOne({ cedula }) : null;
+      const prev = cedula ? await Patient.findOne(patientIdentificationFilter(cedula)) : null;
       if (prev) { Object.assign(prev, fields); await prev.save(); updated++; }
       else { await Patient.create({ clinic: req.clinicId, cedula, ...fields }); created++; }
     } catch (e) { errors.push(`Fila ${r.__row} (${cedula || firstName}): ${e.message}`); }

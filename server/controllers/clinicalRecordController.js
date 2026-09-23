@@ -2818,6 +2818,16 @@ exports.deleteFollowUpAttachment = async (req, res) => {
     const att = fu.attachments.id(attachmentId);
     if (!att) return res.status(404).json({ message: 'Archivo no encontrado' });
 
+    // Un profesional puede retirar únicamente el archivo que él mismo subió.
+    // El administrador conserva la capacidad de corregir cualquier adjunto.
+    // Los adjuntos antiguos sin `uploadedBy` quedan solo para administración:
+    // no es seguro adivinar su autor a partir del autor del seguimiento.
+    const isAdmin = !!req.user?.isSuperAdmin || req.role === 'admin';
+    const isUploader = att.uploadedBy && String(att.uploadedBy) === String(req.user?._id);
+    if (!isAdmin && !isUploader) {
+      return res.status(403).json({ message: 'Solo puedes eliminar los archivos que tú subiste' });
+    }
+
     const filePath = rutaDelAdjunto(att, req.clinicId);
     if (filePath) { try { fs.unlinkSync(filePath); } catch (_) {} }
     att.deleteOne();

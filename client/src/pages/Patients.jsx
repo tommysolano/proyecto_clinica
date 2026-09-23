@@ -29,6 +29,7 @@ import {
   HiOutlineArrowDownTray,
   HiOutlineCloudArrowUp,
   HiOutlineDocumentMagnifyingGlass,
+  HiOutlineArrowsRightLeft,
 } from 'react-icons/hi2';
 import BulkUploadModal from '../components/BulkUploadModal';
 import ServiceItemPicker from '../components/ServiceItemPicker';
@@ -154,6 +155,7 @@ export default function Patients() {
   const [onlyNew, setOnlyNew] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [mergeTarget, setMergeTarget] = useState(null);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyPatientForm);
   // Los dos números en un solo campo (los junta y reparte PatientFields, ver
@@ -537,6 +539,16 @@ export default function Patients() {
                       )}
                       {canDelete && (
                         <button
+                          onClick={() => setMergeTarget(p)}
+                          className="inline-flex items-center gap-1 p-1.5 rounded-lg hover:bg-violet-50 text-slate-400 hover:text-violet-600 bg-transparent border-none cursor-pointer ml-1"
+                          title="Fusionar con otro paciente"
+                        >
+                          <HiOutlineArrowsRightLeft className="w-4 h-4" />
+                          <span className="hidden xl:inline text-xs">Fusionar</span>
+                        </button>
+                      )}
+                      {canDelete && (
+                        <button
                           onClick={() => handleDelete(p._id)}
                           className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer ml-1"
                           title="Eliminar"
@@ -881,6 +893,15 @@ export default function Patients() {
         onImported={fetchPatients}
       />
 
+      <MergePatientsModal
+        target={mergeTarget}
+        onClose={() => setMergeTarget(null)}
+        onMerged={async () => {
+          setMergeTarget(null);
+          await fetchPatients();
+        }}
+      />
+
       <style>{`
         .input {
           width: 100%;
@@ -894,6 +915,174 @@ export default function Patients() {
         .input:focus { border-color: #10b981; background: white; }
       `}</style>
     </div>
+  );
+}
+
+const patientLabel = (patient) =>
+  `${patient?.firstName || ''} ${patient?.lastName || ''}`.trim() || 'Paciente sin nombre';
+
+/**
+ * La dirección importa: `target` es el perfil que queda y el resultado no
+ * cambia sus datos escritos por otros en conflicto. El buscador obliga a elegir
+ * expresamente la ficha que se absorbe para que una inversión accidental sea
+ * visible antes de confirmar.
+ */
+function MergePatientsModal({ target, onClose, onMerged }) {
+  const [search, setSearch] = useState('');
+  const debounced = useDebounce(search, 300);
+  const [results, setResults] = useState([]);
+  const [source, setSource] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!target) {
+      setSearch('');
+      setResults([]);
+      setSource(null);
+      return;
+    }
+    if (debounced.trim().length < 2) {
+      setResults([]);
+      return;
+    }
+    let alive = true;
+    setLoading(true);
+    api.get('/patients', { params: { search: debounced.trim(), page: 1, limit: 15 } })
+      .then(({ data }) => {
+        if (!alive) return;
+        setResults((data.patients || []).filter((p) => String(p._id) !== String(target._id)));
+      })
+      .catch(() => { if (alive) toast.error('No se pudieron buscar pacientes'); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [debounced, target]);
+
+  const merge = async () => {
+    if (!source || !target) return;
+    if (!window.confirm(
+      `¿Fusionar a ${patientLabel(source)} dentro de ${patientLabel(target)}?\n\n` +
+      'El segundo perfil dejará de aparecer y toda su información pasará al perfil que se conserva.'
+    )) return;
+    setSaving(true);
+    try {
+      await api.post(`/patients/${target._id}/merge`, { sourcePatientId: source._id });
+      toast.success('Pacientes fusionados. Toda la información quedó en un solo perfil.');
+      await onMerged();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudieron fusionar los pacientes');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      isOpen={!!target}
+      onClose={() => { if (!saving) onClose(); }}
+      title="Fusionar pacientes"
+      size="lg"
+    >
+      {target && (
+        <div className="space-y-4">
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700 mb-1">
+              Perfil que se conserva
+            </p>
+            <p className="font-semibold text-slate-800">{patientLabel(target)}</p>
+            <p className="text-sm text-slate-600">
+              Identificación: {target.cedula || 'sin identificación'}
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              Busca el perfil duplicado que será absorbido
+            </label>
+            <div className="relative">
+              <HiOutlineMagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <input
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setSource(null); }}
+                placeholder="Nombre, cédula, RUC o teléfono…"
+                className="input pl-9"
+                autoFocus
+              />
+            </div>
+            {loading && <p className="text-xs text-slate-400 mt-2">Buscando…</p>}
+            {!loading && debounced.trim().length >= 2 && results.length === 0 && (
+              <p className="text-xs text-slate-400 mt-2">No se encontraron otros pacientes.</p>
+            )}
+            {results.length > 0 && !source && (
+              <div className="mt-2 max-h-52 overflow-y-auto rounded-xl border border-slate-200 divide-y divide-slate-100">
+                {results.map((patient) => (
+                  <button
+                    key={patient._id}
+                    type="button"
+                    onClick={() => setSource(patient)}
+                    className="w-full text-left px-3 py-2.5 bg-white hover:bg-violet-50 border-none cursor-pointer"
+                  >
+                    <span className="block text-sm font-medium text-slate-800">{patientLabel(patient)}</span>
+                    <span className="block text-xs text-slate-500">
+                      {patient.cedula || 'Sin identificación'}
+                      {patient.phone ? ` · ${patient.phone}` : ''}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {source && (
+            <div className="rounded-xl border border-violet-200 bg-violet-50 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-violet-700 mb-1">
+                Perfil que se absorbe
+              </p>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-semibold text-slate-800">{patientLabel(source)}</p>
+                  <p className="text-sm text-slate-600">
+                    Identificación: {source.cedula || 'sin identificación'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSource(null)}
+                  className="text-xs text-violet-700 bg-transparent border-none cursor-pointer underline"
+                >
+                  Cambiar
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5 text-xs text-amber-900">
+            Se reunirán seguimientos, observaciones, archivos, citas, ventas, tratamientos y datos relacionados.
+            Si un dato general es distinto, se conserva el del perfil verde; la otra identificación queda guardada y seguirá siendo buscable.
+          </div>
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={saving}
+              className="px-4 py-2 rounded-xl text-sm border border-slate-200 bg-white text-slate-600 cursor-pointer disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={merge}
+              disabled={!source || saving}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border-none bg-violet-600 hover:bg-violet-700 text-white cursor-pointer disabled:opacity-50"
+            >
+              <HiOutlineArrowsRightLeft className="w-4 h-4" />
+              {saving ? 'Fusionando…' : 'Fusionar en este perfil'}
+            </button>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 

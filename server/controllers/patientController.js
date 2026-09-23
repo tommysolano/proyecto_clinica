@@ -4,6 +4,8 @@ const { emitToClinic } = require('../realtime');
 const { canReq } = require('../utils/permissions');
 const { phoneSearchRegex } = require('../utils/phoneNormalize');
 const { nameSearchFilter } = require('../utils/nameSearch');
+const { mergePatients: mergePatientData } = require('../services/patientMergeService');
+const { patientIdentificationFilter } = require('../utils/patientIdentity');
 
 // NOTA: los DATOS de los pacientes se comparten entre todas las clínicas
 // (cédula única global). El campo `clinic` queda como referencia de la clínica
@@ -127,6 +129,9 @@ const stripContactData = (patient, req) => {
     if (canSeeContactField(req, f)) return;
     obj[f] = undefined;
   });
+  // Los alias son cédulas/RUC anteriores: obedecen exactamente al mismo
+  // permiso que la identificación principal.
+  if (!canSeeCedula(req)) obj.identificationAliases = undefined;
   const alternos = obj.scanImport?.alternos;
   if (Array.isArray(alternos) && alternos.length) {
     obj.scanImport = {
@@ -167,7 +172,7 @@ exports.searchReferralCandidates = async (req, res) => {
     const pacientePorNombre = buscar([
       'firstName',
       'lastName',
-      ...(showCedula ? ['cedula'] : []),
+      ...(showCedula ? ['cedula', 'identificationAliases'] : []),
       ...(showContact ? ['phone'] : []),
     ]);
     if (pacientePorNombre) Object.assign(patientFilter, pacientePorNombre);
@@ -222,7 +227,9 @@ exports.getPatients = async (req, res) => {
        * —normales en un teléfono copiado y pegado— rompen la expresión y la
        * consulta revienta con un 500.
        */
-      const porNombre = nameSearchFilter(search, ['firstName', 'lastName', 'cedula']);
+      const porNombre = nameSearchFilter(search, [
+        'firstName', 'lastName', 'cedula', 'identificationAliases',
+      ]);
       /**
        * BUSCAR por cédula o teléfono lo puede hacer cualquiera que ya entre al
        * listado; VERLOS en la tabla sigue siendo solo del admin (más abajo, en
@@ -377,7 +384,7 @@ exports.createPatient = async (req, res) => {
   try {
     const cedula = (req.body.cedula || '').trim();
     if (cedula) {
-      const existing = await Patient.findOne({ cedula });
+      const existing = await Patient.findOne(patientIdentificationFilter(cedula));
       if (existing) {
         return res.status(400).json({ message: 'Ya existe un paciente con esa cédula' });
       }
@@ -424,6 +431,17 @@ exports.updatePatient = async (req, res) => {
     CONTACT_FIELDS.forEach((f) => {
       if (!canSeeContactField(req, f)) delete update[f];
     });
+    if (String(update.cedula || '').trim()) {
+      const collision = await Patient.findOne({
+        _id: { $ne: req.params.id },
+        ...patientIdentificationFilter(update.cedula),
+      }).select('_id');
+      if (collision) {
+        return res.status(400).json({
+          message: 'Ya existe un paciente con ese número de identificación',
+        });
+      }
+    }
     // Etiquetas previas: para disparar 'tag_added' solo por las realmente nuevas.
     const prev = Array.isArray(update.tags)
       ? await Patient.findById(req.params.id).select('tags')
@@ -470,6 +488,35 @@ exports.deletePatient = async (req, res) => {
     res.json({ message: 'Paciente eliminado' });
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar paciente' });
+  }
+};
+
+/**
+ * POST /patients/:id/merge
+ * Conserva `:id` y absorbe el paciente indicado en `sourcePatientId`.
+ * Solo administración llega a esta ruta: es una operación global e irreversible
+ * desde la interfaz, aunque deja respaldo y trazabilidad en PatientMerge.
+ */
+exports.mergePatient = async (req, res) => {
+  try {
+    const result = await mergePatientData({
+      targetPatientId: req.params.id,
+      sourcePatientId: req.body?.sourcePatientId,
+      clinicId: req.clinicId,
+      userId: req.user._id,
+    });
+    emitToClinic(req.clinicId, 'patient:updated', { id: result.targetPatientId });
+    emitToClinic(req.clinicId, 'patient:updated', { id: result.sourcePatientId });
+    res.json({
+      message: 'Pacientes fusionados correctamente',
+      patientId: result.targetPatientId,
+      moved: result.moved,
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      message: error.status ? error.message : 'No se pudieron fusionar los pacientes',
+      error: error.message,
+    });
   }
 };
 

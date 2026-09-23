@@ -8,6 +8,7 @@ const {
   searchReferralCandidates,
   getPatientPurchases,
   bulkTag,
+  mergePatient,
 } = require('../controllers/patientController');
 const patientImport = require('../controllers/patientImportController');
 const scanReview = require('../controllers/scanReviewController');
@@ -18,6 +19,10 @@ router.use(auth, requireClinic);
 
 // Etiquetado masivo para segmentación de marketing.
 router.post('/bulk-tag', requireRole('admin', 'marketing'), bulkTag);
+
+// La fusión mueve historia clínica, documentos y referencias de todo el sistema.
+// Va antes de '/:id' y queda exclusivamente en manos de administración.
+router.post('/:id/merge', requireRole('admin'), mergePatient);
 
 // Carga masiva por Excel: datos generales + ficha clínica + seguimientos.
 // Va antes de '/:id' para que "import-template" no se lea como un id.

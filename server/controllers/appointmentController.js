@@ -1,6 +1,7 @@
 const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
 const Patient = require('../models/Patient');
+const PatientObservation = require('../models/PatientObservation');
 const Notification = require('../models/Notification');
 // Se importa aunque no se use directamente aquí: `populate('serviceItem')` falla
 // con "Schema hasn't been registered" si el modelo no se ha cargado nunca.
@@ -2745,17 +2746,20 @@ exports.getDerivacionesDeCita = async (req, res) => {
 };
 
 /**
- * EL COBRO DE LA CITA, registrado por mostrador (sep-2026).
+ * LA COMPRA DE PRODUCTOS DE LA CITA, registrada por mostrador (sep-2026).
  *
  * Dos partes que antes se mezclaban y ahora quedan separadas:
  *  · el VALOR DE LA CITA, que ya tenía su sitio (`agreedValue`);
  *  · LO QUE EL PACIENTE PAGA POR LOS ITEMS que el doctor recetó — mostrador los
- *    escoge con checks (`prescribedItems`) y anota el total (`itemsValue`).
+ *    escoge con checks y anota el total;
+ *  · los productos ADICIONALES que el paciente decide llevarse en caja.
  *
- * Y queda QUIÉN registró el cobro: "agendada por" no dice quién cobró.
- * Dato OPERATIVO: no genera venta, factura ni asiento.
+ * Cada guardado crea una entrada en Observaciones del paciente. La cita se deja
+ * limpia inmediatamente para que la siguiente compra empiece sin checks ni
+ * valores anteriores. Dato OPERATIVO: no genera venta, factura ni asiento.
  */
 exports.updateCobroItems = async (req, res) => {
+  let session;
   try {
     if (!puedeFijarValor(req)) {
       return res.status(403).json({ message: 'Solo mostrador puede registrar el cobro' });
@@ -2763,40 +2767,117 @@ exports.updateCobroItems = async (req, res) => {
     const apt = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
 
-    if (req.body.items !== undefined) {
-      const lista = Array.isArray(req.body.items) ? req.body.items : [];
-      apt.prescribedItems = lista
-        .filter((it) => it && (it.item || it.name))
-        .map((it) => ({
-          followUp: it.followUp || undefined,
-          item: it.item || undefined,
-          name: String(it.name || '').trim(),
-          quantity: Number(it.quantity) > 0 ? Number(it.quantity) : 1,
-          price: it.price == null || it.price === '' ? null : Math.max(0, Number(it.price) || 0),
-        }));
-    }
-    if (req.body.itemsValue !== undefined) {
-      if (req.body.itemsValue === null || req.body.itemsValue === '') {
-        apt.itemsValue = null;
-      } else {
-        const num = Number(req.body.itemsValue);
-        if (!Number.isFinite(num) || num < 0) {
-          return res.status(400).json({ message: 'El valor de los items no es válido' });
-        }
-        apt.itemsValue = num;
+    let total = null;
+    if (req.body.itemsValue !== undefined && req.body.itemsValue !== null && req.body.itemsValue !== '') {
+      total = Number(req.body.itemsValue);
+      if (!Number.isFinite(total) || total < 0) {
+        return res.status(400).json({ message: 'El valor de los productos no es válido' });
       }
     }
 
-    if (req.body.itemsMethod !== undefined) {
-      const metodos = ['efectivo', 'transferencia', 'tarjeta_credito', 'tarjeta_debito'];
-      apt.itemsMethod = metodos.includes(req.body.itemsMethod) ? req.body.itemsMethod : '';
+    const paymentMethods = ['efectivo', 'transferencia', 'tarjeta_credito', 'tarjeta_debito'];
+    const paymentMethod = paymentMethods.includes(req.body.itemsMethod) ? req.body.itemsMethod : '';
+    const rawItems = Array.isArray(req.body.items) ? req.body.items.filter(Boolean) : [];
+    const extraRows = rawItems.filter((item) => item.source === 'adicional' || item.product);
+    const invalidProduct = extraRows.some((item) => !Product.db.base.Types.ObjectId.isValid(item.product));
+    if (invalidProduct) {
+      return res.status(400).json({ message: 'Uno de los productos adicionales no es válido' });
     }
 
-    apt.chargeRegisteredBy = req.user._id;
-    apt.chargeRegisteredByName = req.user.name || '';
-    apt.chargeRegisteredAt = new Date();
+    const productIds = [...new Set(extraRows.map((item) => String(item.product)))];
+    const catalogProducts = productIds.length
+      ? await Product.find({
+          _id: { $in: productIds },
+          active: true,
+          category: 'insumo',
+          $or: [
+            { availableInClinics: { $exists: false } },
+            { availableInClinics: { $size: 0 } },
+            { availableInClinics: apt.clinic },
+          ],
+        }).select('_id name salePrice').lean()
+      : [];
+    const productsById = new Map(catalogProducts.map((product) => [String(product._id), product]));
+    if (productsById.size !== productIds.length) {
+      return res.status(400).json({
+        message: 'Uno de los productos adicionales ya no está disponible en esta sucursal',
+      });
+    }
 
-    await apt.save();
+    const normalizeQuantity = (value) => Math.max(1, Math.min(9999, Number(value) || 1));
+    const items = rawItems
+      .map((item) => {
+        if (item.source === 'adicional' || item.product) {
+          const product = productsById.get(String(item.product));
+          if (!product) return null;
+          return {
+            name: product.name,
+            quantity: normalizeQuantity(item.quantity),
+            source: 'adicional',
+            price: Number(product.salePrice) || 0,
+          };
+        }
+        const name = String(item.name || '').trim();
+        if (!name) return null;
+        return {
+          name,
+          quantity: normalizeQuantity(item.quantity),
+          source: 'receta',
+          price: null,
+        };
+      })
+      .filter(Boolean);
+
+    const paymentLabels = {
+      efectivo: 'Efectivo',
+      transferencia: 'Transferencia',
+      tarjeta_credito: 'Tarjeta de crédito',
+      tarjeta_debito: 'Tarjeta de débito',
+    };
+    const observationLines = [];
+    if (items.length > 0) {
+      observationLines.push('Compra registrada desde la agenda');
+      const appointmentDate = apt.date
+        ? new Intl.DateTimeFormat('es-EC', {
+            timeZone: 'America/Guayaquil',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          }).format(apt.date)
+        : '';
+      observationLines.push(`Cita: ${[appointmentDate, apt.startTime].filter(Boolean).join(' · ')}`);
+      observationLines.push('', 'Productos:');
+      for (const item of items) {
+        const origin = item.source === 'adicional' ? 'adicional' : 'receta';
+        const unitPrice = item.source === 'adicional' ? ` · $${item.price.toFixed(2)} c/u` : '';
+        observationLines.push(`• ${item.name} × ${item.quantity} (${origin})${unitPrice}`);
+      }
+      if (total !== null) observationLines.push('', `Total pagado: $${total.toFixed(2)}`);
+      if (paymentMethod) observationLines.push(`Forma de pago: ${paymentLabels[paymentMethod]}`);
+    }
+
+    session = await Appointment.startSession();
+    await session.withTransaction(async () => {
+      if (observationLines.length > 0) {
+        await PatientObservation.create([{
+          clinic: apt.clinic,
+          patient: apt.patient,
+          text: observationLines.join('\n'),
+          createdBy: req.user._id,
+        }], { session });
+      }
+
+      // Estos campos quedan como compatibilidad con citas antiguas, pero ya no
+      // guardan la última compra: el historial definitivo vive en Observaciones.
+      apt.prescribedItems = [];
+      apt.itemsValue = null;
+      apt.itemsMethod = '';
+      apt.chargeRegisteredBy = null;
+      apt.chargeRegisteredByName = '';
+      apt.chargeRegisteredAt = null;
+      await apt.save({ session });
+    });
+
     const populated = await Appointment.findById(apt._id)
       .populate('patient', POPULATE_PATIENT)
       .populate('doctor', POPULATE_DOCTOR)
@@ -2808,6 +2889,8 @@ exports.updateCobroItems = async (req, res) => {
     res.json(populated);
   } catch (error) {
     res.status(500).json({ message: 'No se pudo registrar el cobro', error: error.message });
+  } finally {
+    if (session) await session.endSession();
   }
 };
 
