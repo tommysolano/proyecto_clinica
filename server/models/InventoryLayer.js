@@ -17,8 +17,11 @@ const inventoryLayerSchema = new mongoose.Schema(
     costCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null },
     lot: { type: String, default: '' },
     expiryDate: { type: Date, default: null },
-    qtyInitial: { type: Number, required: true, min: 0 },
-    qtyRemaining: { type: Number, required: true, min: 0 },
+    // Una capa importada puede representar un déficit histórico de la bodega.
+    // Se marca agotada y nunca participa como disponibilidad FIFO, pero conservar
+    // el signo permite que el saldo auditado coincida con Contífico.
+    qtyInitial: { type: Number, required: true },
+    qtyRemaining: { type: Number, required: true },
     unitCost: { type: Number, required: true, min: 0 },
     date: { type: Date, required: true, index: true }, // orden FIFO
     sourceModel: { type: String, default: null }, // PurchaseInvoice | Sale | Adjustment | Opening

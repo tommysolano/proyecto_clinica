@@ -226,17 +226,29 @@ function parseArgs(argv) {
     cutoff: parseDate(values.cutoff) || new Date(),
     stopAfter: values['stop-after'] || null,
     only: values.only || null,
+    skipLinkedInventory: flags.has('skip-linked-inventory'),
   };
 }
 
+// Entidades que la extracción vigente recupera como una instantánea completa.
+// Las demás (catálogos, personas, stock y nómina) conservan su última copia
+// válida hasta que se ejecute su propio refresco.
+const snapshotEntities = {
+  documents: 'document', transactions: 'transaction', bank_movements: 'bank_movement',
+  inventory_movements: 'inventory_movement', journal_entries: 'journal_entry',
+};
+
 class Projector {
-  constructor({ clinic, commit, cutoff, stopAfter = null, only = null }) {
+  constructor({ clinic, commit, cutoff, stopAfter = null, only = null, skipLinkedInventory = false }) {
     this.clinic = clinic;
     this.commit = commit;
     this.cutoff = cutoff;
     this.stopAfter = stopAfter;
     this.only = only;
+    this.skipLinkedInventory = skipLinkedInventory;
     this.run = null;
+    this.sourceSnapshot = null;
+    this.snapshotEntities = new Set();
     this.stages = [];
     this.issues = [];
     this.maps = { clinic: clinic._id, accounts: new Map(), costCenters: new Map(), categories: new Map(), warehouses: new Map(), banks: new Map(), suppliers: new Map(), patients: new Map(), products: new Map(), periods: new Map() };
@@ -246,7 +258,9 @@ class Projector {
   issue(stage, externalId, message) { stage.warnings += 1; if (this.issues.length < 500) this.issues.push({ stage: stage.name, externalId, message }); }
   async finishStage(stage) { stage.status = stage.warnings ? 'COMPLETED_WITH_WARNINGS' : 'COMPLETED'; this.log(`fin ${stage.name}: source=${stage.source} created=${stage.created} linked=${stage.linked} projected=${stage.projected} skipped=${stage.skipped} warnings=${stage.warnings}`); if (this.run) { this.run.stages = this.stages; this.run.issues = this.issues; await this.run.save(); } }
   async records(entity) {
-    const records = await ContificoRecord.find({ clinic: this.clinic._id, entity }).sort({ externalId: 1 }).lean();
+    const filter = { clinic: this.clinic._id, entity };
+    if (this.sourceSnapshot && this.snapshotEntities.has(entity)) filter.migrationRun = this.sourceSnapshot._id;
+    const records = await ContificoRecord.find(filter).sort({ externalId: 1 }).lean();
     return records.map((record) => ({
       ...record,
       payload: record.payload || decodeCompressedJson(record.payloadCompressed),
@@ -262,7 +276,18 @@ class Projector {
       } })), { ordered: false });
     }
   }
-  async begin() { if (this.commit) this.run = await ContificoMigrationRun.create({ clinic: this.clinic._id, mode: 'COMMIT', phase: 'PROJECT', range: { cutoff: this.cutoff } }); }
+  async begin() {
+    this.sourceSnapshot = await ContificoMigrationRun.findOne({
+      clinic: this.clinic._id, phase: 'EXTRACT', status: { $in: ['COMPLETED', 'COMPLETED_WITH_WARNINGS'] },
+    }).sort({ completedAt: -1, createdAt: -1 }).lean();
+    if (this.sourceSnapshot) {
+      for (const stage of this.sourceSnapshot.stages || []) {
+        if (stage.status === 'COMPLETED' && snapshotEntities[stage.name]) this.snapshotEntities.add(snapshotEntities[stage.name]);
+      }
+      this.log(`instantánea fuente ${this.sourceSnapshot._id}: ${[...this.snapshotEntities].join(', ')}`);
+    }
+    if (this.commit) this.run = await ContificoMigrationRun.create({ clinic: this.clinic._id, mode: 'COMMIT', phase: 'PROJECT', range: { cutoff: this.cutoff } });
+  }
 
   async accounts() {
     const stage = this.stage('accounts');
@@ -371,6 +396,12 @@ class Projector {
 
   async persons() {
     const stage = this.stage('persons'); const records = await this.records('person'); stage.source = records.length;
+    // Una persona puede haber perdido la marca `es_proveedor` después de emitir
+    // una compra. El documento PRO sigue siendo evidencia suficiente para crear
+    // su ficha de proveedor y no dejar ese comprobante sin importar.
+    const providerPersonIds = new Set((await this.records('document'))
+      .filter((record) => String(record.payload.tipo_registro || '').toUpperCase() === 'PRO')
+      .map((record) => String(record.payload.persona_id || '')).filter(Boolean));
     const ids = [...new Set(records.map((record) => identification(record.payload)).filter(Boolean))];
     const oldSuppliers = await Supplier.find({ clinic: this.clinic._id, ruc: { $in: ids } }).lean(); const oldPatients = await Patient.find({ $or: [{ cedula: { $in: ids } }, { identificationAliases: { $in: ids } }] }).lean();
     const oldSupplierIds = new Set(oldSuppliers.map((row) => String(row.ruc))), oldPatientIds = new Set(oldPatients.flatMap((row) => [row.cedula, ...(row.identificationAliases || [])].map(String)));
@@ -379,9 +410,19 @@ class Projector {
       for (const record of records) {
         const row = record.payload, id = identification(row); if (!id) continue;
         const roles = [['es_cliente', 'CLIENTE'], ['es_proveedor', 'PROVEEDOR'], ['es_empleado', 'EMPLEADO'], ['es_vendedor', 'VENDEDOR']].filter(([field]) => row[field]).map(([, role]) => role);
-        const needsSupplier = row.es_proveedor || row.es_empleado || row.es_vendedor || !row.es_cliente;
-        if (needsSupplier) supplierOps.push({ updateOne: { filter: { clinic: this.clinic._id, ruc: id }, update: { $setOnInsert: { clinic: this.clinic._id, ruc: id, tipoIdentificacion: idType(id), razonSocial: String(row.razon_social || row.nombre_comercial || id), nombreComercial: String(row.nombre_comercial || ''), roles: roles.length ? roles : ['CLIENTE'], address: String(row.direccion || ''), phone: String(row.telefonos || ''), email: String(row.email || ''), creditDays: num(row.dias_credito), active: true, notes: `Contifico ${record.externalId}` } }, upsert: true } });
-        if (row.es_cliente) { const names = splitName(row.razon_social || row.nombre_comercial || id); patientOps.push({ updateOne: { filter: { $or: [{ cedula: id }, { identificationAliases: id }] }, update: { $setOnInsert: { clinic: this.clinic._id, cedula: id, ...names, email: String(row.email || ''), phone: String(row.telefonos || ''), address: String(row.direccion || ''), notes: `Contifico ${record.externalId}`, active: true } }, upsert: true } }); }
+        const appearsAsProvider = providerPersonIds.has(String(record.externalId));
+        if (appearsAsProvider && !roles.includes('PROVEEDOR')) roles.push('PROVEEDOR');
+        const needsSupplier = appearsAsProvider || row.es_proveedor || row.es_empleado || row.es_vendedor || !row.es_cliente;
+        if (needsSupplier) supplierOps.push({ updateOne: { filter: { clinic: this.clinic._id, ruc: id }, update: {
+          // Solo se refrescan los atributos que Contífico realmente proporciona;
+          // no se borran campos locales de otros módulos.
+          $set: { razonSocial: String(row.razon_social || row.nombre_comercial || id), nombreComercial: String(row.nombre_comercial || ''), roles: roles.length ? roles : ['CLIENTE'], address: String(row.direccion || ''), phone: String(row.telefonos || ''), email: String(row.email || ''), creditDays: num(row.dias_credito), active: true },
+          $setOnInsert: { clinic: this.clinic._id, ruc: id, tipoIdentificacion: idType(id), notes: `Contifico ${record.externalId}` },
+        }, upsert: true } });
+        if (row.es_cliente) { const names = splitName(row.razon_social || row.nombre_comercial || id); patientOps.push({ updateOne: { filter: { $or: [{ cedula: id }, { identificationAliases: id }] }, update: {
+          $set: { ...names, email: String(row.email || ''), phone: String(row.telefonos || ''), address: String(row.direccion || ''), active: true },
+          $setOnInsert: { clinic: this.clinic._id, cedula: id, notes: `Contifico ${record.externalId}` },
+        }, upsert: true } }); }
       }
       for (let i = 0; i < supplierOps.length; i += 1000) await Supplier.bulkWrite(supplierOps.slice(i, i + 1000), { ordered: false });
       for (let i = 0; i < patientOps.length; i += 1000) await Patient.bulkWrite(patientOps.slice(i, i + 1000), { ordered: false });
@@ -391,7 +432,7 @@ class Projector {
     const supplierById = new Map(suppliers.map((row) => [String(row.ruc), row])), patientById = new Map(patients.flatMap((row) => [row.cedula, ...(row.identificationAliases || [])].filter(Boolean).map((id) => [String(id), row]))); const marks = [];
     for (const record of records) {
       const id = identification(record.payload); if (!id) { stage.skipped++; continue; }
-      const needsSupplier = record.payload.es_proveedor || record.payload.es_empleado || record.payload.es_vendedor || !record.payload.es_cliente;
+      const needsSupplier = providerPersonIds.has(String(record.externalId)) || record.payload.es_proveedor || record.payload.es_empleado || record.payload.es_vendedor || !record.payload.es_cliente;
       let supplier = needsSupplier ? supplierById.get(id) : null; if (needsSupplier && !supplier) { supplier = { _id: fakeId() }; supplierById.set(id, supplier); }
       let patient = record.payload.es_cliente ? patientById.get(id) : null; if (record.payload.es_cliente && !patient) { patient = { _id: fakeId() }; patientById.set(id, patient); }
       if (supplier) this.maps.suppliers.set(record.externalId, supplier._id); if (patient) this.maps.patients.set(record.externalId, patient._id);
@@ -410,7 +451,7 @@ class Projector {
     const unitRecords = await this.records('unit'); const unitNames = new Map(unitRecords.map((record) => [record.externalId, String(record.payload.nombre || 'unidad')]));
     const fields = (record) => { const row = record.payload, physical = String(row.tipo).toUpperCase() === 'PRO', rawStock = num(row.cantidad_stock), salePrice = Math.max(0, num(row.pvp1)), sourceCategory = categorySource.get(String(row.categoria_id || '')) || {}; return {
       clinic: this.clinic._id, code: String(row.codigo), barcode: String(row.codigo_barra || row.codigo_auxiliar || ''), name: String(row.nombre || row.codigo), description: String(row.descripcion || ''), category: physical ? 'insumo' : 'servicio', categoria: categoryNames.get(String(row.categoria_id)) || '', isComposite: String(row.tipo_producto).toUpperCase() === 'COP',
-      stock: Math.max(0, rawStock), stockByClinic: [{ clinic: this.clinic._id, stock: Math.max(0, rawStock) }], availableInClinics: [], purchasePrice: Math.max(0, num(row.costo_maximo)), averageCost: Math.max(0, num(row.costo_maximo)), salePrice, salePrices: [{ name: 'General', price: salePrice, active: true }], minStock: Math.max(0, num(row.minimo)),
+      stock: rawStock, stockByClinic: [{ clinic: this.clinic._id, stock: rawStock }], availableInClinics: [], purchasePrice: Math.max(0, num(row.costo_maximo)), averageCost: Math.max(0, num(row.costo_maximo)), salePrice, salePrices: [{ name: 'General', price: salePrice, active: true }], minStock: Math.max(0, num(row.minimo)),
       inventoryAccount: this.maps.accounts.get(String(sourceCategory.cuenta_inventario_id || sourceCategory.cuenta_inventario || '')) || null,
       expenseAccount: this.maps.accounts.get(String(row.cuenta_costo_id || sourceCategory.cuenta_compra_id || sourceCategory.cuenta_compra || '')) || null,
       incomeAccount: this.maps.accounts.get(String(row.cuenta_venta_id || sourceCategory.cuenta_venta_id || sourceCategory.cuenta_venta || '')) || null,
@@ -419,7 +460,7 @@ class Projector {
     }; };
     if (this.commit) { const ops = records.filter((record) => record.payload.codigo).map((record) => ({ updateOne: { filter: { clinic: this.clinic._id, code: String(record.payload.codigo) }, update: { $set: fields(record) }, upsert: true } })); for (let i = 0; i < ops.length; i += 500) await Product.bulkWrite(ops.slice(i, i + 500), { ordered: false }); }
     const targets = this.commit ? await Product.find({ clinic: this.clinic._id, code: { $in: codes } }).lean() : current; const byCode = new Map(targets.map((row) => [String(row.code), row])); const marks = [];
-    for (const record of records) { const code = String(record.payload.codigo || ''); if (!code) { stage.skipped++; continue; } let target = byCode.get(code); if (!target) { target = { _id: fakeId() }; byCode.set(code, target); } const existed = existingCodes.has(code); existed ? stage.linked++ : stage.created++; stage.projected++; this.maps.products.set(record.externalId, target._id); const warnings = num(record.payload.cantidad_stock) < 0 ? [`Stock negativo ${record.payload.cantidad_stock}: saldo operativo en cero; original archivado`] : []; if (warnings.length) this.issue(stage, record.externalId, warnings[0]); marks.push({ recordId: record._id, status: existed ? 'LINKED_EXISTING' : 'PROJECTED', links: [{ model: 'Product', ref: target._id, action: existed ? 'LINK' : 'CREATE' }], warnings }); }
+    for (const record of records) { const code = String(record.payload.codigo || ''); if (!code) { stage.skipped++; continue; } let target = byCode.get(code); if (!target) { target = { _id: fakeId() }; byCode.set(code, target); } const existed = existingCodes.has(code); existed ? stage.linked++ : stage.created++; stage.projected++; this.maps.products.set(record.externalId, target._id); const warnings = num(record.payload.cantidad_stock) < 0 ? [`Déficit de stock ${record.payload.cantidad_stock} importado y marcado para revisión`] : []; if (warnings.length) this.issue(stage, record.externalId, warnings[0]); marks.push({ recordId: record._id, status: existed ? 'LINKED_EXISTING' : 'PROJECTED', links: [{ model: 'Product', ref: target._id, action: existed ? 'LINK' : 'CREATE' }], warnings }); }
     await this.mark(marks); await this.finishStage(stage);
   }
 
@@ -446,8 +487,16 @@ class Projector {
     const products = new Map(productRows.map((product) => [String(product._id), product]));
     products.set(String(manualProduct._id), manualProduct);
     const candidates = records.map((record) => ({ record, fields: contificoSaleFields(record, this.maps, products, manualProduct._id) }));
-    const keys = candidates.map(({ fields }) => fields.idempotencyKey);
-    const before = new Set(await Sale.find({ clinic: this.clinic._id, idempotencyKey: { $in: keys } }).distinct('idempotencyKey'));
+    // La mayoría de ventas ya tiene su enlace de origen archivado. Reutilizarlo
+    // evita una consulta $in masiva contra Atlas antes de poder hacer los upsert.
+    const before = new Set();
+    const saleByKey = new Map();
+    for (const candidate of candidates) {
+      const link = (candidate.record.projection?.links || []).find((item) => item.model === 'Sale' && item.ref);
+      if (!link) continue;
+      before.add(candidate.fields.idempotencyKey);
+      saleByKey.set(candidate.fields.idempotencyKey, { _id: link.ref, ...candidate.fields });
+    }
     if (this.commit) {
       for (let offset = 0; offset < candidates.length; offset += 500) {
         await Sale.bulkWrite(candidates.slice(offset, offset + 500).map(({ fields }) => {
@@ -464,10 +513,15 @@ class Projector {
         } })), { ordered: false });
       }
     }
-    const sales = this.commit
-      ? await Sale.find({ clinic: this.clinic._id, idempotencyKey: { $in: keys } }).lean()
-      : candidates.map(({ fields }) => ({ _id: fakeId(), ...fields }));
-    const saleByKey = new Map(sales.map((sale) => [sale.idempotencyKey, sale]));
+    if (this.commit) {
+      const unresolvedKeys = candidates.filter(({ fields }) => !saleByKey.has(fields.idempotencyKey)).map(({ fields }) => fields.idempotencyKey);
+      for (let offset = 0; offset < unresolvedKeys.length; offset += 500) {
+        const rows = await Sale.find({ clinic: this.clinic._id, idempotencyKey: { $in: unresolvedKeys.slice(offset, offset + 500) } }).lean();
+        rows.forEach((sale) => saleByKey.set(sale.idempotencyKey, sale));
+      }
+    } else for (const candidate of candidates) {
+      if (!saleByKey.has(candidate.fields.idempotencyKey)) saleByKey.set(candidate.fields.idempotencyKey, { _id: fakeId(), ...candidate.fields });
+    }
     const invoices = [];
     for (const candidate of candidates) {
       if (String(candidate.record.payload.tipo_documento).toUpperCase() !== 'FAC') continue;
@@ -487,10 +541,20 @@ class Projector {
         } })), { ordered: false });
       }
     }
-    const invoiceRows = this.commit
-      ? await Invoice.find({ claveAcceso: { $in: invoices.map(({ fields }) => fields.claveAcceso) } }).select('_id claveAcceso').lean()
-      : invoices.map(({ fields }) => ({ _id: fakeId(), claveAcceso: fields.claveAcceso }));
-    const invoiceByKey = new Map(invoiceRows.map((invoice) => [invoice.claveAcceso, invoice]));
+    let invoiceByKey;
+    if (this.commit) {
+      invoiceByKey = new Map();
+      const unresolvedInvoiceKeys = [];
+      for (const item of invoices) {
+        const link = (item.candidate.record.projection?.links || []).find((entry) => entry.model === 'Invoice' && entry.ref);
+        if (link) invoiceByKey.set(item.fields.claveAcceso, { _id: link.ref, claveAcceso: item.fields.claveAcceso });
+        else unresolvedInvoiceKeys.push(item.fields.claveAcceso);
+      }
+      for (let offset = 0; offset < unresolvedInvoiceKeys.length; offset += 500) {
+        const rows = await Invoice.find({ claveAcceso: { $in: unresolvedInvoiceKeys.slice(offset, offset + 500) } }).select('_id claveAcceso').lean();
+        rows.forEach((invoice) => invoiceByKey.set(invoice.claveAcceso, invoice));
+      }
+    } else invoiceByKey = new Map(invoices.map(({ fields }) => [fields.claveAcceso, { _id: fakeId(), claveAcceso: fields.claveAcceso }]));
     if (this.commit && invoices.length) {
       for (let offset = 0; offset < invoices.length; offset += 500) {
         await Sale.bulkWrite(invoices.slice(offset, offset + 500).map(({ sale, fields }) => ({ updateOne: {
@@ -527,18 +591,15 @@ class Projector {
         && allowed.has(String(row.tipo_documento).toUpperCase()) && date && date <= this.cutoff;
     });
     stage.source = source.length;
-    // El modelo impide dos comprobantes iguales del mismo proveedor. Contifico devuelve unos
-    // pocos duplicados historicos: se conserva uno y los otros quedan marcados para auditoria.
-    const unique = new Map(), duplicates = [];
-    for (const record of source) {
-      const key = `${record.payload.persona_id || ''}|${record.payload.documento || record.externalId}`;
-      if (unique.has(key)) duplicates.push(record); else unique.set(key, record);
-    }
+    // Cada registro de Contífico tiene un sourceRef distinto. Aunque dos históricos
+    // compartan proveedor y serie, conservar ambos es necesario para que el sistema
+    // replique el origen; la deduplicación de nuevas compras sigue ocurriendo en el
+    // controlador de la interfaz, no en esta migración histórica.
     const productRows = await Product.find({ clinic: this.clinic._id }).select('category inventoryCategory').lean();
     const productById = new Map(productRows.map((product) => [String(product._id), product]));
     const docType = { FAC: 'FACTURA', NVE: 'NOTA_VENTA', LQC: 'LIQUIDACION', DNA: 'NOTA_DEBITO_REC', DAC: 'NOTA_DEBITO_REC', NCT: 'NOTA_CREDITO_REC' };
     const candidates = [];
-    for (const record of unique.values()) {
+    for (const record of source) {
       const row = record.payload, supplier = this.maps.suppliers.get(String(row.persona_id || ''));
       if (!supplier) { stage.skipped++; this.issue(stage, record.externalId, 'Proveedor sin mapeo'); continue; }
       const date = parseDate(row.fecha_emision), [estab = '', ptoEmi = '', secuencial = record.externalId] = String(row.documento || '').split('-');
@@ -593,7 +654,6 @@ class Projector {
       const existed = before.has(String(record._id)); existed ? stage.linked++ : stage.created++; stage.projected++;
       return { recordId: record._id, status: existed ? 'LINKED_EXISTING' : 'PROJECTED', links: [{ model: 'PurchaseInvoice', ref: targetByRef.get(String(record._id))._id, action: existed ? 'LINK' : 'CREATE' }] };
     });
-    for (const record of duplicates) { stage.skipped++; this.issue(stage, record.externalId, 'Comprobante duplicado para el mismo proveedor'); marks.push({ recordId: record._id, status: 'REVIEW', warnings: ['Comprobante duplicado para el mismo proveedor'] }); }
     await this.mark(marks); await this.finishStage(stage);
   }
 
@@ -621,21 +681,35 @@ class Projector {
       if (warnings.length) warnings.forEach((warning) => this.issue(stage, record.externalId, warning));
       marks.push({ record, links, warnings });
     }
-    const existing = await InventoryMovement.find({ clinic: this.clinic._id, sourceModel: 'ContificoRecord', sourceRef: { $in: records.map((record) => record._id) } }).select('sourceRef reference').lean();
-    const oldKeys = new Set(existing.map((row) => `${row.sourceRef}|${row.reference}`));
-    if (this.commit) for (let offset = 0; offset < candidates.length; offset += 500) await InventoryMovement.bulkWrite(candidates.slice(offset, offset + 500).map(({ record, key, fields }) => ({ updateOne: {
+    // Los registros ya proyectados conservan sus enlaces en el archivo. No se
+    // consulta una lista $in de miles de sourceRef; Atlas se degrada mucho con
+    // ese patrón. Solo se recuperan los destinos de filas realmente nuevas.
+    const linksByRecord = new Map(records.map((record) => [String(record._id), (record.projection?.links || [])
+      .filter((link) => link.model === 'InventoryMovement' && link.ref)]));
+    const writeCandidates = this.skipLinkedInventory
+      ? candidates.filter((candidate) => !(linksByRecord.get(String(candidate.record._id)) || []).length)
+      : candidates;
+    if (this.commit) for (let offset = 0; offset < writeCandidates.length; offset += 500) await InventoryMovement.bulkWrite(writeCandidates.slice(offset, offset + 500).map(({ record, key, fields }) => ({ updateOne: {
       filter: { clinic: this.clinic._id, sourceModel: 'ContificoRecord', sourceRef: record._id, reference: key }, update: { $set: fields }, upsert: true,
     } })), { ordered: false });
-    const targets = this.commit ? await InventoryMovement.find({ clinic: this.clinic._id, sourceModel: 'ContificoRecord', sourceRef: { $in: records.map((record) => record._id) } }).select('sourceRef reference').lean() : candidates.map(({ record, key }) => ({ _id: fakeId(), sourceRef: record._id, reference: key }));
+    const unlinkedRecordIds = records.filter((record) => !(linksByRecord.get(String(record._id)) || []).length).map((record) => record._id);
+    const targets = [];
+    if (this.commit) for (let offset = 0; offset < unlinkedRecordIds.length; offset += 500) {
+      targets.push(...await InventoryMovement.find({ clinic: this.clinic._id, sourceModel: 'ContificoRecord', sourceRef: { $in: unlinkedRecordIds.slice(offset, offset + 500) } }).select('sourceRef reference').lean());
+    } else targets.push(...candidates.map(({ record, key }) => ({ _id: fakeId(), sourceRef: record._id, reference: key })));
     const targetMap = new Map(targets.map((target) => [`${target.sourceRef}|${target.reference}`, target]));
     const candidatesByRecord = new Map(); for (const candidate of candidates) { const key = String(candidate.record._id); if (!candidatesByRecord.has(key)) candidatesByRecord.set(key, []); candidatesByRecord.get(key).push(candidate); }
     const finalMarks = marks.map(({ record, warnings }) => {
-      const rows = candidatesByRecord.get(String(record._id)) || [], links = rows.map(({ key }) => ({ model: 'InventoryMovement', ref: targetMap.get(`${record._id}|${key}`)?._id, action: oldKeys.has(`${record._id}|${key}`) ? 'LINK' : 'CREATE' })).filter((link) => link.ref);
+      const priorLinks = linksByRecord.get(String(record._id)) || [];
+      const rows = candidatesByRecord.get(String(record._id)) || [];
+      const links = priorLinks.length
+        ? priorLinks.map((link) => ({ model: 'InventoryMovement', ref: link.ref, action: 'LINK' }))
+        : rows.map(({ key }) => ({ model: 'InventoryMovement', ref: targetMap.get(`${record._id}|${key}`)?._id, action: 'CREATE' })).filter((link) => link.ref);
       if (!links.length) { stage.skipped++; return { recordId: record._id, status: 'REVIEW', warnings: warnings.length ? warnings : ['Sin lineas proyectables'] }; }
-      stage.projected++; if (links.every((link) => link.action === 'LINK')) stage.linked++; else stage.created++;
+      stage.projected++; if (priorLinks.length) stage.linked++; else stage.created++;
       return { recordId: record._id, status: links.every((link) => link.action === 'LINK') ? 'LINKED_EXISTING' : 'PROJECTED', links, warnings };
     });
-    await this.mark(finalMarks); await this.finishStage(stage);
+    await this.mark(this.skipLinkedInventory ? finalMarks.filter((mark) => mark.status !== 'LINKED_EXISTING') : finalMarks); await this.finishStage(stage);
   }
 
   async bankMovements() {
@@ -681,14 +755,34 @@ class Projector {
       if (!lines.length || warnings.length || Math.abs(debit - credit) > 0.01) { if (!lines.length) warnings.push('Sin lineas'); if (Math.abs(debit - credit) > 0.01) warnings.push(`Descuadrado ${debit}/${credit}`); stage.skipped++; warnings.forEach((warning) => this.issue(stage, record.externalId, warning)); marks.push({ recordId: record._id, status: 'REVIEW', warnings }); continue; }
       candidates.push({ record, number: `CTF-${record.externalId}`, doc: { clinic: this.clinic._id, number: `CTF-${record.externalId}`, date, period: periodByKey.get(`${date.getUTCFullYear()}-${date.getUTCMonth() + 1}`)?._id || null, description: String(row.glosa || `Contifico ${record.externalId}`), source: 'MIGRACION', sourceRef: record._id, sourceModel: 'ContificoRecord', sourceAction: 'IMPORT', lines, totalDebit: debit, totalCredit: credit, status: 'CONTABILIZADO' } });
     }
-    const oldNumbers = new Set(await JournalEntry.find({ clinic: this.clinic._id, number: { $in: candidates.map((item) => item.number) } }).distinct('number'));
-    if (this.commit) { for (let i = 0; i < candidates.length; i += 300) await JournalEntry.bulkWrite(candidates.slice(i, i + 300).map((item) => ({ updateOne: { filter: { clinic: this.clinic._id, number: item.number }, update: { $setOnInsert: item.doc }, upsert: true } })), { ordered: false }); }
-    const targets = this.commit ? await JournalEntry.find({ clinic: this.clinic._id, number: { $in: candidates.map((item) => item.number) } }).select('number').lean() : []; const targetByNumber = new Map(targets.map((row) => [row.number, row]));
+    const oldNumbers = new Set();
+    const targetByNumber = new Map();
+    for (const item of candidates) {
+      const link = (item.record.projection?.links || []).find((entry) => entry.model === 'JournalEntry' && entry.ref);
+      if (!link) continue;
+      oldNumbers.add(item.number);
+      targetByNumber.set(item.number, { _id: link.ref, number: item.number });
+    }
+    // La llave CTF-* solo pertenece a asientos importados. Reaplicar el origen
+    // actualiza correcciones hechas en Contífico, en vez de congelar el primer
+    // valor que se importó.
+    if (this.commit) { for (let i = 0; i < candidates.length; i += 300) await JournalEntry.bulkWrite(candidates.slice(i, i + 300).map((item) => ({ updateOne: { filter: { clinic: this.clinic._id, number: item.number }, update: { $set: item.doc }, upsert: true } })), { ordered: false }); }
+    if (this.commit) {
+      const unresolvedNumbers = candidates.filter((item) => !targetByNumber.has(item.number)).map((item) => item.number);
+      for (let offset = 0; offset < unresolvedNumbers.length; offset += 500) {
+        const rows = await JournalEntry.find({ clinic: this.clinic._id, number: { $in: unresolvedNumbers.slice(offset, offset + 500) } }).select('number').lean();
+        rows.forEach((row) => targetByNumber.set(row.number, row));
+      }
+    }
     for (const item of candidates) { const existed = oldNumbers.has(item.number), target = targetByNumber.get(item.number) || { _id: fakeId() }; existed ? stage.linked++ : stage.created++; stage.projected++; marks.push({ recordId: item.record._id, status: existed ? 'LINKED_EXISTING' : 'PROJECTED', links: [{ model: 'JournalEntry', ref: target._id, action: existed ? 'LINK' : 'CREATE' }] }); }
     await this.mark(marks); await this.finishStage(stage);
 
     const balanceStage = this.stage('account_balances');
     if (this.commit) {
+      // Es un resumen materializado de los asientos, no una fuente primaria.
+      // Reconstruirlo evita que sobreviva un saldo de un asiento que Contífico
+      // ya retiró de la instantánea actual.
+      await AccountBalance.deleteMany({ clinic: this.clinic._id });
       const balances = await JournalEntry.aggregate([{ $match: { clinic: this.clinic._id, status: 'CONTABILIZADO' } }, { $unwind: '$lines' }, { $group: { _id: { account: '$lines.account', year: { $year: '$date' }, month: { $month: '$date' } }, debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } }]);
       balanceStage.source = balances.length; const result = balances.length ? await AccountBalance.bulkWrite(balances.map((row) => ({ updateOne: { filter: { clinic: this.clinic._id, account: row._id.account, year: row._id.year, month: row._id.month }, update: { $set: { debit: +num(row.debit).toFixed(2), credit: +num(row.credit).toFixed(2) } }, upsert: true } })), { ordered: false }) : null;
       balanceStage.created = result?.upsertedCount || 0; balanceStage.projected = balances.length; balanceStage.linked = (result?.matchedCount || 0);
@@ -699,7 +793,7 @@ class Projector {
   async subledger() {
     const stage = this.stage('open_subledger'); const documents = await this.records('document'), persons = await this.records('person'); const personById = new Map(persons.map((record) => [record.externalId, record]));
     const receivableOps = [], payableOps = [];
-    for (const record of documents) { const row = record.payload, balance = num(row.saldo), date = parseDate(row.fecha_emision); if (balance <= 0.005 || row.anulado || !date || date > this.cutoff) continue; stage.source++; const person = personById.get(String(row.persona_id || '')), client = String(row.tipo_registro).toUpperCase() === 'CLI', patient = person ? this.maps.patients.get(person.externalId) : null, supplier = person ? this.maps.suppliers.get(person.externalId) : null, total = Math.max(balance, num(row.total)); const payload = { clinic: this.clinic._id, party: { model: client && patient ? 'Patient' : 'Supplier', ref: client ? (patient || supplier || null) : (supplier || null), name: String(row.cliente?.razon_social || person?.payload?.razon_social || '') }, sourceModel: 'ContificoRecord', sourceRef: record._id, docType: ledgerDocType(row.tipo_documento), number: String(row.documento || ''), issueDate: date, dueDate: parseDate(row.fecha_vencimiento), currency: 'USD', total, applied: +(total - balance).toFixed(2), balance, status: total - balance > 0 ? 'PARCIAL' : 'ABIERTO', account: person ? this.maps.accounts.get(String(client ? person.payload.cuenta_por_cobrar_id : person.payload.cuenta_por_pagar_id)) || null : null, notes: `Contifico ${record.externalId}` }; (client ? receivableOps : payableOps).push({ updateOne: { filter: { clinic: this.clinic._id, sourceModel: 'ContificoRecord', sourceRef: record._id }, update: { $setOnInsert: payload }, upsert: true } }); }
+    for (const record of documents) { const row = record.payload, balance = num(row.saldo), date = parseDate(row.fecha_emision); if (balance <= 0.005 || row.anulado || !date || date > this.cutoff) continue; stage.source++; const person = personById.get(String(row.persona_id || '')), client = String(row.tipo_registro).toUpperCase() === 'CLI', patient = person ? this.maps.patients.get(person.externalId) : null, supplier = person ? this.maps.suppliers.get(person.externalId) : null, total = Math.max(balance, num(row.total)); const payload = { clinic: this.clinic._id, party: { model: client && patient ? 'Patient' : 'Supplier', ref: client ? (patient || supplier || null) : (supplier || null), name: String(row.cliente?.razon_social || person?.payload?.razon_social || '') }, sourceModel: 'ContificoRecord', sourceRef: record._id, docType: ledgerDocType(row.tipo_documento), number: String(row.documento || ''), issueDate: date, dueDate: parseDate(row.fecha_vencimiento), currency: 'USD', total, applied: +(total - balance).toFixed(2), balance, status: total - balance > 0 ? 'PARCIAL' : 'ABIERTO', account: person ? this.maps.accounts.get(String(client ? person.payload.cuenta_por_cobrar_id : person.payload.cuenta_por_pagar_id)) || null : null, notes: `Contifico ${record.externalId}` }; (client ? receivableOps : payableOps).push({ updateOne: { filter: { clinic: this.clinic._id, sourceModel: 'ContificoRecord', sourceRef: record._id }, update: { $set: payload }, upsert: true } }); }
     if (this.commit) { if (receivableOps.length) await Receivable.bulkWrite(receivableOps, { ordered: false }); if (payableOps.length) await Payable.bulkWrite(payableOps, { ordered: false }); }
     stage.created = receivableOps.length + payableOps.length; stage.projected = stage.created; this.log(`CxC=${receivableOps.length} CxP=${payableOps.length}`); await this.finishStage(stage);
   }
@@ -708,9 +802,11 @@ class Projector {
     await this.begin();
     try {
       await this.accounts(); await this.costCenters(); await this.categories(); await this.warehouses(); await this.banks(); await this.persons(); await this.products();
-      if (this.only !== 'operational') await this.sales();
-      if (this.stopAfter !== 'sales') { await this.purchases(); await this.inventoryMovements(); await this.bankMovements(); }
-      if (this.stopAfter !== 'sales' && this.stopAfter !== 'operational' && this.only !== 'operational') { await this.journals(); await this.subledger(); }
+      const operationalOnly = this.only === 'operational';
+      const journalsOnly = this.only === 'journals';
+      if (!operationalOnly && !journalsOnly) await this.sales();
+      if (!journalsOnly && this.stopAfter !== 'sales') { await this.purchases(); await this.inventoryMovements(); await this.bankMovements(); }
+      if (!operationalOnly && this.stopAfter !== 'sales' && this.stopAfter !== 'operational') { await this.journals(); await this.subledger(); }
       if (this.run) { this.run.status = this.issues.length ? 'COMPLETED_WITH_WARNINGS' : 'COMPLETED'; this.run.completedAt = new Date(); this.run.issues = this.issues; await this.run.save(); }
       return { stages: this.stages, issues: this.issues };
     }

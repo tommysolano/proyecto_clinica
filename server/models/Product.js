@@ -64,7 +64,9 @@ const productSchema = new mongoose.Schema(
     stockByClinic: [
       {
         clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic' },
-        stock: { type: Number, default: 0, min: 0 },
+        // Contífico puede registrar déficit de inventario. El signo se conserva
+        // para conciliación; las capas agotadas no se consideran disponibilidad.
+        stock: { type: Number, default: 0 },
         _id: false,
       },
     ],
@@ -107,7 +109,7 @@ const productSchema = new mongoose.Schema(
       required: [true, 'El precio de venta es requerido'],
       min: 0,
     },
-    stock: { type: Number, default: 0, min: 0 },
+    stock: { type: Number, default: 0 },
     minStock: { type: Number, default: 5, min: 0 },
     // Costo unitario promedio ponderado (cache derivado de las capas de kardex vivas).
     averageCost: { type: Number, default: 0, min: 0 },

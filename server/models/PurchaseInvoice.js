@@ -243,7 +243,10 @@ purchaseInvoiceSchema.virtual('retentionSummary').get(function () {
   }));
 });
 
-purchaseInvoiceSchema.index({ clinic: 1, supplier: 1, serie: 1 }, { unique: true, partialFilterExpression: { serie: { $type: 'string' } } });
+// La interfaz bloquea duplicados con findDuplicatePurchaseInvoice(), pero Contífico
+// puede contener dos registros históricos con el mismo proveedor y serie. El índice
+// no debe impedir conservar ambos cuando cada uno tiene su propio sourceRef.
+purchaseInvoiceSchema.index({ clinic: 1, supplier: 1, serie: 1 });
 purchaseInvoiceSchema.index(
   { clinic: 1, sourceModel: 1, sourceRef: 1 },
   { unique: true, partialFilterExpression: { sourceModel: { $type: 'string' }, sourceRef: { $type: 'objectId' } } }

@@ -17,21 +17,34 @@ const AccountBalance = require('../models/AccountBalance');
 const Receivable = require('../models/Receivable');
 const Payable = require('../models/Payable');
 const ContificoRecord = require('../models/ContificoRecord');
+const Sale = require('../models/Sale');
+const PurchaseInvoice = require('../models/PurchaseInvoice');
+const Payment = require('../models/Payment');
+const Payroll = require('../models/Payroll');
+const Employee = require('../models/Employee');
+const InventoryLayer = require('../models/InventoryLayer');
+const CreditDebitNote = require('../models/CreditDebitNote');
 const { checksum } = require('./migrateContifico');
 const { decodeCompressedJson } = require('../utils/compressedJson');
 
 const mb = (value) => Math.round((Number(value || 0) / 1048576) * 10) / 10;
+const option = (name, fallback) => {
+  const prefix = `--${name}=`;
+  return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length) || fallback;
+};
 
 async function main() {
   if (!process.env.MONGODB_URI) throw new Error('Falta MONGODB_URI');
   await mongoose.connect(process.env.MONGODB_URI);
   const db = mongoose.connection.db;
-  const clinic = await db.collection('clinics').findOne({ name: /^Shiluv$/i });
-  if (!clinic) throw new Error('Clinica Shiluv no encontrada');
+  const clinicName = option('clinic-name', 'Shiluv');
+  const clinic = await db.collection('clinics').findOne({ name: new RegExp(`^${clinicName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+  if (!clinic) throw new Error(`Clinica ${clinicName} no encontrada`);
   const matchClinic = { clinic: clinic._id };
   const [stats, archiveStats, journalStats, rawJournalStatuses, entityCounts, projectionCounts, reviewReasons, lastRun,
     chartAccounts, costCenters, categories, warehouses, bankAccounts, importedPatients, importedSuppliers, products,
-    fiscalPeriods, accountBalanceStats, receivableStats, payableStats, journalIntegrity, projectionLinkCounts] = await Promise.all([
+    fiscalPeriods, accountBalanceStats, receivableStats, payableStats, journalIntegrity, projectionLinkCounts,
+    salesStats, purchaseStats, paymentStats, payrollStats, employees, warehouseStockStats, noteStats] = await Promise.all([
     db.command({ dbStats: 1 }),
     db.command({ collStats: 'contificorecords' }),
     db.collection('journalentries').aggregate([
@@ -99,6 +112,32 @@ async function main() {
       { $group: { _id: '$_id.model', uniqueTargets: { $sum: 1 } } },
       { $sort: { _id: 1 } },
     ]),
+    Sale.aggregate([
+      { $match: { ...matchClinic, idempotencyKey: /^contifico:/ } },
+      { $group: { _id: null, count: { $sum: 1 }, total: { $sum: '$total' } } },
+    ]),
+    PurchaseInvoice.aggregate([
+      { $match: { ...matchClinic, sourceModel: 'ContificoRecord' } },
+      { $group: { _id: null, count: { $sum: 1 }, total: { $sum: '$total' } } },
+    ]),
+    Payment.aggregate([
+      { $match: { ...matchClinic, idempotencyKey: /^contifico:transaction:/ } },
+      { $group: { _id: null, count: { $sum: 1 }, total: { $sum: '$total' } } },
+    ]),
+    Payroll.aggregate([
+      { $match: matchClinic },
+      { $group: { _id: null, count: { $sum: 1 }, items: { $sum: { $size: '$items' } }, totalNeto: { $sum: '$totalNeto' } } },
+    ]),
+    Employee.countDocuments(matchClinic),
+    InventoryLayer.aggregate([
+      { $match: { ...matchClinic, sourceModel: 'ContificoStock' } },
+      { $group: { _id: null, count: { $sum: 1 }, qtyInitial: { $sum: '$qtyInitial' }, qtyRemaining: { $sum: '$qtyRemaining' } } },
+    ]),
+    CreditDebitNote.aggregate([
+      { $match: { ...matchClinic, sourceModel: 'ContificoRecord' } },
+      { $group: { _id: '$kind', count: { $sum: 1 }, total: { $sum: '$total' } } },
+      { $sort: { _id: 1 } },
+    ]),
   ]);
   const supplierLinkRows = await ContificoRecord.aggregate([
     { $match: matchClinic },
@@ -143,6 +182,14 @@ async function main() {
     accountBalances: accountBalanceStats[0] || { count: 0, debit: 0, credit: 0 },
     receivables: receivableStats[0] || { count: 0, balance: 0, missingParty: 0, missingAccount: 0 },
     payables: payableStats[0] || { count: 0, balance: 0, missingParty: 0, missingAccount: 0 },
+    operational: {
+      sales: salesStats[0] || { count: 0, total: 0 },
+      purchases: purchaseStats[0] || { count: 0, total: 0 },
+      payments: paymentStats[0] || { count: 0, total: 0 },
+      payroll: { ...(payrollStats[0] || { count: 0, items: 0, totalNeto: 0 }), employees },
+      warehouseStock: warehouseStockStats[0] || { count: 0, qtyInitial: 0, qtyRemaining: 0 },
+      creditDebitNotes: noteStats,
+    },
     lastProjectRun: lastRun[0] && { status: lastRun[0].status, createdAt: lastRun[0].createdAt, completedAt: lastRun[0].completedAt, finalIssue: lastRun[0].issues?.at(-1) },
   }, null, 2));
 }

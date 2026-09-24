@@ -846,6 +846,23 @@ exports.updateConversation = async (req, res) => {
     if (req.body.contactEmail !== undefined) {
       conv.contactEmail = String(req.body.contactEmail || '').trim();
       conv.contactEmailEditedAt = new Date();
+      /**
+       * SI EL CHAT ESTÁ VINCULADO A UN PACIENTE, LA FICHA SE ACTUALIZA (sep-2026,
+       * a pedido de mostrador): el correo que call center/marketing corrigen
+       * desde el chat es el correo REAL del contacto, y la ficha es donde vive
+       * de verdad — lo lee facturación, el envío de resultados y las campañas.
+       * Sin esto, la corrección quedaba solo en el chat y la ficha seguía
+       * mostrando el correo mal escrito.
+       *
+       * Solo cuando se ESCRIBE un correo: borrar el del chat no limpia la
+       * ficha — quitar un dato de contacto es otra decisión, que se toma en la
+       * ficha misma.
+       */
+      const patientId = conv.patient?._id || conv.patient;
+      if (patientId && conv.contactEmail) {
+        await Patient.findByIdAndUpdate(patientId, { $set: { email: conv.contactEmail } });
+        emitToClinic(req.clinicId, 'patient:updated', { id: patientId });
+      }
     }
     await conv.save();
     // Etiquetar desde el chat también dispara los workflows de 'tag_added'

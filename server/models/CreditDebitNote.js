@@ -9,8 +9,11 @@ const creditDebitNoteSchema = new mongoose.Schema(
     kind: { type: String, enum: ['NC', 'ND'], required: true }, // NC=crédito, ND=débito
     direction: { type: String, enum: ['EMITIDA', 'RECIBIDA'], required: true },
     // Documento que modifica
-    refModel: { type: String, enum: ['Invoice', 'PurchaseInvoice'], required: true },
-    refDoc: { type: mongoose.Schema.Types.ObjectId, refPath: 'refModel', required: true },
+    // Las notas históricas de Contífico pueden no traer el comprobante afectado.
+    // Se conservan igualmente para que los reportes fiscales no pierdan el documento;
+    // las notas creadas desde la UI siguen validando la referencia en el controlador.
+    refModel: { type: String, enum: ['Invoice', 'PurchaseInvoice'], default: null },
+    refDoc: { type: mongoose.Schema.Types.ObjectId, refPath: 'refModel', default: null },
     serieAfecta: String, // serie del documento original
     fechaEmisionAfecta: Date,
     // Propios
@@ -46,9 +49,19 @@ const creditDebitNoteSchema = new mongoose.Schema(
     xmlFirmado: String,
     xmlAutorizado: String,
     journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
+    // Trazabilidad e idempotencia de una nota importada. Los asientos históricos
+    // se importan desde /contabilidad/asiento y por eso no se recrean al proyectar
+    // esta ficha documental.
+    sourceModel: { type: String, default: null },
+    sourceRef: { type: mongoose.Schema.Types.ObjectId, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
+);
+
+creditDebitNoteSchema.index(
+  { clinic: 1, sourceModel: 1, sourceRef: 1 },
+  { unique: true, partialFilterExpression: { sourceModel: { $type: 'string' }, sourceRef: { $type: 'objectId' } } }
 );
 
 module.exports = mongoose.model('CreditDebitNote', creditDebitNoteSchema);

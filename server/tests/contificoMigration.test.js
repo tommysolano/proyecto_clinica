@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { ContificoApi } = require('../services/contificoApi');
 const { checksum, parseDate, fmt, months, externalId, search, parseArgs } = require('../scripts/migrateContifico');
 const { accountType, nature, splitName, tax, ledgerDocType, contificoDate, contificoPayment, contificoSaleItem } = require('../scripts/migrateContificoProject');
+const { mapPaymentMethod, payrollPeriod, noteKind } = require('../scripts/projectContificoSupplemental');
 const { _decode } = require('../controllers/contificoArchiveController');
 const { decodeCompressedJson } = require('../utils/compressedJson');
 const zlib = require('zlib');
@@ -41,10 +42,22 @@ test('cliente API pagina solo con GET y Authorization', async () => {
   assert.equal(calls[0].options.headers.Authorization, 'key');
 });
 
+test('rol individual de rrhh v1 se conserva solo cuando se solicita expresamente', async () => {
+  const role = { cedula: '0102030405', anio: '2026', mes: '8', total_pago: '500.00' };
+  const api = new ContificoApi({
+    apiKey: 'key', baseUrl: 'https://test.local',
+    fetchImpl: async () => ({ ok: true, json: async () => role }),
+  });
+  assert.deepEqual(await api.listV1('/rrhh/rol-pago/'), []);
+  assert.deepEqual(await api.listV1('/rrhh/rol-pago/', {}, { singleObject: true }), [role]);
+});
+
 test('CLI permanece dry-run sin --commit', () => {
   assert.equal(parseArgs(['--phase=extract']).commit, false);
   assert.equal(parseArgs(['--phase=extract', '--commit']).commit, true);
   assert.deepEqual([...parseArgs(['--only=documents,journal_entries']).only], ['documents', 'journal_entries']);
+  assert.deepEqual(parseArgs(['--payroll-periods=P,S']).payrollPeriods, ['P', 'S']);
+  assert.equal(parseArgs(['--page-size=500']).pageSize, 100);
 });
 
 test('mapeos contables y tributarios de proyeccion', () => {
@@ -56,6 +69,19 @@ test('mapeos contables y tributarios de proyeccion', () => {
   assert.deepEqual(tax(15), { taxRate: 15, taxCodeSri: '4', taxCategory: 'IVA_15' });
   assert.equal(ledgerDocType('NCT'), 'NC');
   assert.deepEqual(splitName('ANA PEREZ'), { firstName: 'ANA', lastName: 'PEREZ' });
+});
+
+test('proyeccion permite omitir movimientos de inventario ya enlazados', () => {
+  assert.equal(require('../scripts/migrateContificoProject').parseArgs(['--skip-linked-inventory']).skipLinkedInventory, true);
+});
+
+test('mapeos suplementarios conservan la semántica de Contífico', () => {
+  assert.equal(mapPaymentMethod('TRANSF'), 'TRANSFERENCIA');
+  assert.equal(mapPaymentMethod('CAJA'), 'EFECTIVO');
+  assert.equal(payrollPeriod('P'), 'QUINCENA_1');
+  assert.equal(payrollPeriod('S'), 'CIERRE_MES');
+  assert.equal(noteKind('NCT'), 'NC');
+  assert.equal(noteKind('DNA'), 'ND');
 });
 
 test('documentos Contifico conservan fecha Ecuador, pagos e impuestos por linea', () => {

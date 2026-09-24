@@ -147,3 +147,42 @@ test('el agente corrige el correo del chat a mano y manda sobre el detectado', a
   assert.equal(borrado.statusCode, 200, JSON.stringify(borrado.payload));
   assert.equal(borrado.payload.contactEmail, '', 'vacío = sin correo a mano');
 });
+
+test('corregir el correo del chat ACTUALIZA la ficha del paciente vinculado', async () => {
+  /**
+   * Sep-2026, a pedido de mostrador: call center/marketing corrigen el correo
+   * desde el chat, y si el chat está vinculado a un paciente, la ficha se
+   * actualiza con lo que escribieron — la ficha es donde vive de verdad el
+   * correo (facturación, envío de resultados, campañas). Borrar el correo del
+   * chat NO toca la ficha: quitar un dato de contacto se decide en ella.
+   */
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await Patient.create({
+    clinic: clinicId, firstName: 'Tommy', lastName: 'Solano', cedula: '0912345678', email: '18@hotmail.com',
+  });
+  const conv = await conversacionCon(clinicId, [{ body: 'tommysolano 18@hotmail.com' }]);
+  conv.patient = patient._id;
+  await conv.save();
+
+  const guardado = await H.runController(
+    chat.updateConversation,
+    H.mockReq(clinicId, userId, { contactEmail: 'tommysolano18@hotmail.com' },
+      { params: { id: String(conv._id) } })
+  );
+  assert.equal(guardado.statusCode, 200, JSON.stringify(guardado.payload));
+  assert.equal(guardado.payload.patient.email, 'tommysolano18@hotmail.com',
+    'la ficha del paciente quedó con el correo corregido');
+  // La ficha persiste el cambio (no solo la respuesta).
+  const ficha = await Patient.findById(patient._id).lean();
+  assert.equal(ficha.email, 'tommysolano18@hotmail.com');
+
+  // Borrar el correo del chat no limpia la ficha.
+  const borrado = await H.runController(
+    chat.updateConversation,
+    H.mockReq(clinicId, userId, { contactEmail: '' }, { params: { id: String(conv._id) } })
+  );
+  assert.equal(borrado.statusCode, 200, JSON.stringify(borrado.payload));
+  const fichaTrasBorrar = await Patient.findById(patient._id).lean();
+  assert.equal(fichaTrasBorrar.email, 'tommysolano18@hotmail.com',
+    'la ficha conserva su correo aunque el chat quede sin él');
+});

@@ -69,9 +69,17 @@ class ContificoApi {
     }
   }
 
-  async listV1(path, params = {}) {
+  async listV1(path, params = {}, { singleObject = false } = {}) {
     const data = await this.get(path, params);
-    const rows = Array.isArray(data) ? data : (data.results || []);
+    // La mayor parte de endpoints v1 responde un arreglo, pero rrhh/rol-pago
+    // devuelve UN objeto cuando el empleado sí tiene rol. No convertir ese
+    // objeto en una fila por defecto: otros endpoints pueden responder objetos
+    // de error. El llamador del endpoint singular debe pedirlo explícitamente.
+    const rows = Array.isArray(data)
+      ? data
+      : (Array.isArray(data?.results)
+        ? data.results
+        : (singleObject && data && typeof data === 'object' && !data.error && !data.detail ? [data] : []));
     this.metrics.rows += rows.length;
     return rows;
   }

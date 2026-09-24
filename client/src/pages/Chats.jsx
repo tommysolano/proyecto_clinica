@@ -4367,8 +4367,9 @@ function ContactEmailRow({ conv, onUpdated, email }) {
 /**
  * LA COMPROBACIÓN QUE PIDIÓ MOSTRADOR (sep-2026): cuando el chat está vinculado
  * a un paciente, decir si el correo del chat es el mismo que tiene su ficha.
- * Si difiere, se enseña el de la ficha — copiable — para que el agente decida
- * cuál es el bueno y corrija donde corresponda.
+ * Si difiere, se enseña el de la ficha — copiable — para que el agente vea la
+ * diferencia. Corregir el correo aquí (lápiz de arriba) ACTUALIZA LA FICHA:
+ * el servidor escribe el correo del chat en el perfil del paciente vinculado.
  */
 function EmailVsFicha({ conv, email }) {
   const ficha = String(conv.patient?.email || '').trim();
