@@ -3,7 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { ContificoApi } = require('../services/contificoApi');
-const { checksum, parseDate, fmt, months, externalId, search, parseArgs } = require('../scripts/migrateContifico');
+const { checksum, parseDate, fmt, months, externalId, search, parseArgs, Extractor } = require('../scripts/migrateContifico');
+const ContificoRecord = require('../models/ContificoRecord');
 const { accountType, nature, splitName, tax, ledgerDocType, contificoDate, contificoPayment, contificoSaleItem } = require('../scripts/migrateContificoProject');
 const { mapPaymentMethod, payrollPeriod, noteKind } = require('../scripts/projectContificoSupplemental');
 const { _decode } = require('../controllers/contificoArchiveController');
@@ -153,4 +154,35 @@ test('archivo comprimido se recupera sin perdida', () => {
   assert.equal(decoded.payloadCompressed, undefined);
   const compressed = zlib.gzipSync(Buffer.from(JSON.stringify(payload)));
   assert.deepEqual(decodeCompressedJson({ buffer: compressed, position: compressed.length }), payload);
+});
+
+test('RR.HH. sigue preguntando por quien ya tuvo rol aunque pierda es_empleado', async () => {
+  // El endpoint de rol de pagos exige cedula, asi que la extraccion decide a
+  // quien preguntar. Si solo mirara `es_empleado`, a quien sale de la nomina se
+  // le quita la marca en Contifico y su rol historico dejaria de llegar: como la
+  // etapa se trata como instantanea, desapareceria de nominas ya importadas.
+  const original = ContificoRecord.find;
+  ContificoRecord.find = () => ({ select: () => ({ lean: async () => [
+    { externalId: '0941502387:2026:8:S:202608000041', search: { identification: '0941502387' } },
+    { externalId: '0950114694:2026:8:S:202608000041', search: {} },
+  ] }) });
+  try {
+    const extractor = new Extractor({
+      api: null, clinic: { _id: 'clinica' }, commit: false,
+      from: parseDate('01/01/2026'), through: parseDate('31/12/2026'), cutoff: parseDate('24/09/2026'),
+      pageSize: 100, payrollCedulas: ['0912345678'],
+    });
+    const ids = await extractor.payrollIdentifications([
+      { cedula: '0931358808', es_empleado: true },
+      { cedula: '0941502387', es_empleado: false },
+      { cedula: '1790000000001', es_cliente: true },
+    ]);
+    assert.deepEqual([...ids.keys()], ['0931358808', '0941502387', '0950114694', '0912345678']);
+    assert.equal(ids.get('0931358808'), 'es_empleado');
+    // La cedula tambien se recupera del externalId cuando el indice no la trae.
+    assert.equal(ids.get('0950114694'), 'rol previo');
+    assert.equal(ids.get('0912345678'), 'indicada a mano');
+    // Un cliente cualquiera NO entra: seria una consulta por persona y mes.
+    assert.equal(ids.has('1790000000001'), false);
+  } finally { ContificoRecord.find = original; }
 });

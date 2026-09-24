@@ -78,9 +78,29 @@ Dos avisos que explican casi todas las "diferencias" que no lo son:
 
 ## Nómina
 
-`/api/v1/rrhh/rol-pago/` exige `cedula`: no hay forma de pedir el rol de todos de
-una vez. La extracción recorre las personas marcadas `es_empleado` en Contífico,
-mes a mes y por período (`P` quincena, `S` cierre de mes, `M` mensual). Un
-empleado al que en Contífico se le haya quitado esa marca **no se consulta**, así
-que su rol no llega; los períodos que Contífico no tiene responden «Período
-solicitado no existe» y simplemente no se archivan.
+`/api/v1/rrhh/rol-pago/` exige `cedula`: **no hay forma de listar el rol de un
+período entero**, ni por comprobante. La extracción tiene que saber a quién
+preguntar, y la marca `es_empleado` de Contífico no alcanza —a quien sale de la
+nómina se la quitan, y su rol histórico dejaría de llegar—. Por eso se consulta:
+
+1. toda persona marcada `es_empleado`,
+2. toda cédula que ya figure en un rol archivado (se autocura: quien entró una
+   vez se sigue consultando), y
+3. las que se pasen a mano con `--payroll-cedulas=0941502387,0950114694`.
+
+Si en una nómina de Contífico aparece alguien que el sistema no muestra, casi
+siempre es que esa persona **nunca** estuvo marcada `es_empleado` y por tanto
+jamás se le preguntó. Se arregla de las dos formas: marcándola en Contífico, o
+nombrándola una vez con `--payroll-cedulas` (a partir de ahí ya entra sola).
+
+Los períodos que Contífico no tiene responden «Período solicitado no existe» y no
+se archivan; los que sí existen pero sin esa persona, «La persona no se encuentra
+registrada en el período solicitado».
+
+Para volver a traer solo la nómina, sin repetir la descarga entera:
+
+```
+node scripts/migrateContifico.js --phase=extract --clinic-name=Central \
+  --only=payroll_roles --from=01/01/2026 --commit
+node scripts/projectContificoSupplemental.js --clinic-name=Central --only=payroll --commit
+```

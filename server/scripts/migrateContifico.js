@@ -79,15 +79,17 @@ function parseArgs(argv) {
     pageSize: Math.min(100, Math.max(10, num(values['page-size'], 100))),
     only: new Set(String(values.only || '').split(',').map((value) => value.trim()).filter(Boolean)),
     payrollPeriods: String(values['payroll-periods'] || 'P,S,M').split(',').map((value) => value.trim().toUpperCase()).filter(Boolean),
+    payrollCedulas: String(values['payroll-cedulas'] || '').split(',').map((value) => value.trim()).filter(Boolean),
   };
 }
 
 class Extractor {
-  constructor({ api, clinic, commit, from, through, cutoff, pageSize, only = new Set(), payrollPeriods = ['P', 'S', 'M'] }) {
+  constructor({ api, clinic, commit, from, through, cutoff, pageSize, only = new Set(), payrollPeriods = ['P', 'S', 'M'], payrollCedulas = [] }) {
     this.api = api; this.clinic = clinic; this.commit = commit;
     this.from = from; this.through = through; this.cutoff = cutoff; this.pageSize = pageSize;
     this.only = only;
     this.payrollPeriods = payrollPeriods;
+    this.payrollCedulas = payrollCedulas;
     this.stages = []; this.issues = []; this.run = null; this.cache = {}; this.earliestJournal = null;
   }
   log(text) { console.log(`[contifico] ${text}`); }
@@ -204,16 +206,43 @@ class Extractor {
     }
     await this.saveStage(stage);
   }
+  /**
+   * Cedulas a consultar en RR.HH. El endpoint de rol de pagos exige `cedula` --
+   * no existe forma de listar un periodo entero--, asi que hay que saber a quien
+   * preguntar, y `es_empleado` no alcanza: a quien sale de la nomina se le quita
+   * esa marca en Contifico, su rol historico deja de llegar y, como la
+   * proyeccion trata esta etapa como instantanea, desaparece de nominas ya
+   * importadas. Por eso se vuelve a preguntar por todo el que ya figuro en un
+   * rol, mas las cedulas que se indiquen a mano con --payroll-cedulas.
+   */
+  async payrollIdentifications(persons) {
+    const identifications = new Map();
+    for (const person of persons) {
+      const id = String(person.cedula || person.ruc || '').trim();
+      if (person.es_empleado && id) identifications.set(id, 'es_empleado');
+    }
+    const archived = await ContificoRecord.find({ clinic: this.clinic._id, entity: 'payroll_role' })
+      .select('externalId search.identification').lean();
+    for (const record of archived) {
+      const id = String(record.search?.identification || String(record.externalId).split(':')[0] || '').trim();
+      if (id && !identifications.has(id)) identifications.set(id, 'rol previo');
+    }
+    for (const id of this.payrollCedulas) if (id && !identifications.has(id)) identifications.set(id, 'indicada a mano');
+    return identifications;
+  }
   async payroll() {
     const stage = this.stage('payroll_roles');
     let persons = this.cache.person;
     if (!persons) persons = (await ContificoRecord.find({ clinic: this.clinic._id, entity: 'person' }).select('payloadCompressed').lean()).map((record) => decodeCompressedJson(record.payloadCompressed));
-    const employees = persons.filter((person) => person.es_empleado && (person.cedula || person.ruc));
+    const identifications = await this.payrollIdentifications(persons);
+    const origins = {};
+    for (const origin of identifications.values()) origins[origin] = (origins[origin] || 0) + 1;
+    this.log(`payroll_roles: ${identifications.size} cedulas (${Object.entries(origins).map(([key, value]) => `${key}=${value}`).join(', ') || 'ninguna'})`);
     const ranges = months(this.earliestJournal || this.from || parseDate('01/11/2025'), this.cutoff);
-    for (const employee of employees) for (const month of ranges) for (const period of this.payrollPeriods) {
+    for (const cedula of identifications.keys()) for (const month of ranges) for (const period of this.payrollPeriods) {
       const rows = await this.api.listV1(
         '/api/v1/rrhh/rol-pago/',
-        { cedula: employee.cedula || employee.ruc, periodo: period, anio: month.from.getUTCFullYear(), mes: month.from.getUTCMonth() + 1 },
+        { cedula, periodo: period, anio: month.from.getUTCFullYear(), mes: month.from.getUTCMonth() + 1 },
         { singleObject: true }
       );
       await this.archive('payroll_role', rows.map((row) => ({ ...row, periodo_consultado: period })), stage);
