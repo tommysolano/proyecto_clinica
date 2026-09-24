@@ -95,10 +95,27 @@ class Extractor {
     if (this.commit) this.run = await ContificoMigrationRun.create({ clinic: this.clinic._id, mode: 'COMMIT', phase: 'EXTRACT', range: { from: this.from, through: this.through, cutoff: this.cutoff } });
   }
   stage(name) { const stage = { name, fetched: 0, unique: 0, created: 0, updated: 0, unchanged: 0, duplicates: 0, status: 'RUNNING' }; this.stages.push(stage); this.log(`inicio ${name}`); return stage; }
+  /**
+   * Anota si una ventana paginada quedo corta frente al total que informa
+   * Contifico. Una etapa incompleta NO puede marcarse COMPLETED: la proyeccion
+   * trata las etapas completas como instantanea y retira lo que no aparece en
+   * ellas, asi que declararla completa borraria registros vivos.
+   */
+  track(stage, stats) {
+    if (stats.expected === null || stats.expected === undefined) return;
+    stage.expected = (stage.expected || 0) + stats.expected;
+    stage.recovered = (stage.recovered || 0) + (stats.recovered || 0);
+    if (stats.complete) return;
+    const missing = stats.expected - stats.unique;
+    stage.missing = (stage.missing || 0) + missing;
+    const message = `Contifico informo ${stats.expected} filas y solo entrego ${stats.unique} tras ${stats.attempts} pasadas`;
+    this.issues.push({ stage: stage.name, message });
+    this.log(`AVISO ${stage.name}: ${message}`);
+  }
   async saveStage(stage) {
-    stage.status = 'COMPLETED';
-    this.log(`fin ${stage.name}: fetched=${stage.fetched} unique=${stage.unique} new=${stage.created} updated=${stage.updated} unchanged=${stage.unchanged} duplicates=${stage.duplicates}`);
-    if (this.run) { this.run.stages = this.stages; await this.run.save(); }
+    stage.status = stage.missing ? 'INCOMPLETE' : 'COMPLETED';
+    this.log(`fin ${stage.name}: fetched=${stage.fetched} unique=${stage.unique} new=${stage.created} updated=${stage.updated} unchanged=${stage.unchanged} duplicates=${stage.duplicates} esperados=${stage.expected ?? '-'} recuperados=${stage.recovered || 0} faltantes=${stage.missing || 0}`);
+    if (this.run) { this.run.stages = this.stages; this.run.issues = this.issues; await this.run.save(); }
   }
   async archive(entity, rows, stage, idFunction = externalId) {
     stage.fetched += rows.length;
@@ -140,12 +157,13 @@ class Extractor {
     await this.saveStage(stage);
   }
   async v2(name, entity, path, { cache = false } = {}) {
-    const stage = this.stage(name); const cached = [];
-    for await (const page of this.api.pages(path, {}, this.pageSize)) {
+    const stage = this.stage(name); const cached = []; const stats = {};
+    for await (const page of this.api.pages(path, {}, this.pageSize, stats)) {
       await this.archive(entity, page.rows, stage);
       if (cache) cached.push(...page.rows);
       if (stage.fetched && stage.fetched % 1000 < page.rows.length) this.log(`${name}: ${stage.fetched}/${page.count}`);
     }
+    this.track(stage, stats);
     if (cache) this.cache[entity] = cached;
     await this.saveStage(stage);
   }
@@ -175,12 +193,13 @@ class Extractor {
   async journals() {
     const stage = this.stage('journal_entries');
     for (const month of months(this.from, this.through)) {
-      let count = 0;
-      for await (const page of this.api.pages('/api/v2/contabilidad/asiento/', { fecha_inicial: fmt(month.from), fecha_final: fmt(month.through) }, this.pageSize)) {
+      let count = 0; const stats = {};
+      for await (const page of this.api.pages('/api/v2/contabilidad/asiento/', { fecha_inicial: fmt(month.from), fecha_final: fmt(month.through) }, this.pageSize, stats)) {
         count = page.count;
         if (count && !this.earliestJournal) this.earliestJournal = month.from;
         await this.archive('journal_entry', page.rows, stage);
       }
+      this.track(stage, stats);
       if (count) this.log(`journal_entries ${month.key}: ${count}`);
     }
     await this.saveStage(stage);
@@ -227,7 +246,7 @@ class Extractor {
       if (enabled('inventory_movements')) await this.v2('inventory_movements', 'inventory_movement', '/api/v2/movimiento-inventario/');
       if (enabled('journal_entries')) await this.journals();
       if (enabled('payroll_roles')) await this.payroll();
-      if (this.run) { this.run.status = this.stages.some((stage) => stage.duplicates) ? 'COMPLETED_WITH_WARNINGS' : 'COMPLETED'; this.run.completedAt = new Date(); await this.run.save(); }
+      if (this.run) { this.run.status = this.stages.some((stage) => stage.duplicates || stage.missing) ? 'COMPLETED_WITH_WARNINGS' : 'COMPLETED'; this.run.completedAt = new Date(); this.run.issues = this.issues; await this.run.save(); }
       return { stages: this.stages.map(({ _seen, ...stage }) => stage), metrics: this.api.metrics };
     } catch (error) {
       if (this.run) { this.run.status = 'FAILED'; this.run.completedAt = new Date(); this.run.issues = [{ message: error.message }]; await this.run.save(); }

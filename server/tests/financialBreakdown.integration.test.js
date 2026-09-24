@@ -146,3 +146,45 @@ test('sin desglose el reporte sigue siendo el de siempre (una sola cifra por cue
   assert.deepEqual(r.payload.columns, []);
   assert.equal(r.payload.totalIngresos, 100);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('costos y gastos colgados de la MISMA raíz salen cada uno en su sección', async () => {
+  // El plan que llegó de Contífico cuelga los costos (5.1) y los gastos (5.2) de
+  // la raíz 5, que está tipada como COSTO. Repartir las secciones por el tipo de
+  // la raíz metía el grupo 5 entero en "Costo de ventas" y dejaba "Gastos
+  // operativos" vacío pero con total: el reporte se contradecía solo.
+  const { clinicId, userId } = await H.seedClinic({ date: d('2026-03-15') });
+  await ChartOfAccount.create([
+    { clinic: clinicId, code: '5.2', name: 'Gastos', type: 'GASTO', nature: 'DEBITO', level: 2, allowsMovement: false, active: true },
+    { clinic: clinicId, code: '5.2.1', name: 'Gastos de Actividades Ordinarias', type: 'GASTO', nature: 'DEBITO', level: 3, allowsMovement: true, active: true },
+  ]);
+  const caja = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.01.01' });
+  const costo = await ChartOfAccount.findOne({ clinic: clinicId, code: '5.1.01' });
+  const gastoOrdinario = await ChartOfAccount.findOne({ clinic: clinicId, code: '5.2.1' });
+  await venta(clinicId, userId, { fecha: '2026-03-20', monto: 1000 });
+  await createEntry({ clinicId, date: d('2026-03-21'), description: 'Costo', source: 'AJUSTE', userId,
+    lines: [{ account: costo._id, debit: 300, credit: 0 }, { account: caja._id, debit: 0, credit: 300 }] });
+  await createEntry({ clinicId, date: d('2026-03-22'), description: 'Gasto ordinario', source: 'AJUSTE', userId,
+    lines: [{ account: gastoOrdinario._id, debit: 120, credit: 0 }, { account: caja._id, debit: 0, credit: 120 }] });
+
+  const r = await pedir(clinicId, userId, { startDate: '2026-03-01', endDate: '2026-03-31' });
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  const p = r.payload;
+  assert.equal(p.totalCostos, 300);
+  assert.equal(p.totalGastos, 120);
+
+  const seccion = (tipo) => p.tree.filter((n) => n.type === tipo);
+  const suma = (nodes) => +nodes.reduce((acc, n) => acc + n.total, 0).toFixed(2);
+  // Cada sección trae cuentas y cuadra con SU propio total: ni una vacía con
+  // saldo, ni una que se lleve el importe de la otra.
+  assert.ok(seccion('COSTO').length, 'la sección de costos quedó vacía');
+  assert.ok(seccion('GASTO').length, 'la sección de gastos quedó vacía');
+  assert.equal(suma(seccion('COSTO')), p.totalCostos);
+  assert.equal(suma(seccion('GASTO')), p.totalGastos);
+  assert.equal(suma(seccion('INGRESO')), p.totalIngresos);
+
+  // Y ninguna cuenta de gasto se cuela en el árbol de costos.
+  const codigos = (nodes, out = []) => { for (const n of nodes) { out.push(n.code); codigos(n.children || [], out); } return out; };
+  assert.ok(!codigos(seccion('COSTO')).includes('5.2.1'));
+  assert.ok(codigos(seccion('GASTO')).includes('5.2.1'));
+});

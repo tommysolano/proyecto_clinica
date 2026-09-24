@@ -42,6 +42,50 @@ test('cliente API pagina solo con GET y Authorization', async () => {
   assert.equal(calls[0].options.headers.Authorization, 'key');
 });
 
+test('la paginacion recupera las filas que Contifico se salta entre paginas', async () => {
+  // Contifico no ordena de forma estable: en la primera pasada repite la fila 2
+  // en el borde de pagina y, a cambio, nunca entrega la 4. Como informa el total
+  // real en `count`, el cliente debe repetir con otro tamano de pagina hasta
+  // completarlas, sin emitir ninguna fila dos veces.
+  const porTamano = {
+    2: [
+      { count: 5, next: 'https://test.local/items?page=2', results: [{ id: 1 }, { id: 2 }] },
+      { count: 5, next: 'https://test.local/items?page=3', results: [{ id: 2 }, { id: 3 }] },
+      { count: 5, next: null, results: [{ id: 5 }] },
+    ],
+    97: [
+      { count: 5, next: null, results: [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }] },
+    ],
+  };
+  const api = new ContificoApi({ apiKey: 'key', baseUrl: 'https://test.local', fetchImpl: async (url) => {
+    const size = new URL(String(url)).searchParams.get('page_size') || lastSize;
+    lastSize = size;
+    return { ok: true, json: async () => porTamano[size].shift() };
+  } });
+  let lastSize = '2';
+  const stats = {};
+  const ids = [];
+  for await (const page of api.pages('/items', {}, 2, stats)) ids.push(...page.rows.map((row) => row.id));
+  assert.deepEqual(ids, [1, 2, 3, 5, 4]);
+  assert.equal(stats.expected, 5);
+  assert.equal(stats.unique, 5);
+  assert.equal(stats.recovered, 1);
+  assert.equal(stats.complete, true);
+});
+
+test('una ventana que nunca se completa se declara incompleta, no completa', async () => {
+  const api = new ContificoApi({ apiKey: 'key', baseUrl: 'https://test.local', fetchImpl: async () => ({
+    ok: true, json: async () => ({ count: 4, next: null, results: [{ id: 1 }, { id: 2 }] }),
+  }) });
+  const stats = {};
+  const ids = [];
+  for await (const page of api.pages('/items', {}, 2, stats)) ids.push(...page.rows.map((row) => row.id));
+  // Solo se emite cada fila una vez, y el llamador se entera de que faltan dos.
+  assert.deepEqual(ids, [1, 2]);
+  assert.equal(stats.complete, false);
+  assert.equal(stats.expected - stats.unique, 2);
+});
+
 test('rol individual de rrhh v1 se conserva solo cuando se solicita expresamente', async () => {
   const role = { cedula: '0102030405', anio: '2026', mes: '8', total_pago: '500.00' };
   const api = new ContificoApi({

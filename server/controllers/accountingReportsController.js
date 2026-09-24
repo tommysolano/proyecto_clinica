@@ -294,21 +294,38 @@ async function getAccountBalances(clinicId, { startDate, endDate, mode = 'none',
 /**
  * Construye el árbol jerárquico del plan de cuentas (por prefijo de código) con
  * los saldos rodados hacia arriba, igual que presentan Contífico/Supercías: cada
- * cuenta agrupadora muestra el subtotal de sus cuentas hijas. Devuelve los nodos
- * raíz cuyo `type` está en `types`, podando ramas sin saldo.
+ * cuenta agrupadora muestra el subtotal de sus cuentas hijas.
+ *
+ * Devuelve UN árbol por cada tipo pedido, y cada árbol solo suma las cuentas de
+ * movimiento de ESE tipo. El tipo de la cuenta raíz no sirve para repartir las
+ * secciones: el plan cuelga los costos (5.1) y los gastos (5.2) de la misma raíz
+ * 5, así que filtrar por el tipo de la raíz metía el grupo 5 entero en una sola
+ * sección y dejaba la otra vacía aunque su total no fuera cero.
  */
 function buildAccountTree(balances, types) {
+  return types.flatMap((type) => buildTypeTree(balances, type));
+}
+
+/** Árbol del plan de cuentas contando solo las cuentas de movimiento de `type`. */
+function buildTypeTree(balances, type) {
   const byCode = new Map();
-  const nodes = balances.map((a) => ({
-    _id: a._id, code: a.code, name: a.name, type: a.type, nature: a.nature,
-    level: a.level, allowsMovement: a.allowsMovement,
-    debit: a.debit || 0, credit: a.credit || 0,
-    own: a.allowsMovement ? (a.balance || 0) : 0, total: 0, children: [],
-    // Importe propio por columna del desglose (mes / centro de costo / sede).
-    ownByColumn: a.allowsMovement ? (a.byColumn || {}) : {},
-    values: {},
-  }));
-  nodes.sort((a, b) => String(a.code).localeCompare(String(b.code)));
+  const nodes = balances.map((a) => {
+    // Una cuenta de otro tipo sigue en el árbol como jerarquía, pero no aporta
+    // saldo: así cada sección cuadra con su propio total.
+    const suma = a.allowsMovement && a.type === type;
+    return {
+      _id: a._id, code: a.code, name: a.name, type: a.type, nature: a.nature,
+      level: a.level, allowsMovement: a.allowsMovement,
+      debit: suma ? (a.debit || 0) : 0, credit: suma ? (a.credit || 0) : 0,
+      own: suma ? (a.balance || 0) : 0, total: 0, children: [],
+      // Importe propio por columna del desglose (mes / centro de costo / sede).
+      ownByColumn: suma ? (a.byColumn || {}) : {},
+      values: {},
+    };
+  });
+  // Orden numerico por tramo: si no, 4.1.12 se cuela delante de 4.1.2 y el
+  // reporte no se lee en el mismo orden que el de Contifico.
+  nodes.sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
   for (const n of nodes) byCode.set(n.code, n);
   const roots = [];
   for (const n of nodes) {
@@ -332,9 +349,19 @@ function buildAccountTree(balances, types) {
   const prune = (n) => {
     n.children = n.children.filter((c) => { prune(c); return Math.abs(c.total) > 0.004 || c.children.length; });
   };
+  // Una misma raíz puede alimentar dos secciones (5 cuelga costos y gastos). Si
+  // el grupo no aporta saldo propio y solo le queda una hija con su mismo total,
+  // repetirlo confundiría: la sección arranca en la primera cuenta que reparte.
+  const collapse = (n) => (
+    !n.allowsMovement && n.children.length === 1 && Math.abs(n.total - n.children[0].total) < 0.005
+      ? collapse(n.children[0])
+      : n
+  );
   return roots
-    .filter((r) => types.includes(r.type))
-    .filter((r) => { prune(r); return Math.abs(r.total) > 0.004 || r.children.length; });
+    .filter((r) => { prune(r); return Math.abs(r.total) > 0.004 || r.children.length; })
+    .map(collapse)
+    // La sección la identifica el tipo que agrupa, no el de la cuenta raíz.
+    .map((r) => ({ ...r, type }));
 }
 
 const round2 = (n) => +(Number(n) || 0).toFixed(2);
