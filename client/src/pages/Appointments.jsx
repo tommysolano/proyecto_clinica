@@ -1508,6 +1508,10 @@ export default function Appointments() {
    * cambia la otra, o el botón sale y lleva a un 403.
    */
   const puedeBorrar = isAdmin || hasRole('marketing');
+  // La marca «Paciente nuevo» altera reportes y comisiones. Solo quien responde
+  // por la agenda (administración o marketing) puede corregir un falso positivo.
+  // Es espejo de `PATCH /appointments/:id/clear-first-visit`.
+  const puedeQuitarPacienteNuevo = isAdmin || isMarketing;
 
   const handleDelete = async (apt) => {
     if (!puedeBorrar) {
@@ -1527,6 +1531,30 @@ export default function Appointments() {
       fetchAppointments();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al eliminar');
+    }
+  };
+
+  const quitarEstadoPacienteNuevo = async (apt) => {
+    if (!puedeQuitarPacienteNuevo) {
+      toast.error('Solo administración y marketing pueden quitar el estado de paciente nuevo.');
+      return;
+    }
+    const quien = [apt.patient?.firstName, apt.patient?.lastName].filter(Boolean).join(' ');
+    const aviso =
+      `¿Quitar el estado de paciente nuevo${quien ? ` a ${quien}` : ''}? ` +
+      'La cita dejará de contar como paciente nuevo en la agenda, reportes y comisiones.';
+    if (!window.confirm(aviso)) return;
+    try {
+      const { data } = await api.patch(`/appointments/${apt._id}/clear-first-visit`);
+      setDetailModal((actual) => (
+        actual && String(actual._id) === String(apt._id)
+          ? { ...data, status: normalizeStatus(data.status) }
+          : actual
+      ));
+      toast.success('La cita ahora está marcada como paciente recurrente.');
+      fetchAppointments();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo quitar el estado de paciente nuevo.');
     }
   };
 
@@ -3168,6 +3196,14 @@ export default function Appointments() {
                         fn: () => openEdit(apt),
                       });
                     }
+                    if (puedeQuitarPacienteNuevo && apt.isFirstVisit) {
+                      opciones.push({
+                        id: 'quitar_paciente_nuevo',
+                        label: 'Quitar paciente nuevo',
+                        icon: HiOutlineNoSymbol,
+                        fn: () => quitarEstadoPacienteNuevo(apt),
+                      });
+                    }
                     /* BORRAR ES BORRAR: administración y marketing. El aviso
                         de `handleDelete` dice lo que pasa de verdad. */
                     if (puedeBorrar) {
@@ -3954,8 +3990,17 @@ export default function Appointments() {
         {detailModal && (
           <div className="space-y-4">
             {detailModal.isFirstVisit && (
-              <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2 text-amber-700 text-sm font-semibold uppercase tracking-wide">
-                ✨ Paciente Nuevo
+              <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2 text-amber-700 text-sm font-semibold flex flex-wrap items-center justify-between gap-2">
+                <span className="uppercase tracking-wide">✨ Paciente Nuevo</span>
+                {puedeQuitarPacienteNuevo && (
+                  <button
+                    type="button"
+                    onClick={() => quitarEstadoPacienteNuevo(detailModal)}
+                    className="px-2.5 py-1 rounded-lg text-xs font-semibold normal-case tracking-normal bg-white text-amber-800 border border-amber-300 hover:bg-amber-100 cursor-pointer"
+                  >
+                    Quitar estado
+                  </button>
+                )}
               </div>
             )}
             <div className="grid grid-cols-2 gap-4">

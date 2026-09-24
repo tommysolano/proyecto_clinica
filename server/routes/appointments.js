@@ -7,6 +7,7 @@ const {
   exportAppointments,
   createWalkIn,
   updateAppointment,
+  clearFirstVisit,
   deleteAppointment,
   getTodayAppointments,
   getAppointmentPdf,
@@ -103,6 +104,13 @@ router.post('/walk-in', requireRole('admin', 'doctor'), createWalkIn);
  * la regla.
  */
 router.put('/:id', requireRole('admin', 'cajero', 'call_center', 'marketing'), updateAppointment);
+/**
+ * CORREGIR «PACIENTE NUEVO»: esta marca alimenta reportes y comisiones, por lo
+ * que no se abre dentro de la edición normal de la cita. Administración y
+ * marketing pueden quitarla cuando se marcó por error; nadie puede volver a
+ * ponerla manualmente.
+ */
+router.patch('/:id/clear-first-visit', requireRole('admin', 'marketing'), clearFirstVisit);
 router.post('/:id/start', requireRole('admin', 'doctor'), startConsultation);
 router.post('/:id/end', requireRole('admin', 'doctor'), endConsultation);
 router.post('/:id/confirm', requireRole('admin', 'cajero', 'call_center', 'enfermero'), markConfirmed);

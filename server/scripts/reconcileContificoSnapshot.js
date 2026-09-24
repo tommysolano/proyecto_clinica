@@ -17,6 +17,7 @@ const Payroll = require('../models/Payroll');
 const InventoryLayer = require('../models/InventoryLayer');
 const CreditDebitNote = require('../models/CreditDebitNote');
 const Product = require('../models/Product');
+const ChartOfAccount = require('../models/ChartOfAccount');
 const { decodeCompressedJson } = require('../utils/compressedJson');
 const { parseDate } = require('./migrateContifico');
 
@@ -44,6 +45,23 @@ function comparison(source, target) {
   return result;
 }
 
+function incomeStatement(accounts, entries, accountIdOf, debitOf, creditOf) {
+  const balances = new Map(accounts.map((account) => [String(account._id), { ...account, debit: 0, credit: 0 }]));
+  for (const entry of entries) for (const line of entry.lines || entry.payload?.detalles || []) {
+    const account = balances.get(String(accountIdOf(line) || ''));
+    if (!account) continue;
+    account.debit += amount(debitOf(line));
+    account.credit += amount(creditOf(line));
+  }
+  const sum = (type) => round([...balances.values()]
+    .filter((account) => account.allowsMovement && account.type === type)
+    .reduce((value, account) => value + (account.nature === 'DEBITO'
+      ? account.debit - account.credit
+      : account.credit - account.debit), 0));
+  const ingresos = sum('INGRESO'), costos = sum('COSTO'), gastos = sum('GASTO');
+  return { ingresos, costos, gastos, utilidad: round(ingresos - costos - gastos) };
+}
+
 async function main() {
   const options = args(process.argv.slice(2));
   await mongoose.connect(process.env.MONGODB_URI);
@@ -57,9 +75,13 @@ async function main() {
   }).sort({ completedAt: -1, createdAt: -1 }).lean();
   if (!snapshot) throw new Error('No existe una instantanea de extracción completada');
 
-  const [dynamicRows, staticRows] = await Promise.all([
+  const snapshotEntities = new Set((snapshot.stages || []).filter((stage) => stage.status === 'COMPLETED').map((stage) => stage.name));
+  const staticEntities = ['product_stock', 'product'];
+  if (!snapshotEntities.has('payroll_roles')) staticEntities.push('payroll_role');
+  const [dynamicRows, staticRows, rawAccounts] = await Promise.all([
     ContificoRecord.find({ clinic: clinic._id, migrationRun: snapshot._id }).lean(),
-    ContificoRecord.find({ clinic: clinic._id, entity: { $in: ['payroll_role', 'product_stock', 'product'] } }).lean(),
+    ContificoRecord.find({ clinic: clinic._id, entity: { $in: staticEntities } }).lean(),
+    ContificoRecord.find({ clinic: clinic._id, entity: 'chart_account' }).lean(),
   ]);
   const rows = [...dynamicRows, ...staticRows];
   const byEntity = (entity) => rows
@@ -101,7 +123,7 @@ async function main() {
     && beforeCutoff(row, 'fecha_emision'));
   const sourceStockLines = stock.flatMap((row) => Array.isArray(row.payload.stock) ? row.payload.stock : []);
 
-  const [nativeSales, nativePurchases, nativePayments, nativeJournals, nativePayroll, nativeStock, nativeNotes, nativeProducts] = await Promise.all([
+  const [nativeSales, nativePurchases, nativePayments, nativeJournals, nativePayroll, nativeStock, nativeNotes, nativeProducts, accounts, nativeJournalLines] = await Promise.all([
     Sale.find({ clinic: clinic._id, idempotencyKey: /^contifico:/ }).select('total').lean(),
     PurchaseInvoice.find({ clinic: clinic._id, sourceModel: 'ContificoRecord' }).select('total').lean(),
     Payment.find({ clinic: clinic._id, idempotencyKey: /^contifico:transaction:/ }).select('total').lean(),
@@ -110,7 +132,30 @@ async function main() {
     InventoryLayer.find({ clinic: clinic._id, sourceModel: 'ContificoStock' }).select('qtyInitial').lean(),
     CreditDebitNote.find({ clinic: clinic._id, sourceModel: 'ContificoRecord' }).select('total').lean(),
     Product.find({ clinic: clinic._id, code: { $in: products.map((row) => String(row.payload.codigo || '')).filter(Boolean) } }).select('stock').lean(),
+    ChartOfAccount.find({ clinic: clinic._id }).select('code type nature allowsMovement').lean(),
+    JournalEntry.find({ clinic: clinic._id, status: 'CONTABILIZADO' }).select('date lines').lean(),
   ]);
+  const accountByCode = new Map(accounts.map((account) => [String(account.code), account]));
+  const sourceAccountMap = new Map(rawAccounts.map((record) => {
+    const payload = decodeCompressedJson(record.payloadCompressed);
+    return [String(record.externalId), accountByCode.get(String(payload.codigo || ''))?._id || null];
+  }));
+  const year = options.cutoff.getUTCFullYear();
+  const start = new Date(Date.UTC(year, 0, 1));
+  const end = new Date(Date.UTC(year, 11, 31, 23, 59, 59, 999));
+  const nativeYearJournals = nativeJournalLines.filter((entry) => entry.date >= start && entry.date <= end);
+  const sourceYearJournals = sourceJournals.filter((entry) => {
+    const date = parseDate(entry.payload.fecha);
+    return date && date >= start && date <= end;
+  });
+  const sourceStatement = incomeStatement(
+    accounts,
+    sourceYearJournals,
+    (line) => sourceAccountMap.get(String(line.cuenta_id || '')),
+    (line) => String(line.tipo).toUpperCase() === 'D' ? line.valor : 0,
+    (line) => String(line.tipo).toUpperCase() === 'H' ? line.valor : 0,
+  );
+  const nativeStatement = incomeStatement(accounts, nativeYearJournals, (line) => line.account, (line) => line.debit, (line) => line.credit);
 
   const report = {
     clinic: clinic.name,
@@ -133,6 +178,12 @@ async function main() {
       warehouseStock: comparison({ count: sourceStockLines.length, total: total(sourceStockLines, (line) => amount(line.cantidad)) }, { count: nativeStock.length, total: total(nativeStock, (row) => amount(row.qtyInitial)) }),
       products: comparison({ count: products.length, total: total(products, (row) => amount(row.payload.cantidad_stock)) }, { count: nativeProducts.length, total: total(nativeProducts, (row) => amount(row.stock)) }),
       creditDebitNotes: comparison({ count: sourceNotes.length, total: total(sourceNotes, (row) => amount(row.payload.total)) }, { count: nativeNotes.length, total: total(nativeNotes, (row) => amount(row.total)) }),
+    },
+    incomeStatement: {
+      year,
+      source: sourceStatement,
+      target: nativeStatement,
+      match: Object.keys(sourceStatement).every((key) => Math.abs(sourceStatement[key] - nativeStatement[key]) < 0.01),
     },
   };
   console.log(JSON.stringify(report, null, 2));

@@ -476,6 +476,12 @@ const appointmentSchema = new mongoose.Schema(
     // Marca si es la primera cita del paciente (registrado por primera vez).
     // Se calcula al crear: true si el paciente no tenía citas previas.
     isFirstVisit: { type: Boolean, default: false },
+    // Si administración o marketing corrige una marca de «paciente nuevo»
+    // equivocada, queda la trazabilidad de una decisión que altera reportes y
+    // comisiones. La marca solo se puede quitar, nunca poner manualmente.
+    firstVisitCorrectedAt: { type: Date, default: null },
+    firstVisitCorrectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    firstVisitCorrectedByName: { type: String, trim: true, default: '' },
     // Cronómetro de consulta (lo arranca el doctor desde la UI).
     consultationStartedAt: { type: Date },
     consultationEndedAt: { type: Date },

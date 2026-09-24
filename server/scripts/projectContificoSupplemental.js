@@ -52,6 +52,9 @@ const status = (row) => row?.anulado ? 'ANULADA' : (row?.autorizado_sri ? 'AUTOR
 const snapshotEntities = {
   documents: 'document', transactions: 'transaction', bank_movements: 'bank_movement',
   inventory_movements: 'inventory_movement', journal_entries: 'journal_entry',
+  // RR.HH. se consulta como una foto por período. No mezclar roles de una
+  // extracción anterior evita empleados/valores ya inexistentes en Contífico.
+  payroll_roles: 'payroll_role',
 };
 
 function args(argv) {
@@ -196,20 +199,32 @@ class SupplementalProjector {
     const [people, roles, existingEmployees] = await Promise.all([
       this.records('person'), this.records('payroll_role'), Employee.find({ clinic: this.clinic._id }).select('_id identificacion').lean(),
     ]);
-    const employees = people.filter((record) => record.payload.es_empleado && (record.payload.cedula || record.payload.ruc));
-    const employeeById = new Map(existingEmployees.map((employee) => [String(employee.identificacion), employee]));
+    // Algunas personas históricas ya no tienen la bandera `es_empleado`, pero sí
+    // constan en un rol de pago. También son empleados de origen y deben aparecer
+    // en nómina para que ningún rol quede sin su ficha.
+    const employeeSources = new Map();
+    for (const record of people) {
+      const identification = String(record.payload.cedula || record.payload.ruc || '');
+      if (record.payload.es_empleado && identification) employeeSources.set(identification, { record, role: null });
+    }
+    for (const role of roles) {
+      const identification = String(role.payload.cedula || '');
+      if (identification && !employeeSources.has(identification)) employeeSources.set(identification, { record: null, role });
+    }
     const employeeOps = [];
-    for (const record of employees) {
-      const row = record.payload, identification = String(row.cedula || row.ruc || '');
-      if (!identification || employeeById.has(identification)) continue;
-      const names = splitName(row.razon_social || row.nombre_comercial || identification);
-      employeeOps.push({ updateOne: { filter: { clinic: this.clinic._id, identificacion: identification }, update: { $setOnInsert: {
-        clinic: this.clinic._id, code: `CTF-${record.externalId}`, identificacion: identification, tipoIdentificacion: idType(identification),
+    for (const [identification, source] of employeeSources) {
+      const row = source.record?.payload || {}, role = source.role?.payload || {};
+      const names = splitName(row.razon_social || row.nombre_comercial || role.nombre_persona || identification);
+      const externalId = source.record?.externalId || `ROL-${identification}`;
+      // Las fichas que vienen de Contífico se refrescan también si ya existen:
+      // antes solo se insertaban y quedaban nombres/sueldos desactualizados.
+      employeeOps.push({ updateOne: { filter: { clinic: this.clinic._id, identificacion: identification }, update: { $set: {
+        clinic: this.clinic._id, code: `CTF-${externalId}`, identificacion: identification, tipoIdentificacion: idType(identification),
         ...names, email: String(row.email || ''), phone: String(row.telefonos || ''), address: String(row.direccion || ''),
-        // Contífico no expone fecha de ingreso en persona. El corte se marca como
-        // aproximación explícita en notas, sin inventar antigüedad anterior.
-        hireDate: this.cutoff, baseSalary: Math.max(0, num(row.sueldo)), active: true,
-        notes: `Importado de Contifico (${record.externalId}); fecha de ingreso no disponible en origen.`,
+        // Contífico no expone fecha de ingreso. El corte queda explícito como
+        // aproximación, sin inventar antigüedad anterior.
+        hireDate: this.cutoff, baseSalary: Math.max(0, num(row.sueldo || role.total_ingresos)), active: true,
+        notes: `Importado de Contifico (${externalId}); fecha de ingreso no disponible en origen.`,
       } }, upsert: true } });
     }
     if (this.commit && employeeOps.length) await Employee.bulkWrite(employeeOps, { ordered: false });

@@ -132,3 +132,44 @@ test('la segunda cita del mismo paciente nunca es la primera', async () => {
   assert.equal(primera.isFirstVisit, true);
   assert.equal(segunda.isFirstVisit, false);
 });
+
+test('solo administración y marketing pueden quitar una marca errónea de paciente nuevo', async () => {
+  const { clinicId, userId, patient } = await seed();
+  const crearCitaNueva = (hora) => Appointment.create({
+    clinic: clinicId,
+    patient: patient._id,
+    date: H.docDate(1),
+    startTime: hora,
+    status: 'completada',
+    createdBy: userId,
+    isFirstVisit: true,
+  });
+
+  const restringida = await crearCitaNueva('09:00');
+  const sinPermiso = await H.runController(
+    appt.clearFirstVisit,
+    H.mockReq(clinicId, userId, {}, { role: 'cajero', params: { id: String(restringida._id) } }),
+  );
+  assert.equal(sinPermiso.statusCode, 403);
+  assert.equal((await Appointment.findById(restringida._id)).isFirstVisit, true);
+
+  const admin = await crearCitaNueva('10:00');
+  const comoAdmin = await H.runController(
+    appt.clearFirstVisit,
+    H.mockReq(clinicId, userId, {}, { role: 'admin', params: { id: String(admin._id) } }),
+  );
+  assert.equal(comoAdmin.statusCode, 200, JSON.stringify(comoAdmin.payload));
+  assert.equal(comoAdmin.payload.isFirstVisit, false);
+
+  const marketing = await crearCitaNueva('11:00');
+  const comoMarketing = await H.runController(
+    appt.clearFirstVisit,
+    H.mockReq(clinicId, userId, {}, { role: 'marketing', params: { id: String(marketing._id) } }),
+  );
+  assert.equal(comoMarketing.statusCode, 200, JSON.stringify(comoMarketing.payload));
+  assert.equal(comoMarketing.payload.isFirstVisit, false);
+
+  const guardada = await Appointment.findById(marketing._id);
+  assert.equal(String(guardada.firstVisitCorrectedBy), String(userId));
+  assert.ok(guardada.firstVisitCorrectedAt instanceof Date, 'queda auditada la corrección');
+});

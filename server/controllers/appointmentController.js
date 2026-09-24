@@ -1833,6 +1833,64 @@ exports.updateAppointment = async (req, res) => {
 };
 
 /**
+ * QUITAR «PACIENTE NUEVO» DE UNA CITA.
+ *
+ * `isFirstVisit` es una foto tomada al agendar. Normalmente la calcula el
+ * sistema, pero puede estar equivocada, por ejemplo si la persona ya había sido
+ * atendida antes de que sus datos se importaran. No va por `updateAppointment`:
+ * esa puerta descarta el campo a propósito, para que editar fecha, servicio o
+ * cualquier otro dato no cambie por accidente reportes ni comisiones.
+ *
+ * Esta es una corrección de una sola vía: administración y marketing pueden
+ * convertir una cita marcada como nueva en recurrente, pero nadie puede marcar
+ * manualmente una cita como nueva. Se admite incluso después de completarla,
+ * justamente porque muchos de estos errores se detectan al revisar la agenda.
+ */
+exports.clearFirstVisit = async (req, res) => {
+  try {
+    const appointment = await Appointment.findOne({
+      _id: req.params.id,
+      ...filtroSucursalCita(req),
+    });
+    if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
+
+    const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
+    if (!isAdmin && req.role !== 'marketing') {
+      return res.status(403).json({
+        message: 'Solo administración y marketing pueden quitar el estado de paciente nuevo.',
+      });
+    }
+    if (!appointment.isFirstVisit) {
+      return res.status(400).json({ message: 'La cita ya está marcada como paciente recurrente.' });
+    }
+
+    appointment.isFirstVisit = false;
+    appointment.firstVisitCorrectedAt = new Date();
+    appointment.firstVisitCorrectedBy = req.user._id;
+    appointment.firstVisitCorrectedByName = req.user.name || '';
+    await appointment.save();
+
+    const populated = await Appointment.findById(appointment._id)
+      .populate('patient', POPULATE_PATIENT)
+      .populate('doctor', POPULATE_DOCTOR)
+      .populate('turns.user', POPULATE_DOCTOR)
+      .populate('serviceItem', POPULATE_SERVICE_ITEM)
+      .populate('services.product', 'name code salePrice category')
+      .populate('createdBy', POPULATE_CREATOR)
+      .populate('registeredBy', POPULATE_CREATOR)
+      .populate('firstVisitCorrectedBy', 'name');
+
+    // La misma señal que cualquier otra corrección de cita: actualiza de
+    // inmediato la agenda abierta de quienes están trabajando en esa sede.
+    emitToClinic(appointment.clinic, 'appointment:updated', populated);
+    if (populated.doctor?._id) emitToUser(populated.doctor._id, 'appointment:updated', populated);
+    res.json(populated);
+  } catch (error) {
+    res.status(500).json({ message: 'No se pudo quitar el estado de paciente nuevo', error: error.message });
+  }
+};
+
+/**
  * LO QUE APUNTABA A UNA CITA BORRADA.
  *
  * Una cita eliminada no puede seguir asomando de refilón: la oportunidad del
