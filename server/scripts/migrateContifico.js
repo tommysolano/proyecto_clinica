@@ -86,6 +86,7 @@ function parseArgs(argv) {
 class Extractor {
   constructor({ api, clinic, commit, from, through, cutoff, pageSize, only = new Set(), payrollPeriods = ['P', 'S', 'M'], payrollCedulas = [] }) {
     this.api = api; this.clinic = clinic; this.commit = commit;
+    if (api) api.log = (text) => this.log(text);
     this.from = from; this.through = through; this.cutoff = cutoff; this.pageSize = pageSize;
     this.only = only;
     this.payrollPeriods = payrollPeriods;

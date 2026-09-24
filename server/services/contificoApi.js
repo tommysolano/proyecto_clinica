@@ -8,6 +8,12 @@ function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 // de pagina, que es justo donde Contifico pierde filas.
 const RETRY_PAGE_SIZES = [97, 89, 71, 53];
 
+// Cada pasada de recuperacion cuesta lo mismo que la original -- en /documento/
+// son ~200 paginas de ~470 KB --, asi que el esfuerzo se acota. Si despues de
+// estas pasadas sigue faltando algo, la etapa se declara INCOMPLETE, que es
+// justo lo que evita que se retire nada a partir de datos parciales.
+const MAX_PAGINATION_PASSES = 3;
+
 /** Identidad estable de una fila, para no emitirla dos veces entre pasadas. */
 function rowKey(row) {
   const id = row?.id;
@@ -16,13 +22,16 @@ function rowKey(row) {
 }
 
 class ContificoApi {
-  constructor({ apiKey, baseUrl = 'https://api.contifico.com/sistema', fetchImpl = global.fetch, retries = 4, timeoutMs = 60000 }) {
+  constructor({ apiKey, baseUrl = 'https://api.contifico.com/sistema', fetchImpl = global.fetch, retries = 4, timeoutMs = 60000, log = () => {} }) {
     if (!apiKey) throw new Error('Falta CONTIFICO_API_KEY');
     this.apiKey = apiKey;
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.fetchImpl = fetchImpl;
     this.retries = retries;
     this.timeoutMs = timeoutMs;
+    // Una pasada de recuperacion puede tardar tanto como la original y no emite
+    // casi filas: sin avisar, parece que el proceso se colgo.
+    this.log = log;
     this.metrics = { requests: 0, retries: 0, rows: 0, repagedWindows: 0 };
   }
 
@@ -101,14 +110,20 @@ class ContificoApi {
    * para que el llamador registre si la ventana quedo incompleta.
    */
   async *pages(path, params = {}, pageSize = 100, stats = {}) {
-    const sizes = [pageSize, ...RETRY_PAGE_SIZES.filter((size) => size !== pageSize)];
+    const sizes = [pageSize, ...RETRY_PAGE_SIZES.filter((size) => size !== pageSize)].slice(0, MAX_PAGINATION_PASSES);
     const emitted = new Set();
     Object.assign(stats, { expected: null, unique: 0, attempts: 0, recovered: 0, complete: false });
     for (const size of sizes) {
       stats.attempts += 1;
       const before = emitted.size;
+      // El total se toma de la PRIMERA pagina de la pasada, no de la ultima: en
+      // un endpoint vivo `count` crece mientras se recorre -- la clinica sigue
+      // facturando -- y perseguir el ultimo valor no termina nunca. Lo que hay
+      // que recuperar es lo que existia al empezar la pasada; lo que nazca
+      // despues entra igual si aparece, y si no, en la siguiente extraccion.
+      let target = null;
       for await (const page of this.rawPages(path, params, size)) {
-        stats.expected = page.count;
+        if (target === null) { target = page.count; stats.expected = target; }
         const rows = page.rows.filter((row) => {
           const key = rowKey(row);
           if (emitted.has(key)) return false;
@@ -119,10 +134,11 @@ class ContificoApi {
       }
       stats.unique = emitted.size;
       if (stats.attempts > 1) stats.recovered += emitted.size - before;
-      if (stats.expected === null || emitted.size >= stats.expected) { stats.complete = true; break; }
+      if (target === null || emitted.size >= target) { stats.complete = true; break; }
       // Una pasada que no aporta ninguna fila nueva ya no va a converger.
       if (stats.attempts > 1 && emitted.size === before) break;
       this.metrics.repagedWindows += 1;
+      this.log(`repaginando ${path}: ${emitted.size}/${target} filas con page_size=${size}; nueva pasada para recuperar las que faltan`);
     }
   }
 

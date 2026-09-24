@@ -186,3 +186,28 @@ test('RR.HH. sigue preguntando por quien ya tuvo rol aunque pierda es_empleado',
     assert.equal(ids.has('1790000000001'), false);
   } finally { ContificoRecord.find = original; }
 });
+
+test('el total se toma de la primera pagina: un endpoint vivo no se persigue', async () => {
+  // Mientras se recorre /documento/ la clinica sigue facturando y `count` crece.
+  // Comparar contra el ultimo valor hacia que la pasada nunca se diera por
+  // completa y se repitiera el endpoint entero -- 200 paginas de ~470 KB --
+  // persiguiendo filas que aun no existian cuando empezo.
+  const respuestas = [
+    { count: 3, next: 'https://test.local/items?page=2', results: [{ id: 1 }, { id: 2 }] },
+    { count: 5, next: null, results: [{ id: 3 }] },
+  ];
+  let peticiones = 0;
+  const api = new ContificoApi({ apiKey: 'key', baseUrl: 'https://test.local', fetchImpl: async () => {
+    peticiones += 1;
+    return { ok: true, json: async () => respuestas.shift() };
+  } });
+  const stats = {};
+  const ids = [];
+  for await (const page of api.pages('/items', {}, 2, stats)) ids.push(...page.rows.map((row) => row.id));
+  assert.deepEqual(ids, [1, 2, 3]);
+  assert.equal(stats.expected, 3);
+  assert.equal(stats.complete, true);
+  // Una sola pasada: sin esto se repetia el recorrido entero por filas nuevas.
+  assert.equal(stats.attempts, 1);
+  assert.equal(peticiones, 2);
+});

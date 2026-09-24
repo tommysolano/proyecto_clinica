@@ -743,7 +743,13 @@ class Projector {
     const ccRecords = await this.records('cost_center'); const ccMap = new Map(ccRecords.map((record) => [record.externalId, this.maps.costCenters.get(record.externalId)]));
     const monthSet = new Map(); for (const record of records) { const date = parseDate(record.payload.fecha); if (date && date <= this.cutoff) monthSet.set(`${date.getUTCFullYear()}-${date.getUTCMonth() + 1}`, { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1 }); }
     const oldPeriods = await FiscalPeriod.find({ clinic: this.clinic._id }).lean(); const oldKeys = new Set(oldPeriods.map((row) => `${row.year}-${row.month}`));
-    if (this.commit) await FiscalPeriod.bulkWrite([...monthSet.values()].map((value) => ({ updateOne: { filter: { clinic: this.clinic._id, ...value }, update: { $setOnInsert: { clinic: this.clinic._id, ...value, status: value.year === this.cutoff.getUTCFullYear() && value.month === this.cutoff.getUTCMonth() + 1 ? 'ABIERTO' : 'CERRADO', notes: 'Migracion Contifico' } }, upsert: true } })), { ordered: false });
+    // Un período se cierra por ser PASADO, no por quedar fuera del corte. Cerrar
+    // según el corte dejaba octubre y noviembre cerrados de antemano y, como
+    // `assertPeriodOpen` rechaza asientos en período cerrado, al llegar ese mes
+    // la clínica no habría podido facturar.
+    const hoy = new Date();
+    const abierto = (value) => value.year > hoy.getFullYear() || (value.year === hoy.getFullYear() && value.month >= hoy.getMonth() + 1);
+    if (this.commit) await FiscalPeriod.bulkWrite([...monthSet.values()].map((value) => ({ updateOne: { filter: { clinic: this.clinic._id, ...value }, update: { $setOnInsert: { clinic: this.clinic._id, ...value, status: abierto(value) ? 'ABIERTO' : 'CERRADO', notes: 'Migracion Contifico' } }, upsert: true } })), { ordered: false });
     const periods = this.commit ? await FiscalPeriod.find({ clinic: this.clinic._id }).lean() : oldPeriods; const periodByKey = new Map(periods.map((row) => [`${row.year}-${row.month}`, row])); for (const [key, value] of monthSet) if (!periodByKey.has(key)) periodByKey.set(key, { _id: fakeId(), ...value });
     const candidates = [], marks = [];
     for (const record of records) {
