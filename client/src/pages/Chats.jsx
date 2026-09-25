@@ -2672,6 +2672,9 @@ export default function Chats() {
       )}
       {appointmentModal && activeConv && (
         <AgregarYAgendarModal
+          // Un formulario por chat: si el chat activo cambia con el modal abierto,
+          // los datos del anterior NO pueden viajar al alta del nuevo.
+          key={activeConv._id}
           conv={activeConv}
           onClose={() => setAppointmentModal(false)}
           onDone={(c, count) => {
@@ -7210,12 +7213,29 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
     try {
       if (necesitaAlta) {
         const { firstName, lastName } = partirNombreCompleto(datos.fullName);
-        const r = await api.post(`/chats/${conv._id}/register-patient`, {
-          firstName,
-          lastName,
-          email: datos.email,
-          phone: datos.phone,
-        });
+        const cuerpo = { firstName, lastName, email: datos.email, phone: datos.phone };
+        let r;
+        try {
+          r = await api.post(`/chats/${conv._id}/register-patient`, cuerpo);
+        } catch (err) {
+          // El nombre ya es de otra paciente con OTRO teléfono: casi siempre es
+          // el nombre del chat anterior pegado en este. Se pregunta antes de
+          // abrir una ficha que después nadie sabe deshacer.
+          if (err.response?.status !== 409 || err.response?.data?.code !== 'SAME_NAME_OTHER_PHONE') throw err;
+          const lista = (err.response.data.matches || [])
+            .map((m) => `• ${m.name}${m.phoneTail ? ` — teléfono terminado en ${m.phoneTail}` : ''}${m.createdAt ? ` (registrada el ${fmtDateTime(m.createdAt)})` : ''}`)
+            .join('\n');
+          const sigue = window.confirm(
+            `${err.response.data.message}\n\n${lista}\n\n` +
+            `Este chat es de OTRO número. Revisa que el nombre sea el de la persona de ESTE chat.\n\n` +
+            `¿Registrarla igualmente con este nombre?`
+          );
+          if (!sigue) {
+            setSaving(false);
+            return;
+          }
+          r = await api.post(`/chats/${conv._id}/register-patient`, { ...cuerpo, confirmSameName: true });
+        }
         conversacion = r.data.conversation;
         toast.success('Paciente agregado al sistema');
       }

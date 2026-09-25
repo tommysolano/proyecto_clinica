@@ -285,6 +285,11 @@ exports.listConversations = async (req, res) => {
         // se desvían a otro número (ver gateway.destinationIsLid). Sin él, la
         // bandeja anunciaba un desvío que el envío no iba a hacer.
         '_id clinic channel phone externalUserId contactName contactEmail patient assignedTo assignedToName workflowRestrictedTo workflowRestrictionActive ' +
+          // El SELLO del nombre escrito a mano. Sin estos dos campos,
+          // `sincronizarNombreDePaciente` creía que ningún chat de la página
+          // había sido renombrado y le devolvía el nombre de la ficha en cada
+          // recarga de la bandeja: «le cambio el nombre y vuelve a salir el otro».
+          'contactNameEditedAt contactNameSource ' +
           'status isFeatured featuredNote blocked window24hExpiresAt lastInboundAt ' +
           'lastInboundAccount lastMessageAt lastMessagePreview lastMessageDirection unreadCount tags ' +
           // Quién atendió por última vez: es lo que la fila y la cabecera muestran
@@ -616,7 +621,9 @@ async function sincronizarNombreDePaciente(convs) {
     if (!nombre || c.contactName === nombre) continue;
     ops.push({
       updateOne: {
-        filter: { _id: c._id },
+        // El sello va TAMBIÉN en el filtro: lo que se leyó puede ser de antes de
+        // que un agente renombrara el chat, y esta escritura no puede pisarlo.
+        filter: { _id: c._id, contactNameEditedAt: null, contactNameSource: { $ne: 'manual' } },
         update: { $set: { contactName: nombre, contactNameSource: 'contact' } },
       },
     });
@@ -5528,6 +5535,54 @@ exports.registerPatientFromChat = async (req, res) => {
     if (cedula) patient = await Patient.findOne(patientIdentificationFilter(cedula));
     if (!patient && phone) {
       patient = await Patient.findOne({ phone: { $regex: phone.slice(-9) + '$' } });
+    }
+    if (!patient && !req.body.confirmSameName) {
+      /**
+       * ¿ESTE NOMBRE YA ES DE OTRA PERSONA CON OTRO TELÉFONO? (sep-2026)
+       *
+       * Caso real: una asesora llevaba dos chats a la vez, registró a «DEYSI
+       * MABEL RUIZ MIRANDA» en el suyo y, tres minutos después, pegó ese mismo
+       * nombre al registrar el chat de OTRA paciente. Salió una segunda Deysi con
+       * el teléfono y el correo de la otra; recepción ya no encontraba a la
+       * paciente de verdad por su número y le abrió una tercera ficha. Nada de
+       * eso se ve hasta que alguien busca a la paciente y le salen dos chats.
+       *
+       * No se prohíbe —hay homónimos—, se PREGUNTA: el cliente enseña a quién se
+       * parece y vuelve a llamar con `confirmSameName: true`.
+       */
+      const nombreAlta = `${firstName || ''} ${lastName || ''}`.trim();
+      const { nameSearchFilter, palabrasDe } = require('../utils/nameSearch');
+      const filtroNombre = nombreAlta ? nameSearchFilter(nombreAlta, ['firstName', 'lastName']) : null;
+      if (filtroNombre) {
+        const clave = (p) => palabrasDe(`${p.firstName || ''} ${p.lastName || ''}`).sort().join(' ');
+        const buscada = palabrasDe(nombreAlta).sort().join(' ');
+        const cola = phone ? phone.slice(-9) : '';
+        const tocayos = (
+          await Patient.find({ ...filtroNombre, active: { $ne: false }, mergedInto: null })
+            .select('firstName lastName phone whatsapp createdAt')
+            .limit(20)
+            .lean()
+        ).filter((p) => {
+          if (clave(p) !== buscada) return false;
+          const suyos = [p.phone, p.whatsapp].map((t) => String(t || '').replace(/\D/g, '')).filter(Boolean);
+          // Con el mismo teléfono no es otra persona: es ella (y no llegaría aquí).
+          return !cola || !suyos.some((t) => t.slice(-9) === cola);
+        });
+        if (tocayos.length) {
+          return res.status(409).json({
+            code: 'SAME_NAME_OTHER_PHONE',
+            message: `Ya hay ${tocayos.length > 1 ? `${tocayos.length} pacientes registrados` : 'un paciente registrado'} como «${nombreAlta}» con otro teléfono.`,
+            // Solo los 4 últimos dígitos: basta para reconocer el número y no
+            // enseña el dato de contacto completo a quien no le toca.
+            matches: tocayos.map((p) => ({
+              _id: p._id,
+              name: `${p.firstName || ''} ${p.lastName || ''}`.trim(),
+              phoneTail: String(p.phone || p.whatsapp || '').replace(/\D/g, '').slice(-4),
+              createdAt: p.createdAt,
+            })),
+          });
+        }
+      }
     }
     if (!patient) {
       patient = await Patient.create({

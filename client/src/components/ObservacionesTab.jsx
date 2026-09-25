@@ -14,6 +14,7 @@ import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { fmtDateTime } from '../utils/date';
+import AttachmentPreviewModal from './AttachmentPreviewModal';
 import {
   HiOutlinePaperClip,
   HiOutlineXMark,
@@ -21,6 +22,8 @@ import {
   HiOutlinePencilSquare,
   HiOutlineTrash,
   HiOutlinePlus,
+  HiOutlineEye,
+  HiOutlineArrowDownTray,
 } from 'react-icons/hi2';
 
 // Observaciones: mismo tope que acepta el servidor (multer .array('files', 10)).
@@ -44,6 +47,12 @@ const observationFileSize = (bytes) => {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+/** Lo que el visor sabe dibujar sin descargar: PDF e imágenes. */
+const sePuedeVer = (att) => {
+  const mime = String(att?.mimeType || '');
+  return mime === 'application/pdf' || mime.startsWith('image/') || /\.pdf$/i.test(att?.originalName || '');
+};
+
 export default function ObservacionesTab({ patientId }) {
   const { user, hasRole } = useAuth();
   const isAdmin = hasRole('admin');
@@ -56,6 +65,7 @@ export default function ObservacionesTab({ patientId }) {
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState(null);   // observación con una acción en curso
   const [editing, setEditing] = useState(null); // { id, text }
+  const [previewAtt, setPreviewAtt] = useState(null); // { obsId, att }
   const newFileRef = useRef(null);
 
   const load = async () => {
@@ -362,14 +372,39 @@ export default function ObservacionesTab({ patientId }) {
                     {obs.attachments.map((att) => (
                       <div key={att._id} className="flex items-center gap-2 text-xs text-slate-600">
                         <span>{String(att.mimeType || '').startsWith('image/') ? '🖼️' : '📎'}</span>
+                        {/* Igual que en los seguimientos: el PDF o la imagen se
+                            ABREN en el visor; descargar es su propio botón. */}
                         <button
                           type="button"
-                          onClick={() => downloadAttachment(obs, att)}
-                          className="underline text-emerald-700 hover:text-emerald-800 bg-transparent border-none cursor-pointer p-0 truncate"
+                          onClick={() =>
+                            sePuedeVer(att)
+                              ? setPreviewAtt({ obsId: obs._id, att })
+                              : downloadAttachment(obs, att)
+                          }
+                          title={sePuedeVer(att) ? 'Ver el archivo' : 'Descargar'}
+                          className="underline text-emerald-700 hover:text-emerald-800 bg-transparent border-none cursor-pointer p-0 truncate text-left"
                         >
                           {att.originalName}
                         </button>
                         <span className="text-slate-400 shrink-0">({observationFileSize(att.size)})</span>
+                        {sePuedeVer(att) && (
+                          <button
+                            type="button"
+                            title="Ver"
+                            onClick={() => setPreviewAtt({ obsId: obs._id, att })}
+                            className="text-slate-400 hover:text-emerald-700 bg-transparent border-none cursor-pointer p-0 shrink-0"
+                          >
+                            <HiOutlineEye className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          title="Descargar"
+                          onClick={() => downloadAttachment(obs, att)}
+                          className="text-slate-400 hover:text-emerald-700 bg-transparent border-none cursor-pointer p-0 shrink-0"
+                        >
+                          <HiOutlineArrowDownTray className="w-3.5 h-3.5" />
+                        </button>
                         {mine && (
                           <button
                             type="button"
@@ -407,6 +442,16 @@ export default function ObservacionesTab({ patientId }) {
             );
           })}
         </div>
+      )}
+
+      {previewAtt && (
+        <AttachmentPreviewModal
+          key={previewAtt.att._id}
+          url={`/patients/${patientId}/observations/${previewAtt.obsId}/attachments/${previewAtt.att._id}`}
+          filename={previewAtt.att.originalName}
+          mimeType={previewAtt.att.mimeType}
+          onClose={() => setPreviewAtt(null)}
+        />
       )}
     </div>
   );

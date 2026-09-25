@@ -185,3 +185,58 @@ test('N7) un envío masivo con la conversación YA cargada también renombra el 
     gw.sendText = orig;
   }
 });
+
+test('N8) renombrar un chat VINCULADO a paciente no se revierte al recargar la bandeja', async () => {
+  // Caso real (sep-2026): la lista no leía el sello del nombre, así que la
+  // sincronización «nombre de la ficha → chat» devolvía el de la ficha en cada
+  // recarga y el nombre escrito a mano duraba lo que tardaba en llegar un mensaje.
+  const { clinicId, userId } = await H.seedClinic();
+  const Patient = require('../models/Patient');
+  const p = await Patient.create({ clinic: clinicId, firstName: 'DEYSI MABEL', lastName: 'RUIZ MIRANDA', phone: '593994530587' });
+  const conv = await Conversation.create({
+    clinic: clinicId, channel: 'whatsapp', phone: '593994530587',
+    contactName: 'DEYSI MABEL RUIZ MIRANDA', contactNameSource: 'contact', patient: p._id,
+  });
+  await renombrar(clinicId, userId, conv._id, 'JAMILET ELIZABETH SAENZ BANCHON');
+
+  const lista = await H.runController(chat.listConversations, H.mockReq(clinicId, userId, {}, { role: 'admin' }));
+  const items = lista.payload.items || lista.payload;
+  assert.equal(items[0].contactName, 'JAMILET ELIZABETH SAENZ BANCHON', 'la bandeja muestra lo escrito a mano');
+  await new Promise((r) => setTimeout(r, 50)); // el bulkWrite de la sincronización no se espera
+  const saved = await Conversation.findById(conv._id).lean();
+  assert.equal(saved.contactName, 'JAMILET ELIZABETH SAENZ BANCHON');
+  assert.equal(saved.contactNameSource, 'manual');
+});
+
+test('N9) dar de alta en un chat con el nombre de OTRA paciente (otro teléfono) pide confirmación', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const Patient = require('../models/Patient');
+  await Patient.create({ clinic: clinicId, firstName: 'DEYSI MABEL', lastName: 'RUIZ MIRANDA', phone: '593986747212' });
+  const conv = await Conversation.create({ clinic: clinicId, channel: 'whatsapp', phone: '593994530587', contactName: 'Jamilet' });
+  const alta = (extra = {}) => H.runController(
+    chat.registerPatientFromChat,
+    H.mockReq(clinicId, userId, { firstName: 'Deysi Mabel', lastName: 'Ruíz Miranda', ...extra }, { role: 'call_center', params: { id: String(conv._id) } })
+  );
+
+  const r1 = await alta();
+  assert.equal(r1.statusCode, 409, JSON.stringify(r1.payload));
+  assert.equal(r1.payload.code, 'SAME_NAME_OTHER_PHONE');
+  assert.equal(r1.payload.matches[0].phoneTail, '7212');
+  assert.equal(await Patient.countDocuments(), 1, 'no se crea nada sin confirmar');
+
+  const r2 = await alta({ confirmSameName: true });
+  assert.equal(r2.statusCode, 201, JSON.stringify(r2.payload));
+  assert.equal(await Patient.countDocuments(), 2, 'confirmado (homónimo real), sí se registra');
+});
+
+test('N10) un nombre distinto, o el mismo nombre con el MISMO teléfono, no pregunta nada', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const Patient = require('../models/Patient');
+  await Patient.create({ clinic: clinicId, firstName: 'DEYSI MABEL', lastName: 'RUIZ MIRANDA', phone: '593986747212' });
+  const conv = await Conversation.create({ clinic: clinicId, channel: 'whatsapp', phone: '593994530587', contactName: '' });
+  const r = await H.runController(
+    chat.registerPatientFromChat,
+    H.mockReq(clinicId, userId, { firstName: 'Jamilet Elizabeth', lastName: 'Saenz Banchon' }, { role: 'call_center', params: { id: String(conv._id) } })
+  );
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+});
