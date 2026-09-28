@@ -249,6 +249,48 @@ test('filtro de doctores: todas las sucursales, con el rol (general o especialid
   assert.deepStrictEqual(soloA.payload.filter((d) => d.name.startsWith('Zz')).map((d) => d.name), ['Zz General']);
 });
 
+test('tarifa por horario: el mismo servicio paga distinto en la mañana y en la tarde', async () => {
+  const clinic = await Clinic.create({ name: 'HR', nombreComercial: 'HR', active: true });
+  const doctor = await User.create({
+    name: 'Turno Doble', email: 'turnodoble@test.com', password: '123456',
+    clinics: [{ clinic: clinic._id, role: 'doctor' }],
+  });
+  const paciente = await Patient.create({ clinic: clinic._id, firstName: 'Mañana', lastName: 'Tarde' });
+  const eco = await AppointmentServiceItem.create({ clinic: clinic._id, name: 'Eco horario', slug: 'eco horario' });
+  const cita = (d, hora) => ({
+    clinic: clinic._id, patient: paciente._id, doctor: doctor._id, date: dia(11, d), startTime: hora,
+    status: 'completada', serviceItem: eco._id, serviceName: 'Eco horario', agreedValue: 100,
+  });
+  // Mañana, tarde (13:00 ya es tarde) y noche (fuera de todo horario: valor general).
+  await Appointment.create([cita(3, '09:00'), cita(4, '13:00'), cita(5, '20:30')]);
+
+  const base = { doctor: String(doctor._id), service: String(eco._id), clinics: [String(clinic._id)], amountType: 'fixed', value: 5 };
+  const cruzados = await llamar(ctrl.saveDoctorServiceRule, reqDe(clinic._id, {
+    body: { ...base, timeBands: [
+      { startTime: '07:00', endTime: '13:00', amountType: 'fixed', value: 10 },
+      { startTime: '12:00', endTime: '19:00', amountType: 'fixed', value: 15 },
+    ] },
+  }));
+  assert.strictEqual(cruzados.code, 400, 'dos horarios que se cruzan no se guardan');
+
+  const ok = await llamar(ctrl.saveDoctorServiceRule, reqDe(clinic._id, {
+    body: { ...base, timeBands: [
+      { startTime: '13:00', endTime: '19:00', amountType: 'percent', value: 20 },
+      { startTime: '07:00', endTime: '13:00', amountType: 'fixed', value: 10 },
+    ] },
+  }));
+  assert.strictEqual(ok.code, 200);
+
+  const q = { start: '2026-11-01', end: '2026-11-30' };
+  const resumen = await llamar(ctrl.doctorSummary, reqDe(clinic._id, { query: q }));
+  const svc = resumen.payload.doctors[0].services.find((s) => s.serviceId === String(eco._id));
+  assert.strictEqual(svc.commission.earned, 35, '$10 mañana + 20% de $100 tarde + $5 general de noche');
+  assert.deepStrictEqual(svc.commission.timeBands.map((b) => b.startTime), ['07:00', '13:00'], 'se guardan ordenados');
+
+  const reporte = await llamar(ctrl.report, reqDe(clinic._id, { query: q }));
+  assert.strictEqual(reporte.payload.total, 35, 'la contabilización paga lo mismo');
+});
+
 test('detalle de citas paginado: la página trae su tramo, los totales y las visitas cuentan el filtro entero', async () => {
   const clinic = await Clinic.create({ name: 'PAG', nombreComercial: 'PAG', active: true });
   const doctor = await User.create({

@@ -60,7 +60,7 @@ export default function Commissions() {
   const [dataCC, setDataCC] = useState(null);
   const [loading, setLoading] = useState(false);
   const [commissionEditor, setCommissionEditor] = useState(null);
-  const [commissionForm, setCommissionForm] = useState({ amountType: 'fixed', value: '', firstTimeOnly: false });
+  const [commissionForm, setCommissionForm] = useState({ amountType: 'fixed', value: '', firstTimeOnly: false, timeBands: [] });
   const [savingCommission, setSavingCommission] = useState(false);
   const [adjustEditor, setAdjustEditor] = useState(null);
   const [adjustForm, setAdjustForm] = useState({ amount: '', note: '' });
@@ -177,8 +177,28 @@ export default function Commissions() {
       amountType: !current?.mixed && current?.amountType ? current.amountType : 'fixed',
       value: !current?.mixed && current?.value != null ? String(current.value) : '',
       firstTimeOnly: !!current?.firstTimeOnly,
+      timeBands: !current?.mixed
+        ? (current?.timeBands || []).map((b) => ({ ...b, value: String(b.value) }))
+        : [],
     });
   };
+
+  // Tarifas por horario del editor: filas { startTime, endTime, amountType, value }.
+  const setBand = (i, patch) => setCommissionForm((f) => ({
+    ...f,
+    timeBands: f.timeBands.map((b, j) => (j === i ? { ...b, ...patch } : b)),
+  }));
+  const addBand = () => setCommissionForm((f) => {
+    const last = f.timeBands[f.timeBands.length - 1];
+    // Propone el tramo siguiente: primero la mañana, luego desde donde acabó el anterior.
+    const startTime = last?.endTime || '07:00';
+    const endTime = last ? '20:00' : '13:00';
+    return {
+      ...f,
+      timeBands: [...f.timeBands, { startTime, endTime, amountType: f.amountType, value: '' }],
+    };
+  });
+  const removeBand = (i) => setCommissionForm((f) => ({ ...f, timeBands: f.timeBands.filter((_, j) => j !== i) }));
 
   const editorClinics = (ed) => {
     if (ed.service) return ed.service.clinicIds;
@@ -198,11 +218,20 @@ export default function Commissions() {
     const value = Number(commissionForm.value);
     if (!Number.isFinite(value) || value < 0) return toast.error('Ingresa un valor válido');
     if (commissionForm.amountType === 'percent' && value > 100) return toast.error('El porcentaje no puede superar 100');
+    const timeBands = commissionForm.timeBands.map((b) => ({ ...b, value: Number(b.value) }));
+    for (const b of timeBands) {
+      if (!b.startTime || !b.endTime) return toast.error('Cada horario necesita hora de inicio y de fin');
+      if (b.startTime >= b.endTime) return toast.error(`El horario ${b.startTime}–${b.endTime} termina antes de empezar`);
+      if (!Number.isFinite(b.value) || b.value < 0 || (b.amountType === 'percent' && b.value > 100)) {
+        return toast.error(`Revisa el valor del horario ${b.startTime}–${b.endTime}`);
+      }
+    }
     setSavingCommission(true);
     try {
       await putRule({
         amountType: commissionForm.amountType,
         value,
+        timeBands,
         ...(commissionEditor.scope === 'service' ? { firstTimeOnly: commissionForm.firstTimeOnly } : {}),
       });
       toast.success('Comisión guardada');
@@ -238,7 +267,9 @@ export default function Commissions() {
       ? `${Number(commission.value).toFixed(2)}%`
       : money(commission.value);
     const primera = commission.firstTimeOnly ? ' · solo 1ª vez' : '';
-    return `${label}${primera}${commission.partial ? ' (parcial)' : ''} · ${ganado}`;
+    const n = commission.timeBands?.length || 0;
+    const horarios = n ? ` · ${n} horario${n > 1 ? 's' : ''}` : '';
+    return `${label}${horarios}${primera}${commission.partial ? ' (parcial)' : ''} · ${ganado}`;
   };
 
   // ─── Ajustes ───
@@ -937,6 +968,9 @@ export default function Commissions() {
 
             <label className="block text-sm text-slate-700">
               {commissionForm.amountType === 'percent' ? 'Porcentaje (%)' : 'Valor fijo ($)'}
+              {commissionForm.timeBands.length > 0 && (
+                <span className="text-xs text-slate-400"> — fuera de los horarios de abajo</span>
+              )}
               <NumericInput
                 value={commissionForm.value}
                 onChange={(e) => setCommissionForm({ ...commissionForm, value: e.target.value })}
@@ -952,6 +986,75 @@ export default function Commissions() {
                 </span>
               )}
             </label>
+
+            {/* TARIFA POR HORARIO: el mismo servicio paga distinto según la hora
+                a la que empieza la cita (p. ej. mañana y tarde). */}
+            <div className="rounded-xl border border-slate-200 px-3 py-2.5 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-semibold text-slate-700">Valor según el horario</span>
+                <button
+                  type="button"
+                  onClick={addBand}
+                  className="text-xs text-emerald-700 hover:underline bg-transparent border-none cursor-pointer"
+                >
+                  + Agregar horario
+                </button>
+              </div>
+              {commissionForm.timeBands.length === 0 ? (
+                <p className="text-xs text-slate-400">
+                  Opcional. Úsalo si el doctor gana distinto en la mañana y en la tarde. Sin horarios, paga el mismo valor todo el día.
+                </p>
+              ) : (
+                <>
+                  {commissionForm.timeBands.map((b, i) => (
+                    <div key={i} className="flex flex-wrap items-center gap-1.5 text-xs">
+                      <span className="text-slate-500">De</span>
+                      <input
+                        type="time"
+                        value={b.startTime}
+                        onChange={(e) => setBand(i, { startTime: e.target.value })}
+                        className="border border-slate-200 rounded-lg px-2 py-1.5"
+                      />
+                      <span className="text-slate-500">a</span>
+                      <input
+                        type="time"
+                        value={b.endTime}
+                        onChange={(e) => setBand(i, { endTime: e.target.value })}
+                        className="border border-slate-200 rounded-lg px-2 py-1.5"
+                      />
+                      <select
+                        value={b.amountType}
+                        onChange={(e) => setBand(i, { amountType: e.target.value })}
+                        className="border border-slate-200 rounded-lg px-1.5 py-1.5 bg-white"
+                      >
+                        <option value="fixed">$</option>
+                        <option value="percent">%</option>
+                      </select>
+                      <NumericInput
+                        value={b.value}
+                        onChange={(e) => setBand(i, { value: e.target.value })}
+                        min="0"
+                        max={b.amountType === 'percent' ? '100' : undefined}
+                        required
+                        placeholder={b.amountType === 'percent' ? '%' : '$'}
+                        className="w-20 border border-slate-200 rounded-lg px-2 py-1.5"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeBand(i)}
+                        title="Quitar horario"
+                        className="text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer text-sm leading-none"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                  <p className="text-[11px] text-slate-400">
+                    Cuenta la hora de inicio de la cita: una cita de las 13:00 entra en «13:00 a 19:00», no en «07:00 a 13:00». Si no cae en ningún horario se paga el valor general.
+                  </p>
+                </>
+              )}
+            </div>
 
             {commissionEditor.scope === 'service' && (
               <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5">

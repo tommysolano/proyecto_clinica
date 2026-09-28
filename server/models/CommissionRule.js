@@ -16,6 +16,24 @@ const serviceAmountSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/**
+ * TARIFA POR HORARIO (sep-2026) de las reglas de Comisiones > Doctores: el mismo
+ * servicio puede pagar distinto en la mañana y en la tarde. Si la hora de
+ * inicio de la cita cae en [startTime, endTime) se paga esta tarifa; si no cae
+ * en ninguna, la general de la regla. Las horas son 'HH:MM' de Ecuador, igual
+ * que `Appointment.startTime`.
+ */
+const timeBandSchema = new mongoose.Schema(
+  {
+    startTime: { type: String, required: true }, // 'HH:MM' incluido
+    endTime: { type: String, required: true },   // 'HH:MM' excluido
+    amountType: { type: String, enum: ['fixed', 'percent'], default: 'fixed' },
+    amount: { type: Number, default: 0, min: 0 },
+    percent: { type: Number, default: 0, min: 0, max: 100 },
+  },
+  { _id: false }
+);
+
 /** Eventos que pueden devengar una comisión (ver el comentario de `trigger`). */
 const TRIGGERS = [
   'appointment_performed',
@@ -125,6 +143,8 @@ const commissionRuleSchema = new mongoose.Schema(
      * sucursales y con cualquier doctor. Solo aplica a las reglas por servicio.
      */
     firstTimeOnly: { type: Boolean, default: false },
+    // Tarifas por horario (ver timeBandSchema). Vacío = el mismo valor todo el día.
+    timeBands: { type: [timeBandSchema], default: [] },
 
     // Agente de call center al que está ligado un usuario marketing. Sólo aplica
     // al trigger 'call_center_commission': el marketing gana en función de la

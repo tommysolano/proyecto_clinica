@@ -150,6 +150,39 @@ const saveManagedDoctorRule = async (req, res, scope) => {
       return res.status(400).json({ message: amountType === 'percent' ? 'El porcentaje debe estar entre 0 y 100' : 'El monto debe ser mayor o igual a cero' });
     }
 
+    // Tarifas por horario: el mismo servicio paga distinto en la mañana y en la
+    // tarde. Se validan aquí para que el cálculo nunca dude qué tarifa aplica.
+    const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+    const timeBands = [];
+    for (const b of Array.isArray(req.body?.timeBands) ? req.body.timeBands : []) {
+      const startTime = String(b?.startTime || '').slice(0, 5);
+      const endTime = String(b?.endTime || '').slice(0, 5);
+      const bType = b?.amountType === 'percent' ? 'percent' : 'fixed';
+      const bValue = Number(b?.value);
+      if (!HHMM.test(startTime) || !HHMM.test(endTime)) {
+        return res.status(400).json({ message: 'Cada horario necesita hora de inicio y de fin (HH:MM)' });
+      }
+      if (startTime >= endTime) {
+        return res.status(400).json({ message: `El horario ${startTime}–${endTime} termina antes de empezar` });
+      }
+      if (!Number.isFinite(bValue) || bValue < 0 || (bType === 'percent' && bValue > 100)) {
+        return res.status(400).json({ message: `El valor del horario ${startTime}–${endTime} no es válido` });
+      }
+      timeBands.push({
+        startTime, endTime, amountType: bType,
+        amount: bType === 'fixed' ? bValue : 0,
+        percent: bType === 'percent' ? bValue : 0,
+      });
+    }
+    timeBands.sort((a, b) => a.startTime.localeCompare(b.startTime));
+    for (let i = 1; i < timeBands.length; i += 1) {
+      if (timeBands[i].startTime < timeBands[i - 1].endTime) {
+        return res.status(400).json({
+          message: `Los horarios ${timeBands[i - 1].startTime}–${timeBands[i - 1].endTime} y ${timeBands[i].startTime}–${timeBands[i].endTime} se cruzan`,
+        });
+      }
+    }
+
     const [doctorDoc, serviceDoc] = await Promise.all([
       User.findById(doctor).select('name').lean(),
       sinServicio ? null : AppointmentServiceItem.findById(service).select('name').lean(),
@@ -197,6 +230,7 @@ const saveManagedDoctorRule = async (req, res, scope) => {
             managedFromDoctorCommissions: true,
             doctorCommissionScope: scope,
             firstTimeOnly,
+            timeBands,
             amountType,
             amount: amountType === 'fixed' ? value : 0,
             percent: amountType === 'percent' ? value : 0,
@@ -212,7 +246,7 @@ const saveManagedDoctorRule = async (req, res, scope) => {
       ).lean();
       saved.push(rule);
     }
-    res.json({ active: true, amountType, value, firstTimeOnly, clinics: clinicIds, rules: saved });
+    res.json({ active: true, amountType, value, firstTimeOnly, timeBands, clinics: clinicIds, rules: saved });
   } catch (e) {
     const status = e?.code === 11000 ? 409 : 500;
     res.status(status).json({
@@ -465,7 +499,8 @@ async function computeCommissions(clinicId, startDate, endDate) {
         let cfg;
         if (rule.appointmentService) {
           if (!matchesAppointmentService(rule, svc)) continue;
-          cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
+          // Tarifa de Comisiones > Doctores: puede cambiar según el horario de la cita.
+          cfg = cfgDeRegla(rule, appt);
         } else if (svc.sourceType === 'appointment') {
           // Las reglas generales apuntan a productos de inventario, no al
           // catálogo operativo de Agenda.
@@ -535,7 +570,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
         for (const rule of patientRules) {
           if (rule.patientScope === 'new' && !appt.isFirstVisit) continue;
           if (!inSchedule(rule, appt) || !matchTarget(rule, performer, performerRole)) continue;
-          const cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
+          const cfg = cfgDeRegla(rule, appt);
           detail.push({
             userId: String(performer._id), userName: performer.name, userRole: performerRole,
             ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
@@ -580,7 +615,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
         detail.push({
           userId: String(fromDoc._id), userName: fromDoc.name, userRole: roleFor(fromDoc),
           ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
-          amount: calcAmount(cfgDeRegla(rule), paidValue), date: appt.date,
+          amount: calcAmount(cfgDeRegla(rule, appt), paidValue), date: appt.date,
           service: appt.serviceName || appt.services?.[0]?.name || '—', patient: patientName, source: 'derivación', apptId: String(appt._id),
         });
       }
@@ -897,7 +932,23 @@ const ESTADOS_ATENDIDA = ['asistida', 'completada'];
 const esAtendida = (a) => ESTADOS_ATENDIDA.includes(a?.status);
 const idDe = (v) => (v ? String(v._id || v) : '');
 const nombrePaciente = (p) => (p ? `${p.firstName || ''} ${p.lastName || ''}`.trim() || '—' : '—');
-const cfgDeRegla = (rule) => ({ amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) });
+/**
+ * El HORARIO de la regla en el que empieza la cita, o null (ver timeBands en el
+ * modelo). Rango [inicio, fin): una cita de las 13:00 cae en «13:00–19:00», no en
+ * «07:00–13:00». Si dos se solapan manda la primera (al guardar no se permite).
+ */
+const franjaDeRegla = (rule, appt) => {
+  const hora = String(appt?.startTime || '').slice(0, 5);
+  if (!hora || !rule?.timeBands?.length) return null;
+  return rule.timeBands.find((b) => b.startTime && b.endTime && hora >= b.startTime && hora < b.endTime) || null;
+};
+const etiquetaFranja = (b) => (b ? `${b.startTime}–${b.endTime}` : '');
+
+/** Tarifa que aplica: la del horario de la cita si cae en uno, si no la general. */
+const cfgDeRegla = (rule, appt = null) => {
+  const src = franjaDeRegla(rule, appt) || rule;
+  return { amountType: src.amountType || 'fixed', amount: num(src.amount), percent: num(src.percent) };
+};
 const ordenCita = (x, y) =>
   (new Date(x.date) - new Date(y.date))
   || String(x.startTime || '').localeCompare(String(y.startTime || ''))
@@ -1231,7 +1282,8 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
       const repetida = !!rule.firstTimeOnly && !esPrimeraVez(appt, svc.key);
       agregar({
         ...comun, kind: 'servicio', ruleId: String(rule._id), serviceKey: svc.key, serviceName: svc.name,
-        amount: repetida ? 0 : calcAmount(cfgDeRegla(rule), pagado), repetida,
+        amount: repetida ? 0 : calcAmount(cfgDeRegla(rule, appt), pagado), repetida,
+        franja: etiquetaFranja(franjaDeRegla(rule, appt)),
       });
     }
     // La base por paciente solo cuando ningún servicio de la cita paga por sí
@@ -1243,7 +1295,8 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
       if (rule) {
         agregar({
           ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: 'Paciente atendido',
-          amount: calcAmount(cfgDeRegla(rule), pagado),
+          amount: calcAmount(cfgDeRegla(rule, appt), pagado),
+          franja: etiquetaFranja(franjaDeRegla(rule, appt)),
         });
       }
     }
@@ -1268,7 +1321,8 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
       patient: nombrePaciente(cita.patient), base: pagado,
       kind: 'derivacion', ruleId: String(rule._id), porServicio: !!rule.appointmentService,
       serviceKey: svc.key, serviceName: svc.name, atendidaPor: cita.doctor?.name || '',
-      amount: calcAmount(cfgDeRegla(rule), pagado),
+      amount: calcAmount(cfgDeRegla(rule, cita), pagado),
+      franja: etiquetaFranja(franjaDeRegla(rule, cita)),
     });
   }
 
@@ -1303,7 +1357,13 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
 /** Resumen de una tarifa configurada (igual en todas las sucursales o mezclada). */
 const resumenTarifa = (configs, earned, totalClinics, extra = {}) => {
   if (!configs.length) return null;
-  const firma = (r) => `${r.amountType}:${r.amountType === 'percent' ? num(r.percent) : num(r.amount)}:${!!r.firstTimeOnly}`;
+  const bandas = (r) => (r.timeBands || []).map((b) => ({
+    startTime: b.startTime,
+    endTime: b.endTime,
+    amountType: b.amountType || 'fixed',
+    value: b.amountType === 'percent' ? num(b.percent) : num(b.amount),
+  }));
+  const firma = (r) => `${r.amountType}:${r.amountType === 'percent' ? num(r.percent) : num(r.amount)}:${!!r.firstTimeOnly}:${JSON.stringify(bandas(r))}`;
   const base = { earned: +num(earned).toFixed(2), configuredClinics: configs.length, totalClinics, ...extra };
   if (new Set(configs.map(firma)).size > 1) return { mixed: true, ...base };
   const first = configs[0];
@@ -1312,6 +1372,7 @@ const resumenTarifa = (configs, earned, totalClinics, extra = {}) => {
     amountType: first.amountType || 'fixed',
     value: first.amountType === 'percent' ? num(first.percent) : num(first.amount),
     firstTimeOnly: !!first.firstTimeOnly,
+    timeBands: bandas(first),
     partial: configs.length < totalClinics,
     ...base,
   };
@@ -2240,10 +2301,11 @@ exports.doctorReportPdf = async (req, res) => {
     const fechaCorta = (d) => new Date(d).toISOString().slice(0, 10).split('-').reverse().join('/');
     const filasDetalle = lineas.length
       ? lineas.map((l) => {
-          const concepto = l.kind === 'derivacion'
+          const base = l.kind === 'derivacion'
             ? `Derivación: ${l.serviceName}${l.atendidaPor ? ` (atendió ${l.atendidaPor})` : ''}`
             : l.kind === 'paciente' ? 'Paciente atendido'
             : `${l.serviceName}${l.repetida ? ' — ya lo había recibido (solo paga la primera vez)' : ''}`;
+          const concepto = l.franja ? `${base} · horario ${l.franja}` : base;
           return `
             <tr>
               <td>${escapeHtml(fechaCorta(l.date))}</td>
