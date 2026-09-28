@@ -65,7 +65,7 @@ export default function Commissions() {
   const [adjustEditor, setAdjustEditor] = useState(null);
   const [adjustForm, setAdjustForm] = useState({ amount: '', note: '' });
   const [savingAdjust, setSavingAdjust] = useState(false);
-  // Pago por período: { start, end, note, selected: [doctorId] }
+  // Pago por período de UN doctor: { start, end, note, doctorId, name, doctor }
   const [payout, setPayout] = useState(null);
   const [payoutPreview, setPayoutPreview] = useState(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
@@ -281,34 +281,28 @@ export default function Commissions() {
     }
   };
 
-  // ─── Pagos por período ───
-  const openPayout = (doctor = null) => {
+  // ─── Pago por período, DE UN DOCTOR ───
+  // Se paga doctor por doctor, desde su tarjeta: cada uno puede cobrar en
+  // fechas distintas.
+  const openPayout = (doctor) => {
     setPayoutPreview(null);
-    setPayout({
-      start,
-      end,
-      note: '',
-      soloDoctor: doctor?.doctorId || null,
-      selected: doctor
-        ? [doctor.doctorId]
-        : (data?.doctors || []).filter((d) => d.pendingTotal > 0).map((d) => d.doctorId),
-    });
+    setPayout({ start, end, note: '', doctorId: doctor.doctorId, name: doctor.name, doctor });
   };
 
   /**
-   * Lo pendiente de cada doctor en el PERÍODO DEL PAGO (que puede no ser el del
+   * Lo pendiente del doctor en el PERÍODO DEL PAGO (que puede no ser el del
    * filtro de la pantalla: p. ej. la pantalla enseña el mes y se paga la primera
    * quincena). Sin filtros de estado ni servicio: se paga todo lo devengado.
    */
   useEffect(() => {
-    if (!payout?.start || !payout?.end) return undefined;
+    if (!payout?.start || !payout?.end || !payout?.doctorId) return undefined;
     const t = setTimeout(async () => {
       setLoadingPreview(true);
       try {
-        const params = { start: payout.start, end: payout.end, clinic };
-        if (payout.soloDoctor) params.doctor = payout.soloDoctor;
-        const r = await api.get('/commissions/doctor-summary', { params });
-        setPayoutPreview(r.data);
+        const r = await api.get('/commissions/doctor-summary', {
+          params: { start: payout.start, end: payout.end, clinic, doctor: payout.doctorId },
+        });
+        setPayoutPreview((r.data?.doctors || []).find((d) => d.doctorId === payout.doctorId) || null);
       } catch {
         setPayoutPreview(null);
       } finally {
@@ -316,36 +310,23 @@ export default function Commissions() {
       }
     }, 300);
     return () => clearTimeout(t);
-  }, [payout?.start, payout?.end, payout?.soloDoctor, clinic]);
+  }, [payout?.start, payout?.end, payout?.doctorId, clinic]);
 
-  const previewDoctors = (payoutPreview?.doctors || []).filter((d) =>
-    d.commissionTotalWithAdjustments !== 0 || d.pendingTotal !== 0 || (d.payouts || []).length);
-  const payoutTotal = previewDoctors
-    .filter((d) => payout?.selected.includes(d.doctorId))
-    .reduce((t, d) => t + Number(d.pendingTotal || 0), 0);
-
-  const togglePayoutDoctor = (id) => setPayout((p) => ({
-    ...p,
-    selected: p.selected.includes(id) ? p.selected.filter((x) => x !== id) : [...p.selected, id],
-  }));
+  const payoutTotal = Number(payoutPreview?.pendingTotal || 0);
 
   const savePayout = async (e) => {
     e.preventDefault();
-    if (!payout.selected.length) return toast.error('Selecciona al menos un doctor');
     setSavingPayout(true);
     try {
       const r = await api.post('/commissions/payouts', {
         start: payout.start,
         end: payout.end,
         clinic,
-        doctors: payout.selected,
+        doctors: [payout.doctorId],
         note: payout.note,
       });
-      const creados = r.data?.created || [];
-      toast.success(`Pago registrado: ${creados.length} doctor(es), ${money(creados.reduce((t, c) => t + c.amount, 0))}`);
-      if ((r.data?.sinPendiente || []).length) {
-        toast(`Sin pendiente en el período: ${r.data.sinPendiente.join(', ')}`);
-      }
+      const creado = r.data?.created?.[0];
+      toast.success(`Pago registrado: ${payout.name}, ${money(creado?.amount)}`);
       setPayout(null);
       await load();
     } catch (err) {
@@ -560,25 +541,15 @@ export default function Commissions() {
               <Stat label="Ya pagado" tone="teal" value={money(data.totals?.paid)} hint="Comisiones que caen dentro de un pago registrado" />
               <Stat label="Por pagar" tone="amber" value={money(data.totals?.pending)} hint="Comisiones ganadas que aún no se han pagado" />
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-slate-500">
-                {data.statuses && data.statuses.length > 0 && <>Estados: {data.statuses.join(', ')} · </>}
-                {/* EL DETALLE GENERAL: la misma información del detalle por doctor
-                    —fecha, paciente, servicios, estado, pago, seguimientos y
-                    derivaciones— pero de TODOS los doctores que cumplan los filtros. */}
-                <a href={urlDetalleGeneral()} target="_blank" rel="noreferrer" className="text-emerald-600 hover:underline font-semibold">
-                  Ver todas las citas y derivaciones
-                </a>
-              </p>
-              <button
-                type="button"
-                onClick={() => openPayout()}
-                disabled={!(data.totals?.pending > 0)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 text-white rounded-xl text-sm border-none cursor-pointer hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <HiOutlineCheckBadge className="w-4 h-4" /> Marcar período como pagado
-              </button>
-            </div>
+            <p className="text-xs text-slate-500">
+              {data.statuses && data.statuses.length > 0 && <>Estados: {data.statuses.join(', ')} · </>}
+              {/* EL DETALLE GENERAL: la misma información del detalle por doctor
+                  —fecha, paciente, servicios, estado, pago, seguimientos y
+                  derivaciones— pero de TODOS los doctores que cumplan los filtros. */}
+              <a href={urlDetalleGeneral()} target="_blank" rel="noreferrer" className="text-emerald-600 hover:underline font-semibold">
+                Ver todas las citas y derivaciones
+              </a>
+            </p>
           </div>
 
           <div className="space-y-3">
@@ -640,9 +611,9 @@ export default function Commissions() {
                           onClick={() => openPayout(d)}
                           disabled={!(d.pendingTotal > 0)}
                           title="Marcar como pagadas las comisiones de este doctor en un período"
-                          className="inline-flex items-center gap-1 border border-teal-200 bg-white text-teal-700 hover:bg-teal-50 rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                          className="inline-flex items-center gap-1 border-none bg-teal-600 text-white hover:bg-teal-700 rounded-full px-3 py-1 text-[11px] font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                         >
-                          <HiOutlineCheckBadge className="w-3.5 h-3.5" /> Pagar
+                          <HiOutlineCheckBadge className="w-3.5 h-3.5" /> Marcar como pagado
                         </button>
                       </div>
                     </div>
@@ -1085,12 +1056,18 @@ export default function Commissions() {
         isOpen={!!payout}
         onClose={() => !savingPayout && setPayout(null)}
         title="Marcar comisiones como pagadas"
-        size="md"
+        size="sm"
       >
         {payout && (
           <form onSubmit={savePayout} className="space-y-4">
+            <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2.5 text-sm">
+              <div className="font-semibold text-slate-800">{payout.name}</div>
+              {doctorRolesLabel(payout.doctor) && (
+                <div className="text-xs text-slate-500">{doctorRolesLabel(payout.doctor)}</div>
+              )}
+            </div>
             <p className="text-xs text-teal-800 bg-teal-50 border border-teal-200 rounded-lg px-3 py-2">
-              Elige el período que se paga (p. ej. la primera quincena del mes). Todas las comisiones cuya cita cae dentro de esas fechas quedan como <b>pagadas</b> y dejan de sumar en «Por pagar». Se puede deshacer desde la tarjeta del doctor.
+              Elige el período que se le paga (p. ej. la primera quincena del mes). Sus comisiones de citas dentro de esas fechas quedan como <b>pagadas</b> y dejan de sumar en «Por pagar». Se puede deshacer desde su tarjeta.
             </p>
             <div className="flex flex-wrap gap-3">
               <label className="text-sm">Desde
@@ -1104,35 +1081,21 @@ export default function Commissions() {
               </div>
             </div>
 
-            <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-72 overflow-y-auto">
-              {loadingPreview && <div className="px-3 py-3 text-sm text-slate-400">Calculando lo pendiente del período...</div>}
-              {!loadingPreview && previewDoctors.length === 0 && (
-                <div className="px-3 py-3 text-sm text-slate-400">Ningún doctor tiene comisiones en ese período.</div>
+            {/* Lo del doctor EN EL PERÍODO DEL PAGO, recalculado al cambiar las fechas. */}
+            <div className="grid grid-cols-3 gap-2">
+              {loadingPreview ? (
+                <div className="col-span-3 text-sm text-slate-400 px-1 py-2">Calculando lo pendiente del período...</div>
+              ) : (
+                <>
+                  <Stat label="Ganado" tone="emerald" value={money(payoutPreview?.commissionTotalWithAdjustments)} />
+                  <Stat label="Ya pagado" tone="teal" value={money(payoutPreview?.paidTotal)} />
+                  <Stat label="A pagar ahora" tone="amber" value={money(payoutTotal)} />
+                </>
               )}
-              {!loadingPreview && previewDoctors.map((d) => (
-                <label key={d.doctorId} className={`flex items-center justify-between gap-3 px-3 py-2 text-sm ${d.pendingTotal > 0 ? 'cursor-pointer hover:bg-slate-50' : 'opacity-60'}`}>
-                  <span className="flex items-center gap-2 min-w-0">
-                    <input
-                      type="checkbox"
-                      disabled={!(d.pendingTotal > 0)}
-                      checked={payout.selected.includes(d.doctorId) && d.pendingTotal > 0}
-                      onChange={() => togglePayoutDoctor(d.doctorId)}
-                      className="accent-teal-600"
-                    />
-                    <span className="min-w-0">
-                      <span className="font-medium text-slate-800">{d.name}</span>
-                      <span className="block text-[11px] text-slate-400">
-                        {doctorRolesLabel(d)}
-                        {d.paidTotal > 0 ? ` · ya pagado ${money(d.paidTotal)}` : ''}
-                      </span>
-                    </span>
-                  </span>
-                  <span className={`font-bold tabular-nums ${d.pendingTotal > 0 ? 'text-amber-700' : 'text-slate-400'}`}>
-                    {d.pendingTotal > 0 ? money(d.pendingTotal) : 'Nada pendiente'}
-                  </span>
-                </label>
-              ))}
             </div>
+            {!loadingPreview && !(payoutTotal > 0) && (
+              <p className="text-xs text-slate-500">No tiene comisiones pendientes en ese período.</p>
+            )}
 
             <label className="block text-sm text-slate-700">
               Observación (opcional)
@@ -1144,10 +1107,7 @@ export default function Commissions() {
               />
             </label>
 
-            <div className="flex items-center justify-between gap-3 pt-1">
-              <span className="text-sm text-slate-600">
-                Total a marcar: <b className="text-teal-800">{money(payoutTotal)}</b>
-              </span>
+            <div className="flex items-center justify-end gap-3 pt-1">
               <div className="flex gap-2">
                 <button type="button" onClick={() => setPayout(null)} disabled={savingPayout} className="px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white cursor-pointer disabled:opacity-50">
                   Cancelar

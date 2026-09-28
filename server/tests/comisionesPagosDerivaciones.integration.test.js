@@ -248,3 +248,29 @@ test('filtro de doctores: todas las sucursales, con el rol (general o especialid
   const soloA = await llamar(ctrl.doctorOptions, reqDe(a._id, { query: { clinic: String(a._id) } }));
   assert.deepStrictEqual(soloA.payload.filter((d) => d.name.startsWith('Zz')).map((d) => d.name), ['Zz General']);
 });
+
+test('detalle de citas paginado: la página trae su tramo, los totales y las visitas cuentan el filtro entero', async () => {
+  const clinic = await Clinic.create({ name: 'PAG', nombreComercial: 'PAG', active: true });
+  const doctor = await User.create({
+    name: 'Muchas Citas', email: 'muchas@test.com', password: '123456',
+    clinics: [{ clinic: clinic._id, role: 'doctor' }],
+  });
+  const paciente = await Patient.create({ clinic: clinic._id, firstName: 'Siempre', lastName: 'Viene' });
+  await Appointment.create([1, 2, 3, 4, 5].map((d) => ({
+    clinic: clinic._id, patient: paciente._id, doctor: doctor._id,
+    date: dia(10, d), startTime: '09:00', status: 'completada', serviceName: 'Consulta', agreedValue: 10,
+  })));
+
+  const q = { start: '2026-10-01', end: '2026-10-31', doctor: String(doctor._id), limit: '2', page: '3' };
+  const res = await llamar(ctrl.doctorAppointments, reqDe(clinic._id, { query: q }));
+  assert.strictEqual(res.payload.appointments.length, 1, 'la tercera página de 2 en 2 trae la quinta cita');
+  assert.deepStrictEqual(res.payload.pagination, { page: 3, limit: 2, total: 5, pages: 3 });
+  assert.strictEqual(res.payload.totals.appointments, 5);
+  assert.strictEqual(res.payload.totals.payments, 50);
+  assert.strictEqual(res.payload.appointments[0].visitNumber, 5);
+  assert.strictEqual(res.payload.appointments[0].visitsTotal, 5);
+
+  // Sin `limit`, todas como antes.
+  const todas = await llamar(ctrl.doctorAppointments, reqDe(clinic._id, { query: { ...q, limit: undefined, page: undefined } }));
+  assert.strictEqual(todas.payload.appointments.length, 5);
+});

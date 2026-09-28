@@ -1599,13 +1599,32 @@ exports.doctorAppointments = async (req, res) => {
     const { query, startDate, endDate } = await construirQueryResumen(req);
     const catalogo = await catalogoServicios();
 
-    const appts = await Appointment.find(query)
+    /**
+     * PAGINADO (sep-2026): con todos los doctores de un mes salían miles de
+     * filas y la página tardaba en cargar. Primero se leen TODAS las citas del
+     * filtro con los campos justos para el total de pagos y el nº de visita
+     * (que deben contar el filtro entero, no la página); después solo las de la
+     * página cargan paciente, turnos, ventas, seguimientos y derivaciones, que
+     * es lo caro. `limit` 0 (o ausente) = todas, como antes.
+     */
+    const ORDEN = { date: 1, startTime: 1, _id: 1 };
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 0, 0), 1000);
+    const todas = await Appointment.find(query)
+      .select('patient doctor date startTime agreedValue isCanje advancePayment advanceAmount')
+      .sort(ORDEN)
+      .lean();
+    const total = todas.length;
+    const pages = limit ? Math.max(Math.ceil(total / limit), 1) : 1;
+    const page = limit ? Math.min(Math.max(parseInt(req.query.page, 10) || 1, 1), pages) : 1;
+    const idsPagina = limit ? todas.slice((page - 1) * limit, page * limit).map((a) => a._id) : null;
+
+    const appts = await Appointment.find(idsPagina ? { _id: { $in: idsPagina } } : query)
       .populate('patient', 'firstName lastName')
       .populate('doctor', 'name')
       .populate('turns.user', 'name')
       .populate('attendedByNurse', 'name')
       .populate('clinic', 'name nombreComercial')
-      .sort({ date: 1, startTime: 1 })
+      .sort(ORDEN)
       .lean();
 
     // Ventas ligadas: para decir CUÁNDO se pagó la cita y con qué número.
@@ -1666,11 +1685,12 @@ exports.doctorAppointments = async (req, res) => {
     }
 
     // Visitas repetidas: cuántas veces atendió este doctor AL MISMO paciente.
-    // Se cuenta DENTRO del resultado (las citas que pasaron los filtros).
+    // Se cuenta DENTRO del resultado (las citas que pasaron los filtros, todas
+    // las páginas: la visita 3/5 lo es aunque las otras estén en otra página).
     const visitasPaciente = new Map();
-    for (const a of appts) {
-      const pid = a.patient?._id ? String(a.patient._id) : null;
-      const did = a.doctor?._id ? String(a.doctor._id) : null;
+    for (const a of todas) {
+      const pid = a.patient ? String(a.patient) : null;
+      const did = a.doctor ? String(a.doctor) : null;
       if (!pid || !did) continue;
       const key = `${pid}|${did}`;
       if (!visitasPaciente.has(key)) visitasPaciente.set(key, []);
@@ -1692,10 +1712,12 @@ exports.doctorAppointments = async (req, res) => {
     }
 
     // Más las derivaciones registradas a mano (página Derivaciones) por los
-    // doctores del resultado en el rango, que no vienen de un seguimiento.
-    const doctorIds = [...new Set(appts.filter((a) => a.doctor).map((a) => String(a.doctor._id || a.doctor)))];
+    // doctores del resultado en el rango, que no vienen de un seguimiento. No
+    // cuelgan de una cita de la página, así que van solo en la PRIMERA página
+    // (en las demás se repetirían).
+    const doctorIds = [...new Set(todas.filter((a) => a.doctor).map((a) => String(a.doctor)))];
     let manuales = [];
-    if (doctorIds.length) {
+    if (doctorIds.length && page === 1) {
       const filtroDeriva = { fromDoctor: { $in: doctorIds }, date: { $gte: startDate, $lte: endDate } };
       if (query.clinic) filtroDeriva.clinic = query.clinic;
       manuales = await Referral.find(filtroDeriva)
@@ -1827,9 +1849,12 @@ exports.doctorAppointments = async (req, res) => {
       end: endDate,
       appointments,
       totals: {
-        appointments: appointments.length,
-        payments: +appointments.reduce((sum, a) => sum + num(a.payment?.totalValue), 0).toFixed(2),
+        // Del filtro ENTERO, no de la página.
+        appointments: total,
+        payments: +todas.reduce((sum, a) => sum + num(appointmentPaymentValue(a)), 0).toFixed(2),
+        pagePayments: +appointments.reduce((sum, a) => sum + num(a.payment?.totalValue), 0).toFixed(2),
       },
+      pagination: { page, limit, total, pages },
       doctorNames,
       referralsByDoctor: Object.fromEntries(derivacionesPorDoctor),
     });

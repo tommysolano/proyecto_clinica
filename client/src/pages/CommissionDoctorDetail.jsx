@@ -20,6 +20,30 @@ import {
 
 const lista = (v) => String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
 
+// Citas por página: con todos los doctores de un mes salían miles de filas de golpe.
+const POR_PAGINA = 200;
+
+/** Anterior / «Página X de Y» / Siguiente. */
+function Paginador({ pagination, onPage }) {
+  if (!pagination || pagination.pages <= 1) return null;
+  const { page, pages, total, limit } = pagination;
+  const desde = (page - 1) * limit + 1;
+  const hasta = Math.min(page * limit, total);
+  const btn = 'px-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-white cursor-pointer hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed';
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+      <span>Mostrando <b>{desde}–{hasta}</b> de <b>{total}</b> citas</span>
+      <div className="flex items-center gap-1.5">
+        <button type="button" className={btn} disabled={page <= 1} onClick={() => onPage(1)}>« Primera</button>
+        <button type="button" className={btn} disabled={page <= 1} onClick={() => onPage(page - 1)}>‹ Anterior</button>
+        <span className="px-2">Página <b>{page}</b> de <b>{pages}</b></span>
+        <button type="button" className={btn} disabled={page >= pages} onClick={() => onPage(page + 1)}>Siguiente ›</button>
+        <button type="button" className={btn} disabled={page >= pages} onClick={() => onPage(pages)}>Última »</button>
+      </div>
+    </div>
+  );
+}
+
 function EstadoDerivacion({ estado }) {
   const e = DERIVACION_ESTADOS[estado] || { label: estado, cls: 'bg-slate-100 text-slate-500' };
   return <span className={`px-2 py-0.5 rounded-full font-semibold whitespace-nowrap ${e.cls}`}>{e.label}</span>;
@@ -49,8 +73,19 @@ export default function CommissionDoctorDetail() {
   const doctorFilter = lista(searchParams.get('doctor'));
   const statusFilter = lista(searchParams.get('status'));
 
+  const page = Math.max(parseInt(searchParams.get('page'), 10) || 1, 1);
+  const irAPagina = (n) => {
+    const next = new URLSearchParams(searchParams);
+    if (n <= 1) next.delete('page');
+    else next.set('page', String(n));
+    setSearchParams(next, { replace: true });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // Cambiar un filtro vuelve a la página 1: la página 7 de otro filtro no existe.
   const setParam = (key, value) => {
     const next = new URLSearchParams(searchParams);
+    if (key !== 'page') next.delete('page');
     if (value == null || value === '' || (Array.isArray(value) && !value.length)) next.delete(key);
     else next.set(key, Array.isArray(value) ? value.join(',') : value);
     setSearchParams(next, { replace: true });
@@ -71,7 +106,7 @@ export default function CommissionDoctorDetail() {
     const t = setTimeout(async () => {
       setLoading(true);
       try {
-        const params = {};
+        const params = { limit: POR_PAGINA, page };
         ['start', 'end', 'clinic', 'status', 'service'].forEach((k) => {
           if (searchParams.get(k)) params[k] = searchParams.get(k);
         });
@@ -141,6 +176,7 @@ export default function CommissionDoctorDetail() {
               onChange={(e) => {
                 const next = new URLSearchParams(searchParams);
                 next.set('clinic', e.target.value);
+                next.delete('page');
                 if (esGeneral) next.delete('doctor');
                 setSearchParams(next, { replace: true });
               }}
@@ -220,20 +256,22 @@ export default function CommissionDoctorDetail() {
       {data && (
         <div className="flex flex-wrap items-center gap-3">
           <p className="text-sm text-slate-500">
-            {fmtDate(data.start)} — {fmtDate(data.end)} · <b>{citas.length}</b> citas en el filtro
+            {fmtDate(data.start)} — {fmtDate(data.end)} · <b>{data.totals?.appointments ?? citas.length}</b> citas en el filtro
           </p>
           <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-sm font-semibold">
             Total pagos: {money(totalPagos)}
           </span>
           {derivaciones.length > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 text-violet-800 px-3 py-1 text-sm font-semibold">
-              Derivaciones: {derivaciones.length} · realizadas {cuentaDeriva(['realizada'])} · sin realizar {cuentaDeriva(['sin_agendar', 'no_asistio', 'cancelada'])}
+              Derivaciones{data.pagination?.pages > 1 ? ' (esta página)' : ''}: {derivaciones.length} · realizadas {cuentaDeriva(['realizada'])} · sin realizar {cuentaDeriva(['sin_agendar', 'no_asistio', 'cancelada'])}
             </span>
           )}
         </div>
       )}
 
       {loading && <div className="text-slate-500">Cargando...</div>}
+
+      {data && <Paginador pagination={data.pagination} onPage={irAPagina} />}
 
       {data && (
         <div className="space-y-4">
@@ -347,8 +385,15 @@ export default function CommissionDoctorDetail() {
                   ))}
                 </tbody>
                 <tfoot className="bg-emerald-50 border-t-2 border-emerald-200">
+                  {data.pagination?.pages > 1 && (
+                    <tr>
+                      <td colSpan={5} className="px-3 py-2 text-right font-semibold text-emerald-700">Pagos de esta página</td>
+                      <td className="px-3 py-2 whitespace-nowrap font-semibold text-emerald-700">{money(data.totals?.pagePayments)}</td>
+                      <td colSpan={2}></td>
+                    </tr>
+                  )}
                   <tr>
-                    <td colSpan={5} className="px-3 py-2 text-right font-semibold text-emerald-800">Total pagos</td>
+                    <td colSpan={5} className="px-3 py-2 text-right font-semibold text-emerald-800">Total pagos del filtro</td>
                     <td className="px-3 py-2 whitespace-nowrap font-bold text-emerald-800">{money(totalPagos)}</td>
                     <td colSpan={2}></td>
                   </tr>
@@ -361,12 +406,15 @@ export default function CommissionDoctorDetail() {
             </div>
           )}
 
+          <Paginador pagination={data.pagination} onPage={irAPagina} />
+
           <div className="bg-white rounded-xl border border-slate-200 px-4 py-3">
             <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide mb-1 inline-flex items-center gap-1">
               <HiOutlineArrowsRightLeft className="w-3.5 h-3.5" /> Derivaciones de los doctores ({derivaciones.length})
             </p>
             <p className="text-[11px] text-slate-500 mb-2">
               El doctor gana la comisión de una derivación solo cuando el paciente se la realiza.
+              {data.pagination?.pages > 1 && ' Se listan las derivaciones de las citas de esta página.'}
             </p>
             {derivaciones.length > 0 ? (
               <div className="overflow-x-auto">
