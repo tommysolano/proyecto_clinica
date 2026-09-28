@@ -9,6 +9,13 @@ router.get('/doctor-summary', requireSuperAdmin, ctrl.doctorSummary);
 router.get('/doctor-appointments', requireSuperAdmin, ctrl.doctorAppointments);
 router.put('/doctor-service-rule', requireSuperAdmin, ctrl.saveDoctorServiceRule);
 router.put('/doctor-patient-rule', requireSuperAdmin, ctrl.saveDoctorPatientRule);
+// Tarifa por derivación realizada (base o por servicio derivado).
+router.put('/doctor-referral-rule', requireSuperAdmin, ctrl.saveDoctorReferralRule);
+// Doctores (general o especialidad) para los filtros, de una sucursal o de todas.
+router.get('/doctors', requireSuperAdmin, ctrl.doctorOptions);
+// Pagos por período: marcar como pagado lo ganado entre dos fechas, y deshacerlo.
+router.post('/payouts', requireSuperAdmin, ctrl.createPayouts);
+router.delete('/payouts/:id', requireSuperAdmin, ctrl.deletePayout);
 // Ajustes manuales: sumar (o restar) un valor a las comisiones del doctor con
 // observación, para corregir comisiones que el sistema no contabilizó bien.
 router.post('/doctor-adjustment', requireSuperAdmin, ctrl.saveDoctorAdjustment);

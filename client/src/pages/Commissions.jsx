@@ -1,16 +1,49 @@
 import { useEffect, useMemo, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
-import { HiOutlineCurrencyDollar, HiOutlineMegaphone, HiOutlineUserGroup, HiOutlineDocumentArrowDown, HiOutlinePlusCircle } from 'react-icons/hi2';
+import {
+  HiOutlineCurrencyDollar, HiOutlineMegaphone, HiOutlineUserGroup, HiOutlineDocumentArrowDown,
+  HiOutlinePlusCircle, HiOutlineCheckBadge, HiOutlineArrowsRightLeft,
+} from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import Modal from '../components/Modal';
 import NumericInput from '../components/NumericInput';
 import ProductAutocomplete from '../components/ProductAutocomplete';
 import { doctorOptionLabel, doctorTypeLabel } from '../utils/roles';
-import { STATUS_COLORS, STATUS_OPTIONS } from '../utils/commissionsFormat';
+import { fmtDate, todayEc } from '../utils/date';
+import {
+  STATUS_COLORS, STATUS_OPTIONS, money, doctorRolesLabel, doctorSearchOption,
+} from '../utils/commissionsFormat';
 
-const today = () => new Date().toISOString().slice(0, 10);
-const monthAgo = () => new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+const today = () => todayEc();
+const monthAgo = () => {
+  const [y, m, d] = todayEc().split('-').map(Number);
+  const f = new Date(y, m - 1, d - 30);
+  return `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, '0')}-${String(f.getDate()).padStart(2, '0')}`;
+};
+
+const RULE_ENDPOINT = {
+  service: '/commissions/doctor-service-rule',
+  patient: '/commissions/doctor-patient-rule',
+  referral: '/commissions/doctor-referral-rule',
+};
+
+/** Una cifra del doctor: etiqueta arriba, valor grande, explicación al pasar el ratón. */
+function Stat({ label, value, hint, tone = 'slate' }) {
+  const tones = {
+    slate: 'bg-white border-slate-200 text-slate-800',
+    sky: 'bg-sky-50 border-sky-200 text-sky-800',
+    emerald: 'bg-emerald-50 border-emerald-200 text-emerald-800',
+    teal: 'bg-teal-50 border-teal-200 text-teal-800',
+    amber: 'bg-amber-50 border-amber-200 text-amber-800',
+  };
+  return (
+    <div title={hint} className={`rounded-xl border px-3 py-2 min-w-0 ${tones[tone]}`}>
+      <div className="text-[10px] uppercase tracking-wide opacity-70 font-semibold leading-tight">{label}</div>
+      <div className="text-base font-bold tabular-nums mt-0.5">{value}</div>
+    </div>
+  );
+}
 
 export default function Commissions() {
   const [tab, setTab] = useState('doctores');
@@ -27,11 +60,16 @@ export default function Commissions() {
   const [dataCC, setDataCC] = useState(null);
   const [loading, setLoading] = useState(false);
   const [commissionEditor, setCommissionEditor] = useState(null);
-  const [commissionForm, setCommissionForm] = useState({ amountType: 'fixed', value: '' });
+  const [commissionForm, setCommissionForm] = useState({ amountType: 'fixed', value: '', firstTimeOnly: false });
   const [savingCommission, setSavingCommission] = useState(false);
   const [adjustEditor, setAdjustEditor] = useState(null);
   const [adjustForm, setAdjustForm] = useState({ amount: '', note: '' });
   const [savingAdjust, setSavingAdjust] = useState(false);
+  // Pago por período: { start, end, note, selected: [doctorId] }
+  const [payout, setPayout] = useState(null);
+  const [payoutPreview, setPayoutPreview] = useState(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [savingPayout, setSavingPayout] = useState(false);
 
   const filtrosBase = () => {
     const params = { start, end };
@@ -68,18 +106,15 @@ export default function Commissions() {
     api.get('/appointment-service-items').then((r) => setServices(r.data || [])).catch(() => {});
   }, []);
 
-  const loadDoctors = async () => {
-    try {
-      const res = await api.get('/users/doctors');
-      setDoctors(res.data || []);
-    } catch {
-      // sin listado de doctores el filtro queda vacío, no rompe la página
-    }
-  };
-
+  /**
+   * Doctores del filtro: los de la sucursal elegida o los de TODAS, cada uno con
+   * su rol (general o especialidad). Antes el filtro solo salía con una
+   * sucursal concreta y listaba los de la sucursal activa de la sesión.
+   */
   useEffect(() => {
-    if (clinic === 'all') setDoctors([]);
-    else loadDoctors();
+    api.get('/commissions/doctors', { params: { clinic } })
+      .then((r) => setDoctors(r.data || []))
+      .catch(() => setDoctors([]));
   }, [clinic]);
 
   /**
@@ -119,34 +154,44 @@ export default function Commissions() {
     if (clinic) params.set('clinic', clinic);
     if (statusFilter.length) params.set('status', statusFilter.join(','));
     if (serviceFilter.length) params.set('service', serviceFilter.join(','));
+    if (doctorId === 'todos' && doctorFilter.length) params.set('doctor', doctorFilter.join(','));
     if (doctorName) params.set('name', doctorName);
     return `/commissions/${doctorId}?${params.toString()}`;
   };
 
-  /** El DETALLE GENERAL: todas las citas de todos los doctores que cumplan los filtros (fechas, sucursal, estados y servicios). */
+  /** El DETALLE GENERAL: todas las citas de todos los doctores que cumplan los filtros. */
   const urlDetalleGeneral = () => urlDetalle('todos');
 
-  const openCommissionEditor = (doctor, service) => {
-    if (!service.serviceId) {
+  // ─── Editor de tarifas (servicio, paciente, derivación) ───
+  const openEditor = (scope, doctor, service = null) => {
+    if (service && !service.serviceId) {
       toast.error('Este servicio antiguo no está vinculado al catálogo de Agenda');
       return;
     }
-    const current = service.commission;
-    setCommissionEditor({ scope: 'service', doctor, service, commission: current });
+    const current = scope === 'patient'
+      ? doctor.patientCommission
+      : scope === 'referral' && !service ? doctor.referralCommission
+      : service?.commission;
+    setCommissionEditor({ scope, doctor, service, commission: current });
     setCommissionForm({
       amountType: !current?.mixed && current?.amountType ? current.amountType : 'fixed',
       value: !current?.mixed && current?.value != null ? String(current.value) : '',
+      firstTimeOnly: !!current?.firstTimeOnly,
     });
   };
 
-  const openPatientCommissionEditor = (doctor) => {
-    const current = doctor.patientCommission;
-    setCommissionEditor({ scope: 'patient', doctor, service: null, commission: current });
-    setCommissionForm({
-      amountType: !current?.mixed && current?.amountType ? current.amountType : 'fixed',
-      value: !current?.mixed && current?.value != null ? String(current.value) : '',
-    });
+  const editorClinics = (ed) => {
+    if (ed.service) return ed.service.clinicIds;
+    if (ed.scope === 'referral') return ed.doctor.referralClinicIds?.length ? ed.doctor.referralClinicIds : ed.doctor.clinicIds;
+    return ed.doctor.clinicIds;
   };
+
+  const putRule = (body) => api.put(RULE_ENDPOINT[commissionEditor.scope], {
+    doctor: commissionEditor.doctor.doctorId,
+    ...(commissionEditor.service ? { service: commissionEditor.service.serviceId } : {}),
+    clinics: editorClinics(commissionEditor),
+    ...body,
+  });
 
   const saveCommission = async (e) => {
     e.preventDefault();
@@ -155,20 +200,11 @@ export default function Commissions() {
     if (commissionForm.amountType === 'percent' && value > 100) return toast.error('El porcentaje no puede superar 100');
     setSavingCommission(true);
     try {
-      await api.put(
-        commissionEditor.scope === 'patient'
-          ? '/commissions/doctor-patient-rule'
-          : '/commissions/doctor-service-rule',
-        {
-        doctor: commissionEditor.doctor.doctorId,
-        ...(commissionEditor.scope === 'service' ? { service: commissionEditor.service.serviceId } : {}),
-        clinics: commissionEditor.scope === 'service'
-          ? commissionEditor.service.clinicIds
-          : commissionEditor.doctor.clinicIds,
+      await putRule({
         amountType: commissionForm.amountType,
         value,
-        }
-      );
+        ...(commissionEditor.scope === 'service' ? { firstTimeOnly: commissionForm.firstTimeOnly } : {}),
+      });
       toast.success('Comisión guardada');
       setCommissionEditor(null);
       await load();
@@ -183,19 +219,7 @@ export default function Commissions() {
     if (!commissionEditor?.commission) return;
     setSavingCommission(true);
     try {
-      await api.put(
-        commissionEditor.scope === 'patient'
-          ? '/commissions/doctor-patient-rule'
-          : '/commissions/doctor-service-rule',
-        {
-        doctor: commissionEditor.doctor.doctorId,
-        ...(commissionEditor.scope === 'service' ? { service: commissionEditor.service.serviceId } : {}),
-        clinics: commissionEditor.scope === 'service'
-          ? commissionEditor.service.clinicIds
-          : commissionEditor.doctor.clinicIds,
-        active: false,
-        }
-      );
+      await putRule({ active: false });
       toast.success('Comisión eliminada');
       setCommissionEditor(null);
       await load();
@@ -208,14 +232,16 @@ export default function Commissions() {
 
   const commissionLabel = (commission) => {
     if (!commission) return 'Definir comisión';
-    if (commission.mixed) return `Valores distintos · ganado $${Number(commission.earned || 0).toFixed(2)}`;
+    const ganado = `ganó ${money(commission.earned)}`;
+    if (commission.mixed) return `Valores distintos · ${ganado}`;
     const label = commission.amountType === 'percent'
       ? `${Number(commission.value).toFixed(2)}%`
-      : `$${Number(commission.value).toFixed(2)}`;
-    const earned = `ganado $${Number(commission.earned || 0).toFixed(2)}`;
-    return commission.partial ? `${label} (parcial) · ${earned}` : `${label} · ${earned}`;
+      : money(commission.value);
+    const primera = commission.firstTimeOnly ? ' · solo 1ª vez' : '';
+    return `${label}${primera}${commission.partial ? ' (parcial)' : ''} · ${ganado}`;
   };
 
+  // ─── Ajustes ───
   const openAdjustEditor = (doctor) => {
     setAdjustEditor(doctor);
     setAdjustForm({ amount: '', note: '' });
@@ -244,7 +270,7 @@ export default function Commissions() {
     }
   };
 
-  const removeAdjust = async (doctor, adjId) => {
+  const removeAdjust = async (adjId) => {
     if (!confirm('¿Eliminar este ajuste?')) return;
     try {
       await api.delete(`/commissions/doctor-adjustment/${adjId}`);
@@ -252,6 +278,91 @@ export default function Commissions() {
       await load();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al eliminar el ajuste');
+    }
+  };
+
+  // ─── Pagos por período ───
+  const openPayout = (doctor = null) => {
+    setPayoutPreview(null);
+    setPayout({
+      start,
+      end,
+      note: '',
+      soloDoctor: doctor?.doctorId || null,
+      selected: doctor
+        ? [doctor.doctorId]
+        : (data?.doctors || []).filter((d) => d.pendingTotal > 0).map((d) => d.doctorId),
+    });
+  };
+
+  /**
+   * Lo pendiente de cada doctor en el PERÍODO DEL PAGO (que puede no ser el del
+   * filtro de la pantalla: p. ej. la pantalla enseña el mes y se paga la primera
+   * quincena). Sin filtros de estado ni servicio: se paga todo lo devengado.
+   */
+  useEffect(() => {
+    if (!payout?.start || !payout?.end) return undefined;
+    const t = setTimeout(async () => {
+      setLoadingPreview(true);
+      try {
+        const params = { start: payout.start, end: payout.end, clinic };
+        if (payout.soloDoctor) params.doctor = payout.soloDoctor;
+        const r = await api.get('/commissions/doctor-summary', { params });
+        setPayoutPreview(r.data);
+      } catch {
+        setPayoutPreview(null);
+      } finally {
+        setLoadingPreview(false);
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [payout?.start, payout?.end, payout?.soloDoctor, clinic]);
+
+  const previewDoctors = (payoutPreview?.doctors || []).filter((d) =>
+    d.commissionTotalWithAdjustments !== 0 || d.pendingTotal !== 0 || (d.payouts || []).length);
+  const payoutTotal = previewDoctors
+    .filter((d) => payout?.selected.includes(d.doctorId))
+    .reduce((t, d) => t + Number(d.pendingTotal || 0), 0);
+
+  const togglePayoutDoctor = (id) => setPayout((p) => ({
+    ...p,
+    selected: p.selected.includes(id) ? p.selected.filter((x) => x !== id) : [...p.selected, id],
+  }));
+
+  const savePayout = async (e) => {
+    e.preventDefault();
+    if (!payout.selected.length) return toast.error('Selecciona al menos un doctor');
+    setSavingPayout(true);
+    try {
+      const r = await api.post('/commissions/payouts', {
+        start: payout.start,
+        end: payout.end,
+        clinic,
+        doctors: payout.selected,
+        note: payout.note,
+      });
+      const creados = r.data?.created || [];
+      toast.success(`Pago registrado: ${creados.length} doctor(es), ${money(creados.reduce((t, c) => t + c.amount, 0))}`);
+      if ((r.data?.sinPendiente || []).length) {
+        toast(`Sin pendiente en el período: ${r.data.sinPendiente.join(', ')}`);
+      }
+      setPayout(null);
+      await load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al registrar el pago');
+    } finally {
+      setSavingPayout(false);
+    }
+  };
+
+  const removePayout = async (p) => {
+    if (!confirm(`¿Deshacer el pago del ${fmtDate(p.start)} al ${fmtDate(p.end)}? Sus comisiones vuelven a «Por pagar».`)) return;
+    try {
+      await api.delete(`/commissions/payouts/${p.id}`);
+      toast.success('Pago eliminado');
+      await load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al eliminar el pago');
     }
   };
 
@@ -270,6 +381,14 @@ export default function Commissions() {
       toast.error(err.response?.data?.message || 'Error al generar el PDF');
     }
   };
+
+  const chipBtn = (active, extra = '') => `border-none rounded-full px-2 py-0.5 text-[10px] font-semibold cursor-pointer ${
+    active ? 'bg-sky-100 text-sky-700 hover:bg-sky-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+  } ${extra}`;
+
+  const editorTitle = !commissionEditor ? '' : commissionEditor.scope === 'patient'
+    ? 'Comisión por paciente atendido'
+    : commissionEditor.scope === 'referral' ? 'Comisión por derivación realizada' : 'Comisión por servicio';
 
   return (
     <div className="space-y-4">
@@ -306,7 +425,7 @@ export default function Commissions() {
           <label className="text-sm">Sucursal
             <select
               value={clinic}
-              onChange={(e) => setClinic(e.target.value)}
+              onChange={(e) => { setClinic(e.target.value); setDoctorFilter([]); }}
               className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm min-w-[180px]"
             >
               <option value="all">Todas las sucursales</option>
@@ -315,23 +434,23 @@ export default function Commissions() {
               ))}
             </select>
           </label>
-          {tab === 'doctores' && clinic !== 'all' && (
+          {tab === 'doctores' && (
             <label className="text-sm">Doctor
-              <div className="mt-1">
-                {/* CON BUSCADOR, igual que el filtro de servicio: se escribe y
-                    el resultado se añade como chip. La especialidad va como
-                    «categoría» para que el buscador la encuentre y las
-                    sugerencias la muestren. Los doctores ya filtrados
-                    desaparecen de las sugerencias. */}
+              <div className="mt-1 min-w-[240px]">
+                {/* CON BUSCADOR: se escribe el nombre o el rol («gineco»,
+                    «general») y el resultado se añade como chip. Debajo de cada
+                    nombre va su rol, general o especialidad. */}
                 <ProductAutocomplete
-                  products={doctors.map((d) => ({ ...d, category: d.specialty || '' }))}
+                  products={doctors
+                    .filter((d) => !doctorFilter.some((x) => String(x) === String(d._id)))
+                    .map(doctorSearchOption)}
                   value=""
                   onSelect={(p) => {
                     if (p && !doctorFilter.some((x) => String(x) === String(p._id))) {
                       setDoctorFilter([...doctorFilter, p._id]);
                     }
                   }}
-                  placeholder="Filtrar por doctor..."
+                  placeholder="Escribe un doctor o especialidad..."
                 />
               </div>
             </label>
@@ -380,7 +499,7 @@ export default function Commissions() {
               ))}
             </div>
 
-            {(doctorFilter.length > 0 || serviceFilter.length > 0 || statusFilter.length !== STATUS_OPTIONS.length) && (
+            {(doctorFilter.length > 0 || serviceFilter.length > 0 || statusFilter.length !== 2) && (
               <div className="flex flex-wrap gap-1.5">
                 {doctorFilter.map((id) => (
                   <span key={id} className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-slate-100 text-xs text-slate-700">
@@ -422,190 +541,319 @@ export default function Commissions() {
 
       {tab === 'doctores' && data && (
         <div className="space-y-3">
-          <p className="text-sm text-slate-500">
-            Total de citas en el filtro: <b>{data.totals?.total ?? 0}</b>
-            {data.statuses && data.statuses.length > 0 && (
-              <span className="text-slate-400"> — {data.statuses.join(', ')}</span>
-            )}
-            {/* EL DETALLE GENERAL: la misma información del detalle por doctor
-                —fecha, paciente, servicios, estado, pago, seguimientos— pero de
-                TODOS los doctores que cumplan los filtros. */}
-            <a
-              href={urlDetalleGeneral()}
-              target="_blank"
-              rel="noreferrer"
-              className="ml-3 text-xs text-emerald-600 hover:underline"
-            >
-              Ver todas las citas
-            </a>
-          </p>
+          {/* Totales del filtro: lo que pagaron los pacientes y lo que se debe a los doctores. */}
+          <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-3">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+              <Stat label="Citas en el filtro" value={data.totals?.total ?? 0} />
+              <Stat
+                label="Generado"
+                tone="sky"
+                value={money(data.totals?.generated)}
+                hint="Lo que pagaron los pacientes por las citas atendidas (asistidas/completadas) en el filtro"
+              />
+              <Stat
+                label="Comisiones ganadas"
+                tone="emerald"
+                value={money(data.totals?.commissions)}
+                hint="Lo que ganaron los doctores: servicios, paciente atendido, derivaciones realizadas y ajustes"
+              />
+              <Stat label="Ya pagado" tone="teal" value={money(data.totals?.paid)} hint="Comisiones que caen dentro de un pago registrado" />
+              <Stat label="Por pagar" tone="amber" value={money(data.totals?.pending)} hint="Comisiones ganadas que aún no se han pagado" />
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-slate-500">
+                {data.statuses && data.statuses.length > 0 && <>Estados: {data.statuses.join(', ')} · </>}
+                {/* EL DETALLE GENERAL: la misma información del detalle por doctor
+                    —fecha, paciente, servicios, estado, pago, seguimientos y
+                    derivaciones— pero de TODOS los doctores que cumplan los filtros. */}
+                <a href={urlDetalleGeneral()} target="_blank" rel="noreferrer" className="text-emerald-600 hover:underline font-semibold">
+                  Ver todas las citas y derivaciones
+                </a>
+              </p>
+              <button
+                type="button"
+                onClick={() => openPayout()}
+                disabled={!(data.totals?.pending > 0)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 text-white rounded-xl text-sm border-none cursor-pointer hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <HiOutlineCheckBadge className="w-4 h-4" /> Marcar período como pagado
+              </button>
+            </div>
+          </div>
 
           <div className="space-y-3">
-            {(data.doctors || []).map((d) => (
-              <div key={d.doctorId} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-slate-50 border-b border-slate-100">
-                  <div>
-                    <span className="font-semibold text-slate-800">{d.name}</span>
-                    {(d.roles?.length ? d.roles : [d.roleInClinic].filter(Boolean)).map((role) => (
-                      <span key={role} className="ml-2 text-xs px-2 py-0.5 rounded bg-sky-100 text-sky-700 font-semibold">
-                        {doctorTypeLabel({ roleInClinic: role })}
-                      </span>
-                    ))}
-                    {d.specialty && !(d.roles?.length ? d.roles : [d.roleInClinic].filter(Boolean))
-                      .some((role) => doctorTypeLabel({ roleInClinic: role }).toLowerCase() === d.specialty.trim().toLowerCase()) ? (
-                      <span className="ml-2 text-xs px-2 py-0.5 rounded bg-slate-200/70 text-slate-600">
-                        Especialidad: {d.specialty}
-                      </span>
-                    ) : null}
-                    {(d.clinics || []).length > 0 && (
-                      <span className="block text-xs text-slate-500 mt-0.5">{d.clinics.join(', ')}</span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap justify-end">
-                    <span className="text-sm text-slate-600 mr-1">
-                      Total: <b className="text-slate-900">{d.total}</b>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => openPatientCommissionEditor(d)}
-                      title="Comisión base por cada paciente atendido, salvo cuando la cita ya paga por servicio"
-                      className={`border-none rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer ${
-                        d.patientCommission
-                          ? 'bg-violet-100 text-violet-700 hover:bg-violet-200'
-                          : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-100'
-                      }`}
-                    >
-                      Por paciente: {commissionLabel(d.patientCommission)}
-                    </button>
-                    {d.hasConfiguredCommissions && (
-                      <span className="text-sm text-emerald-700 mr-1">
-                        Ganado: <b>${Number(d.commissionTotal || 0).toFixed(2)}</b>
-                      </span>
-                    )}
-                    {(d.adjustments || []).length > 0 && (
-                      <span className="text-sm text-amber-700 mr-1">
-                        Ajustes: <b>{d.adjustmentTotal >= 0 ? '+' : ''}${Number(d.adjustmentTotal || 0).toFixed(2)}</b>
-                      </span>
-                    )}
-                    {((d.hasConfiguredCommissions && d.commissionTotal > 0) || d.adjustmentTotal > 0) && (
-                      <span className="text-sm font-bold text-emerald-800 bg-emerald-100 rounded-full px-3 py-1 mr-1">
-                        Total: ${Number(d.commissionTotalWithAdjustments || 0).toFixed(2)}
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => downloadPdf(d)}
-                      title="Descargar reporte PDF de comisiones del doctor (fecha, paciente, servicio y comisión)"
-                      className="inline-flex items-center gap-1 border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-emerald-700 rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer"
-                    >
-                      <HiOutlineDocumentArrowDown className="w-3.5 h-3.5" /> PDF
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => openAdjustEditor(d)}
-                      title="Sumar (o restar) un valor a las comisiones del doctor con una observación"
-                      className="inline-flex items-center gap-1 border border-amber-200 bg-white text-amber-700 hover:bg-amber-50 rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer"
-                    >
-                      <HiOutlinePlusCircle className="w-3.5 h-3.5" /> Ajuste
-                    </button>
-                    {columnas.map((s) => (
-                      <span
-                        key={s.value}
-                        title={`${s.label}: ${d.byStatus?.[s.value] || 0}`}
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${
-                          (d.byStatus?.[s.value] || 0) > 0
-                            ? `${STATUS_COLORS[s.value]} font-semibold`
-                            : 'bg-white border border-slate-200 text-slate-300'
-                        }`}
-                      >
-                        {s.label} {d.byStatus?.[s.value] || 0}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <div className="px-4 py-3 space-y-3">
-                  {d.services && d.services.length > 0 ? (
-                    <div>
-                      <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-2">
-                        Servicios atendidos
-                      </p>
-                      <div className="flex flex-wrap gap-1.5 bg-emerald-50/40 border border-emerald-100 rounded-lg p-3">
-                        {[...d.services].sort((a, b) => b.count - a.count).map((svc) => (
-                          <div
-                            key={svc.name}
-                            title={Object.entries(svc.byStatus || {}).map(([k, v]) => `${k}: ${v}`).join(' · ')}
-                            className="inline-flex items-center gap-1.5 bg-white border border-emerald-200 text-slate-700 text-xs pl-2.5 pr-1 py-1 rounded-full"
+            {(data.doctors || []).map((d) => {
+              const ref = d.referrals || {};
+              return (
+                <div key={d.doctorId} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                  <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 space-y-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <span className="font-semibold text-slate-800">{d.name}</span>
+                        {(d.roles?.length ? d.roles : [d.roleInClinic].filter(Boolean)).map((role) => (
+                          <span key={role} className="ml-2 text-xs px-2 py-0.5 rounded bg-sky-100 text-sky-700 font-semibold">
+                            {doctorTypeLabel({ roleInClinic: role })}
+                          </span>
+                        ))}
+                        {d.specialty && !(d.roles?.length ? d.roles : [d.roleInClinic].filter(Boolean))
+                          .some((role) => doctorTypeLabel({ roleInClinic: role }).toLowerCase() === d.specialty.trim().toLowerCase()) ? (
+                          <span className="ml-2 text-xs px-2 py-0.5 rounded bg-slate-200/70 text-slate-600">
+                            Especialidad: {d.specialty}
+                          </span>
+                        ) : null}
+                        {(d.clinics || []).length > 0 && (
+                          <span className="block text-xs text-slate-500 mt-0.5">{d.clinics.join(', ')}</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap justify-end">
+                        {columnas.map((s) => (
+                          <span
+                            key={s.value}
+                            title={`${s.label}: ${d.byStatus?.[s.value] || 0}`}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${
+                              (d.byStatus?.[s.value] || 0) > 0
+                                ? `${STATUS_COLORS[s.value]} font-semibold`
+                                : 'bg-white border border-slate-200 text-slate-300'
+                            }`}
                           >
-                            <span>{svc.name}</span>
-                            <span className="bg-emerald-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{svc.count}</span>
-                            <button
-                              type="button"
-                              onClick={() => openCommissionEditor(d, svc)}
-                              disabled={!svc.serviceId}
-                              title={svc.serviceId ? 'Definir lo que gana el doctor por esta atención' : 'Servicio sin vínculo al catálogo de Agenda'}
-                              className={`border-none rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                                svc.serviceId
-                                  ? svc.commission
-                                    ? 'bg-sky-100 text-sky-700 hover:bg-sky-200 cursor-pointer'
-                                    : 'bg-slate-100 text-slate-500 hover:bg-slate-200 cursor-pointer'
-                                  : 'bg-slate-50 text-slate-300 cursor-not-allowed'
-                              }`}
-                            >
-                              {commissionLabel(svc.commission)}
-                            </button>
-                          </div>
+                            {s.label} {d.byStatus?.[s.value] || 0}
+                          </span>
                         ))}
+                        <button
+                          type="button"
+                          onClick={() => downloadPdf(d)}
+                          title="Descargar reporte PDF de comisiones del doctor (fecha, paciente, concepto, comisión y si está pagada)"
+                          className="inline-flex items-center gap-1 border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-emerald-700 rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer"
+                        >
+                          <HiOutlineDocumentArrowDown className="w-3.5 h-3.5" /> PDF
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openAdjustEditor(d)}
+                          title="Sumar (o restar) un valor a las comisiones del doctor con una observación"
+                          className="inline-flex items-center gap-1 border border-amber-200 bg-white text-amber-700 hover:bg-amber-50 rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer"
+                        >
+                          <HiOutlinePlusCircle className="w-3.5 h-3.5" /> Ajuste
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openPayout(d)}
+                          disabled={!(d.pendingTotal > 0)}
+                          title="Marcar como pagadas las comisiones de este doctor en un período"
+                          className="inline-flex items-center gap-1 border border-teal-200 bg-white text-teal-700 hover:bg-teal-50 rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <HiOutlineCheckBadge className="w-3.5 h-3.5" /> Pagar
+                        </button>
                       </div>
                     </div>
-                  ) : (
-                    <p className="text-xs text-slate-400">Sin servicios registrados en las citas de este doctor.</p>
-                  )}
 
-                  {(d.adjustments || []).length > 0 && (
-                    <div>
-                      <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2">
-                        Ajustes manuales del período
+                    {/* LAS CIFRAS DEL DOCTOR, con nombre claro: cuánto pagaron sus
+                        pacientes y cuánto ganó él, cuánto ya se le pagó y cuánto falta. */}
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                      <Stat label="Citas" value={d.total} hint="Citas del doctor en el filtro" />
+                      <Stat
+                        label="Generado (pacientes)"
+                        tone="sky"
+                        value={money(d.generated)}
+                        hint="Lo que pagaron los pacientes por las citas que atendió este doctor"
+                      />
+                      <Stat
+                        label="Comisión ganada"
+                        tone="emerald"
+                        value={money(d.commissionTotalWithAdjustments)}
+                        hint={`Servicios, paciente atendido y derivaciones: ${money(d.commissionTotal)}${d.adjustments?.length ? ` · ajustes ${d.adjustmentTotal >= 0 ? '+' : ''}${money(d.adjustmentTotal)}` : ''}`}
+                      />
+                      <Stat label="Ya pagado" tone="teal" value={money(d.paidTotal)} />
+                      <Stat label="Por pagar" tone="amber" value={money(d.pendingTotal)} />
+                    </div>
+                    {!d.hasConfiguredCommissions && (
+                      <p className="text-[11px] text-slate-400">
+                        Sin comisiones configuradas: define abajo lo que gana por servicio, por paciente o por derivación.
                       </p>
-                      <div className="space-y-1.5">
-                        {d.adjustments.map((adj) => (
-                          <div key={adj.id} className="flex items-center justify-between gap-3 bg-amber-50/60 border border-amber-200 rounded-lg px-3 py-2 text-xs">
-                            <div className="min-w-0">
-                              <span className={`font-bold ${adj.amount >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
-                                {adj.amount >= 0 ? '+' : ''}${Number(adj.amount).toFixed(2)}
-                              </span>
-                              {adj.note && <span className="text-slate-600 ml-2">{adj.note}</span>}
-                              <span className="block text-[10px] text-slate-400 mt-0.5">
-                                {new Date(adj.start).toLocaleDateString()} — {new Date(adj.end).toLocaleDateString()}
-                                {adj.createdBy ? ` · registrado por ${adj.createdBy}` : ''}
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => removeAdjust(d, adj.id)}
-                              title="Eliminar ajuste"
-                              className="text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer text-sm leading-none"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
 
-                  <div>
-                    <a
-                      href={urlDetalle(d.doctorId, d.name)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs text-emerald-600 hover:underline"
-                    >
-                      Ver citas ({d.total})
-                    </a>
+                  <div className="px-4 py-3 space-y-4">
+                    <div>
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                        <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">
+                          Servicios atendidos
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => openEditor('patient', d)}
+                          title="Comisión base por cada paciente atendido, salvo cuando la cita ya paga por servicio"
+                          className={`border-none rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer ${
+                            d.patientCommission
+                              ? 'bg-violet-100 text-violet-700 hover:bg-violet-200'
+                              : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          Por paciente: {commissionLabel(d.patientCommission)}
+                        </button>
+                      </div>
+                      {d.services && d.services.length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5 bg-emerald-50/40 border border-emerald-100 rounded-lg p-3">
+                          {[...d.services].sort((a, b) => b.count - a.count).map((svc) => (
+                            <div
+                              key={svc.name}
+                              title={Object.entries(svc.byStatus || {}).map(([k, v]) => `${k}: ${v}`).join(' · ')}
+                              className="inline-flex items-center gap-1.5 bg-white border border-emerald-200 text-slate-700 text-xs pl-2.5 pr-1 py-1 rounded-full"
+                            >
+                              <span>{svc.name}</span>
+                              <span className="bg-emerald-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{svc.count}</span>
+                              <button
+                                type="button"
+                                onClick={() => openEditor('service', d, svc)}
+                                disabled={!svc.serviceId}
+                                title={svc.serviceId
+                                  ? `Definir lo que gana el doctor por esta atención${svc.commission?.repeated ? ` · ${svc.commission.repeated} cita(s) sin comisión: el paciente ya lo había recibido` : ''}`
+                                  : 'Servicio sin vínculo al catálogo de Agenda'}
+                                className={svc.serviceId
+                                  ? chipBtn(!!svc.commission)
+                                  : 'border-none rounded-full px-2 py-0.5 text-[10px] font-semibold bg-slate-50 text-slate-300 cursor-not-allowed'}
+                              >
+                                {commissionLabel(svc.commission)}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-400">Sin servicios registrados en las citas de este doctor.</p>
+                      )}
+                    </div>
+
+                    {/* DERIVACIONES: el doctor gana solo cuando el paciente SE HACE
+                        la derivación. Las indicadas que no se realizaron no pagan. */}
+                    <div>
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                        <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide inline-flex items-center gap-1">
+                          <HiOutlineArrowsRightLeft className="w-3.5 h-3.5" /> Derivaciones
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => openEditor('referral', d)}
+                          title="Lo que gana el doctor por cada derivación que el paciente SE REALIZA (si el servicio derivado no tiene una tarifa propia)"
+                          className={`border-none rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer ${
+                            d.referralCommission
+                              ? 'bg-violet-100 text-violet-700 hover:bg-violet-200'
+                              : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          Por derivación realizada: {commissionLabel(d.referralCommission)}
+                        </button>
+                      </div>
+                      <p className="text-xs text-slate-600 mb-2">
+                        Indicadas en el período: <b>{ref.indicadas || 0}</b>
+                        <span className="text-emerald-700"> · realizadas {ref.realizadas || 0}</span>
+                        <span className="text-blue-700"> · agendadas {ref.agendadas || 0}</span>
+                        <span className="text-amber-700"> · sin realizar {(ref.sinAgendar || 0) + (ref.noRealizadas || 0)}</span>
+                        <span className="text-slate-400"> — realizadas en el período (pagan): {ref.realizadasEnPeriodo || 0} · comisión {money(ref.earned)}</span>
+                      </p>
+                      {(d.referralServices || []).length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 bg-violet-50/40 border border-violet-100 rounded-lg p-3">
+                          {d.referralServices.map((svc) => (
+                            <div
+                              key={svc.name}
+                              className="inline-flex items-center gap-1.5 bg-white border border-violet-200 text-slate-700 text-xs pl-2.5 pr-1 py-1 rounded-full"
+                            >
+                              <span>{svc.name}</span>
+                              <span title="Derivaciones realizadas en el período" className="bg-violet-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{svc.realizadas}</span>
+                              <button
+                                type="button"
+                                onClick={() => openEditor('referral', d, svc)}
+                                disabled={!svc.serviceId}
+                                title="Tarifa propia por derivar a este servicio (reemplaza a la base de derivación)"
+                                className={svc.serviceId
+                                  ? chipBtn(!!svc.commission)
+                                  : 'border-none rounded-full px-2 py-0.5 text-[10px] font-semibold bg-slate-50 text-slate-300 cursor-not-allowed'}
+                              >
+                                {svc.commission ? commissionLabel(svc.commission) : 'Usa la base'}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {(d.adjustments || []).length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2">
+                          Ajustes manuales del período
+                        </p>
+                        <div className="space-y-1.5">
+                          {d.adjustments.map((adj) => (
+                            <div key={adj.id} className="flex items-center justify-between gap-3 bg-amber-50/60 border border-amber-200 rounded-lg px-3 py-2 text-xs">
+                              <div className="min-w-0">
+                                <span className={`font-bold ${adj.amount >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+                                  {adj.amount >= 0 ? '+' : ''}{money(adj.amount)}
+                                </span>
+                                {adj.note && <span className="text-slate-600 ml-2">{adj.note}</span>}
+                                {adj.pagado && <span className="ml-2 px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-semibold text-[10px]">Pagado</span>}
+                                <span className="block text-[10px] text-slate-400 mt-0.5">
+                                  {fmtDate(adj.start)} — {fmtDate(adj.end)}
+                                  {adj.createdBy ? ` · registrado por ${adj.createdBy}` : ''}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => removeAdjust(adj.id)}
+                                title="Eliminar ajuste"
+                                className="text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer text-sm leading-none"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {(d.payouts || []).length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-teal-700 uppercase tracking-wide mb-2">
+                          Pagos registrados
+                        </p>
+                        <div className="space-y-1.5">
+                          {d.payouts.map((p) => (
+                            <div key={p.id} className="flex items-center justify-between gap-3 bg-teal-50/60 border border-teal-200 rounded-lg px-3 py-2 text-xs">
+                              <div className="min-w-0">
+                                <span className="font-bold text-teal-800">{money(p.amount)}</span>
+                                <span className="text-slate-700 ml-2">del {fmtDate(p.start)} al {fmtDate(p.end)}</span>
+                                {!p.allClinics && <span className="text-slate-400 ml-1">(una sucursal)</span>}
+                                {p.note && <span className="text-slate-500 ml-2">· {p.note}</span>}
+                                <span className="block text-[10px] text-slate-400 mt-0.5">
+                                  {p.count} comisión(es){p.createdBy ? ` · registrado por ${p.createdBy}` : ''}{p.createdAt ? ` el ${fmtDate(p.createdAt)}` : ''}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => removePayout(p)}
+                                title="Deshacer este pago"
+                                className="text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer text-sm leading-none"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div>
+                      <a
+                        href={urlDetalle(d.doctorId, d.name)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-emerald-600 hover:underline"
+                      >
+                        Ver citas y derivaciones ({d.total})
+                      </a>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
             {(!data.doctors || data.doctors.length === 0) && (
               <div className="bg-white rounded-xl border border-slate-200 px-4 py-6 text-center text-slate-400">
                 Sin atenciones en el período con los filtros aplicados.
@@ -665,7 +913,7 @@ export default function Commissions() {
       <Modal
         isOpen={!!commissionEditor}
         onClose={() => !savingCommission && setCommissionEditor(null)}
-        title={commissionEditor?.scope === 'patient' ? 'Comisión por paciente atendido' : 'Comisión por servicio'}
+        title={editorTitle}
         size="sm"
       >
         {commissionEditor && (
@@ -673,11 +921,15 @@ export default function Commissions() {
             <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2.5 text-sm">
               <div className="font-semibold text-slate-800">{commissionEditor.doctor.name}</div>
               <div className="text-slate-500">
-                {commissionEditor.scope === 'patient' ? 'Cada paciente atendido' : commissionEditor.service.name}
+                {commissionEditor.scope === 'patient' && 'Cada paciente atendido'}
+                {commissionEditor.scope === 'service' && commissionEditor.service.name}
+                {commissionEditor.scope === 'referral' && (commissionEditor.service
+                  ? `Derivaciones a ${commissionEditor.service.name}`
+                  : 'Cualquier derivación sin tarifa propia')}
               </div>
-              {((commissionEditor.scope === 'patient' ? commissionEditor.doctor.clinicIds : commissionEditor.service.clinicIds) || []).length > 1 && (
+              {(editorClinics(commissionEditor) || []).length > 1 && (
                 <div className="text-xs text-sky-700 mt-1">
-                  Se aplicará en {(commissionEditor.scope === 'patient' ? commissionEditor.doctor.clinicIds : commissionEditor.service.clinicIds).length} sucursales del resultado.
+                  Se aplicará en {editorClinics(commissionEditor).length} sucursales del resultado.
                 </div>
               )}
             </div>
@@ -690,7 +942,14 @@ export default function Commissions() {
 
             {commissionEditor.scope === 'patient' && (
               <p className="text-xs text-violet-700 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
-                Esta comisión se paga una vez por cita completada. Si la cita tiene un servicio con comisión propia, se paga la del servicio y esta base no se suma.
+                Esta comisión se paga una vez por cita atendida. Si la cita tiene un servicio con comisión propia, se paga la del servicio y esta base no se suma.
+              </p>
+            )}
+
+            {commissionEditor.scope === 'referral' && (
+              <p className="text-xs text-violet-700 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+                El doctor gana esta comisión solo cuando el paciente <b>se realiza</b> la derivación (la cita derivada queda asistida o completada). Si el paciente no se la hace, no gana nada.
+                {!commissionEditor.service && ' Un servicio derivado con tarifa propia usa la suya en vez de esta.'}
               </p>
             )}
 
@@ -700,8 +959,8 @@ export default function Commissions() {
                 onChange={(e) => setCommissionForm({ ...commissionForm, amountType: e.target.value })}
                 className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2.5 bg-white"
               >
-                <option value="fixed">Valor fijo por cita atendida</option>
-                <option value="percent">Porcentaje del valor cobrado</option>
+                <option value="fixed">{commissionEditor.scope === 'referral' ? 'Valor fijo por derivación realizada' : 'Valor fijo por cita atendida'}</option>
+                <option value="percent">{commissionEditor.scope === 'referral' ? 'Porcentaje de lo que pagó el paciente en la cita derivada' : 'Porcentaje del valor cobrado'}</option>
               </select>
             </label>
 
@@ -722,6 +981,23 @@ export default function Commissions() {
                 </span>
               )}
             </label>
+
+            {commissionEditor.scope === 'service' && (
+              <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  checked={commissionForm.firstTimeOnly}
+                  onChange={(e) => setCommissionForm({ ...commissionForm, firstTimeOnly: e.target.checked })}
+                  className="mt-0.5 accent-emerald-600"
+                />
+                <span>
+                  <b>Solo la primera vez</b> que el paciente recibe este servicio
+                  <span className="block text-xs text-slate-500 mt-0.5">
+                    Si el paciente vuelve a hacérselo (con cualquier doctor o en cualquier sucursal), el doctor ya no gana comisión por esa cita.
+                  </span>
+                </span>
+              </label>
+            )}
 
             <div className="flex items-center justify-between gap-3 pt-1">
               <div>
@@ -760,13 +1036,11 @@ export default function Commissions() {
             <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2.5 text-sm">
               <div className="font-semibold text-slate-800">{adjustEditor.name}</div>
               <div className="text-slate-500">
-                Período: {start} — {end}
+                Período: {fmtDate(start)} — {fmtDate(end)}
               </div>
-              {adjustEditor.hasConfiguredCommissions && (
-                <div className="text-xs text-emerald-700 mt-1">
-                  Ganado en el sistema: ${Number(adjustEditor.commissionTotal || 0).toFixed(2)}
-                </div>
-              )}
+              <div className="text-xs text-emerald-700 mt-1">
+                Comisión calculada por el sistema: {money(adjustEditor.commissionTotal)}
+              </div>
             </div>
 
             <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
@@ -802,6 +1076,89 @@ export default function Commissions() {
               <button disabled={savingAdjust} className="px-4 py-2 text-sm bg-amber-600 text-white rounded-xl border-none cursor-pointer disabled:opacity-50">
                 {savingAdjust ? 'Guardando...' : 'Agregar ajuste'}
               </button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!payout}
+        onClose={() => !savingPayout && setPayout(null)}
+        title="Marcar comisiones como pagadas"
+        size="md"
+      >
+        {payout && (
+          <form onSubmit={savePayout} className="space-y-4">
+            <p className="text-xs text-teal-800 bg-teal-50 border border-teal-200 rounded-lg px-3 py-2">
+              Elige el período que se paga (p. ej. la primera quincena del mes). Todas las comisiones cuya cita cae dentro de esas fechas quedan como <b>pagadas</b> y dejan de sumar en «Por pagar». Se puede deshacer desde la tarjeta del doctor.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <label className="text-sm">Desde
+                <DateInput value={payout.start} onChange={(e) => setPayout({ ...payout, start: e.target.value })} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
+              </label>
+              <label className="text-sm">Hasta
+                <DateInput value={payout.end} onChange={(e) => setPayout({ ...payout, end: e.target.value })} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
+              </label>
+              <div className="text-xs text-slate-500 self-end pb-2">
+                Sucursal: <b>{clinic === 'all' ? 'todas' : (clinics.find((c) => c._id === clinic)?.nombreComercial || clinics.find((c) => c._id === clinic)?.name || 'la elegida')}</b>
+              </div>
+            </div>
+
+            <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-72 overflow-y-auto">
+              {loadingPreview && <div className="px-3 py-3 text-sm text-slate-400">Calculando lo pendiente del período...</div>}
+              {!loadingPreview && previewDoctors.length === 0 && (
+                <div className="px-3 py-3 text-sm text-slate-400">Ningún doctor tiene comisiones en ese período.</div>
+              )}
+              {!loadingPreview && previewDoctors.map((d) => (
+                <label key={d.doctorId} className={`flex items-center justify-between gap-3 px-3 py-2 text-sm ${d.pendingTotal > 0 ? 'cursor-pointer hover:bg-slate-50' : 'opacity-60'}`}>
+                  <span className="flex items-center gap-2 min-w-0">
+                    <input
+                      type="checkbox"
+                      disabled={!(d.pendingTotal > 0)}
+                      checked={payout.selected.includes(d.doctorId) && d.pendingTotal > 0}
+                      onChange={() => togglePayoutDoctor(d.doctorId)}
+                      className="accent-teal-600"
+                    />
+                    <span className="min-w-0">
+                      <span className="font-medium text-slate-800">{d.name}</span>
+                      <span className="block text-[11px] text-slate-400">
+                        {doctorRolesLabel(d)}
+                        {d.paidTotal > 0 ? ` · ya pagado ${money(d.paidTotal)}` : ''}
+                      </span>
+                    </span>
+                  </span>
+                  <span className={`font-bold tabular-nums ${d.pendingTotal > 0 ? 'text-amber-700' : 'text-slate-400'}`}>
+                    {d.pendingTotal > 0 ? money(d.pendingTotal) : 'Nada pendiente'}
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            <label className="block text-sm text-slate-700">
+              Observación (opcional)
+              <input
+                value={payout.note}
+                onChange={(e) => setPayout({ ...payout, note: e.target.value })}
+                placeholder="Ej. transferencia del 16/09"
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2.5"
+              />
+            </label>
+
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <span className="text-sm text-slate-600">
+                Total a marcar: <b className="text-teal-800">{money(payoutTotal)}</b>
+              </span>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setPayout(null)} disabled={savingPayout} className="px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white cursor-pointer disabled:opacity-50">
+                  Cancelar
+                </button>
+                <button
+                  disabled={savingPayout || loadingPreview || !(payoutTotal > 0)}
+                  className="px-4 py-2 text-sm bg-teal-600 text-white rounded-xl border-none cursor-pointer disabled:opacity-50"
+                >
+                  {savingPayout ? 'Guardando...' : 'Marcar como pagado'}
+                </button>
+              </div>
             </div>
           </form>
         )}

@@ -1,42 +1,84 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
-import { HiOutlineArrowLeft, HiOutlineCurrencyDollar, HiOutlineUserGroup } from 'react-icons/hi2';
+import { HiOutlineArrowLeft, HiOutlineCurrencyDollar, HiOutlineUserGroup, HiOutlineArrowsRightLeft } from 'react-icons/hi2';
 import { fmtDate } from '../utils/date';
+import DateInput from '../components/DateInput';
+import ProductAutocomplete from '../components/ProductAutocomplete';
+import { doctorOptionLabel } from '../utils/roles';
 import {
   STATUS_COLORS,
   STATUS_OPTIONS,
+  DERIVACION_ESTADOS,
   fmtAtendientes,
   fmtPago,
+  money,
   statusLabel,
+  doctorSearchOption,
 } from '../utils/commissionsFormat';
+
+const lista = (v) => String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
+
+function EstadoDerivacion({ estado }) {
+  const e = DERIVACION_ESTADOS[estado] || { label: estado, cls: 'bg-slate-100 text-slate-500' };
+  return <span className={`px-2 py-0.5 rounded-full font-semibold whitespace-nowrap ${e.cls}`}>{e.label}</span>;
+}
 
 export default function CommissionDoctorDetail() {
   const { doctorId } = useParams();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   /**
    * EL DETALLE GENERAL (sep-2026): `/commissions/todos` enseña TODAS las citas
    * de todos los doctores —la misma información del detalle de un doctor, pero
-   * sin el corte por profesional—, respetando los demás filtros (fechas,
-   * sucursal, estados y servicios).
+   * sin el corte por profesional—, con sus propios filtros de doctor (con
+   * buscador), sucursal y fechas, además de los estados y servicios que vienen
+   * de la pantalla de Comisiones.
    */
   const esGeneral = doctorId === 'todos';
   const doctorName = searchParams.get('name') || 'Doctor';
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [clinics, setClinics] = useState([]);
+  const [doctors, setDoctors] = useState([]);
+
+  // Los filtros viven en la URL: el enlace se puede compartir o recargar tal cual.
+  const start = searchParams.get('start') || '';
+  const end = searchParams.get('end') || '';
+  const clinic = searchParams.get('clinic') || 'all';
+  const doctorFilter = lista(searchParams.get('doctor'));
+  const statusFilter = lista(searchParams.get('status'));
+
+  const setParam = (key, value) => {
+    const next = new URLSearchParams(searchParams);
+    if (value == null || value === '' || (Array.isArray(value) && !value.length)) next.delete(key);
+    else next.set(key, Array.isArray(value) ? value.join(',') : value);
+    setSearchParams(next, { replace: true });
+  };
 
   useEffect(() => {
-    (async () => {
+    api.get('/clinics').then((r) => setClinics(r.data || [])).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!esGeneral) return;
+    api.get('/commissions/doctors', { params: { clinic } })
+      .then((r) => setDoctors(r.data || []))
+      .catch(() => setDoctors([]));
+  }, [clinic, esGeneral]);
+
+  useEffect(() => {
+    const t = setTimeout(async () => {
       setLoading(true);
       try {
         const params = {};
         ['start', 'end', 'clinic', 'status', 'service'].forEach((k) => {
           if (searchParams.get(k)) params[k] = searchParams.get(k);
         });
-        // El corte por doctor SOLO cuando hay doctor; en el modo general el
-        // servidor devuelve las citas de todos los que cumplan los filtros.
+        // El corte por doctor: el de la URL en el modo individual, y el del
+        // filtro (si lo hay) en el general.
         if (!esGeneral) params.doctor = doctorId;
+        else if (doctorFilter.length) params.doctor = doctorFilter.join(',');
         const res = await api.get('/commissions/doctor-appointments', { params });
         setData(res.data);
       } catch (err) {
@@ -44,18 +86,21 @@ export default function CommissionDoctorDetail() {
       } finally {
         setLoading(false);
       }
-    })();
+    }, 250);
+    return () => clearTimeout(t);
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, [doctorId]);
+  }, [doctorId, searchParams.toString()]);
 
   const citas = data?.appointments || [];
   /**
    * Las derivaciones: del doctor en el modo individual; TODAS, aplanadas, en el
-   * general (cada fila lleva quién derivó en su columna nueva).
+   * general (cada fila lleva quién derivó).
    */
-  const derivaciones = esGeneral
+  const derivaciones = useMemo(() => (esGeneral
     ? Object.values(data?.referralsByDoctor || {}).flat()
-    : data?.referralsByDoctor?.[doctorId] || [];
+    : data?.referralsByDoctor?.[doctorId] || []
+  ).sort((a, b) => new Date(b.date) - new Date(a.date)), [data, esGeneral, doctorId]);
+  const cuentaDeriva = (estados) => derivaciones.filter((d) => estados.includes(d.estado)).length;
   const nombreReal = data?.doctorNames?.[doctorId] || doctorName;
   const totalPagos = Number(data?.totals?.payments || 0);
 
@@ -81,14 +126,110 @@ export default function CommissionDoctorDetail() {
           </>
         )}
       </h1>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-3">
+        <div className="flex flex-wrap gap-3 items-end">
+          <label className="text-sm">Desde
+            <DateInput value={start} onChange={(e) => setParam('start', e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
+          </label>
+          <label className="text-sm">Hasta
+            <DateInput value={end} onChange={(e) => setParam('end', e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
+          </label>
+          <label className="text-sm">Sucursal
+            <select
+              value={clinic}
+              onChange={(e) => {
+                const next = new URLSearchParams(searchParams);
+                next.set('clinic', e.target.value);
+                if (esGeneral) next.delete('doctor');
+                setSearchParams(next, { replace: true });
+              }}
+              className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm min-w-[180px]"
+            >
+              <option value="all">Todas las sucursales</option>
+              {clinics.map((c) => (
+                <option key={c._id} value={c._id}>{c.nombreComercial || c.name}</option>
+              ))}
+            </select>
+          </label>
+          {esGeneral && (
+            <label className="text-sm">Doctor
+              <div className="mt-1 min-w-[260px]">
+                {/* Se escribe el nombre o la especialidad; debajo de cada
+                    doctor sale su rol (general o especialidad). */}
+                <ProductAutocomplete
+                  products={doctors
+                    .filter((d) => !doctorFilter.includes(String(d._id)))
+                    .map(doctorSearchOption)}
+                  value=""
+                  onSelect={(p) => {
+                    if (p && !doctorFilter.includes(String(p._id))) setParam('doctor', [...doctorFilter, String(p._id)]);
+                  }}
+                  placeholder="Escribe un doctor o especialidad..."
+                />
+              </div>
+            </label>
+          )}
+        </div>
+
+        <div className="flex flex-wrap gap-1.5 items-center">
+          <span className="text-xs text-slate-500">Estados:</span>
+          {STATUS_OPTIONS.map((s) => {
+            const activos = statusFilter.length ? statusFilter : ['asistida', 'completada'];
+            const on = activos.includes(s.value);
+            return (
+              <button
+                key={s.value}
+                type="button"
+                onClick={() => setParam('status', on ? activos.filter((x) => x !== s.value) : [...activos, s.value])}
+                className={`px-2.5 py-1 rounded-full text-xs cursor-pointer border-none ${
+                  on ? `${STATUS_COLORS[s.value]} font-semibold` : 'bg-slate-50 text-slate-400 border border-slate-200'
+                }`}
+              >
+                {s.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {esGeneral && doctorFilter.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {doctorFilter.map((id) => (
+              <span key={id} className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-slate-100 text-xs text-slate-700">
+                {doctorOptionLabel(doctors.find((d) => String(d._id) === id) || { name: data?.doctorNames?.[id] || 'Doctor', roleInClinic: '' })}
+                <button
+                  type="button"
+                  onClick={() => setParam('doctor', doctorFilter.filter((x) => x !== id))}
+                  className="text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer leading-none"
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+            <button
+              type="button"
+              onClick={() => setParam('doctor', [])}
+              className="text-xs text-emerald-600 hover:underline bg-transparent border-none cursor-pointer px-1"
+            >
+              Quitar doctores
+            </button>
+          </div>
+        )}
+      </div>
+
       {data && (
         <div className="flex flex-wrap items-center gap-3">
           <p className="text-sm text-slate-500">
             {fmtDate(data.start)} — {fmtDate(data.end)} · <b>{citas.length}</b> citas en el filtro
           </p>
           <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-sm font-semibold">
-            Total pagos: ${totalPagos.toFixed(2)}
+            Total pagos: {money(totalPagos)}
           </span>
+          {derivaciones.length > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 text-violet-800 px-3 py-1 text-sm font-semibold">
+              Derivaciones: {derivaciones.length} · realizadas {cuentaDeriva(['realizada'])} · sin realizar {cuentaDeriva(['sin_agendar', 'no_asistio', 'cancelada'])}
+            </span>
+          )}
         </div>
       )}
 
@@ -108,6 +249,7 @@ export default function CommissionDoctorDetail() {
                     <th className="text-left px-3 py-2">Atendida por</th>
                     <th className="text-left px-3 py-2">Pago</th>
                     <th className="text-left px-3 py-2">Seguimiento</th>
+                    <th className="text-left px-3 py-2">Derivaciones</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -152,7 +294,7 @@ export default function CommissionDoctorDetail() {
                         )}
                       </td>
                       <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{fmtPago(a)}</td>
-                      <td className="px-3 py-2 min-w-[220px]">
+                      <td className="px-3 py-2 min-w-[200px]">
                         {(a.seguimientos || []).length > 0 ? (
                           <div className="space-y-1">
                             {a.seguimientos.map((s, i) => (
@@ -182,14 +324,33 @@ export default function CommissionDoctorDetail() {
                           <span className="text-slate-300">—</span>
                         )}
                       </td>
+                      <td className="px-3 py-2 min-w-[190px]">
+                        {(a.derivaciones || []).length > 0 ? (
+                          <div className="space-y-1">
+                            {a.derivaciones.map((d) => (
+                              <div key={d.id} className="flex flex-col gap-0.5">
+                                <span className="text-slate-700 font-medium">{d.service}</span>
+                                <span><EstadoDerivacion estado={d.estado} /></span>
+                                {d.cita && (
+                                  <span className="text-[10px] text-slate-400">
+                                    {fmtDate(d.cita.date)}{d.cita.doctor ? ` · ${d.cita.doctor}` : ''}
+                                  </span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-slate-300">—</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
                 <tfoot className="bg-emerald-50 border-t-2 border-emerald-200">
                   <tr>
                     <td colSpan={5} className="px-3 py-2 text-right font-semibold text-emerald-800">Total pagos</td>
-                    <td className="px-3 py-2 whitespace-nowrap font-bold text-emerald-800">${totalPagos.toFixed(2)}</td>
-                    <td></td>
+                    <td className="px-3 py-2 whitespace-nowrap font-bold text-emerald-800">{money(totalPagos)}</td>
+                    <td colSpan={2}></td>
                   </tr>
                 </tfoot>
               </table>
@@ -200,11 +361,14 @@ export default function CommissionDoctorDetail() {
             </div>
           )}
 
-          {derivaciones.length > 0 && (
-            <div className="bg-white rounded-xl border border-slate-200 px-4 py-3">
-              <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide mb-2">
-                Derivaciones añadidas ({derivaciones.length})
-              </p>
+          <div className="bg-white rounded-xl border border-slate-200 px-4 py-3">
+            <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide mb-1 inline-flex items-center gap-1">
+              <HiOutlineArrowsRightLeft className="w-3.5 h-3.5" /> Derivaciones de los doctores ({derivaciones.length})
+            </p>
+            <p className="text-[11px] text-slate-500 mb-2">
+              El doctor gana la comisión de una derivación solo cuando el paciente se la realiza.
+            </p>
+            {derivaciones.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead className="text-slate-500">
@@ -212,38 +376,44 @@ export default function CommissionDoctorDetail() {
                       {esGeneral && <th className="text-left px-2 py-1">Doctor que derivó</th>}
                       <th className="text-left px-2 py-1">Paciente</th>
                       <th className="text-left px-2 py-1">Derivado a</th>
-                      <th className="text-left px-2 py-1">Motivo</th>
-                      <th className="text-left px-2 py-1">Fecha</th>
-                      <th className="text-left px-2 py-1">Estado</th>
+                      <th className="text-left px-2 py-1">Indicada</th>
+                      <th className="text-left px-2 py-1">¿Se realizó?</th>
+                      <th className="text-left px-2 py-1">Cita derivada</th>
                     </tr>
                   </thead>
                   <tbody>
                     {derivaciones.map((r) => (
-                      <tr key={r.id} className="border-t border-slate-100">
+                      <tr key={r.id} className="border-t border-slate-100 align-top">
                         {esGeneral && (
                           <td className="px-2 py-1.5 text-slate-800 font-medium">{r.fromDoctor || '—'}</td>
                         )}
                         <td className="px-2 py-1.5 text-slate-800">{r.patient}</td>
-                        <td className="px-2 py-1.5 text-slate-600">{r.toDoctor || r.specialty || '—'}</td>
-                        <td className="px-2 py-1.5 text-slate-500">{r.reason || '—'}</td>
-                        <td className="px-2 py-1.5 text-slate-500">{fmtDate(r.date)}</td>
-                        <td className="px-2 py-1.5">
-                          <span className={`px-2 py-0.5 rounded-full font-semibold ${
-                            r.status === 'atendida' ? 'bg-emerald-100 text-emerald-700'
-                              : r.status === 'cancelada' ? 'bg-red-100 text-red-600'
-                              : r.status === 'agendada' ? 'bg-blue-100 text-blue-700'
-                              : 'bg-slate-100 text-slate-500'
-                          }`}>
-                            {r.status}
-                          </span>
+                        <td className="px-2 py-1.5 text-slate-600">
+                          {r.service || r.specialty || '—'}
+                          {r.toDoctor ? <span className="block text-[10px] text-slate-400">{r.toDoctor}</span> : null}
+                          {r.reason ? <span className="block text-[10px] text-slate-400">{r.reason}</span> : null}
+                        </td>
+                        <td className="px-2 py-1.5 text-slate-500 whitespace-nowrap">{fmtDate(r.date)}</td>
+                        <td className="px-2 py-1.5"><EstadoDerivacion estado={r.estado} /></td>
+                        <td className="px-2 py-1.5 text-slate-500 whitespace-nowrap">
+                          {r.cita ? (
+                            <>
+                              {fmtDate(r.cita.date)}{r.cita.startTime ? ` ${r.cita.startTime}` : ''}
+                              <span className="block text-[10px] text-slate-400">
+                                {statusLabel(r.cita.status)}{r.cita.clinic ? ` · ${r.cita.clinic}` : ''}
+                              </span>
+                            </>
+                          ) : '—'}
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            </div>
-          )}
+            ) : (
+              <p className="text-xs text-slate-400">Sin derivaciones en las citas del filtro.</p>
+            )}
+          </div>
         </div>
       )}
     </div>

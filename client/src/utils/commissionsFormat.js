@@ -1,4 +1,39 @@
 import { fmtDate } from './date';
+import { doctorTypeLabel } from './roles';
+
+export const money = (v) => `$${Number(v || 0).toFixed(2)}`;
+
+/**
+ * Rol(es) del doctor para mostrar: «General», «Ginecología», o varios si en cada
+ * sucursal tiene uno distinto. Con la especialidad escrita a mano cuando añade
+ * algo al rol.
+ */
+export const doctorRolesLabel = (d) => {
+  const roles = (d?.roles?.length ? d.roles : [d?.roleInClinic].filter(Boolean))
+    .map((role) => doctorTypeLabel({ roleInClinic: role }))
+    .filter(Boolean);
+  const specialty = (d?.specialty || '').trim();
+  const extra = specialty && !roles.some((r) => r.toLowerCase() === specialty.toLowerCase()) ? specialty : '';
+  return [roles.join(' · '), extra].filter(Boolean).join(' — ');
+};
+
+/**
+ * Opción del buscador de doctores (ProductAutocomplete): el rol va como
+ * «categoría», así se ve debajo del nombre y también se puede buscar por él
+ * (escribir «gineco» encuentra a las ginecólogas).
+ */
+export const doctorSearchOption = (d) => ({
+  ...d,
+  category: `${doctorRolesLabel(d) || 'Sin rol'}${d.active === false ? ' · inactivo' : ''}`,
+});
+
+export const DERIVACION_ESTADOS = {
+  realizada: { label: 'Realizada', cls: 'bg-emerald-100 text-emerald-700' },
+  agendada: { label: 'Agendada, aún no se realiza', cls: 'bg-blue-100 text-blue-700' },
+  sin_agendar: { label: 'No realizada (sin agendar)', cls: 'bg-amber-100 text-amber-700' },
+  no_asistio: { label: 'No realizada (no asistió)', cls: 'bg-orange-100 text-orange-700' },
+  cancelada: { label: 'No realizada (cancelada)', cls: 'bg-red-100 text-red-600' },
+};
 
 export const STATUS_OPTIONS = [
   { value: 'pendiente', label: 'Pendiente' },

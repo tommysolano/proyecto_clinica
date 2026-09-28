@@ -112,7 +112,19 @@ const commissionRuleSchema = new mongoose.Schema(
     managedFromDoctorCommissions: { type: Boolean, default: false },
     // `patient`: una vez por cita completada, solo si ningún servicio de esa
     // cita tiene una comisión específica para el doctor.
-    doctorCommissionScope: { type: String, enum: ['patient', 'service'], default: 'service' },
+    // `referral`: el doctor DERIVÓ al paciente y la cita derivada se REALIZÓ
+    // (asistida/completada). Con `appointmentService` paga solo por las
+    // derivaciones a ese servicio; sin él es la tarifa base de cualquier
+    // derivación que no tenga una propia. Una derivación que el paciente no se
+    // hizo no paga nada: no hay cita realizada que la devengue.
+    doctorCommissionScope: { type: String, enum: ['patient', 'service', 'referral'], default: 'service' },
+    /**
+     * SOLO LA PRIMERA VEZ (sep-2026). Hay servicios que pagan comisión cuando el
+     * paciente los recibe por primera vez y nunca más: si vuelve a hacérselo, el
+     * doctor no gana nada por esa cita. «Primera vez» se mira en TODAS las
+     * sucursales y con cualquier doctor. Solo aplica a las reglas por servicio.
+     */
+    firstTimeOnly: { type: Boolean, default: false },
 
     // Agente de call center al que está ligado un usuario marketing. Sólo aplica
     // al trigger 'call_center_commission': el marketing gana en función de la
@@ -150,14 +162,19 @@ const commissionRuleSchema = new mongoose.Schema(
 );
 
 // Una sola configuración por doctor, alcance y sucursal: `appointmentService`
-// identifica la tarifa específica y null identifica la base por paciente. El
-// índice es parcial para no tocar las reglas generales ya existentes.
+// identifica la tarifa específica y null la base (por paciente o por
+// derivación). El ALCANCE entra en la clave desde sep-2026: la base por
+// derivación y la base por paciente comparten `appointmentService: null`, y la
+// tarifa por derivar a un servicio comparte el servicio con la de atenderlo.
+// El índice anterior, sin el alcance, lo retira
+// scripts/relaxDoctorCommissionRuleIndex.js (deploy.sh, antes del reinicio).
+// Es parcial para no tocar las reglas generales ya existentes.
 commissionRuleSchema.index(
-  { clinic: 1, doctorServiceDoctor: 1, appointmentService: 1 },
+  { clinic: 1, doctorServiceDoctor: 1, appointmentService: 1, doctorCommissionScope: 1 },
   {
     unique: true,
     partialFilterExpression: { managedFromDoctorCommissions: true },
-    name: 'uniq_doctor_appointment_service_commission',
+    name: 'uniq_doctor_commission_scope_service',
   }
 );
 

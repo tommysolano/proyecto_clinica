@@ -392,6 +392,15 @@ if ! ( cd "$APP_DIR/server" && node scripts/backfillLastInboundAccountOnce.js --
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/backfillLastInboundAccountOnce.js --commit'"
 fi
 
+# Idempotente, corre en cada despliegue. Comisiones > Doctores (sep-2026): el indice
+# unico de las tarifas por doctor incluye ahora el ALCANCE, para que la tarifa por
+# DERIVACION conviva con la de paciente atendido y la de servicio. Va antes del
+# reinicio: con el indice viejo, guardar la tarifa de derivacion daria "ya existe".
+if ! ( cd "$APP_DIR/server" && node scripts/relaxDoctorCommissionRuleIndex.js --commit ); then
+  echo "ADVERTENCIA: no se pudo actualizar el indice de tarifas de comisiones. Reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/relaxDoctorCommissionRuleIndex.js --commit'"
+fi
+
 echo "==> 5/6 Reiniciando el backend con PM2 (bajo el usuario 'clinica')"
 # IMPORTANTE: el backend corre bajo el pm2 del usuario `clinica` (God Daemon en
 # /home/clinica/.pm2), NO bajo el de root. GitHub Actions ejecuta este deploy
