@@ -291,6 +291,31 @@ test('tarifa por horario: el mismo servicio paga distinto en la mañana y en la 
   assert.strictEqual(reporte.payload.total, 35, 'la contabilización paga lo mismo');
 });
 
+test('una cita de CANJE no genera comisión, aunque la tarifa sea un valor fijo', async () => {
+  const clinic = await Clinic.create({ name: 'CJ', nombreComercial: 'CJ', active: true });
+  const doctor = await User.create({
+    name: 'Atiende Canjes', email: 'canjes@test.com', password: '123456',
+    clinics: [{ clinic: clinic._id, role: 'doctor' }],
+  });
+  const paciente = await Patient.create({ clinic: clinic._id, firstName: 'Canje', lastName: 'Paciente' });
+  await Appointment.create([
+    { clinic: clinic._id, patient: paciente._id, doctor: doctor._id, date: dia(12, 2), startTime: '09:00', status: 'completada', serviceName: 'Consulta', agreedValue: 40 },
+    { clinic: clinic._id, patient: paciente._id, doctor: doctor._id, date: dia(12, 3), startTime: '09:00', status: 'completada', serviceName: 'Consulta', isCanje: true },
+  ]);
+  await llamar(ctrl.saveDoctorPatientRule, reqDe(clinic._id, {
+    body: { doctor: String(doctor._id), clinics: [String(clinic._id)], amountType: 'fixed', value: 10 },
+  }));
+
+  const q = { start: '2026-12-01', end: '2026-12-31' };
+  const resumen = await llamar(ctrl.doctorSummary, reqDe(clinic._id, { query: q }));
+  const fila = resumen.payload.doctors.find((d) => d.doctorId === String(doctor._id));
+  assert.strictEqual(fila.total, 2, 'la cita de canje sigue contando como cita');
+  assert.strictEqual(fila.commissionTotal, 10, 'solo paga la cita cobrada');
+
+  const reporte = await llamar(ctrl.report, reqDe(clinic._id, { query: q }));
+  assert.strictEqual(reporte.payload.total, 10);
+});
+
 test('detalle de citas paginado: la página trae su tramo, los totales y las visitas cuentan el filtro entero', async () => {
   const clinic = await Clinic.create({ name: 'PAG', nombreComercial: 'PAG', active: true });
   const doctor = await User.create({

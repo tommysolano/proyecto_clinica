@@ -433,6 +433,9 @@ async function computeCommissions(clinicId, startDate, endDate) {
 
   const detail = [];
   for (const appt of appts) {
+    // Una cita de CANJE no genera comisión para nadie (sep-2026): el paciente no
+    // pagó, se cambió por otra cosa. Ver también calcularComisionesDoctores.
+    if (appt.isCanje) continue;
     const isCompleted = appt.status === 'completada';
     const isAttended = appt.status === 'asistida' || isCompleted;
     const legacyServices = appt.services?.length
@@ -1265,7 +1268,9 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
   };
 
   for (const appt of appts) {
-    if (!esAtendida(appt) || !appt.doctor?._id) continue;
+    // Canje: no genera comisión, ni por servicio ni por paciente (un valor fijo
+    // la habría pagado igual aunque la cita valga $0).
+    if (!esAtendida(appt) || !appt.doctor?._id || appt.isCanje) continue;
     const doctorId = String(appt.doctor._id);
     const clinicId = idDe(appt.clinic);
     const pagado = appointmentPaymentValue(appt);
@@ -1303,6 +1308,8 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
   }
 
   for (const cita of derivadas) {
+    // Tampoco paga la derivación cuya cita derivada fue de canje.
+    if (cita.isCanje) continue;
     const doctorId = String(cita.referral.fromDoctor._id);
     const clinicId = idDe(cita.clinic);
     const svcs = serviciosDeCita(cita, catalogo);
@@ -2312,17 +2319,15 @@ exports.doctorReportPdf = async (req, res) => {
               <td>${escapeHtml(l.patient)}</td>
               <td>${escapeHtml(concepto)}</td>
               <td class="num">${fmtMoney(l.amount)}</td>
-              <td class="${l.pagada ? 'pagado' : 'pendiente'}">${l.pagada ? 'Pagado' : 'Pendiente'}</td>
             </tr>`;
         }).join('')
-      : '<tr><td colspan="5" class="vacio">Sin comisiones en el período.</td></tr>';
+      : '<tr><td colspan="4" class="vacio">Sin comisiones en el período.</td></tr>';
 
     const filasAjustes = ajustes.map((a) => `
             <tr>
               <td>${fechaCorta(a.start)} — ${fechaCorta(a.end)}</td>
               <td>${escapeHtml(a.note || '—')}</td>
               <td class="num">${fmtMoney(a.amount)}</td>
-              <td class="${a.pagado ? 'pagado' : 'pendiente'}">${a.pagado ? 'Pagado' : 'Pendiente'}</td>
             </tr>`).join('');
 
     const rango = `${fechaCorta(startDate)} — ${fechaCorta(endDate)}`;
@@ -2341,8 +2346,6 @@ exports.doctorReportPdf = async (req, res) => {
   th { background: #ecfdf5; text-align: left; padding: 6px 8px; border: 1px solid #e2e8f0; font-size: 11px; }
   td { padding: 5px 8px; border: 1px solid #e2e8f0; }
   .num { text-align: right; white-space: nowrap; }
-  .pagado { color: #047857; font-weight: bold; white-space: nowrap; }
-  .pendiente { color: #b45309; white-space: nowrap; }
   .vacio { text-align: center; color: #94a3b8; padding: 14px; }
   .totales { margin-top: 14px; width: 50%; margin-left: auto; }
   .totales td { border: none; padding: 3px 8px; }
@@ -2371,7 +2374,6 @@ exports.doctorReportPdf = async (req, res) => {
         <th>Paciente</th>
         <th>Concepto</th>
         <th class="num">Comisión</th>
-        <th>Estado</th>
       </tr>
     </thead>
     <tbody>${filasDetalle}</tbody>
@@ -2385,7 +2387,6 @@ exports.doctorReportPdf = async (req, res) => {
         <th>Período</th>
         <th>Observación</th>
         <th class="num">Valor</th>
-        <th>Estado</th>
       </tr>
     </thead>
     <tbody>${filasAjustes}</tbody>
