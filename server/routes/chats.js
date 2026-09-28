@@ -54,12 +54,17 @@ router.delete('/saved-replies/:id', requireRole(...CALL_CENTER_ROLES), ctrl.dele
 // Llamadas de voz por WhatsApp (Calling API de Meta). Las rutas por :callId van
 // antes que las paramétricas de conversación para que /calls no se confunda con
 // un id de chat.
+//
+// El ADMINISTRADOR NO LLAMA (sep-2026): las llamadas son de call center y
+// marketing. El super-admin sí, pero no hace falta listarlo: `requireRole`
+// siempre lo deja pasar. El cliente aplica la misma regla (WhatsappCallContext).
+const CALL_ROLES = ['call_center', 'marketing'];
 const callCtrl = require('../controllers/callController');
-router.get('/calls/ice-config', requireRole(...CALL_CENTER_ROLES), callCtrl.getIceConfig);
-router.get('/calls/pending', requireRole(...CALL_CENTER_ROLES), callCtrl.getPendingCall);
-router.post('/calls/:callId/accept', requireRole(...CALL_CENTER_ROLES), callCtrl.acceptCall);
-router.post('/calls/:callId/reject', requireRole(...CALL_CENTER_ROLES), callCtrl.rejectCall);
-router.post('/calls/:callId/terminate', requireRole(...CALL_CENTER_ROLES), callCtrl.terminateCall);
+router.get('/calls/ice-config', requireRole(...CALL_ROLES), callCtrl.getIceConfig);
+router.get('/calls/pending', requireRole(...CALL_ROLES), callCtrl.getPendingCall);
+router.post('/calls/:callId/accept', requireRole(...CALL_ROLES), callCtrl.acceptCall);
+router.post('/calls/:callId/reject', requireRole(...CALL_ROLES), callCtrl.rejectCall);
+router.post('/calls/:callId/terminate', requireRole(...CALL_ROLES), callCtrl.terminateCall);
 
 // Automatizaciones (workflows) desde el chat: listar activas y disparar a mano.
 router.get('/workflows-list', requireRole(...CALL_CENTER_ROLES), ctrl.listWorkflowsForChat);
@@ -140,11 +145,11 @@ router.put('/:id/opportunities/:idx', requireRole(...CALL_CENTER_ROLES), ctrl.up
 router.delete('/:id/opportunities/:idx', requireRole(...CALL_CENTER_ROLES), ctrl.removeOpportunityAt);
 
 // Llamadas de un chat concreto.
-router.get('/:id/calling-status', requireRole(...CALL_CENTER_ROLES), callCtrl.getCallingStatus);
-router.post('/:id/calling-enable', requireRole('admin', 'marketing'), callCtrl.enableCalling);
-router.get('/:id/calls', requireRole(...CALL_CENTER_ROLES), callCtrl.listCalls);
-router.post('/:id/call', requireRole(...CALL_CENTER_ROLES), callCtrl.startCall);
-router.post('/:id/call-permission', requireRole(...CALL_CENTER_ROLES), callCtrl.requestCallPermission);
+router.get('/:id/calling-status', requireRole(...CALL_ROLES), callCtrl.getCallingStatus);
+router.post('/:id/calling-enable', requireRole('marketing'), callCtrl.enableCalling);
+router.get('/:id/calls', requireRole(...CALL_ROLES), callCtrl.listCalls);
+router.post('/:id/call', requireRole(...CALL_ROLES), callCtrl.startCall);
+router.post('/:id/call-permission', requireRole(...CALL_ROLES), callCtrl.requestCallPermission);
 
 router.get('/:id/messages', requireRole(...CALL_CENTER_ROLES), ctrl.listMessages);
 router.post('/:id/messages', requireRole(...CALL_CENTER_ROLES), ctrl.sendMessage);

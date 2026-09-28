@@ -21,8 +21,9 @@ router.use(auth, requireClinic);
 router.post('/bulk-tag', requireRole('admin', 'marketing'), bulkTag);
 
 // La fusión mueve historia clínica, documentos y referencias de todo el sistema.
-// Va antes de '/:id' y queda exclusivamente en manos de administración.
-router.post('/:id/merge', requireRole('admin'), mergePatient);
+// Va antes de '/:id'. Administración y marketing (sep-2026): marketing es quien
+// da de alta a los contactos de campaña y quien encuentra sus duplicados.
+router.post('/:id/merge', requireRole('admin', 'marketing'), mergePatient);
 
 // Carga masiva por Excel: datos generales + ficha clínica + seguimientos.
 // Va antes de '/:id' para que "import-template" no se lea como un id.

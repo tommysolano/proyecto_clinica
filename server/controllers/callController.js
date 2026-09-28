@@ -193,12 +193,12 @@ exports.getCallingStatus = async (req, res) => {
     const status = String(settings.calling?.status || '').toUpperCase();
     return res.json({
       enabled: status === 'ENABLED',
-      // Es un número Cloud API cuyas llamadas están APAGADAS: un admin puede
-      // encenderlas desde la UI (POST /calling-enable) sin entrar a Meta.
+      // Es un número Cloud API cuyas llamadas están APAGADAS: el super-admin
+      // puede encenderlas desde la UI (POST /calling-enable) sin entrar a Meta.
       canEnable: status !== 'ENABLED',
       reason: status === 'ENABLED'
         ? ''
-        : 'Las llamadas no están habilitadas en este número de WhatsApp. Un administrador puede activarlas.',
+        : 'Las llamadas no están habilitadas en este número de WhatsApp. Un super administrador puede activarlas.',
       status,
     });
   } catch (err) {

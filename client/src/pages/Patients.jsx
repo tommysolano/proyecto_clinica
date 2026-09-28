@@ -147,6 +147,8 @@ export default function Patients() {
   // encontraron pacientes" y el ancho del esqueleto.
   const columnCount = 3 + (showCedula ? 1 : 0) + (showContact ? 1 : 0) + (showEmail ? 1 : 0);
   const canDelete = hasRole('admin');
+  // Fusionar duplicados: admin y marketing (misma regla que POST /patients/:id/merge).
+  const canMerge = hasRole('admin', 'marketing');
 
   const [patients, setPatients] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -537,7 +539,7 @@ export default function Patients() {
                           <HiOutlinePencil className="w-4 h-4" />
                         </button>
                       )}
-                      {canDelete && (
+                      {canMerge && (
                         <button
                           onClick={() => setMergeTarget(p)}
                           className="inline-flex items-center gap-1 p-1.5 rounded-lg hover:bg-violet-50 text-slate-400 hover:text-violet-600 bg-transparent border-none cursor-pointer ml-1"

@@ -1427,10 +1427,12 @@ export default function Chats() {
   // Llamadas de voz por WhatsApp. `calling` dice si el número de ESTE chat puede
   // llamar (solo Cloud API, y con las llamadas habilitadas en Meta); se consulta
   // al abrir el chat para no ofrecer un botón que fallaría al pulsarlo.
+  // Sin contexto (el administrador no llama) no se consulta ni se ofrece el botón.
   const voiceCall = useWhatsappCallContext();
+  const canCall = !!voiceCall;
   const [calling, setCalling] = useState(null);
   useEffect(() => {
-    if (!activeId) return setCalling(null);
+    if (!activeId || !canCall) return setCalling(null);
     setCalling(null);
     let cancelled = false;
     api
@@ -1438,7 +1440,7 @@ export default function Chats() {
       .then(({ data }) => { if (!cancelled) setCalling(data); })
       .catch(() => { if (!cancelled) setCalling({ enabled: false, reason: 'No se pudo comprobar si este número puede llamar.' }); });
     return () => { cancelled = true; };
-  }, [activeId]);
+  }, [activeId, canCall]);
 
   // Inserta un mensaje guardado: reemplaza el token "/atajo" (o añade al final),
   // rellena variables con el contacto y prepara el adjunto si lo tiene.
@@ -1921,7 +1923,7 @@ export default function Chats() {
                   isAdmin={isAdmin}
                   meId={user?._id}
                   calling={calling}
-                  onCall={() => voiceCall.startCall(activeConv)}
+                  onCall={canCall ? () => voiceCall.startCall(activeConv) : null}
                   onBack={() => setActiveId(null)}
                   onToggleInfo={() => setInfoOpen(true)}
                   onToggleSearch={() => setChatSearchOpen((v) => !v)}
@@ -3230,9 +3232,10 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onTransfer, onOpenOpportun
   const canTake = !conv.assignedTo || String(conv.assignedTo._id || conv.assignedTo) !== String(meId);
   // "Esperando respuesta" cuando el último mensaje es entrante (del paciente).
   const waitingReply = conv.lastMessageDirection === 'in';
-  // Un admin puede encender las llamadas de un número Cloud API que las tiene
-  // apagadas (sin entrar a Meta). Por QR es imposible: no se ofrece.
-  const canEnableCalls = isAdmin && calling && calling.enabled === false && calling.canEnable;
+  // El super-admin puede encender las llamadas de un número Cloud API que las
+  // tiene apagadas (sin entrar a Meta). Por QR es imposible: no se ofrece. Sin
+  // `onCall` el usuario no usa llamadas (el administrador): tampoco las enciende.
+  const canEnableCalls = !!onCall && isAdmin && calling && calling.enabled === false && calling.canEnable;
 
   // Acciones secundarias: en línea en pantallas anchas, en el menú "⋯" cuando no
   // caben. "Transferir chat" lo ve cualquier usuario de la bandeja: abre el
@@ -3311,14 +3314,16 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onTransfer, onOpenOpportun
         {/* Llamar por WhatsApp. Solo los números Cloud API pueden llamar: si el
             chat usa un número QR o Meta no tiene las llamadas habilitadas, el
             botón queda deshabilitado explicando por qué en vez de fallar al pulsar. */}
-        <button
-          onClick={onCall}
-          disabled={!calling?.enabled || conv.blocked}
-          title={conv.blocked ? 'Contacto bloqueado' : calling?.enabled ? 'Llamar por WhatsApp' : (calling?.reason || 'Comprobando si este número puede llamar…')}
-          className="text-xs px-2 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed border-none cursor-pointer flex items-center gap-1 shrink-0"
-        >
-          <HiOutlinePhone className="w-4 h-4" /> <span className="hidden @5xl:inline">Llamar</span>
-        </button>
+        {onCall && (
+          <button
+            onClick={onCall}
+            disabled={!calling?.enabled || conv.blocked}
+            title={conv.blocked ? 'Contacto bloqueado' : calling?.enabled ? 'Llamar por WhatsApp' : (calling?.reason || 'Comprobando si este número puede llamar…')}
+            className="text-xs px-2 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed border-none cursor-pointer flex items-center gap-1 shrink-0"
+          >
+            <HiOutlinePhone className="w-4 h-4" /> <span className="hidden @5xl:inline">Llamar</span>
+          </button>
+        )}
 
         {/* Acciones en línea (solo icono + tooltip) cuando hay ancho (≥ @5xl).
             Se mantienen sin texto para que nunca desborden la columna: la versión

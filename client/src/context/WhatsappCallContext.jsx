@@ -33,11 +33,20 @@ function ActiveWhatsappCallProvider({ children }) {
   );
 }
 
+/**
+ * ¿Este usuario usa las llamadas de WhatsApp? Call center, marketing y el
+ * super-admin; el administrador NO (sep-2026). Misma regla que las rutas
+ * /chats/.../call* del servidor. Sin llamadas no se monta el provider y
+ * `useWhatsappCallContext()` devuelve null: así lo detecta la bandeja.
+ */
+function canUseWhatsappCalls(user, role) {
+  return !!user?.isSuperAdmin || ['call_center', 'marketing'].includes(role);
+}
+
 /** Mantiene una sola llamada WebRTC aunque el usuario cambie de pagina. */
 export function WhatsappCallProvider({ children }) {
   const { user, role } = useAuth();
-  const allowed = !!user?.isSuperAdmin || ['admin', 'call_center', 'marketing'].includes(role);
-  if (!allowed) return children;
+  if (!canUseWhatsappCalls(user, role)) return children;
   return <ActiveWhatsappCallProvider>{children}</ActiveWhatsappCallProvider>;
 }
 
