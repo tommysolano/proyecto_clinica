@@ -37,6 +37,10 @@ export const emptyPatientForm = {
   email: '',
   phone: '',
   whatsapp: '',
+  // Los de más (los deja una fusión): texto separado por comas en pantalla,
+  // lista en la base (ver payloadDePaciente).
+  otherPhonesText: '',
+  otherEmailsText: '',
   birthDate: '',
   age: '',
   gender: '',
@@ -66,6 +70,8 @@ export function formDesdePaciente(patient) {
       ...emptyPatientForm,
       ...visible,
       birthDate: nacimiento,
+      otherPhonesText: (patient?.otherPhones || []).join(', '),
+      otherEmailsText: (patient?.otherEmails || []).join(', '),
       // Con fecha de nacimiento la edad se recalcula al abrir: la guardada puede
       // ser de hace tres años y el campo ya no se puede corregir a mano.
       age: nacimiento ? edadDesdeFecha(nacimiento) : (patient?.age ?? ''),
@@ -74,6 +80,12 @@ export function formDesdePaciente(patient) {
   };
 }
 
+/** «a, b; c» → ['a', 'b', 'c'] (otros teléfonos / correos). */
+const lista = (texto) => String(texto || '')
+  .split(/[,;/|\n]+/)
+  .map((t) => t.trim())
+  .filter(Boolean);
+
 /**
  * Del formulario al cuerpo de la petición.
  *
@@ -81,8 +93,11 @@ export function formDesdePaciente(patient) {
  * ObjectId/número/fecha y el guardado fallaba con un error opaco.
  */
 export function payloadDePaciente(form, telefonos) {
+  const { otherPhonesText, otherEmailsText, ...resto } = form;
   return {
-    ...form,
+    ...resto,
+    otherPhones: lista(otherPhonesText),
+    otherEmails: lista(otherEmailsText).map((e) => e.toLowerCase()),
     // El campo único vuelve a ser `phone` + `whatsapp`, que es lo que entiende
     // el resto del sistema.
     ...partirTelefonos(telefonos),
@@ -311,6 +326,30 @@ export default function PatientFields({ form, setForm, telefonos, setTelefonos, 
               ¿Tiene dos números? Escríbelos separados por «/». El segundo es el que se usa
               para WhatsApp.
             </p>
+          </Field>
+        )}
+        {/* Los que quedan de una fusión (o cualquier número más). Solo al
+            editar: al registrar basta con el principal. */}
+        {editing && showContact && (
+          <Field label="Otros teléfonos">
+            <input
+              name="otherPhonesText"
+              value={form.otherPhonesText}
+              onChange={handleChange}
+              placeholder="Separados por comas"
+              className="input"
+            />
+          </Field>
+        )}
+        {editing && showEmail && (
+          <Field label="Otros correos">
+            <input
+              name="otherEmailsText"
+              value={form.otherEmailsText}
+              onChange={handleChange}
+              placeholder="Separados por comas"
+              className="input"
+            />
           </Field>
         )}
         <Field label="Fecha de nacimiento">

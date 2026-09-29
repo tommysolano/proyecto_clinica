@@ -1,0 +1,105 @@
+/**
+ * Comisiones > Marketing: los agendamientos del call center.
+ *
+ * - Un agente DESACTIVADO sigue saliendo con lo que agendó en el período (hay
+ *   que poder calcular lo que se le debe).
+ * - El listado de pacientes nuevos trae quién los agendó, cuándo se agendaron y
+ *   cuándo el sistema los dio por nuevos.
+ * - El filtro puede ir por fecha de la cita o por fecha en que se agendó.
+ */
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const H = require('./_integrationHelpers');
+
+const commissions = require('../controllers/commissionController');
+const User = require('../models/User');
+const Patient = require('../models/Patient');
+const Appointment = require('../models/Appointment');
+require('../models/Clinic'); // el populate de la sucursal
+
+const ok = (result) => {
+  assert.ok(result.statusCode < 400, JSON.stringify(result.payload));
+  return result.payload;
+};
+
+test.before(async () => { await H.startDb(); });
+test.after(async () => { await H.stopDb(); });
+test.beforeEach(async () => { await H.resetDb(); });
+
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+async function seed() {
+  const { clinicId, userId } = await H.seedClinic();
+  const activa = await User.create({
+    name: 'Asesora Activa', email: 'activa@correo.com', password: 'x'.repeat(12),
+    clinics: [{ clinic: clinicId, role: 'call_center' }],
+  });
+  const ida = await User.create({
+    name: 'Asesora Que Se Fue', email: 'ida@correo.com', password: 'x'.repeat(12),
+    active: false,
+    clinics: [{ clinic: clinicId, role: 'call_center' }],
+  });
+  const nuevo = await Patient.create({ clinic: clinicId, firstName: 'PACIENTE', lastName: 'NUEVO' });
+  const viejo = await Patient.create({ clinic: clinicId, firstName: 'PACIENTE', lastName: 'VIEJO' });
+
+  const hoy = new Date();
+  hoy.setHours(12, 0, 0, 0);
+  const haceDiezDias = new Date(hoy.getTime() - 10 * 86400000);
+  const cita = (extra) => Appointment.create({
+    clinic: clinicId, date: hoy, startTime: '10:00', status: 'pendiente', ...extra,
+  });
+  // La asesora desactivada agendó a un paciente nuevo HACE 10 DÍAS para hoy.
+  const citaNueva = await cita({
+    patient: nuevo._id, createdBy: ida._id, createdByName: ida.name, createdByRole: 'call_center',
+    isFirstVisit: true, status: 'asistida',
+  });
+  await Appointment.collection.updateOne({ _id: citaNueva._id }, { $set: { createdAt: haceDiezDias } });
+  await cita({ patient: viejo._id, createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: false });
+
+  return { clinicId, userId, activa, ida, hoy, haceDiezDias };
+}
+
+test('la asesora desactivada sigue saliendo con lo que agendó', async () => {
+  const { clinicId, userId, ida, hoy } = await seed();
+  const res = ok(await H.runController(
+    commissions.callCenterSummary,
+    H.mockReq(clinicId, userId, {}, { role: 'marketing', query: { start: ymd(hoy), end: ymd(hoy), clinic: 'all' } })
+  ));
+  const suya = res.agents.find((a) => a.userId === String(ida._id));
+  assert.ok(suya, 'aparece aunque su cuenta esté desactivada');
+  assert.equal(suya.inactive, true);
+  assert.equal(suya.total, 1);
+  assert.equal(suya.nuevos, 1);
+  assert.equal(res.totals.total, 2);
+});
+
+test('lista a los pacientes nuevos con quién y cuándo se agendaron', async () => {
+  const { clinicId, userId, ida, hoy, haceDiezDias } = await seed();
+  const res = ok(await H.runController(
+    commissions.callCenterNewPatients,
+    H.mockReq(clinicId, userId, {}, { role: 'marketing', query: { start: ymd(hoy), end: ymd(hoy), clinic: 'all' } })
+  ));
+  assert.equal(res.total, 1, 'solo el nuevo; el recurrente no entra');
+  const [p] = res.patients;
+  assert.equal(p.patient, 'PACIENTE NUEVO');
+  assert.equal(p.agent, ida.name);
+  assert.equal(p.agentInactive, true);
+  assert.equal(new Date(p.scheduledAt).getTime(), haceDiezDias.getTime());
+  assert.equal(new Date(p.markedNewAt).getTime(), haceDiezDias.getTime());
+  assert.equal(p.status, 'asistida');
+
+  // Filtrando por la fecha en que se AGENDÓ: hoy no hay ninguno, hace 10 días sí.
+  const porAgendaHoy = ok(await H.runController(
+    commissions.callCenterNewPatients,
+    H.mockReq(clinicId, userId, {}, { role: 'marketing', query: { start: ymd(hoy), end: ymd(hoy), clinic: 'all', fecha: 'agendada' } })
+  ));
+  assert.equal(porAgendaHoy.total, 0);
+  const porAgendaAntes = ok(await H.runController(
+    commissions.callCenterNewPatients,
+    H.mockReq(clinicId, userId, {}, {
+      role: 'marketing',
+      query: { start: ymd(haceDiezDias), end: ymd(haceDiezDias), clinic: 'all', fecha: 'agendada', agent: String(ida._id) },
+    })
+  ));
+  assert.equal(porAgendaAntes.total, 1);
+});

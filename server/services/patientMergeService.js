@@ -24,6 +24,7 @@ const CashFlowManualItem = require('../models/CashFlowManualItem');
 const Receivable = require('../models/Receivable');
 const Payable = require('../models/Payable');
 const CashFlowMapping = require('../models/CashFlowMapping');
+const { normalizePhone } = require('../utils/phoneNormalize');
 
 const PATIENT_MODELS = [
   Appointment,
@@ -47,6 +48,7 @@ const PATIENT_MODELS = [
 const PATIENT_SKIP = new Set([
   '_id', '__v', 'clinic', 'active', 'mergedInto', 'mergedAt', 'mergedBy',
   'createdAt', 'updatedAt', 'cedula', 'identificationAliases', 'tags', 'marketing',
+  'phone', 'whatsapp', 'email', 'otherPhones', 'otherEmails',
 ]);
 const RECORD_SKIP = new Set([
   '_id', '__v', 'clinic', 'patient', 'followUps', 'createdAt', 'updatedAt',
@@ -102,6 +104,62 @@ function fillMissing(primary, secondary) {
 const uniqStrings = (values) => [...new Set(values.map((v) => String(v || '').trim()).filter(Boolean))];
 const mergeText = (...values) => uniqStrings(values).join('\n\n');
 
+/**
+ * Deja la lista sin repetidos según `clave`, conservando el primero tal como se
+ * escribió. Un mismo celular guardado como '0988535561' y '+593 98 853 5561' es
+ * UN número, no dos.
+ */
+const uniqBy = (values, clave) => {
+  const vistos = new Set();
+  const out = [];
+  for (const v of values.map((x) => String(x || '').trim()).filter(Boolean)) {
+    const k = clave(v);
+    if (!k || vistos.has(k)) continue;
+    vistos.add(k);
+    out.push(v);
+  }
+  return out;
+};
+const phoneKey = (v) => {
+  const n = normalizePhone(v);
+  return n.ok ? n.phone : v.replace(/\D/g, '') || v;
+};
+const emailKey = (v) => v.toLowerCase();
+
+/**
+ * TELÉFONOS Y CORREOS: NO SE PIERDE NINGUNO (sep-2026).
+ *
+ * Antes el perfil que se conservaba se quedaba con su celular y su correo, y los
+ * del duplicado —si eran distintos— desaparecían con él. Pero son justo los
+ * datos que más cambian entre dos fichas de la misma persona (se registró una
+ * vez con el suyo y otra con el de un familiar), y cualquiera de los dos puede
+ * ser por el que se le localiza.
+ *
+ * El principal sigue siendo el del perfil que se conserva (o el del duplicado
+ * si aquel no tenía); todos los demás van a `otherPhones` / `otherEmails`.
+ */
+function mergeContactos(target, source) {
+  const phone = String(target.phone || '').trim() || String(source.phone || '').trim();
+  const whatsapp = String(target.whatsapp || '').trim() || String(source.whatsapp || '').trim();
+  const principales = new Set([phone, whatsapp].filter(Boolean).map(phoneKey));
+  const otherPhones = uniqBy([
+    ...(target.otherPhones || []),
+    target.phone, target.whatsapp,
+    source.phone, source.whatsapp,
+    ...(source.otherPhones || []),
+  ], phoneKey).filter((v) => !principales.has(phoneKey(v)));
+
+  const email = String(target.email || '').trim().toLowerCase() || String(source.email || '').trim().toLowerCase();
+  const otherEmails = uniqBy([
+    ...(target.otherEmails || []),
+    target.email,
+    source.email,
+    ...(source.otherEmails || []),
+  ], emailKey).map(emailKey).filter((v) => v !== email);
+
+  return { phone, whatsapp, email, otherPhones, otherEmails };
+}
+
 function mergePatientProfile(target, source) {
   const merged = { ...target };
   for (const [key, value] of Object.entries(source)) {
@@ -109,6 +167,7 @@ function mergePatientProfile(target, source) {
     merged[key] = key in merged ? fillMissing(merged[key], value) : value;
   }
 
+  Object.assign(merged, mergeContactos(target, source));
   merged.tags = uniqStrings([...(target.tags || []), ...(source.tags || [])]);
   // En estos campos dos textos distintos pueden ser verdaderos a la vez. No se
   // descarta el del duplicado: se anexan ambos, sin repetirlos.

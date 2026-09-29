@@ -45,6 +45,16 @@ const patientSchema = new mongoose.Schema(
     email: { type: String, lowercase: true, trim: true },
     phone: { type: String, trim: true },
     whatsapp: { type: String, trim: true },
+    /**
+     * TELÉFONOS Y CORREOS DE MÁS (sep-2026). Nacieron para la FUSIÓN: dos fichas
+     * del mismo paciente con celulares o correos distintos no pueden quedarse
+     * con uno y tirar el otro — los dos pueden ser verdaderos (el suyo y el de
+     * la hija que lo agenda, el personal y el del trabajo). El principal sigue
+     * en `phone`/`whatsapp`/`email`, que es lo que usa todo el envío; aquí va el
+     * resto, que se ve en la ficha y sirve para encontrar al paciente.
+     */
+    otherPhones: { type: [String], default: [] },
+    otherEmails: { type: [String], default: [] },
     birthDate: { type: Date },
     age: { type: Number, min: 0, max: 150 },
     gender: { type: String, enum: ['masculino', 'femenino', 'otro'] },

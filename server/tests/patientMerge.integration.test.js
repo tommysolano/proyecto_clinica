@@ -124,6 +124,53 @@ test('fusiona perfiles, historias, archivos, observaciones y referencias sin per
   assert.equal(duplicateAgain.statusCode, 400, 'el alias no puede volver a crear otro duplicado');
 });
 
+test('con celulares y correos distintos, el perfil fusionado conserva los dos', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const target = await Patient.create({
+    clinic: clinicId, cedula: '0102030405', firstName: 'ANA',
+    phone: '0991112233', email: 'ana@correo.com',
+  });
+  const source = await Patient.create({
+    clinic: clinicId, cedula: '0911111111', firstName: 'ANA',
+    // El mismo celular del principal escrito de otra forma + uno nuevo.
+    phone: '+593 99 111 2233', whatsapp: '0987654321',
+    email: 'Ana.Trabajo@correo.com', otherEmails: ['ana@correo.com'],
+  });
+
+  ok(await H.runController(
+    patients.mergePatient,
+    H.mockReq(clinicId, userId, { sourcePatientId: String(source._id) }, {
+      role: 'marketing', params: { id: String(target._id) },
+    })
+  ));
+
+  const merged = await Patient.findById(target._id).lean();
+  assert.equal(merged.phone, '0991112233', 'el principal sigue siendo el del perfil conservado');
+  assert.equal(merged.whatsapp, '0987654321', 'el WhatsApp vacío se rellena desde el duplicado');
+  assert.deepEqual(merged.otherPhones, [], 'el mismo número en otro formato no se duplica');
+  assert.equal(merged.email, 'ana@correo.com');
+  assert.deepEqual(merged.otherEmails, ['ana.trabajo@correo.com'], 'el otro correo se conserva');
+  assert.deepEqual(merged.identificationAliases, ['0911111111'], 'la otra cédula se conserva');
+
+  // Un tercero con otro celular: el principal se mantiene y el nuevo va a la lista.
+  const third = await Patient.create({ clinic: clinicId, firstName: 'ANA', phone: '0977777777' });
+  ok(await H.runController(
+    patients.mergePatient,
+    H.mockReq(clinicId, userId, { sourcePatientId: String(third._id) }, {
+      role: 'admin', params: { id: String(target._id) },
+    })
+  ));
+  const again = await Patient.findById(target._id).lean();
+  assert.deepEqual(again.otherPhones, ['0977777777']);
+
+  const found = ok(await H.runController(
+    patients.getPatients,
+    H.mockReq(clinicId, userId, {}, { role: 'admin', query: { search: '0977777777' } })
+  ));
+  assert.equal(found.patients.length, 1, 'el otro celular sigue encontrando al paciente');
+  assert.equal(String(found.patients[0]._id), String(target._id));
+});
+
 test('un doctor solo elimina el adjunto que él mismo subió', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const otherDoctor = new H.mongoose.Types.ObjectId();

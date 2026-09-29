@@ -36,7 +36,7 @@ const { patientIdentificationFilter } = require('../utils/patientIdentity');
  * paciente (`GET /patients/:id`) y el listado de Clientes NO lo piden: ahí van
  * censurados para todos menos el admin.
  */
-const CONTACT_FIELDS = ['cedula', 'address', 'phone', 'whatsapp', 'email'];
+const CONTACT_FIELDS = ['cedula', 'address', 'phone', 'whatsapp', 'email', 'otherPhones', 'otherEmails'];
 
 /** ¿Este usuario puede ver los datos de contacto del paciente? (solo admin). */
 const canSeeContactData = (req) => canReq(req, 'patients.contactData');
@@ -103,9 +103,10 @@ const canSeePhone = (req) => canSeeContactData(req) || canReq(req, 'patients.pho
 /** ¿Puede ver ESTE campo de contacto? */
 const canSeeContactField = (req, field) => {
   if (field === 'cedula') return canSeeCedula(req);
-  if (field === 'email') return canSeeEmail(req);
+  // Los de más (los que deja una fusión) obedecen al mismo permiso que el principal.
+  if (field === 'email' || field === 'otherEmails') return canSeeEmail(req);
   if (field === 'address') return canSeeAddress(req);
-  if (field === 'phone' || field === 'whatsapp') return canSeePhone(req);
+  if (field === 'phone' || field === 'whatsapp' || field === 'otherPhones') return canSeePhone(req);
   return canSeeContactData(req);
 };
 
@@ -247,7 +248,7 @@ exports.getPatients = async (req, res) => {
       const telefono = phoneSearchRegex(search);
       query.$or = [
         ...(porNombre ? [porNombre] : []),
-        ...(telefono ? [{ phone: telefono }, { whatsapp: telefono }] : []),
+        ...(telefono ? [{ phone: telefono }, { whatsapp: telefono }, { otherPhones: telefono }] : []),
       ];
       // Un texto que no deja ni una palabra ni un teléfono (solo signos) no
       // puede acabar en un `$or: []`, que mongo rechaza.

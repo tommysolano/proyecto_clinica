@@ -906,6 +906,13 @@ function DatosTab({ patient, onSaved }) {
         {showEmail && <Item label="Email" value={patient.email} otros={otros('correo')} />}
         {showContact && <Item label="Teléfono" value={patient.phone} otros={otros('celular')} />}
         {showContact && <Item label="WhatsApp" value={patient.whatsapp} />}
+        {/* Los que dejó una fusión: el duplicado tenía otros y no se tiran. */}
+        {showContact && (patient.otherPhones || []).length > 0 && (
+          <Item label="Otros teléfonos" value={patient.otherPhones.join(' · ')} />
+        )}
+        {showEmail && (patient.otherEmails || []).length > 0 && (
+          <Item label="Otros correos" value={patient.otherEmails.join(' · ')} />
+        )}
         <Item
           label="Marketing"
           value={

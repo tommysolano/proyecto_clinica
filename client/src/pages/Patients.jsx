@@ -1060,7 +1060,8 @@ function MergePatientsModal({ target, onClose, onMerged }) {
 
           <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5 text-xs text-amber-900">
             Se reunirán seguimientos, observaciones, archivos, citas, ventas, tratamientos y datos relacionados.
-            Si un dato general es distinto, se conserva el del perfil verde; la otra identificación queda guardada y seguirá siendo buscable.
+            Si un dato general es distinto, se conserva el del perfil verde. No se pierde nada de contacto:
+            la otra identificación, los otros teléfonos y los otros correos quedan guardados en el perfil y siguen siendo buscables.
           </div>
 
           <div className="flex justify-end gap-2 pt-1">

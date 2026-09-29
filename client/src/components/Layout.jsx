@@ -110,7 +110,8 @@ const MENU_GROUPS = [
   },
   {
     key: 'comisiones', label: 'Comisiones', icon: HiOutlineCurrencyDollar, items: [
-      { path: '/commissions', label: 'Comisiones', roles: [], superOnly: true },
+      // Marketing: solo el apartado de marketing (el super-admin ve todo).
+      { path: '/commissions', label: 'Comisiones', roles: ['marketing'] },
     ],
   },
   {

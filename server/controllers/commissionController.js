@@ -1932,45 +1932,90 @@ exports.doctorAppointments = async (req, res) => {
 };
 
 /**
+ * Por qué fecha se filtra el apartado de marketing: la de la CITA (lo de
+ * siempre, y lo que usa el resumen por doctor) o el día en que se AGENDÓ.
+ */
+const FECHA_CALLCENTER = { cita: 'date', agendada: 'createdAt' };
+
+/**
+ * LAS CITAS QUE AGENDÓ EL CALL CENTER, incluidas las de agentes DESACTIVADOS.
+ *
+ * El resumen buscaba a los agentes con `active: true` y después sus citas. Al
+ * desactivar a una asesora que se iba, sus agendamientos desaparecían de la
+ * pantalla justo cuando hacía falta calcular lo que se le quedaba debiendo. Lo
+ * que agendó no deja de haber ocurrido porque se le cierre la cuenta.
+ *
+ * Cuenta como del call center la cita que:
+ *   · creó (o se le acreditó a) un usuario con rol call_center en alguna sede,
+ *     esté activo o no; o
+ *   · lleva el sello `createdByRole: 'call_center'`, aunque esa persona haya
+ *     cambiado de rol después.
+ *
+ * La sucursal filtra las CITAS, no a los agentes: el call center es único para
+ * toda la organización y agenda en sedes en las que no figura.
+ */
+async function agendamientosCallCenter(req, { select, extra = {}, populatePatient = false }) {
+  const { start, end, clinic } = req.query;
+  const { startDate, endDate } = parseRange(start, end);
+  const campo = FECHA_CALLCENTER[req.query.fecha] || 'date';
+
+  const usuariosCC = await User.find({ 'clinics.role': 'call_center' })
+    .select('name active clinics worksInAllClinics')
+    .lean();
+
+  const query = {
+    [campo]: { $gte: startDate, $lte: endDate },
+    $or: [
+      { createdBy: { $in: usuariosCC.map((u) => u._id) } },
+      { createdByRole: 'call_center' },
+    ],
+    ...extra,
+  };
+  if (clinic !== 'all') query.clinic = clinic || req.clinicId;
+
+  let consulta = Appointment.find(query)
+    .populate('clinic', 'name nombreComercial')
+    .select(select);
+  if (populatePatient) consulta = consulta.populate('patient', 'firstName lastName createdAt');
+  const appts = await consulta.lean();
+
+  // Quien agendó por el sello de rol y ya no es call center no está en la
+  // lista: se le busca aparte para tener su nombre y si sigue activo.
+  const conocidos = new Set(usuariosCC.map((u) => String(u._id)));
+  const faltan = [...new Set(appts.map((a) => String(a.createdBy || '')).filter((id) => id && !conocidos.has(id)))];
+  const otros = faltan.length
+    ? await User.find({ _id: { $in: faltan } }).select('name active').lean()
+    : [];
+  const usuarios = new Map([...usuariosCC, ...otros].map((u) => [String(u._id), u]));
+
+  return { startDate, endDate, campo, appts, usuariosCC, usuarios };
+}
+
+/** Nombre del agente de una cita: el usuario, o el nombre sellado si ya no existe. */
+const nombreAgente = (usuarios, a) =>
+  usuarios.get(String(a.createdBy || ''))?.name || a.createdByName || 'Sin agente';
+
+/**
  * Resumen de AGENDAMIENTOS por agente de call center: cuántas citas agendó cada
  * uno y de esas cuántas fueron para pacientes NUEVOS y cuántas para
  * RECURRENTES. Mismo alcance de fechas/sucursal que el resumen por doctor.
+ *
+ * Los agentes ACTIVOS salen siempre (aunque no agendaran nada, para ver quién
+ * está en cero); los desactivados solo si agendaron en el período.
  */
 exports.callCenterSummary = async (req, res) => {
   try {
-    const { start, end, clinic } = req.query;
-    const { startDate, endDate } = parseRange(start, end);
-
-    const query = { date: { $gte: startDate, $lte: endDate } };
-    if (clinic === 'all') {
-      // 'all' = todas las sucursales
-    } else {
-      query.clinic = clinic || req.clinicId;
-    }
-
-    const agentes = await User.find({
-      active: true,
-      ...(clinic === 'all'
-        ? { 'clinics.role': 'call_center' }
-        : User.enSucursal(clinic || req.clinicId, ['call_center'])),
-    })
-      .select('name clinics worksInAllClinics')
-      .lean();
-    const idsAgentes = agentes.map((a) => String(a._id));
-
-    const appts = idsAgentes.length
-      ? await Appointment.find({ ...query, createdBy: { $in: idsAgentes } })
-          .populate('clinic', 'name nombreComercial')
-          .select('createdBy isFirstVisit clinic')
-          .lean()
-      : [];
+    const { clinic } = req.query;
+    const {
+      startDate, endDate, campo, appts, usuariosCC, usuarios,
+    } = await agendamientosCallCenter(req, { select: 'createdBy createdByName isFirstVisit clinic' });
 
     const porAgente = new Map();
     for (const a of appts) {
-      const id = String(a.createdBy?._id || a.createdBy);
+      const id = String(a.createdBy || `nombre:${a.createdByName || ''}`);
       let fila = porAgente.get(id);
       if (!fila) {
-        fila = { total: 0, nuevos: 0, recurrentes: 0, clinics: new Set() };
+        fila = { name: nombreAgente(usuarios, a), total: 0, nuevos: 0, recurrentes: 0, clinics: new Set() };
         porAgente.set(id, fila);
       }
       fila.total += 1;
@@ -1980,23 +2025,36 @@ exports.callCenterSummary = async (req, res) => {
       if (nombreSucursal) fila.clinics.add(nombreSucursal);
     }
 
-    const agents = agentes
-      .map((a) => {
-        const f = porAgente.get(String(a._id)) || { total: 0, nuevos: 0, recurrentes: 0, clinics: [] };
+    // Activos de la sede elegida (o de todas) que no agendaron: van en cero.
+    const sede = clinic === 'all' ? null : String(clinic || req.clinicId);
+    for (const u of usuariosCC) {
+      const id = String(u._id);
+      if (!u.active || porAgente.has(id)) continue;
+      const trabajaAqui = !sede || u.worksInAllClinics ||
+        (u.clinics || []).some((c) => c.role === 'call_center' && String(c.clinic) === sede);
+      if (trabajaAqui) porAgente.set(id, { name: u.name, total: 0, nuevos: 0, recurrentes: 0, clinics: new Set() });
+    }
+
+    const agents = [...porAgente.entries()]
+      .map(([id, f]) => {
+        const usuario = usuarios.get(id);
         return {
-          userId: String(a._id),
-          name: a.name,
-          clinics: f.clinics instanceof Set ? [...f.clinics] : (f.clinics || []),
+          userId: id,
+          name: f.name,
+          // Desactivado = su cuenta está cerrada; sus agendamientos siguen contando.
+          inactive: usuario ? usuario.active === false : true,
+          clinics: [...f.clinics],
           total: f.total,
           nuevos: f.nuevos,
           recurrentes: f.recurrentes,
         };
       })
-      .sort((a, b) => b.total - a.total);
+      .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
 
     res.json({
       start: startDate,
       end: endDate,
+      fecha: campo === 'createdAt' ? 'agendada' : 'cita',
       agents,
       totals: {
         total: appts.length,
@@ -2006,6 +2064,63 @@ exports.callCenterSummary = async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ message: 'Error al calcular el resumen de call center', error: e.message });
+  }
+};
+
+/**
+ * LOS PACIENTES NUEVOS QUE AGENDÓ EL CALL CENTER, uno por uno.
+ *
+ * El resumen decía «Nuevos 12» y nada más: para pagar la captación había que
+ * saber QUIÉNES eran, cuándo se agendaron y cuándo los dio el sistema por
+ * nuevos. Lo último es el momento de agendar: la marca `isFirstVisit` se decide
+ * al crear la cita (ver utils/firstVisit.js) y queda congelada, así que la fecha
+ * en que se agendó ES la fecha en que el sistema lo consideró nuevo.
+ *
+ * Filtros: los mismos del resumen (fechas, sucursal, `fecha=cita|agendada`) y
+ * `agent` para ver los de una sola persona.
+ */
+exports.callCenterNewPatients = async (req, res) => {
+  try {
+    const extra = { isFirstVisit: true };
+    if (req.query.agent) {
+      if (!mongoose.Types.ObjectId.isValid(req.query.agent)) {
+        return res.status(400).json({ message: 'Agente no válido' });
+      }
+      extra.createdBy = new mongoose.Types.ObjectId(req.query.agent);
+    }
+    const { appts, usuarios } = await agendamientosCallCenter(req, {
+      select: 'patient date startTime createdAt createdBy createdByName status clinic serviceName services arrivedAt completedAt',
+      extra,
+      populatePatient: true,
+    });
+
+    const patients = appts
+      .map((a) => {
+        const agente = usuarios.get(String(a.createdBy || ''));
+        return {
+          appointmentId: String(a._id),
+          patientId: a.patient?._id ? String(a.patient._id) : null,
+          patient: nombrePaciente(a.patient),
+          patientRegisteredAt: a.patient?.createdAt || null,
+          agentId: a.createdBy ? String(a.createdBy) : null,
+          agent: nombreAgente(usuarios, a),
+          agentInactive: agente ? agente.active === false : true,
+          // Se agendó y, en ese mismo momento, el sistema lo marcó como nuevo.
+          scheduledAt: a.createdAt,
+          markedNewAt: a.createdAt,
+          appointmentDate: a.date,
+          startTime: a.startTime || '',
+          status: a.status,
+          attendedAt: a.completedAt || a.arrivedAt || null,
+          clinic: a.clinic?.nombreComercial || a.clinic?.name || '',
+          services: [a.serviceName, ...(a.services || []).map((s) => s.name)].filter(Boolean),
+        };
+      })
+      .sort((a, b) => new Date(b.scheduledAt) - new Date(a.scheduledAt));
+
+    res.json({ patients, total: patients.length });
+  } catch (e) {
+    res.status(500).json({ message: 'Error al listar los pacientes nuevos del call center', error: e.message });
   }
 };
 

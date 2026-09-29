@@ -22,8 +22,13 @@ router.post('/doctor-adjustment', requireSuperAdmin, ctrl.saveDoctorAdjustment);
 router.delete('/doctor-adjustment/:id', requireSuperAdmin, ctrl.deleteDoctorAdjustment);
 // Reporte PDF por doctor: fecha, paciente, servicio y valor de la comisión.
 router.get('/doctor-report.pdf', requireSuperAdmin, ctrl.doctorReportPdf);
+// Apartado MARKETING: el super-admin y el rol marketing (sep-2026). Marketing
+// entra a Comisiones solo por este apartado; el de doctores sigue siendo del
+// super-admin (requireRole deja pasar al super-admin siempre).
 // Agendamientos por agente de call center (pacientes nuevos vs recurrentes).
-router.get('/callcenter-summary', requireSuperAdmin, ctrl.callCenterSummary);
+router.get('/callcenter-summary', requireRole('marketing'), ctrl.callCenterSummary);
+// Los pacientes nuevos que agendó el call center, uno por uno.
+router.get('/callcenter-new-patients', requireRole('marketing'), ctrl.callCenterNewPatients);
 
 // Admin y contabilidad gestionan reglas de comisión y ven el reporte global.
 router.get('/rules', requireRole('admin', 'contabilidad'), ctrl.listRules);

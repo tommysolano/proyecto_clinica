@@ -553,9 +553,11 @@ function AppRoutes() {
                 <Route
                   path="/commissions"
                   element={
-                    <SuperAdminRoute>
+                    // Marketing entra solo al apartado de marketing (la página
+                    // esconde el de doctores); el super-admin pasa siempre.
+                    <RoleRoute roles={['marketing']}>
                       <Commissions />
-                    </SuperAdminRoute>
+                    </RoleRoute>
                   }
                 />
                 <Route
