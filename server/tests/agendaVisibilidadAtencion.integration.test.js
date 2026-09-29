@@ -123,15 +123,35 @@ test('2b · odontología sigue viendo sus citas PENDIENTES (agenda y atiende dir
   assert.deepEqual((await agendaDe(clinicId, odoB, 'odontologia')).map((a) => String(a._id)), [String(cita._id)]);
 });
 
-test('2c · odontología ve TODAS las citas de su sede, aunque caja las agende sin doctor o con otro', async () => {
-  const { clinicId, odoB, doc, cita, patient } = await seed();
-  // `cita` está pendiente y SIN doctor (como la deja caja al agendar).
-  const deOtro = await Appointment.create({
-    clinic: clinicId, patient: patient._id, date: H.docDate(), startTime: '11:00', status: 'pendiente',
+test('2c · odontología ve TODAS las citas de la sucursal «odontología», y en las demás solo las de odontólogos', async () => {
+  const { clinicId, odoA, odoB, doc, cita, patient } = await seed();
+  const Clinic = require('../models/Clinic');
+  const sedeOdonto = await Clinic.create({ name: 'odontología' });
+  await Clinic.create({ _id: clinicId, name: 'Central' });
+
+  // En la sucursal de odontología, agendadas por caja: sin doctor y con otro doctor.
+  const sinDoctor = await Appointment.create({
+    clinic: sedeOdonto._id, patient: patient._id, date: H.docDate(), startTime: '09:00', status: 'pendiente',
   });
-  await agendarCon(deOtro, doc._id);
-  const ids = (await agendaDe(clinicId, odoB, 'odontologia')).map((a) => String(a._id)).sort();
-  assert.deepEqual(ids, [String(cita._id), String(deOtro._id)].sort());
+  const conOtro = await Appointment.create({
+    clinic: sedeOdonto._id, patient: patient._id, date: H.docDate(), startTime: '11:00', status: 'pendiente',
+  });
+  await agendarCon(conOtro, doc._id);
+  // En Central: la de un odontólogo sí; `cita` (sin doctor) NO.
+  const deOdontologoEnCentral = await Appointment.create({
+    clinic: clinicId, patient: patient._id, date: H.docDate(), startTime: '12:00', status: 'pendiente',
+  });
+  await agendarCon(deOdontologoEnCentral, odoA._id);
+
+  // Como en producción: trabaja en todas las sucursales y la agenda pide clinic=all.
+  const r = await H.runController(appt.getAppointments, (() => {
+    const req = H.mockReq(clinicId, odoB._id, {}, { role: 'odontologia', query: { clinic: 'all' } });
+    req.user.worksInAllClinics = true;
+    return req;
+  })());
+  const ids = r.payload.map((a) => String(a._id)).sort();
+  assert.deepEqual(ids, [String(sinDoctor._id), String(conOtro._id), String(deOdontologoEnCentral._id)].sort());
+  assert.ok(!ids.includes(String(cita._id)), 'la cita sin doctor de Central no es de odontología');
   // El doctor general sigue sin ver la pendiente.
   assert.deepEqual((await agendaDe(clinicId, doc, 'doctor')).map((a) => String(a._id)), []);
 });

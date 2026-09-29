@@ -185,15 +185,15 @@ async function filtroAgendaDelDoctor(req) {
     // Él mismo, aunque su rol en esa sede sea otro: sus citas no pueden caerse.
     if (!ids.some((id) => String(id) === String(req.user._id))) ids.push(req.user._id);
     /**
-     * TODA LA AGENDA DE SU SEDE DE ODONTOLOGÍA (sep-2026).
+     * TODA LA AGENDA DE LA SUCURSAL «ODONTOLOGÍA» (sep-2026).
      *
      * Mirar solo las citas de odontólogos dejaba fuera las que agenda caja o
-     * administración: esas nacen SIN doctor (o con el de otra persona) y no
-     * salían en la agenda de nadie del consultorio. En las sedes donde es
-     * odontólogo ve TODAS las citas —pendientes y sin asignar incluidas—,
-     * agende quien las agende; en las demás, lo de antes.
+     * administración en esa sucursal: nacen SIN doctor (o con el de otra
+     * persona) y no salían en la agenda de nadie del consultorio. En la
+     * sucursal de odontología ve TODAS —pendientes y sin asignar incluidas—;
+     * en Central, Extensión y el resto, solo las de odontólogos, como antes.
      */
-    const sedes = await sedesDeOdontologia(req);
+    const sedes = await sedesDeOdontologia();
     return {
       $or: [
         { clinic: { $in: sedes } },

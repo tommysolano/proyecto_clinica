@@ -24,18 +24,20 @@ async function idsDeOdontologos() {
 }
 
 /**
- * Sedes donde ESTE usuario es odontólogo: en ellas ve la agenda entera. La
- * activa entra siempre (el rol del token ya es 'odontologia' ahí).
+ * LA SUCURSAL DE ODONTOLOGÍA: la que se escoge al agendar («odontología»). En
+ * ella el odontólogo ve TODAS las citas, agende quien las agende.
+ *
+ * Va por el NOMBRE de la sucursal, no por el rol del usuario: los odontólogos
+ * tienen su rol guardado en Central o Extensión y trabajan «en todas las
+ * sucursales», así que mirar dónde tienen el rol les abría la agenda entera de
+ * Central y Extensión (sep-2026, corregido a pedido de la clínica).
  */
-async function sedesDeOdontologia(req) {
-  const User = require('../models/User');
-  const u = await User.findById(req.user._id).select('clinics').lean();
-  const sedes = (u?.clinics || [])
-    .filter((c) => c.role === ROL_COMPARTIDO && c.clinic)
-    .map((c) => String(c.clinic));
-  if (req.clinicId) sedes.push(String(req.clinicId));
-  const mongoose = require('mongoose');
-  return [...new Set(sedes)].map((id) => new mongoose.Types.ObjectId(id));
+async function sedesDeOdontologia() {
+  const Clinic = require('../models/Clinic');
+  const sedes = await Clinic.find({
+    $or: [{ name: /odontolog/i }, { nombreComercial: /odontolog/i }],
+  }).select('_id').lean();
+  return sedes.map((c) => c._id);
 }
 
 const idDe = (v) => (v && typeof v === 'object' && v._id ? String(v._id) : v ? String(v) : '');
