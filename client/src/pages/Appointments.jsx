@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import api from '../api/axios';
 import Modal from '../components/Modal';
@@ -521,6 +521,7 @@ const hhmmToMin = (s) => {
 
 export default function Appointments() {
   const navigate = useNavigate();
+  const [urlParams, setUrlParams] = useSearchParams();
   const { user, role, hasRole, activeClinic, clinics } = useAuth();
   // 'odontologia' va enumerada y no por 'doctor', que expande a todas las
   // especialidades: agendar se le abrió a ella, no al resto. Es espejo de la
@@ -1733,6 +1734,22 @@ export default function Appointments() {
       toast.error('Error al cargar detalle');
     }
   };
+
+  /**
+   * ENLACE DIRECTO A UNA CITA: `/appointments?cita=<id>` abre su detalle. Lo
+   * usa Comisiones → Marketing para ir a la cita en la que un paciente quedó
+   * marcado como nuevo. El parámetro se quita enseguida para que recargar la
+   * página no la vuelva a abrir.
+   */
+  useEffect(() => {
+    const cita = (urlParams.get('cita') || '').trim();
+    if (!cita) return;
+    const resto = new URLSearchParams(urlParams);
+    resto.delete('cita');
+    setUrlParams(resto, { replace: true });
+    openDetail(cita);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlParams]);
 
   const startConsultation = async (apt) => {
     try {

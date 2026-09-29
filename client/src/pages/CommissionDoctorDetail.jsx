@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import { HiOutlineArrowLeft, HiOutlineCurrencyDollar, HiOutlineUserGroup, HiOutlineArrowsRightLeft } from 'react-icons/hi2';
 import { fmtDate } from '../utils/date';
 import DateInput from '../components/DateInput';
+import Paginador from '../components/Paginador';
 import ProductAutocomplete from '../components/ProductAutocomplete';
 import { doctorOptionLabel } from '../utils/roles';
 import {
@@ -22,27 +23,6 @@ const lista = (v) => String(v || '').split(',').map((s) => s.trim()).filter(Bool
 
 // Citas por página: con todos los doctores de un mes salían miles de filas de golpe.
 const POR_PAGINA = 200;
-
-/** Anterior / «Página X de Y» / Siguiente. */
-function Paginador({ pagination, onPage }) {
-  if (!pagination || pagination.pages <= 1) return null;
-  const { page, pages, total, limit } = pagination;
-  const desde = (page - 1) * limit + 1;
-  const hasta = Math.min(page * limit, total);
-  const btn = 'px-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-white cursor-pointer hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed';
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
-      <span>Mostrando <b>{desde}–{hasta}</b> de <b>{total}</b> citas</span>
-      <div className="flex items-center gap-1.5">
-        <button type="button" className={btn} disabled={page <= 1} onClick={() => onPage(1)}>« Primera</button>
-        <button type="button" className={btn} disabled={page <= 1} onClick={() => onPage(page - 1)}>‹ Anterior</button>
-        <span className="px-2">Página <b>{page}</b> de <b>{pages}</b></span>
-        <button type="button" className={btn} disabled={page >= pages} onClick={() => onPage(page + 1)}>Siguiente ›</button>
-        <button type="button" className={btn} disabled={page >= pages} onClick={() => onPage(pages)}>Última »</button>
-      </div>
-    </div>
-  );
-}
 
 function EstadoDerivacion({ estado }) {
   const e = DERIVACION_ESTADOS[estado] || { label: estado, cls: 'bg-slate-100 text-slate-500' };
@@ -271,7 +251,7 @@ export default function CommissionDoctorDetail() {
 
       {loading && <div className="text-slate-500">Cargando...</div>}
 
-      {data && <Paginador pagination={data.pagination} onPage={irAPagina} />}
+      {data && <Paginador pagination={data.pagination} onPage={irAPagina} unidad="citas" />}
 
       {data && (
         <div className="space-y-4">
@@ -406,7 +386,7 @@ export default function CommissionDoctorDetail() {
             </div>
           )}
 
-          <Paginador pagination={data.pagination} onPage={irAPagina} />
+          <Paginador pagination={data.pagination} onPage={irAPagina} unidad="citas" />
 
           <div className="bg-white rounded-xl border border-slate-200 px-4 py-3">
             <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide mb-1 inline-flex items-center gap-1">

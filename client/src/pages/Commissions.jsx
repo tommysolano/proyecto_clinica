@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import {
   HiOutlineCurrencyDollar, HiOutlineMegaphone, HiOutlineUserGroup, HiOutlineDocumentArrowDown,
   HiOutlinePlusCircle, HiOutlineCheckBadge, HiOutlineArrowsRightLeft,
+  HiOutlineChatBubbleLeftRight, HiOutlineCalendarDays, HiOutlineHeart,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import Modal from '../components/Modal';
+import Paginador from '../components/Paginador';
 import NumericInput from '../components/NumericInput';
 import ProductAutocomplete from '../components/ProductAutocomplete';
 import { doctorOptionLabel, doctorTypeLabel } from '../utils/roles';
@@ -71,6 +74,8 @@ export default function Commissions() {
   const [fechaCC, setFechaCC] = useState('cita');
   const [agentCC, setAgentCC] = useState('');
   const [nuevosCC, setNuevosCC] = useState(null);
+  // Pacientes nuevos de 200 en 200 (el servidor pagina).
+  const [pageNuevos, setPageNuevos] = useState(1);
   const [loadingNuevos, setLoadingNuevos] = useState(false);
   const [loading, setLoading] = useState(false);
   const [commissionEditor, setCommissionEditor] = useState(null);
@@ -157,7 +162,7 @@ export default function Commissions() {
       setLoadingNuevos(true);
       try {
         const r = await api.get('/commissions/callcenter-new-patients', {
-          params: { ...filtrosCC(), ...(agentCC ? { agent: agentCC } : {}) },
+          params: { ...filtrosCC(), ...(agentCC ? { agent: agentCC } : {}), page: pageNuevos, limit: 200 },
         });
         if (vivo) setNuevosCC(r.data);
       } catch (err) {
@@ -168,7 +173,10 @@ export default function Commissions() {
     }, 250);
     return () => { vivo = false; clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, start, end, clinic, fechaCC, agentCC]);
+  }, [tab, start, end, clinic, fechaCC, agentCC, pageNuevos]);
+
+  // Cualquier cambio de filtro vuelve a la primera página.
+  useEffect(() => { setPageNuevos(1); }, [start, end, clinic, fechaCC, agentCC]);
 
   const nameOfService = (sid) =>
     services.find((s) => String(s._id) === String(sid))?.name || 'Servicio';
@@ -434,6 +442,9 @@ export default function Commissions() {
       toast.error(err.response?.data?.message || 'Error al generar el PDF');
     }
   };
+
+  // Botones «Ir a» de la lista de pacientes nuevos (chat, cita, seguimientos).
+  const irA = 'inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs border border-slate-200 bg-white text-slate-600 hover:text-emerald-700 hover:border-emerald-300 no-underline whitespace-nowrap';
 
   const chipBtn = (active, extra = '') => `border-none rounded-full px-2 py-0.5 text-[10px] font-semibold cursor-pointer ${
     active ? 'bg-sky-100 text-sky-700 hover:bg-sky-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
@@ -995,7 +1006,7 @@ export default function Commissions() {
           {/* PACIENTES NUEVOS, UNO POR UNO: quién, quién lo agendó, cuándo se
               agendó y cuándo el sistema lo dio por nuevo (es el mismo momento:
               la marca se decide al agendar y queda congelada). */}
-          <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-3">
+          <div id="nuevos-cc" className="bg-white rounded-xl border border-slate-200 p-3 space-y-3 scroll-mt-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="text-base font-semibold text-slate-800 m-0">
@@ -1025,6 +1036,9 @@ export default function Commissions() {
                 No hay pacientes nuevos agendados por call center en el período.
               </div>
             )}
+            {nuevosCC && (
+              <Paginador pagination={nuevosCC.pagination} onPage={setPageNuevos} unidad="pacientes" />
+            )}
             {nuevosCC && nuevosCC.patients.length > 0 && (
               <div className="tbl-wrap">
                 <div className="tbl-scroll">
@@ -1037,6 +1051,7 @@ export default function Commissions() {
                         <th>Considerado nuevo</th>
                         <th>Cita</th>
                         <th>Estado</th>
+                        <th>Ir a</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1083,12 +1098,45 @@ export default function Commissions() {
                               </span>
                             )}
                           </td>
+                          {/* Se abren en otra pestaña: así el listado (con su
+                              página y filtros) sigue aquí al volver. */}
+                          <td data-cell="acciones">
+                            <div className="flex flex-wrap gap-1">
+                              {p.chatId ? (
+                                <Link to={`/chats?chat=${p.chatId}`} target="_blank" rel="noopener" className={irA} title="Abrir el chat del paciente">
+                                  <HiOutlineChatBubbleLeftRight className="w-3.5 h-3.5" /> Chat
+                                </Link>
+                              ) : (
+                                <span className={`${irA} opacity-40 cursor-not-allowed`} title="Este paciente no tiene chat">
+                                  <HiOutlineChatBubbleLeftRight className="w-3.5 h-3.5" /> Chat
+                                </span>
+                              )}
+                              <Link to={`/appointments?cita=${p.appointmentId}`} target="_blank" rel="noopener" className={irA} title="Abrir la cita en la que quedó marcado como nuevo">
+                                <HiOutlineCalendarDays className="w-3.5 h-3.5" /> Cita
+                              </Link>
+                              {p.patientId && (
+                                <Link to={`/patients/${p.patientId}?tab=seguimientos`} target="_blank" rel="noopener" className={irA} title="Ver los seguimientos del paciente">
+                                  <HiOutlineHeart className="w-3.5 h-3.5" /> Seguimientos
+                                </Link>
+                              )}
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
               </div>
+            )}
+            {nuevosCC && nuevosCC.patients.length > 0 && (
+              <Paginador
+                pagination={nuevosCC.pagination}
+                onPage={(p) => {
+                  setPageNuevos(p);
+                  document.getElementById('nuevos-cc')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }}
+                unidad="pacientes"
+              />
             )}
           </div>
         </div>

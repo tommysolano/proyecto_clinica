@@ -9,6 +9,9 @@ const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const ClinicalRecord = require('../models/ClinicalRecord');
 const Sale = require('../models/Sale');
 const Referral = require('../models/Referral');
+const Conversation = require('../models/Conversation');
+const Patient = require('../models/Patient');
+const { normalizePhone } = require('../utils/phoneNormalize');
 const { createEntry, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { DOCTOR_SPECIALTY_ROLES, DOCTOR_LIKE_ROLES } = require('../constants/roles');
@@ -1954,7 +1957,7 @@ const FECHA_CALLCENTER = { cita: 'date', agendada: 'createdAt' };
  * La sucursal filtra las CITAS, no a los agentes: el call center es único para
  * toda la organización y agenda en sedes en las que no figura.
  */
-async function agendamientosCallCenter(req, { select, extra = {}, populatePatient = false }) {
+async function agendamientosCallCenter(req, { select, extra = {}, populatePatient = false, pagina = null }) {
   const { start, end, clinic } = req.query;
   const { startDate, endDate } = parseRange(start, end);
   const campo = FECHA_CALLCENTER[req.query.fecha] || 'date';
@@ -1977,6 +1980,16 @@ async function agendamientosCallCenter(req, { select, extra = {}, populatePatien
     .populate('clinic', 'name nombreComercial')
     .select(select);
   if (populatePatient) consulta = consulta.populate('patient', 'firstName lastName createdAt');
+  // Con página: lo último agendado primero, y solo esa tanda. El total se
+  // cuenta aparte para el paginador.
+  let total = null;
+  if (pagina) {
+    total = await Appointment.countDocuments(query);
+    consulta = consulta
+      .sort({ createdAt: -1, _id: -1 })
+      .skip((pagina.page - 1) * pagina.limit)
+      .limit(pagina.limit);
+  }
   const appts = await consulta.lean();
 
   // Quien agendó por el sello de rol y ya no es call center no está en la
@@ -1988,7 +2001,47 @@ async function agendamientosCallCenter(req, { select, extra = {}, populatePatien
     : [];
   const usuarios = new Map([...usuariosCC, ...otros].map((u) => [String(u._id), u]));
 
-  return { startDate, endDate, campo, appts, usuariosCC, usuarios };
+  return { startDate, endDate, campo, appts, total, usuariosCC, usuarios };
+}
+
+/**
+ * El chat de cada paciente, para el botón «Chat» del listado. Primero el que
+ * está vinculado al paciente; si no hay, el de su teléfono (la conversación se
+ * identifica por el número). El teléfono NO sale en la respuesta: marketing no
+ * lo ve, solo recibe el id del chat al que saltar.
+ */
+async function chatsDePacientes(patientIds) {
+  const ids = [...new Set(patientIds.filter(Boolean).map(String))];
+  const out = new Map();
+  if (!ids.length) return out;
+  const vinculados = await Conversation.find({ patient: { $in: ids } })
+    .select('_id patient lastMessageAt')
+    .sort({ lastMessageAt: -1 })
+    .lean();
+  for (const c of vinculados) {
+    const pid = String(c.patient);
+    if (!out.has(pid)) out.set(pid, String(c._id));
+  }
+  const faltan = ids.filter((id) => !out.has(id));
+  if (!faltan.length) return out;
+  const pacientes = await Patient.find({ _id: { $in: faltan } }).select('phone whatsapp').lean();
+  const telDe = new Map();
+  for (const pac of pacientes) {
+    for (const t of [pac.whatsapp, pac.phone]) {
+      const n = normalizePhone(t);
+      if (n.ok && !telDe.has(n.phone)) telDe.set(n.phone, String(pac._id));
+    }
+  }
+  if (!telDe.size) return out;
+  const porTelefono = await Conversation.find({ phone: { $in: [...telDe.keys()] } })
+    .select('_id phone lastMessageAt')
+    .sort({ lastMessageAt: -1 })
+    .lean();
+  for (const c of porTelefono) {
+    const pid = telDe.get(String(c.phone));
+    if (pid && !out.has(pid)) out.set(pid, String(c._id));
+  }
+  return out;
 }
 
 /** Nombre del agente de una cita: el usuario, o el nombre sellado si ya no existe. */
@@ -2078,7 +2131,11 @@ exports.callCenterSummary = async (req, res) => {
  *
  * Filtros: los mismos del resumen (fechas, sucursal, `fecha=cita|agendada`) y
  * `agent` para ver los de una sola persona.
+ *
+ * PAGINADO DE 200 EN 200 (`page`, `limit`): con un mes entero de call center
+ * salían cientos de filas de golpe y la pantalla tardaba en cargar.
  */
+const NUEVOS_POR_PAGINA = 200;
 exports.callCenterNewPatients = async (req, res) => {
   try {
     const extra = { isFirstVisit: true };
@@ -2088,11 +2145,15 @@ exports.callCenterNewPatients = async (req, res) => {
       }
       extra.createdBy = new mongoose.Types.ObjectId(req.query.agent);
     }
-    const { appts, usuarios } = await agendamientosCallCenter(req, {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || NUEVOS_POR_PAGINA, 1), 500);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const { appts, total, usuarios } = await agendamientosCallCenter(req, {
       select: 'patient date startTime createdAt createdBy createdByName status clinic serviceName services arrivedAt completedAt',
       extra,
       populatePatient: true,
+      pagina: { page, limit },
     });
+    const chatDe = await chatsDePacientes(appts.map((a) => a.patient?._id));
 
     const patients = appts
       .map((a) => {
@@ -2102,6 +2163,8 @@ exports.callCenterNewPatients = async (req, res) => {
           patientId: a.patient?._id ? String(a.patient._id) : null,
           patient: nombrePaciente(a.patient),
           patientRegisteredAt: a.patient?.createdAt || null,
+          // Para los botones de la fila: su chat (si tiene) y la cita.
+          chatId: a.patient?._id ? chatDe.get(String(a.patient._id)) || null : null,
           agentId: a.createdBy ? String(a.createdBy) : null,
           agent: nombreAgente(usuarios, a),
           agentInactive: agente ? agente.active === false : true,
@@ -2115,10 +2178,13 @@ exports.callCenterNewPatients = async (req, res) => {
           clinic: a.clinic?.nombreComercial || a.clinic?.name || '',
           services: [a.serviceName, ...(a.services || []).map((s) => s.name)].filter(Boolean),
         };
-      })
-      .sort((a, b) => new Date(b.scheduledAt) - new Date(a.scheduledAt));
+      });
 
-    res.json({ patients, total: patients.length });
+    res.json({
+      patients,
+      total,
+      pagination: { page, limit, total, pages: Math.max(Math.ceil(total / limit), 1) },
+    });
   } catch (e) {
     res.status(500).json({ message: 'Error al listar los pacientes nuevos del call center', error: e.message });
   }

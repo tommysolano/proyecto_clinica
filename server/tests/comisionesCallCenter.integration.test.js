@@ -15,6 +15,7 @@ const commissions = require('../controllers/commissionController');
 const User = require('../models/User');
 const Patient = require('../models/Patient');
 const Appointment = require('../models/Appointment');
+const Conversation = require('../models/Conversation');
 require('../models/Clinic'); // el populate de la sucursal
 
 const ok = (result) => {
@@ -102,4 +103,58 @@ test('lista a los pacientes nuevos con quién y cuándo se agendaron', async () 
     })
   ));
   assert.equal(porAgendaAntes.total, 1);
+});
+
+test('los pacientes nuevos vienen paginados, lo último agendado primero', async () => {
+  const { clinicId, userId, activa, hoy } = await seed();
+  const base = Date.now();
+  for (let i = 0; i < 5; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const pac = await Patient.create({ clinic: clinicId, firstName: `PAG${i}` });
+    // eslint-disable-next-line no-await-in-loop
+    const c = await Appointment.create({
+      clinic: clinicId, date: hoy, startTime: '11:00', status: 'pendiente', patient: pac._id,
+      createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: true,
+    });
+    // eslint-disable-next-line no-await-in-loop
+    await Appointment.collection.updateOne({ _id: c._id }, { $set: { createdAt: new Date(base + i * 60000) } });
+  }
+  const pedir = (page) => H.runController(
+    commissions.callCenterNewPatients,
+    H.mockReq(clinicId, userId, {}, {
+      role: 'marketing', query: { start: ymd(hoy), end: ymd(hoy), clinic: 'all', page: String(page), limit: '2' },
+    })
+  ).then(ok);
+  const p1 = await pedir(1);
+  assert.equal(p1.total, 6, '5 nuevos + el de la asesora desactivada');
+  assert.deepEqual(p1.pagination, { page: 1, limit: 2, total: 6, pages: 3 });
+  assert.deepEqual(p1.patients.map((x) => x.patient), ['PAG4', 'PAG3']);
+  const p3 = await pedir(3);
+  assert.equal(p3.patients.length, 2);
+  assert.equal(p3.patients[1].patient, 'PACIENTE NUEVO', 'el más antiguo, al final');
+});
+
+test('cada paciente nuevo trae su chat: el vinculado o, si no, el de su teléfono', async () => {
+  const { clinicId, userId, activa, hoy } = await seed();
+  const conChat = await Patient.create({ clinic: clinicId, firstName: 'CON CHAT' });
+  const porTel = await Patient.create({ clinic: clinicId, firstName: 'POR TELEFONO', phone: '0999111222' });
+  const sinChat = await Patient.create({ clinic: clinicId, firstName: 'SIN CHAT', phone: '0988000000' });
+  const vinculado = await Conversation.create({ clinic: clinicId, phone: '593977000000', patient: conChat._id });
+  const delTelefono = await Conversation.create({ clinic: clinicId, phone: '593999111222' });
+  for (const pac of [conChat, porTel, sinChat]) {
+    // eslint-disable-next-line no-await-in-loop
+    await Appointment.create({
+      clinic: clinicId, date: hoy, startTime: '12:00', status: 'pendiente', patient: pac._id,
+      createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: true,
+    });
+  }
+  const res = ok(await H.runController(
+    commissions.callCenterNewPatients,
+    H.mockReq(clinicId, userId, {}, { role: 'marketing', query: { start: ymd(hoy), end: ymd(hoy), clinic: 'all' } })
+  ));
+  const de = (nombre) => res.patients.find((x) => x.patient === nombre);
+  assert.equal(de('CON CHAT').chatId, String(vinculado._id));
+  assert.equal(de('POR TELEFONO').chatId, String(delTelefono._id));
+  assert.equal(de('SIN CHAT').chatId, null);
+  assert.ok(!('phone' in de('POR TELEFONO')), 'el teléfono no se expone');
 });
