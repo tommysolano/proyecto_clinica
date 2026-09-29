@@ -90,8 +90,9 @@ const populated = (query) =>
  * para que se vea quién la tocó (es el «creado por / modificado por» de la ficha).
  */
 const canEdit = (obs, req) =>
-  String(obs.createdBy?._id || obs.createdBy) === String(req.user._id) ||
-  canReq(req, 'patients.observations.moderate');
+  canReq(req, 'patients.observations.moderate') ||
+  // Un registro automático no es «suyo» aunque lo firme: es la constancia de un cobro.
+  (!obs.auto?.kind && String(obs.createdBy?._id || obs.createdBy) === String(req.user._id));
 
 /** Marca la observación como modificada por quien la está tocando. */
 const stampEditor = (obs, req) => {

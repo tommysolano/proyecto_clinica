@@ -327,6 +327,17 @@ function textoAdelanto(apt) {
   return abonado > 0 ? `Abonó $${abonado.toFixed(2)}${forma}` : `Abonó${forma}`;
 }
 
+/**
+ * «COBRÓ: …» SOLO SI ENTRÓ DINERO (sep-2026). Con «No pagó aún» la agenda
+ * mostraba como cobrador a quien agendó y el equipo daba la cita por pagada.
+ * El servidor ya no lo sella sin pago; esto cubre las citas guardadas antes.
+ */
+function quienCobro(apt) {
+  const pago = !!apt?.advancePayment || (apt?.itemsValue != null && Number(apt.itemsValue) > 0);
+  if (!pago) return '';
+  return apt.chargeRegisteredByName || apt.chargeRegisteredBy?.name || '';
+}
+
 /** Los OTROS servicios de la visita, sin el principal. Nombres, ya en snapshot. */
 function serviciosExtra(apt) {
   return (apt?.additionalServices || [])
@@ -3036,7 +3047,11 @@ export default function Appointments() {
                       * mismo a la cola y abre la ficha. Sobre las ya asistidas
                       * y suyas manda el «Atender» de arriba, con su turno.
                       */
-                    if (esOdontologia && ['pendiente', 'confirmada', 'no_asistio'].includes(apt.status)) {
+                    // También la que caja ya recibió pero dejó SIN nadie en la
+                    // cola: si no, en la agenda compartida se ve y nadie la toma.
+                    const recibidaSinAtender = apt.status === 'asistida'
+                      && !apt.currentTurnUser && apt.currentTurnKind !== 'enfermeria' && !esMiTurno;
+                    if (esOdontologia && (['pendiente', 'confirmada', 'no_asistio'].includes(apt.status) || recibidaSinAtender)) {
                       opciones.push({
                         id: 'atender_directo',
                         label: 'Atender',
@@ -3331,9 +3346,9 @@ export default function Appointments() {
                           * QUIÉN REGISTRÓ EL COBRO (sep-2026), junto a quién
                           * agendó: "agendada por" no dice quién cobró.
                           */}
-                        {(apt.chargeRegisteredByName || apt.chargeRegisteredBy?.name) && (
+                        {quienCobro(apt) && (
                           <div className="text-[11px] text-emerald-700 mt-0.5">
-                            Cobró: {apt.chargeRegisteredByName || apt.chargeRegisteredBy?.name}
+                            Cobró: {quienCobro(apt)}
                           </div>
                         )}
                         {ultimoReagendamiento(apt) && (
@@ -4290,11 +4305,11 @@ export default function Appointments() {
                     </p>
                   </>
                 )}
-                {(detailModal.chargeRegisteredByName || detailModal.chargeRegisteredBy?.name) && (
+                {quienCobro(detailModal) && (
                   <>
                     <p className="text-xs text-emerald-600 font-medium pt-1">Cobro registrado por</p>
                     <p className="text-sm text-slate-800">
-                      {detailModal.chargeRegisteredByName || detailModal.chargeRegisteredBy?.name}
+                      {quienCobro(detailModal)}
                       {detailModal.chargeRegisteredAt
                         ? ` · ${new Date(detailModal.chargeRegisteredAt).toLocaleString('es-EC', { dateStyle: 'short', timeStyle: 'short' })}`
                         : ''}

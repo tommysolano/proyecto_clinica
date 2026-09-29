@@ -564,6 +564,7 @@ exports.anular = async (req, res) => {
           });
         });
         saleReversed = true;
+        require('../utils/observacionesAutomaticas').registrarVenta(invoice.sale, req.user._id);
       } catch (e) {
         // No revertimos la anulación de la factura: solo avisamos del problema
         // con la venta (p. ej. ya estaba anulada o período cerrado).

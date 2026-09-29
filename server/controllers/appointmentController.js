@@ -2,6 +2,7 @@ const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
 const Patient = require('../models/Patient');
 const PatientObservation = require('../models/PatientObservation');
+const { registrarVisita } = require('../utils/observacionesAutomaticas');
 const Notification = require('../models/Notification');
 // Se importa aunque no se use directamente aquí: `populate('serviceItem')` falla
 // con "Schema hasn't been registered" si el modelo no se ha cargado nunca.
@@ -48,6 +49,7 @@ const { isDoctorRole } = require('../constants/roles');
 const {
   esOdontologiaCompartida,
   idsDeOdontologos,
+  sedesDeOdontologia,
   turnoVigenteEsDeOdontologia,
 } = require('../utils/odontologiaCompartida');
 const {
@@ -182,7 +184,22 @@ async function filtroAgendaDelDoctor(req) {
     const ids = await idsDeOdontologos();
     // Él mismo, aunque su rol en esa sede sea otro: sus citas no pueden caerse.
     if (!ids.some((id) => String(id) === String(req.user._id))) ids.push(req.user._id);
-    return filtroCitasDelDoctor(ids, { incluirSinAsignar: true });
+    /**
+     * TODA LA AGENDA DE SU SEDE DE ODONTOLOGÍA (sep-2026).
+     *
+     * Mirar solo las citas de odontólogos dejaba fuera las que agenda caja o
+     * administración: esas nacen SIN doctor (o con el de otra persona) y no
+     * salían en la agenda de nadie del consultorio. En las sedes donde es
+     * odontólogo ve TODAS las citas —pendientes y sin asignar incluidas—,
+     * agende quien las agende; en las demás, lo de antes.
+     */
+    const sedes = await sedesDeOdontologia(req);
+    return {
+      $or: [
+        { clinic: { $in: sedes } },
+        filtroCitasDelDoctor(ids, { incluirSinAsignar: true }),
+      ],
+    };
   }
   if (req.role === 'odontologia_neurofocal') {
     return filtroCitasDelDoctor(req.user._id, { incluirSinAsignar: true });
@@ -358,9 +375,9 @@ async function construirQueryAgenda(req, {
   if (req.role === 'enfermero') {
     extras.push(await filtroEnfermeria(req));
   }
-  if (extras.length) {
-    Object.assign(query, extras.length === 1 ? extras[0] : { $and: extras });
-  }
+  // Siempre en `$and`: el filtro de servicio ya puede haber dejado su propio
+  // `$or` en la query, y un Object.assign lo pisaba.
+  if (extras.length) query.$and = [...(query.$and || []), ...extras];
 
   /**
    * Búsqueda libre por paciente (nombre, apellido, cédula o teléfono).
@@ -2238,6 +2255,8 @@ exports.endConsultation = async (req, res) => {
       appointment.status = 'completada';
     }
     await appointment.save();
+    // Constancia en Observaciones del paciente (no espera: ver utils/observacionesAutomaticas).
+    registrarVisita(appointment._id, req.user._id);
     // Quien cerró SU turno deja de sonar aunque la cita siga viva (ver
     // `apagarAvisoDeCitaPara`): con enfermería detrás, el aviso del doctor no
     // esperaba a que la cita entera terminara — que a veces nunca termina.
@@ -2667,6 +2686,8 @@ exports.markAttended = async (req, res) => {
     // utils/appointmentArrival.js.
     registrarLlegada(apt);
     await apt.save();
+    // Constancia en Observaciones del paciente (no espera: ver utils/observacionesAutomaticas).
+    registrarVisita(apt._id, req.user._id);
     if (apt.referral) {
       try {
         const Referral = require('../models/Referral');
@@ -2968,6 +2989,7 @@ exports.updateCobroItems = async (req, res) => {
           clinic: apt.clinic,
           patient: apt.patient,
           text: observationLines.join('\n'),
+          auto: { kind: 'compra', ref: null },
           createdBy: req.user._id,
         }], { session });
       }
@@ -3201,6 +3223,8 @@ exports.updateServiceAndValue = async (req, res) => {
     if (!cambio) return res.status(400).json({ message: 'No hay nada que cambiar' });
 
     await apt.save();
+    // Constancia en Observaciones del paciente (no espera: ver utils/observacionesAutomaticas).
+    registrarVisita(apt._id, req.user._id);
 
     const populated = await Appointment.findById(apt._id)
       .populate('patient', POPULATE_PATIENT)
@@ -3540,6 +3564,8 @@ exports.assignDoctor = async (req, res) => {
      */
     if (pasos.length && !apt.attentionAssignedAt) apt.attentionAssignedAt = new Date();
     await apt.save();
+    // Constancia en Observaciones del paciente (no espera: ver utils/observacionesAutomaticas).
+    registrarVisita(apt._id, req.user._id);
 
     /**
      * EL AVISO DE QUIEN YA NO LE TOCA, SE APAGA (sep-2026).
@@ -4158,6 +4184,8 @@ exports.nurseComplete = async (req, res) => {
       apt.consultationEndedAt = new Date();
     }
     await apt.save();
+    // Constancia en Observaciones del paciente (no espera: ver utils/observacionesAutomaticas).
+    registrarVisita(apt._id, req.user._id);
 
     /**
      * Al siguiente le llega la cita ahora, en su pantalla y en su móvil. Tres

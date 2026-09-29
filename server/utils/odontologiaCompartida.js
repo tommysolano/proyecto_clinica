@@ -23,6 +23,21 @@ async function idsDeOdontologos() {
   return usuarios.map((u) => u._id);
 }
 
+/**
+ * Sedes donde ESTE usuario es odontólogo: en ellas ve la agenda entera. La
+ * activa entra siempre (el rol del token ya es 'odontologia' ahí).
+ */
+async function sedesDeOdontologia(req) {
+  const User = require('../models/User');
+  const u = await User.findById(req.user._id).select('clinics').lean();
+  const sedes = (u?.clinics || [])
+    .filter((c) => c.role === ROL_COMPARTIDO && c.clinic)
+    .map((c) => String(c.clinic));
+  if (req.clinicId) sedes.push(String(req.clinicId));
+  const mongoose = require('mongoose');
+  return [...new Set(sedes)].map((id) => new mongoose.Types.ObjectId(id));
+}
+
 const idDe = (v) => (v && typeof v === 'object' && v._id ? String(v._id) : v ? String(v) : '');
 
 /**
@@ -46,5 +61,6 @@ module.exports = {
   ROL_COMPARTIDO,
   esOdontologiaCompartida,
   idsDeOdontologos,
+  sedesDeOdontologia,
   turnoVigenteEsDeOdontologia,
 };

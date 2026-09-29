@@ -123,6 +123,19 @@ test('2b · odontología sigue viendo sus citas PENDIENTES (agenda y atiende dir
   assert.deepEqual((await agendaDe(clinicId, odoB, 'odontologia')).map((a) => String(a._id)), [String(cita._id)]);
 });
 
+test('2c · odontología ve TODAS las citas de su sede, aunque caja las agende sin doctor o con otro', async () => {
+  const { clinicId, odoB, doc, cita, patient } = await seed();
+  // `cita` está pendiente y SIN doctor (como la deja caja al agendar).
+  const deOtro = await Appointment.create({
+    clinic: clinicId, patient: patient._id, date: H.docDate(), startTime: '11:00', status: 'pendiente',
+  });
+  await agendarCon(deOtro, doc._id);
+  const ids = (await agendaDe(clinicId, odoB, 'odontologia')).map((a) => String(a._id)).sort();
+  assert.deepEqual(ids, [String(cita._id), String(deOtro._id)].sort());
+  // El doctor general sigue sin ver la pendiente.
+  assert.deepEqual((await agendaDe(clinicId, doc, 'doctor')).map((a) => String(a._id)), []);
+});
+
 test('3 · enfermería NO ve la consulta del doctor de la misma cita, solo el suero de mostrador', async () => {
   const { clinicId, userId, patient, doc, enf, cita } = await seed();
   await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {

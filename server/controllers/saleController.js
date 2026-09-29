@@ -844,6 +844,8 @@ exports.createSale = async (req, res) => {
         .populate('patient', 'firstName lastName cedula')
         .populate('createdBy', 'name');
       emitToClinic(req.clinicId, 'sale:created', { id: txSaleId });
+      // Constancia en Observaciones del paciente: qué se llevó, cuánto, cómo y quién cobró.
+      require('../utils/observacionesAutomaticas').registrarVenta(txSaleId, req.user._id);
       // Evento de dominio para el motor de workflows (trigger sale_created).
       if (txPopulated.patient?._id) {
         const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
@@ -1085,6 +1087,7 @@ exports.cancelSale = async (req, res) => {
           reversalDate,
         });
       });
+      require('../utils/observacionesAutomaticas').registrarVenta(req.params.id, req.user._id);
       return res.json(result);
     }
   } catch (error) {

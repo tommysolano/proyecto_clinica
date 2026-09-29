@@ -133,10 +133,22 @@ function aplicarValorDeCita(apt, body, req) {
    * pone el dinero de la cita — crear, asignar la atención, marcar asistencia,
    * corregir el valor, agendar desde el chat — deja dicho quién fue. Antes solo
    * el modal de los items lo sellaba y "Cobró: …" no aparecía en la agenda.
+   *
+   * PERO SOLO SI ENTRÓ DINERO (sep-2026, a petición de la clínica). Con «No pagó
+   * aún» (o un canje) la agenda decía «Cobró: <quien agendó>» y el resto del
+   * equipo daba la cita por pagada. Sin pago, el sello se BORRA: si antes se
+   * marcó pagada por error y se corrige, el «Cobró» tampoco puede quedarse.
+   * Quién fijó el valor sigue en `valueSetBy`.
    */
-  apt.chargeRegisteredBy = req.user._id;
-  apt.chargeRegisteredByName = req.user.name || '';
-  apt.chargeRegisteredAt = new Date();
+  if (apt.advancePayment) {
+    apt.chargeRegisteredBy = req.user._id;
+    apt.chargeRegisteredByName = req.user.name || '';
+    apt.chargeRegisteredAt = new Date();
+  } else {
+    apt.chargeRegisteredBy = null;
+    apt.chargeRegisteredByName = '';
+    apt.chargeRegisteredAt = null;
+  }
   return true;
 }
 

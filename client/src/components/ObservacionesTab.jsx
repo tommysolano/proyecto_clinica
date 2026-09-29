@@ -48,6 +48,14 @@ const observationFileSize = (bytes) => {
 };
 
 /** Lo que el visor sabe dibujar sin descargar: PDF e imágenes. */
+/**
+ * REGISTROS AUTOMÁTICOS (sep-2026): el sistema anota solo la atención de cada
+ * cita, cada venta y lo que caja registra de la receta. Solo el admin los
+ * corrige: son la constancia de un cobro, no una nota de quien figura.
+ */
+const AUTO_LABEL = { visita: 'Atención', venta: 'Venta', compra: 'Compra de receta' };
+const FILTROS = [['todas', 'Todas'], ['escritas', 'Escritas'], ['auto', 'Automáticas']];
+
 const sePuedeVer = (att) => {
   const mime = String(att?.mimeType || '');
   return mime === 'application/pdf' || mime.startsWith('image/') || /\.pdf$/i.test(att?.originalName || '');
@@ -66,6 +74,7 @@ export default function ObservacionesTab({ patientId }) {
   const [busyId, setBusyId] = useState(null);   // observación con una acción en curso
   const [editing, setEditing] = useState(null); // { id, text }
   const [previewAtt, setPreviewAtt] = useState(null); // { obsId, att }
+  const [filtro, setFiltro] = useState('todas');
   const newFileRef = useRef(null);
 
   const load = async () => {
@@ -86,7 +95,11 @@ export default function ObservacionesTab({ patientId }) {
   }, [patientId]);
 
   const canEdit = (obs) =>
-    isAdmin || String(obs.createdBy?._id || obs.createdBy) === String(meId);
+    isAdmin || (!obs.auto?.kind && String(obs.createdBy?._id || obs.createdBy) === String(meId));
+
+  const visibles = rows.filter((o) => (
+    filtro === 'todas' ? true : filtro === 'auto' ? !!o.auto?.kind : !o.auto?.kind
+  ));
 
   /** Reemplaza una observación en la lista sin recargarlas todas. */
   const replaceRow = (obs) => setRows((prev) => prev.map((o) => (o._id === obs._id ? obs : o)));
@@ -282,9 +295,25 @@ export default function ObservacionesTab({ patientId }) {
       </form>
 
       {/* Historial: la última que se escribió, primera */}
+      {!loading && rows.some((o) => o.auto?.kind) && (
+        <div className="inline-flex rounded-xl border border-slate-200 overflow-hidden bg-white">
+          {FILTROS.map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setFiltro(v)}
+              className={`px-3 py-1.5 text-xs font-medium border-none cursor-pointer ${
+                filtro === v ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
       {loading ? (
         <div className="text-sm text-slate-400">Cargando…</div>
-      ) : rows.length === 0 ? (
+      ) : visibles.length === 0 ? (
         <div className="text-center py-10">
           <HiOutlineChatBubbleLeftRight className="w-10 h-10 text-slate-300 mx-auto" />
           <p className="text-sm text-slate-500 mt-2">Todavía no hay observaciones.</p>
@@ -292,7 +321,7 @@ export default function ObservacionesTab({ patientId }) {
         </div>
       ) : (
         <div className="space-y-3">
-          {rows.map((obs) => {
+          {visibles.map((obs) => {
             const mine = canEdit(obs);
             const busy = busyId === obs._id;
             const isEditing = editing?.id === obs._id;
@@ -300,8 +329,13 @@ export default function ObservacionesTab({ patientId }) {
               <div key={obs._id} className="border border-slate-200 rounded-xl p-4 space-y-2">
                 <div className="flex items-start justify-between gap-3">
                   <div className="text-xs text-slate-500">
+                    {obs.auto?.kind && (
+                      <span className="inline-block mb-1 px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200 text-[11px] font-semibold">
+                        Automático · {AUTO_LABEL[obs.auto.kind] || 'Registro'}
+                      </span>
+                    )}
                     <div className="font-semibold text-slate-700">
-                      Creado por {obs.createdBy?.name || 'usuario eliminado'}
+                      {obs.auto?.kind ? 'Registrado por' : 'Creado por'} {obs.createdBy?.name || 'usuario eliminado'}
                     </div>
                     <div>{fmtDateTime(obs.createdAt)}</div>
                     {obs.updatedBy && (

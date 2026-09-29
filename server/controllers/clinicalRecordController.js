@@ -1451,6 +1451,8 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
     }
   }
   await apt.save();
+  // Constancia en Observaciones del paciente (quién atendió, qué servicio).
+  require('../utils/observacionesAutomaticas').registrarVisita(apt._id, req.user._id);
   // Si la cita quedó COMPLETADA, ya no espera a nadie: sus avisos de campana
   // se apagan aquí también (el reclamo es solo un camino).
   if (apt.status === 'completada') {

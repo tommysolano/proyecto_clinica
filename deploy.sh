@@ -392,6 +392,14 @@ if ! ( cd "$APP_DIR/server" && node scripts/backfillLastInboundAccountOnce.js --
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/backfillLastInboundAccountOnce.js --commit'"
 fi
 
+# Observaciones automaticas (sep-2026): la bitacora del paciente se escribe sola con
+# cada cita atendida y cada venta. Este relleno escribe lo que YA paso, fechado cuando
+# paso, para que la ficha no arranque vacia. Idempotente y con marca en `onetimetasks`.
+if ! ( cd "$APP_DIR/server" && node scripts/backfillObservacionesAutomaticasOnce.js --commit ); then
+  echo "ADVERTENCIA: el relleno de observaciones automaticas fallo. Reintentalo a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/backfillObservacionesAutomaticasOnce.js --commit'"
+fi
+
 # Idempotente, corre en cada despliegue. Comisiones > Doctores (sep-2026): el indice
 # unico de las tarifas por doctor incluye ahora el ALCANCE, para que la tarifa por
 # DERIVACION conviva con la de paciente atendido y la de servicio. Va antes del

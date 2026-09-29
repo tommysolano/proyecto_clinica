@@ -60,6 +60,24 @@ const patientObservationSchema = new mongoose.Schema(
       scan: { type: mongoose.Schema.Types.ObjectId, ref: 'ScannedDocument', default: null },
       importadoAt: { type: Date, default: null },
     },
+    /**
+     * REGISTRO AUTOMÁTICO (sep-2026): la escribe el sistema, no una persona.
+     *
+     *  · 'visita' → una por cita (`ref`): servicios, quién atendió, valor o canje,
+     *    adelanto y quién registró el cobro. Se REESCRIBE cada vez que la cita
+     *    cambia, así que siempre dice lo último.
+     *  · 'venta'  → una por venta (`ref`): qué se llevó, cuánto, cómo pagó y
+     *    quién cobró. Al anularse la venta, lo dice.
+     *  · 'compra' → lo que caja registra de la receta desde la agenda (una por
+     *    guardado, sin `ref`).
+     *
+     * Solo el administrador la corrige o la borra: es la constancia de lo que
+     * pasó, y el cajero que figura como autor no puede reescribir su propio cobro.
+     */
+    auto: {
+      kind: { type: String, enum: ['visita', 'venta', 'compra', null], default: null },
+      ref: { type: mongoose.Schema.Types.ObjectId, default: null },
+    },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     // Última persona que la modificó. Vacío = nadie la ha tocado desde que se creó.
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
@@ -77,6 +95,12 @@ patientObservationSchema.index({ patient: 1, createdAt: -1 });
 patientObservationSchema.index(
   { 'scanImport.scan': 1 },
   { unique: true, partialFilterExpression: { 'scanImport.scan': { $type: 'objectId' } } }
+);
+
+// Un registro automático por cita / por venta: los reintentos lo reescriben, no lo duplican.
+patientObservationSchema.index(
+  { 'auto.kind': 1, 'auto.ref': 1 },
+  { unique: true, partialFilterExpression: { 'auto.ref': { $type: 'objectId' } } }
 );
 
 module.exports = mongoose.model('PatientObservation', patientObservationSchema);
