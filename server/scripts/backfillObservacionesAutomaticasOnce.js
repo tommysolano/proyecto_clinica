@@ -37,9 +37,12 @@ require('../models/CreditCard');
 require('../models/AppointmentServiceItem');
 const { registrarVisita, registrarVenta } = require('../utils/observacionesAutomaticas');
 
-const TASK_KEY = 'observaciones-automaticas-2026-09-29';
-const STALE_RUNNING_MS = 60 * 60 * 1000;
-const LOTE = 10;
+// v2: el primer intento corrió dentro del deploy, lo mató el corte de 10 min del SSH
+// y dejó su marca en RUNNING. Clave nueva para no esperar a que caduque; repetir lo
+// ya escrito es inofensivo (upsert por cita/venta).
+const TASK_KEY = 'observaciones-automaticas-2026-09-29-v2';
+const STALE_RUNNING_MS = 20 * 60 * 1000;
+const LOTE = 20;
 
 const FILTRO_VISITAS = {
   patient: { $ne: null },

@@ -392,14 +392,6 @@ if ! ( cd "$APP_DIR/server" && node scripts/backfillLastInboundAccountOnce.js --
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/backfillLastInboundAccountOnce.js --commit'"
 fi
 
-# Observaciones automaticas (sep-2026): la bitacora del paciente se escribe sola con
-# cada cita atendida y cada venta. Este relleno escribe lo que YA paso, fechado cuando
-# paso, para que la ficha no arranque vacia. Idempotente y con marca en `onetimetasks`.
-if ! ( cd "$APP_DIR/server" && node scripts/backfillObservacionesAutomaticasOnce.js --commit ); then
-  echo "ADVERTENCIA: el relleno de observaciones automaticas fallo. Reintentalo a mano:"
-  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/backfillObservacionesAutomaticasOnce.js --commit'"
-fi
-
 # Idempotente, corre en cada despliegue. Comisiones > Doctores (sep-2026): el indice
 # unico de las tarifas por doctor incluye ahora el ALCANCE, para que la tarifa por
 # DERIVACION conviva con la de paciente atendido y la de servicio. Va antes del
@@ -517,5 +509,20 @@ fi
 echo "==> Fichas escaneadas: importando en segundo plano. Sigue el avance con:"
 echo "    tail -f $LOG_FICHAS"
 # ─────────────────────────────────────────────────────────────────────────────────────
+
+# Observaciones automaticas (sep-2026): la bitacora del paciente se escribe sola con
+# cada cita atendida y cada venta. Este relleno escribe lo que YA paso, fechado cuando
+# paso. EN SEGUNDO PLANO y DESPUES del reinicio: son miles de ventas y citas, y dentro
+# del paso 4/6 se comio los 10 minutos del SSH de GitHub y el backend no se reinicio.
+# Idempotente (un registro por cita/venta) y con marca en `onetimetasks`.
+#   Para mirar como va:   tail -f /home/clinica/observaciones-auto.log
+LOG_OBS=/home/clinica/observaciones-auto.log
+CMD_OBS="cd $APP_DIR/server && node scripts/backfillObservacionesAutomaticasOnce.js --commit"
+if [ "$(id -un)" = "clinica" ]; then
+  nohup bash -lc "$CMD_OBS" >> "$LOG_OBS" 2>&1 &
+else
+  sudo -iu clinica bash -lc "nohup bash -lc '$CMD_OBS' >> $LOG_OBS 2>&1 &"
+fi
+echo "==> Observaciones automaticas: relleno historico en segundo plano ($LOG_OBS)"
 
 echo "==> Despliegue completado: $(date)"

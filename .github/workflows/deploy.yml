@@ -23,6 +23,9 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script_stop: true
+          # El defecto de ssh-action son 10 min y corta A MEDIAS: sin reiniciar el
+          # backend (pasó en sep-2026 con un relleno largo en el paso 4/6).
+          command_timeout: 30m
           # La contraseña de sudo del usuario del deploy: el paso 3b/6 de deploy.sh
           # la usa para aplicar el límite de subida de nginx (el 25m de fábrica
           # mataba con 413 toda subida de más de 25 MB). Si el secret no existe,
