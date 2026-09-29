@@ -9,7 +9,7 @@ import SelectorComponentesSuero from './SelectorComponentesSuero';
 import SueroComposicionEditor from './SueroComposicionEditor';
 import { SUERO_CLORURO_NOMBRE } from '../constants/sueroterapia';
 import { useAuth } from '../context/AuthContext';
-import { doctorOptionLabel, doctorTypeLabel } from '../utils/roles';
+import { doctorOptionLabel, doctorTypeLabel, nombreConTratamiento, roleSatisfies } from '../utils/roles';
 import { pendingSerums, serumProgress } from '../utils/serumProgress';
 import {
   HiOutlineBeaker,
@@ -809,6 +809,15 @@ export default function AssignAttentionModal({
                                   <div className="text-[10px] text-violet-800/80 mt-0.5 break-words">
                                     {textoDelSueroDeFicha(fu)}
                                   </div>
+                                  {/* De dónde sale: el recetado por el doctor o
+                                      uno que escribió mostrador. Es lo que se
+                                      escoge aquí — enfermería solo verá este. */}
+                                  {fu.createdBy?.name && (
+                                    <div className="text-[10px] text-violet-700 mt-0.5">
+                                      {roleSatisfies(fu.createdByRole, ['doctor']) || fu.createdByRole === 'optica' ? 'Recetado por ' : 'Escrito por '}
+                                      {nombreConTratamiento(fu.createdBy.name, fu.createdByRole)}
+                                    </div>
+                                  )}
                                 </button>
                               );
                             })}

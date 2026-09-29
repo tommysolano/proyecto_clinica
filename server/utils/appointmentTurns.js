@@ -458,13 +458,35 @@ function enfermerosDeLaCita(apt) {
  *  2. Las que YA atendió, para que no se le caigan del historial al pasar el
  *     turno al siguiente.
  *  3. Las citas SIN turnos (anteriores al cambio), donde manda el espejo.
+ *
+ * LA CITA AGENDADA NO ES TODAVÍA DEL DOCTOR (sep-2026, a petición de la
+ * clínica). Al agendar se puede dejar escogido el doctor, y con eso la cita ya
+ * le salía en su agenda estando PENDIENTE —el paciente ni había llegado—. Ahora
+ * los casos 1 y 3 exigen que la atención esté ASIGNADA: que mostrador le haya
+ * dado a «Asignar atención» (`attentionAssignedAt`) o que el paciente ya esté
+ * en la clínica ('asistida'/'completada', que cubre las citas de antes de la
+ * marca y las atenciones sin cita). El caso 2 no lo necesita: si ya la atendió,
+ * es parte de su día.
+ *
+ * `userId` puede ser una lista (la agenda compartida de odontología), y
+ * `incluirSinAsignar` devuelve el comportamiento de antes: odontología agenda y
+ * atiende directo sus propias citas, sin pasar por mostrador.
  */
-function filtroCitasDelDoctor(userId) {
+const ATENCION_ASIGNADA = {
+  $or: [
+    { attentionAssignedAt: { $ne: null } },
+    { status: { $in: ['asistida', 'completada'] } },
+  ],
+};
+
+function filtroCitasDelDoctor(userId, { incluirSinAsignar = false } = {}) {
+  const quien = Array.isArray(userId) ? { $in: userId } : userId;
+  const asignada = incluirSinAsignar ? [] : [ATENCION_ASIGNADA];
   return {
     $or: [
-      { currentTurnUser: userId },
-      { turns: { $elemMatch: { user: userId, status: 'completado' } } },
-      { $and: [{ turns: { $in: [null, []] } }, { doctor: userId }] },
+      { $and: [{ currentTurnUser: quien }, ...asignada] },
+      { turns: { $elemMatch: { user: quien, status: 'completado' } } },
+      { $and: [{ turns: { $in: [null, []] } }, { doctor: quien }, ...asignada] },
     ],
   };
 }

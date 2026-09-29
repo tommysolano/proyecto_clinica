@@ -27,7 +27,7 @@ const {
   getDerivacionesDeCita,
   updateCobroItems,
 } = require('../controllers/appointmentController');
-const { auth, requireClinic, requireRole } = require('../middleware/auth');
+const { auth, requireClinic, requireRole, requireSuperAdmin } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
 
@@ -59,11 +59,12 @@ router.get(
  * archivo dice EXACTAMENTE lo que el usuario tiene delante: la agenda filtra en
  * el navegador y rehacer aquí ese filtrado se desincroniza a la primera.
  *
- * Mostrador entra con administración: es quien cuadra el día y quien tenía que
- * pedirle el archivo a un administrador cada vez. No lleva datos de contacto
- * (ver services/agendaWorkbook.js), así que no abre nada que no vea ya.
+ * SOLO EL SUPER USUARIO (sep-2026, a petición de la clínica). Antes entraban
+ * administración y mostrador; ahora el conteo de la agenda —cuántas citas hubo
+ * en cada estado— es información de gerencia y el archivo sale de la clínica
+ * por WhatsApp. El botón tampoco se pinta para nadie más (Appointments.jsx).
  */
-router.post('/export.xlsx', requireRole('admin', 'cajero'), exportAppointments);
+router.post('/export.xlsx', requireSuperAdmin, exportAppointments);
 
 /**
  * ODONTOLOGÍA AGENDA (sep-2026, a petición del usuario).

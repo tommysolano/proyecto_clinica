@@ -2882,9 +2882,24 @@ exports.getFollowUpsByAppointment = async (req, res) => {
     // sigue llegando como tocón.
     const todos = hideTherapyNotes(record, req, { conReceta: true }).followUps || [];
 
+    /**
+     * ENFERMERÍA SOLO VE LO QUE LE ASIGNÓ MOSTRADOR (sep-2026, a petición de la
+     * clínica). Al entrar a atender le salía también la consulta del doctor de
+     * esa misma cita —su seguimiento está sellado en el turno del doctor— con el
+     * suero que él recetó, y ese no siempre es el que toca: lo que se aplica lo
+     * decide mostrador en «Asignar atención» (el suero del paso, que puede ser
+     * el recetado por el doctor o uno creado ahí; la hidroterapia y las
+     * indicaciones van en la barra de atención). Así que para enfermería solo
+     * cuentan los sellos de ENFERMERÍA: el suero de cada paso, el de serie del
+     * servicio y sus propios partes. El turno del doctor no.
+     */
+    const lecturaDeEnfermero = esLecturaDeEnfermero(req);
+    const turnosQueCuentan = (apt.turns || []).filter(
+      (t) => !lecturaDeEnfermero || t.kind === 'enfermeria'
+    );
     const sellados = new Set([
-      ...(apt.turns || []).map((t) => t.followUp),
-      ...(apt.turns || []).map((t) => t.serumFollowUp),
+      ...turnosQueCuentan.map((t) => t.followUp),
+      ...turnosQueCuentan.map((t) => t.serumFollowUp),
       apt.autoSerumFollowUp,
     ].filter(Boolean).map(String));
     let followUps = todos.filter((f) => sellados.has(String(f._id)));
@@ -2917,6 +2932,10 @@ exports.getFollowUpsByAppointment = async (req, res) => {
       const esEnfermero = req.role === 'enfermero';
       followUps = todos.filter((f) => {
         if (!isSameLocalDay(f.fecha, apt.date)) return false;
+        // Tampoco por el respaldo le llega a enfermería la consulta del médico:
+        // del día solo cuenta lo que escribió mostrador (el suero que mandó) y
+        // su propio parte (ver arriba, «solo lo que le asignó mostrador»).
+        if (lecturaDeEnfermero && isDoctorRole(f.createdByRole)) return false;
         // Sin nadie identificado (cita vieja sin turnos ni espejo) manda el día:
         // es lo único que hay, y es mejor que no enseñar nada.
         if (atendieron.size === 0 || atendieron.has(idDe(f.createdBy))) return true;

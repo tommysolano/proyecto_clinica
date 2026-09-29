@@ -3,7 +3,7 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import PasswordInput from '../components/PasswordInput';
-import { HiOutlineCog6Tooth, HiOutlineKey, HiOutlineSwatch, HiOutlinePencilSquare, HiOutlineEnvelope, HiOutlineIdentification } from 'react-icons/hi2';
+import { HiOutlineCog6Tooth, HiOutlineKey, HiOutlineSwatch, HiOutlinePencilSquare, HiOutlineEnvelope, HiOutlineIdentification, HiOutlineUser } from 'react-icons/hi2';
 
 const THEMES = [
   { value: 'green', label: 'Verde (por defecto)', swatch: '#0f766e' },
@@ -26,6 +26,16 @@ export default function Settings() {
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'green');
   const [pwd, setPwd] = useState({ currentPassword: '', newPassword: '', confirm: '' });
   const [mail, setMail] = useState({ email: '', currentPassword: '' });
+  /**
+   * MIS DATOS (sep-2026): nombre, cédula y teléfono los edita la propia persona.
+   * Se rellenan con lo que trae la sesión y se vuelven a copiar si esta cambia
+   * (p. ej. al volver de guardar, con `refreshMe`).
+   */
+  const [perfil, setPerfil] = useState({ name: '', cedula: '', phone: '' });
+  const [savingPerfil, setSavingPerfil] = useState(false);
+  useEffect(() => {
+    setPerfil({ name: user?.name || '', cedula: user?.cedula || '', phone: user?.phone || '' });
+  }, [user?.name, user?.cedula, user?.phone]);
   const [savingMail, setSavingMail] = useState(false);
   const [saving, setSaving] = useState(false);
   /**
@@ -165,6 +175,29 @@ export default function Settings() {
     }
   };
 
+  const submitPerfil = async (e) => {
+    e.preventDefault();
+    if (!perfil.name.trim()) {
+      toast.error('El nombre no puede quedar vacío');
+      return;
+    }
+    setSavingPerfil(true);
+    try {
+      await api.put('/auth/profile', {
+        name: perfil.name.trim(),
+        cedula: perfil.cedula.trim(),
+        phone: perfil.phone.trim(),
+      });
+      toast.success('Tus datos quedaron guardados');
+      // El nombre se ve en la cabecera: sin recargar la sesión seguiría el viejo.
+      await refreshMe?.();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudieron guardar tus datos');
+    } finally {
+      setSavingPerfil(false);
+    }
+  };
+
   const submitPassword = async (e) => {
     e.preventDefault();
     if (pwd.newPassword.length < 6) {
@@ -195,6 +228,42 @@ export default function Settings() {
       <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
         <HiOutlineCog6Tooth className="text-emerald-600" /> Configuración
       </h1>
+
+      {/* Mis datos: nombre, cédula y teléfono */}
+      <div className="bg-white rounded-2xl border border-emerald-100 p-6">
+        <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2 mb-1">
+          <HiOutlineUser className="text-emerald-600" /> Mis datos
+        </h2>
+        <p className="text-sm text-slate-500 mb-4">
+          Tu nombre es el que aparece en la agenda, los seguimientos y las recetas.
+        </p>
+        <form onSubmit={submitPerfil} className="space-y-3 max-w-lg">
+          <label className="block text-sm">Nombre completo
+            <input type="text" value={perfil.name} maxLength={120}
+              onChange={(e) => setPerfil({ ...perfil, name: e.target.value })}
+              placeholder="Nombres y apellidos"
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block text-sm">Cédula
+              <input type="text" inputMode="numeric" value={perfil.cedula} maxLength={20}
+                onChange={(e) => setPerfil({ ...perfil, cedula: e.target.value })}
+                placeholder="0102030405"
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+            </label>
+            <label className="block text-sm">Teléfono
+              <input type="tel" value={perfil.phone} maxLength={20}
+                onChange={(e) => setPerfil({ ...perfil, phone: e.target.value })}
+                placeholder="0991234567"
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+            </label>
+          </div>
+          <button type="submit" disabled={savingPerfil}
+            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium border-none cursor-pointer disabled:opacity-50">
+            {savingPerfil ? 'Guardando...' : 'Guardar mis datos'}
+          </button>
+        </form>
+      </div>
 
       {/* Paleta de colores */}
       <div className="bg-white rounded-2xl border border-emerald-100 p-6">

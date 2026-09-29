@@ -2036,7 +2036,8 @@ export default function Appointments() {
     if (isDoctor) {
       // Cita anterior a los turnos: lo único que tiene es el reloj de la cita.
       if (!conTurnos) return apt.consultationStartedAt ? 'atendido' : 'pendiente';
-      const esMiTurno = idDeCampo(apt.currentTurnUser) === miId;
+      const esMiTurno = idDeCampo(apt.currentTurnUser) === miId
+        || (esOdontologia && !!apt.turnoOdontologiaCompartido);
       if (esMiTurno) return inicioDeMiTurno(apt) ? 'atendido' : 'pendiente';
       const yaAtendi = (apt.turns || []).some(
         (t) => t.status === 'completado' && idDeCampo(t.user) === miId
@@ -2217,9 +2218,9 @@ export default function Appointments() {
               ))}
             </div>
           )}
-          {/* Mostrador también: es quien cuadra el día y quien tenía que pedirle
-              el archivo a un administrador cada vez. */}
-          {(isAdmin || canCharge) && (
+          {/* SOLO EL SUPER USUARIO (sep-2026): el servidor ya no se lo acepta a
+              nadie más (`requireSuperAdmin` en la ruta). */}
+          {user?.isSuperAdmin && (
             <button
               onClick={() => setExcelModal(true)}
               title="Descargar en Excel las citas que se están viendo, o un rango de fechas"
@@ -2791,7 +2792,12 @@ export default function Appointments() {
                    */
                   const idDe = (v) => String(v?._id || v || '');
                   const conTurnos = (apt.turns || []).length > 0;
-                  const esMiTurno = idDe(apt.currentTurnUser) === String(user?.id);
+                  // ODONTOLOGÍA COMPARTIDA (sep-2026): el turno de CUALQUIER
+                  // odontólogo es también el mío — todos pueden entrar a atender
+                  // la misma cita (lo marca el servidor: de los demás solo llega
+                  // el nombre).
+                  const esMiTurno = idDe(apt.currentTurnUser) === String(user?.id)
+                    || (esOdontologia && !!apt.turnoOdontologiaCompartido);
                   const yaAtendi = (apt.turns || []).some(
                     (t) => t.status === 'completado' && idDe(t.user) === String(user?.id)
                   );

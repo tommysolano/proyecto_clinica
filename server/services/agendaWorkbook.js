@@ -201,6 +201,49 @@ function cabeceraDelInforme(ws, { titulo, subtitulo, periodo, filtros, resumen }
   ws.getRow(4).height = 16;
 }
 
+/**
+ * Cuántas citas hay en CADA estado, con los que están en cero incluidos: un
+ * estado que no sale no se lee como «ninguna», se lee como que no se contó.
+ */
+function conteoPorEstado(citas) {
+  const n = Object.fromEntries(Object.keys(ESTADOS).map((k) => [k, 0]));
+  citas.forEach((a) => { if (n[a.status] !== undefined) n[a.status] += 1; });
+  return n;
+}
+
+/**
+ * Columnas que ocupa cada casilla del conteo en la fila 5 (desde, hasta). Van
+ * por anchos: «Confirmadas: 120» no cabe en las columnas estrechas de la hora.
+ */
+const CASILLAS_DEL_CONTEO = [[1, 2], [3, 4], [5, 5], [6, 6], [7, 7], [8, 8], [9, 9]];
+
+/**
+ * FILA 5: EL TOTAL Y LAS CITAS DE CADA ESTADO (sep-2026).
+ *
+ * Lo pidió la clínica: para saber cuántas fueron asistidas, confirmadas o no
+ * asistieron había que ir filtrando la columna Estado una por una. Va encima de
+ * los encabezados —dentro de la parte congelada— para que se vea sin bajar, y
+ * cada casilla con el color de su estado, el mismo de la columna.
+ */
+function filaDeConteo(ws, citas) {
+  const n = conteoPorEstado(citas);
+  const casillas = [
+    { texto: `Total: ${citas.length}`, fondo: VERDE, letra: 'FFFFFFFF' },
+    ...Object.entries(ESTADOS).map(([k, e]) => ({ texto: `${e.texto}: ${n[k]}`, fondo: e.fondo, letra: e.letra })),
+  ];
+  casillas.forEach((c, i) => {
+    const [desde, hasta] = CASILLAS_DEL_CONTEO[i];
+    if (hasta > desde) ws.mergeCells(5, desde, 5, hasta);
+    const celda = ws.getCell(5, desde);
+    celda.value = c.texto;
+    celda.font = { size: 10, bold: true, color: { argb: c.letra } };
+    celda.fill = relleno(c.fondo);
+    celda.border = BORDES;
+    celda.alignment = { vertical: 'middle', horizontal: 'center' };
+  });
+  ws.getRow(5).height = 20;
+}
+
 function hojaDeCitas(wb, citas, meta, opciones) {
   const ws = wb.addWorksheet('Citas', {
     views: [{ state: 'frozen', ySplit: 6 }],
@@ -213,6 +256,7 @@ function hojaDeCitas(wb, citas, meta, opciones) {
 
   ws.columns = COLUMNAS.map((c) => ({ key: c.key, width: c.width }));
   cabeceraDelInforme(ws, meta);
+  filaDeConteo(ws, citas);
 
   // Fila 6: los encabezados de la tabla.
   const cab = ws.getRow(6);
@@ -395,10 +439,15 @@ function hojaDeResumen(wb, citas, meta, opciones) {
 
   let fila = 4;
 
+  // TODOS los estados, en su orden y con los que están en cero: es el conteo
+  // que se viene a buscar, y uno que falta no se lee como «ninguna».
+  const porEstado = conteoPorEstado(citas);
   fila = bloque(
     ws, fila, 'Citas por estado', ['Estado', 'Citas', '%'],
-    contarPor(citas, (a) => (ESTADOS[a.status] || {}).texto || a.status)
-      .map(([k, n]) => [k, n, pct(n)]),
+    [
+      ...Object.entries(ESTADOS).map(([k, e]) => [e.texto, porEstado[k], pct(porEstado[k])]),
+      ['Total', citas.length, citas.length ? 1 : 0],
+    ],
     { numFmt: { 2: '0.0%' } }
   );
 

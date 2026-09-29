@@ -210,6 +210,13 @@ const appointmentSchema = new mongoose.Schema(
     },
     // Cuándo y quién asignó al doctor (espejo del turno vigente).
     doctorAssignedAt: { type: Date },
+    /**
+     * CUÁNDO MOSTRADOR LE DIO A «ASIGNAR ATENCIÓN» (sep-2026). Hasta entonces la
+     * cita NO sale en la agenda del doctor aunque se le haya escogido al agendar
+     * (ver `filtroCitasDelDoctor`). No se borra al reasignar: la atención ya
+     * se repartió una vez.
+     */
+    attentionAssignedAt: { type: Date, default: null },
     doctorAssignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     /**
      * Turnos de atención, en orden. Es la FUENTE ÚNICA de quién atiende la cita:

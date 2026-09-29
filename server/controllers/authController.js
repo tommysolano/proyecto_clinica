@@ -140,6 +140,56 @@ exports.changeEmail = async (req, res) => {
 };
 
 /**
+ * MIS DATOS (sep-2026): nombre, cédula y teléfono, editados por la propia
+ * persona desde «Configuración de cuenta». Antes solo los podía tocar un
+ * administrador desde Usuarios, y el nombre es lo que sale en recetas,
+ * seguimientos y la agenda.
+ *
+ * Solo esos tres campos: el correo va por `changeEmail` (pide contraseña) y el
+ * rol, las sucursales o el estado no son cosa de uno mismo.
+ */
+exports.updateProfile = async (req, res) => {
+  try {
+    const { validateCedula, validateRuc } = require('../utils/cedulaLookup');
+    const name = String(req.body?.name ?? '').replace(/\s+/g, ' ').trim();
+    const cedula = String(req.body?.cedula ?? '').trim();
+    const phone = String(req.body?.phone ?? '').trim();
+
+    if (!name) return res.status(400).json({ message: 'El nombre no puede quedar vacío' });
+    if (name.length > 120) return res.status(400).json({ message: 'El nombre es demasiado largo' });
+    /**
+     * La cédula se comprueba si TIENE FORMA de cédula o RUC (10 o 13 dígitos):
+     * un dígito cambiado es el error típico y así no llega a la ficha. Otra
+     * cosa (un pasaporte) se acepta tal cual: hay personal extranjero.
+     */
+    if (cedula) {
+      if (/^\d{10}$/.test(cedula) && !validateCedula(cedula)) {
+        return res.status(400).json({ message: 'La cédula no es válida: revisa los dígitos' });
+      }
+      if (/^\d{13}$/.test(cedula) && !validateRuc(cedula)) {
+        return res.status(400).json({ message: 'El RUC no es válido: revisa los dígitos' });
+      }
+      if (!/^[A-Za-z0-9-]{5,20}$/.test(cedula)) {
+        return res.status(400).json({ message: 'Escribe una cédula, RUC o pasaporte válido' });
+      }
+    }
+    if (phone && !/^[+\d][\d\s()-]{5,19}$/.test(phone)) {
+      return res.status(400).json({ message: 'Escribe un teléfono válido (solo números)' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: { name, cedula, phone } },
+      { new: true, runValidators: true }
+    );
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    res.json({ message: 'Datos actualizados', name: user.name, cedula: user.cedula, phone: user.phone });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al guardar tus datos', error: error.message });
+  }
+};
+
+/**
  * Login: devuelve token sin clínica + lista de clínicas disponibles.
  * El cliente debe llamar a /auth/select-clinic para obtener un token con clinicId.
  */

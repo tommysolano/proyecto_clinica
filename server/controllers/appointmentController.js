@@ -46,6 +46,11 @@ const {
 } = require('../utils/appointmentDate');
 const { isDoctorRole } = require('../constants/roles');
 const {
+  esOdontologiaCompartida,
+  idsDeOdontologos,
+  turnoVigenteEsDeOdontologia,
+} = require('../utils/odontologiaCompartida');
+const {
   sucursalesVisibles,
   alcanzaSucursal,
   validarSucursalDestino,
@@ -162,6 +167,28 @@ const filtroSucursalCita = (req) => {
   if (visibles === null) return {};
   return { clinic: { $in: [req.clinicId, ...visibles] } };
 };
+
+/**
+ * LAS CITAS QUE VE UN MÉDICO EN SU AGENDA (lista, calendario y «hoy»).
+ *
+ *  · Cualquier médico: las suyas, y solo con la atención ya ASIGNADA por
+ *    mostrador — una cita pendiente con su nombre todavía no es suya.
+ *  · Odontología (sep-2026): las de TODOS los odontólogos, y también las
+ *    pendientes — ellos agendan sus controles y atienden directo, sin pasar
+ *    por mostrador (ver `assignDoctor`). Ver utils/odontologiaCompartida.js.
+ */
+async function filtroAgendaDelDoctor(req) {
+  if (esOdontologiaCompartida(req.role)) {
+    const ids = await idsDeOdontologos();
+    // Él mismo, aunque su rol en esa sede sea otro: sus citas no pueden caerse.
+    if (!ids.some((id) => String(id) === String(req.user._id))) ids.push(req.user._id);
+    return filtroCitasDelDoctor(ids, { incluirSinAsignar: true });
+  }
+  if (req.role === 'odontologia_neurofocal') {
+    return filtroCitasDelDoctor(req.user._id, { incluirSinAsignar: true });
+  }
+  return filtroCitasDelDoctor(req.user._id);
+}
 
 /**
  * LA CONSULTA DE LA AGENDA, en un solo sitio.
@@ -323,11 +350,9 @@ async function construirQueryAgenda(req, {
   if (isDoctorRole(req.role)) {
     // Su turno VIGENTE o uno que ya atendió: al doctor que va segundo la cita
     // no le aparece hasta que el primero termine (ver filtroCitasDelDoctor).
-    // Odontología y odontología neurofocal entran aquí igual que cualquier
-    // especialidad: solo ven SUS citas —les agenden donde les agenden, las de
-    // sus sucursales salen todas (sep-2026)—, no la agenda entera como
-    // mostrador.
-    extras.push(filtroCitasDelDoctor(req.user._id));
+    // Y solo con la atención ya asignada por mostrador: una cita pendiente con
+    // su nombre todavía no es suya (sep-2026).
+    extras.push(await filtroAgendaDelDoctor(req));
   }
   // El call center puede ver TODAS las citas agendadas (no solo las suyas).
   if (req.role === 'enfermero') {
@@ -386,6 +411,22 @@ exports.getAppointments = async (req, res) => {
       .populate('services.product', 'name code salePrice category nursingService')
       .populate('chargeRegisteredBy', 'name')
       .sort({ date: 1, startTime: 1 });
+
+    /**
+     * ODONTOLOGÍA COMPARTIDA: la pantalla necesita saber si el turno vigente es
+     * de CUALQUIER odontólogo para ofrecer «Atender» aunque no sea el suyo. No
+     * puede deducirlo sola: de los demás solo le llega el nombre.
+     */
+    if (esOdontologiaCompartida(req.role)) {
+      const ids = (await idsDeOdontologos()).map(String);
+      const marcadas = [];
+      for (const a of appointments) {
+        const o = a.toJSON();
+        o.turnoOdontologiaCompartido = await turnoVigenteEsDeOdontologia(a, ids);
+        marcadas.push(o);
+      }
+      return res.json(marcadas);
+    }
 
     res.json(appointments);
   } catch (error) {
@@ -1053,7 +1094,7 @@ exports.createAppointment = async (req, res) => {
     for (const k of ['turns', 'steps', 'serum', 'currentTurnKind', 'currentTurnUser']) delete cleanBody[k];
     // Una cita recién agendada no tiene hora de llegada: eso lo sella el gesto
     // de marcar asistencia y no puede llegar por el cuerpo de la petición.
-    for (const k of ['arrivedAt', 'arrivalDelayMinutes']) delete cleanBody[k];
+    for (const k of ['arrivedAt', 'arrivalDelayMinutes', 'attentionAssignedAt']) delete cleanBody[k];
     const valorCita = {};
     aplicarValorDeCita(valorCita, req.body, req);
     if (cleanBody.doctor === '') delete cleanBody.doctor;
@@ -1419,6 +1460,8 @@ exports.updateAppointment = async (req, res) => {
     // mano. Se calcula más abajo, cuando el estado pasa a 'asistida'.
     delete update.arrivedAt;
     delete update.arrivalDelayMinutes;
+    // Ni la marca de «Asignar atención»: la pone solo esa puerta (assignDoctor).
+    delete update.attentionAssignedAt;
     delete update.createdBy;
     delete update.createdByRole;
     delete update.registeredBy;
@@ -2080,7 +2123,9 @@ exports.startConsultation = async (req, res) => {
 
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
     const isAssignedDoctor =
-      (isDoctorRole(req.role)) && String(appointment.doctor) === String(req.user._id);
+      ((isDoctorRole(req.role)) && String(appointment.doctor) === String(req.user._id))
+      // Odontología compartida: cualquier odontólogo entra a la cita de otro.
+      || (esOdontologiaCompartida(req.role) && (await turnoVigenteEsDeOdontologia(appointment)));
     if (!isAdmin && !isAssignedDoctor) {
       return res.status(403).json({
         message: 'Solo el doctor asignado puede iniciar la consulta.',
@@ -2131,7 +2176,9 @@ exports.endConsultation = async (req, res) => {
 
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
     const isAssignedDoctor =
-      (isDoctorRole(req.role)) && String(appointment.doctor) === String(req.user._id);
+      ((isDoctorRole(req.role)) && String(appointment.doctor) === String(req.user._id))
+      // Odontología compartida: cualquier odontólogo entra a la cita de otro.
+      || (esOdontologiaCompartida(req.role) && (await turnoVigenteEsDeOdontologia(appointment)));
     if (!isAdmin && !isAssignedDoctor) {
       return res.status(403).json({
         message: 'Solo el doctor asignado puede finalizar la consulta.',
@@ -2340,7 +2387,7 @@ exports.getTodayAppointments = async (req, res) => {
     };
 
     if (isDoctorRole(req.role)) {
-      Object.assign(query, filtroCitasDelDoctor(req.user._id));
+      Object.assign(query, await filtroAgendaDelDoctor(req));
     }
     // El call center puede ver TODAS las citas del día.
     if (req.role === 'enfermero') {
@@ -3486,6 +3533,12 @@ exports.assignDoctor = async (req, res) => {
       // (reabrir este modal para añadir un doctor no la corre).
       registrarLlegada(apt);
     }
+    /**
+     * LA ATENCIÓN QUEDA ASIGNADA (sep-2026): desde aquí la cita sale en la
+     * agenda del doctor, también si es de otro día. Antes de este gesto, el
+     * doctor escogido al agendar no la ve (ver `filtroCitasDelDoctor`).
+     */
+    if (pasos.length && !apt.attentionAssignedAt) apt.attentionAssignedAt = new Date();
     await apt.save();
 
     /**

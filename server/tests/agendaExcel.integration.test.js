@@ -174,7 +174,7 @@ test('E4) el archivo trae las dos hojas, con encabezados y totales', async () =>
   assert.match(res.headers['content-disposition'], /attachment; filename="citas-/);
 
   const ws = wb.getWorksheet('Citas');
-  // Fila 6: los encabezados (1-4 son la cabecera del informe, 5 va en blanco).
+  // Fila 6: los encabezados (1-4 son la cabecera del informe, 5 el conteo por estado).
   const encabezados = ws.getRow(6).values.filter(Boolean).map(String);
   assert.ok(encabezados.includes('Paciente'), 'la fila 6 son los encabezados');
   assert.ok(encabezados.includes('Retraso'));
@@ -292,4 +292,26 @@ test('E9) sin enfermería: un solo rótulo para el médico y fuera las de solo e
   // El resumen rotula igual, o los totales por profesional no cuadrarían.
   const resumen = textoDe(wb.getWorksheet('Resumen'));
   assert.doesNotMatch(resumen, /Enf\. Emmily/);
+});
+
+test('E10) la fila 5 cuenta las citas de CADA estado, también los que están en cero', async () => {
+  const { clinicId, userId, citas } = await seed();
+
+  const { wb } = await pedirExcel(clinicId, userId, {
+    ids: [String(citas[0]._id), String(citas[1]._id)],
+  });
+
+  // Encima de los encabezados, dentro de la parte congelada: se ve sin bajar.
+  const fila5 = wb.getWorksheet('Citas').getRow(5).values.filter(Boolean).map(String);
+  assert.ok(fila5.includes('Total: 2'), fila5.join(' | '));
+  assert.ok(fila5.includes('Asistida: 1'));
+  assert.ok(fila5.includes('Pendiente: 1'));
+  assert.ok(fila5.includes('Cancelada: 0'), 'un estado sin citas dice 0, no desaparece');
+  assert.ok(fila5.includes('No asistió: 0'));
+
+  // Y el Resumen lista los seis estados, en cero incluidos.
+  const resumen = textoDe(wb.getWorksheet('Resumen'));
+  for (const estado of ['Pendiente', 'Confirmada', 'Asistida', 'Completada', 'No asistió', 'Cancelada']) {
+    assert.match(resumen, new RegExp(estado), `falta «${estado}» en el Resumen`);
+  }
 });

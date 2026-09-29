@@ -238,9 +238,20 @@ test('R9) la receta de la consulta del terapeuta SÍ sale, el resto sigue privad
   assert.ok(fu.recetaItems[0].isSerum, 'el suero sale con su sello');
   assert.equal(fu.recomendacionesNoFarmacologicas, 'Cenar tres horas antes de dormir', 'lo que la hoja de receta imprime sale');
 
-  // Y para la ENFERMERÍA, que es quien lo aplica: lo mismo.
+  /**
+   * Y ENFERMERÍA, SOLO SI MOSTRADOR LO ESCOGE (sep-2026). Antes le llegaba
+   * directo, por el turno del terapeuta; ahora solo ve lo que se le asigna en
+   * «Asignar atención». Mostrador escoge ESE suero de la ficha para el paso de
+   * enfermería y entonces sí le aparece.
+   */
+  const sinAsignar = ok(await consultaDe(clinicId, userId, cita._id, 'enfermero'));
+  assert.equal(sinAsignar.followUps.length, 0, 'lo recetado no le llega sin que mostrador lo asigne');
+
+  ok(await H.runController(appt.assignDoctor, H.mockReq(clinicId, userId, {
+    steps: [{ kind: 'enfermeria', serumFollowUp: String(fu._id) }],
+  }, { params: { id: String(cita._id) } })));
   const paraEnf = ok(await consultaDe(clinicId, userId, cita._id, 'enfermero'));
-  assert.equal(paraEnf.followUps[0].recetaItems[0].name, 'Sueroterapia', 'la enfermera ve el suero');
+  assert.equal(paraEnf.followUps[0].recetaItems[0].name, 'Sueroterapia', 'asignado, la enfermera ve el suero');
 });
 
 test('R8) una cita que no existe da 404', async () => {
