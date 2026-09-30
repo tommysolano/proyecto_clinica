@@ -432,13 +432,8 @@ function extractProviderMessageId(result) {
 async function findPatientByPhone(clinicId, phone) {
   const normalized = normalizePhone(phone);
   if (!normalized) return null;
-  const tail = normalized.slice(-9);
-  return Patient.findOne({
-    $or: [
-      { phone: { $regex: `${tail}$` } },
-      { whatsapp: { $regex: `${tail}$` } },
-    ],
-  });
+  // También por sus OTROS números (ver utils/patientIdentity).
+  return require('./patientIdentity').findPatientByAnyPhone(normalized);
 }
 
 async function resolvePatient({ clinicId, patient, conv, to }) {
@@ -861,8 +856,9 @@ function providerErrorMessage(result) {
 
 async function findPatientByEmail(clinicId, email) {
   if (!email) return null;
-  // CRM global: busca por email en toda la organización.
-  return Patient.findOne({ email: String(email).toLowerCase().trim() });
+  // CRM global: busca por email en toda la organización (también en los otros
+  // correos del paciente).
+  return require('./patientIdentity').findPatientByAnyEmail(email);
 }
 
 /**

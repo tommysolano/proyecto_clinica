@@ -37,10 +37,12 @@ export const emptyPatientForm = {
   email: '',
   phone: '',
   whatsapp: '',
-  // Los de más (los deja una fusión): texto separado por comas en pantalla,
-  // lista en la base (ver payloadDePaciente).
-  otherPhonesText: '',
-  otherEmailsText: '',
+  // VARIOS por paciente (sep-2026): el principal va arriba; los de más —el
+  // celular viejo y el nuevo, el correo del trabajo, el RUC además de la
+  // cédula— en estas listas.
+  otherPhones: [],
+  otherEmails: [],
+  identificationAliases: [],
   birthDate: '',
   age: '',
   gender: '',
@@ -70,8 +72,9 @@ export function formDesdePaciente(patient) {
       ...emptyPatientForm,
       ...visible,
       birthDate: nacimiento,
-      otherPhonesText: (patient?.otherPhones || []).join(', '),
-      otherEmailsText: (patient?.otherEmails || []).join(', '),
+      otherPhones: [...(patient?.otherPhones || [])],
+      otherEmails: [...(patient?.otherEmails || [])],
+      identificationAliases: [...(patient?.identificationAliases || [])],
       // Con fecha de nacimiento la edad se recalcula al abrir: la guardada puede
       // ser de hace tres años y el campo ya no se puede corregir a mano.
       age: nacimiento ? edadDesdeFecha(nacimiento) : (patient?.age ?? ''),
@@ -80,11 +83,52 @@ export function formDesdePaciente(patient) {
   };
 }
 
-/** «a, b; c» → ['a', 'b', 'c'] (otros teléfonos / correos). */
-const lista = (texto) => String(texto || '')
-  .split(/[,;/|\n]+/)
-  .map((t) => t.trim())
+/** Sin huecos vacíos (las filas en blanco de la lista no se guardan). */
+const lista = (valores) => (Array.isArray(valores) ? valores : [])
+  .map((t) => String(t || '').trim())
   .filter(Boolean);
+
+/**
+ * LISTA DE VALORES DE MÁS: una fila por teléfono / correo / identificación, con
+ * «+ Agregar» y una ✕ por fila. Antes era un texto «separado por comas», solo
+ * al editar, y nadie adivinaba que ahí cabían varios.
+ */
+function ListaDeValores({ label, valores, onChange, placeholder, type = 'text', agregar = 'Agregar otro' }) {
+  const filas = Array.isArray(valores) ? valores : [];
+  const cambiar = (i, v) => onChange(filas.map((x, j) => (j === i ? v : x)));
+  return (
+    <Field label={label}>
+      <div className="space-y-1.5">
+        {filas.map((v, i) => (
+          <div key={i} className="flex items-center gap-1.5">
+            <input
+              type={type}
+              value={v}
+              onChange={(e) => cambiar(i, e.target.value)}
+              placeholder={placeholder}
+              className="input flex-1"
+            />
+            <button
+              type="button"
+              onClick={() => onChange(filas.filter((_, j) => j !== i))}
+              title="Quitar"
+              className="shrink-0 w-8 h-8 rounded-lg border border-slate-200 bg-white text-slate-400 hover:text-rose-600 hover:border-rose-200 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() => onChange([...filas, ''])}
+          className="text-xs text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0"
+        >
+          + {agregar}
+        </button>
+      </div>
+    </Field>
+  );
+}
 
 /**
  * Del formulario al cuerpo de la petición.
@@ -93,11 +137,11 @@ const lista = (texto) => String(texto || '')
  * ObjectId/número/fecha y el guardado fallaba con un error opaco.
  */
 export function payloadDePaciente(form, telefonos) {
-  const { otherPhonesText, otherEmailsText, ...resto } = form;
   return {
-    ...resto,
-    otherPhones: lista(otherPhonesText),
-    otherEmails: lista(otherEmailsText).map((e) => e.toLowerCase()),
+    ...form,
+    otherPhones: lista(form.otherPhones),
+    otherEmails: lista(form.otherEmails).map((e) => e.toLowerCase()),
+    identificationAliases: lista(form.identificationAliases),
     // El campo único vuelve a ser `phone` + `whatsapp`, que es lo que entiende
     // el resto del sistema.
     ...partirTelefonos(telefonos),
@@ -279,6 +323,17 @@ export default function PatientFields({ form, setForm, telefonos, setTelefonos, 
             <SriStatus status={cedulaLookup} />
           </Field>
         )}
+        {/* Otras identificaciones: el RUC además de la cédula, un pasaporte.
+            Todas sirven para encontrarlo y ninguna puede ser de otro paciente. */}
+        {(showCedula || !editing) && (
+          <ListaDeValores
+            label="Otras identificaciones"
+            valores={form.identificationAliases}
+            onChange={(v) => setForm((f) => ({ ...f, identificationAliases: v }))}
+            placeholder="RUC, otra cédula o pasaporte"
+            agregar="Agregar identificación"
+          />
+        )}
         {/* Ni género, ni nombres, ni apellidos son obligatorios: el paciente
             se registra muchas veces con lo que se tiene a mano (a veces solo
             el teléfono, o solo la cédula) y se completa después. Exigirlos
@@ -328,29 +383,28 @@ export default function PatientFields({ form, setForm, telefonos, setTelefonos, 
             </p>
           </Field>
         )}
-        {/* Los que quedan de una fusión (o cualquier número más). Solo al
-            editar: al registrar basta con el principal. */}
-        {editing && showContact && (
-          <Field label="Otros teléfonos">
-            <input
-              name="otherPhonesText"
-              value={form.otherPhonesText}
-              onChange={handleChange}
-              placeholder="Separados por comas"
-              className="input"
-            />
-          </Field>
+        {/* Los de más: el celular viejo cuando cambió de número, el de un
+            familiar, el correo del trabajo. Todos sirven para encontrarlo (y
+            el chat lo reconoce por cualquiera de sus números). Misma regla que
+            el principal: al editar, solo quien lo ve. */}
+        {(showContact || !editing) && (
+          <ListaDeValores
+            label="Otros teléfonos"
+            valores={form.otherPhones}
+            onChange={(v) => setForm((f) => ({ ...f, otherPhones: v }))}
+            placeholder="0991234567"
+            agregar="Agregar teléfono"
+          />
         )}
-        {editing && showEmail && (
-          <Field label="Otros correos">
-            <input
-              name="otherEmailsText"
-              value={form.otherEmailsText}
-              onChange={handleChange}
-              placeholder="Separados por comas"
-              className="input"
-            />
-          </Field>
+        {(showEmail || !editing) && (
+          <ListaDeValores
+            label="Otros correos"
+            type="email"
+            valores={form.otherEmails}
+            onChange={(v) => setForm((f) => ({ ...f, otherEmails: v }))}
+            placeholder="correo@ejemplo.com"
+            agregar="Agregar correo"
+          />
         )}
         <Field label="Fecha de nacimiento">
           <DateInput

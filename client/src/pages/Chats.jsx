@@ -383,6 +383,9 @@ export default function Chats() {
   const [runningWf, setRunningWf] = useState(false);
   // Sube al ejecutar una automatización a mano: refresca la lista del panel derecho.
   const [automationsVersion, setAutomationsVersion] = useState(0);
+  // Sube al agendar desde el chat: el panel vuelve a pedir las citas (las
+  // agendadas para otra persona no cambian el paciente del chat).
+  const [citasVersion, setCitasVersion] = useState(0);
   // Mensajes guardados y galería
   const [savedReplies, setSavedReplies] = useState([]);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -2617,6 +2620,7 @@ export default function Chats() {
                 onCreateQuotation={() => setQuotationModal(true)}
                 waAccounts={waAccounts}
                 automationsVersion={automationsVersion}
+                citasVersion={citasVersion}
               />
             ) : (
               <div className="text-sm text-slate-400">Sin chat seleccionado</div>
@@ -2652,6 +2656,7 @@ export default function Chats() {
                   onCreateQuotation={() => setQuotationModal(true)}
                   waAccounts={waAccounts}
                   automationsVersion={automationsVersion}
+                  citasVersion={citasVersion}
                 />
               </div>
             </div>
@@ -2685,6 +2690,7 @@ export default function Chats() {
             // `count === 0` = solo se dio de alta al contacto (no marcó agendar):
             // el aviso del alta ya lo dio el propio modal.
             if (count > 0) {
+              setCitasVersion((v) => v + 1);
               toast.success(count > 1 ? `${count} citas creadas desde el chat` : 'Cita creada desde el chat');
             }
           }}
@@ -4865,30 +4871,38 @@ function ChatAutomationsSection({ conv, version = 0 }) {
   );
 }
 
-function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onScheduleAppointment, onCreateQuotation, automationsVersion = 0, waAccounts = [] }) {
+function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onScheduleAppointment, onCreateQuotation, automationsVersion = 0, citasVersion = 0, waAccounts = [] }) {
   const { hasRole } = useAuth();
   const op = conv.opportunity || {};
   const meta = op.isOpportunity ? stageMeta(op.stage) : null;
   const [appts, setAppts] = useState([]);
   const [editAppt, setEditAppt] = useState(null); // cita a editar
   const [apptsVersion, setApptsVersion] = useState(0); // fuerza recarga tras editar
+  const [asignarPaciente, setAsignarPaciente] = useState(false);
   // Espejo de la ruta PUT /appointments/:id (admin/cajero/call_center/marketing).
   // Antes el botón lo veía todo el mundo y los demás roles se topaban con un 403.
   const puedeEditarCita = hasRole('admin', 'cajero', 'call_center', 'marketing');
+  const pacienteId = String(conv.patient?._id || conv.patient || '');
 
-  // Cargar citas del paciente vinculado para mostrar cuántas tiene y sus fechas.
-  // clinic=all: el chat es global, la cita puede ser de cualquier sucursal.
+  /**
+   * LAS CITAS DEL CHAT: las del paciente vinculado Y las que se agendaron DESDE
+   * este chat para otra persona (la madre que pide hora para el niño). Antes solo
+   * salían las del paciente, así que la cita del niño no se podía ni ver ni
+   * reagendar desde la conversación en la que se pidió.
+   * clinic=all: el chat es global, la cita puede ser de cualquier sucursal.
+   */
   useEffect(() => {
-    if (!conv.patient?._id && !conv.patient) {
-      setAppts([]);
-      return;
-    }
-    const pid = conv.patient?._id || conv.patient;
     api
-      .get('/appointments', { params: { patient: pid, limit: 100, clinic: 'all' } })
+      .get('/appointments', {
+        params: { ...(pacienteId ? { patient: pacienteId } : {}), conversation: conv._id, limit: 100, clinic: 'all' },
+      })
       .then((r) => setAppts(Array.isArray(r.data) ? r.data : r.data?.appointments || []))
       .catch(() => setAppts([]));
-  }, [conv.patient, apptsVersion]);
+  }, [conv._id, pacienteId, apptsVersion, citasVersion]);
+
+  /** De otra persona = no es del paciente del chat. */
+  const paraOtro = (a) => String(a.patient?._id || a.patient || '') !== pacienteId;
+  const nombreDe = (a) => `${a.patient?.firstName || ''} ${a.patient?.lastName || ''}`.trim() || 'otra persona';
 
   return (
     <div className="space-y-3">
@@ -4908,9 +4922,19 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
           )}
         </div>
         {conv.patient && (
-          <div className="mt-2 text-xs bg-emerald-50 text-emerald-700 px-2 py-1 rounded">
-            Paciente: {conv.patient.firstName} {conv.patient.lastName}
-            {conv.patient.cedula && <span className="text-emerald-600/70 ml-1">· {conv.patient.cedula}</span>}
+          <div className="mt-2 text-xs bg-emerald-50 text-emerald-700 px-2 py-1 rounded flex items-center justify-between gap-2">
+            <span className="min-w-0">
+              Paciente: {conv.patient.firstName} {conv.patient.lastName}
+              {conv.patient.cedula && <span className="text-emerald-600/70 ml-1">· {conv.patient.cedula}</span>}
+            </span>
+            <button
+              type="button"
+              onClick={() => setAsignarPaciente(true)}
+              title="Este chat es de otro paciente ya registrado"
+              className="shrink-0 text-[10px] text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0"
+            >
+              Cambiar
+            </button>
           </div>
         )}
         {isOptedOut(conv) && (
@@ -4942,6 +4966,18 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
           >
             {conv.patient ? 'Agendar cita(s)' : '+ Agregar al sistema y agendar'}
           </button>
+          {/* El paciente YA está registrado pero el chat no lo reconoce (cambió
+              de número, escribe desde el de un familiar): se asigna a mano y su
+              número queda guardado en la ficha. */}
+          {!conv.patient && (
+            <button
+              type="button"
+              onClick={() => setAsignarPaciente(true)}
+              className="w-full text-xs px-2 py-1.5 rounded-xl cursor-pointer bg-white text-emerald-700 hover:bg-emerald-50 border border-emerald-200"
+            >
+              Asignar a un paciente ya registrado
+            </button>
+          )}
           <button
             onClick={() => onCreateQuotation?.()}
             className="w-full text-xs px-2 py-1.5 bg-amber-50 text-amber-700 rounded-lg hover:bg-amber-100 border border-amber-200 cursor-pointer"
@@ -5056,10 +5092,12 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
           mismo —qué ha pasado con este paciente— y se consultan seguidas. */}
       <HistoriaClinicaSection conv={conv} />
 
-      {conv.patient && (
+      {(conv.patient || appts.length > 0) && (
         <div>
           <div className="text-xs font-semibold text-slate-500 mb-1 flex items-center justify-between">
-            <span>Citas del paciente</span>
+            <span title="Las del paciente del chat y las agendadas desde este chat para otras personas">
+              {appts.some(paraOtro) ? 'Citas del paciente y agendadas desde este chat' : 'Citas del paciente'}
+            </span>
             <span className="bg-emerald-100 text-emerald-700 text-[10px] px-1.5 rounded-full">
               {appts.length}
             </span>
@@ -5100,6 +5138,9 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
                     <div className="font-semibold">
                       Última cita ({estado}): {fecha} · {ultima.startTime || ''}
                     </div>
+                    {paraOtro(ultima) && (
+                      <div className="text-violet-700">Para: {nombreDe(ultima)}</div>
+                    )}
                     <div className="text-emerald-700/90 break-words">
                       {servicio ? `${servicio}` : 'Sin servicio'}
                       {sede ? ` · ${sede}` : ''}
@@ -5121,8 +5162,14 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
                   const canEdit = puedeEditarCita && !['completada', 'asistida'].includes(a.status);
                   return (
                     <li key={a._id} className="text-xs text-slate-600 flex items-center justify-between gap-1 bg-slate-50 rounded px-2 py-1">
-                      <span>
+                      <span className="min-w-0">
                         {dd}/{mm}/{dt.getFullYear()} · {a.startTime}
+                        {/* Agendada desde este chat para OTRA persona. */}
+                        {paraOtro(a) && (
+                          <span className="block text-[10px] text-violet-700 truncate" title={`Cita de ${nombreDe(a)}, agendada desde este chat`}>
+                            Para: {nombreDe(a)}
+                          </span>
+                        )}
                       </span>
                       <span className="flex items-center gap-1.5 shrink-0">
                         <span className="text-[10px] uppercase tracking-wide text-slate-400">
@@ -5155,6 +5202,17 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
           onSaved={() => {
             setEditAppt(null);
             setApptsVersion((v) => v + 1);
+          }}
+        />
+      )}
+
+      {asignarPaciente && (
+        <AsignarPacienteModal
+          conv={conv}
+          onClose={() => setAsignarPaciente(false)}
+          onDone={(c) => {
+            setAsignarPaciente(false);
+            onUpdated?.(c);
           }}
         />
       )}
@@ -6856,11 +6914,12 @@ function TransferChatModal({ conv, meId, canAutoAssign, onClose, onTransfer }) {
  * abierto es perder la conversación, y el caso normal es que el familiar NO esté
  * registrado. Quien no pueda dar altas (marketing) solo ve el buscador.
  */
-function SelectorOtroPaciente({ valor, onChange }) {
+function SelectorOtroPaciente({ valor, onChange, sinAlta = false }) {
   const { hasRole } = useAuth();
   // Espejo del `requireRole` de POST /patients (con 'optica' enumerada aparte,
-  // que en el cliente no expande desde 'doctor').
-  const puedeRegistrar = hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica', 'marketing');
+  // que en el cliente no expande desde 'doctor'). `sinAlta`: solo buscar (al
+  // asignar un chat a alguien que YA está registrado).
+  const puedeRegistrar = !sinAlta && hasRole('admin', 'cajero', 'call_center', 'doctor', 'optica', 'marketing');
   const [q, setQ] = useState('');
   const busqueda = useDebounce(q, 350);
   const [resultados, setResultados] = useState([]);
@@ -7005,6 +7064,152 @@ function SelectorOtroPaciente({ valor, onChange }) {
   );
 }
 
+/**
+ * Vincula el chat a un paciente YA registrado (POST /chats/:id/link-patient). El
+ * número del chat queda en la ficha, entre sus otros teléfonos. Devuelve la
+ * respuesta del servidor ({ conversation, numeroAgregado, … }).
+ */
+async function vincularChatAPaciente(convId, patientId, phone) {
+  const { data } = await api.post(`/chats/${convId}/link-patient`, { patientId, phone: phone || undefined });
+  toast.success(
+    data.numeroAgregado
+      ? 'Chat asignado al paciente. Su número quedó guardado en la ficha.'
+      : 'Chat asignado al paciente.'
+  );
+  return data;
+}
+
+/**
+ * ASIGNAR ESTE CHAT A UN PACIENTE YA REGISTRADO (sep-2026).
+ *
+ * Para cuando el paciente cambió de número y escribe desde el nuevo: el chat no
+ * lo reconoce y el alta choca con «ya hay un paciente con ese nombre y otro
+ * teléfono». Aquí se busca y se asigna; el número del chat se guarda en su
+ * ficha (otros teléfonos) y la próxima vez se le reconoce solo. Sirve también
+ * para corregir un chat vinculado a quien no era.
+ */
+function AsignarPacienteModal({ conv, onClose, onDone }) {
+  const [elegido, setElegido] = useState(null);
+  const [telefono, setTelefono] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const isWhatsapp = (conv.channel || 'whatsapp') === 'whatsapp';
+  const actual = conv.patient ? `${conv.patient.firstName || ''} ${conv.patient.lastName || ''}`.trim() : '';
+
+  const guardar = async () => {
+    if (!elegido?._id) return toast.error('Busca y escoge al paciente.');
+    if (conv.patient && String(conv.patient._id || conv.patient) === String(elegido._id)) {
+      return onClose();
+    }
+    if (actual && !window.confirm(`Este chat está vinculado a «${actual}». ¿Cambiarlo a «${elegido.firstName} ${elegido.lastName}»?`)) {
+      return undefined;
+    }
+    setGuardando(true);
+    try {
+      const data = await vincularChatAPaciente(conv._id, elegido._id, isWhatsapp ? '' : telefono.trim());
+      onDone(data.conversation);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo asignar el chat');
+    } finally {
+      setGuardando(false);
+    }
+    return undefined;
+  };
+
+  return (
+    <ModalShell title="Asignar a un paciente ya registrado" onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-xs text-slate-500 m-0">
+          Úsalo cuando el paciente ya existe en el sistema pero escribe desde otro número (por ejemplo,
+          cambió de celular). El número de este chat se guarda en su ficha junto a los que ya tenía, y la
+          próxima vez que escriba se le reconocerá solo.
+        </p>
+        <SelectorOtroPaciente valor={elegido} onChange={setElegido} sinAlta />
+        {!isWhatsapp && (
+          <input
+            value={telefono}
+            onChange={(e) => setTelefono(e.target.value)}
+            placeholder="Teléfono real del contacto (opcional)"
+            className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+          />
+        )}
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 cursor-pointer"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            disabled={!elegido || guardando}
+            onClick={guardar}
+            className="text-xs px-3 py-1.5 rounded-lg bg-emerald-600 text-white border-none cursor-pointer disabled:opacity-50"
+          >
+            {guardando ? 'Asignando…' : 'Asignar chat'}
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+/**
+ * «YA HAY UN PACIENTE CON ESE NOMBRE Y OTRO TELÉFONO» — qué hacer.
+ *
+ * Era un confirm de dos salidas (cancelar o crear la ficha igual), y el caso más
+ * común no tenía ninguna: ES la misma persona, que cambió de número. Ahora cada
+ * coincidencia trae «Es esta persona» (vincula el chat y guarda el número), y
+ * siguen estando «Registrar como paciente nuevo» y «Cancelar».
+ */
+function CoincidenciaNombreModal({ info, onElegir }) {
+  return (
+    <ModalShell title="¿Es la misma persona?" onClose={() => onElegir({ accion: 'cancelar' })}>
+      <div className="space-y-3">
+        <p className="text-sm text-slate-700 m-0">{info.message}</p>
+        <ul className="m-0 p-0 list-none space-y-1.5">
+          {(info.matches || []).map((m) => (
+            <li key={m._id} className="flex items-center justify-between gap-2 border border-slate-200 rounded-lg px-2.5 py-2">
+              <span className="text-xs text-slate-700 min-w-0">
+                <strong>{m.name}</strong>
+                {m.phoneTail ? <span className="text-slate-500"> · teléfono terminado en {m.phoneTail}</span> : null}
+                {m.createdAt ? <span className="block text-[11px] text-slate-400">Registrada el {fmtDateTime(m.createdAt)}</span> : null}
+              </span>
+              <button
+                type="button"
+                onClick={() => onElegir({ accion: 'vincular', patientId: m._id })}
+                className="shrink-0 text-[11px] px-2 py-1 rounded-lg bg-emerald-600 text-white border-none cursor-pointer"
+              >
+                Es esta persona
+              </button>
+            </li>
+          ))}
+        </ul>
+        <p className="text-[11px] text-slate-500 m-0">
+          «Es esta persona» asigna este chat a su ficha y guarda este número junto a los que ya tenía (por
+          ejemplo, si cambió de celular). Si es otra persona con el mismo nombre, regístrala como nueva.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => onElegir({ accion: 'cancelar' })}
+            className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 cursor-pointer"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={() => onElegir({ accion: 'nuevo' })}
+            className="text-xs px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 cursor-pointer"
+          >
+            Registrar como paciente nuevo
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
 function AgregarYAgendarModal({ conv, onClose, onDone }) {
   const { clinics, activeClinic, hasRole } = useAuth();
   const yaEsPaciente = !!conv.patient;
@@ -7144,6 +7349,9 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unaSolaSede, sedes, items.length]);
   const [saving, setSaving] = useState(false);
+  // «Ya hay un paciente con ese nombre y otro teléfono»: { info, resolve }
+  // mientras se pregunta qué hacer (ver CoincidenciaNombreModal).
+  const [coincidencia, setCoincidencia] = useState(null);
   // Espacios de la agenda de la sucursal ELEGIDA en CADA cita: el asesor agenda
   // en la sede que le pida el paciente, no siempre en la suya, y una tanda puede
   // repartirse entre dos sedes.
@@ -7227,22 +7435,22 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
           // el nombre del chat anterior pegado en este. Se pregunta antes de
           // abrir una ficha que después nadie sabe deshacer.
           if (err.response?.status !== 409 || err.response?.data?.code !== 'SAME_NAME_OTHER_PHONE') throw err;
-          const lista = (err.response.data.matches || [])
-            .map((m) => `• ${m.name}${m.phoneTail ? ` — teléfono terminado en ${m.phoneTail}` : ''}${m.createdAt ? ` (registrada el ${fmtDateTime(m.createdAt)})` : ''}`)
-            .join('\n');
-          const sigue = window.confirm(
-            `${err.response.data.message}\n\n${lista}\n\n` +
-            `Este chat es de OTRO número. Revisa que el nombre sea el de la persona de ESTE chat.\n\n` +
-            `¿Registrarla igualmente con este nombre?`
-          );
-          if (!sigue) {
+          // Tres salidas: es ella (cambió de número → se vincula el chat y se
+          // guarda el número), es otra persona homónima, o cancelar.
+          const eleccion = await new Promise((resolve) => setCoincidencia({ info: err.response.data, resolve }));
+          if (eleccion.accion === 'cancelar') {
             setSaving(false);
             return;
           }
-          r = await api.post(`/chats/${conv._id}/register-patient`, { ...cuerpo, confirmSameName: true });
+          if (eleccion.accion === 'vincular') {
+            const vinculado = await vincularChatAPaciente(conv._id, eleccion.patientId, isWhatsapp ? '' : datos.phone);
+            r = { data: vinculado, vinculado: true };
+          } else {
+            r = await api.post(`/chats/${conv._id}/register-patient`, { ...cuerpo, confirmSameName: true });
+          }
         }
         conversacion = r.data.conversation;
-        toast.success('Paciente agregado al sistema');
+        if (!r.vinculado) toast.success('Paciente agregado al sistema');
       }
     } catch (err) {
       setSaving(false);
@@ -7298,6 +7506,15 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
       onClose={onClose}
       size="lg"
     >
+      {coincidencia && (
+        <CoincidenciaNombreModal
+          info={coincidencia.info}
+          onElegir={(eleccion) => {
+            coincidencia.resolve(eleccion);
+            setCoincidencia(null);
+          }}
+        />
+      )}
       <div className="space-y-3 text-sm">
         <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-2 text-xs text-emerald-800">
           {yaEsPaciente ? 'Paciente' : 'Contacto'}:{' '}

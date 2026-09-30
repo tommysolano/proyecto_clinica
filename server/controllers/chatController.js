@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Patient = require('../models/Patient');
-const { patientIdentificationFilter } = require('../utils/patientIdentity');
+const { patientIdentificationFilter, findPatientByAnyPhone, colaTelefono } = require('../utils/patientIdentity');
 const User = require('../models/User');
 const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
@@ -4063,14 +4063,9 @@ async function processMetaStatuses(clinicId, statuses = []) {
 async function findPatientForIncoming(clinicId, phone) {
   const normalized = normalizePhone(phone);
   if (!normalized) return null;
-  const tail = normalized.slice(-9);
-  // CRM global: vincula al paciente esté en la sucursal que esté.
-  return Patient.findOne({
-    $or: [
-      { phone: { $regex: `${tail}$` } },
-      { whatsapp: { $regex: `${tail}$` } },
-    ],
-  });
+  // CRM global: vincula al paciente esté en la sucursal que esté. También por
+  // sus OTROS números: el celular nuevo que se le asignó a mano desde un chat.
+  return findPatientByAnyPhone(normalized);
 }
 
 async function applyIncomingOptOut({ clinicId, conv, incomingText }) {
@@ -5534,7 +5529,8 @@ exports.registerPatientFromChat = async (req, res) => {
     let patient = null;
     if (cedula) patient = await Patient.findOne(patientIdentificationFilter(cedula));
     if (!patient && phone) {
-      patient = await Patient.findOne({ phone: { $regex: phone.slice(-9) + '$' } });
+      // Principal, WhatsApp u otro número suyo (el celular que cambió).
+      patient = await findPatientByAnyPhone(phone);
     }
     if (!patient && !req.body.confirmSameName) {
       /**
@@ -5559,12 +5555,13 @@ exports.registerPatientFromChat = async (req, res) => {
         const cola = phone ? phone.slice(-9) : '';
         const tocayos = (
           await Patient.find({ ...filtroNombre, active: { $ne: false }, mergedInto: null })
-            .select('firstName lastName phone whatsapp createdAt')
+            .select('firstName lastName phone whatsapp otherPhones createdAt')
             .limit(20)
             .lean()
         ).filter((p) => {
           if (clave(p) !== buscada) return false;
-          const suyos = [p.phone, p.whatsapp].map((t) => String(t || '').replace(/\D/g, '')).filter(Boolean);
+          const suyos = [p.phone, p.whatsapp, ...(p.otherPhones || [])]
+            .map((t) => String(t || '').replace(/\D/g, '')).filter(Boolean);
           // Con el mismo teléfono no es otra persona: es ella (y no llegaría aquí).
           return !cola || !suyos.some((t) => t.slice(-9) === cola);
         });
@@ -5572,6 +5569,9 @@ exports.registerPatientFromChat = async (req, res) => {
           return res.status(409).json({
             code: 'SAME_NAME_OTHER_PHONE',
             message: `Ya hay ${tocayos.length > 1 ? `${tocayos.length} pacientes registrados` : 'un paciente registrado'} como «${nombreAlta}» con otro teléfono.`,
+            // El cliente ofrece, por cada uno, «es esta persona: vincular el chat»
+            // (POST /chats/:id/link-patient): es lo que pasa cuando el paciente
+            // cambió de número y escribe desde el nuevo.
             // Solo los 4 últimos dígitos: basta para reconocer el número y no
             // enseña el dato de contacto completo a quien no le toca.
             matches: tocayos.map((p) => ({
@@ -5677,6 +5677,102 @@ exports.registerPatientFromChat = async (req, res) => {
     res.status(201).json({ patient, conversation: await conversationPayload(conv) });
   } catch (err) {
     res.status(500).json({ message: 'Error al registrar paciente', error: err.message });
+  }
+};
+
+/**
+ * El teléfono REAL de un chat, o '' si no lo hay: en Messenger/Instagram `phone`
+ * es el id interno del contacto, y en un chat de número oculto (@lid) es el LID;
+ * en ese caso vale el número que se le enlazó (`linkedPhone`).
+ */
+function telefonoRealDelChat(conv) {
+  if ((conv.channel || 'whatsapp') !== 'whatsapp') return '';
+  if (conv.linkedPhone) return conv.linkedPhone;
+  const jid = String(conv.externalUserId || '');
+  const esOculto = jid.endsWith('@lid')
+    && String(conv.phone || '').replace(/\D/g, '') === jid.replace(/@lid$/, '').replace(/\D/g, '');
+  return esOculto ? '' : String(conv.phone || '');
+}
+
+/**
+ * POST /api/chats/:id/link-patient   { patientId, phone? }
+ *
+ * ASIGNAR ESTE CHAT A UN PACIENTE YA REGISTRADO, a mano (sep-2026).
+ *
+ * El caso: el paciente cambió de número y escribe desde el nuevo. El chat no lo
+ * reconoce (el número no es el de su ficha) y el alta desde el chat choca con
+ * «ya hay un paciente con ese nombre y otro teléfono»: la única salida era
+ * abrirle una ficha duplicada o no poder agendarle.
+ *
+ * Aquí el agente dice «es este paciente» y:
+ *   · el chat queda vinculado a su ficha (y con él, sus citas en el panel);
+ *   · el número del chat se AÑADE a sus otros teléfonos —no pisa el principal:
+ *     el viejo puede seguir siendo bueno—, así que la próxima vez que escriba
+ *     desde ese número se le reconoce solo (ver findPatientByAnyPhone);
+ *   · el nombre del chat pasa a ser el de la ficha, como en el alta.
+ *
+ * Si el chat ya estaba vinculado a OTRO paciente, se cambia (el cliente lo
+ * confirma antes): es la forma de corregir un vínculo equivocado.
+ */
+exports.linkPatientToChat = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    const { patientId } = req.body || {};
+    if (!patientId || !mongoose.Types.ObjectId.isValid(String(patientId))) {
+      return res.status(400).json({ message: 'Escoge el paciente al que asignar este chat.' });
+    }
+    const patient = await Patient.findOne({ _id: patientId, active: { $ne: false } });
+    if (!patient) return res.status(404).json({ message: 'No se encontró al paciente (¿está desactivado o fusionado?).' });
+
+    // El número que se le suma: el del chat en WhatsApp; fuera de WhatsApp, el
+    // que el agente escriba (opcional).
+    const telefono = telefonoRealDelChat(conv) || String(req.body.phone || '').replace(/[^\d+]/g, '');
+    const cola = colaTelefono(telefono);
+    let numeroAgregado = false;
+    if (cola.length >= 7) {
+      const suyos = [patient.phone, patient.whatsapp, ...(patient.otherPhones || [])].map(colaTelefono);
+      if (!suyos.includes(cola)) {
+        if (!patient.phone && !patient.whatsapp) {
+          // Sin ningún número: este pasa a ser el principal.
+          patient.phone = telefono;
+          patient.whatsapp = telefono;
+        } else {
+          patient.otherPhones = [...(patient.otherPhones || []), telefono];
+        }
+        numeroAgregado = true;
+      }
+    }
+
+    const anterior = conv.patient ? String(conv.patient) : null;
+    conv.patient = patient._id;
+    messaging.applyContactName(
+      conv,
+      `${patient.firstName || ''} ${patient.lastName || ''}`.trim(),
+      { source: 'contact' }
+    );
+    if (numeroAgregado) await patient.save();
+    await conv.save();
+
+    // Los otros chats sueltos del mismo número (Messenger con ese teléfono, un
+    // WhatsApp viejo) quedan con el mismo paciente, igual que en el alta.
+    if (cola.length >= 7) {
+      await Conversation.updateMany(
+        { clinic: req.clinicId, phone: { $regex: `${cola}$` }, patient: null, _id: { $ne: conv._id } },
+        { $set: { patient: patient._id } }
+      );
+    }
+
+    emitToClinic(req.clinicId, 'patient:updated', { id: patient._id });
+    emitToCallCenter('chat:updated', { id: conv._id });
+    res.json({
+      patient: { _id: patient._id, firstName: patient.firstName, lastName: patient.lastName },
+      numeroAgregado,
+      cambiado: Boolean(anterior && anterior !== String(patient._id)),
+      conversation: await conversationPayload(conv),
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al asignar el chat al paciente', error: err.message });
   }
 };
 

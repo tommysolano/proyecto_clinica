@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
 const Patient = require('../models/Patient');
@@ -232,6 +233,7 @@ async function construirQueryAgenda(req, {
   toTime,
   room,
   patient,
+  conversation,
   origin,
   q,
   clinic: clinicParam,
@@ -344,7 +346,21 @@ async function construirQueryAgenda(req, {
     ]);
   }
   if (room) query.room = room;
-  if (patient) query.patient = patient;
+  /**
+   * LAS CITAS DE UN CHAT (`conversation`): las del paciente del chat Y las que
+   * se agendaron DESDE ese chat para otra persona (la madre que pide hora para
+   * el niño). Con `patient` y `conversation` juntos es un «o», no un «y»: el
+   * panel del chat tiene que enseñar las dos para poder editarlas o
+   * reagendarlas sin salir de la conversación.
+   */
+  const convValida = conversation && mongoose.Types.ObjectId.isValid(String(conversation));
+  if (convValida && patient) {
+    query.$and = [...(query.$and || []), { $or: [{ patient }, { conversation }] }];
+  } else if (convValida) {
+    query.conversation = conversation;
+  } else if (patient) {
+    query.patient = patient;
+  }
   if (origin) query.origin = origin;
   // Filtro por rango de horario (HH:MM)
   if (fromTime && toTime) {
@@ -389,11 +405,13 @@ async function construirQueryAgenda(req, {
    */
   if (q && String(q).trim()) {
     const term = String(q).trim();
-    const porNombre = nameSearchFilter(term, ['firstName', 'lastName', 'cedula']);
+    // También por los otros números e identificaciones del paciente (el
+    // celular viejo, el RUC además de la cédula).
+    const porNombre = nameSearchFilter(term, ['firstName', 'lastName', 'cedula', 'identificationAliases']);
     const telefono = phoneSearchRegex(term);
     const alternativas = [
       ...(porNombre ? [porNombre] : []),
-      ...(telefono ? [{ phone: telefono }, { whatsapp: telefono }] : []),
+      ...(telefono ? [{ phone: telefono }, { whatsapp: telefono }, { otherPhones: telefono }] : []),
     ];
     const matched = await Patient.find({
       ...(clinicScope !== null ? { clinic: clinicScope } : {}),

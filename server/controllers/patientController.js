@@ -36,7 +36,9 @@ const { patientIdentificationFilter } = require('../utils/patientIdentity');
  * paciente (`GET /patients/:id`) y el listado de Clientes NO lo piden: ahí van
  * censurados para todos menos el admin.
  */
-const CONTACT_FIELDS = ['cedula', 'address', 'phone', 'whatsapp', 'email', 'otherPhones', 'otherEmails'];
+const CONTACT_FIELDS = [
+  'cedula', 'identificationAliases', 'address', 'phone', 'whatsapp', 'email', 'otherPhones', 'otherEmails',
+];
 
 /** ¿Este usuario puede ver los datos de contacto del paciente? (solo admin). */
 const canSeeContactData = (req) => canReq(req, 'patients.contactData');
@@ -102,7 +104,8 @@ const canSeePhone = (req) => canSeeContactData(req) || canReq(req, 'patients.pho
 
 /** ¿Puede ver ESTE campo de contacto? */
 const canSeeContactField = (req, field) => {
-  if (field === 'cedula') return canSeeCedula(req);
+  // Las otras identificaciones (el RUC además de la cédula) van con la cédula.
+  if (field === 'cedula' || field === 'identificationAliases') return canSeeCedula(req);
   // Los de más (los que deja una fusión) obedecen al mismo permiso que el principal.
   if (field === 'email' || field === 'otherEmails') return canSeeEmail(req);
   if (field === 'address') return canSeeAddress(req);
@@ -130,9 +133,6 @@ const stripContactData = (patient, req) => {
     if (canSeeContactField(req, f)) return;
     obj[f] = undefined;
   });
-  // Los alias son cédulas/RUC anteriores: obedecen exactamente al mismo
-  // permiso que la identificación principal.
-  if (!canSeeCedula(req)) obj.identificationAliases = undefined;
   const alternos = obj.scanImport?.alternos;
   if (Array.isArray(alternos) && alternos.length) {
     obj.scanImport = {
@@ -360,8 +360,57 @@ const cleanPatientBody = (body) => {
   }
   // El enum de género no acepta '': si viene vacío, mejor no enviar el campo.
   if (out.gender === '') delete out.gender;
+  /**
+   * VARIOS TELÉFONOS, CORREOS E IDENTIFICACIONES (sep-2026). El principal sigue
+   * en `phone`/`email`/`cedula`; los de más llegan como listas. Se limpian: sin
+   * vacíos, sin repetidos y sin repetir el principal.
+   */
+  const lista = (v, clave = (x) => x) => {
+    const vistos = new Set();
+    return (Array.isArray(v) ? v : String(v || '').split(/[,;\n]+/))
+      .map((x) => String(x || '').trim())
+      .filter((x) => {
+        const k = clave(x);
+        if (!k || vistos.has(k)) return false;
+        vistos.add(k);
+        return true;
+      });
+  };
+  const digitos = (x) => String(x || '').replace(/\D/g, '').slice(-9);
+  if ('otherPhones' in out) {
+    const principales = new Set([out.phone, out.whatsapp].map(digitos).filter(Boolean));
+    out.otherPhones = lista(out.otherPhones, digitos).filter((t) => !principales.has(digitos(t)));
+  }
+  if ('otherEmails' in out) {
+    const principal = String(out.email || '').trim().toLowerCase();
+    out.otherEmails = lista(out.otherEmails, (x) => x.toLowerCase())
+      .map((x) => x.toLowerCase())
+      .filter((x) => x !== principal);
+  }
+  if ('identificationAliases' in out) {
+    const principal = String(out.cedula || '').trim();
+    out.identificationAliases = lista(out.identificationAliases).filter((x) => x !== principal);
+  }
   return out;
 };
+
+/**
+ * ¿Alguna de estas identificaciones (la cédula y las otras) ya es de OTRO
+ * paciente? Devuelve la que choca, o null. La cédula es única en la base y un
+ * RUC o cédula de más tampoco puede identificar a dos personas.
+ */
+async function identificacionAjena(ids, excluirId = null) {
+  const limpias = [...new Set((ids || []).map((x) => String(x || '').trim()).filter(Boolean))];
+  for (const id of limpias) {
+    // eslint-disable-next-line no-await-in-loop
+    const otro = await Patient.findOne({
+      ...(excluirId ? { _id: { $ne: excluirId } } : {}),
+      ...patientIdentificationFilter(id),
+    }).select('_id');
+    if (otro) return id;
+  }
+  return null;
+}
 
 /** Traduce los errores de Mongoose a un mensaje que el usuario pueda accionar. */
 const describeSaveError = (error) => {
@@ -384,15 +433,20 @@ const describeSaveError = (error) => {
 exports.createPatient = async (req, res) => {
   try {
     const cedula = (req.body.cedula || '').trim();
+    const cuerpo = cleanPatientBody({ ...req.body, cedula });
     if (cedula) {
       const existing = await Patient.findOne(patientIdentificationFilter(cedula));
       if (existing) {
         return res.status(400).json({ message: 'Ya existe un paciente con esa cédula' });
       }
     }
+    const ajena = await identificacionAjena(cuerpo.identificationAliases);
+    if (ajena) {
+      return res.status(400).json({ message: `Ya existe un paciente con la identificación ${ajena}` });
+    }
 
     const patient = await Patient.create({
-      ...cleanPatientBody(req.body),
+      ...cuerpo,
       cedula,
       clinic: req.clinicId,
     });
@@ -441,6 +495,12 @@ exports.updatePatient = async (req, res) => {
         return res.status(400).json({
           message: 'Ya existe un paciente con ese número de identificación',
         });
+      }
+    }
+    if (Array.isArray(update.identificationAliases)) {
+      const ajena = await identificacionAjena(update.identificationAliases, req.params.id);
+      if (ajena) {
+        return res.status(400).json({ message: `Ya existe un paciente con la identificación ${ajena}` });
       }
     }
     // Etiquetas previas: para disparar 'tag_added' solo por las realmente nuevas.

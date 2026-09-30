@@ -161,6 +161,12 @@ router.post(
   requireRole(...CALL_CENTER_ROLES),
   ctrl.registerPatientFromChat
 );
+// Asignar el chat a un paciente YA registrado (cambió de número, etc.).
+router.post(
+  '/:id/link-patient',
+  requireRole(...CALL_CENTER_ROLES),
+  ctrl.linkPatientToChat
+);
 router.post(
   '/:id/appointment',
   requireRole(...CALL_CENTER_ROLES),
