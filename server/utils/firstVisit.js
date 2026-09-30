@@ -103,9 +103,13 @@ const dia = (v) => {
  * anterior.
  *
  * @param {Array<{_id, patient, date, turns?, autoSerumFollowUp?}>} citas
+ * @param {object} [opts]
+ * @param {Map<string, Set<string>>} [opts.ignorar] por paciente, ids de
+ *        seguimientos que tampoco son pasado (los que escribieron sus otras
+ *        citas, p. ej. el suero de serie de una a la que faltó).
  * @returns {Promise<Set<string>>} ids de las citas cuyo paciente ya tenía historia.
  */
-async function citasConHistoriaPrevia(citas) {
+async function citasConHistoriaPrevia(citas, { ignorar = new Map() } = {}) {
   const ClinicalRecord = require('../models/ClinicalRecord');
   const Patient = require('../models/Patient');
 
@@ -134,11 +138,12 @@ async function citasConHistoriaPrevia(citas) {
     const pid = idPac(cita);
     if (!pid) continue;
     if (conArchivoFisico.has(pid)) { out.add(String(cita._id)); continue; }
-    const propios = new Set(
-      [cita.autoSerumFollowUp, ...(cita.turns || []).flatMap((t) => [t.followUp, t.serumFollowUp])]
+    const propios = new Set([
+      ...[cita.autoSerumFollowUp, ...(cita.turns || []).flatMap((t) => [t.followUp, t.serumFollowUp])]
         .filter(Boolean)
-        .map(String)
-    );
+        .map(String),
+      ...(ignorar.get(pid) || []),
+    ]);
     const diaCita = dia(cita.date);
     const previo = (seguimientos.get(pid) || []).some((fu) => {
       if (propios.has(String(fu._id))) return false;

@@ -1997,27 +1997,85 @@ async function agendamientosCallCenter(req, { select, extra = {} }) {
 /**
  * ¿NUEVO, NUEVO SIN ASISTIR O RECURRENTE? Lo que cuenta para marketing.
  *
- * Nuevo es el paciente que se agendó por PRIMERA VEZ (`isFirstVisit`, congelada
- * al agendar) y además:
- *   · esa cita quedó ASISTIDA o COMPLETADA. Si está pendiente, confirmada, no
- *     asistió o se canceló, todavía no hay captación que pagar: sale aparte como
- *     «nuevo sin asistir» y no suma a los nuevos;
- *   · en su historia no había ya una consulta ANTERIOR a esa cita ni ficha física
- *     escaneada. La marca se tomó al agendar y la ficha de papel puede haberse
- *     subido después: se vuelve a mirar aquí (ver `citasConHistoriaPrevia`).
+ * Lo que cuenta es la PRIMERA CITA ATENDIDA del paciente. Es nuevo cuando:
+ *   · era nuevo al agendarse por primera vez: su cita más antigua (por fecha de
+ *     creación) quedó marcada `isFirstVisit`;
+ *   · ESTA cita quedó ASISTIDA o COMPLETADA y es la primera suya que se atendió
+ *     (de cualquier sucursal). Si faltó a la primera y en vez de reagendarla se
+ *     le creó otra, esa otra lleva `isFirstVisit: false` —ya existía una cita—,
+ *     pero es la que cuenta en cuanto asiste;
+ *   · en su historia no había ya una consulta ANTERIOR ni ficha física escaneada.
+ *     La marca se tomó al agendar y la ficha de papel puede haberse subido
+ *     después: se vuelve a mirar aquí (ver `citasConHistoriaPrevia`).
  *
- * Lo que no es primera vez —o resultó tener historia— es recurrente.
- * Necesita de cada cita: patient, date, status, isFirstVisit, turns y autoSerumFollowUp.
+ * Las citas no atendidas de un paciente que todavía puede ser nuevo salen como
+ * «nuevo sin asistir» (no suman). Si ese paciente ya asistió a una cita
+ * POSTERIOR, la que faltó queda como «reemplazada»: ni nuevo ni recurrente, para
+ * no contar dos veces a la misma persona. Todo lo demás es recurrente.
  */
-const CAMPOS_CLASIFICACION = 'patient date status isFirstVisit turns.followUp turns.serumFollowUp autoSerumFollowUp';
+const CAMPOS_CLASIFICACION = 'patient date status';
+const CAMPOS_CITA_PACIENTE = 'patient date startTime createdAt status isFirstVisit turns.followUp turns.serumFollowUp autoSerumFollowUp';
+const idPaciente = (a) => String(a.patient?._id || a.patient || '');
+/** Orden cronológico de las citas: día, hora y, si empatan, cuál se creó antes. */
+const ordenCitas = (a, b) => (new Date(a.date) - new Date(b.date))
+  || String(a.startTime || '').localeCompare(String(b.startTime || ''))
+  || (new Date(a.createdAt) - new Date(b.createdAt))
+  || String(a._id).localeCompare(String(b._id));
+
 async function clasificarAgendamientos(appts) {
-  const candidatas = appts.filter((a) => a.isFirstVisit);
-  const conHistoria = await citasConHistoriaPrevia(candidatas);
+  const pacienteIds = [...new Set(appts.map(idPaciente).filter(Boolean))];
+  // Solo puede ser nuevo quien alguna vez se agendó como primera vez: el resto
+  // (la mayoría) no hace falta ni mirarlo.
+  const posibles = pacienteIds.length
+    ? await Appointment.distinct('patient', { patient: { $in: pacienteIds }, isFirstVisit: true })
+    : [];
+  const citasDe = new Map();
+  if (posibles.length) {
+    for (const c of await Appointment.find({ patient: { $in: posibles } }).select(CAMPOS_CITA_PACIENTE).lean()) {
+      const k = String(c.patient);
+      if (!citasDe.has(k)) citasDe.set(k, []);
+      citasDe.get(k).push(c);
+    }
+  }
+
+  const porId = new Map();
+  const info = new Map();
+  const seguimientosDeSusCitas = new Map();
+  for (const [k, citas] of citasDe) {
+    for (const c of citas) porId.set(String(c._id), c);
+    const primeraCreada = citas.reduce(
+      (m, c) => (!m || new Date(c.createdAt) < new Date(m.createdAt) ? c : m),
+      null
+    );
+    info.set(k, {
+      nuevoAlAgendar: Boolean(primeraCreada?.isFirstVisit),
+      primeraAtendida: citas.filter(esAtendida).sort(ordenCitas)[0] || null,
+    });
+    // Lo que escribieron sus propias citas (la consulta, los sueros de serie)
+    // no es historia previa: si faltó a la primera, su suero de serie ya está
+    // fechado antes de la segunda.
+    seguimientosDeSusCitas.set(k, new Set(
+      citas.flatMap((c) => [c.autoSerumFollowUp, ...(c.turns || []).flatMap((t) => [t.followUp, t.serumFollowUp])])
+        .filter(Boolean)
+        .map(String)
+    ));
+  }
+
+  const conHistoria = await citasConHistoriaPrevia(
+    appts.filter((a) => info.get(idPaciente(a))?.nuevoAlAgendar),
+    { ignorar: seguimientosDeSusCitas }
+  );
+
   const tipo = new Map();
   for (const a of appts) {
     const id = String(a._id);
-    if (!a.isFirstVisit || conHistoria.has(id)) tipo.set(id, 'recurrente');
-    else tipo.set(id, esAtendida(a) ? 'nuevo' : 'nuevoSinAsistir');
+    const p = info.get(idPaciente(a));
+    if (!p?.nuevoAlAgendar || conHistoria.has(id)) { tipo.set(id, 'recurrente'); continue; }
+    const primera = p.primeraAtendida;
+    if (esAtendida(a)) tipo.set(id, String(primera?._id) === id ? 'nuevo' : 'recurrente');
+    else if (!primera) tipo.set(id, 'nuevoSinAsistir');
+    else if (ordenCitas(primera, porId.get(id) || a) < 0) tipo.set(id, 'recurrente');
+    else tipo.set(id, 'reemplazada');
   }
   return tipo;
 }
@@ -2096,7 +2154,8 @@ exports.callCenterSummary = async (req, res) => {
       const t = tipo.get(String(a._id));
       if (t === 'nuevo') fila.nuevos += 1;
       else if (t === 'nuevoSinAsistir') fila.nuevosSinAsistir += 1;
-      else fila.recurrentes += 1;
+      // La que faltó y se reemplazó por otra ya atendida: solo suma a «Agendadas».
+      else if (t === 'recurrente') fila.recurrentes += 1;
       const nombreSucursal = a.clinic?.nombreComercial || a.clinic?.name;
       if (nombreSucursal) fila.clinics.add(nombreSucursal);
     }
@@ -2151,8 +2210,8 @@ exports.callCenterSummary = async (req, res) => {
  * El resumen decía «Nuevos 12» y nada más: para pagar la captación había que
  * saber QUIÉNES eran, cuándo se agendaron y cuándo los dio el sistema por
  * nuevos. Solo salen los que cuentan como nuevos para la comisión (ver
- * `clasificarAgendamientos`): primera cita, ASISTIDA o COMPLETADA, y sin
- * consulta previa ni ficha física. Se da por nuevo cuando asistió.
+ * `clasificarAgendamientos`): su PRIMERA cita ATENDIDA —aunque antes faltara a
+ * otra—, sin consulta previa ni ficha física. Se da por nuevo cuando asistió.
  *
  * Filtros: los mismos del resumen (fechas, sucursal, `fecha=cita|agendada`) y
  * `agent` para ver los de una sola persona.
@@ -2165,7 +2224,9 @@ exports.callCenterSummary = async (req, res) => {
 const NUEVOS_POR_PAGINA = 200;
 exports.callCenterNewPatients = async (req, res) => {
   try {
-    const extra = { isFirstVisit: true, status: { $in: ESTADOS_ATENDIDA } };
+    // Sin filtrar por `isFirstVisit`: la cita que se creó tras una falta no la
+    // lleva y aun así puede ser la primera atendida.
+    const extra = { status: { $in: ESTADOS_ATENDIDA } };
     if (req.query.agent) {
       if (!mongoose.Types.ObjectId.isValid(req.query.agent)) {
         return res.status(400).json({ message: 'Agente no válido' });

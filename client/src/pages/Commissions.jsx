@@ -980,7 +980,7 @@ export default function Commissions() {
                     </span>
                     {a.nuevosSinAsistir > 0 && (
                       <span
-                        title="Primera cita todavía sin asistir (pendiente, no asistió o cancelada): no cuenta como nuevo"
+                        title="Paciente nuevo que todavía no ha asistido a ninguna cita (pendiente, no asistió o cancelada): no cuenta como nuevo hasta que asista"
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-amber-100 text-amber-700 font-semibold"
                       >
                         Sin asistir {a.nuevosSinAsistir}
@@ -1022,9 +1022,9 @@ export default function Commissions() {
                   {nuevosCC && <span className="text-slate-400 font-normal"> ({nuevosCC.total})</span>}
                 </h2>
                 <p className="text-xs text-slate-500 m-0 mt-0.5">
-                  Solo cuenta como nuevo el paciente que se agendó por primera vez y asistió: esa
-                  primera cita quedó asistida o completada. No cuenta quien ya tenía un seguimiento
-                  anterior a la cita o ficha física escaneada.
+                  Cuenta como nuevo el paciente en su primera cita atendida (asistida o completada);
+                  si faltó y se le agendó otra cita, cuenta la nueva cuando asiste. No cuenta quien ya
+                  tenía un seguimiento anterior a la cita o ficha física escaneada.
                 </p>
               </div>
               {agentCC && (

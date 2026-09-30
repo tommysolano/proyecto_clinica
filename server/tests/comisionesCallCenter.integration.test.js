@@ -204,6 +204,67 @@ test('quien ya tenía un seguimiento anterior o ficha física no es nuevo, aunqu
   assert.equal(suya.recurrentes, 3, 'el paciente viejo + los dos con historia previa');
 });
 
+test('si faltó a la primera y se le creó OTRA cita, cuenta como nuevo cuando asiste a esa otra', async () => {
+  const { clinicId, userId, activa, hoy } = await seed();
+  const ayer = new Date(hoy.getTime() - 86400000);
+  const pac = await Patient.create({ clinic: clinicId, firstName: 'FALTO Y VOLVIO' });
+  const primera = await Appointment.create({
+    clinic: clinicId, date: ayer, startTime: '09:00', status: 'no_asistio', patient: pac._id,
+    createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: true,
+  });
+  await Appointment.collection.updateOne({ _id: primera._id }, { $set: { createdAt: new Date(ayer.getTime() - 86400000) } });
+  // Su suero de serie quedó escrito al agendar la primera: no es historia previa.
+  await ClinicalRecord.create({
+    clinic: clinicId, patient: pac._id, createdBy: userId,
+    followUps: [{ _id: primera._id, fecha: ayer, motivoConsulta: 'Suero', createdBy: userId }],
+  });
+  await Appointment.collection.updateOne({ _id: primera._id }, { $set: { autoSerumFollowUp: primera._id } });
+  // La segunda la agendó el sistema como NO primera vez (ya existía la otra).
+  await Appointment.create({
+    clinic: clinicId, date: hoy, startTime: '09:00', status: 'asistida', patient: pac._id,
+    createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: false,
+  });
+
+  const pedir = (fn, desde) => H.runController(fn, H.mockReq(clinicId, userId, {}, {
+    role: 'marketing', query: { start: ymd(desde), end: ymd(hoy), clinic: 'all' },
+  })).then(ok);
+  const lista = await pedir(commissions.callCenterNewPatients, hoy);
+  assert.ok(lista.patients.some((p) => p.patient === 'FALTO Y VOLVIO'), 'la cita a la que asistió cuenta');
+
+  // Con los dos días: nuevo 1 vez (la atendida); la que faltó no suma ni como
+  // «sin asistir» ni como recurrente.
+  const resumen = await pedir(commissions.callCenterSummary, ayer);
+  const suya = resumen.agents.find((a) => a.userId === String(activa._id));
+  assert.equal(suya.total, 3, 'las dos del paciente + el recurrente del seed');
+  assert.equal(suya.nuevos, 1);
+  assert.equal(suya.nuevosSinAsistir, 0);
+  assert.equal(suya.recurrentes, 1);
+
+  // Una tercera cita, ya después de la atendida, es recurrente.
+  await Appointment.create({
+    clinic: clinicId, date: new Date(hoy.getTime() + 86400000), startTime: '09:00', status: 'completada',
+    patient: pac._id, createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: false,
+  });
+  const lista2 = ok(await H.runController(commissions.callCenterNewPatients, H.mockReq(clinicId, userId, {}, {
+    role: 'marketing', query: { start: ymd(ayer), end: ymd(new Date(hoy.getTime() + 86400000)), clinic: 'all' },
+  })));
+  assert.equal(lista2.patients.filter((p) => p.patient === 'FALTO Y VOLVIO').length, 1, 'se cuenta una sola vez');
+});
+
+test('el paciente que nunca fue nuevo no se vuelve nuevo por asistir', async () => {
+  const { clinicId, userId, activa, hoy } = await seed();
+  const pac = await Patient.create({ clinic: clinicId, firstName: 'DE CONTIFICO' });
+  // Su única cita se agendó ya como NO primera vez (tenía ventas, p. ej.).
+  await Appointment.create({
+    clinic: clinicId, date: hoy, startTime: '09:00', status: 'completada', patient: pac._id,
+    createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: false,
+  });
+  const lista = ok(await H.runController(commissions.callCenterNewPatients, H.mockReq(clinicId, userId, {}, {
+    role: 'marketing', query: { start: ymd(hoy), end: ymd(hoy), clinic: 'all' },
+  })));
+  assert.ok(!lista.patients.some((p) => p.patient === 'DE CONTIFICO'));
+});
+
 test('cada paciente nuevo trae su chat: el vinculado o, si no, el de su teléfono', async () => {
   const { clinicId, userId, activa, hoy } = await seed();
   const conChat = await Patient.create({ clinic: clinicId, firstName: 'CON CHAT' });
