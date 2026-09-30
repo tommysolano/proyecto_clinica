@@ -936,6 +936,7 @@ export default function Commissions() {
           <p className="text-sm text-slate-500">
             Citas agendadas por call center: <b>{dataCC.totals?.total ?? 0}</b>
             <span className="text-emerald-700"> · nuevos: {dataCC.totals?.nuevos ?? 0}</span>
+            <span className="text-amber-700"> · nuevos sin asistir: {dataCC.totals?.nuevosSinAsistir ?? 0}</span>
             <span className="text-slate-400"> · recurrentes: {dataCC.totals?.recurrentes ?? 0}</span>
             <span className="text-slate-400">
               {' '}· por {fechaCC === 'agendada' ? 'fecha en que se agendó' : 'fecha de la cita'}
@@ -972,11 +973,19 @@ export default function Commissions() {
                       Agendadas: <b className="text-slate-900">{a.total}</b>
                     </span>
                     <span
-                      title="Pacientes nuevos"
+                      title="Pacientes nuevos cuya primera cita quedó asistida o completada"
                       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700 font-semibold"
                     >
                       Nuevos {a.nuevos}
                     </span>
+                    {a.nuevosSinAsistir > 0 && (
+                      <span
+                        title="Primera cita todavía sin asistir (pendiente, no asistió o cancelada): no cuenta como nuevo"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-amber-100 text-amber-700 font-semibold"
+                      >
+                        Sin asistir {a.nuevosSinAsistir}
+                      </span>
+                    )}
                     <span
                       title="Pacientes recurrentes"
                       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-slate-200/70 text-slate-700 font-semibold"
@@ -1004,8 +1013,7 @@ export default function Commissions() {
           </div>
 
           {/* PACIENTES NUEVOS, UNO POR UNO: quién, quién lo agendó, cuándo se
-              agendó y cuándo el sistema lo dio por nuevo (es el mismo momento:
-              la marca se decide al agendar y queda congelada). */}
+              agendó y cuándo cuenta como nuevo (cuando asistió a esa primera cita). */}
           <div id="nuevos-cc" className="bg-white rounded-xl border border-slate-200 p-3 space-y-3 scroll-mt-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -1014,9 +1022,9 @@ export default function Commissions() {
                   {nuevosCC && <span className="text-slate-400 font-normal"> ({nuevosCC.total})</span>}
                 </h2>
                 <p className="text-xs text-slate-500 m-0 mt-0.5">
-                  El sistema decide que un paciente es nuevo en el momento en que se agenda la cita
-                  (si no tiene citas, historia clínica, ventas ni ficha escaneada previas).
-                  La comisión se gana cuando la cita queda asistida o completada.
+                  Solo cuenta como nuevo el paciente que se agendó por primera vez y asistió: esa
+                  primera cita quedó asistida o completada. No cuenta quien ya tenía un seguimiento
+                  anterior a la cita o ficha física escaneada.
                 </p>
               </div>
               {agentCC && (
@@ -1078,7 +1086,7 @@ export default function Commissions() {
                             {fmtDateTime(p.scheduledAt)}
                           </td>
                           <td data-cell="detalle">
-                            <span className="md:hidden text-slate-400">Nuevo desde: </span>
+                            <span className="md:hidden text-slate-400">Nuevo desde (asistió): </span>
                             {fmtDateTime(p.markedNewAt)}
                           </td>
                           <td data-cell="detalle">

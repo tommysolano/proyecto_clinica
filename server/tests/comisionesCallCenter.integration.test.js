@@ -6,6 +6,8 @@
  * - El listado de pacientes nuevos trae quién los agendó, cuándo se agendaron y
  *   cuándo el sistema los dio por nuevos.
  * - El filtro puede ir por fecha de la cita o por fecha en que se agendó.
+ * - Nuevo = primera cita ASISTIDA o COMPLETADA y sin seguimiento anterior ni
+ *   ficha física (aunque la ficha se haya subido después de agendar).
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -16,6 +18,7 @@ const User = require('../models/User');
 const Patient = require('../models/Patient');
 const Appointment = require('../models/Appointment');
 const Conversation = require('../models/Conversation');
+const ClinicalRecord = require('../models/ClinicalRecord');
 require('../models/Clinic'); // el populate de la sucursal
 
 const ok = (result) => {
@@ -86,7 +89,8 @@ test('lista a los pacientes nuevos con quién y cuándo se agendaron', async () 
   assert.equal(p.agent, ida.name);
   assert.equal(p.agentInactive, true);
   assert.equal(new Date(p.scheduledAt).getTime(), haceDiezDias.getTime());
-  assert.equal(new Date(p.markedNewAt).getTime(), haceDiezDias.getTime());
+  // Cuenta como nuevo desde que asistió (sin hora de llegada: el día de la cita).
+  assert.equal(new Date(p.markedNewAt).getTime(), hoy.getTime());
   assert.equal(p.status, 'asistida');
 
   // Filtrando por la fecha en que se AGENDÓ: hoy no hay ninguno, hace 10 días sí.
@@ -113,7 +117,7 @@ test('los pacientes nuevos vienen paginados, lo último agendado primero', async
     const pac = await Patient.create({ clinic: clinicId, firstName: `PAG${i}` });
     // eslint-disable-next-line no-await-in-loop
     const c = await Appointment.create({
-      clinic: clinicId, date: hoy, startTime: '11:00', status: 'pendiente', patient: pac._id,
+      clinic: clinicId, date: hoy, startTime: '11:00', status: 'asistida', patient: pac._id,
       createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: true,
     });
     // eslint-disable-next-line no-await-in-loop
@@ -134,6 +138,72 @@ test('los pacientes nuevos vienen paginados, lo último agendado primero', async
   assert.equal(p3.patients[1].patient, 'PACIENTE NUEVO', 'el más antiguo, al final');
 });
 
+test('la primera cita que no quedó asistida no cuenta como nuevo', async () => {
+  const { clinicId, userId, activa, hoy } = await seed();
+  for (const status of ['pendiente', 'confirmada', 'no_asistio', 'cancelada']) {
+    // eslint-disable-next-line no-await-in-loop
+    const pac = await Patient.create({ clinic: clinicId, firstName: `SIN ASISTIR ${status}` });
+    // eslint-disable-next-line no-await-in-loop
+    await Appointment.create({
+      clinic: clinicId, date: hoy, startTime: '09:00', status, patient: pac._id,
+      createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: true,
+    });
+  }
+  const query = { start: ymd(hoy), end: ymd(hoy), clinic: 'all' };
+  const resumen = ok(await H.runController(
+    commissions.callCenterSummary, H.mockReq(clinicId, userId, {}, { role: 'marketing', query })
+  ));
+  const suya = resumen.agents.find((a) => a.userId === String(activa._id));
+  assert.equal(suya.nuevos, 0);
+  assert.equal(suya.nuevosSinAsistir, 4);
+  assert.equal(resumen.totals.nuevos, 1, 'solo el asistido de la asesora desactivada');
+  assert.equal(resumen.totals.nuevosSinAsistir, 4);
+
+  const lista = ok(await H.runController(
+    commissions.callCenterNewPatients, H.mockReq(clinicId, userId, {}, { role: 'marketing', query })
+  ));
+  assert.deepEqual(lista.patients.map((p) => p.patient), ['PACIENTE NUEVO']);
+});
+
+test('quien ya tenía un seguimiento anterior o ficha física no es nuevo, aunque se subiera después de agendar', async () => {
+  const { clinicId, userId, activa, hoy } = await seed();
+  const crear = async (firstName, extraPac = {}) => {
+    const pac = await Patient.create({ clinic: clinicId, firstName, ...extraPac });
+    const c = await Appointment.create({
+      clinic: clinicId, date: hoy, startTime: '08:00', status: 'completada', patient: pac._id,
+      createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: true,
+    });
+    return { pac, c };
+  };
+  // La ficha de papel (consulta de 2023) se importó DESPUÉS de agendar.
+  const { pac: papel } = await crear('CON FICHA DE PAPEL');
+  await ClinicalRecord.create({
+    clinic: clinicId, patient: papel._id, createdBy: userId,
+    followUps: [{ fecha: new Date('2023-04-12'), motivoConsulta: 'Control', createdBy: userId }],
+  });
+  await crear('CON ARCHIVO FISICO', { scanImport: { importadoAt: new Date('2026-09-23') } });
+  // El seguimiento que escribió la propia consulta (mismo día) no es pasado.
+  const { pac: deHoy } = await crear('SEGUIMIENTO DE LA CITA');
+  await ClinicalRecord.create({
+    clinic: clinicId, patient: deHoy._id, createdBy: userId,
+    followUps: [{ fecha: hoy, motivoConsulta: 'Primera consulta', createdBy: userId }],
+  });
+
+  const query = { start: ymd(hoy), end: ymd(hoy), clinic: 'all' };
+  const lista = ok(await H.runController(
+    commissions.callCenterNewPatients, H.mockReq(clinicId, userId, {}, { role: 'marketing', query })
+  ));
+  assert.deepEqual(lista.patients.map((p) => p.patient).sort(), ['PACIENTE NUEVO', 'SEGUIMIENTO DE LA CITA']);
+  assert.equal(lista.total, 2);
+
+  const resumen = ok(await H.runController(
+    commissions.callCenterSummary, H.mockReq(clinicId, userId, {}, { role: 'marketing', query })
+  ));
+  const suya = resumen.agents.find((a) => a.userId === String(activa._id));
+  assert.equal(suya.nuevos, 1);
+  assert.equal(suya.recurrentes, 3, 'el paciente viejo + los dos con historia previa');
+});
+
 test('cada paciente nuevo trae su chat: el vinculado o, si no, el de su teléfono', async () => {
   const { clinicId, userId, activa, hoy } = await seed();
   const conChat = await Patient.create({ clinic: clinicId, firstName: 'CON CHAT' });
@@ -144,7 +214,7 @@ test('cada paciente nuevo trae su chat: el vinculado o, si no, el de su teléfon
   for (const pac of [conChat, porTel, sinChat]) {
     // eslint-disable-next-line no-await-in-loop
     await Appointment.create({
-      clinic: clinicId, date: hoy, startTime: '12:00', status: 'pendiente', patient: pac._id,
+      clinic: clinicId, date: hoy, startTime: '12:00', status: 'completada', patient: pac._id,
       createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: true,
     });
   }

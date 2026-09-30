@@ -12,6 +12,7 @@ const Referral = require('../models/Referral');
 const Conversation = require('../models/Conversation');
 const Patient = require('../models/Patient');
 const { normalizePhone } = require('../utils/phoneNormalize');
+const { citasConHistoriaPrevia } = require('../utils/firstVisit');
 const { createEntry, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { DOCTOR_SPECIALTY_ROLES, DOCTOR_LIKE_ROLES } = require('../constants/roles');
@@ -1957,7 +1958,7 @@ const FECHA_CALLCENTER = { cita: 'date', agendada: 'createdAt' };
  * La sucursal filtra las CITAS, no a los agentes: el call center es único para
  * toda la organización y agenda en sedes en las que no figura.
  */
-async function agendamientosCallCenter(req, { select, extra = {}, populatePatient = false, pagina = null }) {
+async function agendamientosCallCenter(req, { select, extra = {} }) {
   const { start, end, clinic } = req.query;
   const { startDate, endDate } = parseRange(start, end);
   const campo = FECHA_CALLCENTER[req.query.fecha] || 'date';
@@ -1976,21 +1977,10 @@ async function agendamientosCallCenter(req, { select, extra = {}, populatePatien
   };
   if (clinic !== 'all') query.clinic = clinic || req.clinicId;
 
-  let consulta = Appointment.find(query)
+  const appts = await Appointment.find(query)
     .populate('clinic', 'name nombreComercial')
-    .select(select);
-  if (populatePatient) consulta = consulta.populate('patient', 'firstName lastName createdAt');
-  // Con página: lo último agendado primero, y solo esa tanda. El total se
-  // cuenta aparte para el paginador.
-  let total = null;
-  if (pagina) {
-    total = await Appointment.countDocuments(query);
-    consulta = consulta
-      .sort({ createdAt: -1, _id: -1 })
-      .skip((pagina.page - 1) * pagina.limit)
-      .limit(pagina.limit);
-  }
-  const appts = await consulta.lean();
+    .select(select)
+    .lean();
 
   // Quien agendó por el sello de rol y ya no es call center no está en la
   // lista: se le busca aparte para tener su nombre y si sigue activo.
@@ -2001,7 +1991,35 @@ async function agendamientosCallCenter(req, { select, extra = {}, populatePatien
     : [];
   const usuarios = new Map([...usuariosCC, ...otros].map((u) => [String(u._id), u]));
 
-  return { startDate, endDate, campo, appts, total, usuariosCC, usuarios };
+  return { startDate, endDate, campo, appts, usuariosCC, usuarios };
+}
+
+/**
+ * ¿NUEVO, NUEVO SIN ASISTIR O RECURRENTE? Lo que cuenta para marketing.
+ *
+ * Nuevo es el paciente que se agendó por PRIMERA VEZ (`isFirstVisit`, congelada
+ * al agendar) y además:
+ *   · esa cita quedó ASISTIDA o COMPLETADA. Si está pendiente, confirmada, no
+ *     asistió o se canceló, todavía no hay captación que pagar: sale aparte como
+ *     «nuevo sin asistir» y no suma a los nuevos;
+ *   · en su historia no había ya una consulta ANTERIOR a esa cita ni ficha física
+ *     escaneada. La marca se tomó al agendar y la ficha de papel puede haberse
+ *     subido después: se vuelve a mirar aquí (ver `citasConHistoriaPrevia`).
+ *
+ * Lo que no es primera vez —o resultó tener historia— es recurrente.
+ * Necesita de cada cita: patient, date, status, isFirstVisit, turns y autoSerumFollowUp.
+ */
+const CAMPOS_CLASIFICACION = 'patient date status isFirstVisit turns.followUp turns.serumFollowUp autoSerumFollowUp';
+async function clasificarAgendamientos(appts) {
+  const candidatas = appts.filter((a) => a.isFirstVisit);
+  const conHistoria = await citasConHistoriaPrevia(candidatas);
+  const tipo = new Map();
+  for (const a of appts) {
+    const id = String(a._id);
+    if (!a.isFirstVisit || conHistoria.has(id)) tipo.set(id, 'recurrente');
+    else tipo.set(id, esAtendida(a) ? 'nuevo' : 'nuevoSinAsistir');
+  }
+  return tipo;
 }
 
 /**
@@ -2050,8 +2068,9 @@ const nombreAgente = (usuarios, a) =>
 
 /**
  * Resumen de AGENDAMIENTOS por agente de call center: cuántas citas agendó cada
- * uno y de esas cuántas fueron para pacientes NUEVOS y cuántas para
- * RECURRENTES. Mismo alcance de fechas/sucursal que el resumen por doctor.
+ * uno y de esas cuántas fueron para pacientes NUEVOS (ya asistidos), NUEVOS SIN
+ * ASISTIR (no suman) y RECURRENTES —ver `clasificarAgendamientos`—. Mismo
+ * alcance de fechas/sucursal que el resumen por doctor.
  *
  * Los agentes ACTIVOS salen siempre (aunque no agendaran nada, para ver quién
  * está en cero); los desactivados solo si agendaron en el período.
@@ -2061,18 +2080,22 @@ exports.callCenterSummary = async (req, res) => {
     const { clinic } = req.query;
     const {
       startDate, endDate, campo, appts, usuariosCC, usuarios,
-    } = await agendamientosCallCenter(req, { select: 'createdBy createdByName isFirstVisit clinic' });
+    } = await agendamientosCallCenter(req, { select: `createdBy createdByName clinic ${CAMPOS_CLASIFICACION}` });
+    const tipo = await clasificarAgendamientos(appts);
 
+    const filaVacia = (name) => ({ name, total: 0, nuevos: 0, nuevosSinAsistir: 0, recurrentes: 0, clinics: new Set() });
     const porAgente = new Map();
     for (const a of appts) {
       const id = String(a.createdBy || `nombre:${a.createdByName || ''}`);
       let fila = porAgente.get(id);
       if (!fila) {
-        fila = { name: nombreAgente(usuarios, a), total: 0, nuevos: 0, recurrentes: 0, clinics: new Set() };
+        fila = filaVacia(nombreAgente(usuarios, a));
         porAgente.set(id, fila);
       }
       fila.total += 1;
-      if (a.isFirstVisit) fila.nuevos += 1;
+      const t = tipo.get(String(a._id));
+      if (t === 'nuevo') fila.nuevos += 1;
+      else if (t === 'nuevoSinAsistir') fila.nuevosSinAsistir += 1;
       else fila.recurrentes += 1;
       const nombreSucursal = a.clinic?.nombreComercial || a.clinic?.name;
       if (nombreSucursal) fila.clinics.add(nombreSucursal);
@@ -2085,7 +2108,7 @@ exports.callCenterSummary = async (req, res) => {
       if (!u.active || porAgente.has(id)) continue;
       const trabajaAqui = !sede || u.worksInAllClinics ||
         (u.clinics || []).some((c) => c.role === 'call_center' && String(c.clinic) === sede);
-      if (trabajaAqui) porAgente.set(id, { name: u.name, total: 0, nuevos: 0, recurrentes: 0, clinics: new Set() });
+      if (trabajaAqui) porAgente.set(id, filaVacia(u.name));
     }
 
     const agents = [...porAgente.entries()]
@@ -2099,6 +2122,7 @@ exports.callCenterSummary = async (req, res) => {
           clinics: [...f.clinics],
           total: f.total,
           nuevos: f.nuevos,
+          nuevosSinAsistir: f.nuevosSinAsistir,
           recurrentes: f.recurrentes,
         };
       })
@@ -2112,6 +2136,7 @@ exports.callCenterSummary = async (req, res) => {
       totals: {
         total: appts.length,
         nuevos: agents.reduce((t, a) => t + a.nuevos, 0),
+        nuevosSinAsistir: agents.reduce((t, a) => t + a.nuevosSinAsistir, 0),
         recurrentes: agents.reduce((t, a) => t + a.recurrentes, 0),
       },
     });
@@ -2125,20 +2150,22 @@ exports.callCenterSummary = async (req, res) => {
  *
  * El resumen decía «Nuevos 12» y nada más: para pagar la captación había que
  * saber QUIÉNES eran, cuándo se agendaron y cuándo los dio el sistema por
- * nuevos. Lo último es el momento de agendar: la marca `isFirstVisit` se decide
- * al crear la cita (ver utils/firstVisit.js) y queda congelada, así que la fecha
- * en que se agendó ES la fecha en que el sistema lo consideró nuevo.
+ * nuevos. Solo salen los que cuentan como nuevos para la comisión (ver
+ * `clasificarAgendamientos`): primera cita, ASISTIDA o COMPLETADA, y sin
+ * consulta previa ni ficha física. Se da por nuevo cuando asistió.
  *
  * Filtros: los mismos del resumen (fechas, sucursal, `fecha=cita|agendada`) y
  * `agent` para ver los de una sola persona.
  *
  * PAGINADO DE 200 EN 200 (`page`, `limit`): con un mes entero de call center
- * salían cientos de filas de golpe y la pantalla tardaba en cargar.
+ * salían cientos de filas de golpe y la pantalla tardaba en cargar. La historia
+ * previa no se puede preguntar en la consulta a Mongo, así que se filtra sobre
+ * las candidatas (livianas) y se pide completa solo la página que se enseña.
  */
 const NUEVOS_POR_PAGINA = 200;
 exports.callCenterNewPatients = async (req, res) => {
   try {
-    const extra = { isFirstVisit: true };
+    const extra = { isFirstVisit: true, status: { $in: ESTADOS_ATENDIDA } };
     if (req.query.agent) {
       if (!mongoose.Types.ObjectId.isValid(req.query.agent)) {
         return res.status(400).json({ message: 'Agente no válido' });
@@ -2147,12 +2174,24 @@ exports.callCenterNewPatients = async (req, res) => {
     }
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || NUEVOS_POR_PAGINA, 1), 500);
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
-    const { appts, total, usuarios } = await agendamientosCallCenter(req, {
-      select: 'patient date startTime createdAt createdBy createdByName status clinic serviceName services arrivedAt completedAt',
+    const { appts: candidatas, usuarios } = await agendamientosCallCenter(req, {
+      select: `createdAt createdBy ${CAMPOS_CLASIFICACION}`,
       extra,
-      populatePatient: true,
-      pagina: { page, limit },
     });
+    const tipo = await clasificarAgendamientos(candidatas);
+    // Lo último agendado primero.
+    const nuevas = candidatas
+      .filter((a) => tipo.get(String(a._id)) === 'nuevo')
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt) || String(b._id).localeCompare(String(a._id)));
+    const total = nuevas.length;
+    const idsPagina = nuevas.slice((page - 1) * limit, page * limit).map((a) => a._id);
+    const orden = new Map(idsPagina.map((id, i) => [String(id), i]));
+    const appts = (await Appointment.find({ _id: { $in: idsPagina } })
+      .populate('clinic', 'name nombreComercial')
+      .populate('patient', 'firstName lastName createdAt')
+      .select('patient date startTime createdAt createdBy createdByName status clinic serviceName services arrivedAt completedAt')
+      .lean())
+      .sort((a, b) => orden.get(String(a._id)) - orden.get(String(b._id)));
     const chatDe = await chatsDePacientes(appts.map((a) => a.patient?._id));
 
     const patients = appts
@@ -2168,9 +2207,9 @@ exports.callCenterNewPatients = async (req, res) => {
           agentId: a.createdBy ? String(a.createdBy) : null,
           agent: nombreAgente(usuarios, a),
           agentInactive: agente ? agente.active === false : true,
-          // Se agendó y, en ese mismo momento, el sistema lo marcó como nuevo.
           scheduledAt: a.createdAt,
-          markedNewAt: a.createdAt,
+          // Cuenta como nuevo desde que asistió a esa primera cita.
+          markedNewAt: a.arrivedAt || a.completedAt || a.date,
           appointmentDate: a.date,
           startTime: a.startTime || '',
           status: a.status,
