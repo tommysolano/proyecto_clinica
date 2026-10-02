@@ -69,3 +69,20 @@ test('sin una suma exacta el movimiento queda sin asiento', () => {
   assert.equal(unmatched.length, 1);
   assert.equal(blocks[0].items[0].matched, false);
 });
+
+test('los pendientes al corte deben explicar saldo contable − bancario; los posfechados no cuentan', () => {
+  const lines = [['05/01/26', 'COBRO', '1', 'DEP', '+', '50', '']];
+  const pendingRow = (date, sign, amount) => ['', '', date, 'PARTIDA', 'R', sign, amount, ''];
+  const base = sheets(lines, '$150.00');
+  base.balances[4] = ['', '', '$150.00', '$1,000.00', '-$850.00'];
+  const pending = {
+    DEPOSITO_TRANSITO: [['Depósitos'], [], [], [], ['31/01/26', bank, '30/01/26', 'DEP VT', 'R', '+', '900', '']],
+    CHEQUE_PENDIENTE: [['Cheques'], [], [], [], ['31/01/26', bank, '20/01/26', 'CHEQUE', '7', '-', '50', 'PROV']],
+    CHEQUE_POSTFECHADO: [['Postfechados'], [], [], [], ['31/01/26', bank, ...pendingRow('15/02/26', '-', '999').slice(2)]],
+  };
+  const [block] = parseReconciliations({ ...base, pending });
+  assert.equal(block.pending.length, 3);
+  assert.deepEqual(block.pending.map((item) => item.amount), [900, -50, -999]);
+  pending.CHEQUE_PENDIENTE[4][6] = '60';
+  assert.throws(() => parseReconciliations({ ...base, pending }), /bancario \+ pendientes ≠ contable/);
+});

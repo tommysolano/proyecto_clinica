@@ -46,7 +46,7 @@ const accountNumberOf = (bank) => (text(bank).match(/(\d{6,})\s*$/) || [])[1] ||
  * Convierte las filas de ambas hojas en conciliaciones. Comprueba que el saldo
  * inicial más los movimientos dé el saldo bancario del resumen.
  */
-function parseReconciliations({ movements, balances }) {
+function parseReconciliations({ movements, balances, pending = {} }) {
   const summaries = new Map();
   for (let index = 0; index < balances.length; index += 1) {
     const row = balances[index];
@@ -85,8 +85,44 @@ function parseReconciliations({ movements, balances }) {
     }
   }
   if (summaries.size !== blocks.length) throw new Error(`Resúmenes ${summaries.size} ≠ conciliaciones ${blocks.length}`);
+
+  // Partidas pendientes al corte (columnas: corte, banco, fecha, detalle, referencia, signo, monto, persona).
+  for (const block of blocks) block.pending = [];
+  const byKey = new Map(blocks.map((block) => [`${block.cutDate}|${block.accountNumber}`, block]));
+  for (const [category, rows] of Object.entries(pending)) {
+    let target = null;
+    for (const row of rows) {
+      const cut = isoDay(row[0]);
+      if (cut && text(row[1])) {
+        target = byKey.get(`${cut}|${accountNumberOf(row[1])}`);
+        if (!target) throw new Error(`${category}: conciliación inexistente ${cut} ${text(row[1])}`);
+      }
+      const date = isoDay(row[2]);
+      if (!date || !target) continue;
+      const sign = text(row[5]);
+      if (!['+', '-'].includes(sign)) throw new Error(`${category}: signo inválido «${sign}»`);
+      const amount = money(row[6]);
+      target.pending.push({ category, date, description: text(row[3]), reference: text(row[4]),
+        amount: r2(sign === '-' ? -amount : amount), party: text(row[7]) });
+    }
+  }
+  if (Object.keys(pending).length) for (const block of blocks) {
+    const inTransit = block.pending.filter((item) => item.category !== 'CHEQUE_POSTFECHADO')
+      .reduce((sum, item) => sum + cents(item.amount), 0);
+    if (cents(block.statementBalance) + inTransit !== cents(block.bookBalance)) {
+      throw new Error(`${block.cutDate} ${block.bankName}: bancario + pendientes ≠ contable`);
+    }
+  }
   return blocks;
 }
+
+const PENDING_SHEETS = {
+  DEPOSITO_TRANSITO: 'Depósitos en tránsito',
+  CHEQUE_PENDIENTE: 'Cheques pendientes de cobro',
+  NC_TRANSITO: 'Notas de crédito en tránsito',
+  ND_TRANSITO: 'Notas de dédito en tránsito', // así, con la errata, la nombra Contífico
+  CHEQUE_POSTFECHADO: 'Cheques Postfechados',
+};
 
 /**
  * Asigna a cada movimiento conciliado una línea del mayor: misma cuenta, fecha, signo
@@ -195,13 +231,18 @@ async function readWorkbook(file) {
     });
     return result;
   };
-  return { movements: rows('Movimientos'), balances: rows('Saldo') };
+  const pending = Object.fromEntries(Object.entries(PENDING_SHEETS).map(([category, name]) => [category, rows(name)]));
+  return { movements: rows('Movimientos'), balances: rows('Saldo'), pending };
 }
 
 async function main() {
   const fileArg = process.argv.find((arg) => arg.startsWith('--file='));
   if (!fileArg) throw new Error('Indique --file=Conciliaciones.xlsx');
   const commit = process.argv.includes('--commit');
+  // El exporte no trae el estado; los cortes «Pendiente» en Contífico se indican así:
+  // --pending=2026-07-31:1400632113,2026-07-31:1071312145
+  const pendingArg = process.argv.find((arg) => arg.startsWith('--pending='));
+  const pendingCuts = new Set(pendingArg ? pendingArg.slice('--pending='.length).split(',').map((value) => value.trim()).filter(Boolean) : []);
   const file = fileArg.slice('--file='.length);
   if (!/\.xlsx$/i.test(file)) throw new Error('Guarde el exporte de Contífico como .xlsx');
   const blocks = parseReconciliations(await readWorkbook(file));
@@ -244,27 +285,44 @@ async function main() {
       description: journal.description || '' });
   }
   const { unmatched } = matchLines(blocks, ledger);
+  // Un pendiente puede repetirse en varios cortes (un cheque sin cobrar dos meses) y
+  // conciliarse en uno posterior: se empata dentro de cada conciliación por separado.
+  const pendingUnmatched = [];
+  for (const block of blocks) {
+    const scoped = { ...block, lines: block.pending };
+    pendingUnmatched.push(...matchLines([scoped], ledger).unmatched);
+    block.pendingItems = scoped.items;
+  }
+  const describe = (line) => `${line.cutDate} ${line.bank.slice(0, 20)} ${line.date} ${line.amount} ${line.category || line.type} ${line.reference} ${line.description.slice(0, 60)} (candidatas ${line.candidates})`;
   const total = blocks.reduce((sum, block) => sum + block.lines.length, 0);
+  const pendingTotal = blocks.reduce((sum, block) => sum + block.pending.length, 0);
   console.log(JSON.stringify({ mode: commit ? 'COMMIT' : 'DRY_RUN', reconciliations: blocks.length, movements: total,
-    matched: total - unmatched.length, unmatched: unmatched.length,
-    unmatchedSample: unmatched.slice(0, 30).map((line) => `${line.cutDate} ${line.bank.slice(0, 20)} ${line.date} ${line.amount} ${line.type} ${line.reference} ${line.description.slice(0, 60)} (candidatas ${line.candidates})`) }, null, 2));
+    matched: total - unmatched.length, unmatched: unmatched.length, unmatchedSample: unmatched.slice(0, 30).map(describe),
+    pending: pendingTotal, pendingMatched: pendingTotal - pendingUnmatched.length,
+    pendingUnmatched: pendingUnmatched.length, pendingUnmatchedSample: pendingUnmatched.slice(0, 30).map(describe),
+    pendingStatus: [...pendingCuts] }, null, 2));
+  for (const key of pendingCuts) {
+    if (!blocks.some((block) => `${block.cutDate}:${block.accountNumber}` === key)) throw new Error(`--pending=${key} no existe en el archivo`);
+  }
   if (!commit) return;
-  if (unmatched.length) throw new Error(`${unmatched.length} movimientos sin línea del mayor; no se importa nada`);
+  if (unmatched.length || pendingUnmatched.length) throw new Error('Hay movimientos sin línea del mayor; no se importa nada');
 
   for (const block of blocks) {
     const cutDate = new Date(`${block.cutDate}T12:00:00.000Z`);
     const sourceKey = `contifico:${block.accountNumber}:${block.cutDate}`;
+    const closed = !pendingCuts.has(`${block.cutDate}:${block.accountNumber}`);
+    const item = (row) => ({ lines: row.lines, note: row.note, date: new Date(`${row.date}T12:00:00.000Z`),
+      type: row.type || '', description: row.description, reference: row.reference, party: row.party,
+      amount: row.amount, matched: row.matched, ...(row.category ? { category: row.category } : {}) });
     await Reconciliation.updateOne({ clinic: clinic._id, sourceKey }, { $set: {
       clinic: clinic._id, bankAccount: block.bank._id, cutDate, periodEnd: cutDate, source: 'CONTIFICO', sourceKey,
       description: `Conciliación importada de Contífico (${block.bankName})`,
       openingBalance: block.openingBalance, statementBalance: block.statementBalance, bookBalance: block.bookBalance,
-      difference: block.difference, status: 'CONCILIADO', closedAt: cutDate, items: [], statementLines: [],
-      journalItems: block.items.map((item) => ({ lines: item.lines, note: item.note,
-        date: new Date(`${item.date}T12:00:00.000Z`), type: item.type, description: item.description,
-        reference: item.reference, party: item.party, amount: item.amount, matched: item.matched })),
+      difference: block.difference, status: closed ? 'CONCILIADO' : 'BORRADOR', closedAt: closed ? cutDate : null,
+      items: [], statementLines: [], journalItems: block.items.map(item), pendingItems: block.pendingItems.map(item),
     } }, { upsert: true });
   }
-  console.log(`Importadas ${blocks.length} conciliaciones (${total} movimientos)`);
+  console.log(`Importadas ${blocks.length} conciliaciones (${total} movimientos, ${pendingTotal} pendientes al corte)`);
 }
 
 if (require.main === module) main().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; })

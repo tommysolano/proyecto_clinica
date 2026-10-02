@@ -703,6 +703,8 @@ exports.cashToTransfer = async (req, res) => {
 
 // ---------- Conciliación bancaria ----------
 
+const CONTIFICO_READONLY = 'Conciliación importada de Contífico: se actualiza volviendo a importar su exporte';
+
 /** Calcula el saldo contable (libro) de una cuenta hasta una fecha de corte (incl.). */
 async function bookBalanceAt(clinicId, bank, cutDate, session) {
   const q = BankTransaction.aggregate([
@@ -799,7 +801,8 @@ exports.getReconciliation = async (req, res) => {
   try {
     const raw = await Reconciliation.findById(req.params.id);
     if (!raw || String(raw.clinic) !== String(req.clinicId)) return res.status(404).json({ message: 'No encontrada' });
-    if (raw.status === 'BORRADOR') {
+    // Las importadas de Contífico son un espejo: no se recalculan con BankTransaction.
+    if (raw.status === 'BORRADOR' && raw.source !== 'CONTIFICO') {
       const cambio = await syncReconciliationItems(raw, req.clinicId);
       if (cambio) await raw.save();
     }
@@ -811,6 +814,7 @@ exports.updateReconciliation = async (req, res) => {
   try {
     const rec = await Reconciliation.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!rec) return res.status(404).json({ message: 'No encontrada' });
+    if (rec.source === 'CONTIFICO') return res.status(400).json({ message: CONTIFICO_READONLY });
     if (rec.status === 'CONCILIADO') return res.status(400).json({ message: 'Ya cerrada' });
 
     // Los movimientos del libro se recargan SIEMPRE (no solo al mover la fecha de corte),
@@ -897,6 +901,7 @@ exports.closeReconciliation = async (req, res) => {
     const recId = await runInTransaction(async (session) => {
       const rec = await Reconciliation.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
       if (!rec) throw Object.assign(new Error('No encontrada'), { status: 404 });
+      if (rec.source === 'CONTIFICO') throw Object.assign(new Error(CONTIFICO_READONLY), { status: 400 });
       if (rec.status === 'CONCILIADO') throw Object.assign(new Error('Ya está conciliada'), { status: 400 });
       rec.status = 'CONCILIADO';
       rec.closedAt = new Date();
@@ -926,6 +931,7 @@ exports.reconcileImport = async (req, res) => {
     const { lines = [] } = req.body;
     const rec = await Reconciliation.findOne({ _id: req.params.id, clinic: req.clinicId }).populate('items.transaction', 'date amount direction reference voucherNumber');
     if (!rec) return res.status(404).json({ message: 'No encontrada' });
+    if (rec.source === 'CONTIFICO') return res.status(400).json({ message: CONTIFICO_READONLY });
     if (rec.status === 'CONCILIADO') return res.status(400).json({ message: 'Ya está conciliada' });
 
     const used = new Set();
@@ -974,6 +980,7 @@ exports.reconcileCreateMovements = async (req, res) => {
     const recId = await runInTransaction(async (session) => {
       const rec = await Reconciliation.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
       if (!rec) throw Object.assign(new Error('No encontrada'), { status: 404 });
+      if (rec.source === 'CONTIFICO') throw Object.assign(new Error(CONTIFICO_READONLY), { status: 400 });
       if (rec.status === 'CONCILIADO') throw Object.assign(new Error('Ya está conciliada'), { status: 400 });
       const bank = await BankAccount.findOne({ _id: rec.bankAccount, clinic: req.clinicId }).session(session);
       if (!bank) throw Object.assign(new Error('Cuenta no encontrada'), { status: 404 });
@@ -1038,6 +1045,7 @@ exports.deleteReconciliation = async (req, res) => {
   try {
     const rec = await Reconciliation.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!rec) return res.status(404).json({ message: 'No encontrada' });
+    if (rec.source === 'CONTIFICO') return res.status(400).json({ message: CONTIFICO_READONLY });
     if (rec.status === 'CONCILIADO') {
       return res.status(400).json({
         message: 'Esta conciliación ya está cerrada: no se elimina. Es la evidencia de que el saldo cuadró a esa fecha.',

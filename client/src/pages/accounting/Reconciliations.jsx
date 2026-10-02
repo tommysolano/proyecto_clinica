@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
@@ -10,6 +10,15 @@ import DateInput from '../../components/DateInput';
 
 const EMPTY = { bankAccount: '', cutDate: today(), statementBalance: '', description: '' };
 
+// Partidas pendientes al corte, en el orden del reporte de Contífico.
+const PENDING_GROUPS = [
+  ['DEPOSITO_TRANSITO', 'Depósitos en tránsito'],
+  ['CHEQUE_PENDIENTE', 'Cheques pendientes de cobro'],
+  ['NC_TRANSITO', 'Notas de crédito en tránsito'],
+  ['ND_TRANSITO', 'Notas de débito en tránsito'],
+  ['CHEQUE_POSTFECHADO', 'Cheques posfechados'],
+];
+
 export default function Reconciliations() {
   const [list, setList] = useState([]);
   const [banks, setBanks] = useState([]);
@@ -20,7 +29,8 @@ export default function Reconciliations() {
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
 
-  const isDraft = selected?.status === 'BORRADOR';
+  // Las importadas de Contífico son de solo lectura aunque allá sigan «Pendiente».
+  const isDraft = selected?.status === 'BORRADOR' && selected?.source !== 'CONTIFICO';
 
   const load = async () => {
     try { const r = await api.get('/banks/reconciliations'); setList(r.data || []); }
@@ -163,7 +173,7 @@ export default function Reconciliations() {
                   <td className="px-3 py-2 text-xs">{fmtDate(c.cutDate || c.periodEnd)}</td>
                   <td className="px-3 py-2 text-center">{statusBadge(c.status)}</td>
                   <td className="px-3 py-2 text-right">
-                    {c.status !== 'CONCILIADO' && (
+                    {c.status !== 'CONCILIADO' && c.source !== 'CONTIFICO' && (
                       <button onClick={(e) => eliminar(c, e)} className="text-rose-500 hover:text-rose-700" title="Eliminar esta conciliación pendiente">
                         <HiOutlineTrash className="w-4 h-4" />
                       </button>
@@ -251,6 +261,54 @@ export default function Reconciliations() {
                 </table>
               </div>
             )}
+
+            {/* Partidas pendientes al corte: explican saldo contable − saldo bancario */}
+            {selected.source === 'CONTIFICO' && (selected.pendingItems || []).length > 0 && (() => {
+              const groups = PENDING_GROUPS.map(([key, label]) => {
+                const rows = selected.pendingItems.filter((it) => it.category === key);
+                return { key, label, rows, total: rows.reduce((sum, it) => sum + (it.amount || 0), 0) };
+              }).filter((g) => g.rows.length);
+              const inTransit = groups.filter((g) => g.key !== 'CHEQUE_POSTFECHADO').reduce((sum, g) => sum + g.total, 0);
+              return (
+                <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
+                  <div className="px-4 py-2 bg-slate-50 text-sm font-medium text-slate-600 flex flex-wrap justify-between gap-2">
+                    <span>Pendientes al corte</span>
+                    <span className="text-xs text-slate-500">
+                      Saldo bancario ${fmt(selected.statementBalance)} + pendientes ${fmt(inTransit)} = saldo contable ${fmt((Number(selected.statementBalance) || 0) + inTransit)}
+                    </span>
+                  </div>
+                  <table className="tbl">
+                    <thead className="bg-slate-100 text-xs"><tr>
+                      <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Detalle</th>
+                      <th className="px-2 py-1 text-left">Persona</th><th className="px-2 py-1 text-right">Monto</th>
+                    </tr></thead>
+                    <tbody>
+                      {groups.map((g) => (
+                        <Fragment key={g.key}>
+                          <tr className="border-t bg-slate-50">
+                            <td colSpan={3} className="px-2 py-1 text-xs font-semibold text-slate-600">
+                              {g.label} ({g.rows.length}){g.key === 'CHEQUE_POSTFECHADO' && <span className="font-normal text-slate-400"> · informativo, no entra en el saldo al corte</span>}
+                            </td>
+                            <td className="px-2 py-1 text-right font-mono text-xs font-semibold">${fmt(g.total)}</td>
+                          </tr>
+                          {g.rows.map((it, i) => (
+                            <tr key={i} className="border-t">
+                              <td className="px-2 py-1 text-xs whitespace-nowrap">{fmtDate(it.date)}</td>
+                              <td className="px-2 py-1 text-xs">
+                                {it.description} {it.reference && <span className="text-slate-400">· {it.reference}</span>}
+                                {it.note && <div className="text-[11px] text-slate-400">{it.note}</div>}
+                              </td>
+                              <td className="px-2 py-1 text-xs">{it.party}</td>
+                              <td className={`px-2 py-1 text-right font-mono ${it.amount < 0 ? 'text-rose-600' : 'text-emerald-700'}`}>${fmt(it.amount)}</td>
+                            </tr>
+                          ))}
+                        </Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
 
             {/* Movimientos del libro */}
             {selected.source !== 'CONTIFICO' && (

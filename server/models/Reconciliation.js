@@ -73,6 +73,14 @@ const reconciliationSchema = new mongoose.Schema(
     sourceKey: { type: String, default: null }, // contifico:<nº cuenta>:<AAAA-MM-DD>
     openingBalance: { type: Number, default: null }, // saldo bancario inicial según Contífico
     journalItems: { type: [journalItemSchema], default: [] },
+    // Partidas pendientes al corte según Contífico: explican saldo contable − bancario.
+    // Los cheques posfechados son informativos (fecha posterior al corte).
+    pendingItems: {
+      type: [new mongoose.Schema({
+        category: { type: String, enum: ['DEPOSITO_TRANSITO', 'CHEQUE_PENDIENTE', 'NC_TRANSITO', 'ND_TRANSITO', 'CHEQUE_POSTFECHADO'], required: true },
+      }, { _id: false }).add(journalItemSchema)],
+      default: [],
+    },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
