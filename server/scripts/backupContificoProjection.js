@@ -14,7 +14,9 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const mongoose = require('mongoose');
-const { EJSON } = require('bson');
+// El EJSON del driver: el paquete `bson` suelto puede ser otra versión e
+// incompatible con los ObjectId que entrega mongoose.
+const { EJSON } = require('mongoose').mongo.BSON;
 const Clinic = require('../models/Clinic');
 
 const collections = [

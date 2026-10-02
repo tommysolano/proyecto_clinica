@@ -247,13 +247,16 @@ const snapshotEntities = {
 };
 
 class Projector {
-  constructor({ clinic, commit, cutoff, stopAfter = null, only = null, sourceIds = [], skipLinkedInventory = false, sourceSnapshotId = null }) {
+  constructor({ clinic, commit, cutoff, stopAfter = null, only = null, sourceIds = [], skipLinkedInventory = false, sourceSnapshotId = null, scope = null }) {
     this.clinic = clinic;
     this.commit = commit;
     this.cutoff = cutoff;
     this.stopAfter = stopAfter;
     this.only = only;
     this.sourceIds = new Set(sourceIds);
+    // Sincronización incremental: limita personas/productos a los IDs que
+    // necesitan proyectarse, en vez de releer los catálogos completos.
+    this.scope = scope ? Object.fromEntries(Object.entries(scope).map(([entity, ids]) => [entity, new Set(ids)])) : null;
     this.sourceSnapshotId = sourceSnapshotId;
     this.skipLinkedInventory = skipLinkedInventory;
     this.run = null;
@@ -274,6 +277,10 @@ class Projector {
       if (!this.sourceIds.size) throw new Error('journal_ids exige --source-ids');
       delete filter.migrationRun;
       filter.externalId = { $in: [...this.sourceIds] };
+    }
+    if (this.only === 'documents') {
+      const ids = entity === 'document' ? this.sourceIds : this.scope?.[entity];
+      if (ids) { delete filter.migrationRun; filter.externalId = { $in: [...ids] }; }
     }
     const records = await ContificoRecord.find(filter).sort({ externalId: 1 }).lean();
     return records.map((record) => ({
@@ -434,6 +441,9 @@ class Projector {
         const roles = [['es_cliente', 'CLIENTE'], ['es_proveedor', 'PROVEEDOR'], ['es_empleado', 'EMPLEADO'], ['es_vendedor', 'VENDEDOR']].filter(([field]) => row[field]).map(([, role]) => role);
         const appearsAsProvider = providerPersonIds.has(String(record.externalId));
         if (appearsAsProvider && !roles.includes('PROVEEDOR')) roles.push('PROVEEDOR');
+        // Con alcance parcial no se ven los documentos históricos que justificaban
+        // un rol: no retirarlo, solo sumar los nuevos.
+        if (this.scope?.person) for (const role of oldSuppliers.find((row) => String(row.ruc) === id)?.roles || []) if (!roles.includes(role)) roles.push(role);
         const needsSupplier = appearsAsProvider || row.es_proveedor || row.es_empleado || row.es_vendedor || !row.es_cliente;
         if (needsSupplier) supplierOps.push({ updateOne: { filter: { clinic: this.clinic._id, ruc: id }, update: {
           // Solo se refrescan los atributos que Contífico realmente proporciona;
@@ -494,7 +504,8 @@ class Projector {
       const date = parseDate(row.fecha_emision);
       return String(row.tipo_registro).toUpperCase() === 'CLI'
         && ['FAC', 'NVE'].includes(String(row.tipo_documento).toUpperCase())
-        && date && date <= this.cutoff;
+        && date && date <= this.cutoff
+        && (!this.sourceIds.size || this.sourceIds.has(record.externalId));
     });
     stage.source = records.length;
 
@@ -821,9 +832,19 @@ class Projector {
   }
 
   async subledger() {
-    const stage = this.stage('open_subledger'); const documents = await this.records('document'), persons = await this.records('person'); const personById = new Map(persons.map((record) => [record.externalId, record]));
+    const stage = this.stage('open_subledger'); const documents = await this.records('document');
+    // En modo `documents` el alcance de personas solo contiene las nuevas; la
+    // cartera necesita a todas las que citan estos documentos.
+    const persons = this.only === 'documents'
+      ? (await ContificoRecord.find({ clinic: this.clinic._id, entity: 'person', externalId: { $in: [...new Set(documents.map((record) => String(record.payload.persona_id || '')))] } }).lean())
+        .map((record) => ({ ...record, payload: decodeCompressedJson(record.payloadCompressed) }))
+      : await this.records('person'); const personById = new Map(persons.map((record) => [record.externalId, record]));
     const receivableOps = [], payableOps = [];
-    for (const record of documents) { if (this.sourceIds.size && !this.sourceIds.has(record.externalId)) continue; const row = record.payload, balance = num(row.saldo), date = parseDate(row.fecha_emision); if (balance <= 0.005 || row.anulado || !date || date > this.cutoff || (record.projection?.status === 'REVIEW' && (record.projection.warnings || []).some((warning) => warning.startsWith('Ausente de la instantánea Contífico ')))) continue; stage.source++; const person = personById.get(String(row.persona_id || '')), client = String(row.tipo_registro).toUpperCase() === 'CLI', patient = person ? this.maps.patients.get(person.externalId) : null, supplier = person ? this.maps.suppliers.get(person.externalId) : null, total = Math.max(balance, num(row.total)); const payload = { clinic: this.clinic._id, party: { model: client && patient ? 'Patient' : 'Supplier', ref: client ? (patient || supplier || null) : (supplier || null), name: String(row.cliente?.razon_social || person?.payload?.razon_social || '') }, sourceModel: 'ContificoRecord', sourceRef: record._id, docType: ledgerDocType(row.tipo_documento), number: String(row.documento || ''), issueDate: date, dueDate: parseDate(row.fecha_vencimiento), currency: 'USD', total, applied: +(total - balance).toFixed(2), balance, status: total - balance > 0 ? 'PARCIAL' : 'ABIERTO', account: person ? this.maps.accounts.get(String(client ? person.payload.cuenta_por_cobrar_id : person.payload.cuenta_por_pagar_id)) || null : null, notes: `Contifico ${record.externalId}` }; (client ? receivableOps : payableOps).push({ updateOne: { filter: { clinic: this.clinic._id, sourceModel: 'ContificoRecord', sourceRef: record._id }, update: { $set: payload }, upsert: true } }); }
+    for (const record of documents) { if (this.sourceIds.size && !this.sourceIds.has(record.externalId)) continue; const row = record.payload, balance = num(row.saldo), date = parseDate(row.fecha_emision);
+      // Un documento ya cobrado/pagado o anulado en Contífico debe cerrar la CxC/CxP
+      // abierta que dejó una importación anterior; sin esto quedaba abierta para siempre.
+      if (this.sourceIds.size && (balance <= 0.005 || row.anulado)) { const total = Math.max(0, r2(row.total)); const close = { updateOne: { filter: { clinic: this.clinic._id, sourceModel: 'ContificoRecord', sourceRef: record._id }, update: { $set: { total, applied: row.anulado ? 0 : total, balance: 0, status: row.anulado ? 'ANULADO' : 'PAGADO' } } } }; (String(row.tipo_registro).toUpperCase() === 'CLI' ? receivableOps : payableOps).push(close); stage.linked++; continue; }
+      if (balance <= 0.005 || row.anulado || !date || date > this.cutoff || (record.projection?.status === 'REVIEW' && (record.projection.warnings || []).some((warning) => warning.startsWith('Ausente de la instantánea Contífico ')))) continue; stage.source++; const person = personById.get(String(row.persona_id || '')), client = String(row.tipo_registro).toUpperCase() === 'CLI', patient = person ? this.maps.patients.get(person.externalId) : null, supplier = person ? this.maps.suppliers.get(person.externalId) : null, total = Math.max(balance, num(row.total)); const payload = { clinic: this.clinic._id, party: { model: client && patient ? 'Patient' : 'Supplier', ref: client ? (patient || supplier || null) : (supplier || null), name: String(row.cliente?.razon_social || person?.payload?.razon_social || '') }, sourceModel: 'ContificoRecord', sourceRef: record._id, docType: ledgerDocType(row.tipo_documento), number: String(row.documento || ''), issueDate: date, dueDate: parseDate(row.fecha_vencimiento), currency: 'USD', total, applied: +(total - balance).toFixed(2), balance, status: total - balance > 0 ? 'PARCIAL' : 'ABIERTO', account: person ? this.maps.accounts.get(String(client ? person.payload.cuenta_por_cobrar_id : person.payload.cuenta_por_pagar_id)) || null : null, notes: `Contifico ${record.externalId}` }; (client ? receivableOps : payableOps).push({ updateOne: { filter: { clinic: this.clinic._id, sourceModel: 'ContificoRecord', sourceRef: record._id }, update: { $set: payload }, upsert: true } }); }
     if (this.commit) { if (receivableOps.length) await Receivable.bulkWrite(receivableOps, { ordered: false }); if (payableOps.length) await Payable.bulkWrite(payableOps, { ordered: false }); }
     stage.created = receivableOps.length + payableOps.length; stage.projected = stage.created; this.log(`CxC=${receivableOps.length} CxP=${payableOps.length}`); await this.finishStage(stage);
   }
@@ -845,6 +866,28 @@ class Projector {
       }
       for (const id of ids) if (!target.has(id)) throw new Error(`${model} sin proyeccion existente: ${id}`);
     }
+  }
+
+  /** Enlaces ya proyectados de las personas y productos que citan los documentos. */
+  async existingDocumentMaps() {
+    const records = await this.records('document');
+    const personIds = [...new Set(records.map((record) => String(record.payload.persona_id || '')).filter(Boolean))];
+    const productIds = [...new Set(records.flatMap((record) => (record.payload.detalles || [])
+      .map((detail) => String(detail.producto_id || '')).filter(Boolean)))];
+    const providers = new Set(records.filter((record) => String(record.payload.tipo_registro).toUpperCase() === 'PRO')
+      .map((record) => String(record.payload.persona_id || '')));
+    const sources = await ContificoRecord.find({ clinic: this.clinic._id, $or: [
+      { entity: 'person', externalId: { $in: personIds } }, { entity: 'product', externalId: { $in: productIds } }] })
+      .select('entity externalId projection.links').lean();
+    for (const source of sources) {
+      for (const link of source.projection?.links || []) {
+        if (!link.ref) continue;
+        const target = { Supplier: this.maps.suppliers, Patient: this.maps.patients, Product: this.maps.products }[link.model];
+        if (target && !target.has(source.externalId)) target.set(source.externalId, link.ref);
+      }
+    }
+    for (const id of productIds) if (!this.maps.products.has(id)) throw new Error(`Producto sin proyeccion existente: ${id}`);
+    for (const id of providers) if (id && !this.maps.suppliers.has(id)) throw new Error(`Proveedor sin proyeccion existente: ${id}`);
   }
 
   async execute() {
@@ -869,6 +912,15 @@ class Projector {
         await this.accounts(); await this.costCenters(); await this.banks(); await this.bankMovements();
       } else if (this.only === 'persons') {
         await this.persons();
+      } else if (this.only === 'documents') {
+        // Ventas, compras y cartera de documentos concretos. Las personas y
+        // productos nuevos llegan en `scope`; el resto debe estar ya enlazado.
+        if (!this.sourceIds.size) throw new Error('documents exige IDs de documento');
+        await this.accounts(); await this.costCenters();
+        if (this.scope?.product?.size) { await this.categories(); await this.products(); }
+        if (this.scope?.person?.size) await this.persons();
+        await this.existingDocumentMaps();
+        await this.sales(); await this.purchases(); await this.subledger();
       } else if (this.only === 'purchases' && this.sourceIds.size) {
         await this.accounts(); await this.costCenters(); await this.existingPurchaseMaps();
         await this.purchases(); await this.subledger();

@@ -7,7 +7,9 @@ const path = require('path');
 const zlib = require('zlib');
 const { randomUUID } = require('crypto');
 const os = require('os');
-const { EJSON } = require('bson');
+// El EJSON del driver: el paquete `bson` suelto puede ser otra versión e
+// incompatible con los ObjectId que entrega mongoose.
+const { EJSON } = require('mongoose').mongo.BSON;
 const Clinic = require('../models/Clinic');
 const Record = require('../models/ContificoRecord');
 const Journal = require('../models/JournalEntry');
@@ -353,6 +355,14 @@ function startFinancialSyncJob(leaderOnly) {
       if (history && ['COMPLETED', 'PARTIAL'].includes(result.state)) lastHistory = Date.now();
       console.log('[contifico-financial-sync]', JSON.stringify(result));
     } catch (error) { console.error('[contifico-financial-sync] BLOQUEADO:', error.stack || error.message); }
+    // Ventas, compras y cartera van después del mayor, en el mismo ciclo, para
+    // que las pantallas operativas sigan a Contífico igual que los reportes.
+    try {
+      const { syncDocuments } = require('./contificoDocumentSync');
+      const documents = await syncDocuments({ includeHistory: history, trigger: 'AUTO' });
+      console.log('[contifico-document-sync]', JSON.stringify({ state: documents.state,
+        months: documents.months?.map((month) => `${month.month}:${month.state}`), failures: documents.failures }));
+    } catch (error) { console.error('[contifico-document-sync] BLOQUEADO:', error.stack || error.message); }
   });
   setTimeout(run, 30 * 1000);
   setInterval(run, 15 * 60 * 1000);
