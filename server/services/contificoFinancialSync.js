@@ -323,7 +323,12 @@ async function syncFinancialReports({ includeHistory = false, months: requestedM
 }
 
 function startFinancialSyncJob(leaderOnly) {
-  if (process.env.CONTIFICO_AUTO_SYNC === '0') return;
+  if (process.env.CONTIFICO_AUTO_SYNC === '0') {
+    console.error('[contifico-financial-sync] BLOQUEADO: CONTIFICO_AUTO_SYNC=0');
+    recordSyncState({ state: 'DISABLED', trigger: 'AUTO', host: os.hostname(),
+      completedAt: new Date(), lastError: 'CONTIFICO_AUTO_SYNC=0' });
+    return;
+  }
   if (!process.env.CONTIFICO_API_KEY) {
     console.error('[contifico-financial-sync] BLOQUEADO: falta CONTIFICO_API_KEY');
     recordSyncState({ state: 'NO_API_KEY', trigger: 'AUTO', host: os.hostname(),
