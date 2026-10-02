@@ -273,6 +273,19 @@ La API filtra documentos solo por fecha de **emisión**: un cobro de hoy sobre u
 Resultado aplicado:
 - **Octubre:** SYNCED; 91/91 documentos (89 ventas y 2 compras que no existían localmente) y 36 personas consultadas por ID (2 nuevas). Respaldo `document-sync-Central-2026-10-2026-10-02T16-27-38-736Z`.
 - **Septiembre:** SYNCED; 2.569 documentos; 332 reproyectados (306 ventas, 26 compras, 14 de ellas nuevas). Entre ellos están las compras que figuraban en USD 0. Se retiraron tres documentos que el origen ya no tiene: la compra 006-003-000044130, que fue registrada de nuevo con otro ID; la compra 001-001-000000086 por USD 0; y la venta 001-001-000000043. Antes de escribir había 50 diferencias de campo; la verificación posterior dio 0. Respaldo `document-sync-Central-2026-09-2026-10-02T16-49-33-903Z`.
-- **Enero a agosto:** pendiente. El comando es `cd server && node scripts/syncContificoDocuments.js --months=2026-08,2026-07,2026-06,2026-05,2026-04,2026-03,2026-02,2026-01`; `--dry-run` solo compara.
+- **Enero a agosto** (17:05–17:27 UTC): los ocho meses quedaron SYNCED, sin fallos ni avisos abiertos.
+
+  | Mes | Documentos | Reproyectados | Retirados | Diferencias previas |
+  | --- | ---: | ---: | ---: | ---: |
+  | 2026-08 | 2.780 | 303 | 1 | 6 |
+  | 2026-07 | 2.982 | 299 | 1 | 26 |
+  | 2026-06 | 2.416 | 290 | 0 | 7 |
+  | 2026-05 | 1.860 | 257 | 0 | 0 |
+  | 2026-04 | 2.037 | 296 | 0 | 0 |
+  | 2026-03 | 1.877 | 257 | 0 | 0 |
+  | 2026-02 | 1.404 | 210 | 0 | 0 |
+  | 2026-01 | 1.197 | 135 | 0 | 0 |
+
+  La verificación posterior dio cero diferencias en cada mes. Manual: `cd server && node scripts/syncContificoDocuments.js --months=AAAA-MM[,…]`; `--dry-run` solo compara.
 
 Nómina contra el mayor: los 35 roles archivados (abril–agosto, seis personas) suman exactamente el sueldo de cada mes en `5.2.1.1.1` + `5.2.1.2.1` (1.000,00; 1.000,00; 1.482,00; 2.564,00; 4.697,47) y el 9,45 % IESS de `2.1.7.1.1`. Ningún rol de esos meses falta en la importación. Los profesionales pagados por honorarios (`5.2.1.x.13`) no tienen rol de pago; llegan como compras o liquidaciones. El mayor no tiene sueldos de septiembre ni octubre.
