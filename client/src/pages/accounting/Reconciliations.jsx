@@ -156,7 +156,10 @@ export default function Reconciliations() {
               {list.length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-500 text-sm">Sin conciliaciones.</td></tr>}
               {list.map((c) => (
                 <tr key={c._id} className={`border-t cursor-pointer hover:bg-slate-50 ${selected?._id === c._id ? 'bg-emerald-50/60' : ''}`} onClick={() => openDetail(c)}>
-                  <td className="px-3 py-2 text-xs">{c.bankAccount?.name}</td>
+                  <td className="px-3 py-2 text-xs">
+                    {c.bankAccount?.name}
+                    {c.source === 'CONTIFICO' && <span className="ml-1 text-[10px] text-sky-600">Contífico</span>}
+                  </td>
                   <td className="px-3 py-2 text-xs">{fmtDate(c.cutDate || c.periodEnd)}</td>
                   <td className="px-3 py-2 text-center">{statusBadge(c.status)}</td>
                   <td className="px-3 py-2 text-right">
@@ -215,7 +218,42 @@ export default function Reconciliations() {
               )}
             </div>
 
+            {/* Importada de Contífico: sus movimientos son líneas del mayor ya conciliadas allá */}
+            {selected.source === 'CONTIFICO' && (
+              <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
+                <div className="px-4 py-2 bg-slate-50 text-sm font-medium text-slate-600 flex flex-wrap justify-between gap-2">
+                  <span>Movimientos conciliados en Contífico</span>
+                  <span className="text-xs text-slate-500">
+                    Saldo inicial ${fmt(selected.openingBalance)} · {(selected.journalItems || []).length} movimientos
+                  </span>
+                </div>
+                <table className="tbl">
+                  <thead className="bg-slate-100 text-xs"><tr>
+                    <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Tipo</th>
+                    <th className="px-2 py-1 text-left">Detalle</th><th className="px-2 py-1 text-left">Persona</th>
+                    <th className="px-2 py-1 text-right">Monto</th>
+                  </tr></thead>
+                  <tbody>
+                    {(selected.journalItems || []).map((it, i) => (
+                      <tr key={i} className="border-t">
+                        <td className="px-2 py-1 text-xs whitespace-nowrap">{fmtDate(it.date)}</td>
+                        <td className="px-2 py-1 text-xs">{it.type}</td>
+                        <td className="px-2 py-1 text-xs">
+                          {it.description} {it.reference && <span className="text-slate-400">· {it.reference}</span>}
+                          {it.note && <div className="text-[11px] text-slate-400">{it.note}</div>}
+                          {!it.matched && <div className="text-[11px] text-amber-600">Sin asiento identificado en el mayor</div>}
+                        </td>
+                        <td className="px-2 py-1 text-xs">{it.party}</td>
+                        <td className={`px-2 py-1 text-right font-mono ${it.amount < 0 ? 'text-rose-600' : 'text-emerald-700'}`}>${fmt(it.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
             {/* Movimientos del libro */}
+            {selected.source !== 'CONTIFICO' && (
             <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
               <div className="px-4 py-2 bg-slate-50 text-sm font-medium text-slate-600 flex justify-between">
                 <span>Movimientos del libro hasta el corte</span>
@@ -245,6 +283,7 @@ export default function Reconciliations() {
                 </tbody>
               </table>
             </div>
+            )}
 
             {/* Extracto importado */}
             {(selected.statementLines || []).length > 0 && (

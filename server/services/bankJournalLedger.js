@@ -1,6 +1,7 @@
 'use strict';
 
 const JournalEntry = require('../models/JournalEntry');
+const Reconciliation = require('../models/Reconciliation');
 
 const round = (value) => +Number(value || 0).toFixed(2);
 const isImportedBank = (bank) => /^1\.1\.1\.[345]$/.test(bank?.chartAccount?.code || '');
@@ -44,6 +45,11 @@ async function journalBankLedger(bank, { startDate = null, endDate = null } = {}
     if (endDate) match.date.$lt = nextDay(endDate);
   }
   const journals = await JournalEntry.find(match).sort({ date: 1, number: 1 }).lean();
+  // Líneas del mayor que una conciliación cerrada (importada de Contífico) ya concilió.
+  const reconciledLines = new Set((await Reconciliation.find({ clinic: bank.clinic, bankAccount: bank._id,
+    status: 'CONCILIADO', 'journalItems.0': { $exists: true } }).select('journalItems.lines').lean())
+    .flatMap((rec) => rec.journalItems.flatMap((item) => item.lines || []))
+    .map((line) => `${line.journalEntry}-${line.lineIndex}`));
   let running = opening;
   const rows = [];
   for (const journal of journals) for (const [index, line] of journal.lines.entries()) {
@@ -53,7 +59,7 @@ async function journalBankLedger(bank, { startDate = null, endDate = null } = {}
     rows.push({ _id: `${journal._id}-${index}`, date: journal.date,
       type: 'ASIENTO', description: journal.description || line.description || '',
       reference: journal.number, voucherNumber: '', checkNumber: '',
-      inflow, outflow, reconciled: false, runningBalance: running,
+      inflow, outflow, reconciled: reconciledLines.has(`${journal._id}-${index}`), runningBalance: running,
       journalEntry: journal._id });
   }
   return { bankAccount: { _id: bank._id, name: bank.name, bank: bank.bank,

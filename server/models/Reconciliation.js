@@ -23,6 +23,32 @@ const statementLineSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Línea del MAYOR conciliada en Contífico. En las cuentas importadas el libro del
+// banco es el mayor (services/bankJournalLedger), no BankTransaction; se guarda una
+// copia de lo que mostró Contífico por si el asiento cambia o se retira después.
+const journalItemSchema = new mongoose.Schema(
+  {
+    // Un movimiento del banco puede ser varias líneas del mayor: un «PAGO MASIVO»
+    // agrupa los asientos de pago de cada factura de esa transferencia.
+    lines: {
+      type: [new mongoose.Schema({
+        journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', required: true },
+        lineIndex: { type: Number, required: true },
+      }, { _id: false })],
+      default: [],
+    },
+    note: { type: String, default: '' },
+    date: { type: Date, default: null },
+    type: { type: String, default: '' }, // TRANSF, CHE, DEP, N/C…
+    description: { type: String, default: '' },
+    reference: { type: String, default: '' },
+    party: { type: String, default: '' },
+    amount: { type: Number, default: 0 }, // + entra al banco, - sale
+    matched: { type: Boolean, default: true },
+  },
+  { _id: false }
+);
+
 const reconciliationSchema = new mongoose.Schema(
   {
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, index: true },
@@ -42,9 +68,16 @@ const reconciliationSchema = new mongoose.Schema(
     status: { type: String, enum: ['BORRADOR', 'CONCILIADO'], default: 'BORRADOR' },
     notes: { type: String, default: '' },
     closedAt: { type: Date, default: null },
+    // CONTIFICO = importada del reporte de Contífico; sus movimientos son líneas del mayor.
+    source: { type: String, enum: ['LOCAL', 'CONTIFICO'], default: 'LOCAL' },
+    sourceKey: { type: String, default: null }, // contifico:<nº cuenta>:<AAAA-MM-DD>
+    openingBalance: { type: Number, default: null }, // saldo bancario inicial según Contífico
+    journalItems: { type: [journalItemSchema], default: [] },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
 );
+
+reconciliationSchema.index({ clinic: 1, sourceKey: 1 }, { unique: true, partialFilterExpression: { sourceKey: { $type: 'string' } } });
 
 module.exports = mongoose.model('Reconciliation', reconciliationSchema);

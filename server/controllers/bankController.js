@@ -1021,7 +1021,8 @@ exports.reconcileCreateMovements = async (req, res) => {
 exports.listReconciliations = async (req, res) => {
   const filter = { clinic: req.clinicId };
   if (req.query.bankAccount) filter.bankAccount = req.query.bankAccount;
-  const items = await Reconciliation.find(filter).populate('bankAccount', 'name bank').sort({ cutDate: -1, createdAt: -1 });
+  // El detalle de las importadas (miles de líneas) se carga al abrir cada una.
+  const items = await Reconciliation.find(filter).select('-journalItems').populate('bankAccount', 'name bank').sort({ cutDate: -1, createdAt: -1 });
   res.json(items);
 };
 
