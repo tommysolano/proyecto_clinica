@@ -117,6 +117,7 @@ import Modal from '../components/Modal';
 import { inicioDeMiTurno } from '../utils/appointmentTurns';
 import { cargarPagina } from '../utils/lazyPage';
 import { edadGestacional, fechaProbableParto } from '../constants/gestacion';
+import { cargarServiciosAgenda } from '../utils/serviciosAgenda';
 import {
   SCORE_MAMA_PARAMETROS,
   SCORE_MAMA_CONCIENCIA,
@@ -2162,9 +2163,8 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onUpdateMany, onRemove, t
   useEffect(() => {
     if (!isDerivacion) return undefined;
     let vivo = true;
-    api
-      .get('/appointment-service-items')
-      .then((r) => { if (vivo) setServiciosAgenda(Array.isArray(r.data) ? r.data : []); })
+    cargarServiciosAgenda()
+      .then((l) => { if (vivo) setServiciosAgenda(l); })
       .catch(() => {});
     return () => { vivo = false; };
   }, [isDerivacion]);
@@ -2174,6 +2174,10 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onUpdateMany, onRemove, t
     onUpdateMany(idx, {
       serviceItem: id || null,
       name: svc?.name || '',
+      // Una derivación no lleva cantidad (oct-2026): se manda al paciente a un
+      // servicio, no se le venden tres. Se fija en 1 para que una línea vieja
+      // con otra cantidad no la arrastre escondida.
+      quantity: 1,
     });
   };
 
@@ -2217,8 +2221,9 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onUpdateMany, onRemove, t
     }
   };
 
-  // Columnas por variante. En Derivaciones manda el orden de trabajo: cuántas
-  // sesiones, de qué, y con qué indicaciones.
+  // Columnas por variante. Las Derivaciones son solo el servicio (y debajo sus
+  // indicaciones): la CANTIDAD se quitó en oct-2026 — a un paciente se le
+  // deriva a un servicio, no se le despachan unidades.
   //
   // LAS INDICACIONES YA NO SON UNA COLUMNA. Compartiendo el ancho con otras
   // cinco quedaba una ranura de dos centímetros para el campo donde más se
@@ -2239,8 +2244,7 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onUpdateMany, onRemove, t
         { key: 'isSerum', label: 'Suero', check: true, ancho: 'w-16', ayuda: 'Se administra por dosis' },
       ]
     : [
-        { key: 'quantity', label: 'Cant.', numero: true, ancho: 'w-16' },
-        { key: 'name', label: 'Servicio / Programa', derivacion: true, ancho: 'min-w-[240px]' },
+        { key: 'name', label: 'Servicio', derivacion: true, ancho: 'min-w-[240px]' },
       ];
 
   const placeholderIndicaciones = isReceta
@@ -2305,19 +2309,25 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onUpdateMany, onRemove, t
     ) : c.derivacion ? (
       /**
        * LA DERIVACIÓN SE ESCOGE, NO SE ESCRIBE (sep-2026). Mismo catálogo que
-       * el buscador de servicios de la agenda: sin tildes ni duplicados, y la
-       * cita derivada se agenda con el servicio exacto que el doctor marcó.
+       * el buscador de servicios de la agenda —desde oct-2026, los SERVICIOS
+       * DEL INVENTARIO—, y la cita derivada se agenda con el servicio exacto que
+       * el doctor marcó. Los nombres son largos: van enteros, en varias líneas.
        */
       <SearchableSelect
         options={serviciosAgenda}
         value={row.serviceItem ? String(row.serviceItem) : ''}
         onChange={(v) => escogerServicio(idx, v)}
         getLabel={(s) => s.name || ''}
+        // Una derivación guardada con un servicio del catálogo viejo sigue
+        // diciendo cuál es, aunque ya no se ofrezca.
+        fallbackLabel={row.name || ''}
         placeholder="Escoge el servicio derivado…"
-        searchPlaceholder="Buscar servicio…"
+        searchPlaceholder="Buscar servicio… (varias palabras valen)"
         allowClear
+        wrapOptions
+        wrapLabel
         size="sm"
-        menuMinWidth={220}
+        menuMinWidth={340}
       />
     ) : isReceta && c.key === 'name' ? (
       /**
@@ -4443,7 +4453,8 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
                           <li key={it._id || i}>
                             <div>
                               <b>{it.name}</b>
-                              {it.quantity ? ` ×${it.quantity}` : ''}
+                              {/* Las derivaciones no llevan cantidad (oct-2026). */}
+                              {it.quantity && !it.isService ? ` ×${it.quantity}` : ''}
                               {it.dose ? ` · ${it.dose}` : ''}
                               {it.frequency ? ` · ${it.frequency}` : ''}
                               {it.duration ? ` · ${it.duration}` : ''}

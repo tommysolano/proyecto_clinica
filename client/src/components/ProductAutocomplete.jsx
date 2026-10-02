@@ -50,12 +50,16 @@ export default function ProductAutocomplete({
   }, []);
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return list.slice(0, 50);
+    // Por PALABRAS y sin tildes: los servicios del inventario tienen nombres
+    // largos y nadie los escribe en orden («igg chagas» tiene que encontrar
+    // «TRYPANOZOMA CRUZI (CHAGAS) ANTICUERPOS IgG»).
+    const plano = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    const palabras = plano(query).split(/\s+/).filter(Boolean);
+    if (!palabras.length) return list.slice(0, 50);
     return list
       .filter((p) => {
-        const text = `${p.name || ''} ${p.code || ''} ${p.category || ''}`.toLowerCase();
-        return text.includes(q);
+        const text = plano(`${p.name || ''} ${p.code || ''} ${p.category || ''}`);
+        return palabras.every((w) => text.includes(w));
       })
       .slice(0, 50);
   }, [list, query]);
@@ -144,7 +148,9 @@ export default function ProductAutocomplete({
                   />
                 )}
                 <div className="min-w-0">
-                  <div className="font-medium text-slate-800 truncate">{p.name}</div>
+                  {/* En varias líneas, no recortado: en los nombres largos lo
+                      que distingue a dos suele ir al final. */}
+                  <div className="font-medium text-slate-800 break-words">{p.name}</div>
                   {(p.code || p.category) && (
                     <div className="text-xs text-slate-400 truncate">
                       {p.code ? `${p.code} · ` : ''}

@@ -1,6 +1,7 @@
 const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const { emitToClinic } = require('../realtime');
 const { saneaSueroPlano } = require('../utils/suero');
+const { sincronizarServiciosInventario } = require('../utils/serviciosInventario');
 
 /**
  * Catálogo de servicios de agenda. Ver el modelo para el porqué de que sea de
@@ -21,11 +22,20 @@ const colorPorNombre = (nombre) => {
 };
 
 // GET /appointment-service-items?all=1
-// Sin `all`, solo los activos (lo que se ofrece al agendar).
+// Sin `all`, lo que se ofrece al agendar y al derivar: los activos que salen de
+// un SERVICIO del inventario (oct-2026, ver utils/serviciosInventario.js). Con
+// `all`, todos —también los del catálogo viejo—, para quien tiene que leer
+// citas ya agendadas (duraciones, colores, nombres).
 exports.list = async (req, res) => {
   try {
-    const filtro = req.query.all ? {} : { active: true };
+    await sincronizarServiciosInventario().catch((err) => {
+      console.error('[servicios agenda] no se pudo sincronizar con el inventario:', err.message);
+    });
+    const filtro = req.query.all ? {} : { active: true, product: { $ne: null } };
     const items = await AppointmentServiceItem.find(filtro)
+      // Solo lo que se usa en pantalla: son cerca de mil y el servidor no
+      // comprime las respuestas.
+      .select('-createdBy -clinic -slug -createdAt -updatedAt -__v')
       // Lo más usado primero: quien agenda encuentra en dos letras lo de siempre.
       .sort({ usageCount: -1, name: 1 })
       .lean();
@@ -94,6 +104,11 @@ exports.update = async (req, res) => {
     if (req.body.name !== undefined) {
       const name = String(req.body.name).replace(/\s+/g, ' ').trim();
       if (!name) return res.status(400).json({ message: 'El nombre del servicio es requerido' });
+      // El de un servicio del inventario se cambia en el inventario: renombrarlo
+      // aquí lo desengancharía de su producto en la siguiente sincronización.
+      if (item.product && name !== item.name) {
+        return res.status(400).json({ message: 'Este servicio sale del inventario: cámbiale el nombre desde Inventario.' });
+      }
       const slug = AppointmentServiceItem.slugify(name);
       const choque = await AppointmentServiceItem.findOne({ slug, _id: { $ne: item._id } });
       if (choque) return res.status(409).json({ message: `Ya existe el servicio «${choque.name}»` });

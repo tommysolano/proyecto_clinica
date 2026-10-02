@@ -18,6 +18,10 @@ const mongoose = require('mongoose');
  *
  * `nursingService` es lo que hace que una cita con ese servicio pueda mandarse a
  * enfermería; antes esa marca vivía en el producto del inventario.
+ *
+ * OCT-2026: LA LISTA VUELVE A SALIR DEL INVENTARIO, pero sin volver a atar la
+ * cita al producto. Lo que se ofrece son los productos de tipo SERVICIO (ver el
+ * campo `product`); el registro de aquí sigue siendo lo que la cita guarda.
  */
 const appointmentServiceItemSchema = new mongoose.Schema(
   {
@@ -89,6 +93,18 @@ const appointmentServiceItemSchema = new mongoose.Schema(
         default: [],
       },
     },
+    /**
+     * EL SERVICIO DEL INVENTARIO del que sale (oct-2026).
+     *
+     * Lo que se ofrece al agendar (y al derivar) ya no es una lista que cada
+     * uno amplía escribiendo: son los productos marcados como SERVICIO en el
+     * inventario. Este registro sigue existiendo porque de él cuelgan la
+     * duración, la marca de enfermería, el suero de serie y el historial de las
+     * citas; `utils/serviciosInventario.js` lo mantiene enlazado con su producto.
+     * `null` = servicio del catálogo viejo: las citas que ya lo usan lo
+     * conservan, pero no se ofrece para nada nuevo.
+     */
+    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null, index: true },
     // Cuántas citas se agendaron con él: ordena el buscador por lo más usado.
     usageCount: { type: Number, default: 0 },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

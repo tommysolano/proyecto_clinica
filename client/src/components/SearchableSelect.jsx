@@ -21,6 +21,16 @@ const norm = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toL
  *    de una celda estrecha (bodega, producto…) el panel heredaba el ancho del trigger y las
  *    opciones salían cortadas e ilegibles. Nunca encoge un trigger ancho: solo pone un suelo.
  *  - wrapOptions: si true, las opciones largas se muestran en varias líneas (no se truncan).
+ *  - wrapLabel: si true, lo ELEGIDO también se ve entero en el botón, en varias líneas. Para
+ *    catálogos de nombres larguísimos (los servicios del inventario pasan de cien letras), donde
+ *    lo que distingue a dos opciones suele estar justo al final.
+ *  - fallbackLabel: qué enseñar cuando `value` no está entre las opciones (un valor antiguo que
+ *    ya no se ofrece). Sin esto el botón decía «Seleccione…» y parecía que no había nada.
+ *  - maxVisible: cuántas opciones se pintan como mucho (por defecto 200). Con un catálogo de mil,
+ *    pintarlas todas en cada tecla se nota; el resto aparece al afinar la búsqueda.
+ *
+ * La búsqueda es POR PALABRAS, sin tildes ni mayúsculas: «igg chagas» encuentra
+ * «TRYPANOZOMA CRUZI (CHAGAS) ANTICUERPOS IgG».
  */
 export default function SearchableSelect({
   options = [],
@@ -39,6 +49,9 @@ export default function SearchableSelect({
   size = 'md',
   menuMinWidth = 240,
   wrapOptions = false,
+  wrapLabel = false,
+  fallbackLabel = '',
+  maxVisible = 200,
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -53,10 +66,13 @@ export default function SearchableSelect({
     [options, value, getValue]
   );
   const filtered = useMemo(() => {
-    const q = norm(query);
-    if (!q) return options;
+    const palabras = norm(query).split(/\s+/).filter(Boolean);
+    if (!palabras.length) return options;
     const text = getSearchText || getLabel;
-    return options.filter((o) => norm(text(o)).includes(q));
+    return options.filter((o) => {
+      const t = norm(text(o));
+      return palabras.every((w) => t.includes(w));
+    });
   }, [options, query, getLabel, getSearchText]);
 
   const place = () => {
@@ -64,7 +80,7 @@ export default function SearchableSelect({
     if (!el) return;
     const r = el.getBoundingClientRect();
     const spaceBelow = window.innerHeight - r.bottom;
-    const wanted = Math.min(320, 52 + Math.max(1, filtered.length) * 34);
+    const wanted = Math.min(320, 52 + Math.max(1, Math.min(filtered.length, maxVisible)) * 34);
     const openUp = spaceBelow < wanted && r.top > spaceBelow;
     // El panel nunca es más angosto que el trigger ni que `menuMinWidth`, y se ajusta
     // para no salirse de la ventana (se reubica a la izquierda si haría overflow).
@@ -119,11 +135,11 @@ export default function SearchableSelect({
         onClick={() => !disabled && setOpen((v) => !v)}
         className={`w-full flex items-center justify-between gap-2 border rounded-xl bg-white ${pad} ${disabled ? 'bg-slate-50 text-slate-400 border-slate-200' : 'border-slate-200 hover:border-slate-300'} ${required && !selected ? 'border-rose-200' : ''} ${className}`}
       >
-        <span className={`truncate text-left ${selected ? 'text-slate-700' : 'text-slate-400'}`}>
-          {selected ? getLabel(selected) : placeholder}
+        <span className={`${wrapLabel ? 'break-words whitespace-normal min-w-0' : 'truncate'} text-left ${selected || (value && fallbackLabel) ? 'text-slate-700' : 'text-slate-400'}`}>
+          {selected ? getLabel(selected) : (value && fallbackLabel) || placeholder}
         </span>
         <span className="flex items-center gap-1 shrink-0 text-slate-400">
-          {allowClear && selected && !disabled && (
+          {allowClear && (selected || (value && fallbackLabel)) && !disabled && (
             <HiOutlineXMark className="w-4 h-4 hover:text-rose-500" onClick={(e) => { e.stopPropagation(); onChange(''); }} />
           )}
           <HiOutlineChevronDown className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -143,7 +159,7 @@ export default function SearchableSelect({
                 value={query}
                 onChange={(e) => { setQuery(e.target.value); setHighlight(0); }}
                 onKeyDown={(e) => {
-                  if (e.key === 'ArrowDown') { e.preventDefault(); setHighlight((h) => Math.min(h + 1, filtered.length - 1)); }
+                  if (e.key === 'ArrowDown') { e.preventDefault(); setHighlight((h) => Math.min(h + 1, Math.min(filtered.length, maxVisible) - 1)); }
                   else if (e.key === 'ArrowUp') { e.preventDefault(); setHighlight((h) => Math.max(h - 1, 0)); }
                   else if (e.key === 'Enter') { e.preventDefault(); if (filtered[highlight]) choose(filtered[highlight]); }
                 }}
@@ -154,7 +170,7 @@ export default function SearchableSelect({
           </div>
           <div className="overflow-y-auto" style={{ maxHeight: coords.maxH }}>
             {filtered.length === 0 && <div className="px-3 py-4 text-center text-xs text-slate-400">Sin resultados</div>}
-            {filtered.map((o, i) => {
+            {filtered.slice(0, maxVisible).map((o, i) => {
               const v = String(getValue(o));
               const isSel = v === String(value);
               return (
@@ -170,6 +186,11 @@ export default function SearchableSelect({
                 </button>
               );
             })}
+            {filtered.length > maxVisible && (
+              <div className="px-3 py-2 text-center text-[11px] text-slate-400 border-t border-slate-100">
+                {filtered.length - maxVisible} más — escribe para afinar la búsqueda
+              </div>
+            )}
           </div>
         </div>,
         document.body

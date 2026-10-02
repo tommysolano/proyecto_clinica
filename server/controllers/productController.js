@@ -5,6 +5,9 @@ const Counter = require('../models/Counter');
 const kardex = require('../utils/kardex');
 const { runInTransaction } = require('../utils/accounting');
 const { normName, isPhysicalProduct } = require('../utils/productCategoryResolver');
+// Los SERVICIOS del inventario son lo que se ofrece al agendar: tocar uno hace
+// que la agenda se vuelva a sincronizar en la siguiente lectura.
+const { marcarServiciosPendientes } = require('../utils/serviciosInventario');
 
 /**
  * Resuelve y valida la categoría contable de inventario (`InventoryCategory`,
@@ -264,6 +267,7 @@ exports.createProduct = async (req, res) => {
     // Valida/resuelve la categoría contable de inventario (obligatoria para insumos).
     await applyInventoryCategory(req.clinicId, req.body, { enforce: true });
     const product = await Product.create({ ...req.body, clinic: req.clinicId, code });
+    if (product.category === 'servicio') marcarServiciosPendientes();
     res.status(201).json(product);
   } catch (error) {
     res.status(error.status || 500).json({ message: error.message || 'Error al crear producto', error: error.message });
@@ -300,6 +304,7 @@ exports.updateProduct = async (req, res) => {
       req.body,
       { new: true, runValidators: true }
     ).populate(INVENTORY_CATEGORY_POPULATE);
+    if (existing.category === 'servicio' || product?.category === 'servicio') marcarServiciosPendientes();
     res.json(product);
   } catch (error) {
     res.status(error.status || 500).json({ message: error.message || 'Error al actualizar producto' });
@@ -315,6 +320,7 @@ exports.deleteProduct = async (req, res) => {
       { new: true }
     );
     if (!product) return res.status(404).json({ message: 'Producto no encontrado' });
+    if (product.category === 'servicio') marcarServiciosPendientes();
     res.json({ message: 'Producto eliminado' });
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar producto' });

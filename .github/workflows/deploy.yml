@@ -18,6 +18,9 @@ jobs:
     steps:
       - name: Desplegar por SSH en el VPS
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          CONTIFICO_API_KEY: ${{ secrets.CONTIFICO_API_KEY }}
+          VPS_SUDO_PASS: ${{ secrets.VPS_SUDO_PASS }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -30,7 +33,7 @@ jobs:
           # la usa para aplicar el límite de subida de nginx (el 25m de fábrica
           # mataba con 413 toda subida de más de 25 MB). Si el secret no existe,
           # VPS_SUDO_PASS queda vacío y deploy.sh se lo salta sin más.
-          envs: VPS_SUDO_PASS
+          envs: VPS_SUDO_PASS,CONTIFICO_API_KEY
           # Primero traemos el codigo (esto baja/actualiza el propio deploy.sh en
           # el VPS, asi el primer despliegue tambien funciona) y luego lo corremos.
           script: |

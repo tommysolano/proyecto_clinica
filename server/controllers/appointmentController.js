@@ -2876,7 +2876,6 @@ exports.getDerivacionesDeCita = async (req, res) => {
         derivaciones.push({
           serviceItem: it.serviceItem,
           name: it.name || '',
-          quantity: it.quantity || 1,
           instructions: it.instructions || '',
           derivadaEn: fu.fecha || fu.createdAt || null,
           agendada: !!usada,

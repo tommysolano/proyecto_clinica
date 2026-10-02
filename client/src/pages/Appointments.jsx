@@ -3769,9 +3769,10 @@ export default function Appointments() {
             />
           </div>
 
-          {/* Servicio de la AGENDA: catálogo propio, no el inventario. El
-              consultorio y el "pagado por adelantado" se retiraron con el mismo
-              cambio (lo segundo es cobro, y eso va por contabilidad). */}
+          {/* Servicio: desde oct-2026, los SERVICIOS DEL INVENTARIO, en lista
+              cerrada (ver ServiceItemPicker). El consultorio y el "pagado por
+              adelantado" se retiraron antes (lo segundo es cobro, y eso va por
+              contabilidad). */}
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
               Servicio <span className="text-rose-500">*</span>
@@ -3781,7 +3782,7 @@ export default function Appointments() {
               onChange={(item) => setForm((f) => ({ ...f, serviceItem: item }))}
             />
             <p className="text-[11px] text-slate-400 mt-1">
-              Pincha para ver la lista. Si no está, escríbelo y se crea para todos.
+              Son los servicios del inventario. Si falta uno, se da de alta en Inventario como servicio.
             </p>
           </div>
 
@@ -5099,9 +5100,9 @@ function DerivacionesCitaModal({ appointment, onClose, onAgendar }) {
           >
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <p className="text-sm font-semibold text-slate-800 m-0">
-                  {d.name}{d.quantity > 1 ? ` × ${d.quantity}` : ''}
-                </p>
+                {/* Sin cantidad: una derivación es un servicio al que se manda
+                    al paciente, no unidades (oct-2026). */}
+                <p className="text-sm font-semibold text-slate-800 m-0 break-words">{d.name}</p>
                 {d.instructions && (
                   <p className="text-xs text-slate-500 mt-0.5 whitespace-pre-wrap m-0">{d.instructions}</p>
                 )}

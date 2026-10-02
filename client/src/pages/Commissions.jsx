@@ -124,7 +124,9 @@ export default function Commissions() {
 
   useEffect(() => {
     api.get('/clinics').then((r) => setClinics(r.data || [])).catch(() => {});
-    if (isSuper) api.get('/appointment-service-items').then((r) => setServices(r.data || [])).catch(() => {});
+    // Con `all`: el filtro y los nombres tienen que alcanzar también las citas
+    // viejas, con servicios del catálogo anterior al inventario (oct-2026).
+    if (isSuper) api.get('/appointment-service-items', { params: { all: 1 } }).then((r) => setServices(r.data || [])).catch(() => {});
   }, [isSuper]);
 
   /**

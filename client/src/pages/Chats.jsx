@@ -74,6 +74,7 @@ import { downloadFromUrl, triggerAnchorDownload, triggerBlobDownload } from '../
 import { ENROLL_STATUS, STEP_LABELS } from '../utils/workflowLabels';
 import DateInput from '../components/DateInput';
 import DateTimeInput from '../components/DateTimeInput';
+import { cargarServiciosAgenda } from '../utils/serviciosAgenda';
 
 // Etiquetas de los disparadores (para mostrar los flujos en el menú de
 // automatizaciones del compositor).
@@ -6553,9 +6554,8 @@ function EditApptModal({ appt, onClose, onSaved }) {
       })
       .catch(() => {});
     // EL CATÁLOGO DE LA AGENDA para los OTROS SERVICIOS (sep-2026).
-    api
-      .get('/appointment-service-items')
-      .then((r) => { if (vivo) setServiciosAgenda(Array.isArray(r.data) ? r.data : []); })
+    cargarServiciosAgenda()
+      .then((l) => { if (vivo) setServiciosAgenda(l); })
       .catch(() => {});
     return () => { vivo = false; };
   }, []);
@@ -6711,6 +6711,7 @@ function EditApptModal({ appt, onClose, onSaved }) {
           <label className="text-xs font-medium text-slate-600 block mb-1">Otros servicios (opcional)</label>
           <ChatServicePicker
             services={serviciosAgenda}
+            known={extras || []}
             selectedIds={(extras || []).map((s) => s._id)}
             onAdd={(id) => {
               if (serviceItem && String(id) === String(serviceItem._id)) return;
@@ -7234,9 +7235,8 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
   const [serviciosAgenda, setServiciosAgenda] = useState([]);
   useEffect(() => {
     let vivo = true;
-    api
-      .get('/appointment-service-items')
-      .then((r) => { if (vivo) setServiciosAgenda(Array.isArray(r.data) ? r.data : []); })
+    cargarServiciosAgenda()
+      .then((l) => { if (vivo) setServiciosAgenda(l); })
       .catch(() => {});
     return () => { vivo = false; };
   }, []);
@@ -7793,22 +7793,28 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
 }
 
 // Picker compacto de servicios con autocompletado para el modal de chat.
-function ChatServicePicker({ services, selectedIds, onAdd, onRemove }) {
+function ChatServicePicker({ services, selectedIds, onAdd, onRemove, known = [] }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const matches = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    // Por PALABRAS y sin tildes: los servicios del inventario tienen nombres
+    // largos y nadie los escribe en orden.
+    const plano = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    const palabras = plano(query).split(/\s+/).filter(Boolean);
     const avail = (services || []).filter((s) => !selectedIds.includes(s._id));
-    if (!q) return avail.slice(0, 10);
+    if (!palabras.length) return avail.slice(0, 30);
     return avail
-      .filter((s) =>
-        String(s.name || '').toLowerCase().includes(q) ||
-        String(s.code || '').toLowerCase().includes(q)
-      )
-      .slice(0, 10);
+      .filter((s) => {
+        const t = plano(`${s.name || ''} ${s.code || ''}`);
+        return palabras.every((w) => t.includes(w));
+      })
+      .slice(0, 30);
   }, [query, services, selectedIds]);
+  // `known`: los que ya traía la cita. Uno del catálogo viejo ya no está en la
+  // lista que se ofrece, y sin esto desaparecía de la vista aunque siguiera ahí.
   const selected = selectedIds
-    .map((id) => services.find((s) => s._id === id))
+    .map((id) => services.find((s) => String(s._id) === String(id))
+      || known.find((s) => String(s._id) === String(id)))
     .filter(Boolean);
   return (
     <div className="space-y-1 mt-1">
@@ -7828,10 +7834,14 @@ function ChatServicePicker({ services, selectedIds, onAdd, onRemove }) {
                 type="button"
                 key={s._id}
                 onMouseDown={(e) => { e.preventDefault(); onAdd(s._id); setQuery(''); setOpen(false); }}
-                className="w-full text-left px-2 py-1.5 text-xs hover:bg-emerald-50 bg-white border-none cursor-pointer flex justify-between"
+                className="w-full text-left px-2 py-1.5 text-xs hover:bg-emerald-50 bg-white border-none cursor-pointer flex justify-between gap-2"
               >
-                <span>{s.name}</span>
-                <span className="text-slate-400">${Number(s.salePrice || 0).toFixed(2)}</span>
+                <span className="break-words min-w-0">{s.name}</span>
+                {/* El catálogo de la agenda no trae precio: un «$0.00» al lado
+                    de cada servicio parecía que fuera gratis. */}
+                {s.salePrice != null && (
+                  <span className="text-slate-400 shrink-0">${Number(s.salePrice).toFixed(2)}</span>
+                )}
               </button>
             ))}
           </div>
@@ -7840,7 +7850,7 @@ function ChatServicePicker({ services, selectedIds, onAdd, onRemove }) {
       {selected.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {selected.map((s) => (
-            <span key={s._id} className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-800 text-[11px] px-2 py-0.5 rounded-full">
+            <span key={s._id} className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-800 text-[11px] px-2 py-0.5 rounded-xl max-w-full break-words">
               {s.name}
               <button type="button" onClick={() => onRemove(s._id)} className="text-emerald-700 bg-transparent border-none cursor-pointer">×</button>
             </span>

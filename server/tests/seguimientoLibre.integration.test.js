@@ -104,7 +104,9 @@ test('una derivación escrita a mano se guarda como servicio, no como receta', a
   assert.equal(receta[0].name, 'Paracetamol 500 mg');
   assert.equal(derivaciones.length, 1, 'la derivación NO puede acabar en la receta');
   assert.equal(derivaciones[0].name, 'Fisioterapia');
-  assert.equal(derivaciones[0].quantity, 6);
+  // Las derivaciones no llevan cantidad (oct-2026): aunque llegue una, se
+  // guarda 1 — se deriva a un servicio, no se despachan unidades.
+  assert.equal(derivaciones[0].quantity, 1);
   assert.equal(derivaciones[0].instructions, 'Zona lumbar');
 });
 

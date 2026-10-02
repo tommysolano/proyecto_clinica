@@ -52,6 +52,24 @@ echo "==> 1/6 Trayendo el ultimo codigo de origin/$BRANCH"
 git fetch --all --prune
 git reset --hard "origin/$BRANCH"
 
+# La clave llega cifrada como secreto de GitHub Actions. Instalarla en el
+# .env privado del VPS antes de reiniciar PM2; nunca se guarda en Git ni en logs.
+if [ -n "${CONTIFICO_API_KEY:-}" ]; then
+  ENV_FILE="$APP_DIR/server/.env"
+  TMP_ENV="$(mktemp "$APP_DIR/server/.env.contifico.XXXXXX")"
+  if [ -f "$ENV_FILE" ]; then
+    awk '$0 !~ /^CONTIFICO_(API_KEY|AUTO_SYNC)=/' "$ENV_FILE" > "$TMP_ENV"
+  fi
+  if [ "$(id -u)" = "0" ]; then
+    if [ -f "$ENV_FILE" ]; then chown --reference="$ENV_FILE" "$TMP_ENV"; else chown clinica:clinica "$TMP_ENV"; fi
+  fi
+  printf 'CONTIFICO_API_KEY=%s\nCONTIFICO_AUTO_SYNC=1\n' "$CONTIFICO_API_KEY" >> "$TMP_ENV"
+  chmod 600 "$TMP_ENV"
+  mv "$TMP_ENV" "$ENV_FILE"
+  unset CONTIFICO_API_KEY
+  echo "--> Clave de Contífico configurada en el .env privado del VPS"
+fi
+
 echo "==> 2/6 Instalando dependencias (server + client)"
 # AMPLIAR UN PARCHE YA EXISTENTE ROMPE EL DESPLIEGUE SI NO SE HACE NADA MAS.
 #
@@ -438,9 +456,10 @@ if ! ( cd "$APP_DIR/server" && node scripts/clearPhantomWhatsappWindowOnce.js --
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/clearPhantomWhatsappWindowOnce.js --commit'"
 fi
 
-# Catalogo de SERVICIOS DE AGENDA. Es idempotente (busca por slug antes de crear),
-# asi que puede correr en cada despliegue sin duplicar nada: solo rellena los que
-# falten. Sin esto, la primera vez el selector de servicio saldria vacio.
+# Catalogo de SERVICIOS DE AGENDA, enlazado con los productos de tipo SERVICIO
+# del inventario (oct-2026). Es idempotente (casa por slug antes de crear), asi
+# que puede correr en cada despliegue sin duplicar nada. Si falla no pasa nada
+# grave: el propio listado sincroniza la primera vez que se abre.
 if ! ( cd "$APP_DIR/server" && node scripts/seedAppointmentServiceItems.js ); then
   echo "ADVERTENCIA: no se pudo sembrar el catalogo de servicios de agenda. Reintenta a mano:"
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/seedAppointmentServiceItems.js'"

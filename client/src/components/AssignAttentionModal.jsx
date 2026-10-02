@@ -593,8 +593,8 @@ export default function AssignAttentionModal({
           </label>
           <ServiceItemPicker value={servicio} onChange={setServicio} />
           <p className="text-[11px] text-slate-400 mt-1">
-            Pincha para ver la lista. Si no está, escríbelo y se crea para todos. Si el servicio
-            trae su propio suero, se escribe solo en los seguimientos al guardar.
+            Son los servicios del inventario. Si el servicio trae su propio suero, se escribe solo
+            en los seguimientos al guardar.
           </p>
         </div>
 

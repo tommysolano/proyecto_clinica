@@ -165,7 +165,9 @@ test('las prescripciones llevan la receta, el plan, las derivaciones y el suero'
   assert.match(htmlCapturado, /Pasar en 45 minutos/);
   assert.match(htmlCapturado, /Plan:<\/b> Sueroterapia semanal/);
   assert.match(htmlCapturado, /No farmacológicas:<\/b> Dieta rica en hierro/);
-  assert.match(htmlCapturado, /Derivaciones:<\/b> Fisioterapia x4/);
+  // Las derivaciones ya no llevan cantidad (oct-2026).
+  assert.match(htmlCapturado, /Derivaciones:<\/b> Fisioterapia</);
+  assert.doesNotMatch(htmlCapturado, /Fisioterapia x\d/);
 });
 
 test('la columna de enfermería lleva lo aplicado, lo omitido y quién lo puso', async () => {

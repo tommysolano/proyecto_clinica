@@ -121,7 +121,13 @@ function Fila({ a, small, minutoConsultado, duracion, cerca = false }) {
 
       <div className="mt-1 flex flex-wrap items-center gap-1">
         {servicio ? (
-          <span className={`${t.chip} rounded bg-emerald-100 text-emerald-800 font-medium max-w-full truncate`}>
+          // Hasta dos líneas y no una recortada: los servicios del inventario
+          // pasan de cien letras y lo que distingue a dos suele ir al final
+          // («ECO … + CONSULTA OBSTETRA»). El nombre entero, al pasar el ratón.
+          <span
+            title={servicio}
+            className={`${t.chip} rounded bg-emerald-100 text-emerald-800 font-medium max-w-full break-words line-clamp-2`}
+          >
             {servicio}
           </span>
         ) : (

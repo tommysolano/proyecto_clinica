@@ -1801,7 +1801,8 @@ exports.addFollowUp = async (req, res) => {
         // línea de receta no agenda citas.
         serviceItem: isService ? (it.serviceItem || null) : null,
         name: it.name || servicioAgenda?.name || p?.name || '',
-        quantity: Number(it.quantity || 1),
+        // Una derivación no lleva cantidad (oct-2026): siempre 1.
+        quantity: isService ? 1 : Number(it.quantity || 1),
         dose: it.dose || '',
         frequency: it.frequency || '',
         duration: it.duration || '',
@@ -2323,7 +2324,8 @@ exports.updateFollowUp = async (req, res) => {
         product: it.product || undefined,
         serviceItem: isService ? (it.serviceItem || null) : null,
         name: it.name || servicioAgenda?.name || p?.name || '',
-        quantity: Number(it.quantity || 1),
+        // Una derivación no lleva cantidad (oct-2026): siempre 1.
+        quantity: isService ? 1 : Number(it.quantity || 1),
         dose: it.dose || '',
         frequency: it.frequency || '',
         duration: it.duration || '',
@@ -3078,7 +3080,6 @@ exports.printFollowUp = async (req, res) => {
         (it) => `
         <tr>
           ${celda(it.name)}
-          ${celda(it.quantity || 1, ';text-align:center')}
           ${celda(it.instructions)}
         </tr>`
       )
@@ -3135,7 +3136,6 @@ exports.printFollowUp = async (req, res) => {
   ${derivacionRows ? `<div class="label" style="margin-top:8px">Derivaciones</div>
     <table><thead><tr>
       <th>Servicio / Programa</th>
-      <th style="text-align:center">Cant.</th>
       <th>Indicaciones</th>
     </tr></thead><tbody>${derivacionRows}</tbody></table>` : ''}
 
@@ -3288,8 +3288,8 @@ exports.printMspForm = async (req, res) => {
           .join('')}</table>`
       : '';
     const derivHtml = derivItems.length
-      ? `<div class="sub">Derivaciones</div><table class="grid"><tr><th>Servicio / Programa</th><th>Cant.</th><th>Indicaciones</th></tr>${derivItems
-          .map((it) => `<tr><td>${val(it.name)}</td><td class="c">${it.quantity || 1}</td><td>${val(it.instructions)}</td></tr>`)
+      ? `<div class="sub">Derivaciones</div><table class="grid"><tr><th>Servicio / Programa</th><th>Indicaciones</th></tr>${derivItems
+          .map((it) => `<tr><td>${val(it.name)}</td><td>${val(it.instructions)}</td></tr>`)
           .join('')}</table>`
       : '';
 
@@ -3638,7 +3638,7 @@ exports.printHcu005 = async (req, res) => {
       if (deriv.length) {
         presc.push(
           `<b>Derivaciones:</b> ${deriv
-            .map((it) => `${esc(it.name)}${it.quantity ? ` x${it.quantity}` : ''}${it.instructions ? ` (${esc(it.instructions)})` : ''}`)
+            .map((it) => `${esc(it.name)}${it.instructions ? ` (${esc(it.instructions)})` : ''}`)
             .join('; ')}`,
         );
       }

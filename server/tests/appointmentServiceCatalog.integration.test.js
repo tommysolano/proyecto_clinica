@@ -21,10 +21,11 @@ const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const Patient = require('../models/Patient');
 const ctrl = require('../controllers/appointmentServiceItemController');
 const appt = require('../controllers/appointmentController');
+const { marcarServiciosPendientes } = require('../utils/serviciosInventario');
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
-test.beforeEach(async () => { await H.resetDb(); });
+test.beforeEach(async () => { await H.resetDb(); marcarServiciosPendientes(); });
 
 const crear = (clinicId, userId, body, role = 'cajero') =>
   H.runController(ctrl.create, H.mockReq(clinicId, userId, body, { role }));
@@ -52,7 +53,9 @@ test('crear un servicio al vuelo y volver a pedirlo devuelve el MISMO', async ()
 
 test('el catálogo es de toda la organización, no de una sucursal', async () => {
   const { clinicId, userId } = await H.seedClinic();
-  await crear(clinicId, userId, { name: 'Biorresonancia' });
+  // Desde oct-2026 lo que se ofrece sale de los SERVICIOS del inventario.
+  await H.makeProduct(clinicId, { name: 'Biorresonancia', category: 'servicio', unlimited: true });
+  marcarServiciosPendientes();
 
   // Otra sucursal pide el listado: tiene que ver el servicio igual, o cada sede
   // acabaría creando el suyo.

@@ -42,6 +42,7 @@ import TimeSlotInput from '../components/TimeSlotInput';
 import DateInput from '../components/DateInput';
 import AppointmentValueFields from '../components/AppointmentValueFields';
 import AgendadoPorSelect from '../components/AgendadoPorSelect';
+import { cargarServiciosAgenda } from '../utils/serviciosAgenda';
 import QuienAtiende, {
   CAMPOS_QUIEN_ATIENDE,
   pasosDeAtencion,
@@ -105,8 +106,7 @@ export default function Patients() {
   const [serviciosAgenda, setServiciosAgenda] = useState([]);
   useEffect(() => {
     let vivo = true;
-    api.get('/appointment-service-items')
-      .then((r) => { if (vivo) setServiciosAgenda(Array.isArray(r.data) ? r.data : []); })
+    cargarServiciosAgenda().then((l) => { if (vivo) setServiciosAgenda(l); })
       .catch(() => {});
     return () => { vivo = false; };
   }, []);

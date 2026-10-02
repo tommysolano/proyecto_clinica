@@ -136,7 +136,10 @@ test('el catálogo devuelve la duración: es de donde la lee el panel', async ()
     ctrl.update,
     H.mockReq(clinicId, userId, { durationMinutes: 45 }, { role: 'admin', params: { id: String(item._id) } }),
   );
-  const r = await H.runController(ctrl.list, H.mockReq(clinicId, userId, {}, { query: {} }));
+  // `all`, como lo pide el panel: tiene que saber lo que dura también un
+  // servicio que ya no se ofrece al agendar (oct-2026: los que no salen del
+  // inventario).
+  const r = await H.runController(ctrl.list, H.mockReq(clinicId, userId, {}, { query: { all: 1 } }));
   const encontrado = (r.payload || []).find((x) => String(x._id) === String(item._id));
   assert.ok(encontrado, 'el servicio sale en el catálogo');
   assert.equal(encontrado.durationMinutes, 45);
