@@ -363,6 +363,14 @@ function startFinancialSyncJob(leaderOnly) {
       console.log('[contifico-document-sync]', JSON.stringify({ state: documents.state,
         months: documents.months?.map((month) => `${month.month}:${month.state}`), failures: documents.failures }));
     } catch (error) { console.error('[contifico-document-sync] BLOQUEADO:', error.stack || error.message); }
+    // Roles de pago: después del mayor, porque su control de completitud son los
+    // sueldos contabilizados de cada mes.
+    try {
+      const { syncPayroll } = require('./contificoPayrollSync');
+      const payroll = await syncPayroll({ includeHistory: history, trigger: 'AUTO' });
+      console.log('[contifico-payroll-sync]', JSON.stringify({ state: payroll.state,
+        months: payroll.months?.map((month) => `${month.month}:${month.state}`), failures: payroll.failures }));
+    } catch (error) { console.error('[contifico-payroll-sync] BLOQUEADO:', error.stack || error.message); }
   });
   setTimeout(run, 30 * 1000);
   setInterval(run, 15 * 60 * 1000);

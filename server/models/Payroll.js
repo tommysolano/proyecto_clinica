@@ -97,6 +97,8 @@ const payrollItemSchema = new mongoose.Schema(
     provVacaciones: { type: Number, default: 0 },
     provFondosReserva: { type: Number, default: 0 },
     totalProvisiones: { type: Number, default: 0 },
+    // Roles importados: asiento de Contífico que registró sueldo y provisiones del empleado.
+    journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     notes: String,
   },
   { _id: false }

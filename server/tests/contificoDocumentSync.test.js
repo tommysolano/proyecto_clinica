@@ -66,3 +66,19 @@ test('un documento cuadrado no informa diferencias', () => {
   });
   assert.deepEqual(differences, []);
 });
+
+test('una compra de USD 0 o pendiente en Contífico no queda PAGADA', () => {
+  const { contificoPurchaseStatus } = require('../scripts/migrateContificoProject');
+  assert.equal(contificoPurchaseStatus(purchase({ total: '0.00', saldo: '0.00', estado: 'P' })), 'REGISTRADA');
+  assert.equal(contificoPurchaseStatus(purchase({ total: '0.00', saldo: '0.00', estado: 'G' })), 'REGISTRADA');
+  assert.equal(contificoPurchaseStatus(purchase({ total: '1950', saldo: '-1950', estado: 'P' })), 'REGISTRADA');
+  assert.equal(contificoPurchaseStatus(purchase({ saldo: '0.00', estado: 'G' })), 'PAGADA');
+  assert.equal(contificoPurchaseStatus(purchase({ saldo: '20.00', estado: 'P' })), 'REGISTRADA');
+  assert.equal(contificoPurchaseStatus(purchase({ anulado: true })), 'ANULADA');
+  const row = purchase({ total: '0.00', saldo: '0.00', estado: 'P' });
+  const differences = documentDifferences([row], {
+    archivedById: new Map([[row.id, archivedFor(row, [])]]), salesByKey: new Map(),
+    purchasesByRef: new Map([['rec-P1', { total: 0, balance: 0, status: 'PAGADA' }]]), ledgerByRef: new Map(),
+  });
+  assert.deepEqual(differences.map((item) => item.field), ['estado']);
+});

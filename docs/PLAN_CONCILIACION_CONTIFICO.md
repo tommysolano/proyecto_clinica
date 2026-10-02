@@ -303,3 +303,18 @@ Resultado del archivo entregado: 20 conciliaciones (diciembre 2025 a agosto 2026
 Corrección del mismo día:
 - **Estado:** el exporte no trae el estado. En Contífico, 31/07 Internacional y 31/07 Pacífico están «Pendiente» y se importan como `BORRADOR` con `--pending=2026-07-31:1400632113,2026-07-31:1071312145`; las demás, «Concluida». Las importadas son de solo lectura en la API: no se recalculan con `BankTransaction` ni se editan, cierran o eliminan.
 - **Pendientes al corte:** se importan las hojas «Depósitos en tránsito», «Cheques pendientes de cobro», «Notas de crédito en tránsito», «Notas de débito en tránsito» y «Cheques posfechados», en total 1.444 partidas. Cada una tiene su línea del mayor, cruzada dentro de su propio corte porque una partida puede seguir pendiente en varios. En los 20 cortes, saldo bancario + pendientes = saldo contable al centavo. Los posfechados se muestran como informativos, ya que su fecha es posterior al corte.
+
+### Compras de USD 0 y nómina (02/10/2026)
+
+**Compras.** El estado de una compra ya no se deduce solo del saldo. `contificoPurchaseStatus` devuelve «PAGADA» únicamente si Contífico la tiene pagada (estado G/C), con saldo 0 y valor mayor que 0. Una compra de USD 0, o una que en Contífico está en P (pendiente, por ejemplo un anticipo sin aplicar), queda «REGISTRADA». Así lo pidió la contabilidad. La sincronización de documentos compara el estado y corrigió 16 compras de septiembre, una de mayo (SERVINCREIBLE, USD 0 en estado G) y el anticipo DAC de diciembre 2025. Ninguna compra de USD 0 queda pagada. Las compras creadas en la interfaz ya cumplían la regla: solo pasan a pagadas con un pago o una nota de crédito.
+
+**Nómina.** Los 35 pagos de rol del listado de Contífico (abril–agosto) coinciden con los 35 roles de la API en persona, quincena, comprobante y valor. Cambios en la proyección:
+- **Fecha contable:** es la del asiento de Contífico. El cierre de mes toma la fecha del registro de fin de mes; la primera quincena (anticipo), la de su pago.
+- **Pagos:** cada uno se enlaza a su asiento «Cancelación de haberes» (35/35) y a su cuenta bancaria. Ese asiento también vale como prueba de pago.
+- **Provisiones:** cada empleado del cierre se enlaza a su asiento «Registro de sueldos y provisión…» (18/18). De él salen IESS patronal, SECAP, décimos y vacaciones.
+
+Respaldo previo: `storage/contifico-backups/payroll-before-journal-links-2026-10-02T21-45-12-657Z.json`.
+
+`services/contificoPayrollSync.js` sincroniza nómina en el ciclo automático, después del mayor y de los documentos. Primero arma la población: cédulas conocidas, personas con egresos bancarios y personas nombradas en asientos de nómina, que se identifican por nombre. Después consulta los roles del mes actual y del anterior, o los de todo el año cada 6 h, y los proyecta. Al final exige que los sueldos de los roles sean iguales al gasto de sueldos del mayor (`5.2.1.x.1`). Si difieren, el mes queda bloqueado con aviso «puede faltar el rol de un empleado».
+
+Primera corrida, con 33 cédulas consultadas: abril–agosto CURRENT, con sueldos iguales al mayor al centavo. Septiembre y octubre están SIN_CIERRE: Contífico aún no tiene roles ni sueldos contabilizados. Comando manual: `node scripts/syncContificoPayroll.js --months=AAAA-MM[,…]`.

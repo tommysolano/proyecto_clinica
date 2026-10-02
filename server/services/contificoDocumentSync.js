@@ -27,7 +27,7 @@ const Notification = require('../models/Notification');
 const SyncState = require('../models/ContificoSyncState');
 const { ContificoApi } = require('./contificoApi');
 const { Extractor, checksum, fmt } = require('../scripts/migrateContifico');
-const { Projector } = require('../scripts/migrateContificoProject');
+const { Projector, contificoPurchaseStatus } = require('../scripts/migrateContificoProject');
 const { monthRange, ecToday } = require('./contificoFinancialSync');
 
 let running = false;
@@ -104,7 +104,8 @@ function documentDifferences(rows, { archivedById, salesByKey, purchasesByRef, l
       else {
         if (r2(purchase.total) !== r2(row.total)) add(row, 'total', r2(row.total), r2(purchase.total));
         if (r2(purchase.balance) !== sourceBalance(row)) add(row, 'saldo', sourceBalance(row), r2(purchase.balance));
-        if ((purchase.status === 'ANULADA') !== Boolean(row.anulado)) add(row, 'estado', row.anulado ? 'ANULADA' : 'vigente', purchase.status);
+        const status = contificoPurchaseStatus(row);
+        if (purchase.status !== status) add(row, 'estado', status, purchase.status);
       }
     }
     const ledger = ledgerByRef.get(String(record._id));

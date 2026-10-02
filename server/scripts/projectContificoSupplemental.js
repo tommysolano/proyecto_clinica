@@ -25,6 +25,8 @@ const Payment = require('../models/Payment');
 const Sale = require('../models/Sale');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 const BankAccount = require('../models/BankAccount');
+const JournalEntry = require('../models/JournalEntry');
+require('../models/ChartOfAccount');
 const Employee = require('../models/Employee');
 const Payroll = require('../models/Payroll');
 const BankTransaction = require('../models/BankTransaction');
@@ -58,6 +60,53 @@ const dateKey = (value) => {
 const payrollPaymentKey = ({ personId, date, amount, reference }) => [
   String(personId || ''), dateKey(date), moneyCents(amount), String(reference || ''),
 ].join('|');
+// ── Asientos de nómina del mayor ────────────────────────────────────────────
+// Contífico contabiliza cada pago de rol en «Cancelación de haberes …, NOMBRE» y el
+// cierre mensual de cada empleado en «Registro de sueldos y provisión … , - NOMBRE»
+// (con las provisiones de la empresa). Las glosas abrevian o reordenan el nombre,
+// así que se exige fecha/monto exactos y se desempata por coincidencia de nombre.
+const nameTokens = (value) => new Set(String(value || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .toUpperCase().split(/[^A-Z]+/).filter((token) => token.length >= 3));
+function nameScore(person, description) {
+  const glosa = String(description || '').replace(/^.*,/, ''); // el nombre va tras la última coma
+  const tokens = nameTokens(glosa);
+  let score = 0;
+  for (const token of nameTokens(person)) if ([...tokens].some((other) => other === token || (other.length >= 4 && token.startsWith(other)))) score += 1;
+  return score;
+}
+/** Mejor candidato por nombre (mínimo dos palabras), solo si es único. */
+function bestByName(candidates, person) {
+  const scored = candidates.map((journal) => ({ journal, score: nameScore(person, journal.description) }))
+    .filter((row) => row.score >= 2).sort((a, b) => b.score - a.score);
+  if (!scored.length || (scored[1] && scored[1].score === scored[0].score)) return null;
+  return scored[0].journal;
+}
+const isoDay = (date) => (date ? new Date(date).toISOString().slice(0, 10) : '');
+function payrollPaymentJournal(journals, { date, amount, person, used = new Set() }) {
+  const candidates = journals.filter((journal) => !used.has(String(journal._id))
+    && /cancelaci[oó]n de haberes/i.test(journal.description || '') && isoDay(journal.date) === isoDay(date)
+    && journal.lines.some((line) => /^1\.1\.1\./.test(line.accountCode || '') && r2(line.credit) === r2(amount)));
+  return bestByName(candidates, person);
+}
+function payrollClosingJournal(journals, { year, month, net, person, used = new Set() }) {
+  const candidates = journals.filter((journal) => !used.has(String(journal._id))
+    && /registro de sueldos/i.test(journal.description || '')
+    && journal.date.getUTCFullYear() === year && journal.date.getUTCMonth() + 1 === month
+    && journal.lines.some((line) => line.accountCode === '2.1.7.7.1' && r2(line.credit) === r2(net)));
+  return bestByName(candidates, person);
+}
+/** Provisiones de la empresa en el asiento de cierre: 5.2.1.x.{5,6,8,9,10}. */
+function payrollProvisions(journal) {
+  const field = { 5: 'iessPatronal', 6: 'secap', 8: 'provDecimoTercero', 9: 'provDecimoCuarto', 10: 'provVacaciones' };
+  const result = { iessPatronal: 0, secap: 0, provDecimoTercero: 0, provDecimoCuarto: 0, provVacaciones: 0 };
+  for (const line of journal?.lines || []) {
+    const match = String(line.accountCode || '').match(/^5\.2\.1\.\d+\.(\d+)$/);
+    if (match && field[match[1]]) result[field[match[1]]] = r2(result[field[match[1]]] + num(line.debit) - num(line.credit));
+  }
+  result.totalProvisiones = r2(Object.values(result).reduce((sum, value) => sum + value, 0));
+  return result;
+}
+
 const payrollPaymentPending = (value) => ['N', 'NO_PAGO', 'PENDIENTE', 'EFECTIVO_PENDIENTE'].includes(String(value || '').trim().toUpperCase());
 const snapshotEntities = {
   documents: 'document', transactions: 'transaction', bank_movements: 'bank_movement',
@@ -309,12 +358,22 @@ class SupplementalProjector {
       grouped.get(key).records.push(record);
     }
     stage.source = roles.length;
+    // Asientos de nómina del mayor (pagos y cierres) y la cuenta bancaria de cada cuenta contable.
+    const roleDates = roles.map((record) => parseDate(record.payload.fecha)).filter(Boolean);
+    const payrollJournals = roleDates.length ? await JournalEntry.find({ clinic: this.clinic._id, status: 'CONTABILIZADO',
+      description: /cancelaci[oó]n de haberes|registro de sueldos/i,
+      date: { $gte: new Date(Math.min(...roleDates) - 40 * 86400000), $lte: new Date(Math.max(...roleDates) + 40 * 86400000) } })
+      .select('date description lines.accountCode lines.debit lines.credit').lean() : [];
+    const bankByCode = new Map((await BankAccount.find({ clinic: this.clinic._id }).populate('chartAccount', 'code').lean())
+      .map((bank) => [bank.chartAccount?.code, bank._id]));
+    const usedJournals = new Set();
     const marks = [], operations = [];
     for (const group of grouped.values()) {
       const code = `CTF-ROL-${group.year}-${String(group.month).padStart(2, '0')}-${group.periodType}`;
       const items = [];
       const payments = [];
       const sourceRefs = [];
+      const closingDates = [];
       let allPaymentsVerified = true;
       for (const record of group.records) {
         const row = record.payload, identification = String(row.cedula || '');
@@ -327,16 +386,30 @@ class SupplementalProjector {
           .map((detail, index) => ({ code: `CTF-I-${index + 1}`, name: String(detail.nombre || 'Ingreso Contífico'), amount: r2(detail.total) }));
         const deductions = sourceDetails.filter((detail) => String(detail.tipo || '').toUpperCase().startsWith('E'))
           .map((detail, index) => ({ code: `CTF-E-${index + 1}`, name: String(detail.nombre || 'Egreso Contífico'), amount: r2(detail.total) }));
+        // El cierre de mes trae las provisiones de la empresa en su asiento de registro.
+        const closing = group.periodType === 'CIERRE_MES'
+          ? payrollClosingJournal(payrollJournals, { year: group.year, month: group.month, net: neto, person: row.nombre_persona, used: usedJournals })
+          : null;
+        if (closing) { usedJournals.add(String(closing._id)); closingDates.push(closing.date); }
         items.push({ employee: employee._id, employeeName: String(row.nombre_persona || ''), identificacion: identification,
           daysWorked: Math.max(0, num(row.dias_trabajados, 30)), baseSalary: r2(salaryDetail?.total || ingresos), earnings, deductions,
           totalIngresos: ingresos, totalEgresos: egresos, netoPagar: neto,
+          ...(closing ? { ...payrollProvisions(closing), journalEntry: closing._id } : {}),
           notes: `Importado de Contifico (${record.externalId}); detalle original preservado en archivo.` });
         const evidenceKey = payrollPaymentKey({ personId: personSourceByIdentification.get(identification), date: row.fecha, amount: neto, reference: row.comprobante });
-        const evidences = payrollPaymentPending(row.tipo_pago) ? [] : (paymentEvidence.get(evidenceKey) || []);
-        if (neto > 0 && evidences.length === 1) {
-          const evidence = evidences[0];
+        const pendingInSource = payrollPaymentPending(row.tipo_pago);
+        const evidences = pendingInSource ? [] : (paymentEvidence.get(evidenceKey) || []);
+        // El asiento de pago del mayor también prueba el pago: los movimientos bancarios
+        // de Contífico no siempre listan los pagos de rol.
+        const paymentJournal = pendingInSource || neto <= 0 ? null
+          : payrollPaymentJournal(payrollJournals, { date: parseDate(row.fecha), amount: neto, person: row.nombre_persona, used: usedJournals });
+        if (paymentJournal) usedJournals.add(String(paymentJournal._id));
+        if (neto > 0 && (evidences.length === 1 || paymentJournal)) {
+          const evidence = evidences.length === 1 ? evidences[0] : {};
+          const bankLine = paymentJournal?.lines.find((line) => /^1\.1\.1\./.test(line.accountCode || '') && r2(line.credit) === neto);
           payments.push({ date: parseDate(row.fecha), amount: neto, reference: String(row.comprobante || ''),
-            bankAccount: evidence.bankTransaction?.bankAccount || null, bankTransaction: evidence.bankTransaction?._id || null,
+            bankAccount: bankByCode.get(bankLine?.accountCode) || evidence.bankTransaction?.bankAccount || null,
+            bankTransaction: evidence.bankTransaction?._id || null, journalEntry: paymentJournal?._id || null,
             idempotencyKey: `contifico:payroll:${record.externalId}` });
         } else if (neto > 0) {
           allPaymentsVerified = false;
@@ -351,8 +424,13 @@ class SupplementalProjector {
       const fields = { clinic: this.clinic._id, code, year: group.year, month: group.month, periodType: group.periodType,
         period: `${group.year}-${String(group.month).padStart(2, '0')}`, description: 'Importado de Contifico', items,
         totalIngresos: r2(items.reduce((sum, item) => sum + item.totalIngresos, 0)), totalEgresos: r2(items.reduce((sum, item) => sum + item.totalEgresos, 0)),
-        totalNeto: r2(items.reduce((sum, item) => sum + item.netoPagar, 0)), totalProvisiones: 0,
-        accountingDate: new Date(Date.UTC(group.year, group.month, 0, 12)),
+        totalNeto: r2(items.reduce((sum, item) => sum + item.netoPagar, 0)),
+        totalProvisiones: r2(items.reduce((sum, item) => sum + (item.totalProvisiones || 0), 0)),
+        // La del asiento que lo contabilizó en Contífico: el registro de fin de mes en el
+        // cierre; en la 1.ª quincena (anticipo) el asiento es el del pago, a mitad de mes.
+        accountingDate: closingDates.sort((a, b) => b - a)[0]
+          || group.records.map((record) => parseDate(record.payload.fecha)).filter(Boolean).sort((a, b) => b - a)[0]
+          || new Date(Date.UTC(group.year, group.month, 0, 12)),
         status: allPaymentsVerified ? 'PAGADO' : 'CERRADO', payments: allPaymentsVerified ? payments : [],
         paidAt: allPaymentsVerified && payments.length ? payments.at(-1).date : null,
       };
@@ -484,4 +562,5 @@ async function main() {
 
 if (require.main === module) main().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; }).finally(() => mongoose.disconnect().catch(() => {}));
 
-module.exports = { SupplementalProjector, args, mapPaymentMethod, payrollPeriod, noteKind, payrollPaymentKey, payrollPaymentPending };
+module.exports = { SupplementalProjector, args, mapPaymentMethod, payrollPeriod, noteKind, payrollPaymentKey, payrollPaymentPending,
+  payrollPaymentJournal, payrollClosingJournal, payrollProvisions, nameScore };

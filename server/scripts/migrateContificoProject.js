@@ -168,6 +168,18 @@ function contificoSaleFields(record, maps, products, manualProductId) {
   };
 }
 
+/**
+ * Estado de una compra de Contífico. Saldo 0 no basta para «PAGADA»: un comprobante de
+ * USD 0 o uno que Contífico aún tiene en estado P (pendiente, p. ej. un anticipo sin
+ * aplicar) no fue pagado. Así lo pidió la contabilidad el 02/10/2026.
+ */
+function contificoPurchaseStatus(row) {
+  if (row.anulado) return 'ANULADA';
+  const settled = Math.max(0, r2(row.saldo)) <= 0.01 && r2(row.total) > 0
+    && String(row.estado || '').toUpperCase() !== 'P';
+  return settled ? 'PAGADA' : 'REGISTRADA';
+}
+
 function contificoInvoiceFields(record, saleId, sale) {
   const row = record.payload;
   const [estab = '000', ptoEmi = '000', secuencial = record.externalId] = String(row.documento || '').split('-');
@@ -670,8 +682,8 @@ class Projector {
         subtotalNoObjeto: r2((row.detalles || []).reduce((sum, detail) => sum + num(detail.base_no_gravable), 0)),
         subtotal: r2(items.reduce((sum, item) => sum + item.subtotal, 0)), discount: r2(items.reduce((sum, item) => sum + item.discount, 0)),
         iva: r2(row.iva), ice: r2(row.ice), total, retentions, retentionTotal: r2(retentions.reduce((sum, item) => sum + item.amount, 0)),
-        retentionNumber: String(row.retenciones?.[0]?.numero_comprobante || ''), balance, paid: balance <= 0.01,
-        status: row.anulado ? 'ANULADA' : (balance <= 0.01 ? 'PAGADA' : 'REGISTRADA'),
+        retentionNumber: String(row.retenciones?.[0]?.numero_comprobante || ''), balance,
+        paid: contificoPurchaseStatus(row) === 'PAGADA', status: contificoPurchaseStatus(row),
         notes: `Importado de Contifico (${record.externalId})`, strictAccounts: false,
         sourceModel: 'ContificoRecord', sourceRef: record._id,
       } });
@@ -954,4 +966,4 @@ async function main() {
   console.log(`Clinica: ${clinic.name} (${clinic._id})`); console.log(JSON.stringify(await new Projector({ clinic, ...options }).execute(), null, 2));
 }
 if (require.main === module) main().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; }).finally(() => mongoose.disconnect().catch(() => {}));
-module.exports = { Projector, parseArgs, accountType, nature, splitName, tax, ledgerDocType, contificoDate, contificoPayment, contificoSaleItem, contificoSaleFields, contificoInvoiceFields };
+module.exports = { Projector, parseArgs, accountType, nature, splitName, tax, ledgerDocType, contificoDate, contificoPayment, contificoSaleItem, contificoSaleFields, contificoInvoiceFields, contificoPurchaseStatus };
