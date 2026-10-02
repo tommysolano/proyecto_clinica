@@ -11,6 +11,7 @@ import AccountSelect from '../../components/AccountSelect';
 import DateInput from '../../components/DateInput';
 
 const EMPTY = { name: '', bank: '', accountNumber: '', accountType: 'CORRIENTE', currency: 'USD', city: '', chartAccount: '', initialBalance: 0, nextCheckNumber: 1, active: true };
+const LEDGER_PAGE_SIZE = 200;
 
 export default function BankAccounts() {
   const [accounts, setAccounts] = useState([]);
@@ -21,6 +22,7 @@ export default function BankAccounts() {
   const [form, setForm] = useState(EMPTY);
   const [selected, setSelected] = useState(null);
   const [ledger, setLedger] = useState(null);
+  const [ledgerPage, setLedgerPage] = useState(1);
   const [ledgerFilter, setLedgerFilter] = useState({ startDate: '', cutDate: '' });
   const [showMov, setShowMov] = useState(false);
   const [movForm, setMovForm] = useState({ bankAccount: '', date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', description: '', reference: '', voucherNumber: '', voucherUrl: '' });
@@ -33,10 +35,11 @@ export default function BankAccounts() {
   };
   useEffect(() => {
     api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setChart(r.data || []));
-    load();
+    Promise.resolve().then(load);
   }, []);
 
   const loadLedger = async (id, filter = ledgerFilter) => {
+    setLedgerPage(1);
     try {
       const params = {};
       if (filter.startDate) params.startDate = filter.startDate;
@@ -94,6 +97,7 @@ export default function BankAccounts() {
 
   // /banks/balances devuelve { _id, bookBalance } por cuenta (no bankAccount/balance).
   const balanceOf = (id) => balances.find((b) => String(b._id) === String(id))?.bookBalance || 0;
+  const balanceDetail = (id) => balances.find((b) => String(b._id) === String(id));
 
   return (
     <div className="space-y-4">
@@ -120,6 +124,9 @@ export default function BankAccounts() {
               </div>
             </div>
             <p className="text-2xl font-bold text-emerald-700 mt-2">${fmt(balanceOf(a._id))}</p>
+            {balanceDetail(a._id)?.balanceSource === 'JOURNAL' && (
+              <p className="text-xs text-slate-500 mt-1">Saldo contable del mayor · pendiente de conciliación bancaria</p>
+            )}
           </div>
         ))}
       </div>
@@ -127,7 +134,7 @@ export default function BankAccounts() {
       {selected && (
         <div className="bg-white rounded-xl p-4 shadow-sm border border-emerald-100">
           <div className="flex flex-wrap justify-between items-center gap-2 mb-3">
-            <h2 className="font-semibold">Libro del banco · {selected.name}</h2>
+            <h2 className="font-semibold">{ledger?.source === 'JOURNAL' ? 'Mayor contable' : 'Libro del banco'} · {selected.name}</h2>
             <div className="flex flex-wrap items-end gap-2">
               <label className="text-xs text-slate-500 flex flex-col">Desde
                 <DateInput value={ledgerFilter.startDate} onChange={(e) => { const f = { ...ledgerFilter, startDate: e.target.value }; setLedgerFilter(f); loadLedger(selected._id, f); }} className="border border-slate-200 rounded-lg px-2 py-1 text-sm" />
@@ -140,6 +147,9 @@ export default function BankAccounts() {
           </div>
           {ledger && (
             <>
+              {ledger.source === 'JOURNAL' && (
+                <p className="text-xs text-slate-600 mb-3">Cada entrada y salida procede de un asiento contabilizado. La conciliación con el extracto bancario sigue pendiente.</p>
+              )}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3 text-sm">
                 <div className="bg-slate-50 rounded-lg px-3 py-2">Saldo inicial<br /><b>${fmt(ledger.opening)}</b></div>
                 <div className="bg-emerald-50 rounded-lg px-3 py-2 text-emerald-700">Entradas (ventas/cobros)<br /><b>${fmt(ledger.totalIn)}</b></div>
@@ -155,8 +165,8 @@ export default function BankAccounts() {
                     <th className="px-2 py-1 text-right">Saldo</th><th className="px-2 py-1 text-center">Concil.</th>
                   </tr></thead>
                   <tbody>
-                    <tr className="border-t bg-slate-50/60"><td colSpan={6} className="px-2 py-1 text-xs text-slate-500 italic">Saldo inicial</td><td className="px-2 py-1 text-right font-mono font-semibold">${fmt(ledger.opening)}</td><td></td></tr>
-                    {(ledger.rows || []).map((m) => (
+                    <tr className="border-t bg-slate-50/60"><td colSpan={6} className="px-2 py-1 text-xs text-slate-500 italic">Saldo al inicio de la página</td><td className="px-2 py-1 text-right font-mono font-semibold">${fmt(ledgerPage === 1 ? ledger.opening : ledger.rows[(ledgerPage - 1) * LEDGER_PAGE_SIZE - 1]?.runningBalance ?? ledger.opening)}</td><td></td></tr>
+                    {(ledger.rows || []).slice((ledgerPage - 1) * LEDGER_PAGE_SIZE, ledgerPage * LEDGER_PAGE_SIZE).map((m) => (
                       <tr key={m._id} className="border-t">
                         <td className="px-2 py-1">{fmtDate(m.date)}</td>
                         <td className="px-2 py-1 text-xs">{m.type}</td>
@@ -172,6 +182,13 @@ export default function BankAccounts() {
                   </tbody>
                 </table>
               </div>
+              {(ledger.rows || []).length > LEDGER_PAGE_SIZE && (
+                <div className="flex items-center justify-end gap-3 mt-3 text-sm">
+                  <span>Página {ledgerPage} de {Math.ceil(ledger.rows.length / LEDGER_PAGE_SIZE)} · {ledger.rows.length} movimientos</span>
+                  <button type="button" disabled={ledgerPage === 1} onClick={() => setLedgerPage((p) => p - 1)} className="px-3 py-1 border rounded-lg disabled:opacity-40">Anterior</button>
+                  <button type="button" disabled={ledgerPage >= Math.ceil(ledger.rows.length / LEDGER_PAGE_SIZE)} onClick={() => setLedgerPage((p) => p + 1)} className="px-3 py-1 border rounded-lg disabled:opacity-40">Siguiente</button>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -192,7 +209,7 @@ export default function BankAccounts() {
             <Field label="Saldo inicial"><NumericInput step="0.01" value={form.initialBalance} onChange={(e) => setForm({ ...form, initialBalance: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Próximo cheque #"><NumericInput value={form.nextCheckNumber} onChange={(e) => setForm({ ...form, nextCheckNumber: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Cuenta contable" required>
-              <AccountSelect accounts={chart} value={form.chartAccount} onChange={(v) => setForm({ ...form, chartAccount: v })} filter={(c) => c.code?.startsWith('1.1.01')} required />
+              <AccountSelect accounts={chart} value={form.chartAccount} onChange={(v) => setForm({ ...form, chartAccount: v })} filter={(c) => c.code?.startsWith('1.1.01') || /^1\.1\.1\.[345]$/.test(c.code || '')} required />
             </Field>
           </div>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowAcc(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>

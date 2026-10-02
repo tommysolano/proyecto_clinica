@@ -6,6 +6,7 @@ const CreditCard = require('../models/CreditCard');
 const Sale = require('../models/Sale');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const Payment = require('../models/Payment');
+const { isImportedBank, journalBalances, journalBankLedger, nextDay } = require('../services/bankJournalLedger');
 const { createEntry, findAccount, runInTransaction, assertPeriodOpen, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { girarCheque, liberarCheque } = require('../services/bankChecks');
@@ -86,15 +87,21 @@ exports.deleteAccount = async (req, res) => {
 exports.balances = async (req, res) => {
   try {
     const accounts = await BankAccount.find({ clinic: req.clinicId, active: true }).populate('chartAccount', 'code name');
+    const imported = accounts.filter(isImportedBank);
+    const journal = await journalBalances(accounts[0]?.clinic, imported.map((a) => a.chartAccount._id),
+      req.query.cutDate || null);
     const out = [];
     for (const a of accounts) {
       const agg = await BankTransaction.aggregate([
         { $match: { clinic: a.clinic, bankAccount: a._id, voided: false } },
         { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
       ]);
-      const bookBalance = (a.initialBalance || 0) + (agg[0]?.total || 0);
+      const operationalBalance = +((a.initialBalance || 0) + (agg[0]?.total || 0)).toFixed(2);
+      const bookBalance = isImportedBank(a) ? (journal.get(String(a.chartAccount._id)) || 0) : operationalBalance;
       out.push({ _id: a._id, name: a.name, bank: a.bank, accountNumber: a.accountNumber,
-                 chartAccount: a.chartAccount, bookBalance });
+                 chartAccount: a.chartAccount, bookBalance,
+                 balanceSource: isImportedBank(a) ? 'JOURNAL' : 'TRANSACTIONS',
+                 operationalBalance });
     }
     res.json(out);
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -837,8 +844,15 @@ exports.bankLedger = async (req, res) => {
   try {
     const bank = await BankAccount.findOne({ _id: req.params.id, clinic: req.clinicId }).populate('chartAccount', 'code name');
     if (!bank) return res.status(404).json({ message: 'Cuenta no encontrada' });
+    if (isImportedBank(bank)) {
+      const ledger = await journalBankLedger(bank, {
+        startDate: req.query.startDate || null,
+        endDate: req.query.endDate || req.query.cutDate || null,
+      });
+      return res.json(ledger);
+    }
     const startDate = req.query.startDate ? new Date(req.query.startDate) : null;
-    const endDate = req.query.endDate || req.query.cutDate ? new Date(req.query.endDate || req.query.cutDate) : null;
+    const endDate = req.query.endDate || req.query.cutDate ? nextDay(req.query.endDate || req.query.cutDate) : null;
 
     // Saldo de apertura = saldo inicial de la cuenta + movimientos anteriores a startDate.
     let opening = bank.initialBalance || 0;
@@ -854,7 +868,7 @@ exports.bankLedger = async (req, res) => {
     if (startDate || endDate) {
       filter.date = {};
       if (startDate) filter.date.$gte = startDate;
-      if (endDate) filter.date.$lte = endDate;
+      if (endDate) filter.date.$lt = endDate;
     }
     const txs = await BankTransaction.find(filter).sort({ date: 1, createdAt: 1 });
     let running = opening;

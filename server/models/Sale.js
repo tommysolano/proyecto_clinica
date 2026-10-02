@@ -118,13 +118,17 @@ const saleSchema = new mongoose.Schema(
     // varios. El desglose real está en `payments`.
     paymentMethod: {
       type: String,
-      enum: ['efectivo', 'tarjeta', 'transferencia', 'credito', 'mixto'],
+      enum: ['efectivo', 'tarjeta', 'transferencia', 'credito', 'mixto', 'desconocido'],
       default: 'efectivo',
     },
     // Desglose de pago (uno o varios métodos). Fuente de verdad del cómo se pagó.
     // Para ventas antiguas (antes del pago dividido) queda vacío y se interpreta
     // como un solo pago = { method: paymentMethod, amount: total }.
     payments: { type: [salePaymentSchema], default: [] },
+    // El origen declaró que la venta está cobrada, pero no expuso el medio o el valor
+    // de uno de sus cobros. Se conserva el total contable sin inventar efectivo.
+    paymentEvidenceStatus: { type: String, enum: ['COMPLETA', 'INCOMPLETA'], default: 'COMPLETA', index: true },
+    unverifiedPaymentAmount: { type: Number, default: 0, min: 0 },
     // Detalle del medio de pago según configuración contable:
     //  - transferencia/deposito -> cuenta bancaria destino
     //  - tarjeta -> tarjeta/POS configurado en bancos

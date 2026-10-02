@@ -19,6 +19,7 @@ import DateInput from '../../components/DateInput';
 const REPORT_TABS = [
   ['PYG', 'Estado Resultados'],
   ['BG', 'Balance General'],
+  ['FLUJO_INDIRECTO', 'Flujo indirecto'],
 ];
 
 // Cómo se abre el reporte en columnas. "Sede" agrega las clínicas a las que el
@@ -80,9 +81,8 @@ export default function FinancialReports() {
 
   // Desgloses que admite cada reporte: el Balance es una FOTO a una fecha, así que
   // por mes no tiene sentido (daría una cifra que no significa nada).
-  const opcionesDesglose = tab === 'BG'
-    ? BREAKDOWNS.filter((b) => b.key !== 'month')
-    : BREAKDOWNS;
+  const opcionesDesglose = tab === 'FLUJO_INDIRECTO' ? BREAKDOWNS.slice(0, 1)
+    : tab === 'BG' ? BREAKDOWNS.filter((b) => b.key !== 'month') : BREAKDOWNS;
   const desgloseEfectivo = opcionesDesglose.some((b) => b.key === breakdown) ? breakdown : 'none';
 
   const queryParams = () => (tab === 'BG'
@@ -91,9 +91,8 @@ export default function FinancialReports() {
 
   const load = async () => {
     try {
-      const url = tab === 'BG'
-        ? '/accounting-reports/balance-sheet'
-        : '/accounting-reports/income-statement';
+      const url = tab === 'FLUJO_INDIRECTO' ? '/accounting-reports/cash-flow-indirect'
+        : tab === 'BG' ? '/accounting-reports/balance-sheet' : '/accounting-reports/income-statement';
       const r = await api.get(url, { params: queryParams() });
       setData(r.data);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
@@ -166,6 +165,7 @@ export default function FinancialReports() {
   const renderReport = () => {
     if (!data) return null;
     if (tab === 'PYG') return <IncomeStatement data={data} onAccountClick={openAccount} />;
+    if (tab === 'FLUJO_INDIRECTO') return <IndirectCashFlow data={data} />;
     return <BalanceSheet data={data} onAccountClick={openAccount} />;
   };
 
@@ -193,7 +193,7 @@ export default function FinancialReports() {
         </div>
         <div><label className="text-xs text-slate-500 block">Desde</label><DateInput value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
         <div><label className="text-xs text-slate-500 block">Hasta</label><DateInput value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
-        <div>
+        {tab !== 'FLUJO_INDIRECTO' && <div>
           <label className="text-xs text-slate-500 block">Ver</label>
           <select
             value={desgloseEfectivo}
@@ -202,16 +202,16 @@ export default function FinancialReports() {
           >
             {opcionesDesglose.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
           </select>
-        </div>
+        </div>}
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button>
         {/* Excel del estado financiero: mismo endpoint y MISMOS filtros que la pantalla
             (incluido el desglose en columnas). El Balance General se corta a una FECHA;
             el Estado de Resultados va por rango. */}
-        <ExcelButton
+        {tab !== 'FLUJO_INDIRECTO' && <ExcelButton
           url={tab === 'BG' ? '/accounting-reports/balance-sheet.xlsx' : '/accounting-reports/income-statement.xlsx'}
           params={queryParams()}
           filename={tab === 'BG' ? `balance_general_${endDate}.xlsx` : `estado_resultados_${startDate}_${endDate}.xlsx`}
-        />
+        />}
         {(tab === 'BG' || tab === 'PYG') && (
           <button
             onClick={downloadSupercias}
@@ -251,6 +251,42 @@ export default function FinancialReports() {
       />
     </div>
   );
+}
+
+function IndirectCashFlow({ data }) {
+  const section = (title, rows, totalValue) => (
+    <section className="space-y-2">
+      <h3 className="font-semibold text-emerald-700 border-b pb-1">{title}</h3>
+      <div className="overflow-x-auto rounded-lg border border-slate-100">
+        <table className="tbl min-w-[620px] w-full">
+          <thead className="bg-emerald-50 text-xs uppercase text-slate-600"><tr>
+            <th className="px-3 py-2 text-left">Cuenta</th>
+            <th className="px-3 py-2 text-right">Movimiento</th>
+            <th className="px-3 py-2 text-right">Efecto en caja</th>
+          </tr></thead>
+          <tbody>{rows.map((row) => <tr key={row.label} className="border-t border-slate-100">
+            <td className="px-3 py-1.5" title={`Cuentas: ${row.accounts.join(', ')}`}>{row.label}</td>
+            <td className="px-3 py-1.5 text-right font-mono">${fmt(row.amount)}</td>
+            <td className="px-3 py-1.5 text-right font-mono">${fmt(row.effect)}</td>
+          </tr>)}</tbody>
+          <tfoot className="bg-slate-100 font-bold"><tr>
+            <td colSpan={2} className="px-3 py-2 text-right">Total {title}</td>
+            <td className="px-3 py-2 text-right font-mono">${fmt(totalValue)}</td>
+          </tr></tfoot>
+        </table>
+      </div>
+    </section>
+  );
+  return <div className="space-y-4">
+    <p className="text-xs text-slate-500">Movimientos del mayor entre {fmtDate(data.from)} y {fmtDate(data.through)}. Las cifras provienen de asientos contabilizados.</p>
+    <TotalBand label="Utilidad del período" value={data.result} />
+    {section('Actividades operativas', data.operating.rows, data.operating.total)}
+    {section('Inversiones', data.investing.rows, data.investing.total)}
+    <TotalBand label="Flujo de caja del período" value={data.net} prominent />
+    {Math.abs(data.difference) > 0.004 && <p className="text-sm text-amber-700 bg-amber-50 rounded-lg p-3">
+      Diferencia frente al movimiento de caja y bancos: ${fmt(data.difference)}. Revisar la clasificación de cuentas.
+    </p>}
+  </div>;
 }
 
 // Aplana el árbol jerárquico en filas con sangría y subtotales (estilo Contífico).

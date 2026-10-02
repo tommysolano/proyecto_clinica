@@ -56,17 +56,19 @@ class ContificoApi {
           headers: { Authorization: this.apiKey, Accept: 'application/json' },
           signal: controller.signal,
         });
-        clearTimeout(timeout);
-        if (response.ok) return response.json();
+        // Mantener el plazo hasta terminar de leer el cuerpo. Contifico puede
+        // entregar cabeceras y quedarse sin completar el JSON.
+        if (response.ok) return await response.json();
         const body = await response.text().catch(() => '');
         const error = new Error(`Contifico GET ${url.pathname}: HTTP ${response.status}${body ? ` - ${body.slice(0, 200)}` : ''}`);
         error.status = response.status;
         if ((response.status !== 429 && response.status < 500) || attempt === this.retries) throw error;
         lastError = error;
       } catch (error) {
-        clearTimeout(timeout);
         lastError = error;
         if (attempt === this.retries || (error.status && error.status !== 429 && error.status < 500)) throw error;
+      } finally {
+        clearTimeout(timeout);
       }
       this.metrics.retries += 1;
       await wait(Math.min(1000 * 2 ** attempt, 10000));

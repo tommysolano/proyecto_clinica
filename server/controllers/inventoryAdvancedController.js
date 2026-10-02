@@ -744,7 +744,8 @@ exports.transferStock = async (req, res) => {
  */
 exports.warehouseStock = async (req, res) => {
   try {
-    const match = { clinic: new (require('mongoose').Types.ObjectId)(req.clinicId), qtyRemaining: { $gt: 0 } };
+    // Los deficit historicos no son disponibilidad FIFO, pero deben verse en el reporte.
+    const match = { clinic: new (require('mongoose').Types.ObjectId)(req.clinicId), qtyRemaining: { $ne: 0 } };
     if (req.query.warehouse) match.warehouse = new (require('mongoose').Types.ObjectId)(req.query.warehouse);
     const rows = await InventoryLayer.aggregate([
       { $match: match },

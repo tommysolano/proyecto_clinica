@@ -22,6 +22,9 @@ const fondosReservaDate = (hireDate) => {
   return new Date(h.getFullYear() + 1, h.getMonth(), h.getDate());
 };
 
+const missingContificoField = (employee, field) => employee?.contificoSource?.imported
+  && employee.contificoSource?.[field] === false;
+
 // Separa un nombre completo en nombres/apellidos (heurística simple ES).
 const splitName = (full = '') => {
   const parts = full.trim().split(/\s+/);
@@ -181,13 +184,21 @@ export default function Employees() {
                     ? (depts.find((d) => String(d._id) === String(e.departmentRef))?.name || e.position || '—')
                     : <span className="text-amber-600" title="Sin departamento parametrizado">⚠ {e.department || e.position || 'Sin depto.'}</span>}
                 </td>
-                <td className="px-3 py-2 text-xs">{fmtDate(e.hireDate)}</td>
+                <td className="px-3 py-2 text-xs">
+                  {missingContificoField(e, 'hireDateAvailable')
+                    ? <span className="text-slate-500" title="Contífico no entrega la fecha de ingreso">No disponible</span>
+                    : fmtDate(e.hireDate)}
+                </td>
                 <td className="px-3 py-2 text-xs text-center">
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${e.salaryType === 'NET' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'}`}>
-                    {e.salaryType || 'GROSS'}
+                    {missingContificoField(e, 'salaryAvailable') ? 'SIN DATO' : (e.salaryType || 'GROSS')}
                   </span>
                 </td>
-                <td className="px-3 py-2 text-right font-mono">${fmt(e.baseSalary)}</td>
+                <td className="px-3 py-2 text-right font-mono">
+                  {missingContificoField(e, 'salaryAvailable')
+                    ? <span className="text-slate-500" title="Contífico no entrega el sueldo contractual">No disponible</span>
+                    : `$${fmt(e.baseSalary)}`}
+                </td>
                 <td className="px-3 py-2 text-right font-mono">{e.salaryType === 'NET' ? `$${fmt(e.netSalary)}` : '—'}</td>
                 <td className="px-3 py-2 flex gap-1 justify-end">
                   <button title="Historial de sueldo" onClick={() => setHistory(e)} className="text-slate-600"><HiOutlineClock className="w-4 h-4" /></button>

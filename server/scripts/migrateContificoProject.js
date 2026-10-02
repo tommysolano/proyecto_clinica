@@ -2,6 +2,7 @@
 'use strict';
 
 require('dotenv').config();
+const fs = require('fs');
 const mongoose = require('mongoose');
 const Clinic = require('../models/Clinic');
 const ContificoRecord = require('../models/ContificoRecord');
@@ -123,10 +124,10 @@ function contificoSaleFields(record, maps, products, manualProductId) {
   const payments = (row.cobros || []).map((payment) => contificoPayment(payment, date)).filter((payment) => payment.amount > 0);
   const recorded = r2(payments.reduce((sum, payment) => sum + payment.amount, 0));
   if (balance > 0) payments.push({ method: 'credito', amount: balance, date, reference: 'Saldo Contifico' });
-  // Contifico no devuelve los cobros de varios documentos antiguos/anulados. En ventas vigentes,
-  // completar la diferencia mantiene la conciliacion sin esconder que fue un fallback.
+  // Algunos documentos antiguos no contienen el desglose de cobros. No se debe crear un
+  // renglón de efectivo ficticio: el asiento Contífico sigue siendo la fuente financiera,
+  // mientras que esta venta queda marcada para revisión del medio de pago.
   const missing = r2(total - recorded - balance);
-  if (!row.anulado && missing > 0.01) payments.push({ method: 'efectivo', amount: missing, date, reference: 'CONTIFICO_SIN_DESGLOSE' });
   const methods = [...new Set(payments.map((payment) => payment.method))];
   const client = row.cliente || {};
   const gross = r2(items.reduce((sum, item) => sum + item.grossAmount, 0));
@@ -151,15 +152,17 @@ function contificoSaleFields(record, maps, products, manualProductId) {
     discountTaxBase: discount,
     taxAmount: r2(row.iva),
     total,
-    paymentMethod: methods.length > 1 ? 'mixto' : (methods[0] || 'efectivo'),
+    paymentMethod: missing > 0.01 && !row.anulado ? 'desconocido' : (methods.length > 1 ? 'mixto' : (methods[0] || 'efectivo')),
     payments,
+    paymentEvidenceStatus: missing > 0.01 && !row.anulado ? 'INCOMPLETA' : 'COMPLETA',
+    unverifiedPaymentAmount: missing > 0.01 && !row.anulado ? missing : 0,
     creditDays: balance > 0 && parseDate(row.fecha_vencimiento) && date
       ? Math.max(0, Math.round((parseDate(row.fecha_vencimiento) - date) / 86400000)) : null,
     dueDate: balance > 0 ? parseDate(row.fecha_vencimiento) : null,
     balance,
     paid: balance <= 0.01,
     status: row.anulado ? 'anulada' : 'completada',
-    notes: `Importado de Contifico (${record.externalId})${missing > 0.01 && !row.anulado ? '; pago sin desglose en origen' : ''}`,
+    notes: `Importado de Contifico (${record.externalId})${missing > 0.01 && !row.anulado ? '; medio de pago sin desglose en origen' : ''}`,
     idempotencyKey: `contifico:${record.externalId}`,
     createdAt: date,
   };
@@ -219,6 +222,10 @@ function parseArgs(argv) {
     const at = arg.indexOf('=');
     if (at < 0) flags.add(arg.slice(2)); else values[arg.slice(2, at)] = arg.slice(at + 1);
   }
+  const sourceIds = values['source-ids-file']
+    ? JSON.parse(fs.readFileSync(values['source-ids-file'], 'utf8')).pairs.map((pair) =>
+      values.only === 'journal_ids' ? pair.journalId : pair.documentId)
+    : String(values['source-ids'] || '').split(',').map((value) => value.trim()).filter(Boolean);
   return {
     commit: flags.has('commit'),
     clinicId: values.clinic || null,
@@ -226,6 +233,7 @@ function parseArgs(argv) {
     cutoff: parseDate(values.cutoff) || new Date(),
     stopAfter: values['stop-after'] || null,
     only: values.only || null,
+    sourceIds,
     skipLinkedInventory: flags.has('skip-linked-inventory'),
   };
 }
@@ -239,12 +247,14 @@ const snapshotEntities = {
 };
 
 class Projector {
-  constructor({ clinic, commit, cutoff, stopAfter = null, only = null, skipLinkedInventory = false }) {
+  constructor({ clinic, commit, cutoff, stopAfter = null, only = null, sourceIds = [], skipLinkedInventory = false, sourceSnapshotId = null }) {
     this.clinic = clinic;
     this.commit = commit;
     this.cutoff = cutoff;
     this.stopAfter = stopAfter;
     this.only = only;
+    this.sourceIds = new Set(sourceIds);
+    this.sourceSnapshotId = sourceSnapshotId;
     this.skipLinkedInventory = skipLinkedInventory;
     this.run = null;
     this.sourceSnapshot = null;
@@ -260,6 +270,11 @@ class Projector {
   async records(entity) {
     const filter = { clinic: this.clinic._id, entity };
     if (this.sourceSnapshot && this.snapshotEntities.has(entity)) filter.migrationRun = this.sourceSnapshot._id;
+    if (entity === 'journal_entry' && this.only === 'journal_ids') {
+      if (!this.sourceIds.size) throw new Error('journal_ids exige --source-ids');
+      delete filter.migrationRun;
+      filter.externalId = { $in: [...this.sourceIds] };
+    }
     const records = await ContificoRecord.find(filter).sort({ externalId: 1 }).lean();
     return records.map((record) => ({
       ...record,
@@ -278,6 +293,7 @@ class Projector {
   }
   async begin() {
     this.sourceSnapshot = await ContificoMigrationRun.findOne({
+      ...(this.sourceSnapshotId ? { _id: this.sourceSnapshotId } : {}),
       clinic: this.clinic._id, phase: 'EXTRACT', status: { $in: ['COMPLETED', 'COMPLETED_WITH_WARNINGS'] },
     }).sort({ completedAt: -1, createdAt: -1 }).lean();
     if (this.sourceSnapshot) {
@@ -399,8 +415,14 @@ class Projector {
     // Una persona puede haber perdido la marca `es_proveedor` después de emitir
     // una compra. El documento PRO sigue siendo evidencia suficiente para crear
     // su ficha de proveedor y no dejar ese comprobante sin importar.
-    const providerPersonIds = new Set((await this.records('document'))
+    const sourceDocuments = await this.records('document');
+    const providerPersonIds = new Set(sourceDocuments
       .filter((record) => String(record.payload.tipo_registro || '').toUpperCase() === 'PRO')
+      .map((record) => String(record.payload.persona_id || '')).filter(Boolean));
+    // La bandera actual de la persona puede haber cambiado después de la venta.
+    // El documento CLI es evidencia suficiente para conservar su ficha de cliente.
+    const clientPersonIds = new Set(sourceDocuments
+      .filter((record) => String(record.payload.tipo_registro || '').toUpperCase() === 'CLI')
       .map((record) => String(record.payload.persona_id || '')).filter(Boolean));
     const ids = [...new Set(records.map((record) => identification(record.payload)).filter(Boolean))];
     const oldSuppliers = await Supplier.find({ clinic: this.clinic._id, ruc: { $in: ids } }).lean(); const oldPatients = await Patient.find({ $or: [{ cedula: { $in: ids } }, { identificationAliases: { $in: ids } }] }).lean();
@@ -419,7 +441,7 @@ class Projector {
           $set: { razonSocial: String(row.razon_social || row.nombre_comercial || id), nombreComercial: String(row.nombre_comercial || ''), roles: roles.length ? roles : ['CLIENTE'], address: String(row.direccion || ''), phone: String(row.telefonos || ''), email: String(row.email || ''), creditDays: num(row.dias_credito), active: true },
           $setOnInsert: { clinic: this.clinic._id, ruc: id, tipoIdentificacion: idType(id), notes: `Contifico ${record.externalId}` },
         }, upsert: true } });
-        if (row.es_cliente) { const names = splitName(row.razon_social || row.nombre_comercial || id); patientOps.push({ updateOne: { filter: { $or: [{ cedula: id }, { identificationAliases: id }] }, update: {
+        if (row.es_cliente || clientPersonIds.has(String(record.externalId))) { const names = splitName(row.razon_social || row.nombre_comercial || id); patientOps.push({ updateOne: { filter: { $or: [{ cedula: id }, { identificationAliases: id }] }, update: {
           $set: { ...names, email: String(row.email || ''), phone: String(row.telefonos || ''), address: String(row.direccion || ''), active: true },
           $setOnInsert: { clinic: this.clinic._id, cedula: id, notes: `Contifico ${record.externalId}` },
         }, upsert: true } }); }
@@ -434,7 +456,8 @@ class Projector {
       const id = identification(record.payload); if (!id) { stage.skipped++; continue; }
       const needsSupplier = providerPersonIds.has(String(record.externalId)) || record.payload.es_proveedor || record.payload.es_empleado || record.payload.es_vendedor || !record.payload.es_cliente;
       let supplier = needsSupplier ? supplierById.get(id) : null; if (needsSupplier && !supplier) { supplier = { _id: fakeId() }; supplierById.set(id, supplier); }
-      let patient = record.payload.es_cliente ? patientById.get(id) : null; if (record.payload.es_cliente && !patient) { patient = { _id: fakeId() }; patientById.set(id, patient); }
+      const needsPatient = record.payload.es_cliente || clientPersonIds.has(String(record.externalId));
+      let patient = needsPatient ? patientById.get(id) : null; if (needsPatient && !patient) { patient = { _id: fakeId() }; patientById.set(id, patient); }
       if (supplier) this.maps.suppliers.set(record.externalId, supplier._id); if (patient) this.maps.patients.set(record.externalId, patient._id);
       const supplierNew = supplier && !oldSupplierIds.has(id), patientNew = patient && !oldPatientIds.has(id); stage.created += (supplierNew ? 1 : 0) + (patientNew ? 1 : 0); if (supplier && !supplierNew) stage.linked++; if (patient && !patientNew) stage.linked++; stage.projected++;
       const links = [supplier && { model: 'Supplier', ref: supplier._id, action: supplierNew ? 'CREATE' : 'LINK' }, patient && { model: 'Patient', ref: patient._id, action: patientNew ? 'CREATE' : 'LINK' }].filter(Boolean);
@@ -572,7 +595,7 @@ class Projector {
       stage.projected++;
       const warnings = [];
       if ((record.payload.detalles || []).some((detail) => !detail.producto_id || !this.maps.products.has(String(detail.producto_id)))) warnings.push('Documento con item manual sin producto_id');
-      if (!record.payload.anulado && (fields.payments || []).some((payment) => payment.reference === 'CONTIFICO_SIN_DESGLOSE')) warnings.push('Venta sin desglose completo de cobro; diferencia asignada a efectivo');
+      if (fields.paymentEvidenceStatus === 'INCOMPLETA') warnings.push(`Venta sin desglose completo de cobro; $${fields.unverifiedPaymentAmount.toFixed(2)} queda sin medio de pago asignado`);
       warnings.forEach((warning) => this.issue(stage, record.externalId, warning));
       return { recordId: record._id, status: existed ? 'LINKED_EXISTING' : 'PROJECTED', links: [
         { model: 'Sale', ref: sale._id, action: existed ? 'LINK' : 'CREATE' },
@@ -588,7 +611,8 @@ class Projector {
     const source = (await this.records('document')).filter((record) => {
       const row = record.payload, date = parseDate(row.fecha_emision);
       return String(row.tipo_registro).toUpperCase() === 'PRO'
-        && allowed.has(String(row.tipo_documento).toUpperCase()) && date && date <= this.cutoff;
+        && allowed.has(String(row.tipo_documento).toUpperCase()) && date && date <= this.cutoff
+        && (!this.sourceIds.size || this.sourceIds.has(record.externalId));
     });
     stage.source = source.length;
     // Cada registro de Contífico tiene un sourceRef distinto. Aunque dos históricos
@@ -597,7 +621,7 @@ class Projector {
     // controlador de la interfaz, no en esta migración histórica.
     const productRows = await Product.find({ clinic: this.clinic._id }).select('category inventoryCategory').lean();
     const productById = new Map(productRows.map((product) => [String(product._id), product]));
-    const docType = { FAC: 'FACTURA', NVE: 'NOTA_VENTA', LQC: 'LIQUIDACION', DNA: 'NOTA_DEBITO_REC', DAC: 'NOTA_DEBITO_REC', NCT: 'NOTA_CREDITO_REC' };
+    const docType = { FAC: 'FACTURA', NVE: 'NOTA_VENTA', LQC: 'LIQUIDACION', DNA: 'NOTA_DEBITO_REC', DAC: 'ANTICIPO_PROVEEDOR', NCT: 'NOTA_CREDITO_REC' };
     const candidates = [];
     for (const record of source) {
       const row = record.payload, supplier = this.maps.suppliers.get(String(row.persona_id || ''));
@@ -799,20 +823,71 @@ class Projector {
   async subledger() {
     const stage = this.stage('open_subledger'); const documents = await this.records('document'), persons = await this.records('person'); const personById = new Map(persons.map((record) => [record.externalId, record]));
     const receivableOps = [], payableOps = [];
-    for (const record of documents) { const row = record.payload, balance = num(row.saldo), date = parseDate(row.fecha_emision); if (balance <= 0.005 || row.anulado || !date || date > this.cutoff) continue; stage.source++; const person = personById.get(String(row.persona_id || '')), client = String(row.tipo_registro).toUpperCase() === 'CLI', patient = person ? this.maps.patients.get(person.externalId) : null, supplier = person ? this.maps.suppliers.get(person.externalId) : null, total = Math.max(balance, num(row.total)); const payload = { clinic: this.clinic._id, party: { model: client && patient ? 'Patient' : 'Supplier', ref: client ? (patient || supplier || null) : (supplier || null), name: String(row.cliente?.razon_social || person?.payload?.razon_social || '') }, sourceModel: 'ContificoRecord', sourceRef: record._id, docType: ledgerDocType(row.tipo_documento), number: String(row.documento || ''), issueDate: date, dueDate: parseDate(row.fecha_vencimiento), currency: 'USD', total, applied: +(total - balance).toFixed(2), balance, status: total - balance > 0 ? 'PARCIAL' : 'ABIERTO', account: person ? this.maps.accounts.get(String(client ? person.payload.cuenta_por_cobrar_id : person.payload.cuenta_por_pagar_id)) || null : null, notes: `Contifico ${record.externalId}` }; (client ? receivableOps : payableOps).push({ updateOne: { filter: { clinic: this.clinic._id, sourceModel: 'ContificoRecord', sourceRef: record._id }, update: { $set: payload }, upsert: true } }); }
+    for (const record of documents) { if (this.sourceIds.size && !this.sourceIds.has(record.externalId)) continue; const row = record.payload, balance = num(row.saldo), date = parseDate(row.fecha_emision); if (balance <= 0.005 || row.anulado || !date || date > this.cutoff || (record.projection?.status === 'REVIEW' && (record.projection.warnings || []).some((warning) => warning.startsWith('Ausente de la instantánea Contífico ')))) continue; stage.source++; const person = personById.get(String(row.persona_id || '')), client = String(row.tipo_registro).toUpperCase() === 'CLI', patient = person ? this.maps.patients.get(person.externalId) : null, supplier = person ? this.maps.suppliers.get(person.externalId) : null, total = Math.max(balance, num(row.total)); const payload = { clinic: this.clinic._id, party: { model: client && patient ? 'Patient' : 'Supplier', ref: client ? (patient || supplier || null) : (supplier || null), name: String(row.cliente?.razon_social || person?.payload?.razon_social || '') }, sourceModel: 'ContificoRecord', sourceRef: record._id, docType: ledgerDocType(row.tipo_documento), number: String(row.documento || ''), issueDate: date, dueDate: parseDate(row.fecha_vencimiento), currency: 'USD', total, applied: +(total - balance).toFixed(2), balance, status: total - balance > 0 ? 'PARCIAL' : 'ABIERTO', account: person ? this.maps.accounts.get(String(client ? person.payload.cuenta_por_cobrar_id : person.payload.cuenta_por_pagar_id)) || null : null, notes: `Contifico ${record.externalId}` }; (client ? receivableOps : payableOps).push({ updateOne: { filter: { clinic: this.clinic._id, sourceModel: 'ContificoRecord', sourceRef: record._id }, update: { $set: payload }, upsert: true } }); }
     if (this.commit) { if (receivableOps.length) await Receivable.bulkWrite(receivableOps, { ordered: false }); if (payableOps.length) await Payable.bulkWrite(payableOps, { ordered: false }); }
     stage.created = receivableOps.length + payableOps.length; stage.projected = stage.created; this.log(`CxC=${receivableOps.length} CxP=${payableOps.length}`); await this.finishStage(stage);
+  }
+
+  async existingPurchaseMaps() {
+    const records = (await this.records('document')).filter((record) => this.sourceIds.has(record.externalId));
+    const personIds = [...new Set(records.map((record) => String(record.payload.persona_id || '')).filter(Boolean))];
+    const productIds = [...new Set(records.flatMap((record) => (record.payload.detalles || [])
+      .map((detail) => String(detail.producto_id || '')).filter(Boolean)))];
+    for (const [entity, ids, model, target] of [
+      ['person', personIds, 'Supplier', this.maps.suppliers],
+      ['product', productIds, 'Product', this.maps.products],
+    ]) {
+      if (!ids.length) continue;
+      const sources = await ContificoRecord.find({ clinic: this.clinic._id, entity, externalId: { $in: ids } }).lean();
+      for (const source of sources) {
+        const link = (source.projection?.links || []).find((item) => item.model === model && item.ref);
+        if (link) target.set(source.externalId, link.ref);
+      }
+      for (const id of ids) if (!target.has(id)) throw new Error(`${model} sin proyeccion existente: ${id}`);
+    }
   }
 
   async execute() {
     await this.begin();
     try {
+      // Sincronización contable aislada: exige una extracción completa de asientos
+      // y no reproyecta documentos, nómina, inventario ni cartera con archivos viejos.
+      if (this.only === 'journal_entries') {
+        if (!this.sourceSnapshot || !this.snapshotEntities.has('journal_entry')) {
+          throw new Error('Falta una extracción completa de asientos para proyectar');
+        }
+        await this.accounts(); await this.costCenters(); await this.journals();
+      } else if (this.only === 'journal_ids') {
+        const found = await ContificoRecord.countDocuments({ clinic: this.clinic._id, entity: 'journal_entry',
+          externalId: { $in: [...this.sourceIds] } });
+        if (!this.sourceIds.size || found !== this.sourceIds.size) throw new Error('Faltan asientos archivados para journal_ids');
+        await this.accounts(); await this.costCenters(); await this.journals();
+      } else if (this.only === 'bank_movements') {
+        if (!this.sourceSnapshot || !this.snapshotEntities.has('bank_movement')) {
+          throw new Error('Falta una extracción completa de movimientos bancarios para proyectar');
+        }
+        await this.accounts(); await this.costCenters(); await this.banks(); await this.bankMovements();
+      } else if (this.only === 'persons') {
+        await this.persons();
+      } else if (this.only === 'purchases' && this.sourceIds.size) {
+        await this.accounts(); await this.costCenters(); await this.existingPurchaseMaps();
+        await this.purchases(); await this.subledger();
+      } else {
       await this.accounts(); await this.costCenters(); await this.categories(); await this.warehouses(); await this.banks(); await this.persons(); await this.products();
+      // Reanudar una etapa aislada permite recuperarse de un lote interrumpido sin
+      // reescribir los módulos que ya quedaron conciliados y enlazados.
+      if (this.only === 'inventory') await this.inventoryMovements();
+      else if (this.only === 'banks') await this.bankMovements();
+      else if (this.only === 'purchases') { await this.purchases(); if (this.sourceIds.size) await this.subledger(); }
+      else if (this.only === 'journals') { await this.journals(); await this.subledger(); }
+      else {
       const operationalOnly = this.only === 'operational';
       const journalsOnly = this.only === 'journals';
       if (!operationalOnly && !journalsOnly) await this.sales();
       if (!journalsOnly && this.stopAfter !== 'sales') { await this.purchases(); await this.inventoryMovements(); await this.bankMovements(); }
       if (!operationalOnly && this.stopAfter !== 'sales' && this.stopAfter !== 'operational') { await this.journals(); await this.subledger(); }
+      }
+      }
       if (this.run) { this.run.status = this.issues.length ? 'COMPLETED_WITH_WARNINGS' : 'COMPLETED'; this.run.completedAt = new Date(); this.run.issues = this.issues; await this.run.save(); }
       return { stages: this.stages, issues: this.issues };
     }

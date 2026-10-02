@@ -275,6 +275,9 @@ connectDB().then(() => {
   // paralelo con el líder real.
   function wireLeaderJobs() {
     const only = registry.leaderOnly;
+    // El mayor de Contífico alimenta los tres reportes financieros. Revisar
+    // periódicamente asientos completos y reproyectar solo ventanas con cambios.
+    require('./services/contificoFinancialSync').startFinancialSyncJob(only);
     // Job: marcar automáticamente como "no asistió" las citas de días pasados.
     require('./utils/autoNoShow').startAutoNoShowJob();
     // Job: reanudar flujos de mensajes con pasos de espera vencidos (cada 60s).

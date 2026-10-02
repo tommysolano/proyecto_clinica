@@ -27,6 +27,7 @@ const PurchaseInvoice = require('../models/PurchaseInvoice');
 const BankAccount = require('../models/BankAccount');
 const Employee = require('../models/Employee');
 const Payroll = require('../models/Payroll');
+const BankTransaction = require('../models/BankTransaction');
 const InventoryLayer = require('../models/InventoryLayer');
 const Product = require('../models/Product');
 const Invoice = require('../models/Invoice');
@@ -44,11 +45,20 @@ const splitName = (value) => {
     : { firstName: parts.slice(0, -1).join(' '), lastName: parts.at(-1) };
 };
 const mapPaymentMethod = (value) => ({
-  CAJA: 'EFECTIVO', TC: 'TARJETA', TRANSF: 'TRANSFERENCIA', CHEQUE: 'CHEQUE',
+  CAJA: 'EFECTIVO', 'CAJA CHICA': 'EFECTIVO', TC: 'TARJETA', TRANSF: 'TRANSFERENCIA', CHEQUE: 'CHEQUE',
 }[String(value || '').trim().toUpperCase()] || 'OTRO');
 const payrollPeriod = (value) => ({ P: 'QUINCENA_1', S: 'CIERRE_MES', M: 'MENSUAL' }[String(value || '').toUpperCase()] || null);
 const noteKind = (value) => ({ NCT: 'NC', DNA: 'ND', DAC: 'ND' }[String(value || '').toUpperCase()] || null);
 const status = (row) => row?.anulado ? 'ANULADA' : (row?.autorizado_sri ? 'AUTORIZADO' : 'REGISTRADA');
+const moneyCents = (value) => Number.isFinite(Number(value)) ? Math.round(Number(value) * 100) : null;
+const dateKey = (value) => {
+  const date = parseDate(value);
+  return date ? fmt(date) : '';
+};
+const payrollPaymentKey = ({ personId, date, amount, reference }) => [
+  String(personId || ''), dateKey(date), moneyCents(amount), String(reference || ''),
+].join('|');
+const payrollPaymentPending = (value) => ['N', 'NO_PAGO', 'PENDIENTE', 'EFECTIVO_PENDIENTE'].includes(String(value || '').trim().toUpperCase());
 const snapshotEntities = {
   documents: 'document', transactions: 'transaction', bank_movements: 'bank_movement',
   inventory_movements: 'inventory_movement', journal_entries: 'journal_entry',
@@ -70,15 +80,17 @@ function args(argv) {
     clinicName: values['clinic-name'] || 'Central',
     cutoff: parseDate(values.cutoff) || new Date(),
     only: new Set(String(values.only || '').split(',').map((x) => x.trim()).filter(Boolean)),
+    sourceIds: new Set(String(values['source-ids'] || '').split(',').map((x) => x.trim()).filter(Boolean)),
   };
 }
 
 class SupplementalProjector {
-  constructor({ clinic, commit, cutoff, only }) {
+  constructor({ clinic, commit, cutoff, only, sourceIds = new Set() }) {
     this.clinic = clinic;
     this.commit = commit;
     this.cutoff = cutoff;
     this.only = only;
+    this.sourceIds = sourceIds;
     this.stages = [];
     this.sourceSnapshot = null;
     this.snapshotEntities = new Set();
@@ -101,7 +113,9 @@ class SupplementalProjector {
   }
   async records(entity) {
     const filter = { clinic: this.clinic._id, entity };
-    if (this.sourceSnapshot && this.snapshotEntities.has(entity)) filter.migrationRun = this.sourceSnapshot._id;
+    if (entity === 'transaction' && this.sourceIds.size) filter.externalId = { $in: [...this.sourceIds] };
+    else if (!(entity === 'document' && this.sourceIds.size) &&
+      this.sourceSnapshot && this.snapshotEntities.has(entity)) filter.migrationRun = this.sourceSnapshot._id;
     const rows = await ContificoRecord.find(filter).sort({ externalId: 1 }).lean();
     return rows.map((record) => ({ ...record, payload: decodeCompressedJson(record.payloadCompressed) }));
   }
@@ -137,6 +151,8 @@ class SupplementalProjector {
       PurchaseInvoice.find({ clinic: this.clinic._id, sourceModel: 'ContificoRecord' }).select('_id sourceRef').lean(),
       BankAccount.find({ clinic: this.clinic._id }).select('_id chartAccount').lean(),
     ]);
+    if (this.sourceIds.size && records.length !== this.sourceIds.size)
+      throw new Error(`Transacciones fuente incompletas: ${records.length}/${this.sourceIds.size}`);
     stage.source = records.length;
     const documentById = new Map(documents.map((record) => [record.externalId, record]));
     const personById = new Map(persons.map((record) => [record.externalId, record]));
@@ -175,16 +191,30 @@ class SupplementalProjector {
         });
         if (!bankAccount && detail.cuenta_id) bankAccount = bankByChartAccount.get(String(detail.cuenta_id)) || null;
       }
+      // Algunos cruces de anticipo apuntan a la factura en el encabezado y
+      // dejan documento_id vacío en todos los detalles.
+      if (!applications.length && row.documento_id) {
+        const doc = documentById.get(String(row.documento_id));
+        if (doc) {
+          const isSale = String(doc.payload.tipo_registro || '').toUpperCase() === 'CLI';
+          const target = isSale ? saleByDocument.get(doc.externalId) : purchaseBySource.get(String(doc._id));
+          if (target) applications.push({ docModel: isSale ? 'Sale' : 'PurchaseInvoice',
+            docRef: target._id, docNumber: String(doc.payload.documento || ''), amount: total });
+        }
+      }
       const key = `contifico:transaction:${record.externalId}`;
       const fields = {
         clinic: this.clinic._id, type: type === 'C' ? 'COBRO' : 'PAGO', number: `CTF-TX-${record.externalId}`,
         date, partyModel, partyRef: partyRef || null, partyName: String(person?.payload?.razon_social || person?.payload?.nombre_comercial || ''),
         partyId: String(person?.payload?.cedula || person?.payload?.ruc || ''), method: mapPaymentMethod(row.forma),
-        bankAccount, reference: String(row.numero_comprobante || ''), total, applications,
+        reference: String(row.numero_comprobante || ''), total, applications,
         appliedAmount: r2(applications.reduce((sum, item) => sum + item.amount, 0)),
         advanceAmount: r2(Math.max(0, total - applications.reduce((sum, item) => sum + item.amount, 0))),
         description: `Importado de Contifico (${record.externalId})`, status: 'REGISTRADO', idempotencyKey: key,
       };
+      // La API de transacciones no siempre expone la cuenta afectada. Conservar
+      // el vínculo comprobado por el exporte GUI y el asiento original.
+      if (bankAccount) fields.bankAccount = bankAccount;
       operations.push({ updateOne: { filter: { clinic: this.clinic._id, idempotencyKey: key }, update: { $set: fields }, upsert: true } });
       marks.push({ record, status: 'PROJECTED', links: [{ model: 'Payment', action: 'UPSERT' }] });
       stage.projected += 1;
@@ -196,26 +226,59 @@ class SupplementalProjector {
 
   async payroll() {
     const stage = this.stage('payroll');
-    const [people, roles, existingEmployees] = await Promise.all([
-      this.records('person'), this.records('payroll_role'), Employee.find({ clinic: this.clinic._id }).select('_id identificacion').lean(),
+    const [people, roles, bankRecords, existingEmployees] = await Promise.all([
+      this.records('person'), this.records('payroll_role'), this.records('bank_movement'),
+      Employee.find({ clinic: this.clinic._id }).select('_id identificacion').lean(),
     ]);
     // Algunas personas históricas ya no tienen la bandera `es_empleado`, pero sí
     // constan en un rol de pago. También son empleados de origen y deben aparecer
     // en nómina para que ningún rol quede sin su ficha.
+    const personByIdentification = new Map();
+    for (const record of people) {
+      const identification = String(record.payload.cedula || record.payload.ruc || '');
+      if (identification) personByIdentification.set(identification, record);
+    }
     const employeeSources = new Map();
     for (const record of people) {
       const identification = String(record.payload.cedula || record.payload.ruc || '');
-      if (record.payload.es_empleado && identification) employeeSources.set(identification, { record, role: null });
+      if (record.payload.es_empleado && identification) employeeSources.set(identification, { record, roles: [] });
     }
     for (const role of roles) {
       const identification = String(role.payload.cedula || '');
-      if (identification && !employeeSources.has(identification)) employeeSources.set(identification, { record: null, role });
+      if (!identification) continue;
+      if (!employeeSources.has(identification)) {
+        employeeSources.set(identification, { record: personByIdentification.get(identification) || null, roles: [] });
+      }
+      employeeSources.get(identification).roles.push(role);
+    }
+    const personSourceByIdentification = new Map(people.map((record) => [String(record.payload.cedula || record.payload.ruc || ''), record.externalId]).filter(([id]) => id));
+    const bankLinkIds = new Set(bankRecords.map((record) => this.link(record, 'BankTransaction')).filter(Boolean).map(String));
+    const nativeBankTransactions = bankLinkIds.size
+      ? await BankTransaction.find({ _id: { $in: [...bankLinkIds] } }).select('_id bankAccount').lean()
+      : [];
+    const bankTransactionById = new Map(nativeBankTransactions.map((row) => [String(row._id), row]));
+    const paymentEvidence = new Map();
+    for (const record of bankRecords) {
+      const row = record.payload;
+      if (String(row.tipo_registro || '').toUpperCase() !== 'E') continue;
+      const amount = r2((row.detalles || []).reduce((sum, detail) => sum + num(detail.monto), 0));
+      const key = payrollPaymentKey({ personId: row.persona, date: row.fecha_emision, amount, reference: row.numero_comprobante });
+      const bankTransaction = bankTransactionById.get(String(this.link(record, 'BankTransaction') || ''));
+      if (!paymentEvidence.has(key)) paymentEvidence.set(key, []);
+      paymentEvidence.get(key).push({ record, bankTransaction });
     }
     const employeeOps = [];
     for (const [identification, source] of employeeSources) {
-      const row = source.record?.payload || {}, role = source.role?.payload || {};
-      const names = splitName(row.razon_social || row.nombre_comercial || role.nombre_persona || identification);
+      const row = source.record?.payload || {};
+      const sourceRoles = source.roles || [];
+      const latestRole = [...sourceRoles].sort((a, b) => String(b.payload.fecha || '').localeCompare(String(a.payload.fecha || ''))).at(0);
+      const names = splitName(row.razon_social || row.nombre_comercial || latestRole?.payload?.nombre_persona || identification);
       const externalId = source.record?.externalId || `ROL-${identification}`;
+      const roleDates = sourceRoles.map((record) => parseDate(record.payload.fecha)).filter(Boolean).sort((a, b) => a - b);
+      const sourceSalary = Number(row.sueldo);
+      const salaryAvailable = Number.isFinite(sourceSalary) && sourceSalary > 0;
+      const hasSourceHireDate = Boolean(row.fecha_ingreso && parseDate(row.fecha_ingreso));
+      const employeeFlag = source.record ? Boolean(row.es_empleado) : true;
       // Las fichas que vienen de Contífico se refrescan también si ya existen:
       // antes solo se insertaban y quedaban nombres/sueldos desactualizados.
       employeeOps.push({ updateOne: { filter: { clinic: this.clinic._id, identificacion: identification }, update: { $set: {
@@ -223,8 +286,15 @@ class SupplementalProjector {
         ...names, email: String(row.email || ''), phone: String(row.telefonos || ''), address: String(row.direccion || ''),
         // Contífico no expone fecha de ingreso. El corte queda explícito como
         // aproximación, sin inventar antigüedad anterior.
-        hireDate: this.cutoff, baseSalary: Math.max(0, num(row.sueldo || role.total_ingresos)), active: true,
-        notes: `Importado de Contifico (${externalId}); fecha de ingreso no disponible en origen.`,
+        hireDate: hasSourceHireDate ? parseDate(row.fecha_ingreso) : this.cutoff,
+        baseSalary: salaryAvailable ? sourceSalary : 0,
+        active: employeeFlag,
+        contificoSource: {
+          imported: true, externalId, employeeFlag,
+          hireDateAvailable: hasSourceHireDate, salaryAvailable,
+          firstPayrollDate: roleDates[0] || null, lastPayrollDate: roleDates.at(-1) || null,
+        },
+        notes: `Importado de Contifico (${externalId}); ${hasSourceHireDate ? 'fecha de ingreso suministrada por origen.' : 'fecha de ingreso no disponible en origen.'} ${salaryAvailable ? 'sueldo suministrado por origen.' : 'sueldo contractual no disponible en origen.'}`,
       } }, upsert: true } });
     }
     if (this.commit && employeeOps.length) await Employee.bulkWrite(employeeOps, { ordered: false });
@@ -245,16 +315,36 @@ class SupplementalProjector {
       const items = [];
       const payments = [];
       const sourceRefs = [];
+      let allPaymentsVerified = true;
       for (const record of group.records) {
         const row = record.payload, identification = String(row.cedula || '');
         const employee = employeeMap.get(identification);
         if (!employee) { this.warn(stage, record, 'Empleado no mapeado'); marks.push({ record, status: 'REVIEW', warnings: ['Empleado no mapeado'] }); continue; }
         const ingresos = r2(row.total_ingresos), egresos = r2(row.total_egresos), neto = r2(row.total_pago);
+        const sourceDetails = Array.isArray(row.detalles) ? row.detalles : [];
+        const salaryDetail = sourceDetails.find((detail) => /\bSUELDO\b/i.test(String(detail.nombre || '')) && String(detail.tipo || '').toUpperCase().startsWith('I'));
+        const earnings = sourceDetails.filter((detail) => String(detail.tipo || '').toUpperCase().startsWith('I') && detail !== salaryDetail)
+          .map((detail, index) => ({ code: `CTF-I-${index + 1}`, name: String(detail.nombre || 'Ingreso Contífico'), amount: r2(detail.total) }));
+        const deductions = sourceDetails.filter((detail) => String(detail.tipo || '').toUpperCase().startsWith('E'))
+          .map((detail, index) => ({ code: `CTF-E-${index + 1}`, name: String(detail.nombre || 'Egreso Contífico'), amount: r2(detail.total) }));
         items.push({ employee: employee._id, employeeName: String(row.nombre_persona || ''), identificacion: identification,
-          daysWorked: Math.max(0, num(row.dias_trabajados, 30)), baseSalary: ingresos, totalIngresos: ingresos,
-          totalEgresos: egresos, netoPagar: neto,
+          daysWorked: Math.max(0, num(row.dias_trabajados, 30)), baseSalary: r2(salaryDetail?.total || ingresos), earnings, deductions,
+          totalIngresos: ingresos, totalEgresos: egresos, netoPagar: neto,
           notes: `Importado de Contifico (${record.externalId}); detalle original preservado en archivo.` });
-        if (neto > 0) payments.push({ date: parseDate(row.fecha) || this.cutoff, amount: neto, reference: String(row.comprobante || ''), idempotencyKey: `contifico:payroll:${record.externalId}` });
+        const evidenceKey = payrollPaymentKey({ personId: personSourceByIdentification.get(identification), date: row.fecha, amount: neto, reference: row.comprobante });
+        const evidences = payrollPaymentPending(row.tipo_pago) ? [] : (paymentEvidence.get(evidenceKey) || []);
+        if (neto > 0 && evidences.length === 1) {
+          const evidence = evidences[0];
+          payments.push({ date: parseDate(row.fecha), amount: neto, reference: String(row.comprobante || ''),
+            bankAccount: evidence.bankTransaction?.bankAccount || null, bankTransaction: evidence.bankTransaction?._id || null,
+            idempotencyKey: `contifico:payroll:${record.externalId}` });
+        } else if (neto > 0) {
+          allPaymentsVerified = false;
+          const reason = payrollPaymentPending(row.tipo_pago)
+            ? 'Rol pendiente de pago en Contífico'
+            : `Pago sin evidencia bancaria única para comprobante ${String(row.comprobante || '(vacío)')}`;
+          this.warn(stage, record, reason);
+        }
         sourceRefs.push(record);
       }
       if (!items.length) continue;
@@ -262,10 +352,16 @@ class SupplementalProjector {
         period: `${group.year}-${String(group.month).padStart(2, '0')}`, description: 'Importado de Contifico', items,
         totalIngresos: r2(items.reduce((sum, item) => sum + item.totalIngresos, 0)), totalEgresos: r2(items.reduce((sum, item) => sum + item.totalEgresos, 0)),
         totalNeto: r2(items.reduce((sum, item) => sum + item.netoPagar, 0)), totalProvisiones: 0,
-        status: 'PAGADO', payments, paidAt: payments.length ? payments.at(-1).date : null,
+        accountingDate: new Date(Date.UTC(group.year, group.month, 0, 12)),
+        status: allPaymentsVerified ? 'PAGADO' : 'CERRADO', payments: allPaymentsVerified ? payments : [],
+        paidAt: allPaymentsVerified && payments.length ? payments.at(-1).date : null,
       };
       operations.push({ updateOne: { filter: { clinic: this.clinic._id, year: group.year, month: group.month, periodType: group.periodType }, update: { $set: fields }, upsert: true } });
-      for (const record of sourceRefs) { marks.push({ record, status: 'PROJECTED', links: [{ model: 'Payroll', action: 'UPSERT' }] }); stage.projected += 1; }
+      for (const record of sourceRefs) {
+        const warning = stage.samples.find((sample) => sample.externalId === record.externalId)?.message;
+        marks.push({ record, status: warning ? 'REVIEW' : 'PROJECTED', links: warning ? [] : [{ model: 'Payroll', action: 'UPSERT' }], warnings: warning ? [warning] : [] });
+        stage.projected += 1;
+      }
     }
     if (this.commit && operations.length) await Payroll.bulkWrite(operations, { ordered: false });
     stage.created = operations.length;
@@ -388,4 +484,4 @@ async function main() {
 
 if (require.main === module) main().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; }).finally(() => mongoose.disconnect().catch(() => {}));
 
-module.exports = { SupplementalProjector, args, mapPaymentMethod, payrollPeriod, noteKind };
+module.exports = { SupplementalProjector, args, mapPaymentMethod, payrollPeriod, noteKind, payrollPaymentKey, payrollPaymentPending };

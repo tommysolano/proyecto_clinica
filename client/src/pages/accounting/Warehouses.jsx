@@ -156,13 +156,16 @@ export default function Warehouses() {
       {/* --- Pestaña Existencias por bodega --- */}
       {tab === 'stock' && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
+          <p className="px-3 py-2 text-xs text-amber-800 bg-amber-50 border-b border-amber-100">
+            El valor es estimado con el costo registrado en nuestro sistema. El stock por bodega de Contífico informa cantidades, pero no costos por bodega.
+          </p>
           <table className="tbl">
             <thead className="bg-emerald-50 text-xs uppercase"><tr>
               <th className="w-8"></th>
               <th className="px-3 py-2 text-left">Código</th>
               <th className="px-3 py-2 text-left">Producto</th>
               <th className="px-3 py-2 text-right">Stock total</th>
-              <th className="px-3 py-2 text-right">Valor</th>
+              <th className="px-3 py-2 text-right">Valor estimado</th>
               <th className="px-3 py-2 text-left">Bodegas</th>
             </tr></thead>
             <tbody>
@@ -176,8 +179,8 @@ export default function Warehouses() {
                       <td className="px-2 py-2 text-center"><button onClick={() => setExpanded({ ...expanded, [s.product._id]: !isOpen })} className="text-slate-500">{isOpen ? <HiOutlineChevronDown /> : <HiOutlineChevronRight />}</button></td>
                       <td className="px-3 py-2 font-mono text-xs">{s.product.code}</td>
                       <td className="px-3 py-2 font-medium">{s.product.name}</td>
-                      <td className="px-3 py-2 text-right font-mono">{fmt(s.totalQty)}</td>
-                      <td className="px-3 py-2 text-right font-mono text-emerald-700">${fmt(s.totalValue)}</td>
+                      <td className={`px-3 py-2 text-right font-mono ${s.totalQty < 0 ? 'text-rose-700 font-semibold' : ''}`}>{fmt(s.totalQty)}</td>
+                      <td className={`px-3 py-2 text-right font-mono ${s.totalValue < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>${fmt(s.totalValue)}</td>
                       <td className="px-3 py-2 text-xs text-slate-600">
                         {s.warehouses.map((w) => `${w.warehouse?.name || 'Sin bodega'} (${fmt(w.qty)})`).join(', ')}
                       </td>
@@ -185,13 +188,13 @@ export default function Warehouses() {
                     {isOpen && (
                       <tr className="bg-slate-50/70"><td></td><td colSpan={5} className="px-3 py-2">
                         <table className="tbl text-xs">
-                          <thead className="text-slate-500"><tr><th className="px-2 py-1 text-left">Bodega</th><th className="px-2 py-1 text-right">Stock</th><th className="px-2 py-1 text-right">Valor</th></tr></thead>
+                          <thead className="text-slate-500"><tr><th className="px-2 py-1 text-left">Bodega</th><th className="px-2 py-1 text-right">Stock</th><th className="px-2 py-1 text-right">Valor estimado</th></tr></thead>
                           <tbody>
                             {s.warehouses.map((w, i) => (
                               <tr key={i} className="border-t border-slate-200">
                                 <td className="px-2 py-1">{w.warehouse ? `${w.warehouse.code} - ${w.warehouse.name}` : 'Sin bodega'}</td>
-                                <td className="px-2 py-1 text-right font-mono">{fmt(w.qty)}</td>
-                                <td className="px-2 py-1 text-right font-mono">${fmt(w.value)}</td>
+                                <td className={`px-2 py-1 text-right font-mono ${w.qty < 0 ? 'text-rose-700 font-semibold' : ''}`}>{fmt(w.qty)}</td>
+                                <td className={`px-2 py-1 text-right font-mono ${w.value < 0 ? 'text-rose-700' : ''}`}>${fmt(w.value)}</td>
                               </tr>
                             ))}
                           </tbody>

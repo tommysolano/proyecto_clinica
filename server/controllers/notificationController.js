@@ -21,6 +21,7 @@ const { VALID_ROLES, DOCTOR_LIKE_ROLES } = require('../constants/roles');
 const MARKETING_ROLES = ['admin', 'marketing'];
 
 const TYPE_ROLES = {
+  contifico_sync_blocked: ['admin', 'contabilidad'],
   template_category_changed: MARKETING_ROLES,
   template_status_changed: MARKETING_ROLES,
   template_check_failed: MARKETING_ROLES,

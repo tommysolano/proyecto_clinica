@@ -140,6 +140,46 @@ test('2) saldo inicial: una cuenta NO configurada queda fuera', async () => {
   assert.equal(data.cuentas.length, 1);
 });
 
+test('flujo incorpora las cuentas de caja y bancos del plan importado de Contífico', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: dia(-15) });
+  const root = await ChartOfAccount.create({
+    clinic: clinicId, code: '1.1.1', name: 'Efectivo y Equivalentes a Efectivo',
+    type: 'ACTIVO', nature: 'DEBITO', allowsMovement: false, active: true,
+  });
+  const importedBank = await ChartOfAccount.create({
+    clinic: clinicId, code: '1.1.1.3', name: 'Banco Pichincha',
+    type: 'ACTIVO', nature: 'DEBITO', parent: root._id, active: true,
+  });
+  const otherIncome = await getAccount(clinicId, 'otrosIngresos');
+  await createEntry({
+    clinicId, date: dia(-10), description: 'Fondeo banco importado', userId,
+    sourceModel: 'CashDeposit', sourceRef: importedBank._id, sourceAction: 'FUND:CONTIFICO',
+    lines: [
+      { account: importedBank._id, debit: 700, credit: 0 },
+      { account: otherIncome._id, debit: 0, credit: 700 },
+    ],
+  });
+  const data = await proj(clinicId);
+  assert.equal(data.saldoInicial, 700);
+  assert.ok(data.cuentas.some((account) => account.code === '1.1.1.3'));
+  const cfg = await svc.getConfig(clinicId);
+  cfg.cashAccounts = [(await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.01.01' }))._id];
+  await cfg.save();
+  const explicit = await proj(clinicId);
+  assert.equal(explicit.saldoInicial, 0, 'la selección explícita conserva prioridad');
+});
+
+test('un rango histórico muestra movimientos reales sin proyectar obligaciones abiertas hoy', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: dia(-15) });
+  await fondear(clinicId, userId, 500, dia(-4));
+  await cxp(clinicId, { total: 100, dueDate: dia(-3) });
+  const data = await proj(clinicId, dia(-10), dia(-1));
+  assert.equal(data.totales.ingresos, 500);
+  assert.equal(data.totales.egresos, 0);
+  assert.equal(data.saldoFinal, 500);
+  assert.equal(data.detalle.filter((row) => !row.esReal && row.day).length, 0);
+});
+
 test('4) saldo inicial: aislamiento por clínica', async () => {
   const a = await H.seedClinic({ date: dia(-15) });
   const b = await H.seedClinic({ date: dia(-15) });

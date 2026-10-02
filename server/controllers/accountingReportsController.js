@@ -21,6 +21,7 @@ const {
 const { invoiceTaxBreakdown } = require('../utils/invoiceTaxBreakdown');
 const { effectivePaymentDate } = require('../utils/paymentSchedule');
 const { resolveReceivableEconomicObligations } = require('../services/receivableObligations');
+const { indirectCashFlow } = require('../services/indirectCashFlowService');
 const ExcelJS = require('exceljs');
 const mongoose = require('mongoose');
 
@@ -71,7 +72,7 @@ async function countPendingSalesInRange(clinicId, start, end) {
 
 /** Compras (no anuladas) cuya fecha de emisión (Date) cae en [start, end]. */
 function purchasesInRangeQuery(clinicId, start, end) {
-  return { clinic: clinicId, status: { $ne: 'ANULADA' }, fechaEmision: { $gte: start, $lte: end } };
+  return { clinic: clinicId, status: { $ne: 'ANULADA' }, docType: { $ne: 'ANTICIPO_PROVEEDOR' }, fechaEmision: { $gte: start, $lte: end } };
 }
 
 /** Objeto período serializable para las respuestas (etiqueta + metadatos). */
@@ -366,6 +367,16 @@ function buildTypeTree(balances, type) {
 
 const round2 = (n) => +(Number(n) || 0).toFixed(2);
 
+exports.indirectCashFlow = async (req, res) => {
+  try {
+    const report = await indirectCashFlow({ clinicId: req.clinicId,
+      startDate: req.query.startDate, endDate: req.query.endDate });
+    res.json(report);
+  } catch (error) {
+    res.status(/fecha|rango/i.test(error.message) ? 400 : 500).json({ message: error.message });
+  }
+};
+
 // ---------- Estado de Resultados ----------
 exports.incomeStatement = async (req, res) => {
   try {
@@ -573,7 +584,10 @@ exports.cashFlow = async (req, res) => {
     const { startDate, endDate } = req.query;
     const start = startOfDay(startDate);
     const end = endOfDay(endDate);
-    const cashAccs = await ChartOfAccount.find({ clinic: req.clinicId, code: /^1\.1\.01\./ }).lean();
+    // Conviven el catálogo local legado (1.1.01.*) y el importado de
+    // Contífico (1.1.1.*). Ambos representan efectivo y bancos.
+    const cashAccs = await ChartOfAccount.find({ clinic: req.clinicId,
+      code: /^(?:1\.1\.01\.|1\.1\.1\.)/ }).lean();
     const ids = cashAccs.map((a) => a._id);
     const accountMap = new Map(cashAccs.map((a) => [String(a._id), {
       ...compactAccount(a), opening: 0, debit: 0, credit: 0, closing: 0, balance: 0,

@@ -8,6 +8,7 @@ const mongoose = require('mongoose');
 const Clinic = require('../models/Clinic');
 const ContificoRecord = require('../models/ContificoRecord');
 const ContificoMigrationRun = require('../models/ContificoMigrationRun');
+const Employee = require('../models/Employee');
 const { ContificoApi } = require('../services/contificoApi');
 const { decodeCompressedJson } = require('../utils/compressedJson');
 
@@ -80,17 +81,20 @@ function parseArgs(argv) {
     only: new Set(String(values.only || '').split(',').map((value) => value.trim()).filter(Boolean)),
     payrollPeriods: String(values['payroll-periods'] || 'P,S,M').split(',').map((value) => value.trim().toUpperCase()).filter(Boolean),
     payrollCedulas: String(values['payroll-cedulas'] || '').split(',').map((value) => value.trim()).filter(Boolean),
+    payrollConcurrency: Math.min(8, Math.max(1, num(values['payroll-concurrency'], 4))),
   };
 }
 
 class Extractor {
-  constructor({ api, clinic, commit, from, through, cutoff, pageSize, only = new Set(), payrollPeriods = ['P', 'S', 'M'], payrollCedulas = [] }) {
+  constructor({ api, clinic, commit, from, through, cutoff, pageSize, only = new Set(), payrollPeriods = ['P', 'S', 'M'], payrollCedulas = [], payrollConcurrency = 4, journalWindows = null }) {
     this.api = api; this.clinic = clinic; this.commit = commit;
     if (api) api.log = (text) => this.log(text);
     this.from = from; this.through = through; this.cutoff = cutoff; this.pageSize = pageSize;
     this.only = only;
     this.payrollPeriods = payrollPeriods;
     this.payrollCedulas = payrollCedulas;
+    this.payrollConcurrency = payrollConcurrency;
+    this.journalWindows = journalWindows;
     this.stages = []; this.issues = []; this.run = null; this.cache = {}; this.earliestJournal = null;
   }
   log(text) { console.log(`[contifico] ${text}`); }
@@ -167,8 +171,49 @@ class Extractor {
       if (stage.fetched && stage.fetched % 1000 < page.rows.length) this.log(`${name}: ${stage.fetched}/${page.count}`);
     }
     this.track(stage, stats);
+    // El count del listado de documentos puede coincidir exactamente con las
+    // filas únicas y aun así omitir documentos vivos conocidos. Consultarlos
+    // por ID evita retirarlos como si Contífico los hubiera eliminado.
+    if (entity === 'document') await this.recoverKnownDocuments(stage);
     if (cache) this.cache[entity] = cached;
     await this.saveStage(stage);
+  }
+  async recoverKnownDocuments(stage) {
+    const known = await ContificoRecord.find({ clinic: this.clinic._id, entity: 'document' })
+      .select('externalId').lean();
+    const missing = known.filter((row) => !stage._seen?.has(row.externalId));
+    stage.knownIdsMissingFromList = missing.length;
+    stage.knownIdsRecovered = 0;
+    stage.knownIdsRemoved = 0;
+    stage.knownIdsUnverified = 0;
+    if (!missing.length) return;
+    this.log(`documents: ${missing.length} IDs archivados ausentes del listado; verificando por ID`);
+    for (let offset = 0; offset < missing.length; offset += 5) {
+      const batch = missing.slice(offset, offset + 5);
+      const checked = await Promise.all(batch.map(async (row) => {
+        try {
+          const payload = await this.api.get(`/api/v2/documento/${encodeURIComponent(row.externalId)}/`);
+          if (String(payload.id) !== row.externalId) throw new Error('ID de respuesta distinto');
+          return { id: row.externalId, payload };
+        } catch (error) {
+          if (error.status === 400 && error.message.includes('Documento no encontrado.')) return { id: row.externalId, removed: true };
+          return { id: row.externalId, error };
+        }
+      }));
+      const recovered = checked.filter((item) => item.payload).map((item) => item.payload);
+      if (recovered.length) await this.archive('document', recovered, stage);
+      stage.knownIdsRecovered += recovered.length;
+      stage.knownIdsRemoved += checked.filter((item) => item.removed).length;
+      for (const item of checked.filter((entry) => entry.error)) {
+        stage.knownIdsUnverified += 1;
+        if (this.issues.length < 500) this.issues.push({ stage: 'documents', externalId: item.id,
+          message: `No se pudo verificar documento conocido por ID: ${item.error.message}` });
+      }
+      if ((offset + batch.length) % 50 < 5 || offset + batch.length >= missing.length)
+        this.log(`documents: verificados ${Math.min(offset + batch.length, missing.length)}/${missing.length}; vivos=${stage.knownIdsRecovered} retirados=${stage.knownIdsRemoved} sin verificar=${stage.knownIdsUnverified}`);
+    }
+    // Una consulta fallida no autoriza a retirar la proyección operativa.
+    stage.missing = (stage.missing || 0) + stage.knownIdsUnverified;
   }
   async transactions() {
     const stage = this.stage('transactions');
@@ -196,6 +241,16 @@ class Extractor {
   async journals() {
     const stage = this.stage('journal_entries');
     for (const month of months(this.from, this.through)) {
+      const prefetched = this.journalWindows?.get(month.key);
+      if (prefetched) {
+        if (!prefetched.stats?.complete || prefetched.stats.expected !== prefetched.rows.length)
+          throw new Error(`Ventana de asientos incompleta ${month.key}`);
+        if (prefetched.rows.length && !this.earliestJournal) this.earliestJournal = month.from;
+        await this.archive('journal_entry', prefetched.rows, stage);
+        this.track(stage, prefetched.stats);
+        this.log(`journal_entries ${month.key}: ${prefetched.rows.length}`);
+        continue;
+      }
       let count = 0; const stats = {};
       for await (const page of this.api.pages('/api/v2/contabilidad/asiento/', { fecha_inicial: fmt(month.from), fecha_final: fmt(month.through) }, this.pageSize, stats)) {
         count = page.count;
@@ -218,8 +273,10 @@ class Extractor {
    */
   async payrollIdentifications(persons) {
     const identifications = new Map();
+    const personIds = new Map();
     for (const person of persons) {
       const id = String(person.cedula || person.ruc || '').trim();
+      if (id) personIds.set(String(person.id || ''), id);
       if (person.es_empleado && id) identifications.set(id, 'es_empleado');
     }
     const archived = await ContificoRecord.find({ clinic: this.clinic._id, entity: 'payroll_role' })
@@ -227,6 +284,24 @@ class Extractor {
     for (const record of archived) {
       const id = String(record.search?.identification || String(record.externalId).split(':')[0] || '').trim();
       if (id && !identifications.has(id)) identifications.set(id, 'rol previo');
+    }
+    // Un movimiento bancario de egreso asociado a una persona es evidencia de
+    // que podría tener rol histórico aunque Contífico ya no la marque como
+    // empleado. Incluirla evita depender solo de la bandera actual sin barrer
+    // miles de clientes que nunca estuvieron en nómina.
+    const bankRows = await ContificoRecord.find({ clinic: this.clinic._id, entity: 'bank_movement' })
+      .select('payloadCompressed').lean();
+    for (const record of bankRows) {
+      if (!record.payloadCompressed) continue;
+      const row = decodeCompressedJson(record.payloadCompressed);
+      if (String(row?.tipo_registro || '').toUpperCase() !== 'E') continue;
+      const id = personIds.get(String(row?.persona || ''));
+      if (id && !identifications.has(id)) identifications.set(id, 'movimiento_bancario');
+    }
+    const localEmployees = await Employee.find({ clinic: this.clinic._id }).select('identificacion').lean();
+    for (const employee of localEmployees) {
+      const id = String(employee.identificacion || '').trim();
+      if (id && !identifications.has(id)) identifications.set(id, 'empleado_local');
     }
     for (const id of this.payrollCedulas) if (id && !identifications.has(id)) identifications.set(id, 'indicada a mano');
     return identifications;
@@ -239,14 +314,27 @@ class Extractor {
     const origins = {};
     for (const origin of identifications.values()) origins[origin] = (origins[origin] || 0) + 1;
     this.log(`payroll_roles: ${identifications.size} cedulas (${Object.entries(origins).map(([key, value]) => `${key}=${value}`).join(', ') || 'ninguna'})`);
-    const ranges = months(this.earliestJournal || this.from || parseDate('01/11/2025'), this.cutoff);
+    // El rango pedido define el alcance. Usar `earliestJournal` aquí abría años
+    // no solicitados y hacía que una extracción acotada ejecutara miles de
+    // consultas de nómina innecesarias.
+    const end = this.through && this.through < this.cutoff ? this.through : this.cutoff;
+    const ranges = months(this.from || parseDate('01/11/2025'), end);
+    const requests = [];
     for (const cedula of identifications.keys()) for (const month of ranges) for (const period of this.payrollPeriods) {
-      const rows = await this.api.listV1(
-        '/api/v1/rrhh/rol-pago/',
-        { cedula, periodo: period, anio: month.from.getUTCFullYear(), mes: month.from.getUTCMonth() + 1 },
-        { singleObject: true }
-      );
-      await this.archive('payroll_role', rows.map((row) => ({ ...row, periodo_consultado: period })), stage);
+      requests.push({ cedula, month, period });
+    }
+    for (let offset = 0; offset < requests.length; offset += this.payrollConcurrency) {
+      const batch = requests.slice(offset, offset + this.payrollConcurrency);
+      const results = await Promise.all(batch.map(async ({ cedula, month, period }) => ({
+        cedula, period,
+        rows: await this.api.listV1(
+          '/api/v1/rrhh/rol-pago/',
+          { cedula, periodo: period, anio: month.from.getUTCFullYear(), mes: month.from.getUTCMonth() + 1 },
+          { singleObject: true }
+        ),
+      })));
+      for (const result of results) await this.archive('payroll_role', result.rows.map((row) => ({ ...row, periodo_consultado: result.period })), stage);
+      if ((offset + batch.length) % 1000 < batch.length) this.log(`payroll_roles: consultas=${offset + batch.length}/${requests.length}, roles=${stage.fetched}`);
     }
     await this.saveStage(stage);
   }

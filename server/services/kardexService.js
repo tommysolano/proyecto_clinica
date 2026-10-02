@@ -237,7 +237,8 @@ async function buildKardex(clinicId, {
  * `Product.stock` es un agregado global de apoyo y NO se usa para decidir por bodega.
  */
 async function stockByWarehouse({ clinicId, product = null, warehouse = null }) {
-  const match = { clinic: oid(clinicId), qtyRemaining: { $gt: 0 } };
+  // Una capa negativa importada expresa un deficit real de esa bodega.
+  const match = { clinic: oid(clinicId), qtyRemaining: { $ne: 0 } };
   if (product) match.product = oid(product);
   if (warehouse) match.warehouse = oid(warehouse);
   const agg = await InventoryLayer.aggregate([

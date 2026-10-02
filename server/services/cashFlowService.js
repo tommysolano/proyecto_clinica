@@ -97,7 +97,8 @@ async function getConfig(clinicId) {
  * Cuentas que forman el disponible. NUNCA se deducen del nombre («todo lo que diga banco»).
  * Prioridad:
  *   1. las cuentas configuradas explícitamente en CashFlowConfig;
- *   2. si no hay ninguna, los ROLES contables `caja`, `cajaChica` y `bancos`.
+ *   2. si no hay ninguna, los ROLES contables `caja`, `cajaChica` y `bancos`,
+ *      más el grupo de efectivo `1.1.1` del plan importado de Contífico si existe.
  * En ambos casos se añaden las cuentas HIJAS (jerarquía por código del plan) si la config
  * lo permite. El conjunto se deduplica por id, así que configurar a la vez una cuenta padre
  * y una hija NO puede duplicar el saldo: cada línea del asiento pertenece a una sola cuenta.
@@ -112,6 +113,14 @@ async function resolveCashAccounts(clinicId, cfg) {
       ['caja', 'cajaChica', 'bancos'].map((rol) => getAccount(clinicId, rol).catch(() => null))
     );
     roots = porRol.filter(Boolean).map((a) => (a.toObject ? a.toObject() : a));
+    // El plan importado de Contífico agrupa caja y bancos en 1.1.1. Los roles del
+    // catálogo estándar apuntan a 1.1.01.* y pueden existir sin ningún movimiento.
+    // Incluir la raíz importada incorpora sus cuentas hijas respaldadas por el mayor,
+    // conservando también cualquier movimiento real de las cuentas estándar.
+    const contificoCash = await ChartOfAccount.findOne({
+      clinic: clinicId, code: '1.1.1', type: 'ACTIVO', active: true,
+    }).lean();
+    if (contificoCash) roots.push(contificoCash);
   }
   if (!roots.length) return { accounts: [], ids: [], byId: new Map() };
 
@@ -347,15 +356,19 @@ async function buildProjection(clinicId, { from, to, filters = {} } = {}) {
   if (!days.length) throw badRequest('El rango no contiene ningún día hábil.');
 
   const hoy = startOfDay(new Date());
+  // Una consulta completamente histórica no es una previsión: las obligaciones
+  // abiertas HOY no prueban que estuvieran abiertas en aquel corte. Mostrar sus
+  // saldos actuales en un mes pasado inventaría salidas e ingresos históricos.
+  const soloHistorico = hasta < hoy;
 
   // ── Carga por lotes (sin N+1: una consulta por colección, no una por día ni por documento)
   const abierto = { clinic: clinicId, status: { $in: ['ABIERTO', 'PARCIAL'] }, balance: { $gt: 0.005 } };
   const [opening, mappings, payables, receivables, manuales] = await Promise.all([
     openingBalance(clinicId, accountIds, desde),
     loadMappings(clinicId),
-    Payable.find(abierto).lean(),
-    Receivable.find(abierto).lean(),
-    CashFlowManualItem.find({ clinic: clinicId, status: 'PLANIFICADO', plannedDate: { $lte: hasta } }).lean(),
+    soloHistorico ? [] : Payable.find(abierto).lean(),
+    soloHistorico ? [] : Receivable.find(abierto).lean(),
+    soloHistorico ? [] : CashFlowManualItem.find({ clinic: clinicId, status: 'PLANIFICADO', plannedDate: { $lte: hasta } }).lean(),
   ]);
 
   // Planes (override/exclusión) de todos los documentos de golpe.

@@ -28,6 +28,7 @@ router.get('/income-statement.xlsx', c.incomeStatementExcel);
 router.get('/balance-sheet', c.balanceSheet);
 router.get('/balance-sheet.xlsx', c.balanceSheetExcel);
 router.get('/cash-flow', c.cashFlow);
+router.get('/cash-flow-indirect', c.indirectCashFlow);
 
 // Ventas
 router.get('/sales/summary', c.salesSummary);

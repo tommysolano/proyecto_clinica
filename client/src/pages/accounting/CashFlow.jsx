@@ -63,6 +63,7 @@ export default function CashFlow() {
   const [filtros, setFiltros] = useState({ onlyOverdue: false, onlyUnclassified: false, party: '' });
   const [data, setData] = useState(null);
   const [movs, setMovs] = useState(null);
+  const [movPage, setMovPage] = useState(1);
   const [cell, setCell] = useState(null);
   const [nueva, setNueva] = useState(null);
   const [config, setConfig] = useState(null);
@@ -97,12 +98,12 @@ export default function CashFlow() {
   const cargarMovs = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await api.get('/cash-flow/movements', { params: { from, to, pageSize: 500 } });
+      const r = await api.get('/cash-flow/movements', { params: { from, to, page: movPage, pageSize: 500 } });
       setMovs(r.data);
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al cargar los movimientos');
     } finally { setLoading(false); }
-  }, [from, to]);
+  }, [from, to, movPage]);
 
   const cargarItems = useCallback(async () => {
     try {
@@ -229,12 +230,12 @@ export default function CashFlow() {
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end flex-wrap">
         <div>
           <label className="text-xs text-slate-500 block">Desde</label>
-          <DateInput value={from} onChange={(e) => setFrom(e.target.value)}
+          <DateInput value={from} onChange={(e) => { setMovPage(1); setFrom(e.target.value); }}
             className="border border-slate-200 rounded-xl px-3 py-2" />
         </div>
         <div>
           <label className="text-xs text-slate-500 block">Hasta</label>
-          <DateInput value={to} onChange={(e) => setTo(e.target.value)}
+          <DateInput value={to} onChange={(e) => { setMovPage(1); setTo(e.target.value); }}
             className="border border-slate-200 rounded-xl px-3 py-2" />
         </div>
         {tab === 'proyeccion' && (
@@ -359,6 +360,25 @@ export default function CashFlow() {
               </tbody>
             </table>
           </div>
+          {movs.total > movs.pageSize && (
+            <div className="px-4 py-3 border-t border-slate-100 flex items-center justify-between gap-3 text-sm text-slate-600">
+              <span>
+                {((movs.page - 1) * movs.pageSize) + 1}–{Math.min(movs.page * movs.pageSize, movs.total)} de {movs.total} movimientos
+              </span>
+              <div className="flex gap-2">
+                <button type="button" disabled={loading || movs.page <= 1}
+                  onClick={() => setMovPage((page) => Math.max(1, page - 1))}
+                  className="px-3 py-1.5 rounded-lg border border-slate-200 disabled:opacity-40">
+                  Anterior
+                </button>
+                <button type="button" disabled={loading || movs.page * movs.pageSize >= movs.total}
+                  onClick={() => setMovPage((page) => page + 1)}
+                  className="px-3 py-1.5 rounded-lg border border-slate-200 disabled:opacity-40">
+                  Siguiente
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

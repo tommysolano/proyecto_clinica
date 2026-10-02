@@ -508,10 +508,13 @@ export default function Payroll() {
                     <HiOutlineLockOpen className="w-4 h-4" /> Reabrir
                   </button>
                 )}
-                {selected.status !== 'BORRADOR' && (
+                {selected.status !== 'BORRADOR' && (selected.journalEntry || (selected.payments || []).some((payment) => payment.journalEntry)) && (
                   <button onClick={() => setShowEntry(true)} className="px-3 py-1.5 bg-slate-700 text-white rounded-lg text-sm flex items-center gap-1" title="Ver el asiento de cierre y los pagos">
                     <HiOutlineEye className="w-4 h-4" /> Ver asiento
                   </button>
+                )}
+                {selected.status !== 'BORRADOR' && !selected.journalEntry && !(selected.payments || []).some((payment) => payment.journalEntry) && (
+                  <span className="text-xs text-amber-700">Asiento sin vínculo directo con este rol</span>
                 )}
               </div>
             </div>

@@ -156,6 +156,7 @@ exports.form104Xml = async (req, res) => {
     const compras = await PurchaseInvoice.find({
       clinic: req.clinicId,
       status: { $ne: 'ANULADA' },
+      docType: { $ne: 'ANTICIPO_PROVEEDOR' },
       fechaEmision: { $gte: start, $lte: end },
     });
     const c = compras.reduce(
@@ -224,6 +225,7 @@ exports.form103Xml = async (req, res) => {
     const compras = await PurchaseInvoice.find({
       clinic: req.clinicId,
       status: { $ne: 'ANULADA' },
+      docType: { $ne: 'ANTICIPO_PROVEEDOR' },
       fechaEmision: { $gte: start, $lte: end },
     });
     const byCode = {};

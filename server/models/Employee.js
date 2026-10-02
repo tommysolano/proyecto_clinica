@@ -92,6 +92,18 @@ const employeeSchema = new mongoose.Schema(
     decimoCuartoAcumulado: { type: String, enum: ['ACUMULADO', 'MENSUALIZADO'], default: 'MENSUALIZADO' },
     fondosReservaAcumulado: { type: String, enum: ['ACUMULADO', 'MENSUALIZADO'], default: 'MENSUALIZADO' },
     active: { type: Boolean, default: true },
+    // Indica qué datos laborales fueron realmente suministrados por Contífico.
+    // La importación histórica conserva los campos técnicos requeridos por el
+    // modelo, pero la interfaz no debe presentarlos como evidencia si faltan.
+    contificoSource: {
+      imported: { type: Boolean, default: false },
+      externalId: { type: String, default: '' },
+      employeeFlag: { type: Boolean, default: null },
+      hireDateAvailable: { type: Boolean, default: true },
+      salaryAvailable: { type: Boolean, default: true },
+      firstPayrollDate: { type: Date, default: null },
+      lastPayrollDate: { type: Date, default: null },
+    },
     notes: String,
   },
   { timestamps: true }

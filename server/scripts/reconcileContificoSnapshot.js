@@ -76,6 +76,24 @@ async function main() {
   if (!snapshot) throw new Error('No existe una instantanea de extracción completada');
 
   const snapshotEntities = new Set((snapshot.stages || []).filter((stage) => stage.status === 'COMPLETED').map((stage) => stage.name));
+  // Esta auditoría compara un corte completo. Una extracción selectiva (p. ej.
+  // solo journal_entries) no debe presentarse como si los otros módulos tuvieran
+  // cero registros de origen: eso produce diferencias ficticias de cientos de
+  // miles de dólares.
+  const requiredStages = ['documents', 'transactions', 'journal_entries', 'payroll_roles'];
+  const missingStages = requiredStages.filter((name) => !snapshotEntities.has(name));
+  if (missingStages.length) {
+    console.log(JSON.stringify({
+      status: 'NO_VERIFICABLE',
+      reason: 'La última extracción no cubre todos los módulos que este comparador resume.',
+      snapshot: String(snapshot._id),
+      completedStages: [...snapshotEntities],
+      missingStages,
+      instruction: 'Ejecute una extracción completa del mismo corte o use auditorías específicas por módulo.',
+    }, null, 2));
+    process.exitCode = 2;
+    return;
+  }
   const staticEntities = ['product_stock', 'product'];
   if (!snapshotEntities.has('payroll_roles')) staticEntities.push('payroll_role');
   const [dynamicRows, staticRows, rawAccounts] = await Promise.all([

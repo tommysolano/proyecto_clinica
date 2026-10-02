@@ -5,16 +5,39 @@ const assert = require('node:assert/strict');
 const { ContificoApi } = require('../services/contificoApi');
 const { checksum, parseDate, fmt, months, externalId, search, parseArgs, Extractor } = require('../scripts/migrateContifico');
 const ContificoRecord = require('../models/ContificoRecord');
-const { accountType, nature, splitName, tax, ledgerDocType, contificoDate, contificoPayment, contificoSaleItem } = require('../scripts/migrateContificoProject');
-const { mapPaymentMethod, payrollPeriod, noteKind } = require('../scripts/projectContificoSupplemental');
+const { accountType, nature, splitName, tax, ledgerDocType, contificoDate, contificoPayment, contificoSaleItem, contificoSaleFields } = require('../scripts/migrateContificoProject');
+const { mapPaymentMethod, payrollPeriod, noteKind, payrollPaymentKey, payrollPaymentPending } = require('../scripts/projectContificoSupplemental');
+const Employee = require('../models/Employee');
 const { _decode } = require('../controllers/contificoArchiveController');
 const { decodeCompressedJson } = require('../utils/compressedJson');
+const { entryDifference } = require('../scripts/auditContificoLedger');
 const zlib = require('zlib');
 
 test('checksum es estable y las fechas conservan el dia', () => {
   assert.equal(checksum({ b: 2, a: 1 }), checksum({ a: 1, b: 2 }));
   assert.equal(fmt(parseDate('31/08/2026')), '31/08/2026');
   assert.deepEqual(months(parseDate('15/11/2025'), parseDate('02/01/2026')).map((item) => item.key), ['2025-11', '2025-12', '2026-01']);
+});
+
+test('auditoria detecta fecha y lineas diferentes aunque el asiento cuadre', () => {
+  const accounts = new Map([['origen-a', '4.1'], ['origen-b', '5.1']]);
+  const localAccounts = new Map([['local-a', { code: '4.1' }], ['local-b', { code: '5.1' }]]);
+  const source = { fecha: '01/09/2026', detalles: [
+    { cuenta_id: 'origen-a', tipo: 'H', valor: '100.00' },
+    { cuenta_id: 'origen-b', tipo: 'D', valor: '100.00' },
+  ] };
+  const matching = { date: new Date('2026-09-01T12:00:00Z'), lines: [
+    { account: 'local-a', debit: 0, credit: 100 },
+    { account: 'local-b', debit: 100, credit: 0 },
+  ] };
+  assert.deepEqual(entryDifference(source, matching, accounts, localAccounts), { date: null, lines: null });
+  const wrong = { date: new Date('2026-09-02T12:00:00Z'), lines: [
+    { account: 'local-a', debit: 100, credit: 0 },
+    { account: 'local-b', debit: 0, credit: 100 },
+  ] };
+  const difference = entryDifference(source, wrong, accounts, localAccounts);
+  assert.deepEqual(difference.date, { source: '01/09/2026', local: '02/09/2026' });
+  assert.ok(difference.lines);
 });
 
 test('identidad y busqueda documental', () => {
@@ -41,6 +64,19 @@ test('cliente API pagina solo con GET y Authorization', async () => {
   assert.deepEqual(ids, [1, 2, 3]);
   assert.equal(calls[0].options.method, 'GET');
   assert.equal(calls[0].options.headers.Authorization, 'key');
+});
+
+test('cliente API limita también la lectura del cuerpo JSON', async () => {
+  const api = new ContificoApi({
+    apiKey: 'key', baseUrl: 'https://test.local', timeoutMs: 20, retries: 0,
+    fetchImpl: async (_url, options) => ({
+      ok: true,
+      json: () => new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new Error('lectura interrumpida')), { once: true });
+      }),
+    }),
+  });
+  await assert.rejects(api.get('/items'), /lectura interrumpida/);
 });
 
 test('la paginacion recupera las filas que Contifico se salta entre paginas', async () => {
@@ -87,6 +123,34 @@ test('una ventana que nunca se completa se declara incompleta, no completa', asy
   assert.equal(stats.expected - stats.unique, 2);
 });
 
+test('documentos conocidos ausentes del listado se verifican por ID antes de retirarlos', async () => {
+  const original = ContificoRecord.find;
+  ContificoRecord.find = () => ({ select: () => ({ lean: async () => [
+    { externalId: 'en-lista' }, { externalId: 'vivo-omitido' }, { externalId: 'retirado' },
+  ] }) });
+  const archived = [];
+  try {
+    const extractor = new Extractor({ api: { get: async (path) => {
+      if (path.endsWith('/vivo-omitido/')) return { id: 'vivo-omitido', total: '20.00' };
+      const error = new Error('HTTP 400 - {"documento":"Documento no encontrado."}');
+      error.status = 400;
+      throw error;
+    } }, clinic: { _id: 'clinica' }, commit: false, pageSize: 100 });
+    extractor.archive = async (_entity, rows, stage) => {
+      archived.push(...rows);
+      rows.forEach((row) => stage._seen.add(row.id));
+    };
+    extractor.log = () => {};
+    const stage = { _seen: new Set(['en-lista']), missing: 0 };
+    await extractor.recoverKnownDocuments(stage);
+    assert.deepEqual(archived, [{ id: 'vivo-omitido', total: '20.00' }]);
+    assert.equal(stage.knownIdsRecovered, 1);
+    assert.equal(stage.knownIdsRemoved, 1);
+    assert.equal(stage.knownIdsUnverified, 0);
+    assert.equal(stage.missing, 0);
+  } finally { ContificoRecord.find = original; }
+});
+
 test('rol individual de rrhh v1 se conserva solo cuando se solicita expresamente', async () => {
   const role = { cedula: '0102030405', anio: '2026', mes: '8', total_pago: '500.00' };
   const api = new ContificoApi({
@@ -123,10 +187,17 @@ test('proyeccion permite omitir movimientos de inventario ya enlazados', () => {
 test('mapeos suplementarios conservan la semántica de Contífico', () => {
   assert.equal(mapPaymentMethod('TRANSF'), 'TRANSFERENCIA');
   assert.equal(mapPaymentMethod('CAJA'), 'EFECTIVO');
+  assert.equal(mapPaymentMethod('CAJA CHICA'), 'EFECTIVO');
   assert.equal(payrollPeriod('P'), 'QUINCENA_1');
   assert.equal(payrollPeriod('S'), 'CIERRE_MES');
   assert.equal(noteKind('NCT'), 'NC');
   assert.equal(noteKind('DNA'), 'ND');
+  assert.equal(payrollPaymentPending('PENDIENTE'), true);
+  assert.equal(payrollPaymentPending('TRANSFERENCIA'), false);
+  assert.equal(
+    payrollPaymentKey({ personId: 'persona', date: '15/08/2026', amount: '123.456', reference: 'A-1' }),
+    'persona|15/08/2026|12346|A-1'
+  );
 });
 
 test('documentos Contifico conservan fecha Ecuador, pagos e impuestos por linea', () => {
@@ -146,6 +217,19 @@ test('documentos Contifico conservan fecha Ecuador, pagos e impuestos por linea'
   assert.equal(item.taxCategory, 'IVA_15');
 });
 
+test('una venta sin desglose de cobro no inventa efectivo', () => {
+  const fields = contificoSaleFields({ externalId: 'venta-sin-cobro', payload: {
+    fecha_emision: '18/09/2026', documento: '001-001-1', total: 100, saldo: 0,
+    cliente: {}, detalles: [], cobros: [],
+  } }, {
+    clinic: 'clinica', products: new Map(), patients: new Map(), costCenters: new Map(),
+  }, new Map(), 'producto-manual');
+  assert.deepEqual(fields.payments, []);
+  assert.equal(fields.paymentMethod, 'desconocido');
+  assert.equal(fields.paymentEvidenceStatus, 'INCOMPLETA');
+  assert.equal(fields.unverifiedPaymentAmount, 100);
+});
+
 test('archivo comprimido se recupera sin perdida', () => {
   const payload = { id: 'x', detalles: [{ cuenta_id: 'a', valor: '10.00' }], texto: 'áéíóú' };
   const record = { externalId: 'x', payloadCompressed: zlib.gzipSync(Buffer.from(JSON.stringify(payload))) };
@@ -162,10 +246,16 @@ test('RR.HH. sigue preguntando por quien ya tuvo rol aunque pierda es_empleado',
   // le quita la marca en Contifico y su rol historico dejaria de llegar: como la
   // etapa se trata como instantanea, desapareceria de nominas ya importadas.
   const original = ContificoRecord.find;
-  ContificoRecord.find = () => ({ select: () => ({ lean: async () => [
-    { externalId: '0941502387:2026:8:S:202608000041', search: { identification: '0941502387' } },
-    { externalId: '0950114694:2026:8:S:202608000041', search: {} },
-  ] }) });
+  const originalEmployees = Employee.find;
+  ContificoRecord.find = (filter) => ({ select: () => ({ lean: async () => (
+    filter.entity === 'bank_movement'
+      ? []
+      : [
+        { externalId: '0941502387:2026:8:S:202608000041', search: { identification: '0941502387' } },
+        { externalId: '0950114694:2026:8:S:202608000041', search: {} },
+      ]
+  ) }) });
+  Employee.find = () => ({ select: () => ({ lean: async () => [{ identificacion: '0922222222' }] }) });
   try {
     const extractor = new Extractor({
       api: null, clinic: { _id: 'clinica' }, commit: false,
@@ -177,14 +267,15 @@ test('RR.HH. sigue preguntando por quien ya tuvo rol aunque pierda es_empleado',
       { cedula: '0941502387', es_empleado: false },
       { cedula: '1790000000001', es_cliente: true },
     ]);
-    assert.deepEqual([...ids.keys()], ['0931358808', '0941502387', '0950114694', '0912345678']);
+    assert.deepEqual([...ids.keys()], ['0931358808', '0941502387', '0950114694', '0922222222', '0912345678']);
     assert.equal(ids.get('0931358808'), 'es_empleado');
     // La cedula tambien se recupera del externalId cuando el indice no la trae.
     assert.equal(ids.get('0950114694'), 'rol previo');
     assert.equal(ids.get('0912345678'), 'indicada a mano');
+    assert.equal(ids.get('0922222222'), 'empleado_local');
     // Un cliente cualquiera NO entra: seria una consulta por persona y mes.
     assert.equal(ids.has('1790000000001'), false);
-  } finally { ContificoRecord.find = original; }
+  } finally { ContificoRecord.find = original; Employee.find = originalEmployees; }
 });
 
 test('el total se toma de la primera pagina: un endpoint vivo no se persigue', async () => {

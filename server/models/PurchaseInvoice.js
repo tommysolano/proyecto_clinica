@@ -130,7 +130,7 @@ const purchaseInvoiceSchema = new mongoose.Schema(
   {
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, index: true },
     supplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', required: true },
-    docType: { type: String, enum: ['FACTURA', 'NOTA_VENTA', 'LIQUIDACION', 'NOTA_DEBITO_REC', 'NOTA_CREDITO_REC'], default: 'FACTURA' },
+    docType: { type: String, enum: ['FACTURA', 'NOTA_VENTA', 'LIQUIDACION', 'NOTA_DEBITO_REC', 'NOTA_CREDITO_REC', 'ANTICIPO_PROVEEDOR'], default: 'FACTURA' },
     estab: String,
     ptoEmi: String,
     secuencial: String,
