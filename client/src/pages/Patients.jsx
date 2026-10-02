@@ -18,7 +18,6 @@ import PatientFields, {
   Field,
 } from '../components/PatientFields';
 import { nombreSucursal } from '../utils/clinicName';
-import ProductAutocomplete from '../components/ProductAutocomplete';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -42,7 +41,6 @@ import TimeSlotInput from '../components/TimeSlotInput';
 import DateInput from '../components/DateInput';
 import AppointmentValueFields from '../components/AppointmentValueFields';
 import AgendadoPorSelect from '../components/AgendadoPorSelect';
-import { cargarServiciosAgenda } from '../utils/serviciosAgenda';
 import QuienAtiende, {
   CAMPOS_QUIEN_ATIENDE,
   pasosDeAtencion,
@@ -101,15 +99,6 @@ export default function Patients() {
     return () => { vivo = false; };
   }, []);
   const showClinicSelector = (sedes?.length || 0) > 1;
-  // EL CATÁLOGO DE LA AGENDA para los OTROS SERVICIOS de la cita (sep-2026):
-  // el mismo que el buscador de la agenda.
-  const [serviciosAgenda, setServiciosAgenda] = useState([]);
-  useEffect(() => {
-    let vivo = true;
-    cargarServiciosAgenda().then((l) => { if (vivo) setServiciosAgenda(l); })
-      .catch(() => {});
-    return () => { vivo = false; };
-  }, []);
   // 'doctor' entra aquí porque expande a las especialidades: en óptica el
   // paciente llega sin cita y quien lo registra es el propio optómetra.
   //
@@ -742,23 +731,24 @@ export default function Patients() {
                       la agenda, la cita puede llevar varios. */}
                   {!aptForm.ahora && (
                     <Field label="Otros servicios">
-                      <ProductAutocomplete
-                        products={serviciosAgenda}
-                        value=""
-                        onSelect={(p) => {
+                      {/* El mismo selector cerrado que el principal (oct-2026):
+                          solo servicios del inventario, sin texto libre. */}
+                      <ServiceItemPicker
+                        value={null}
+                        onChange={(p) => {
                           if (!p) return;
                           if (aptForm.serviceItem && String(p._id) === String(aptForm.serviceItem._id)) return;
                           if ((aptForm.additionalServices || []).some((s) => String(s._id) === String(p._id))) return;
                           setAptForm({ ...aptForm, additionalServices: [...(aptForm.additionalServices || []), { _id: p._id, name: p.name }] });
                         }}
-                        placeholder="Añade otro servicio a la cita…"
+                        placeholder="Añade otro servicio del inventario…"
                       />
                       {(aptForm.additionalServices || []).length > 0 && (
                         <div className="flex flex-wrap gap-1.5 mt-1.5">
                           {aptForm.additionalServices.map((s) => (
                             <span
                               key={s._id}
-                              className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full bg-violet-100 text-violet-800 text-xs font-medium"
+                              className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-xl max-w-full break-words bg-violet-100 text-violet-800 text-xs font-medium"
                             >
                               {s.name || 'Servicio'}
                               <button

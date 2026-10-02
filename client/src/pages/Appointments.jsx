@@ -3795,10 +3795,13 @@ export default function Appointments() {
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
               Otros servicios <span className="font-normal text-slate-400">(opcional)</span>
             </label>
-            <ProductAutocomplete
-              products={services}
-              value=""
-              onSelect={(p) => {
+            {/* El MISMO selector cerrado que el servicio principal (oct-2026):
+                solo los servicios del inventario, con buscador y sin texto
+                libre. Se queda vacío tras cada elección: los elegidos van
+                en las fichas de abajo. */}
+            <ServiceItemPicker
+              value={null}
+              onChange={(p) => {
                 if (!p) return;
                 if (form.serviceItem && String(p._id) === String(form.serviceItem._id)) return;
                 if (form.additionalServices.some((s) => String(s._id) === String(p._id))) return;
@@ -3807,14 +3810,14 @@ export default function Appointments() {
                   additionalServices: [...(f.additionalServices || []), { _id: p._id, name: p.name }],
                 }));
               }}
-              placeholder="Añade otro servicio a la cita…"
+              placeholder="Añade otro servicio del inventario…"
             />
             {(form.additionalServices || []).length > 0 && (
               <div className="flex flex-wrap gap-1.5 mt-1.5">
                 {form.additionalServices.map((s) => (
                   <span
                     key={s._id}
-                    className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full bg-violet-100 text-violet-800 text-xs font-medium"
+                    className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-xl max-w-full break-words bg-violet-100 text-violet-800 text-xs font-medium"
                   >
                     {s.name || 'Servicio'}
                     <button
