@@ -84,26 +84,31 @@ exports.deleteAccount = async (req, res) => {
 };
 
 // ---------- Saldos ----------
+/** Saldo de cada cuenta bancaria activa: del mayor si es importada de Contífico. */
+async function bankBalancesFor(clinicId, cutDate = null) {
+  const accounts = await BankAccount.find({ clinic: clinicId, active: true }).populate('chartAccount', 'code name');
+  const imported = accounts.filter(isImportedBank);
+  const journal = await journalBalances(accounts[0]?.clinic, imported.map((a) => a.chartAccount._id), cutDate);
+  const out = [];
+  for (const a of accounts) {
+    const agg = await BankTransaction.aggregate([
+      { $match: { clinic: a.clinic, bankAccount: a._id, voided: false } },
+      { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
+    ]);
+    const operationalBalance = +((a.initialBalance || 0) + (agg[0]?.total || 0)).toFixed(2);
+    const bookBalance = isImportedBank(a) ? (journal.get(String(a.chartAccount._id)) || 0) : operationalBalance;
+    out.push({ _id: a._id, name: a.name, bank: a.bank, accountNumber: a.accountNumber,
+               chartAccount: a.chartAccount, bookBalance,
+               balanceSource: isImportedBank(a) ? 'JOURNAL' : 'TRANSACTIONS',
+               operationalBalance });
+  }
+  return out;
+}
+exports.bankBalancesFor = bankBalancesFor;
+
 exports.balances = async (req, res) => {
   try {
-    const accounts = await BankAccount.find({ clinic: req.clinicId, active: true }).populate('chartAccount', 'code name');
-    const imported = accounts.filter(isImportedBank);
-    const journal = await journalBalances(accounts[0]?.clinic, imported.map((a) => a.chartAccount._id),
-      req.query.cutDate || null);
-    const out = [];
-    for (const a of accounts) {
-      const agg = await BankTransaction.aggregate([
-        { $match: { clinic: a.clinic, bankAccount: a._id, voided: false } },
-        { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
-      ]);
-      const operationalBalance = +((a.initialBalance || 0) + (agg[0]?.total || 0)).toFixed(2);
-      const bookBalance = isImportedBank(a) ? (journal.get(String(a.chartAccount._id)) || 0) : operationalBalance;
-      out.push({ _id: a._id, name: a.name, bank: a.bank, accountNumber: a.accountNumber,
-                 chartAccount: a.chartAccount, bookBalance,
-                 balanceSource: isImportedBank(a) ? 'JOURNAL' : 'TRANSACTIONS',
-                 operationalBalance });
-    }
-    res.json(out);
+    res.json(await bankBalancesFor(req.clinicId, req.query.cutDate || null));
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 

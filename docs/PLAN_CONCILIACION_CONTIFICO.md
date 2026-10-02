@@ -318,3 +318,18 @@ Respaldo previo: `storage/contifico-backups/payroll-before-journal-links-2026-10
 `services/contificoPayrollSync.js` sincroniza nómina en el ciclo automático, después del mayor y de los documentos. Primero arma la población: cédulas conocidas, personas con egresos bancarios y personas nombradas en asientos de nómina, que se identifican por nombre. Después consulta los roles del mes actual y del anterior, o los de todo el año cada 6 h, y los proyecta. Al final exige que los sueldos de los roles sean iguales al gasto de sueldos del mayor (`5.2.1.x.1`). Si difieren, el mes queda bloqueado con aviso «puede faltar el rol de un empleado».
 
 Primera corrida, con 33 cédulas consultadas: abril–agosto CURRENT, con sueldos iguales al mayor al centavo. Septiembre y octubre están SIN_CIERRE: Contífico aún no tiene roles ni sueldos contabilizados. Comando manual: `node scripts/syncContificoPayroll.js --months=AAAA-MM[,…]`.
+
+### Dashboard contable por sucursal y centro de costo (02/10/2026)
+
+La contabilidad indicó que Central, Extensión y Laboratorio están ligadas a CC CENTRAL (1), CC EXTENSIÓN (2) y CC LABORATORIO (5). El vínculo se guarda en `Clinic.accountingCostCenter` y se aplica con `scripts/linkClinicCostCenters.js --commit`. `services/accountingScope` resuelve el alcance: una sucursal ligada lee los datos de Contífico, que viven en Central, filtrados por su centro; `scope=company` muestra la empresa entera.
+
+En el dashboard contable, las ventas se filtran por `Sale.costCenter` y las compras por línea (`items.costCenter`, subtotal + IVA). La CxP se prorratea según el peso de las líneas del centro. Bancos y stock no tienen centro de costo y se muestran como de la empresa. El saldo bancario sale ahora del mayor en las cuentas importadas: antes sumaba solo `BankTransaction`. Comprobación con datos reales de 2026:
+
+| Vista | Ventas del año (USD) |
+| --- | ---: |
+| CC CENTRAL | 415.096,37 |
+| CC EXTENSIÓN | 275.622,52 |
+| CC LABORATORIO | 50.764,28 |
+| Empresa | 744.041,17 |
+
+La diferencia entre la suma de los tres centros y la empresa (USD 2.558,00) son 9 ventas sin centro en Contífico. En compras, USD 227.711,88 de líneas de 2026 no tienen centro en Contífico; no se atribuyen a ninguna sucursal y el dashboard las informa en el mes. Odontología y Dermazen no tienen centro ligado.

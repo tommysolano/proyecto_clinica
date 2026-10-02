@@ -3,6 +3,10 @@ const mongoose = require('mongoose');
 const clinicSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
+    // Centro de costo contable de la sucursal. La contabilidad de Contífico se importa
+    // en una sola sucursal (Central); el dashboard contable de cada sucursal ligada
+    // muestra esos datos filtrados por su centro (ver services/accountingScope).
+    accountingCostCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null },
     ruc: {
       type: String,
       trim: true,

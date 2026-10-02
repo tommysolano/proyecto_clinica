@@ -13,18 +13,24 @@ const PIE_COLORS = ['#10b981', '#0ea5e9', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4
 
 export default function AccountingDashboard() {
   const [data, setData] = useState(null);
-  const [bankBalances, setBankBalances] = useState([]);
   const [granularity, setGranularity] = useState('month');
+  // Una sucursal ligada a un centro de costo ve ese centro; «Toda la empresa», el consolidado.
+  const [company, setCompany] = useState(false);
   const [showLowStock, setShowLowStock] = useState(false);
 
   const load = async () => {
-    try { const r = await api.get('/dashboard/accounting', { params: { granularity, periods: 12 } }); setData(r.data); }
-    catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    try {
+      const r = await api.get('/dashboard/accounting', { params: { granularity, periods: 12, ...(company ? { scope: 'company' } : {}) } });
+      setData(r.data);
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [granularity]);
-  useEffect(() => { api.get('/banks/balances').then((r) => setBankBalances(r.data || [])).catch(() => {}); }, []);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [granularity, company]);
 
   if (!data) return <div className="p-8 text-slate-400">Cargando dashboard...</div>;
+  const bankBalances = data.banks || [];
+  const scope = data.scope || {};
+  // Bancos y stock no tienen centro de costo: con un centro activo se rotulan como de la empresa.
+  const empresa = scope.costCenter ? ' (empresa)' : '';
 
   const Card = ({ title, value, sub, color = 'text-slate-800', icon: Icon }) => (
     <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
@@ -50,12 +56,28 @@ export default function AccountingDashboard() {
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineChartPie className="text-emerald-600" /> Dashboard Contable</h1>
-        <label className="text-xs text-slate-500 flex flex-col">Período
-          <select value={granularity} onChange={(e) => setGranularity(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg bg-white">
-            <option value="day">Diario</option><option value="week">Semanal</option><option value="month">Mensual</option><option value="quarter">Trimestral</option><option value="year">Anual</option>
-          </select>
-        </label>
+        <div className="flex items-end gap-2 flex-wrap">
+          {scope.linked && (
+            <label className="text-xs text-slate-500 flex flex-col">Centro de costo
+              <select value={company ? 'company' : 'cc'} onChange={(e) => setCompany(e.target.value === 'company')} className="px-3 py-2 border border-slate-200 rounded-lg bg-white">
+                <option value="cc">{scope.sucursalCostCenter?.name || 'De la sucursal'}</option>
+                <option value="company">Toda la empresa</option>
+              </select>
+            </label>
+          )}
+          <label className="text-xs text-slate-500 flex flex-col">Período
+            <select value={granularity} onChange={(e) => setGranularity(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg bg-white">
+              <option value="day">Diario</option><option value="week">Semanal</option><option value="month">Mensual</option><option value="quarter">Trimestral</option><option value="year">Anual</option>
+            </select>
+          </label>
+        </div>
       </div>
+      {scope.costCenter && (
+        <p className="text-xs text-slate-500 -mt-2">
+          Datos de Contífico del centro de costo <b>{scope.costCenter.name}</b>: ventas por su centro y compras por línea; la cuenta por pagar se prorratea por las líneas del centro.
+          {scope.unassignedMonthExpense > 0 && <> Este mes hay <b>${fmt(scope.unassignedMonthExpense)}</b> de compras sin centro de costo en Contífico, que no se atribuyen a ninguna sucursal.</>}
+        </p>
+      )}
 
       {/* Indicadores */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -66,7 +88,7 @@ export default function AccountingDashboard() {
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card title="Ventas del año" value={`$${fmt(data.comparison.year.current)}`} sub={<>vs año ant. <Trend pct={data.comparison.year.pct} /></>} />
-        <Card title="Saldo total en bancos" value={`$${fmt(data.cash.bankTotal)}`} icon={HiOutlineBanknotes} />
+        <Card title={`Saldo total en bancos${empresa}`} value={`$${fmt(data.cash.bankTotal)}`} icon={HiOutlineBanknotes} />
         <Card title="Ventas efectivo hoy" value={`$${fmt(data.cash.todayCashSales)}`} />
         <Card title="Cuentas por pagar" value={`$${fmt(data.ratios.accountsPayable)}`} color="text-amber-600" />
       </div>
@@ -74,7 +96,7 @@ export default function AccountingDashboard() {
       {/* Saldo por banco (no general) */}
       {bankBalances.length > 0 && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
-          <h2 className="font-semibold text-slate-700 mb-3 flex items-center gap-2"><HiOutlineBanknotes className="w-5 h-5 text-emerald-500" /> Saldo por banco</h2>
+          <h2 className="font-semibold text-slate-700 mb-3 flex items-center gap-2"><HiOutlineBanknotes className="w-5 h-5 text-emerald-500" /> Saldo por banco{empresa}</h2>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
             {bankBalances.map((b) => (
               <div key={b._id} className="border border-slate-100 rounded-lg p-3">
@@ -90,7 +112,7 @@ export default function AccountingDashboard() {
       {/* Stock bajo - clicable */}
       {(data.lowStock || []).length > 0 && (
         <button onClick={() => setShowLowStock(true)} className="w-full bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center justify-between hover:bg-amber-100 text-left">
-          <div className="flex items-center gap-3"><HiOutlineExclamationTriangle className="w-6 h-6 text-amber-600" /><div><p className="font-semibold text-amber-800">{data.lowStock.length} productos con stock bajo</p><p className="text-xs text-amber-600">Clic para ver el detalle</p></div></div>
+          <div className="flex items-center gap-3"><HiOutlineExclamationTriangle className="w-6 h-6 text-amber-600" /><div><p className="font-semibold text-amber-800">{data.lowStock.length} productos con stock bajo{empresa}</p><p className="text-xs text-amber-600">Clic para ver el detalle</p></div></div>
           <span className="text-amber-700 text-sm font-semibold">Ver resumen →</span>
         </button>
       )}

@@ -3,9 +3,8 @@ const Patient = require('../models/Patient');
 const Sale = require('../models/Sale');
 const Product = require('../models/Product');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
-const BankAccount = require('../models/BankAccount');
-const BankTransaction = require('../models/BankTransaction');
-const mongoose = require('mongoose');
+const { accountingScope } = require('../services/accountingScope');
+const { bankBalancesFor } = require('./bankController');
 const { isDoctorRole } = require('../constants/roles');
 
 exports.getDashboard = async (req, res) => {
@@ -140,11 +139,19 @@ function dateGroupExpr(granularity, field) {
 /**
  * Dashboard contable: ventas por período, comparativas, top vendido/gastado,
  * resumen de caja/bancos, stock bajo e indicadores financieros.
- * query: { granularity=month, periods=12 }
+ * query: { granularity=month, periods=12, scope=company }
+ *
+ * Alcance (services/accountingScope): una sucursal ligada a un centro de costo ve los
+ * datos de Contífico de ese centro; `scope=company`, la empresa entera. Las ventas se
+ * filtran por su centro y las compras POR LÍNEA (una factura puede repartir centros);
+ * la CxP se prorratea con el peso de las líneas del centro. Bancos y stock no tienen
+ * centro de costo y siempre son de la empresa.
  */
 exports.getAccountingDashboard = async (req, res) => {
   try {
-    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
+    const scope = await accountingScope(req.clinicId, { company: req.query.scope === 'company' });
+    const clinicObjId = scope.dataClinic;
+    const ccId = scope.costCenter?._id || null;
     const granularity = req.query.granularity || 'month';
     const periods = Math.min(parseInt(req.query.periods) || 12, 60);
 
@@ -159,65 +166,71 @@ exports.getAccountingDashboard = async (req, res) => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
 
     const grp = dateGroupExpr(granularity, '$createdAt');
+    const sales = (extra = {}) => ({ clinic: clinicObjId, status: 'completada', ...(ccId ? { costCenter: ccId } : {}), ...extra });
+    const purchases = (extra = {}) => ({ clinic: clinicObjId, status: { $ne: 'ANULADA' }, ...extra });
+    const lineTotal = { $add: ['$items.subtotal', { $ifNull: ['$items.ivaAmount', 0] }] };
+    // Gasto de compras: total del comprobante para la empresa; líneas del centro si hay alcance.
+    const expense = (match, group) => (ccId
+      ? PurchaseInvoice.aggregate([{ $match: purchases(match) }, { $unwind: '$items' },
+        { $match: { 'items.costCenter': ccId } }, { $group: { _id: group, total: { $sum: lineTotal } } }])
+      : PurchaseInvoice.aggregate([{ $match: purchases(match) }, { $group: { _id: group, total: { $sum: '$total' } } }]));
+    const itemSum = (cond) => ({ $sum: { $map: { input: cond ? { $filter: { input: '$items', as: 'i', cond } } : '$items', as: 'i',
+      in: { $add: ['$$i.subtotal', { $ifNull: ['$$i.ivaAmount', 0] }] } } } });
 
     const [
       salesSeries, expenseSeries, topSold, topSpent, lowStock,
       monthSales, prevMonthSales, yearSales, prevYearSales,
-      todayCashSales, bankAccounts, apAgg,
+      todayCashSales, banks, apAgg, monthExpenseAgg, unassignedAgg,
     ] = await Promise.all([
       // Serie de ventas
       Sale.aggregate([
-        { $match: { clinic: clinicObjId, status: 'completada' } },
+        { $match: sales() },
         { $group: { _id: grp, total: { $sum: '$total' }, count: { $sum: 1 } } },
         { $sort: { _id: 1 } }, { $limit: periods + 24 },
       ]),
       // Serie de gastos (compras)
-      PurchaseInvoice.aggregate([
-        { $match: { clinic: clinicObjId, status: { $ne: 'ANULADA' } } },
-        { $group: { _id: dateGroupExpr(granularity, '$fechaEmision'), total: { $sum: '$total' } } },
-        { $sort: { _id: 1 } }, { $limit: periods + 24 },
-      ]),
+      expense({}, dateGroupExpr(granularity, '$fechaEmision')).then((rows) => rows.sort((a, b) => String(a._id).localeCompare(String(b._id))).slice(-(periods + 24))),
       // Top productos vendidos (mes actual)
       Sale.aggregate([
-        { $match: { clinic: clinicObjId, status: 'completada', createdAt: { $gte: startOfMonth, $lte: endOfMonth } } },
+        { $match: sales({ createdAt: { $gte: startOfMonth, $lte: endOfMonth } }) },
         { $unwind: '$items' },
         { $group: { _id: '$items.productName', quantity: { $sum: '$items.quantity' }, revenue: { $sum: '$items.subtotal' } } },
         { $sort: { revenue: -1 } }, { $limit: 8 },
       ]),
-      // Top categorías de gasto (compras del mes por cuenta del ítem)
+      // Top categorías de gasto (compras del mes por descripción del ítem)
       PurchaseInvoice.aggregate([
-        { $match: { clinic: clinicObjId, status: { $ne: 'ANULADA' }, fechaEmision: { $gte: startOfMonth, $lte: endOfMonth } } },
+        { $match: purchases({ fechaEmision: { $gte: startOfMonth, $lte: endOfMonth } }) },
         { $unwind: '$items' },
+        ...(ccId ? [{ $match: { 'items.costCenter': ccId } }] : []),
         { $group: { _id: '$items.description', total: { $sum: '$items.subtotal' } } },
         { $sort: { total: -1 } }, { $limit: 8 },
       ]),
-      Product.find({ clinic: req.clinicId, active: true, unlimited: { $ne: true }, $expr: { $lte: ['$stock', '$minStock'] } })
+      Product.find({ clinic: clinicObjId, active: true, unlimited: { $ne: true }, $expr: { $lte: ['$stock', '$minStock'] } })
         .select('name code stock minStock').sort({ stock: 1 }).limit(50),
-      Sale.aggregate([{ $match: { clinic: clinicObjId, status: 'completada', createdAt: { $gte: startOfMonth, $lte: endOfMonth } } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
-      Sale.aggregate([{ $match: { clinic: clinicObjId, status: 'completada', createdAt: { $gte: startOfPrevMonth, $lte: endOfPrevMonth } } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
-      Sale.aggregate([{ $match: { clinic: clinicObjId, status: 'completada', createdAt: { $gte: startOfYear } } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
-      Sale.aggregate([{ $match: { clinic: clinicObjId, status: 'completada', createdAt: { $gte: startOfPrevYear, $lte: endOfPrevYear } } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
-      Sale.aggregate([{ $match: { clinic: clinicObjId, status: 'completada', paymentMethod: 'efectivo', createdAt: { $gte: today } } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
-      BankAccount.find({ clinic: req.clinicId, active: true }).select('name bank initialBalance'),
-      // Cuentas por pagar (saldo de facturas de compra)
-      PurchaseInvoice.aggregate([{ $match: { clinic: clinicObjId, status: { $ne: 'ANULADA' } } }, { $group: { _id: null, total: { $sum: '$balance' } } }]),
+      Sale.aggregate([{ $match: sales({ createdAt: { $gte: startOfMonth, $lte: endOfMonth } }) }, { $group: { _id: null, total: { $sum: '$total' } } }]),
+      Sale.aggregate([{ $match: sales({ createdAt: { $gte: startOfPrevMonth, $lte: endOfPrevMonth } }) }, { $group: { _id: null, total: { $sum: '$total' } } }]),
+      Sale.aggregate([{ $match: sales({ createdAt: { $gte: startOfYear } }) }, { $group: { _id: null, total: { $sum: '$total' } } }]),
+      Sale.aggregate([{ $match: sales({ createdAt: { $gte: startOfPrevYear, $lte: endOfPrevYear } }) }, { $group: { _id: null, total: { $sum: '$total' } } }]),
+      Sale.aggregate([{ $match: sales({ paymentMethod: 'efectivo', createdAt: { $gte: today } }) }, { $group: { _id: null, total: { $sum: '$total' } } }]),
+      bankBalancesFor(clinicObjId),
+      // Cuentas por pagar: saldo de las compras; con alcance, prorrateado por las líneas del centro.
+      ccId
+        ? PurchaseInvoice.aggregate([
+          { $match: purchases({ balance: { $gt: 0 } }) },
+          { $project: { balance: 1, all: itemSum(null), cc: itemSum({ $eq: ['$$i.costCenter', ccId] }) } },
+          { $group: { _id: null, total: { $sum: { $cond: [{ $gt: ['$all', 0] }, { $multiply: ['$balance', { $divide: ['$cc', '$all'] }] }, 0] } } } },
+        ])
+        : PurchaseInvoice.aggregate([{ $match: purchases() }, { $group: { _id: null, total: { $sum: '$balance' } } }]),
+      expense({ fechaEmision: { $gte: startOfMonth, $lte: endOfMonth } }, null),
+      // Gasto del mes que Contífico no asignó a ningún centro: no se atribuye a una sucursal.
+      ccId
+        ? PurchaseInvoice.aggregate([{ $match: purchases({ fechaEmision: { $gte: startOfMonth, $lte: endOfMonth } }) }, { $unwind: '$items' },
+          { $match: { 'items.costCenter': null } }, { $group: { _id: null, total: { $sum: lineTotal } } }])
+        : Promise.resolve([]),
     ]);
 
-    // Saldos bancarios
-    let bankTotal = 0;
-    for (const a of bankAccounts) {
-      const agg = await BankTransaction.aggregate([
-        { $match: { clinic: clinicObjId, bankAccount: a._id, voided: false } },
-        { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
-      ]);
-      bankTotal += (a.initialBalance || 0) + (agg[0]?.total || 0);
-    }
-
+    const bankTotal = banks.reduce((sum, bank) => sum + (bank.bookBalance || 0), 0);
     const monthRevenue = monthSales[0]?.total || 0;
-    const monthExpenseAgg = await PurchaseInvoice.aggregate([
-      { $match: { clinic: clinicObjId, status: { $ne: 'ANULADA' }, fechaEmision: { $gte: startOfMonth, $lte: endOfMonth } } },
-      { $group: { _id: null, total: { $sum: '$total' } } },
-    ]);
     const monthExpenseTotal = monthExpenseAgg[0]?.total || 0;
     const profit = monthRevenue - monthExpenseTotal;
     const margin = monthRevenue > 0 ? (profit / monthRevenue) * 100 : 0;
@@ -230,19 +243,26 @@ exports.getAccountingDashboard = async (req, res) => {
 
     res.json({
       granularity,
+      scope: {
+        linked: scope.linked, company: scope.company,
+        costCenter: scope.costCenter ? { code: scope.costCenter.code, name: scope.costCenter.name } : null,
+        sucursalCostCenter: scope.sucursalCostCenter ? { code: scope.sucursalCostCenter.code, name: scope.sucursalCostCenter.name } : null,
+        unassignedMonthExpense: +(unassignedAgg[0]?.total || 0).toFixed(2),
+      },
       salesSeries: salesSeries.slice(-periods),
       expenseSeries: expenseSeries.slice(-periods),
       topSold,
       topSpent,
       lowStock,
+      banks,
       comparison: {
         month: { current: monthRevenue, previous: prevMonthSales[0]?.total || 0, pct: pct(monthRevenue, prevMonthSales[0]?.total || 0) },
         year: { current: yearSales[0]?.total || 0, previous: prevYearSales[0]?.total || 0, pct: pct(yearSales[0]?.total || 0, prevYearSales[0]?.total || 0) },
       },
       cash: { bankTotal: +bankTotal.toFixed(2), todayCashSales: todayCashSales[0]?.total || 0 },
       ratios: {
-        monthRevenue, monthExpense: monthExpenseTotal, profit: +profit.toFixed(2), margin: +margin.toFixed(2),
-        accountsPayable: apAgg[0]?.total || 0,
+        monthRevenue, monthExpense: +monthExpenseTotal.toFixed(2), profit: +profit.toFixed(2), margin: +margin.toFixed(2),
+        accountsPayable: +(apAgg[0]?.total || 0).toFixed(2),
         projectionNextPeriod: projection,
       },
     });
