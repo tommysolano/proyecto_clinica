@@ -209,10 +209,15 @@ function PageFallback() {
  * Barrera del área de contenido. Se rearma al cambiar de ruta: si no, una pantalla
  * que falló dejaba el hueco con el error para siempre, aunque el usuario se fuera
  * a otra parte del menú.
+ *
+ * La `key` de la sucursal activa vuelve a montar la pantalla al cambiar de
+ * sucursal: casi todas cargan sus datos una vez al montarse, y sin esto seguían
+ * mostrando los de la sucursal anterior hasta recargar la página.
  */
 function ContentBoundary({ children }) {
   const { pathname } = useLocation();
-  return <ErrorBoundary resetKey={pathname}>{children}</ErrorBoundary>;
+  const { activeClinic } = useAuth();
+  return <ErrorBoundary key={activeClinic?._id || 'none'} resetKey={pathname}>{children}</ErrorBoundary>;
 }
 
 function AppRoutes() {
