@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const { randomUUID } = require('crypto');
+const os = require('os');
 const { EJSON } = require('bson');
 const Clinic = require('../models/Clinic');
 const Record = require('../models/ContificoRecord');
@@ -15,6 +16,7 @@ const CostCenter = require('../models/CostCenter');
 const AccountBalance = require('../models/AccountBalance');
 const ServerLease = require('../models/ServerLease');
 const Notification = require('../models/Notification');
+const SyncState = require('../models/ContificoSyncState');
 const { ContificoApi } = require('./contificoApi');
 const { Extractor, checksum, fmt, parseDate } = require('../scripts/migrateContifico');
 const { Projector } = require('../scripts/migrateContificoProject');
@@ -24,6 +26,7 @@ const { decodeCompressedJson } = require('../utils/compressedJson');
 let running = false;
 let lastHistory = 0;
 const LEASE_NAME = 'contifico-financial-sync';
+const STATE_ID = 'financial-Central';
 const LEASE_MS = 10 * 60 * 1000;
 const eq = (left, right) => String(left) === String(right);
 const dateKey = (date) => `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -36,6 +39,14 @@ const ecToday = () => {
   const get = (part) => Number(pieces.find((piece) => piece.type === part).value);
   return { year: get('year'), month: get('month'), day: get('day') };
 };
+
+async function recordSyncState(patch) {
+  try {
+    await SyncState.updateOne({ _id: STATE_ID }, { $set: patch }, { upsert: true });
+  } catch (error) {
+    console.error('[contifico-financial-sync] No pudo guardar estado:', error.message);
+  }
+}
 
 async function fetchWindow(api, from, through) {
   const rows = new Map();
@@ -217,7 +228,7 @@ async function syncMonth({ clinic, api, year, month, assertLease = () => {} }) {
     backup, snapshot: String(extractor.run._id) };
 }
 
-async function syncFinancialReports({ includeHistory = false, months: requestedMonths = null } = {}) {
+async function syncFinancialReports({ includeHistory = false, months: requestedMonths = null, trigger = 'MANUAL' } = {}) {
   if (running) return { state: 'ALREADY_RUNNING' };
   if (!process.env.CONTIFICO_API_KEY) return { state: 'NO_API_KEY' };
   running = true;
@@ -244,6 +255,8 @@ async function syncFinancialReports({ includeHistory = false, months: requestedM
     const assertLease = () => { if (leaseLost) throw new Error('Arriendo de sincronización perdido'); };
     const clinic = await Clinic.findOne({ name: /^Central$/i }).lean();
     if (!clinic) throw new Error('Clínica Central no encontrada');
+    await recordSyncState({ state: 'RUNNING', trigger, host: os.hostname(),
+      startedAt: new Date(), completedAt: null, months: [], failures: [], lastError: '' });
     await Notification.updateMany({ clinic: clinic._id, type: 'contifico_sync_blocked',
       'meta.month': 'CONFIG', read: false }, { $set: { read: true, readAt: new Date() } })
       .catch((error) => console.error('[contifico-financial-sync] Aviso de configuración resuelto:', error.message));
@@ -293,7 +306,14 @@ async function syncFinancialReports({ includeHistory = false, months: requestedM
           console.error('[contifico-financial-sync] No pudo crear aviso:', notificationError.message));
       }
     }
-    return { state: failures.length ? 'PARTIAL' : 'COMPLETED', months: result, failures };
+    const outcome = { state: failures.length ? 'PARTIAL' : 'COMPLETED', months: result, failures };
+    await recordSyncState({ ...outcome, completedAt: new Date(),
+      ...(failures.length ? {} : { lastSuccessfulAt: new Date() }) });
+    return outcome;
+  } catch (error) {
+    if (acquired) await recordSyncState({ state: 'FAILED', completedAt: new Date(),
+      lastError: String(error.message).slice(0, 500) });
+    throw error;
   } finally {
     if (renewal) clearInterval(renewal);
     if (acquired) await ServerLease.deleteOne({ _id: LEASE_NAME, holder }).catch((error) =>
@@ -306,6 +326,8 @@ function startFinancialSyncJob(leaderOnly) {
   if (process.env.CONTIFICO_AUTO_SYNC === '0') return;
   if (!process.env.CONTIFICO_API_KEY) {
     console.error('[contifico-financial-sync] BLOQUEADO: falta CONTIFICO_API_KEY');
+    recordSyncState({ state: 'NO_API_KEY', trigger: 'AUTO', host: os.hostname(),
+      completedAt: new Date(), lastError: 'Falta CONTIFICO_API_KEY' });
     setTimeout(leaderOnly(async () => {
       try {
         const clinic = await Clinic.findOne({ name: /^Central$/i }).lean();
@@ -322,7 +344,7 @@ function startFinancialSyncJob(leaderOnly) {
   const run = leaderOnly(async () => {
     const history = Date.now() - lastHistory > 6 * 60 * 60 * 1000;
     try {
-      const result = await syncFinancialReports({ includeHistory: history });
+      const result = await syncFinancialReports({ includeHistory: history, trigger: 'AUTO' });
       if (history && ['COMPLETED', 'PARTIAL'].includes(result.state)) lastHistory = Date.now();
       console.log('[contifico-financial-sync]', JSON.stringify(result));
     } catch (error) { console.error('[contifico-financial-sync] BLOQUEADO:', error.stack || error.message); }
