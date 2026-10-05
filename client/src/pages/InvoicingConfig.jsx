@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import NumericInput from '../components/NumericInput';
 import SriStatus from '../components/SriStatus';
+import PuntosEmisionPanel from '../components/invoicing/PuntosEmisionPanel';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import {
   HiOutlineDocumentText,
@@ -287,7 +288,7 @@ export default function InvoicingConfig() {
               className="input"
             />
           </Field>
-          <Field label="Secuencial inicial">
+          <Field label="Secuencial inicial (serie única)">
             <NumericInput
               min={1}
               value={form.secuencial}
@@ -329,6 +330,11 @@ export default function InvoicingConfig() {
           </div>
         </div>
 
+        <p className="text-xs text-slate-500">
+          Establecimiento, punto de emisión y secuencial de esta sección son la serie única de la sucursal: se usan
+          solo mientras no haya puntos de emisión (cajas) creados abajo.
+        </p>
+
         {canEdit && (
           <div className="flex justify-end">
             <button
@@ -341,6 +347,9 @@ export default function InvoicingConfig() {
           </div>
         )}
       </form>
+
+      {/* Puntos de emisión (cajas): una serie y una numeración por usuario */}
+      <PuntosEmisionPanel canEdit={canEdit} />
 
       {/* Certificado digital */}
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-slate-200 p-6 space-y-5">

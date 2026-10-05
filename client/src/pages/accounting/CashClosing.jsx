@@ -70,6 +70,11 @@ export default function CashClosing() {
 
   const live = session.live;
   const open = session.open;
+  // Caja por punto de venta: cada usuario abre y cierra la de SU punto.
+  const miPunto = session.miPunto || null;
+  const sinPunto = !!session.usaPuntos && !miPunto;
+  const serie = (p) => (p ? `${p.establecimiento}-${p.codigo}${p.nombre ? ` · ${p.nombre}` : ''}` : '');
+  const historial = list.filter((c) => !(open && c._id === open._id) && (c.status !== 'ABIERTA' || c.puntoEmision));
   const expectedCash = live?.expectedCash || 0;
   const closeDiff = (+closeForm.countedCash || 0) - expectedCash;
 
@@ -106,13 +111,23 @@ export default function CashClosing() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineCalculator className="text-emerald-600" /> Caja</h1>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
+          <HiOutlineCalculator className="text-emerald-600" /> Caja
+          {miPunto && <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 font-mono">{serie(miPunto)}</span>}
+        </h1>
         {open ? (
           <button onClick={() => { setCloseForm({ countedCash: expectedCash, notes: '' }); setCloseModal(true); }} className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2 border-none cursor-pointer hover:bg-rose-700"><HiOutlineLockClosed /> Cerrar caja</button>
         ) : (
-          <button onClick={() => setOpenModal(true)} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 border-none cursor-pointer hover:bg-emerald-700"><HiOutlineLockOpen /> Abrir caja</button>
+          <button onClick={() => setOpenModal(true)} disabled={sinPunto} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 border-none cursor-pointer hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"><HiOutlineLockOpen /> Abrir caja</button>
         )}
       </div>
+
+      {sinPunto && !open && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Esta sucursal trabaja con cajas por punto de venta y no tienes uno asignado. Pide al administrador que te
+          asigne un punto en Configuración SRI → Puntos de emisión para poder abrir tu caja.
+        </div>
+      )}
 
       {/* Estado de la caja actual */}
       {open ? (
@@ -120,6 +135,7 @@ export default function CashClosing() {
           <div className="flex items-center gap-2 mb-3">
             <span className="px-2 py-0.5 rounded-full text-[11px] bg-emerald-100 text-emerald-700 font-semibold">CAJA ABIERTA</span>
             <span className="text-xs text-slate-500">desde {fmtDate(open.openedAt)} · {open.openedBy?.name || ''}</span>
+            {open.puntoEmision && <span className="text-xs text-slate-500 font-mono">· {serie(open.puntoEmision)}</span>}
           </div>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
             <div className="bg-slate-50 rounded-lg p-2"><p className="text-xs text-slate-500">Fondo inicial</p><p className="font-bold">${fmt(open.openingBalance)}</p></div>
@@ -167,10 +183,10 @@ export default function CashClosing() {
             <th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-right">Fondo inicial</th>
             <th className="px-3 py-2 text-right">Efectivo ventas</th><th className="px-3 py-2 text-right">Esperado</th>
             <th className="px-3 py-2 text-right">Contado</th><th className="px-3 py-2 text-right">Diferencia</th>
-            <th className="px-3 py-2 text-left">Cajero</th><th className="px-3 py-2 text-center">Estado</th><th></th>
+            <th className="px-3 py-2 text-left">Caja</th><th className="px-3 py-2 text-left">Cajero</th><th className="px-3 py-2 text-center">Estado</th><th></th>
           </tr></thead>
           <tbody>
-            {list.filter((c) => c.status !== 'ABIERTA').map((c) => (
+            {historial.map((c) => (
               <tr key={c._id} className="border-t hover:bg-slate-50">
                 <td className="px-3 py-2">{fmtDate(c.date)}</td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(c.openingBalance)}</td>
@@ -178,12 +194,13 @@ export default function CashClosing() {
                 <td className="px-3 py-2 text-right font-mono">{fmt(c.expectedCash)}</td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(c.countedCash)}</td>
                 <td className={`px-3 py-2 text-right font-mono font-semibold ${c.difference < 0 ? 'text-rose-600' : c.difference > 0 ? 'text-amber-600' : 'text-emerald-700'}`}>{fmt(c.difference)}</td>
-                <td className="px-3 py-2 text-xs">{c.closedBy?.name || '—'}</td>
-                <td className="px-3 py-2 text-center"><span className={`px-2 py-0.5 rounded-full text-[11px] ${c.status === 'CERRADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{c.status}</span></td>
+                <td className="px-3 py-2 text-xs font-mono">{c.puntoEmision ? `${c.puntoEmision.establecimiento}-${c.puntoEmision.codigo}` : '—'}</td>
+                <td className="px-3 py-2 text-xs">{c.openedBy?.name || c.closedBy?.name || '—'}</td>
+                <td className="px-3 py-2 text-center"><span className={`px-2 py-0.5 rounded-full text-[11px] ${c.status === 'CERRADO' ? 'bg-emerald-100 text-emerald-700' : c.status === 'ABIERTA' ? 'bg-sky-100 text-sky-700' : 'bg-rose-100 text-rose-700'}`}>{c.status}</span></td>
                 <td className="px-3 py-2 text-right"><button onClick={() => setView(c)} className="text-slate-500 bg-transparent border-none cursor-pointer"><HiOutlineEye className="w-5 h-5" /></button></td>
               </tr>
             ))}
-            {!list.filter((c) => c.status !== 'ABIERTA').length && <tr><td colSpan={9} className="px-3 py-8 text-center text-slate-400">Sin cierres registrados</td></tr>}
+            {!historial.length && <tr><td colSpan={10} className="px-3 py-8 text-center text-slate-400">Sin cierres registrados</td></tr>}
           </tbody>
         </table>
       </div>
@@ -232,6 +249,13 @@ export default function CashClosing() {
       <Modal isOpen={!!view} onClose={() => setView(null)} title={`Cierre ${view ? fmtDate(view.date) : ''}`} size="md">
         {view && (
           <div className="space-y-2 text-sm">
+            {(view.puntoEmision || view.openedBy) && (
+              <p className="text-xs text-slate-500">
+                {view.puntoEmision && <span className="font-mono">{serie(view.puntoEmision)}</span>}
+                {view.openedBy?.name && <span>{view.puntoEmision ? ' · ' : ''}Abrió {view.openedBy.name}</span>}
+                {view.closedBy?.name && <span> · Cerró {view.closedBy.name}</span>}
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <div><span className="text-slate-500">Fondo inicial:</span> ${fmt(view.openingBalance)}</div>
               <div><span className="text-slate-500">Efectivo ventas:</span> ${fmt(view.byMethod?.efectivo)}</div>

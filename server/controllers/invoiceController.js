@@ -18,6 +18,7 @@ const {
   runInvoiceRetryQueue,
 } = require('../utils/invoiceRetry');
 const { isPastDocumentDate } = require('../utils/fiscalDocumentDate');
+const { serieDelEmisor, reservarSecuencial } = require('../services/puntoEmision');
 
 function fmtFechaEmision(d) {
   const dt = d ? new Date(d) : new Date();
@@ -59,8 +60,11 @@ exports.emitFromSale = async (req, res) => {
     const { config, p12Buffer, password } = await loadForSigning(req.clinicId);
     const clinic = await Clinic.findById(req.clinicId);
 
+    // Serie del que EMITE: su punto de emisión (caja) o, si la sucursal no usa puntos, la de
+    // la configuración. Sin punto asignado se corta aquí, antes de gastar un número.
+    const serie = await serieDelEmisor(req.clinicId, req.user._id, config);
     // Reservar secuencial atómicamente
-    const secuencial = await config.reserveSequential();
+    const secuencial = await reservarSecuencial(serie, 'factura', config);
 
     // Datos del comprador
     const compradorIdent =
@@ -85,8 +89,8 @@ exports.emitFromSale = async (req, res) => {
       tipoComprobante: 'factura',
       ruc: config.ruc,
       ambiente: config.ambiente,
-      estab: config.establecimiento,
-      puntoEmision: config.puntoEmision,
+      estab: serie.estab,
+      puntoEmision: serie.ptoEmi,
       secuencial,
     });
 
@@ -173,15 +177,15 @@ exports.emitFromSale = async (req, res) => {
         ruc: config.ruc,
         claveAcceso,
         codDoc: '01',
-        estab: config.establecimiento,
-        ptoEmi: config.puntoEmision,
+        estab: serie.estab,
+        ptoEmi: serie.ptoEmi,
         secuencial,
         dirMatriz: config.direccionMatriz,
         agenteRetencion: config.agenteRetencion || undefined,
       },
       infoFactura: {
         fechaEmision: fmtFechaEmision(fechaEmision),
-        dirEstablecimiento: config.direccionEstablecimiento || config.direccionMatriz,
+        dirEstablecimiento: serie.dirEstablecimiento,
         contribuyenteEspecial: config.contribuyenteEspecial || undefined,
         obligadoContabilidad: config.obligadoContabilidad,
         tipoIdentificacionComprador: tipoIdentificacion(compradorIdent),
@@ -217,8 +221,10 @@ exports.emitFromSale = async (req, res) => {
       sale: sale._id,
       claveAcceso,
       secuencial,
-      estab: config.establecimiento,
-      ptoEmi: config.puntoEmision,
+      estab: serie.estab,
+      ptoEmi: serie.ptoEmi,
+      puntoEmision: serie.punto?._id || null,
+      dirEstablecimiento: serie.dirEstablecimiento,
       ambiente: config.ambiente,
       fechaEmision: fmtFechaEmision(fechaEmision),
       estado: 'EN_COLA',
@@ -291,6 +297,10 @@ exports.emitFromSale = async (req, res) => {
         await invoice.save();
       } catch (_) {}
     }
+    // Errores de negocio (p. ej. sin punto de emisión asignado): el motivo tal cual.
+    if (error.status && error.status < 500) {
+      return res.status(error.status).json({ message: error.message, code: error.code });
+    }
     res
       .status(500)
       .json({ message: 'Error al emitir factura', error: error.message });
@@ -299,9 +309,10 @@ exports.emitFromSale = async (req, res) => {
 
 exports.list = async (req, res) => {
   try {
-    const { startDate, endDate, estado, patient, page = 1, limit = 20 } = req.query;
+    const { startDate, endDate, estado, patient, puntoEmision, page = 1, limit = 20 } = req.query;
     const query = { clinic: req.clinicId };
     if (estado) query.estado = estado;
+    if (puntoEmision) query.puntoEmision = puntoEmision;
     if (startDate && endDate) {
       query.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
     }
@@ -318,6 +329,7 @@ exports.list = async (req, res) => {
           select: 'firstName lastName cedula phone',
         },
       })
+      .populate('puntoEmision', 'establecimiento codigo nombre')
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(parseInt(limit));

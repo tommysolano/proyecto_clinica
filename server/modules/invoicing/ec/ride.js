@@ -65,7 +65,7 @@ function buildRideHtml({ invoice, sale, config, clinic, autorizacion }) {
       ${config.nombreComercial ? `<div>${escape(config.nombreComercial)}</div>` : ''}
       <div>RUC: ${escape(config.ruc)}</div>
       <div>Dir. Matriz: ${escape(config.direccionMatriz || '')}</div>
-      <div>Dir. Sucursal: ${escape(config.direccionEstablecimiento || '')}</div>
+      <div>Dir. Sucursal: ${escape(invoice.dirEstablecimiento || config.direccionEstablecimiento || '')}</div>
       <div>Obligado a llevar contabilidad: ${escape(config.obligadoContabilidad || 'NO')}</div>
     </div>
     <div class="col box">

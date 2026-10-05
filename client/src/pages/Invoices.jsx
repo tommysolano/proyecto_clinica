@@ -65,7 +65,15 @@ export default function Invoices() {
 
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState({ startDate: '', endDate: '', estado: '' });
+  const [filter, setFilter] = useState({ startDate: '', endDate: '', estado: '', puntoEmision: '' });
+  // Puntos de emisión (cajas) para filtrar; solo admin/contabilidad los administran.
+  const canVerPuntos = hasRole('admin', 'contabilidad');
+  const [puntos, setPuntos] = useState([]);
+  useEffect(() => {
+    if (!canVerPuntos) return;
+    api.get('/puntos-emision').then((r) => setPuntos(r.data?.puntos || [])).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [detail, setDetail] = useState(null);
   const [anularTarget, setAnularTarget] = useState(null);
   const [motivo, setMotivo] = useState('');
@@ -81,6 +89,7 @@ export default function Invoices() {
       if (filter.startDate) params.startDate = filter.startDate;
       if (filter.endDate) params.endDate = filter.endDate;
       if (filter.estado) params.estado = filter.estado;
+      if (filter.puntoEmision) params.puntoEmision = filter.puntoEmision;
       const res = await api.get('/invoices', { params });
       setInvoices(res.data.invoices || []);
     } catch (err) {
@@ -254,7 +263,7 @@ export default function Invoices() {
       )}
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className={`grid grid-cols-1 gap-3 ${puntos.length ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
           <DateInput
             value={filter.startDate}
             onChange={(e) => setFilter({ ...filter, startDate: e.target.value })}
@@ -277,6 +286,20 @@ export default function Invoices() {
               </option>
             ))}
           </select>
+          {puntos.length > 0 && (
+            <select
+              value={filter.puntoEmision}
+              onChange={(e) => setFilter({ ...filter, puntoEmision: e.target.value })}
+              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
+            >
+              <option value="">Todas las cajas</option>
+              {puntos.map((p) => (
+                <option key={p._id} value={p._id}>
+                  {p.establecimiento}-{p.codigo}{p.nombre ? ` · ${p.nombre}` : ''}{p.usuario?.name ? ` (${p.usuario.name})` : ''}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       </div>
 

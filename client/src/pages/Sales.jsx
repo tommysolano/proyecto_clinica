@@ -142,6 +142,27 @@ export default function Sales() {
   const [downloadingZip, setDownloadingZip] = useState(false);
   const [topProducts, setTopProducts] = useState([]);
   const [showChart, setShowChart] = useState(false);
+  // Punto de venta (caja) del usuario: de él sale la serie de sus facturas. Con puntos en la
+  // sucursal, quien no tiene uno no puede facturar.
+  const [miPunto, setMiPunto] = useState({ usaPuntos: false, punto: null });
+  const [facturarAlGuardar, setFacturarAlGuardar] = useState(false);
+  const puedeFacturarAqui = canInvoice && (!miPunto.usaPuntos || !!miPunto.punto);
+  const serieTexto = miPunto.punto
+    ? `${miPunto.punto.establecimiento}-${miPunto.punto.codigo}${miPunto.punto.nombre ? ` (${miPunto.punto.nombre})` : ''}`
+    : '';
+
+  useEffect(() => {
+    if (!canCreate) return;
+    api.get('/puntos-emision/mio')
+      .then((r) => {
+        const d = r.data || { usaPuntos: false, punto: null };
+        setMiPunto(d);
+        // Quien tiene su propia caja factura al cobrar; el resto, como antes, desde el historial.
+        setFacturarAlGuardar(!!d.punto && canInvoice);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [form, setForm] = useState({
     clientName: 'Consumidor Final',
@@ -685,6 +706,9 @@ export default function Sales() {
       setModalOpen(false);
       fetchSales();
       fetchProducts();
+      // Factura electrónica desde el punto de venta de quien cobra (no bloquea la venta:
+      // si falla, la venta queda registrada y se puede facturar luego).
+      if (facturarAlGuardar && puedeFacturarAqui && res.data?._id) emitirFactura(res.data);
     } catch (err) {
       const data = err.response?.data;
       if (data?.code === 'COST_CENTER_MISMATCH') {
@@ -716,7 +740,15 @@ export default function Sales() {
 
   const facturar = async (sale) => {
     if (sale.invoice) return toast.error('Esta venta ya tiene factura asociada');
-    if (!window.confirm(`¿Emitir factura electrónica para la venta ${sale.saleNumber}?`)) return;
+    if (!puedeFacturarAqui) {
+      return toast.error('No tienes un punto de emisión asignado en esta sucursal. Pide al administrador que te asigne uno en Configuración SRI.');
+    }
+    const conSerie = serieTexto ? ` con la serie ${serieTexto}` : '';
+    if (!window.confirm(`¿Emitir factura electrónica para la venta ${sale.saleNumber}${conSerie}?`)) return;
+    emitirFactura(sale);
+  };
+
+  const emitirFactura = async (sale) => {
     setInvoicingId(sale._id);
     try {
       const res = await api.post(`/invoices/from-sale/${sale._id}`);
@@ -973,9 +1005,13 @@ export default function Sales() {
                         >
                           {s.invoice.estado}
                         </span>
-                      ) : (
-                        <span className="text-slate-400">—</span>
+                      ) : null}
+                      {s.invoice?.estab && (
+                        <span className="block mt-0.5 font-mono text-[10px] text-slate-400">
+                          {s.invoice.estab}-{s.invoice.ptoEmi}-{s.invoice.secuencial}
+                        </span>
                       )}
+                      {!s.invoice && <span className="text-slate-400">—</span>}
                     </td>
                     <td className="px-6 py-3 text-right">
                       <button
@@ -1740,6 +1776,29 @@ export default function Sales() {
               )}
             </div>
           </FormSection>
+
+          {canInvoice && (miPunto.usaPuntos || miPunto.punto) && (
+            puedeFacturarAqui ? (
+              <label className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50/50 px-4 py-3 text-sm text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="w-4 h-4"
+                  checked={facturarAlGuardar}
+                  onChange={(e) => setFacturarAlGuardar(e.target.checked)}
+                />
+                <span>
+                  Emitir factura electrónica al cobrar · serie{' '}
+                  <b className="font-mono">{miPunto.punto.establecimiento}-{miPunto.punto.codigo}</b>
+                  {miPunto.punto.nombre ? ` (${miPunto.punto.nombre})` : ''}
+                </span>
+              </label>
+            ) : (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 m-0">
+                No tienes un punto de emisión (caja) asignado: la venta se registra, pero no podrás facturarla.
+                Pide al administrador que te asigne uno en Configuración SRI.
+              </p>
+            )
+          )}
 
           <div className="flex justify-end gap-3 pt-2">
             <button

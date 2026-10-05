@@ -174,6 +174,8 @@ const saleSchema = new mongoose.Schema(
     // Trazabilidad: quién atendió en cada eslabón del proceso.
     callCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     cashier: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Punto de venta (caja) de quien registró la venta: su cierre de caja la cuenta.
+    puntoEmision: { type: mongoose.Schema.Types.ObjectId, ref: 'PuntoEmision', default: null, index: true },
     doctor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     nurse: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     // Personal (doctor/enfermero/otro) que recomendó la compra al paciente.

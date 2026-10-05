@@ -153,6 +153,7 @@ app.use('/api/products', require('./routes/products'));
 app.use('/api/inventory', require('./routes/inventory'));
 app.use('/api/sales', require('./routes/sales'));
 app.use('/api/invoicing-config', require('./routes/invoicingConfig'));
+app.use('/api/puntos-emision', require('./routes/puntosEmision'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/reports', require('./routes/reports'));

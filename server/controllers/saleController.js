@@ -14,6 +14,7 @@ const { calculateSaleLine, summarizeSaleTaxes } = require('../utils/tax');
 const { assertNotPastDocumentDate } = require('../utils/fiscalDocumentDate');
 const { invoiceDate } = require('../utils/dates');
 const { emitToClinic } = require('../realtime');
+const { puntoDelUsuario } = require('../services/puntoEmision');
 
 /**
  * Precio unitario de una línea de venta.
@@ -198,6 +199,8 @@ exports.createSale = async (req, res) => {
 
     {
       const saleWarnings = [];
+      // Caja (punto de venta) de quien registra: su cierre de caja cuenta esta venta.
+      const puntoVenta = await puntoDelUsuario(req.clinicId, req.user._id);
       const txSaleId = await runInTransaction(async (session) => {
         const saleDate = req.body.date ? new Date(req.body.date) : new Date();
         // Una VENTA no se registra con fecha pasada: el comprobante lo emitimos nosotros y su
@@ -470,6 +473,7 @@ exports.createSale = async (req, res) => {
           clientZone,
           callCenter: req.body.callCenter || undefined,
           cashier: req.body.cashier || (req.role === 'cajero' ? req.user._id : undefined),
+          puntoEmision: puntoVenta?._id || null,
           doctor: req.body.doctor || undefined,
           nurse: req.body.nurse || undefined,
           recommendedBy: req.body.recommendedBy || undefined,

@@ -3,6 +3,7 @@ const PurchaseInvoice = require('../models/PurchaseInvoice');
 const Supplier = require('../models/Supplier');
 const Clinic = require('../models/Clinic');
 const { loadForSigning } = require('./invoicingConfigController');
+const { seriesDisponibles, puntoDelUsuario } = require('../services/puntoEmision');
 const { generarClaveAcceso } = require('../modules/invoicing/ec/accessKey');
 const { buildRetentionXml } = require('../modules/invoicing/ec/xmlBuilder');
 const { signXml } = require('../modules/invoicing/ec/xadesSigner');
@@ -99,11 +100,13 @@ exports.emitFromPurchase = async (req, res) => {
 
     // TAREA 4 — serie multi-sucursal: el usuario elige establecimiento y punto de emisión
     // (por defecto los de la config). El secuencial es AUTOMÁTICO por serie (no se digita).
-    const estab = String(req.body?.estab || config.establecimiento || '001');
-    const ptoEmi = String(req.body?.ptoEmi || config.puntoEmision || '001');
-    const series = config.availableSeries();
+    // Por defecto, el punto de emisión de quien emite (si tiene uno); si no, el de la config.
+    const miPunto = await puntoDelUsuario(req.clinicId, req.user._id);
+    const estab = String(req.body?.estab || miPunto?.establecimiento || config.establecimiento || '001');
+    const ptoEmi = String(req.body?.ptoEmi || miPunto?.codigo || config.puntoEmision || '001');
+    const series = await seriesDisponibles(req.clinicId, config);
     if (!series.some((s) => s.estab === estab && (s.puntosEmision || []).includes(ptoEmi))) {
-      return res.status(400).json({ message: `La serie ${estab}-${ptoEmi} no está configurada. Agréguela en Facturación electrónica → Establecimientos y puntos de emisión.` });
+      return res.status(400).json({ message: `La serie ${estab}-${ptoEmi} no está configurada. Agréguela en Configuración SRI → Puntos de emisión.` });
     }
 
     // Periodo fiscal: manda lo que envíe la emisión; si no viene, el que se eligió en el
@@ -305,11 +308,21 @@ exports.config = async (req, res) => {
     const InvoicingConfig = require('../models/InvoicingConfig');
     const cfg = await InvoicingConfig.findOne({ clinic: req.clinicId });
     if (!cfg) return res.json({ configured: false, series: [], defaultEstab: '001', defaultPtoEmi: '001' });
+    const series = await seriesDisponibles(req.clinicId, cfg);
+    const miPunto = await puntoDelUsuario(req.clinicId, req.user._id);
+    // Por defecto: el punto del usuario; si no tiene, el par de la config si sigue disponible,
+    // y si no, la primera serie de la lista.
+    let defaultEstab = miPunto?.establecimiento || cfg.establecimiento || '001';
+    let defaultPtoEmi = miPunto?.codigo || cfg.puntoEmision || '001';
+    if (!series.some((s) => s.estab === defaultEstab && s.puntosEmision.includes(defaultPtoEmi)) && series[0]) {
+      defaultEstab = series[0].estab;
+      defaultPtoEmi = series[0].puntosEmision[0];
+    }
     res.json({
       configured: true,
-      series: cfg.availableSeries(),
-      defaultEstab: cfg.establecimiento || '001',
-      defaultPtoEmi: cfg.puntoEmision || '001',
+      series,
+      defaultEstab,
+      defaultPtoEmi,
       ambiente: cfg.ambiente,
     });
   } catch (e) {

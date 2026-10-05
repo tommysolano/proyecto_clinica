@@ -5,6 +5,7 @@ const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOp
 const { getAccount } = require('../utils/accountMap');
 const Clinic = require('../models/Clinic');
 const { loadForSigning } = require('./invoicingConfigController');
+const { serieDelEmisor, reservarSecuencial } = require('../services/puntoEmision');
 const { generarClaveAcceso } = require('../modules/invoicing/ec/accessKey');
 const { buildNotaCreditoXml } = require('../modules/invoicing/ec/xmlBuilder');
 const { signXml } = require('../modules/invoicing/ec/xadesSigner');
@@ -237,11 +238,13 @@ exports.emit = async (req, res) => {
 
     const { config, p12Buffer, password } = await loadForSigning(req.clinicId);
     const clinic = await Clinic.findById(req.clinicId);
-    const secuencial = await config.reserveCreditNoteSequential();
+    // Sale del punto de emisión de QUIEN la emite (no del de la factura original).
+    const serie = await serieDelEmisor(req.clinicId, req.user._id, config);
+    const secuencial = await reservarSecuencial(serie, 'notaCredito', config);
     const fechaEmision = note.fechaEmision || new Date();
     const claveAcceso = generarClaveAcceso({
       fechaEmision, tipoComprobante: 'notaCredito', ruc: config.ruc, ambiente: config.ambiente,
-      estab: config.establecimiento, puntoEmision: config.puntoEmision, secuencial,
+      estab: serie.estab, puntoEmision: serie.ptoEmi, secuencial,
     });
 
     const subtotal = +Number(note.subtotal || 0).toFixed(2);
@@ -271,11 +274,11 @@ exports.emit = async (req, res) => {
       infoTributaria: {
         ambiente: config.ambiente, tipoEmision: '1', razonSocial: config.razonSocial,
         nombreComercial: config.nombreComercial || undefined, ruc: config.ruc, claveAcceso,
-        estab: config.establecimiento, ptoEmi: config.puntoEmision, secuencial, dirMatriz: config.direccionMatriz,
+        estab: serie.estab, ptoEmi: serie.ptoEmi, secuencial, dirMatriz: config.direccionMatriz,
       },
       infoNotaCredito: {
         fechaEmision: fmtFecha(fechaEmision),
-        dirEstablecimiento: config.direccionEstablecimiento || config.direccionMatriz,
+        dirEstablecimiento: serie.dirEstablecimiento,
         tipoIdentificacionComprador: invoice.tipoIdentificacionComprador,
         razonSocialComprador: invoice.razonSocialComprador,
         identificacionComprador: invoice.identificacionComprador,
@@ -294,10 +297,11 @@ exports.emit = async (req, res) => {
       infoAdicional: [clinic ? { nombre: 'Establecimiento', valor: clinic.name } : null].filter(Boolean),
     };
 
-    note.estab = config.establecimiento;
-    note.ptoEmi = config.puntoEmision;
+    note.estab = serie.estab;
+    note.ptoEmi = serie.ptoEmi;
+    note.puntoEmision = serie.punto?._id || null;
     note.secuencial = secuencial;
-    note.serie = `${config.establecimiento}-${config.puntoEmision}-${secuencial}`;
+    note.serie = `${serie.estab}-${serie.ptoEmi}-${secuencial}`;
     note.claveAcceso = claveAcceso;
     note.estado = 'EN_COLA';
     await note.save();
@@ -333,6 +337,10 @@ exports.emit = async (req, res) => {
     await note.save();
     res.json(note);
   } catch (error) {
+    // Error de negocio previo al envío (p. ej. sin punto de emisión): la nota queda como estaba.
+    if (error.status && error.status < 500) {
+      return res.status(error.status).json({ message: error.message, code: error.code });
+    }
     if (note) { note.estado = 'ERROR'; try { await note.save(); } catch (_) {} }
     res.status(500).json({ message: 'Error al emitir nota de crédito', error: error.message });
   }

@@ -19,6 +19,8 @@ const creditDebitNoteSchema = new mongoose.Schema(
     // Propios
     estab: String,
     ptoEmi: String,
+    // Punto de emisión (caja) de quien la emitió electrónicamente; null = serie de la config.
+    puntoEmision: { type: mongoose.Schema.Types.ObjectId, ref: 'PuntoEmision', default: null },
     secuencial: String,
     serie: String,
     claveAcceso: { type: String, index: true },

@@ -66,6 +66,10 @@ const invoiceSchema = new mongoose.Schema(
     secuencial: { type: String, required: true },
     estab: { type: String, required: true },
     ptoEmi: { type: String, required: true },
+    // Punto de emisión (caja) desde el que se emitió; null = serie única de la config.
+    puntoEmision: { type: mongoose.Schema.Types.ObjectId, ref: 'PuntoEmision', default: null, index: true },
+    // Dirección del establecimiento con la que se firmó (la del punto o la de la config): el RIDE la reimprime.
+    dirEstablecimiento: { type: String, default: '' },
     ambiente: { type: String, enum: ['1', '2'], required: true },
     fechaEmision: { type: String, required: true }, // DD/MM/YYYY
     // Estados

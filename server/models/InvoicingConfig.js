@@ -86,13 +86,24 @@ const invoicingConfigSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+/**
+ * Secuencial de la serie única de la config (sucursales sin puntos de emisión; con puntos,
+ * cada punto numera solo: services/puntoEmision). `$inc` atómico: antes era leer-sumar-guardar
+ * y dos cajas facturando a la vez podían sacar el mismo número.
+ */
 invoicingConfigSchema.methods.reserveSequential = async function () {
-  const seq = String(this.secuencial).padStart(9, '0');
-  this.secuencial += 1;
-  this.invoiceCount += 1;
-  this.lastInvoiceDate = new Date();
-  await this.save();
-  return seq;
+  await this.constructor.updateOne(
+    { _id: this._id, secuencial: { $exists: false } },
+    { $set: { secuencial: 1 } }
+  );
+  const antes = await this.constructor.findOneAndUpdate(
+    { _id: this._id },
+    { $inc: { secuencial: 1, invoiceCount: 1 }, $set: { lastInvoiceDate: new Date() } },
+    { new: false }
+  );
+  const reservado = Number(antes.secuencial) || 1;
+  this.secuencial = reservado + 1;
+  return String(reservado).padStart(9, '0');
 };
 
 invoicingConfigSchema.methods.reserveRetentionSequential = async function () {
@@ -154,11 +165,20 @@ invoicingConfigSchema.statics.reserveRetentionSeries = async function (clinicId,
 };
 
 invoicingConfigSchema.methods.reserveCreditNoteSequential = async function () {
-  const seq = String(this.creditNoteSequential || 1).padStart(9, '0');
-  this.creditNoteSequential = (this.creditNoteSequential || 1) + 1;
-  this.creditNoteCount = (this.creditNoteCount || 0) + 1;
-  await this.save();
-  return seq;
+  // Configs antiguas sin el campo: sembrarlo en 1 antes del $inc (si no, el $inc lo deja en 1
+  // y el siguiente volvería a sacar el 1).
+  await this.constructor.updateOne(
+    { _id: this._id, creditNoteSequential: { $exists: false } },
+    { $set: { creditNoteSequential: 1 } }
+  );
+  const antes = await this.constructor.findOneAndUpdate(
+    { _id: this._id },
+    { $inc: { creditNoteSequential: 1, creditNoteCount: 1 } },
+    { new: false }
+  );
+  const reservado = Number(antes.creditNoteSequential) || 1;
+  this.creditNoteSequential = reservado + 1;
+  return String(reservado).padStart(9, '0');
 };
 
 invoicingConfigSchema.methods.isComplete = function () {

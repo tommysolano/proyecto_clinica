@@ -12,6 +12,9 @@ const cashClosingSchema = new mongoose.Schema(
     // Ciclo de la caja: se ABRE (apertura) con un fondo inicial y luego se CIERRA.
     openedAt: { type: Date },
     openedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Punto de venta (caja) de esta sesión. Con puntos, cada cajero/administrador abre y cierra
+    // SU caja: el esperado cuenta solo sus ventas y sus movimientos de Caja. null = caja única.
+    puntoEmision: { type: mongoose.Schema.Types.ObjectId, ref: 'PuntoEmision', default: null, index: true },
     closedAt: { type: Date },
     openingBalance: { type: Number, default: 0 },   // fondo de caja inicial
     expectedCash: { type: Number, default: 0 },      // esperado = fondo + ventas efectivo
