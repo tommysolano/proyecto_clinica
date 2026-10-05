@@ -631,6 +631,8 @@ export default function Appointments() {
   const [modalOpen, setModalOpen] = useState(false);
   const [detailModal, setDetailModal] = useState(null);
   const [editing, setEditing] = useState(null);
+  // Día y hora que tenía la cita al abrir el lápiz (ver `fechaMinForm`).
+  const [editOriginal, setEditOriginal] = useState(null);
   const [form, setForm] = useState(emptyForm);
   // Para administración/caja contiene todas las sucursales de la organización;
   // para los demás roles se conserva el alcance de sus asignaciones.
@@ -1276,6 +1278,23 @@ export default function Appointments() {
     !!editingAppointment?.doctor &&
     (editingAppointment.status === 'completada' || !!editingAppointment.consultationEndedAt);
 
+  /**
+   * EDITAR UNA CITA QUE YA PASÓ (oct-2026). El «no antes de hoy» es para
+   * AGENDAR o MOVER una cita, no para corregirla: a quien se le olvidó poner el
+   * valor o los servicios y vuelve al día siguiente, el `min` de hoy le
+   * invalidaba la fecha que la cita ya tenía —el navegador no dejaba guardar— y
+   * la única salida era moverla de día y hora, que es justo lo que no había que
+   * tocar. Ahora el día y la hora ORIGINALES siempre valen; cambiarlos a otro
+   * momento pasado sigue bloqueado, aquí y en el servidor (`updateAppointment`).
+   */
+  const hoyEc = todayEc();
+  const conservaFecha = !!editing && !!editOriginal && form.date === editOriginal.date;
+  const fechaMinForm = conservaFecha ? undefined : hoyEc;
+  const horaMinForm =
+    form.date === hoyEc && !(conservaFecha && form.startTime === editOriginal.startTime)
+      ? nowEcHHMM()
+      : undefined;
+
   const openNew = () => {
     setEditing(null);
     setDerivationOf(null);
@@ -1318,6 +1337,19 @@ export default function Appointments() {
     if (!apt) return;
     setModalOpen(false);
     setAssignModal({ appointment: apt });
+  };
+
+  /**
+   * Del lápiz a «Cambiar servicio y valor»: el valor de una cita existente no se
+   * edita en este formulario (va por su puerta auditada, válida en cualquier
+   * estado y fecha), y quien abría el lápiz para ponerlo no lo encontraba.
+   * Mismo motivo que arriba para cerrar el formulario.
+   */
+  const abrirValorDesdeEdicion = () => {
+    const apt = appointments.find((a) => String(a._id) === String(editing));
+    if (!apt) return;
+    setModalOpen(false);
+    setServiceValueModal(apt);
   };
 
   /**
@@ -1373,6 +1405,7 @@ export default function Appointments() {
       return;
     }
     setEditing(apt._id);
+    setEditOriginal({ date: apt.date ? apt.date.split('T')[0] : '', startTime: apt.startTime || '' });
     setForm({
       patient: apt.patient?._id || '',
       doctor: apt.doctor?._id || '',
@@ -3779,7 +3812,7 @@ export default function Appointments() {
               <DateInput
                 name="date"
                 value={form.date}
-                min={todayEc()}
+                min={fechaMinForm}
                 onChange={handleChange}
                 required
                 className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
@@ -3793,7 +3826,7 @@ export default function Appointments() {
                 name="startTime"
                 value={form.startTime}
                 slotMinutes={slotMinutes}
-                min={form.date === todayEc() ? nowEcHHMM() : undefined}
+                min={horaMinForm}
                 onChange={handleChange}
                 required
                 className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
@@ -3909,6 +3942,25 @@ export default function Appointments() {
                 className="px-3 py-1.5 rounded-lg bg-white border border-sky-300 text-sky-800 text-xs font-semibold cursor-pointer hover:bg-sky-100"
               >
                 Asignar atención y suero
+              </button>
+            </div>
+          )}
+
+          {/* El VALOR de una cita ya agendada (también de días pasados) va por
+              «Cambiar servicio y valor»; desde aquí se llega sin buscarlo. */}
+          {editing && canCharge && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3 space-y-2">
+              <p className="text-xs text-emerald-900 m-0">
+                <b>¿Falta el valor o fue canje?</b> Se pone en <b>Cambiar servicio y valor</b>,
+                sin mover la fecha ni la hora de la cita, aunque ya haya pasado.
+                Se guarda por su cuenta: si has cambiado algo aquí, guárdalo antes.
+              </p>
+              <button
+                type="button"
+                onClick={abrirValorDesdeEdicion}
+                className="px-3 py-1.5 rounded-lg bg-white border border-emerald-300 text-emerald-800 text-xs font-semibold cursor-pointer hover:bg-emerald-100"
+              >
+                Cambiar servicio y valor
               </button>
             </div>
           )}

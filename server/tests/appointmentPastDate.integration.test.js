@@ -196,6 +196,17 @@ test('updateAppointment bloquea reagendar al pasado (día u hora) pero permite e
   );
   assert.equal(editSameDay.statusCode, 200, JSON.stringify(editSameDay.payload));
 
+  // El lápiz reenvía SIEMPRE la fecha y la hora que ya tenía: corregir servicios
+  // de una cita de ayer no puede exigir moverla de día ni de hora.
+  const editFullForm = await H.runController(
+    appt.updateAppointment,
+    H.mockReq(clinicId, userId, { date: YESTERDAY, startTime: '10:00', reason: 'Se olvidó el servicio' }, { params: { id: String(existing._id) }, role: 'cajero' }),
+  );
+  assert.equal(editFullForm.statusCode, 200, JSON.stringify(editFullForm.payload));
+  const tras = await Appointment.findById(existing._id).lean();
+  assert.equal(tras.startTime, '10:00');
+  assert.equal(ymd(tras.date), YESTERDAY);
+
   // Reagendar a futuro → permitido.
   const reschedFuture = await H.runController(
     appt.updateAppointment,
