@@ -373,7 +373,9 @@ function startFinancialSyncJob(leaderOnly) {
     } catch (error) { console.error('[contifico-payroll-sync] BLOQUEADO:', error.stack || error.message); }
   });
   setTimeout(run, 30 * 1000);
-  setInterval(run, 15 * 60 * 1000);
+  // Cada hora (antes 15 min): el ciclo comparte proceso y base con las pantallas
+  // de la clínica, y una hora de desfase con Contífico es suficiente.
+  setInterval(run, 60 * 60 * 1000);
 }
 
 module.exports = { fetchWindow, ledgerMaps, syncMonth, syncFinancialReports, startFinancialSyncJob, monthRange, ecToday };
