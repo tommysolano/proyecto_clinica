@@ -132,7 +132,7 @@ const INVENTORY_CATEGORY_POPULATE = {
 
 exports.getProducts = async (req, res) => {
   try {
-    const { search, category, categoria, inventoryCategory, lowStock } = req.query;
+    const { search, category, categoria, inventoryCategory, lowStock, bookable } = req.query;
     // Catálogo COMPARTIDO por toda la organización: un producto no pertenece a una
     // sola sucursal. `availableInClinics` decide en qué sucursales se ofrece: vacío
     // (o ausente) = disponible en TODAS; con clínicas = solo en esas. Por eso el
@@ -165,14 +165,24 @@ exports.getProducts = async (req, res) => {
     // Filtro principal por categoría contable; `categoria` (texto) queda como legacy.
     if (inventoryCategory) query.inventoryCategory = inventoryCategory;
     if (categoria) query.categoria = categoria;
+    // Solo lo que se puede ofrecer a un paciente (servicios, programas e ilimitados).
+    // Lo pide el chat: antes descargaba el catálogo ENTERO —insumos incluidos, que
+    // son la mayoría— para quedarse con los servicios en el navegador. Con internet
+    // débil eso retrasaba todo lo demás que la bandeja estaba cargando.
+    if (bookable === 'true') {
+      query.$and.push({ $or: [{ category: { $in: ['servicio', 'programa'] } }, { unlimited: true }] });
+    }
     if (lowStock === 'true') {
       query.unlimited = { $ne: true };
       query.$expr = { $lte: ['$stock', '$minStock'] };
     }
 
+    // `lean`: el modelo no tiene virtuales ni toJSON propio, así que el JSON es el
+    // mismo y nos ahorramos hidratar cientos de documentos de mongoose.
     const products = await Product.find(query)
       .populate(INVENTORY_CATEGORY_POPULATE)
-      .sort({ name: 1 });
+      .sort({ name: 1 })
+      .lean();
     res.json(products);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener productos' });

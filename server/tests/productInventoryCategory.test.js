@@ -164,3 +164,18 @@ test('migración dry-run no escribe nada', async () => {
   const p1 = await Product.findOne({ clinic: clinicId, code: 'P1' });
   assert.equal(p1.inventoryCategory, null, 'dry-run no asigna');
 });
+
+test('getProducts con bookable=true trae solo lo que se ofrece al paciente (servicios, programas e ilimitados)', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const cat = await makeCategory(clinicId, { name: 'Ampollas' });
+  await H.runController(product.createProduct, H.mockReq(clinicId, userId, baseInsumo({ name: 'Jeringa', inventoryCategory: String(cat._id) })));
+  await H.runController(product.createProduct, H.mockReq(clinicId, userId, { name: 'Consulta', category: 'servicio', salePrice: 20, unlimited: true }));
+  await H.runController(product.createProduct, H.mockReq(clinicId, userId, { name: 'Paquete', category: 'programa', salePrice: 100, unlimited: true }));
+
+  const todos = await H.runController(product.getProducts, H.mockReq(clinicId, userId, {}, { query: {} }));
+  assert.equal(todos.payload.length, 3, 'sin el filtro, el catálogo completo de siempre');
+
+  const r = await H.runController(product.getProducts, H.mockReq(clinicId, userId, {}, { query: { bookable: 'true' } }));
+  assert.equal(r.statusCode, 200);
+  assert.deepEqual(r.payload.map((p) => p.name).sort(), ['Consulta', 'Paquete'], 'el insumo no viaja al chat');
+});

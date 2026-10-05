@@ -78,18 +78,51 @@ export default function NotificationBell() {
     }
   };
 
+  /**
+   * Recarga AGRUPADA y en pausa con la pestaña oculta. La campana vive en la
+   * cabecera de TODAS las pantallas y escucha cada cambio de cita de la sucursal:
+   * con una mañana movida eran decenas de recargas seguidas por pestaña abierta,
+   * en la conexión y el procesador de cada equipo. Los eventos que llegan juntos
+   * ahora son una sola recarga, y una pestaña oculta se pone al día al volver.
+   */
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const timerRef = useRef(null);
+  const staleRef = useRef(false);
+  const scheduleLoad = () => {
+    clearTimeout(timerRef.current);
+    if (document.visibilityState === 'hidden') {
+      staleRef.current = true;
+      return;
+    }
+    timerRef.current = setTimeout(() => loadRef.current(), 500);
+  };
+
   // Carga al montar (y al cambiar de sucursal) + sondeo de respaldo.
   useEffect(() => {
     load();
-    const t = setInterval(load, 3 * 60 * 1000);
-    return () => clearInterval(t);
+    const t = setInterval(() => {
+      if (document.visibilityState === 'hidden') staleRef.current = true;
+      else load();
+    }, 3 * 60 * 1000);
+    const onVisible = () => {
+      if (document.visibilityState === 'hidden' || !staleRef.current) return;
+      staleRef.current = false;
+      loadRef.current();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(t);
+      clearTimeout(timerRef.current);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clinicId]);
 
   // El `clinicId` en las dependencias no es decorativo: sin él el manejador se
   // quedaría con el closure del primer render (sin sucursal aún) y `load` saldría
   // siempre por el early-return, dejando el aviso en vivo muerto.
-  useSocketEvent('notification:new', load, [clinicId]);
+  useSocketEvent('notification:new', scheduleLoad, [clinicId]);
 
   /**
    * CUANDO UN COMPAÑERO RECLAMA UNA CITA, EL AVISO SE APAGA EN EL MOMENTO.
@@ -99,7 +132,7 @@ export default function NotificationBell() {
    * seguiría sonando por un paciente que ya está en manos de otro hasta el
    * sondeo de respaldo (3 min).
    */
-  useSocketEvent('appointment:claimed', load, [clinicId]);
+  useSocketEvent('appointment:claimed', scheduleLoad, [clinicId]);
 
   /**
    * CUANDO UNA CITA YA NO ESPERA A NADIE, SU AVISO SE APAGA EN EL MOMENTO.
@@ -109,7 +142,7 @@ export default function NotificationBell() {
    * avisa por este evento. Sin escucharlo, el contador bajaría solo en el
    * sondeo de respaldo (3 min) y la campana seguiría "aturdiendo" ese rato.
    */
-  useSocketEvent('appointment:updated', load, [clinicId]);
+  useSocketEvent('appointment:updated', scheduleLoad, [clinicId]);
 
   // Cerrar al hacer clic fuera o con Escape (mismo comportamiento que el resto
   // de menús flotantes de la app).

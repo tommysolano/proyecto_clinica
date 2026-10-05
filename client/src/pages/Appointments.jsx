@@ -81,6 +81,22 @@ const statusColors = {
  * Ordena cronológicamente para verlas como un HORARIO, no en el orden en que se
  * agendaron.
  */
+/**
+ * Cronómetro de la cita: cuenta desde que empezó EL TURNO en curso, no desde que
+ * el primer profesional abrió la consulta. Lleva su propio tic de un segundo: así
+ * solo se repinta este numerito y no la agenda entera.
+ */
+function CronometroTurno({ apt }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const start = inicioDeMiTurno(apt);
+  const s = start ? Math.max(0, Math.floor((now - start) / 1000)) : 0;
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
 function filtrarEnCliente(lista, filter) {
   return (lista || [])
     .filter((apt) => {
@@ -1122,18 +1138,60 @@ export default function Appointments() {
    */
   const fetchRef = useRef(fetchAppointments);
   fetchRef.current = fetchAppointments;
-  useSocketEvent('appointment:created', () => fetchRef.current());
-  useSocketEvent('appointment:updated', () => fetchRef.current());
-  useSocketEvent('appointment:deleted', () => fetchRef.current());
+  /**
+   * RECARGA AGRUPADA Y EN PAUSA CON LA PESTAÑA OCULTA.
+   *
+   * Cada cambio de CUALQUIER cita de la sucursal recargaba la agenda entera en
+   * TODAS las pantallas abiertas, una vez por evento: un reagendamiento masivo o
+   * una mañana movida eran decenas de recargas seguidas, y en una PC modesta con
+   * internet débil la agenda no terminaba de asentarse. Ahora los eventos que
+   * llegan juntos se convierten en UNA recarga, y una pestaña oculta no recarga:
+   * se pone al día al volver a ella.
+   */
+  const refetchTimerRef = useRef(null);
+  const staleWhileHiddenRef = useRef(false);
+  const scheduleRefetch = () => {
+    clearTimeout(refetchTimerRef.current);
+    if (document.visibilityState === 'hidden') {
+      staleWhileHiddenRef.current = true;
+      return;
+    }
+    refetchTimerRef.current = setTimeout(() => fetchRef.current(), 400);
+  };
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'hidden' || !staleWhileHiddenRef.current) return;
+      staleWhileHiddenRef.current = false;
+      fetchRef.current();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      clearTimeout(refetchTimerRef.current);
+    };
+  }, []);
+  useSocketEvent('appointment:created', scheduleRefetch);
+  useSocketEvent('appointment:updated', scheduleRefetch);
+  useSocketEvent('appointment:deleted', scheduleRefetch);
   // BLOQUEOS: creado/editado/borrado desde Bloques o por marketing → recargar
   // los del período visible sin esperar a que el usuario refresque a mano.
-  useSocketEvent('timeblock:changed', () => fetchRef.current());
+  useSocketEvent('timeblock:changed', scheduleRefetch);
 
-  // Tick global del cronómetro (1s)
+  /**
+   * Reloj del aviso de «tiempo de consulta finalizado».
+   *
+   * Antes era un tic de UN SEGUNDO para todos los roles, y cada tic repintaba la
+   * agenda entera (miles de líneas, todas las citas del día): en una PC modesta
+   * la página no paraba de trabajar aunque nadie la tocara. El aviso solo existe
+   * para quien lleva cronómetro (doctores, no enfermería), y una precisión de
+   * 15 s le sobra. El cronómetro que se ve dentro del aviso cuenta por su cuenta
+   * (ver CronometroTurno) sin arrastrar a la página.
+   */
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
+    if (!isDoctor || isNurse) return undefined;
+    const id = setInterval(() => setNow(Date.now()), 15 * 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [isDoctor, isNurse]);
 
   /**
    * Aviso de «tiempo de consulta finalizado».
@@ -2199,20 +2257,6 @@ export default function Appointments() {
       const nd = new Date(y, m - 1, d + delta);
       return toYmd(nd);
     });
-  };
-
-  // Cronómetro de la cita: cuenta desde que empezó EL TURNO en curso, no desde
-  // que el primer profesional abrió la consulta.
-  const elapsedSeconds = (apt) => {
-    const start = inicioDeMiTurno(apt);
-    if (!start) return 0;
-    return Math.max(0, Math.floor((now - start) / 1000));
-  };
-
-  const fmtSeconds = (s) => {
-    const m = Math.floor(s / 60);
-    const sec = s % 60;
-    return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
   };
 
   return (
@@ -4554,7 +4598,7 @@ export default function Appointments() {
             <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-amber-800 text-sm">
               Tiempo transcurrido:{' '}
               <span className="font-mono font-bold">
-                {fmtSeconds(elapsedSeconds(timeUpModal))}
+                <CronometroTurno apt={timeUpModal} />
               </span>
             </div>
             <div className="flex justify-end gap-2 pt-2">

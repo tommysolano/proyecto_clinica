@@ -115,7 +115,7 @@ test('el alta manual de una oportunidad se queda con el anuncio del chat', async
 
 // ─────────── 2. la bandeja entra por páginas, los contadores no ───────────
 
-test('la bandeja devuelve 25 chats por página y el total REAL', async () => {
+test('la bandeja devuelve 15 chats por página y el total REAL', async () => {
   const clinicId = new H.mongoose.Types.ObjectId();
   const userId = new H.mongoose.Types.ObjectId();
   const base = Date.now();
@@ -130,15 +130,15 @@ test('la bandeja devuelve 25 chats por página y el total REAL', async () => {
   const p1 = await H.runController(
     chat.listConversations, H.mockReq(clinicId, userId, {}, { role: 'admin', query: {} })
   );
-  assert.equal(p1.payload.items.length, 25, 'de entrada, una página');
+  assert.equal(p1.payload.items.length, 15, 'de entrada, una página');
   assert.equal(p1.payload.total, 40, 'pero dice cuántos hay de verdad');
   assert.equal(p1.payload.hasMore, true);
 
   const p2 = await H.runController(
     chat.listConversations,
-    H.mockReq(clinicId, userId, {}, { role: 'admin', query: { skip: 25, limit: 25 } })
+    H.mockReq(clinicId, userId, {}, { role: 'admin', query: { skip: 15, limit: 25 } })
   );
-  assert.equal(p2.payload.items.length, 15);
+  assert.equal(p2.payload.items.length, 25);
   assert.equal(p2.payload.hasMore, false);
   // Sin solapamiento: las dos páginas son 40 chats distintos.
   const ids = new Set([...p1.payload.items, ...p2.payload.items].map((c) => String(c._id)));

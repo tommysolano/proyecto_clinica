@@ -64,7 +64,7 @@ import ServiceItemPicker from '../components/ServiceItemPicker';
 import TagEditor from '../components/TagEditor';
 import SuggestInput from '../components/SuggestInput';
 import WhatsappButtons from '../components/WhatsappButtons';
-import { fmtDate, fmtDateTime, todayEc, nowEcHHMM } from '../utils/date';
+import { fmtDate, fmtDateTime, todayEc, nowEcHHMM, formatEc, ecDayKey } from '../utils/date';
 import { imageFromClipboard, imageFileToDataUrl, pastedImageName } from '../utils/chatMedia';
 import useVoiceRecorder, { formatDuration } from '../hooks/useVoiceRecorder';
 import { useWhatsappCallContext } from '../context/WhatsappCallContext';
@@ -123,13 +123,11 @@ function timeAgo(date) {
 
 function formatTime(date) {
   if (!date) return '';
-  return new Date(date).toLocaleTimeString('es-EC', { timeZone: 'America/Guayaquil', hour: '2-digit', minute: '2-digit' });
+  return formatEc(date, 'es-EC', { hour: '2-digit', minute: '2-digit' });
 }
 
 // Clave YYYY-MM-DD en hora de Ecuador, para agrupar mensajes por día.
-function ecDateKey(date) {
-  return new Date(date).toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' });
-}
+const ecDateKey = ecDayKey;
 
 // Etiqueta del separador de día en el chat, estilo WhatsApp: "Hoy", "Ayer", el
 // día de la semana ("Sábado", "Miércoles") si fue en los últimos 7 días, o la
@@ -144,14 +142,9 @@ function formatDateDivider(date) {
   // Diferencia en días entre fechas EC (los keys YYYY-MM-DD se parsean a UTC 00:00).
   const diffDays = Math.round((Date.parse(todayKey) - Date.parse(key)) / (24 * 60 * 60 * 1000));
   if (diffDays > 1 && diffDays < 7) {
-    return new Date(date).toLocaleDateString('es-EC', { timeZone: 'America/Guayaquil', weekday: 'long' });
+    return formatEc(date, 'es-EC', { weekday: 'long' });
   }
-  return new Date(date).toLocaleDateString('es-EC', {
-    timeZone: 'America/Guayaquil',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-  });
+  return formatEc(date, 'es-EC', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
 function DateDivider({ date }) {
@@ -277,13 +270,8 @@ function humanizeRemaining(ms) {
 // para que "cerrada" venga siempre con el CUÁNDO — en el hilo solo se ve la hora
 // y un mensaje de hace dos semanas parece de anoche.
 function formatDateTimeEc(date) {
-  return new Date(date).toLocaleString('es-EC', {
-    timeZone: 'America/Guayaquil',
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
+  return formatEc(date, 'es-EC', {
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
   });
 }
 
@@ -496,12 +484,27 @@ export default function Chats() {
   // Recarga de la lista AGRUPADA: en horas punta entran varios mensajes por
   // segundo y cada uno pedía la lista entera. Se junta todo en una sola petición
   // poco después del último evento, que es lo que de verdad ve el agente.
+  //
+  // Con la pestaña OCULTA no se recarga nada: quien tiene Vikingo abierto en
+  // varias pestañas (o minimizado) pagaba una recarga por pestaña y por mensaje,
+  // en su conexión y en su procesador. Al volver a la pestaña se pone todo al día
+  // de una vez (ver el efecto de focus/visibilitychange).
   const convRefreshTimer = useRef(null);
   const refreshConversations = () => {
     clearTimeout(convRefreshTimer.current);
-    convRefreshTimer.current = setTimeout(() => loadConversations(paramsRef.current), 400);
+    if (document.visibilityState === 'hidden') return;
+    convRefreshTimer.current = setTimeout(() => loadConversations(paramsRef.current), 500);
   };
   useEffect(() => () => clearTimeout(convRefreshTimer.current), []);
+  // Los contadores del riel, igual: agrupados (son cinco conteos en la base) y
+  // en pausa con la pestaña oculta.
+  const unreadTimer = useRef(null);
+  const refreshUnreadCounts = () => {
+    clearTimeout(unreadTimer.current);
+    if (document.visibilityState === 'hidden') return;
+    unreadTimer.current = setTimeout(() => loadUnreadCounts(), 700);
+  };
+  useEffect(() => () => clearTimeout(unreadTimer.current), []);
 
   // Parámetros de /chats según la vista + alcance + filtro activos.
   //  - Oportunidades: todas las conversaciones marcadas como oportunidad.
@@ -607,6 +610,44 @@ export default function Chats() {
   const [hasOlder, setHasOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const PAGE_SIZE = 80;
+  /**
+   * SE DIBUJAN LOS ÚLTIMOS, NO LOS 80.
+   *
+   * Medido en una PC lenta simulada (04-oct-2026): montar los 80 mensajes de un
+   * chat eran ~5 s de procesador entre React, estilos y maquetación, y era lo que
+   * hacía que cambiar de conversación se sintiera trabado aunque los datos ya
+   * estuvieran. Se siguen TRAYENDO 80 (para el buscador y para no volver a la
+   * red al subir), pero se dibujan los últimos RENDER_STEP; el botón «Ver
+   * mensajes anteriores» primero muestra los que ya están en memoria y solo
+   * después pide más al servidor. Con el buscador abierto se dibujan todos.
+   */
+  const RENDER_STEP = 30;
+  const [shownCount, setShownCount] = useState(RENDER_STEP);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
+  /**
+   * HILOS YA VISTOS, EN MEMORIA.
+   *
+   * Volver a un chat que se acaba de mirar lo descargaba todo otra vez y dejaba
+   * el hilo en blanco mientras tanto: en una PC lenta con internet débil, cuatro
+   * o cinco segundos por cada ida y vuelta entre dos conversaciones. Ahora se
+   * pinta al instante lo que ya se tenía y se pone al día por detrás (siempre se
+   * vuelve a pedir: lo guardado solo adelanta la pantalla, no la sustituye).
+   *
+   * `messagesOwner` dice de QUÉ chat son los mensajes que hay en pantalla. Sin
+   * él, en el render del cambio de chat (id nuevo, mensajes aún del anterior) se
+   * guardarían los mensajes de un contacto bajo el id de otro.
+   */
+  const THREAD_CACHE_MAX = 25;
+  const threadCacheRef = useRef(new Map()); // id -> { messages, hasOlder }
+  const [messagesOwner, setMessagesOwner] = useState(null);
+  const cacheThread = (id, list, older) => {
+    const cache = threadCacheRef.current;
+    cache.delete(id);
+    cache.set(id, { messages: list, hasOlder: older });
+    if (cache.size > THREAD_CACHE_MAX) cache.delete(cache.keys().next().value);
+  };
 
   const loadMessages = async (id, { silent = false } = {}) => {
     const reqId = ++msgReqRef.current;
@@ -658,6 +699,7 @@ export default function Chats() {
         return;
       }
       setMessages((prev) => [...older, ...prev]);
+      setShownCount((c) => c + older.length);
       setHasOlder(older.length >= PAGE_SIZE);
       // El efecto de auto-scroll lleva el hilo abajo cuando cambian los mensajes;
       // aquí queremos justo lo contrario: quedarse donde estaba leyendo.
@@ -671,30 +713,20 @@ export default function Chats() {
     }
   };
 
+  // ══ AL ENTRAR SOLO SE PIDE LO QUE SE VE ══
+  //
+  // Antes la bandeja pedía nueve cosas a la vez al montarse: el catálogo entero
+  // de productos, la galería, las plantillas, los mensajes guardados, los
+  // workflows… y la lista de chats iba en la MISMA cola. Con internet débil todo
+  // eso se repartía la poca velocidad que había y la bandeja se quedaba con las
+  // columnas vacías. Ahora entra lo imprescindible (la lista, los contadores, los
+  // agentes y los números) y el resto se pide al abrir lo que lo usa: los
+  // servicios con la oportunidad o la cotización, plantillas y automatizaciones
+  // con su pestaña del menú «+», los guardados al abrir ese menú (ya se
+  // recargaban ahí) y la galería con su botón.
   useEffect(() => {
-    // Cargar servicios + programas para que estén disponibles en agendamiento y cotizaciones
-    api
-      .get('/products', { params: { limit: 500 } })
-      .then((r) => {
-        const arr = Array.isArray(r.data) ? r.data : r.data?.items || [];
-        setServices(
-          arr.filter(
-            (p) => p.active !== false && (p.category === 'servicio' || p.category === 'programa' || p.unlimited === true)
-          )
-        );
-      })
-      .catch(() => {});
-    loadSavedReplies();
-    loadGallery();
-    api.get('/chats/workflows-list').then((r) => setChatWorkflows(r.data || [])).catch(() => {});
     api.get('/call-center/agents').then((r) => setAgents(r.data || [])).catch(() => {});
     api.get('/chats/accounts').then((r) => setWaAccounts(r.data || [])).catch(() => {});
-    // Plantillas WhatsApp aprobadas por Meta (para enviar desde el chat),
-    // más usadas primero (el menú muestra el top 4 por defecto).
-    api
-      .get('/message-templates', { params: { channel: 'whatsapp', status: 'approved' } })
-      .then((r) => setTemplates((r.data || []).slice().sort((a, b) => (b.usageCount || 0) - (a.usageCount || 0))))
-      .catch(() => {});
     // OJO: aquí NO se piden las estadísticas. `/chats/stats` son 7 agregaciones
     // (1,6 s medidos en producción el 30-jul-2026) y solo las usa el tablero de
     // Supervisión — que la mayoría de agentes no abre nunca. Se cargan en el
@@ -703,6 +735,54 @@ export default function Chats() {
     // /chats/unread-counts (un countDocuments sobre un índice).
     loadUnreadCounts();
   }, []);
+
+  // Servicios y programas: solo los usan la oportunidad y la cotización. Se
+  // filtran en el servidor (`bookable`) en vez de bajar el catálogo con insumos.
+  const servicesRequestedRef = useRef(false);
+  useEffect(() => {
+    if (!(opportunityModal || quotationModal) || servicesRequestedRef.current) return;
+    servicesRequestedRef.current = true;
+    api
+      .get('/products', { params: { bookable: 'true' } })
+      .then((r) => {
+        const arr = Array.isArray(r.data) ? r.data : r.data?.items || [];
+        setServices(
+          arr.filter(
+            (p) => p.active !== false && (p.category === 'servicio' || p.category === 'programa' || p.unlimited === true)
+          )
+        );
+      })
+      .catch(() => { servicesRequestedRef.current = false; });
+  }, [opportunityModal, quotationModal]);
+
+  // Automatizaciones y plantillas: al abrir su pestaña del menú «+» por primera
+  // vez (cambian poco; una vez por visita a la página basta).
+  const pickerDataRef = useRef({ auto: false, templates: false });
+  useEffect(() => {
+    if (pickerTab === 'auto' && !pickerDataRef.current.auto) {
+      pickerDataRef.current.auto = true;
+      api.get('/chats/workflows-list').then((r) => setChatWorkflows(r.data || []))
+        .catch(() => { pickerDataRef.current.auto = false; });
+    }
+    if (pickerTab === 'templates' && !pickerDataRef.current.templates) {
+      pickerDataRef.current.templates = true;
+      // Plantillas WhatsApp aprobadas por Meta, más usadas primero (el menú
+      // muestra el top 4 por defecto).
+      api
+        .get('/message-templates', { params: { channel: 'whatsapp', status: 'approved' } })
+        .then((r) => setTemplates((r.data || []).slice().sort((a, b) => (b.usageCount || 0) - (a.usageCount || 0))))
+        .catch(() => { pickerDataRef.current.templates = false; });
+    }
+  }, [pickerTab]);
+
+  // Galería: se pide la primera vez que se abre. El modal copia la lista al
+  // montarse, así que se pinta cuando ya llegó (mientras, el botón gira).
+  const [galleryReady, setGalleryReady] = useState(false);
+  useEffect(() => {
+    if (!galleryOpen || galleryReady) return;
+    loadGallery().finally(() => setGalleryReady(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [galleryOpen]);
 
   // Estadísticas de Supervisión: SOLO cuando se abre el tablero. Se piden una vez
   // por entrada a la vista; dentro del tablero se refrescan con su botón o al
@@ -724,16 +804,74 @@ export default function Chats() {
   }, [view, scope, filter, sortOrder, debouncedSearch, accountFilter]);
 
   useEffect(() => {
-    // El hilo se vacía SIEMPRE al cambiar de chat. Antes se quedaban a la vista
-    // los mensajes del contacto anterior hasta que llegaba la respuesta del
-    // nuevo: el agente creía que el sistema "no cambiaba de chat" y, peor, podía
-    // ponerse a leer (o a responder sobre) la conversación equivocada.
-    setMessages([]);
-    if (activeId) loadMessages(activeId);
+    // Al cambiar de chat NUNCA quedan a la vista los mensajes del contacto
+    // anterior (el agente creía que el sistema "no cambiaba de chat" y podía
+    // responder sobre la conversación equivocada): o los de ESTE chat que ya se
+    // tenían en memoria, o el hilo vacío con su «Cargando mensajes…».
+    const cached = activeId ? threadCacheRef.current.get(String(activeId)) : null;
+    setShownCount(RENDER_STEP);
+    setMessages(cached ? cached.messages : []);
+    setHasOlder(cached ? cached.hasOlder : false);
+    setMessagesOwner(activeId);
+    if (activeId) loadMessages(activeId, { silent: !!cached });
     setTemplateDraft({ name: '', language: 'es', vars: '' });
     setAttachmentDraft(null);
     setReplyDraft(null);
   }, [activeId]);
+
+  // Dónde va un separador de día. Se calcula cuando cambian los mensajes, no en
+  // cada render: escribir en el compositor repinta esta pantalla con cada tecla.
+  const dividerAt = useMemo(() => {
+    const keys = messages.map((m) => ecDateKey(m.createdAt));
+    return keys.map((k, i) => i === 0 || keys[i - 1] !== k);
+  }, [messages]);
+
+  // Primer mensaje que se dibuja (ver RENDER_STEP). Con el buscador abierto,
+  // todos: las coincidencias tienen que poder verse.
+  const firstShown = chatSearchOpen ? 0 : Math.max(0, messages.length - shownCount);
+  // Muestra los anteriores que ya están en memoria sin que salte la lectura.
+  const showEarlierRendered = () => {
+    const box = messagesEndRef.current;
+    const prevHeight = box?.scrollHeight || 0;
+    setShownCount((c) => c + RENDER_STEP * 2);
+    requestAnimationFrame(() => {
+      if (box) box.scrollTop = box.scrollHeight - prevHeight;
+    });
+  };
+
+  // Lo que hay en pantalla se guarda como copia del chat (solo si es de ESE chat
+  // y no está vacío: un hilo aún sin cargar no debe pasar por "chat sin mensajes").
+  useEffect(() => {
+    if (!activeId || !messages.length || String(messagesOwner) !== String(activeId)) return;
+    cacheThread(String(activeId), messages, hasOlder);
+  }, [messages, hasOlder, messagesOwner, activeId]);
+
+  // Precarga al pasar el mouse por un chat de la lista: cuando el agente hace
+  // clic, el hilo ya está. Solo si se detiene un momento encima (no al barrer la
+  // lista con el mouse), uno a la vez y nunca con el ahorro de datos activado.
+  const prefetchTimerRef = useRef(null);
+  const prefetchingRef = useRef(new Set());
+  const prefetchThread = useCallback((id) => {
+    clearTimeout(prefetchTimerRef.current);
+    const key = String(id);
+    const conn = navigator.connection;
+    if (conn?.saveData || /2g/.test(conn?.effectiveType || '')) return;
+    if (key === String(activeIdRef.current) || threadCacheRef.current.has(key)) return;
+    if (prefetchingRef.current.size) return;
+    prefetchTimerRef.current = setTimeout(() => {
+      prefetchingRef.current.add(key);
+      api.get(`/chats/${key}/messages`, { params: { limit: PAGE_SIZE } })
+        .then((r) => {
+          const list = r.data || [];
+          // Si mientras tanto se abrió, manda la carga del chat abierto.
+          if (key !== String(activeIdRef.current) && list.length) cacheThread(key, list, list.length >= PAGE_SIZE);
+        })
+        .catch(() => {})
+        .finally(() => prefetchingRef.current.delete(key));
+    }, 250);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => () => clearTimeout(prefetchTimerRef.current), []);
 
   // Realtime — el mensaje llega ENTERO en el evento, así que se añade al hilo sin
   // volver a pedirlo. Antes cada mensaje entrante disparaba una recarga completa
@@ -760,9 +898,18 @@ export default function Chats() {
       } else if (payload?.conversationId && String(payload.conversationId) === String(activeId)) {
         // Evento sin cuerpo (emisores antiguos): ahí sí toca releer el hilo.
         loadMessages(activeId, { silent: true });
+      } else if (incoming && payload?.conversationId) {
+        // Un chat que NO está abierto pero que está en memoria: se le añade el
+        // mensaje para que, al volver, se vea al día desde el primer instante.
+        const key = String(payload.conversationId);
+        const cached = threadCacheRef.current.get(key);
+        if (cached && !cached.messages.some((m) => String(m._id) === String(incoming._id)
+          || (incoming.clientId && m.clientId === incoming.clientId))) {
+          cacheThread(key, [...cached.messages, incoming], cached.hasOlder);
+        }
       }
       if (view !== 'board') refreshConversations();
-      loadUnreadCounts();
+      refreshUnreadCounts();
     },
     [activeId, view, scope, filter, sortOrder, debouncedSearch]
   );
@@ -791,7 +938,7 @@ export default function Chats() {
     'chat:updated',
     () => {
       if (view !== 'board') refreshConversations();
-      loadUnreadCounts();
+      refreshUnreadCounts();
     },
     [view, scope, filter, sortOrder, debouncedSearch]
   );
@@ -814,6 +961,7 @@ export default function Chats() {
       const hiddenBecauseMyShiftEnded = !restrictionActive && restrictedTo === me;
       if (isRestrictedAgent && restrictedTo && (hiddenByAnotherOwner || hiddenBecauseMyShiftEnded)) {
         setConversations((prev) => prev.filter((conv) => String(conv._id) !== conversationId));
+        threadCacheRef.current.delete(conversationId);
         if (String(activeIdRef.current) === conversationId) {
           msgReqRef.current += 1;
           msgAbortRef.current?.abort();
@@ -831,7 +979,7 @@ export default function Chats() {
         // supervisores siempre reciben/actualizan el chat sin esperar mensajes.
         if (view !== 'board') refreshConversations();
       }
-      loadUnreadCounts();
+      refreshUnreadCounts();
     },
     [isAdmin, isSupervisor, user?.id, user?._id, view, scope, filter, debouncedSearch]
   );
@@ -918,10 +1066,17 @@ export default function Chats() {
   // Refresco al VOLVER a la pestaña o recuperar el foco: si mientras estabas en
   // otra pestaña se perdió algún evento en vivo, al volver ves todo al día sin
   // pulsar "recargar".
+  const lastCatchUpRef = useRef(0);
   useEffect(() => {
     const refresh = () => {
       if (document.visibilityState === 'hidden') return;
+      // focus y visibilitychange llegan juntos al volver: una sola puesta al día.
+      const now = Date.now();
+      if (now - lastCatchUpRef.current < 1500) return;
+      lastCatchUpRef.current = now;
       if (view !== 'board') loadConversations(paramsRef.current);
+      // Mientras la pestaña estuvo oculta no se recargaron los contadores.
+      loadUnreadCounts();
       // `silent`: es una puesta al día de fondo, no debe parpadear el hilo que el
       // agente ya está leyendo.
       if (activeId) loadMessages(activeId, { silent: true });
@@ -1070,6 +1225,14 @@ export default function Chats() {
     }
     return out;
   };
+  // Manejadores ESTABLES para el panel lateral (memoizado): se apoyan en una ref
+  // a la versión actual, así no hay que enumerar dependencias ni se rompe la
+  // memoización con una flecha nueva en cada render.
+  const applyUpdateRef = useRef(null);
+  const onPanelUpdated = useCallback((c) => applyUpdateRef.current?.(c), []);
+  const openOpportunity = useCallback(() => setOpportunityModal(true), []);
+  const openAppointment = useCallback(() => setAppointmentModal(true), []);
+  const openQuotation = useCallback(() => setQuotationModal(true), []);
   const applyConversationUpdate = (c) => {
     if (!c?._id) return;
     setConversations((prev) =>
@@ -1081,6 +1244,7 @@ export default function Chats() {
         (prev && String(prev._id) === String(c._id) ? conservarDerivados(prev, c) : c));
     }
   };
+  applyUpdateRef.current = applyConversationUpdate;
   // El orden ya viene ordenado del servidor (ver paramsForView): con la lista
   // paginada tiene que ser así, porque los chats que más llevan esperando están
   // al FINAL de la lista completa y aquí no se han cargado siquiera.
@@ -1545,10 +1709,18 @@ export default function Chats() {
   };
 
   // Salta al mensaje original citado y lo resalta un instante.
-  const scrollToMessage = useCallback((id) => {
+  const scrollToMessage = useCallback((id, retried = false) => {
     if (!id) return;
     const el = document.getElementById(`msg-${id}`);
-    if (!el) return;
+    if (!el) {
+      // Está en memoria pero no dibujado (más arriba de los últimos): se dibuja
+      // todo y se reintenta en cuanto React lo pinte.
+      if (!retried && messagesRef.current.some((m) => String(m._id) === String(id))) {
+        setShownCount(Infinity);
+        setTimeout(() => scrollToMessage(id, true), 60);
+      }
+      return;
+    }
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     el.classList.add('ring-2', 'ring-emerald-400', 'rounded-lg');
     setTimeout(() => el.classList.remove('ring-2', 'ring-emerald-400', 'rounded-lg'), 1600);
@@ -1871,6 +2043,7 @@ export default function Chats() {
                       conv={c}
                       active={c._id === activeId}
                       onSelect={selectConversation}
+                      onHover={prefetchThread}
                       onToggleFeatured={toggleFeatured}
                       onToggleRead={toggleRead}
                       variosNumeros={waAccounts.length > 1}
@@ -2000,11 +2173,11 @@ export default function Chats() {
                   )}
                   {/* El chat abre con los últimos mensajes para que entre al
                       instante; el historial anterior se trae solo si hace falta. */}
-                  {hasOlder && !!messages.length && (
+                  {(firstShown > 0 || hasOlder) && !!messages.length && (
                     <div className="flex justify-center pb-2">
                       <button
                         type="button"
-                        onClick={loadOlderMessages}
+                        onClick={firstShown > 0 ? showEarlierRendered : loadOlderMessages}
                         disabled={loadingOlder}
                         className="px-3 py-1 text-xs rounded-full bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
                       >
@@ -2012,25 +2185,17 @@ export default function Chats() {
                       </button>
                     </div>
                   )}
-                  {messages.map((m, i) => {
-                    // Separador de día cuando cambia la fecha (o en el primero).
-                    const prev = messages[i - 1];
-                    const showDivider = !prev || ecDateKey(prev.createdAt) !== ecDateKey(m.createdAt);
-                    return (
-                      <Fragment key={m._id}>
-                        {showDivider && <DateDivider date={m.createdAt} />}
-                        <MessageBubble
-                          highlight={chatSearchOpen ? chatSearch : ''}
-                          msg={m}
-                          onReply={setReplyDraft}
-                          onJumpTo={scrollToMessage}
-                          onRetry={retrySend}
-                          onRetryMedia={retryMedia}
-                          onUseTemplate={openTemplatePicker}
-                        />
-                      </Fragment>
-                    );
-                  })}
+                  <ThreadMessages
+                    messages={messages}
+                    firstShown={firstShown}
+                    dividerAt={dividerAt}
+                    highlight={chatSearchOpen ? chatSearch : ''}
+                    onReply={setReplyDraft}
+                    onJumpTo={scrollToMessage}
+                    onRetry={retrySend}
+                    onRetryMedia={retryMedia}
+                    onUseTemplate={openTemplatePicker}
+                  />
                 </div>
                 {typingAgents.length > 0 && <TypingIndicator agents={typingAgents} />}
                 <div className="border-t border-slate-100 p-2">
@@ -2517,7 +2682,9 @@ export default function Chats() {
                               title="Galería de imágenes"
                               className="p-2 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 hover:border-emerald-300 cursor-pointer flex items-center"
                             >
-                              <HiOutlinePhoto className="w-5 h-5" />
+                              {galleryOpen && !galleryReady
+                                ? <HiOutlineArrowPath className="w-5 h-5 animate-spin" />
+                                : <HiOutlinePhoto className="w-5 h-5" />}
                             </button>
                           )}
                           <input
@@ -2612,12 +2779,10 @@ export default function Chats() {
                 conv={activeConv}
                 agents={agents}
                 meId={user?._id}
-                onUpdated={(c) => {
-                  applyConversationUpdate(c);
-                }}
-                onEditOpportunity={() => setOpportunityModal(true)}
-                onScheduleAppointment={() => setAppointmentModal(true)}
-                onCreateQuotation={() => setQuotationModal(true)}
+                onUpdated={onPanelUpdated}
+                onEditOpportunity={openOpportunity}
+                onScheduleAppointment={openAppointment}
+                onCreateQuotation={openQuotation}
                 waAccounts={waAccounts}
                 automationsVersion={automationsVersion}
                 citasVersion={citasVersion}
@@ -2648,12 +2813,10 @@ export default function Chats() {
                   conv={activeConv}
                   agents={agents}
                   meId={user?._id}
-                  onUpdated={(c) => {
-                    applyConversationUpdate(c);
-                  }}
-                  onEditOpportunity={() => setOpportunityModal(true)}
-                  onScheduleAppointment={() => setAppointmentModal(true)}
-                  onCreateQuotation={() => setQuotationModal(true)}
+                  onUpdated={onPanelUpdated}
+                  onEditOpportunity={openOpportunity}
+                  onScheduleAppointment={openAppointment}
+                  onCreateQuotation={openQuotation}
                   waAccounts={waAccounts}
                   automationsVersion={automationsVersion}
                   citasVersion={citasVersion}
@@ -2716,7 +2879,7 @@ export default function Chats() {
           }}
         />
       )}
-      {galleryOpen && (
+      {galleryOpen && galleryReady && (
         <GalleryModal
           images={gallery}
           onClose={() => setGalleryOpen(false)}
@@ -3093,12 +3256,13 @@ function NumeroEntradaBadge({ conv, varios }) {
  * ser flechas nuevas en cada render (`onClick={() => toggleFeatured(c)}`), que
  * habrían invalidado la memoización en cada render igualmente.
  */
-const ConversationRow = memo(function ConversationRow({ conv, active, onSelect, onToggleFeatured, onToggleRead, variosNumeros }) {
+const ConversationRow = memo(function ConversationRow({ conv, active, onSelect, onHover, onToggleFeatured, onToggleRead, variosNumeros }) {
   const meta = conv.opportunity?.isOpportunity ? stageMeta(conv.opportunity.stage) : null;
   const select = () => onSelect?.(conv._id);
   return (
     <div
       onClick={select}
+      onMouseEnter={onHover && !active ? () => onHover(conv._id) : undefined}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
@@ -3787,6 +3951,41 @@ const MEDIA_LABEL = {
   sticker: '🌟 Sticker',
 };
 
+/**
+ * IMAGEN DEL HILO QUE SOLO SE DESCARGA CUANDO SE VA A VER.
+ *
+ * Al abrir un chat se pintan hasta 80 mensajes de golpe, y cada foto empezaba a
+ * bajar en ese mismo instante —aunque estuviera muy arriba, fuera de la vista—,
+ * compitiendo con los mensajes, el panel y todo lo demás. Con internet débil un
+ * chat con fotos tardaba segundos de más en entrar. `loading="lazy"` del
+ * navegador no basta: con conexión lenta adelanta la descarga hasta 2.500 px.
+ *
+ * Mientras no está cerca de la vista ocupa una caja del tamaño típico de una
+ * foto, para que el hilo no salte cuando por fin aparece.
+ */
+function LazyImg({ src, alt, className = '' }) {
+  const boxRef = useRef(null);
+  const [visible, setVisible] = useState(typeof IntersectionObserver === 'undefined');
+  useEffect(() => {
+    if (visible) return undefined;
+    const el = boxRef.current;
+    if (!el) return undefined;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setVisible(true);
+          io.disconnect();
+        }
+      },
+      { rootMargin: '300px 0px' }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [visible]);
+  if (!visible) return <div ref={boxRef} aria-label={alt} className="w-48 h-40 rounded-lg bg-slate-200 animate-pulse" />;
+  return <img src={src} alt={alt} decoding="async" className={className} />;
+}
+
 function MessageMedia({ msg, isOut, onRetryMedia }) {
   const [retrying, setRetrying] = useState(false);
   // Las fotos que envía el contacto empiezan protegidas. El estado vive por
@@ -3845,7 +4044,7 @@ function MessageMedia({ msg, isOut, onRetryMedia }) {
   if (isSticker) {
     return (
       <div className="relative inline-block mb-1">
-        <img src={url} alt="sticker" className="max-h-28 w-auto block bg-transparent" />
+        <img src={url} alt="sticker" loading="lazy" decoding="async" className="max-h-28 w-auto block bg-transparent" />
         <MediaDownloadButton msg={msg} className="!w-6 !h-6" />
       </div>
     );
@@ -3856,7 +4055,7 @@ function MessageMedia({ msg, isOut, onRetryMedia }) {
       <div className="relative inline-block mb-1 overflow-hidden rounded-lg bg-slate-200">
         {protectedImage ? (
           <div className="relative">
-            <img
+            <LazyImg
               src={url}
               alt="Imagen recibida oculta"
               className="rounded-lg max-h-60 w-auto block blur-xl scale-110 select-none pointer-events-none"
@@ -3875,7 +4074,7 @@ function MessageMedia({ msg, isOut, onRetryMedia }) {
         ) : (
           <>
             <a href={url} target="_blank" rel="noreferrer" className="block">
-              <img src={url} alt="adjunto" className="rounded-lg max-h-60 w-auto block" />
+              <LazyImg src={url} alt="adjunto" className="rounded-lg max-h-60 w-auto block" />
             </a>
             <MediaDownloadButton msg={msg} />
           </>
@@ -3886,7 +4085,9 @@ function MessageMedia({ msg, isOut, onRetryMedia }) {
   if (isVideo) {
     return (
       <div className="relative inline-block mb-1 max-w-full">
-        <video controls src={url} className="rounded-lg max-h-60 w-auto block max-w-full" />
+        {/* preload="none": el video baja al darle a reproducir, no al abrir el chat
+            (eran megas compitiendo con los mensajes en cada apertura). */}
+        <video controls preload="none" src={url} className="rounded-lg max-h-60 min-h-24 min-w-48 w-auto block max-w-full bg-slate-900" />
         <MediaDownloadButton msg={msg} />
       </div>
     );
@@ -4023,6 +4224,29 @@ const EVENT_ICON = {
  * `onReply` recibe el mensaje como argumento en vez de ser una flecha nueva por
  * burbuja en cada render.
  */
+/**
+ * El hilo, memoizado entero: escribir en el compositor (que vive en el mismo
+ * componente) ya no recorre los mensajes en cada tecla. Todas sus props son
+ * estables mientras no cambien los mensajes o el chat.
+ */
+const ThreadMessages = memo(function ThreadMessages({ messages, firstShown, dividerAt, highlight, onReply, onJumpTo, onRetry, onRetryMedia, onUseTemplate }) {
+  return (firstShown ? messages.slice(firstShown) : messages).map((m, j) => (
+    <Fragment key={m._id}>
+      {/* Separador de día cuando cambia la fecha (o en el primero). */}
+      {dividerAt[firstShown + j] && <DateDivider date={m.createdAt} />}
+      <MessageBubble
+        highlight={highlight}
+        msg={m}
+        onReply={onReply}
+        onJumpTo={onJumpTo}
+        onRetry={onRetry}
+        onRetryMedia={onRetryMedia}
+        onUseTemplate={onUseTemplate}
+      />
+    </Fragment>
+  ));
+});
+
 const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry, onRetryMedia, onUseTemplate }) {
   // Evento INTERNO del sistema (kind='event'): chip centrado, visible SOLO para el
   // equipo (nunca se envió al contacto). P.ej. "Oportunidad creada".
@@ -4740,25 +4964,53 @@ function SeguimientosPacienteModal({ patientId, nombre, onClose }) {
  *
  * Cada tarjeta se despliega con el registro de ejecución paso a paso.
  */
+/**
+ * EL PANEL LATERAL CARGA DESPUÉS DEL HILO.
+ *
+ * Abrir un chat disparaba siete peticiones a la vez: los mensajes, el detalle y
+ * —todas del panel lateral— automatizaciones, citas, notas y tareas. Con internet
+ * débil se repartían la poca velocidad que había y los MENSAJES, que es lo que
+ * el agente quiere ver, llegaban los últimos. Y al pasar rápido por varios chats
+ * se disparaban las siete por cada uno aunque no se fuera a mirar ninguno.
+ *
+ * Devuelve el id del chat solo cuando lleva PANEL_DELAY_MS abierto sin cambiar;
+ * mientras tanto, null (las secciones se muestran «cargando» y vacías: nunca con
+ * los datos del chat anterior).
+ */
+const PANEL_DELAY_MS = 450;
+function usePanelReadyId(id) {
+  const [ready, setReady] = useState(null);
+  useEffect(() => {
+    const t = setTimeout(() => setReady(id), PANEL_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [id]);
+  return ready === id ? id : null;
+}
+
 function ChatAutomationsSection({ conv, version = 0 }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState(null); // inscripción con el detalle abierto
   const [tick, setTick] = useState(0); // recarga manual (los pasos corren en el servidor)
+  const readyId = usePanelReadyId(conv._id);
 
   useEffect(() => {
     let alive = true;
     setLoading(true);
     setOpenId(null);
+    if (!readyId) {
+      setRows([]);
+      return undefined;
+    }
     api
-      .get(`/chats/${conv._id}/automations`)
+      .get(`/chats/${readyId}/automations`)
       .then((r) => alive && setRows(Array.isArray(r.data) ? r.data : []))
       .catch(() => alive && setRows([]))
       .finally(() => alive && setLoading(false));
     return () => {
       alive = false;
     };
-  }, [conv._id, version, tick]);
+  }, [readyId, version, tick]);
 
   // Por qué entró: el evento guardado al inscribir y, si no, los disparadores
   // del flujo. 'manual' = la lanzó un agente desde el menú ⚡ del compositor.
@@ -4871,11 +5123,15 @@ function ChatAutomationsSection({ conv, version = 0 }) {
   );
 }
 
-function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onScheduleAppointment, onCreateQuotation, automationsVersion = 0, citasVersion = 0, waAccounts = [] }) {
+// Memoizado: el compositor vive en el mismo componente que lo pinta y, sin
+// esto, cada tecla repintaba el panel entero (citas, notas, tareas…).
+const SidePanel = memo(function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onScheduleAppointment, onCreateQuotation, automationsVersion = 0, citasVersion = 0, waAccounts = [] }) {
   const { hasRole } = useAuth();
   const op = conv.opportunity || {};
   const meta = op.isOpportunity ? stageMeta(op.stage) : null;
-  const [appts, setAppts] = useState([]);
+  // Las citas se guardan junto al chat al que pertenecen: así nunca se pintan
+  // las de otro contacto mientras llegan las del chat recién abierto.
+  const [apptsOf, setApptsOf] = useState({ id: null, list: [] });
   const [editAppt, setEditAppt] = useState(null); // cita a editar
   const [apptsVersion, setApptsVersion] = useState(0); // fuerza recarga tras editar
   const [asignarPaciente, setAsignarPaciente] = useState(false);
@@ -4891,14 +5147,21 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
    * reagendar desde la conversación en la que se pidió.
    * clinic=all: el chat es global, la cita puede ser de cualquier sucursal.
    */
+  const citasConvId = usePanelReadyId(conv._id);
+  const appts = apptsOf.id && apptsOf.id === citasConvId ? apptsOf.list : [];
   useEffect(() => {
+    if (!citasConvId) return undefined;
+    let alive = true;
     api
       .get('/appointments', {
-        params: { ...(pacienteId ? { patient: pacienteId } : {}), conversation: conv._id, limit: 100, clinic: 'all' },
+        params: { ...(pacienteId ? { patient: pacienteId } : {}), conversation: citasConvId, limit: 100, clinic: 'all' },
       })
-      .then((r) => setAppts(Array.isArray(r.data) ? r.data : r.data?.appointments || []))
-      .catch(() => setAppts([]));
-  }, [conv._id, pacienteId, apptsVersion, citasVersion]);
+      .then((r) => alive && setApptsOf({ id: citasConvId, list: Array.isArray(r.data) ? r.data : r.data?.appointments || [] }))
+      .catch(() => alive && setApptsOf({ id: citasConvId, list: [] }));
+    return () => {
+      alive = false;
+    };
+  }, [citasConvId, pacienteId, apptsVersion, citasVersion]);
 
   /** De otra persona = no es del paciente del chat. */
   const paraOtro = (a) => String(a.patient?._id || a.patient || '') !== pacienteId;
@@ -5267,7 +5530,7 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
       </div>
     </div>
   );
-}
+});
 
 /**
  * Selector «Responder desde»: por qué número (global) sale la respuesta de ESTE
@@ -5528,11 +5791,21 @@ function NotesSection({ conv, agents = [], meId }) {
   const [mentionQuery, setMentionQuery] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const load = () => {
-    api.get(`/chats/${conv._id}/notes`).then((r) => setNotes(r.data || [])).catch(() => {});
+  // Solo pinta si sigue siendo el chat abierto (una respuesta tardía no puede
+  // dejar en pantalla las notas de otro contacto).
+  const convIdRef = useRef(conv._id);
+  convIdRef.current = conv._id;
+  const load = (id = conv._id) => {
+    api.get(`/chats/${id}/notes`)
+      .then((r) => { if (convIdRef.current === id) setNotes(r.data || []); })
+      .catch(() => {});
   };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load(); }, [conv._id]);
+  const readyId = usePanelReadyId(conv._id);
+  useEffect(() => {
+    if (!readyId) setNotes([]);
+    else load(readyId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readyId]);
 
   const onDraftChange = (v) => {
     setDraft(v);
@@ -5636,14 +5909,20 @@ function TasksSection({ conv, agents = [], meId }) {
   const [assignedTo, setAssignedTo] = useState('');
   const [adding, setAdding] = useState(false);
 
-  const load = () => {
+  const convIdRef = useRef(conv._id);
+  convIdRef.current = conv._id;
+  const load = (id = conv._id) => {
     api
-      .get('/agent-tasks', { params: { conversation: conv._id } })
-      .then((r) => setTasks(r.data || []))
+      .get('/agent-tasks', { params: { conversation: id } })
+      .then((r) => { if (convIdRef.current === id) setTasks(r.data || []); })
       .catch(() => {});
   };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load(); }, [conv._id]);
+  const readyId = usePanelReadyId(conv._id);
+  useEffect(() => {
+    if (!readyId) setTasks([]);
+    else load(readyId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readyId]);
 
   const add = async () => {
     if (!title.trim()) return;

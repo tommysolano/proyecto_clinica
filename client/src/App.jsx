@@ -8,6 +8,7 @@ import RoleRoute from './components/RoleRoute';
 import Layout from './components/Layout';
 import Spinner from './components/Spinner';
 import ErrorBoundary from './components/ErrorBoundary';
+import SlowNetworkNotice from './components/SlowNetworkNotice';
 import { cargarPagina } from './utils/lazyPage';
 import { DOCTOR_SPECIALTY_ROLES, roleSatisfies } from './utils/roles';
 // Login va EAGER a propósito: es la primera pantalla y hacerla perezosa añadiría
@@ -690,6 +691,7 @@ export default function App() {
               modales (z-9999) y de los dropdowns (z-10001), nunca tapados. */}
           <Toaster position="top-right" containerStyle={{ zIndex: 20000 }} toastOptions={{ duration: 3000, error: { duration: 6000 } }} />
           <AppRoutes />
+          <SlowNetworkNotice />
         </SocketProvider>
       </AuthProvider>
     </BrowserRouter>

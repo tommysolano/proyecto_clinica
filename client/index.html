@@ -5,7 +5,12 @@
     <link rel="icon" type="image/png" href="/pwa-192.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+    <!-- La fuente NO bloquea el arranque: una hoja de estilos normal en el <head>
+         frena la ejecución de la app hasta descargarse, y con internet débil (o con
+         Google lento) eso era pantalla en blanco. Se carga como "print" y pasa a
+         "all" al llegar; mientras tanto se ve la fuente del sistema. -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" /></noscript>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
     <!-- PWA: con esto el móvil ofrece instalar Vikingo como una app más.

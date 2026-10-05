@@ -6,6 +6,48 @@ import { activarPush, desactivarPush } from '../utils/push';
 const AuthContext = createContext(null);
 
 /**
+ * LA SESIÓN SE PINTA DESDE LA ÚLTIMA COPIA, SIN ESPERAR AL SERVIDOR.
+ *
+ * Al abrir o recargar Vikingo, NADA se dibujaba hasta que respondía /auth/me: en
+ * un equipo con internet débil eso era la pantalla en blanco con el spinner, y
+ * todas las peticiones de la pantalla esperaban detrás. Ahora se arranca con la
+ * última respuesta guardada (atada al MISMO token: otro token, otra sesión) y
+ * /auth/me se confirma por detrás; si el rol o la sucursal cambiaron, se corrige
+ * en cuanto responde. Los permisos los sigue decidiendo el servidor en cada
+ * petición: la copia solo adelanta la pantalla.
+ *
+ * Y si /auth/me falla por RED (no por sesión inválida) habiendo copia, se sigue
+ * trabajando: antes un corte de un segundo o un deploy en curso al recargar
+ * cerraban la sesión del usuario.
+ */
+const ME_CACHE_KEY = 'authMeCache';
+function readMeCache(token) {
+  try {
+    const c = JSON.parse(localStorage.getItem(ME_CACHE_KEY) || 'null');
+    return c && c.token === token ? c.data : null;
+  } catch {
+    return null;
+  }
+}
+function writeMeCache(data) {
+  try {
+    const token = localStorage.getItem('token');
+    const raw = JSON.stringify({ token, data });
+    // Un logo en base64 enorme no debe llenar el almacenamiento del navegador.
+    if (token && raw.length < 400000) localStorage.setItem(ME_CACHE_KEY, raw);
+  } catch {
+    /* sin almacenamiento disponible: simplemente no hay copia */
+  }
+}
+function clearMeCache() {
+  try {
+    localStorage.removeItem(ME_CACHE_KEY);
+  } catch {
+    /* noop */
+  }
+}
+
+/**
  * Flujo de auth:
  *   1) login(email, password) → recibe token preliminar + lista de clínicas.
  *   2) selectClinic(clinicId) → recibe nuevo token con clinicId+role.
@@ -20,14 +62,19 @@ export function AuthProvider({ children }) {
   const [clinics, setClinics] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  const applyMe = useCallback((data) => {
+    setUser(data.user);
+    setActiveClinic(data.activeClinic || null);
+    setRole(data.role || null);
+    setClinics(data.clinics || []);
+  }, []);
+
   const refreshMe = useCallback(async () => {
     const res = await api.get('/auth/me');
-    setUser(res.data.user);
-    setActiveClinic(res.data.activeClinic || null);
-    setRole(res.data.role || null);
-    setClinics(res.data.clinics || []);
+    applyMe(res.data);
+    writeMeCache(res.data);
     return res.data;
-  }, []);
+  }, [applyMe]);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -35,13 +82,22 @@ export function AuthProvider({ children }) {
       setLoading(false);
       return;
     }
+    const cached = readMeCache(token);
+    if (cached) {
+      applyMe(cached);
+      setLoading(false);
+    }
     refreshMe()
-      .catch(() => {
+      .catch((err) => {
+        const status = err?.response?.status;
+        // Sin red o servidor reiniciándose: con copia, se sigue trabajando.
+        if (cached && status !== 401 && status !== 403) return;
         localStorage.removeItem('token');
+        clearMeCache();
         setUser(null);
       })
       .finally(() => setLoading(false));
-  }, [refreshMe]);
+  }, [refreshMe, applyMe]);
 
   const login = async (email, password) => {
     const res = await api.post('/auth/login', { email, password });
@@ -83,6 +139,7 @@ export function AuthProvider({ children }) {
     // del anterior.
     desactivarPush().finally(() => {
       localStorage.removeItem('token');
+      clearMeCache();
       setUser(null);
       setActiveClinic(null);
       setRole(null);

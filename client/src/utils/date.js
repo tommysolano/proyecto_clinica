@@ -51,13 +51,51 @@ export function maskDdMmYyyy(raw) {
 const EC_TZ = 'America/Guayaquil';
 
 /**
+ * FORMATEADORES REUTILIZADOS.
+ *
+ * Crear un `Intl.DateTimeFormat` (o llamar a `toLocaleDateString` con opciones,
+ * que crea uno por dentro en cada llamada) es caro: carga los datos de idioma y de
+ * zona horaria cada vez. En una lista que se repinta —el hilo del chat con 80
+ * mensajes, la agenda— eso era la mayor parte del trabajo del procesador: medido
+ * el 04-oct-2026, el 60 % del tiempo de cada tecla en el chat se iba en fechas.
+ * En un equipo modesto, medio segundo por letra. Un formateador creado una vez
+ * da exactamente el mismo texto y cuesta una fracción.
+ */
+const formatters = new Map();
+export function ecFormatter(locale, options = {}) {
+  const key = locale + JSON.stringify(options);
+  let f = formatters.get(key);
+  if (!f) {
+    f = new Intl.DateTimeFormat(locale, { timeZone: EC_TZ, ...options });
+    formatters.set(key, f);
+  }
+  return f;
+}
+
+/**
+ * Formatea un instante con un formateador reutilizado. A diferencia de
+ * `toLocaleDateString`, `format()` LANZA un error con una fecha inválida (y
+ * tumbaría la pantalla entera): aquí se devuelve '' en ese caso.
+ */
+export function formatEc(value, locale = 'es-EC', options = {}) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return ecFormatter(locale, options).format(d);
+}
+
+/** Clave 'YYYY-MM-DD' del día en Ecuador de un instante (Date, ISO o ms). */
+export function ecDayKey(value) {
+  return formatEc(value, 'en-CA');
+}
+
+/**
  * Fecha de HOY en Ecuador como 'YYYY-MM-DD'. Robusto cerca de medianoche (no
  * usa toISOString, que es UTC y adelantaría el día por la noche en Ecuador).
  * Se usa como `min` de los inputs de fecha para bloquear días anteriores a hoy.
  */
 export function todayEc() {
   // 'en-CA' formatea como YYYY-MM-DD.
-  return new Intl.DateTimeFormat('en-CA', { timeZone: EC_TZ }).format(new Date());
+  return ecFormatter('en-CA').format(new Date());
 }
 
 /**
@@ -65,12 +103,7 @@ export function todayEc() {
  * de hora cuando la fecha elegida es HOY (no se agenda en una hora que ya pasó).
  */
 export function nowEcHHMM() {
-  const p = new Intl.DateTimeFormat('en-GB', {
-    timeZone: EC_TZ,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  })
+  const p = ecFormatter('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })
     .formatToParts(new Date())
     .reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
   return `${p.hour === '24' ? '00' : p.hour}:${p.minute}`;
@@ -84,14 +117,8 @@ export function fmtDateTime(value) {
   if (!value) return '';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '';
-  const p = new Intl.DateTimeFormat('es-EC', {
-    timeZone: EC_TZ,
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
+  const p = ecFormatter('es-EC', {
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
   })
     .formatToParts(d)
     .reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
@@ -111,12 +138,7 @@ export function fmtTimeEc(value) {
   if (!value) return '';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '';
-  const p = new Intl.DateTimeFormat('es-EC', {
-    timeZone: EC_TZ,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  })
+  const p = ecFormatter('es-EC', { hour: '2-digit', minute: '2-digit', hour12: false })
     .formatToParts(d)
     .reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
   return `${p.hour === '24' ? '00' : p.hour}:${p.minute}`;

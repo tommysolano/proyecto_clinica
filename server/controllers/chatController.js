@@ -227,6 +227,9 @@ exports.listConversations = async (req, res) => {
     // que rescatar. Se buscan por el número por el que ENTRÓ el último mensaje y
     // también por el enlazado, e incluyendo los ids ANTERIORES de ese mismo
     // teléfono (borrado y vuelto a conectar), que si no quedarían fuera.
+    // Los números conectados no dependen del filtro: se piden YA, en paralelo con
+    // todo lo demás (cada viaje a la base cuenta, y antes iban uno detrás de otro).
+    const accountsPromise = loadSendingAccounts();
     if (account && mongoose.isValidObjectId(account)) {
       const ids = await accountIdFamily(account);
       and.push({ $or: [{ lastInboundAccount: { $in: ids } }, { whatsappAccount: { $in: ids } }] });
@@ -279,7 +282,7 @@ exports.listConversations = async (req, res) => {
     //   · el paciente poblado (solo va su id, que es lo que la UI necesita para
     //     saber si el chat tiene paciente) — del detalle.
     // El detalle es GET /chats/:id (~350 ms), y solo se pide al abrir un chat.
-    const conversations = await Conversation.find(filter)
+    const listQuery = Conversation.find(filter)
       .select(
         // `externalUserId`: identifica los chats de «número oculto» (@lid), que NO
         // se desvían a otro número (ver gateway.destinationIsLid). Sin él, la
@@ -313,20 +316,24 @@ exports.listConversations = async (req, res) => {
       .limit(limit)
       .lean();
 
+    // La página, los números y el total viajan A LA VEZ: son independientes.
+    const [conversations, accounts, total] = await Promise.all([
+      listQuery,
+      accountsPromise,
+      // `total` es el número REAL de chats que cumplen el filtro, no los que se han
+      // llegado a cargar: es lo que hace que "Cargar más" sepa si queda algo y que
+      // la pestaña pueda decir cuántos hay de verdad.
+      Conversation.countDocuments(filter),
+    ]);
     // Número EFECTIVO de salida por chat (y con él la ventana de 24h). Se resuelve
     // en memoria contra la lista de números conectados: un solo query extra para
     // toda la página, en vez de uno por conversación.
-    const accounts = await loadSendingAccounts();
     const items = conversations.map((c) => decorateConversation(c, accounts));
     // Los chats con paciente vinculado cuyo nombre sigue siendo el apodo del
     // perfil de WhatsApp salen corregidos en esta misma respuesta (ver el
     // comentario de `sincronizarNombreDePaciente`).
     await sincronizarNombreDePaciente(items);
 
-    // `total` es el número REAL de chats que cumplen el filtro, no los que se han
-    // llegado a cargar: es lo que hace que "Cargar más" sepa si queda algo y que
-    // la pestaña pueda decir cuántos hay de verdad.
-    const total = await Conversation.countDocuments(filter);
     res.json({ items, total, hasMore: skip + items.length < total });
   } catch (err) {
     res.status(500).json({ message: 'Error al listar conversaciones', error: err.message });
@@ -364,10 +371,16 @@ async function loadSendingAccounts() {
       // `accessToken`/`status` no salen de aquí: solo se usan para decidir si el
       // número PUEDE ENVIAR. Lo que se guarda en el mapa es la versión saneada.
       '_id label connectionType displayPhone connectedPhone isDefault previousIds status accessToken phoneNumberId enabled archivedAt lastDisconnectNeedsQr';
-    const raw = await WhatsappAccount.find({ enabled: true, archivedAt: null })
-      .select(campos)
-      .sort({ isDefault: -1, createdAt: 1 })
-      .lean();
+    // Vivos y borrados en paralelo: son dos consultas independientes.
+    const [raw, archivadas] = await Promise.all([
+      WhatsappAccount.find({ enabled: true, archivedAt: null })
+        .select(campos)
+        .sort({ isDefault: -1, createdAt: 1 })
+        .lean(),
+      WhatsappAccount.find({ $or: [{ archivedAt: { $ne: null } }, { enabled: false }] })
+        .select(campos)
+        .lean(),
+    ]);
     const accounts = raw.map((a) => ({
       _id: a._id,
       label: a.label,
@@ -397,11 +410,6 @@ async function loadSendingAccounts() {
     // esa es justo la información que hace falta para rescatarlos. Van los
     // últimos y solo si el id no lo reclama ya un número vivo: un id heredado
     // (`previousIds`) tiene que seguir resolviendo a quien lo heredó.
-    const archivadas = await WhatsappAccount.find({
-      $or: [{ archivedAt: { $ne: null } }, { enabled: false }],
-    })
-      .select(campos)
-      .lean();
     for (const a of archivadas) {
       if (byId.has(String(a._id))) continue;
       byId.set(String(a._id), {
@@ -635,6 +643,11 @@ async function sincronizarNombreDePaciente(convs) {
 
 exports.getConversation = async (req, res) => {
   try {
+    // El chat y los números conectados se piden a la vez; después, lo que depende
+    // del chat (nombre de ficha, correo detectado, otros canales) también en
+    // paralelo. Antes eran cinco viajes a la base uno detrás de otro, y abrir un
+    // chat los pagaba todos.
+    const accountsPromise = loadSendingAccounts();
     const conv = await Conversation.findOne({ _id: req.params.id, ...buildVisibilityFilter(req) })
       .populate('patient', 'firstName lastName cedula phone whatsapp email marketing tags')
       .populate('assignedTo', 'name email')
@@ -643,23 +656,30 @@ exports.getConversation = async (req, res) => {
       .populate('opportunity.appointment', 'date startTime status')
       .populate('opportunity.interestedIn.product', 'name salePrice')
       .populate('opportunities.interestedIn.product', 'name salePrice');
-    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
-    const out = decorateConversation(conv.toObject(), await loadSendingAccounts());
-    await sincronizarNombreDePaciente(out);
-    out.detectedEmail = await findEmailInConversation(conv._id);
+    if (!conv) {
+      accountsPromise.catch(() => {});
+      return res.status(404).json({ message: 'Conversación no encontrada' });
+    }
+    const out = decorateConversation(conv.toObject(), await accountsPromise);
     // Otros chats (whatsapp/messenger/instagram) del MISMO contacto: alimenta la
     // pestaña de canal del compositor, para responder por cualquiera de ellos sin
     // salir de esta pantalla. Solo existe una vez que el chat está vinculado a un
     // paciente (ver registerPatientFromChat / findPatientForIncoming).
     const patientId = conv.patient?._id || conv.patient;
-    out.linkedConversations = patientId
-      ? await Conversation.find({
-          ...buildVisibilityFilter(req), patient: patientId, _id: { $ne: conv._id },
-        })
-          .select('channel phone lastMessageAt lastMessagePreview unreadCount')
-          .sort({ lastMessageAt: -1 })
-          .lean()
-      : [];
+    const [, detectedEmail, linkedConversations] = await Promise.all([
+      sincronizarNombreDePaciente(out),
+      findEmailInConversation(conv._id),
+      patientId
+        ? Conversation.find({
+            ...buildVisibilityFilter(req), patient: patientId, _id: { $ne: conv._id },
+          })
+            .select('channel phone lastMessageAt lastMessagePreview unreadCount')
+            .sort({ lastMessageAt: -1 })
+            .lean()
+        : [],
+    ]);
+    out.detectedEmail = detectedEmail;
+    out.linkedConversations = linkedConversations;
     res.json(out);
   } catch (err) {
     res.status(500).json({ message: 'Error al obtener conversación', error: err.message });
@@ -3363,7 +3383,11 @@ exports.bulkWhatsappOpportunities = async (req, res) => {
  */
 exports.listMessages = async (req, res) => {
   try {
-    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    // `requireConversationAccess` (router.use('/:id')) ya buscó y validó el chat
+    // en ESTA sucursal: se reutiliza en vez de volver a leer la conversación
+    // entera —con sus notas y oportunidades— solo para tener su id.
+    const conv = req.chatConversation
+      || await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId }).select('_id').lean();
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
 
     const limit = Math.min(Number(req.query.limit) || 80, 300);
