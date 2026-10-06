@@ -491,6 +491,53 @@ function filtroCitasDelDoctor(userId, { incluirSinAsignar = false } = {}) {
   };
 }
 
+/**
+ * LOS DOCTORES DE UNA CITA: todos los que tienen (o tuvieron) un turno de
+ * doctor, más el espejo `doctor`, sin repetir y en el orden de los turnos.
+ *
+ * El espejo solo dice quién atendió el ÚLTIMO: en una cita «ginecología →
+ * medicina general» apunta al segundo, y quien contaba citas por él dejaba a
+ * la primera doctora sin ninguna (oct-2026: Central entera de una ginecóloga
+ * desaparecía del filtro de la agenda y de Comisiones). Los turnos omitidos no
+ * cuentan: ese doctor no llegó a atender. El espejo va al final para cubrir
+ * las citas sin turnos (anteriores al cambio).
+ *
+ * Devuelve los valores tal cual vienen (documento poblado o id).
+ */
+function doctoresDeLaCita(apt) {
+  const vistos = new Set();
+  const out = [];
+  const candidatos = [
+    ...turnosOrdenados(apt)
+      .filter((t) => t.kind === 'doctor' && t.user && t.status !== 'omitido')
+      .map((t) => t.user),
+    apt.doctor,
+  ];
+  for (const d of candidatos) {
+    const id = idDe(d);
+    if (!id || vistos.has(id)) continue;
+    vistos.add(id);
+    out.push(d);
+  }
+  return out;
+}
+
+/**
+ * Condición de Mongo: citas que atendió (o atiende) alguno de estos doctores,
+ * por su turno o por el espejo. Es la misma regla que `doctoresDeLaCita`, para
+ * que filtrar y contar digan lo mismo.
+ */
+function filtroCitasConDoctor(ids) {
+  const lista = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
+  const quien = lista.length === 1 ? lista[0] : { $in: lista };
+  return {
+    $or: [
+      { doctor: quien },
+      { turns: { $elemMatch: { kind: 'doctor', user: quien, status: { $ne: 'omitido' } } } },
+    ],
+  };
+}
+
 module.exports = {
   turnosOrdenados,
   turnoVigente,
@@ -508,4 +555,6 @@ module.exports = {
   turnoVigenteEsEnfermeria,
   enfermerosDeLaCita,
   filtroCitasDelDoctor,
+  doctoresDeLaCita,
+  filtroCitasConDoctor,
 };

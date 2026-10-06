@@ -49,7 +49,27 @@ function mediaUrlForId(id) {
  *   - 'attachment' → adjunto subido para enviar (mensajes guardados, composer)
  *   - 'inbound'    → lo que MANDA el contacto; nunca debe aparecer en la galería
  */
-async function storeBufferMedia({ clinicId, buffer, mimeType, name, kind = 'inbound', createdBy = null }) {
+/**
+ * DURACIÓN de un audio ya guardado en disco, medida con ffmpeg (o null).
+ *
+ * Los audios RECIBIDOS no traían duración y la burbuja dependía del cálculo
+ * del navegador, que en el iPhone salía disparatado (oct-2026, ver
+ * `rangoPedido` en mediaController). Nunca lanza: sin duración el audio se
+ * guarda igual.
+ */
+async function medirDuracionAudio(storageKey) {
+  try {
+    const { probeAudioDurationSec, resolveFfmpegPath } = require('./audioTranscode');
+    const ffmpeg = resolveFfmpegPath();
+    if (!ffmpeg) return null;
+    const ruta = require('./mediaStore').absolutePath(storageKey);
+    return await probeAudioDurationSec(ffmpeg, ruta);
+  } catch {
+    return null;
+  }
+}
+
+async function storeBufferMedia({ clinicId, buffer, mimeType, name, kind = 'inbound', createdBy = null, duration }) {
   if (!Buffer.isBuffer(buffer) || !buffer.length) return null;
   const mongoose = require('mongoose');
   const mediaStore = require('./mediaStore');
@@ -74,7 +94,11 @@ async function storeBufferMedia({ clinicId, buffer, mimeType, name, kind = 'inbo
     kind,
     ...(createdBy ? { createdBy } : {}),
   });
-  return { id: doc._id, url: mediaUrlForId(doc._id), size: doc.size };
+  // Audio: su duración real viaja con el resultado para guardarla en el mensaje.
+  // Si quien llama ya la midió (la nota de voz convertida), no se repite.
+  const audio = cleanMimeType.startsWith('audio/');
+  const medida = audio ? (duration ?? await medirDuracionAudio(storageKey)) : null;
+  return { id: doc._id, url: mediaUrlForId(doc._id), size: doc.size, ...(audio ? { duration: medida } : {}) };
 }
 
 async function storeInlineMedia({ clinicId, dataUrl, name, kind = 'inbound', createdBy = null }) {

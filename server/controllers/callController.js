@@ -309,12 +309,27 @@ exports.acceptCall = async (req, res) => {
       return res.status(502).json({ message: call.errorMessage });
     }
     // El agente que contesta se queda con la llamada (y con el chat si estaba libre).
-    call.status = 'active';
-    call.connectedAt = new Date();
-    call.agent = req.user._id;
-    call.agentName = req.user.name;
-    call.offerSdp = '';
-    await call.save();
+    //
+    // SOLO SI SIGUE SONANDO (oct-2026): mientras Meta confirma el «aceptar», el
+    // contacto puede colgar y el webhook cerrar la llamada. Guardar aquí a ciegas
+    // la devolvía a `active` sobre el cierre y quedaba «en curso» para siempre,
+    // con una conexión posterior al fin.
+    const aceptada = await Call.findOneAndUpdate(
+      { _id: call._id, status: 'ringing' },
+      {
+        $set: {
+          status: 'active',
+          connectedAt: new Date(),
+          agent: req.user._id,
+          agentName: req.user.name,
+          offerSdp: '',
+        },
+      },
+      { new: true }
+    );
+    if (!aceptada) {
+      return res.status(409).json({ message: 'El contacto colgó antes de que se pudiera contestar.' });
+    }
     if (conv && !conv.assignedTo) {
       conv.assignedTo = req.user._id;
       conv.assignedToName = req.user.name;
@@ -324,8 +339,8 @@ exports.acceptCall = async (req, res) => {
         conversationId: conv._id, assignedTo: req.user._id, assignedToName: req.user.name,
       });
     }
-    emitToCallCenter('call:status', callPayload(call));
-    res.json(callPayload(call));
+    emitToCallCenter('call:status', callPayload(aceptada));
+    res.json(callPayload(aceptada));
   } catch (err) {
     res.status(500).json({ message: 'Error al aceptar la llamada', error: err.message });
   }
@@ -474,7 +489,10 @@ exports.handleCallWebhook = async (clinicId, value, account) => {
       if (!call) continue;
       const failed = ev.status && ev.status !== 'COMPLETED';
       // Sin conectar nunca = nadie contestó; con conexión = colgada normal.
-      const status = failed ? (call.connectedAt ? 'completed' : 'missed') : 'completed';
+      // OJO (oct-2026): Meta manda «COMPLETED» también cuando el contacto cuelga
+      // mientras suena. Antes eso se guardaba como completada y el historial
+      // daba por contestadas llamadas que nadie atendió: manda la conexión.
+      const status = call.connectedAt ? 'completed' : 'missed';
       if (ev.duration && !call.durationSec) call.durationSec = ev.duration;
       // eslint-disable-next-line no-await-in-loop
       await finishCall(call, { status, errorMessage: failed ? `WhatsApp: ${ev.status}` : '' });

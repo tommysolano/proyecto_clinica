@@ -91,6 +91,9 @@ self.addEventListener('push', (event) => {
       // El sistema operativo decide sonido y vibración según los ajustes del
       // teléfono. La llamada queda visible hasta que el usuario actúe.
       silent: false,
+      // Vibración como la de WhatsApp (Android; el resto la ignora). La llamada
+      // vibra más largo, como un timbre.
+      vibrate: esLlamada ? [600, 300, 600, 300, 600, 300, 600] : [200, 100, 200],
       requireInteraction: esLlamada,
       timestamp: Number(datos.timestamp) || Date.now(),
       actions: esLlamada
@@ -109,7 +112,15 @@ self.addEventListener('push', (event) => {
   );
 });
 
-/** Al tocar el aviso: si ya hay una ventana abierta se reutiliza, no se abre otra. */
+/**
+ * Al tocar el aviso: si ya hay una ventana abierta se reutiliza, no se abre otra.
+ *
+ * Y NO SE RECARGA (oct-2026): se le pide a la página que navegue ella misma
+ * (`vk-abrir`, ver useAvisosDelSistema en Layout). Recargarla cortaba la
+ * llamada en curso al tocar cualquier otro aviso, y tocar el de una llamada
+ * entrante tenía que reconstruirla desde cero. Solo si la página no contesta
+ * (una versión vieja sin el oyente) se recarga como antes.
+ */
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   if (event.action === 'dismiss-call') return;
@@ -121,8 +132,9 @@ self.addEventListener('notificationclick', (event) => {
       const ventanas = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const v of ventanas) {
         if (v.url.includes(self.location.origin)) {
-          await v.focus();
-          if ('navigate' in v) await v.navigate(destino).catch(() => {});
+          await v.focus().catch(() => {});
+          const atendido = await pedirALaPagina(v, destino);
+          if (!atendido && 'navigate' in v) await v.navigate(destino).catch(() => {});
           return;
         }
       }
@@ -130,6 +142,24 @@ self.addEventListener('notificationclick', (event) => {
     })(),
   );
 });
+
+/** Pide a la página abierta que navegue a `url`. true si confirmó a tiempo. */
+function pedirALaPagina(cliente, url) {
+  return new Promise((resolve) => {
+    const canal = new MessageChannel();
+    const tope = setTimeout(() => resolve(false), 1500);
+    canal.port1.onmessage = () => {
+      clearTimeout(tope);
+      resolve(true);
+    };
+    try {
+      cliente.postMessage({ type: 'vk-abrir', url }, [canal.port2]);
+    } catch {
+      clearTimeout(tope);
+      resolve(false);
+    }
+  });
+}
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;

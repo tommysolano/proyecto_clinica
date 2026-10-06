@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { roleSatisfies, ROLE_LABELS } from '../utils/roles';
 import NotificationBell from './NotificationBell';
 import IncomingCallPushPrompt from './IncomingCallPushPrompt';
+import SonidoMensajes from './SonidoMensajes';
 import { WhatsappCallProvider, useWhatsappCallContext } from '../context/WhatsappCallContext';
 import { formatDuration } from '../hooks/useVoiceRecorder';
 import { HiOutlinePhone } from 'react-icons/hi2';
@@ -197,6 +198,7 @@ const MENU_GROUPS = [
     key: 'marketing', label: 'Fénix', alias: 'marketing crm', icon: HiOutlineFire, items: [
       { path: '/marketing', label: 'Marketing', roles: ['admin', 'marketing'] },
       { path: '/chats', label: 'Chats / WhatsApp', roles: ['admin', 'call_center', 'marketing'] },
+      { path: '/call-log', label: 'Registro de Llamadas', roles: ['admin', 'call_center', 'marketing'] },
       { path: '/contacts', label: 'Contactos', roles: ['admin', 'call_center', 'marketing'] },
       { path: '/opportunities', label: 'Oportunidades', roles: ['admin', 'call_center', 'marketing'] },
       { path: '/campaigns', label: 'Campañas', roles: ['admin', 'marketing'] },
@@ -260,25 +262,62 @@ function CallInProgressPill() {
   const { call, seconds } = voiceCall;
   const ringing = call.status === 'ringing';
   return (
-    <div
-      title={ringing ? 'Llamada sonando' : 'Llamada en curso'}
-      className={`hidden sm:flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold flex-shrink-0 ${
+    <button
+      type="button"
+      // Un toque vuelve a la llamada a pantalla completa (si estaba minimizada).
+      onClick={voiceCall.showCall}
+      title={ringing ? 'Llamada sonando · ver la llamada' : 'Llamada en curso · ver la llamada'}
+      className={`hidden sm:flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold flex-shrink-0 border-none cursor-pointer ${
         ringing
           ? 'bg-amber-100 text-amber-800 animate-pulse'
-          : 'bg-emerald-100 text-emerald-800'
+          : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
       }`}
     >
       <HiOutlinePhone className={`w-3.5 h-3.5 ${ringing ? 'animate-bounce' : ''}`} />
       <span className="max-w-[140px] truncate">{call.contactName || call.phone || 'Llamada'}</span>
       {!ringing && <span className="tabular-nums text-emerald-600">{formatDuration(seconds)}</span>}
-    </div>
+    </button>
   );
+}
+
+/**
+ * TOCAR UN AVISO DEL SISTEMA CON LA APP YA ABIERTA (oct-2026).
+ *
+ * El service worker le pasa a la página la URL del aviso y la página navega
+ * SIN RECARGARSE. Antes el service worker recargaba la pestaña: con una
+ * llamada en curso, tocar cualquier otro aviso la cortaba. Si la página no
+ * responde (versión vieja sin este oyente), el service worker recarga como
+ * antes. `vk-aviso-abierto` lo escucha la llamada para volver a pantalla
+ * completa.
+ */
+function useAvisosDelSistema(navigate) {
+  useEffect(() => {
+    const sw = navigator.serviceWorker;
+    if (!sw) return undefined;
+    const alMensaje = (e) => {
+      if (e.data?.type !== 'vk-abrir') return;
+      let url = String(e.data.url || '/');
+      try {
+        const u = new URL(url, window.location.origin);
+        if (u.origin !== window.location.origin) return;
+        url = `${u.pathname}${u.search}${u.hash}`;
+      } catch {
+        return;
+      }
+      navigate(url);
+      window.dispatchEvent(new CustomEvent('vk-aviso-abierto', { detail: { url } }));
+      e.ports?.[0]?.postMessage('ok');
+    };
+    sw.addEventListener('message', alMensaje);
+    return () => sw.removeEventListener('message', alMensaje);
+  }, [navigate]);
 }
 
 export default function Layout({ children }) {
   const { user, role, activeClinic, clinics, selectClinic, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  useAvisosDelSistema(navigate);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // Colapso de la barra lateral en escritorio. En escritorio la barra divide el
   // espacio con el contenido; al colapsarla, el contenido ocupa todo el ancho.
@@ -387,6 +426,7 @@ export default function Layout({ children }) {
     <WhatsappCallProvider>
     <div className="flex h-screen overflow-hidden bg-body">
       <IncomingCallPushPrompt />
+      <SonidoMensajes />
       {sidebarOpen && (
         <div
           className="fixed inset-0 bg-black/40 backdrop-blur-sm z-20 lg:hidden"

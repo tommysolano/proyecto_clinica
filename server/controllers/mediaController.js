@@ -42,6 +42,36 @@ function wantsDownload(req) {
 }
 
 /**
+ * Traduce la cabecera `Range` a `{ start, end }` (inclusivos), o `'invalid'`
+ * (→ 416), o `null` si no hay rango que atender (→ el archivo entero).
+ *
+ * LOS TRES FORMATOS DE RFC 7233, incluido el SUFIJO `bytes=-N` = «los ÚLTIMOS N
+ * bytes». Antes se leía como `0-N` y se devolvía el PRINCIPIO del archivo (oct-
+ * 2026). Es justo lo que pide Safari/iPhone para leer el final de una nota de
+ * voz ogg, que es donde está su duración: recibía la cabecera en su lugar y la
+ * burbuja enseñaba una duración disparatada («un audio de segundos dura mucho
+ * más»). Chrome de escritorio pide `bytes=X-` y por eso allí se veía bien.
+ */
+function rangoPedido(range, total) {
+  const m = range && /^bytes=(\d*)-(\d*)$/.exec(String(range).trim());
+  if (!m || (!m[1] && !m[2])) return null;
+  let start;
+  let end;
+  if (!m[1]) {
+    // Sufijo: los últimos N bytes (o todo el archivo si N es mayor).
+    const n = Number(m[2]);
+    if (!Number.isFinite(n) || n <= 0) return 'invalid';
+    start = Math.max(0, total - n);
+    end = total - 1;
+  } else {
+    start = Number(m[1]);
+    end = m[2] ? Math.min(Number(m[2]), total - 1) : total - 1;
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= total) return 'invalid';
+  return { start, end };
+}
+
+/**
  * Responde con los bytes de un data URL, atendiendo peticiones con `Range`
  * (206 Parcial): Safari/iOS NO reproduce audio ni video servido por URL si el
  * servidor no soporta rangos.
@@ -55,14 +85,13 @@ function sendDataUrl(res, dataUrl, { fallbackMime = 'application/octet-stream', 
   res.set('Cache-Control', cache || 'public, max-age=31536000, immutable');
   res.set('Accept-Ranges', 'bytes');
 
-  const m = range && /^bytes=(\d*)-(\d*)$/.exec(String(range).trim());
-  if (m && (m[1] || m[2])) {
-    const start = m[1] ? Number(m[1]) : 0;
-    const end = m[2] ? Math.min(Number(m[2]), buffer.length - 1) : buffer.length - 1;
-    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= buffer.length) {
-      res.set('Content-Range', `bytes */${buffer.length}`);
-      return res.status(416).end();
-    }
+  const rango = rangoPedido(range, buffer.length);
+  if (rango === 'invalid') {
+    res.set('Content-Range', `bytes */${buffer.length}`);
+    return res.status(416).end();
+  }
+  if (rango) {
+    const { start, end } = rango;
     const chunk = buffer.subarray(start, end + 1);
     res.status(206);
     res.set('Content-Range', `bytes ${start}-${end}/${buffer.length}`);
@@ -193,14 +222,13 @@ function streamFromDisk(res, storageKey, total, { mimeType, range }) {
   res.set('Cache-Control', 'public, max-age=31536000, immutable');
   res.set('Accept-Ranges', 'bytes');
 
-  const m = range && /^bytes=(\d*)-(\d*)$/.exec(String(range).trim());
-  if (m && (m[1] || m[2])) {
-    const start = m[1] ? Number(m[1]) : 0;
-    const end = m[2] ? Math.min(Number(m[2]), total - 1) : total - 1;
-    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= total) {
-      res.set('Content-Range', `bytes */${total}`);
-      return res.status(416).end();
-    }
+  const rango = rangoPedido(range, total);
+  if (rango === 'invalid') {
+    res.set('Content-Range', `bytes */${total}`);
+    return res.status(416).end();
+  }
+  if (rango) {
+    const { start, end } = rango;
     res.status(206);
     res.set('Content-Range', `bytes ${start}-${end}/${total}`);
     res.set('Content-Length', String(end - start + 1));
@@ -210,3 +238,6 @@ function streamFromDisk(res, storageKey, total, { mimeType, range }) {
   res.set('Content-Length', String(total));
   return mediaStore.createReadStream(storageKey).pipe(res);
 }
+
+// Para pruebas.
+exports._rangoPedido = rangoPedido;

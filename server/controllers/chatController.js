@@ -1693,9 +1693,11 @@ exports.uploadSavedReplyMedia = async (req, res) => {
       name: name || `adjunto_${Date.now()}`,
       kind: 'attachment',
       createdBy: req.user._id,
+      // Ya medida por el conversor: no se vuelve a medir (si faltó, la mide el almacén).
+      ...(audioDuration != null ? { duration: audioDuration } : {}),
     });
     if (!stored) return res.status(400).json({ message: 'Archivo inválido' });
-    res.status(201).json({ id: stored.id, url: publicMediaUrl(req, stored.id), type: kind, name: name || `adjunto_${Date.now()}`, duration: audioDuration });
+    res.status(201).json({ id: stored.id, url: publicMediaUrl(req, stored.id), type: kind, name: name || `adjunto_${Date.now()}`, duration: stored.duration ?? audioDuration });
   } catch (err) {
     res.status(500).json({ message: 'Error al subir adjunto', error: err.message });
   }
@@ -3482,6 +3484,7 @@ exports.retryMessageMedia = async (req, res) => {
     });
     msg.mediaUrl = stored.url;
     msg.mediaSize = size || stored.size || msg.mediaSize;
+    if (stored.duration != null) msg.mediaDuration = stored.duration;
     msg.errorCode = '';
     msg.errorMessage = '';
     await msg.save();
@@ -4312,6 +4315,7 @@ async function ingestExternalOutbound({ clinicId, account, externalUserId, phone
 
   // Es un mensaje escrito de verdad desde el teléfono: sus bytes se guardan
   // aparte, igual que los entrantes.
+  let mediaDuration = null;
   if (media?.dataUrl) {
     const stored = await chatMedia.externalizeMedia({
       clinicId,
@@ -4320,6 +4324,7 @@ async function ingestExternalOutbound({ clinicId, account, externalUserId, phone
     });
     mediaUrl = stored.url;
     if (!mediaSize && stored.size) mediaSize = stored.size;
+    mediaDuration = stored.duration ?? null;
   }
 
   const msg = await Message.create({
@@ -4331,6 +4336,7 @@ async function ingestExternalOutbound({ clinicId, account, externalUserId, phone
     mediaType,
     mediaName,
     mediaSize,
+    ...(mediaDuration != null ? { mediaDuration } : {}),
     ...(mediaError ? { errorCode: 'media_unavailable', errorMessage: mediaError } : {}),
     externalId: externalId || undefined,
     origin: 'phone',
@@ -4510,6 +4516,9 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   let mediaName = '';
   let mediaSize = 0;
   let mediaError = '';
+  // Duración real de una nota de voz recibida, medida al guardarla (oct-2026):
+  // sin ella la burbuja dependía del cálculo del navegador.
+  let mediaDuration = null;
   let finalBody = body || '';
   if (media && channel === 'whatsapp') {
     mediaName = String(media.filename || '').slice(0, 200);
@@ -4530,6 +4539,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
       });
       mediaUrl = stored.url;
       if (!mediaSize && stored.size) mediaSize = stored.size;
+      mediaDuration = stored.duration ?? null;
     } else if (media.unavailable) {
       // QR: la sesión de WhatsApp Web no logró entregar los bytes.
       mediaError = String(media.error || 'No se pudo descargar el archivo de WhatsApp.').slice(0, 300);
@@ -4545,6 +4555,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
         });
         mediaUrl = stored.url;
         mediaSize = Number(dl.size) || stored.size || mediaSize;
+        mediaDuration = stored.duration ?? null;
         if (!mediaName && dl.filename) mediaName = String(dl.filename).slice(0, 200);
       } else {
         mediaError = String(
@@ -4615,6 +4626,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     mediaType,
     mediaName,
     mediaSize,
+    ...(mediaDuration != null ? { mediaDuration } : {}),
     // Id del archivo en Meta: permite reintentar la descarga después.
     mediaExternalId: media?.id || '',
     // Motivo por el que el archivo no está disponible (se muestra en la burbuja).

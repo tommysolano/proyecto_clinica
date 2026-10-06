@@ -23,6 +23,7 @@ const {
   turnoVigenteEsEnfermeria,
   filtroCitasDelDoctor,
   filtroCitasDeEnfermeria,
+  filtroCitasConDoctor,
 sincronizarEspejo,
 turnoVigente,
 turnosTerminados,
@@ -305,12 +306,9 @@ async function construirQueryAgenda(req, {
     if (end) end.setHours(23, 59, 59, 999);
     query.date = { $gte: start, $lte: end };
   }
-  if (doctor) {
-    // UNO o VARIOS separados por coma: la agenda filtra por varios médicos a la
-    // vez (sep-2026, igual que el filtro de servicio).
-    const doctores = String(doctor).split(',').map((s) => s.trim()).filter(Boolean);
-    query.doctor = doctores.length === 1 ? doctores[0] : { $in: doctores };
-  }
+  // UNO o VARIOS separados por coma: la agenda filtra por varios médicos a la
+  // vez (sep-2026, igual que el filtro de servicio).
+  const doctores = doctor ? String(doctor).split(',').map((s) => s.trim()).filter(Boolean) : [];
   if (status) query.status = status;
   if (createdBy) query.createdBy = createdBy;
   if (isFirstVisit === 'true') query.isFirstVisit = true;
@@ -380,6 +378,14 @@ async function construirQueryAgenda(req, {
    * orden). Ambos van dentro de un `$and` para que se acumulen.
    */
   const extras = [];
+  /**
+   * EL FILTRO DE DOCTOR MIRA LOS TURNOS, no solo el espejo `doctor` (oct-2026).
+   * El espejo es el ÚLTIMO doctor que atendió: en las citas de dos médicos
+   * («ginecología → medicina general») la primera desaparecía del filtro y la
+   * agenda decía que había trabajado dos días cuando fueron veinte. Va en
+   * `extras` porque trae su propio `$or`.
+   */
+  if (doctores.length) extras.push(filtroCitasConDoctor(doctores));
   if (isDoctorRole(req.role)) {
     // Su turno VIGENTE o uno que ya atendió: al doctor que va segundo la cita
     // no le aparece hasta que el primero termine (ver filtroCitasDelDoctor).

@@ -70,6 +70,7 @@ const Referrals = pagina(() => import('./pages/Referrals'));
 const Quotations = pagina(() => import('./pages/Quotations'));
 const Marketing = pagina(() => import('./pages/Marketing'));
 const Chats = pagina(() => import('./pages/Chats'));
+const CallLog = pagina(() => import('./pages/CallLog'));
 const OpportunitiesGlobal = pagina(() => import('./pages/OpportunitiesGlobal'));
 const Analytics = pagina(() => import('./pages/Analytics'));
 const MessageTemplates = pagina(() => import('./pages/MessageTemplates'));
@@ -376,6 +377,14 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'call_center', 'marketing']}>
                       <Chats />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/call-log"
+                  element={
+                    <RoleRoute roles={['admin', 'call_center', 'marketing']}>
+                      <CallLog />
                     </RoleRoute>
                   }
                 />

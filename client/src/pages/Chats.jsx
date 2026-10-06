@@ -68,6 +68,7 @@ import { fmtDate, fmtDateTime, todayEc, nowEcHHMM, formatEc, ecDayKey } from '..
 import { imageFromClipboard, imageFileToDataUrl, pastedImageName } from '../utils/chatMedia';
 import useVoiceRecorder, { formatDuration } from '../hooks/useVoiceRecorder';
 import { useWhatsappCallContext } from '../context/WhatsappCallContext';
+import { marcarChatAbierto } from '../utils/sonidos';
 import ChatComposerToolbar from '../components/ChatComposerToolbar';
 import { renderWhatsappText } from '../utils/whatsappText';
 import { downloadFromUrl, triggerAnchorDownload, triggerBlobDownload } from '../utils/download';
@@ -339,6 +340,9 @@ export default function Chats() {
   const activeIdRef = useRef(null);
   useEffect(() => {
     activeIdRef.current = activeId;
+    // El mensaje del chat que se está mirando no suena (ver SonidoMensajes).
+    marcarChatAbierto(activeId);
+    return () => marcarChatAbierto(null);
   }, [activeId]);
   const [messages, setMessages] = useState([]);
   // Buscador DENTRO del chat abierto (estilo WhatsApp): resalta y salta entre
@@ -2326,7 +2330,12 @@ export default function Chats() {
                       )}
                       {voiceNoteAttached ? (
                         <>
-                          <audio controls src={attachmentDraft.url} className="h-8 flex-1 max-w-[260px]" />
+                          {/* El mismo reproductor del chat, con la duración que midió
+                              el servidor: el nativo calculaba la suya y en el
+                              iPhone salía mal. */}
+                          <div className="flex-1 min-w-0 -mb-1">
+                            <AudioPlayer src={attachmentDraft.url} isOut={false} durationSec={attachmentDraft.duration ?? null} />
+                          </div>
                           <span className="text-[11px] text-emerald-700 hidden sm:inline">
                             Se enviará como nota de voz
                           </span>
@@ -3681,9 +3690,13 @@ function AudioPlayer({ src, isOut, onDownload, durationSec = null }) {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
-  // DURACIÓN REAL si el servidor la midió al subir (mediaDuration): el estimo del
-  // navegador para los contenedores de MediaRecorder es absurdo.
-  const [duration, setDuration] = useState(durationSec ?? 0);
+  // DURACIÓN REAL si el servidor la midió (mediaDuration, con ffmpeg): MANDA
+  // SIEMPRE sobre la del navegador (oct-2026). Antes el navegador la pisaba en
+  // cuanto informaba una, y en el iPhone la calculaba mal: «un audio de unos
+  // segundos dice que dura mucho más». La del navegador queda solo para los
+  // audios viejos, sin medir.
+  const [duracionNavegador, setDuration] = useState(0);
+  const duration = durationSec > 0 ? durationSec : duracionNavegador;
   const [rate, setRate] = useState(readSavedAudioSpeed);
   // El navegador no pudo decodificar el audio (Safari/iOS no reproduce ogg/opus,
   // que es el formato de TODAS las notas de voz de WhatsApp). En vez de un botón
@@ -3709,17 +3722,17 @@ function AudioPlayer({ src, isOut, onDownload, durationSec = null }) {
     const a = audioRef.current;
     if (!a) return;
     a.playbackRate = rate;
-    // Con la duración del SERVIDOR ya puesta, solo se refina si el navegador
-    // aporta un dato finito distinto (p. ej. audios entrantes de WhatsApp).
+    // Con la duración del SERVIDOR no hace falta preguntarle nada al navegador.
+    if (durationSec > 0) return;
     if (a.duration === Infinity || Number.isNaN(a.duration)) {
       const onSeeked = () => {
         a.removeEventListener('seeked', onSeeked);
-        if (!durationSec) setDuration(Number.isFinite(a.duration) ? a.duration : 0);
+        setDuration(Number.isFinite(a.duration) ? a.duration : 0);
         a.currentTime = 0;
       };
       a.addEventListener('seeked', onSeeked);
       try { a.currentTime = 1e6; } catch { /* noop */ }
-    } else if (durationSec == null) {
+    } else {
       setDuration(a.duration || 0);
     }
   };
@@ -3782,7 +3795,14 @@ function AudioPlayer({ src, isOut, onDownload, durationSec = null }) {
         onTimeUpdate={() => setCurrent(audioRef.current?.currentTime || 0)}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
-        onEnded={() => { setPlaying(false); setCurrent(0); }}
+        onEnded={() => {
+          // Al terminar de sonar se sabe la duración exacta: corrige lo que el
+          // navegador hubiera calculado mal para un audio viejo sin medir.
+          const fin = audioRef.current?.currentTime;
+          if (Number.isFinite(fin) && fin > 0 && Math.abs(fin - duracionNavegador) > 0.5) setDuration(fin);
+          setPlaying(false);
+          setCurrent(0);
+        }}
       />
       <button
         type="button"
@@ -4125,17 +4145,70 @@ function MessageMedia({ msg, isOut, onRetryMedia }) {
 }
 
 // Botón "responder" que aparece al pasar el cursor sobre la burbuja.
+//
+// EN PANTALLAS TÁCTILES SE VE SIEMPRE (oct-2026): en el celular no hay cursor
+// que «pase por encima», así que el botón no aparecía nunca y no había forma de
+// responder a un mensaje concreto. Ahí además se puede deslizar el mensaje a la
+// derecha, como en WhatsApp (ver useDeslizarParaResponder).
 function ReplyButton({ onClick }) {
   return (
     <button
       type="button"
       onClick={onClick}
       title="Responder a este mensaje"
-      className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 w-7 h-7 rounded-full bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-500 hover:text-emerald-600 hover:border-emerald-300 cursor-pointer"
+      aria-label="Responder a este mensaje"
+      className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-70 transition-opacity shrink-0 w-7 h-7 rounded-full bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-500 hover:text-emerald-600 hover:border-emerald-300 cursor-pointer"
     >
       <HiOutlineArrowUturnLeft className="w-3.5 h-3.5" />
     </button>
   );
+}
+
+// Distancia (px) que hay que deslizar el mensaje para responderlo.
+const UMBRAL_DESLIZAR = 60;
+
+/**
+ * DESLIZAR UN MENSAJE A LA DERECHA PARA RESPONDERLO (oct-2026), el gesto de
+ * WhatsApp en el celular. Solo cuenta un gesto claramente HORIZONTAL: si el
+ * dedo arranca hacia arriba o abajo es el scroll del hilo y no se toca. El
+ * `touch-action: pan-y` de la fila deja el scroll vertical al navegador.
+ */
+function useDeslizarParaResponder(onReply) {
+  const inicio = useRef(null);
+  const [dx, setDx] = useState(0);
+  const dxRef = useRef(0);
+  const mover = (v) => { dxRef.current = v; setDx(v); };
+  const soltar = () => {
+    if (dxRef.current >= UMBRAL_DESLIZAR) {
+      try { navigator.vibrate?.(15); } catch { /* no todos vibran */ }
+      onReply();
+    }
+    inicio.current = null;
+    mover(0);
+  };
+  return {
+    dx,
+    handlers: {
+      onTouchStart: (e) => {
+        const t = e.touches[0];
+        inicio.current = { x: t.clientX, y: t.clientY, eje: null };
+      },
+      onTouchMove: (e) => {
+        const s = inicio.current;
+        if (!s) return;
+        const t = e.touches[0];
+        const mx = t.clientX - s.x;
+        const my = t.clientY - s.y;
+        if (!s.eje) {
+          if (Math.abs(mx) < 10 && Math.abs(my) < 10) return;
+          s.eje = Math.abs(mx) > Math.abs(my) * 1.5 ? 'x' : 'y';
+        }
+        if (s.eje === 'x') mover(Math.max(0, Math.min(mx, 90)));
+      },
+      onTouchEnd: soltar,
+      onTouchCancel: () => { inicio.current = null; mover(0); },
+    },
+  };
 }
 
 // Traduce el resultado real de la cita ('failed:<motivo>') a un texto corto.
@@ -4248,6 +4321,7 @@ const ThreadMessages = memo(function ThreadMessages({ messages, firstShown, divi
 });
 
 const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry, onRetryMedia, onUseTemplate }) {
+  const deslizar = useDeslizarParaResponder(() => onReply?.(msg));
   // Evento INTERNO del sistema (kind='event'): chip centrado, visible SOLO para el
   // equipo (nunca se envió al contacto). P.ej. "Oportunidad creada".
   if (msg.kind === 'event') {
@@ -4282,8 +4356,33 @@ const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, high
   const reply = msg.replyTo && (msg.replyTo.body || msg.replyTo.mediaType || msg.replyTo.senderName)
     ? msg.replyTo
     : null;
+  const { dx } = deslizar;
   return (
-    <div className={`group flex items-center gap-1.5 ${isOut ? 'justify-end' : 'justify-start'}`}>
+    <div
+      {...(onReply ? deslizar.handlers : {})}
+      className={`group relative flex items-center gap-1.5 ${isOut ? 'justify-end' : 'justify-start'}`}
+      style={{
+        touchAction: 'pan-y',
+        transform: dx ? `translateX(${dx}px)` : undefined,
+        transition: dx ? 'none' : 'transform 180ms ease-out',
+      }}
+    >
+      {/* Mientras se desliza asoma la flecha de responder, como en WhatsApp. */}
+      {dx > 0 && (
+        <span
+          aria-hidden="true"
+          className="absolute top-1/2 w-7 h-7 rounded-full bg-white shadow flex items-center justify-center text-emerald-600"
+          style={{
+            // La fila se corre `dx` a la derecha: la flecha va en el hueco que
+            // queda a la izquierda (igual para entrantes y salientes).
+            left: -dx + 4,
+            opacity: Math.min(1, dx / UMBRAL_DESLIZAR),
+            transform: `translateY(-50%) scale(${dx >= UMBRAL_DESLIZAR ? 1.15 : 0.9})`,
+          }}
+        >
+          <HiOutlineArrowUturnLeft className="w-3.5 h-3.5" />
+        </span>
+      )}
       {isOut && <ReplyButton onClick={() => onReply?.(msg)} />}
       <div
         id={`msg-${msg._id}`}

@@ -6,6 +6,8 @@ import {
   HiOutlineBellAlert,
   HiOutlineExclamationTriangle,
   HiOutlineInformationCircle,
+  HiOutlineSpeakerWave,
+  HiOutlineSpeakerXMark,
   HiOutlineXCircle,
 } from 'react-icons/hi2';
 import api from '../api/axios';
@@ -13,6 +15,7 @@ import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
 import { fmtDateTime } from '../utils/date';
 import { activarPush, estadoPush, probarPush } from '../utils/push';
+import { alCambiarSonidos, setSonidosActivos, sonidosActivos, sonarAviso } from '../utils/sonidos';
 
 // A dónde lleva cada tipo de notificación al hacer clic. Todo lo de plantillas
 // termina en la página de Plantillas, que es donde se actúa.
@@ -67,16 +70,36 @@ export default function NotificationBell() {
   // exige clínica y un 403 CLINIC_REQUIRED redirige la app entera.
   const clinicId = activeClinic?._id || null;
 
+  /**
+   * SUENA CUANDO APARECE UN AVISO NUEVO (oct-2026), no con cada evento: el
+   * socket `notification:new` llega también por avisos que este rol no ve
+   * (los de plantillas van a toda la sucursal) y el mismo aviso llega dos
+   * veces (por el rol y por la persona). Se compara la lista que de verdad
+   * devuelve el servidor: si trae un aviso sin leer que no estaba, suena. La
+   * primera carga solo toma nota, para no sonar por lo que ya había.
+   */
+  const vistosRef = useRef(null);
   const load = async () => {
     if (!clinicId) return;
     try {
       const { data } = await api.get('/notifications', { params: { limit: 30 } });
-      setItems(data?.items || []);
+      const lista = data?.items || [];
+      setItems(lista);
       setUnread(data?.unread || 0);
+      const nuevo = vistosRef.current
+        ? lista.find((n) => !n.read && !vistosRef.current.has(n._id))
+        : null;
+      vistosRef.current = new Set([...(vistosRef.current || []), ...lista.map((n) => n._id)]);
+      if (nuevo) sonarAviso(nuevo._id);
     } catch {
       /* el header nunca debe romperse por esto */
     }
   };
+  // Otra sucursal = otra bandeja: su primera carga tampoco suena.
+  useEffect(() => { vistosRef.current = null; }, [clinicId]);
+
+  const [conSonido, setConSonido] = useState(sonidosActivos);
+  useEffect(() => alCambiarSonidos(setConSonido), []);
 
   /**
    * Recarga AGRUPADA y en pausa con la pestaña oculta. La campana vive en la
@@ -285,6 +308,32 @@ export default function NotificationBell() {
                 </button>
               );
             })}
+          </div>
+
+          <div className="border-t border-slate-100 px-3.5 py-2.5 bg-slate-50/70">
+            <div className="flex items-center gap-2">
+              {conSonido
+                ? <HiOutlineSpeakerWave className="w-4 h-4 shrink-0 text-emerald-600" />
+                : <HiOutlineSpeakerXMark className="w-4 h-4 shrink-0 text-slate-400" />}
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-slate-700 m-0">Sonido de avisos</p>
+                <p className="text-[11px] text-slate-500 m-0 leading-snug">
+                  {receivesCalls
+                    ? 'Mensajes nuevos y avisos de la campana. Las llamadas suenan siempre.'
+                    : 'Suena cuando llega un aviso nuevo.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={conSonido}
+                aria-label="Sonido de avisos"
+                onClick={() => setSonidosActivos(!conSonido)}
+                className={`relative w-9 h-5 rounded-full border-none cursor-pointer shrink-0 transition-colors ${conSonido ? 'bg-emerald-600' : 'bg-slate-300'}`}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${conSonido ? 'translate-x-4' : ''}`} />
+              </button>
+            </div>
           </div>
 
           {push.soportado && (

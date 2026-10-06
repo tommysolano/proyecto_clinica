@@ -31,6 +31,12 @@ function installMock(request, exports) {
 installMock('../models/Call', {
   findOne: async () => activeCall,
   findById: async () => activeCall,
+  // Aceptar es condicional: solo si la llamada SIGUE sonando (ver acceptCall).
+  findOneAndUpdate: async (filter, update) => {
+    if (!activeCall || (filter.status && activeCall.status !== filter.status)) return null;
+    Object.assign(activeCall, update.$set);
+    return activeCall;
+  },
 });
 installMock('../models/Conversation', {
   findById: () => queryResult(activeConversation),
@@ -143,4 +149,21 @@ test('una llamada antigua sin cuenta conserva la resolución mediante la convers
   assert.equal(res.statusCode, 200);
   assert.equal(providerInvocation.creds.phoneNumberId, chatAccount.phoneNumberId);
   assert.equal(conversationResolutionCount, 1);
+});
+
+test('contestar una llamada que el contacto ya colgó no la reabre (oct-2026)', async () => {
+  arrangeCall('ringing');
+  // El webhook la cierra mientras Meta confirma el «aceptar».
+  const { acceptCall } = require('../utils/whatsappCalls');
+  const original = acceptCall;
+  require('../utils/whatsappCalls').acceptCall = async (...args) => {
+    activeCall.status = 'missed';
+    return original(...args);
+  };
+  const res = responseRecorder();
+  await callController.acceptCall(request({ sdp: 'v=0 answer' }), res);
+  require('../utils/whatsappCalls').acceptCall = original;
+
+  assert.equal(res.statusCode, 409);
+  assert.equal(activeCall.status, 'missed', 'sigue perdida, no vuelve a «en curso»');
 });

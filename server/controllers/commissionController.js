@@ -13,6 +13,7 @@ const Conversation = require('../models/Conversation');
 const Patient = require('../models/Patient');
 const { normalizePhone } = require('../utils/phoneNormalize');
 const { citasConHistoriaPrevia } = require('../utils/firstVisit');
+const { doctoresDeLaCita, filtroCitasConDoctor } = require('../utils/appointmentTurns');
 const { createEntry, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { DOCTOR_SPECIALTY_ROLES, DOCTOR_LIKE_ROLES } = require('../constants/roles');
@@ -479,9 +480,14 @@ async function computeCommissions(clinicId, startDate, endDate) {
     const enfermeros = (appt.turns || [])
       .filter((t) => t.kind === 'enfermeria' && t.user && t.status === 'completado')
       .map((t) => t.user);
+    // Lo mismo con los DOCTORES (oct-2026): `doctor` es el espejo del último, y
+    // en una cita «ginecología → medicina general» la primera no cobraba nada.
+    const doctoresTurno = (appt.turns || [])
+      .filter((t) => t.kind === 'doctor' && t.user && t.status === 'completado')
+      .map((t) => t.user);
     const performers = [];
     const vistos = new Set();
-    for (const p of [appt.doctor, appt.attendedByNurse, ...enfermeros]) {
+    for (const p of [appt.doctor, ...doctoresTurno, appt.attendedByNurse, ...enfermeros]) {
       const id = p && String(p._id || p);
       if (!id || vistos.has(id)) continue;
       vistos.add(id);
@@ -893,8 +899,16 @@ const parseList = (v) =>
 
 const ESTADOS_CITA = ['pendiente', 'confirmada', 'asistida', 'no_asistio', 'cancelada', 'completada'];
 
-/** Query compartida por el resumen por doctor y su detalle de citas. */
-async function construirQueryResumen(req) {
+/**
+ * Query compartida por el resumen por doctor y su detalle de citas.
+ *
+ * EL DOCTOR SE BUSCA POR SUS TURNOS (oct-2026), no solo por el espejo
+ * `doctor`, que es el ÚLTIMO que atendió: en las citas de dos médicos la
+ * primera se quedaba sin ninguna cita en Comisiones. Va en `$and` porque trae
+ * su propio `$or` (el del servicio también lo usa). `sinDoctor` lo deja fuera:
+ * las derivaciones se filtran por QUIEN DERIVÓ, no por quien atendió.
+ */
+async function construirQueryResumen(req, { sinDoctor = false } = {}) {
   const { start, end, doctor, status, service, clinic } = req.query;
   const { startDate, endDate } = parseRange(start, end);
 
@@ -906,8 +920,7 @@ async function construirQueryResumen(req) {
   }
 
   const doctores = parseList(doctor);
-  if (doctores.length === 1) query.doctor = doctores[0];
-  else if (doctores.length > 1) query.doctor = { $in: doctores };
+  if (doctores.length && !sinDoctor) query.$and = [filtroCitasConDoctor(doctores)];
 
   const estados = parseList(status);
   query.status = { $in: estados.length ? estados : ['asistida', 'completada'] };
@@ -938,6 +951,14 @@ async function construirQueryResumen(req) {
 const ESTADOS_ATENDIDA = ['asistida', 'completada'];
 const esAtendida = (a) => ESTADOS_ATENDIDA.includes(a?.status);
 const idDe = (v) => (v ? String(v._id || v) : '');
+/**
+ * Los doctores a los que se les cuenta esta cita: TODOS los que la atendieron
+ * por turno (ver `doctoresDeLaCita`), o solo los del filtro si lo hay. Una cita
+ * «ginecología → medicina general» suma una atención a cada una, cada una con
+ * sus propias tarifas.
+ */
+const doctoresQueCuentan = (appt, filtro = []) => doctoresDeLaCita(appt)
+  .filter((d) => idDe(d) && (!filtro.length || filtro.includes(idDe(d))));
 const nombrePaciente = (p) => (p ? `${p.firstName || ''} ${p.lastName || ''}`.trim() || '—' : '—');
 /**
  * El HORARIO de la regla en el que empieza la cita, o null (ver timeBands en el
@@ -1184,7 +1205,9 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
     .populate('doctor', POP_DOCTOR)
     .populate('clinic', 'name nombreComercial')
     .populate('patient', 'firstName lastName')
-    .populate('turns.user', 'name')
+    // Con los mismos campos que el espejo: el doctor de un turno es una fila
+    // del resumen igual que él (nombre, rol en la sede, activo).
+    .populate('turns.user', POP_DOCTOR)
     .populate('attendedByNurse', 'name')
     .sort({ date: 1, startTime: 1 })
     .lean();
@@ -1192,8 +1215,8 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
   // Citas DERIVADAS realizadas en el período. No se filtran por su doctor (el que
   // atendió es otro) sino por QUIEN DERIVÓ; los estados son siempre los de una
   // cita realizada, que es lo único que devenga una derivación.
-  const qDerivadas = { ...query, status: { $in: ESTADOS_ATENDIDA }, referral: { $ne: null } };
-  delete qDerivadas.doctor;
+  const { query: qSinDoctor } = await construirQueryResumen({ query: params, clinicId: clinicIdSesion }, { sinDoctor: true });
+  const qDerivadas = { ...qSinDoctor, status: { $in: ESTADOS_ATENDIDA }, referral: { $ne: null } };
   const derivadas = (await Appointment.find(qDerivadas)
     .populate({ path: 'referral', select: 'fromDoctor', populate: { path: 'fromDoctor', select: POP_DOCTOR } })
     .populate('doctor', 'name')
@@ -1205,7 +1228,9 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
       && (!doctoresFiltro.length || doctoresFiltro.includes(String(a.referral.fromDoctor._id))));
 
   const doctores = new Map();
-  for (const a of appts) if (a.doctor?._id) doctores.set(String(a.doctor._id), a.doctor);
+  for (const a of appts) {
+    for (const d of doctoresQueCuentan(a, doctoresFiltro)) if (d?._id) doctores.set(String(d._id), d);
+  }
   for (const a of derivadas) {
     const d = a.referral.fromDoctor;
     if (!doctores.has(String(d._id))) doctores.set(String(d._id), d);
@@ -1274,39 +1299,42 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
   for (const appt of appts) {
     // Canje: no genera comisión, ni por servicio ni por paciente (un valor fijo
     // la habría pagado igual aunque la cita valga $0).
-    if (!esAtendida(appt) || !appt.doctor?._id || appt.isCanje) continue;
-    const doctorId = String(appt.doctor._id);
+    if (!esAtendida(appt) || appt.isCanje) continue;
     const clinicId = idDe(appt.clinic);
     const pagado = appointmentPaymentValue(appt);
-    const comun = {
-      doctorId, apptId: String(appt._id), date: appt.date, clinicId,
-      patient: nombrePaciente(appt.patient), base: pagado,
-    };
-    let cubierta = false;
-    const reglasServicio = reglasDe(doctorId, 'service', clinicId);
-    for (const svc of serviciosDeCita(appt, catalogo)) {
-      const rule = reglaDeServicio(reglasServicio, svc);
-      if (!rule) continue;
-      cubierta = true;
-      const repetida = !!rule.firstTimeOnly && !esPrimeraVez(appt, svc.key);
-      agregar({
-        ...comun, kind: 'servicio', ruleId: String(rule._id), serviceKey: svc.key, serviceName: svc.name,
-        amount: repetida ? 0 : calcAmount(cfgDeRegla(rule, appt), pagado), repetida,
-        franja: etiquetaFranja(franjaDeRegla(rule, appt)),
-      });
-    }
-    // La base por paciente solo cuando ningún servicio de la cita paga por sí
-    // mismo: una tarifa de servicio REEMPLAZA a la base, no se suma. Un servicio
-    // de «solo primera vez» repetido también cubre la cita (paga cero): si no,
-    // la base pagaría justo lo que la regla dice que ya no se paga.
-    if (!cubierta) {
-      const rule = reglasDe(doctorId, 'patient', clinicId)[0];
-      if (rule) {
+    // Cada doctor que atendió la cita cobra con SUS tarifas (no solo el último).
+    for (const doc of doctoresQueCuentan(appt, doctoresFiltro)) {
+      const doctorId = idDe(doc);
+      const comun = {
+        doctorId, apptId: String(appt._id), date: appt.date, clinicId,
+        patient: nombrePaciente(appt.patient), base: pagado,
+      };
+      let cubierta = false;
+      const reglasServicio = reglasDe(doctorId, 'service', clinicId);
+      for (const svc of serviciosDeCita(appt, catalogo)) {
+        const rule = reglaDeServicio(reglasServicio, svc);
+        if (!rule) continue;
+        cubierta = true;
+        const repetida = !!rule.firstTimeOnly && !esPrimeraVez(appt, svc.key);
         agregar({
-          ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: 'Paciente atendido',
-          amount: calcAmount(cfgDeRegla(rule, appt), pagado),
+          ...comun, kind: 'servicio', ruleId: String(rule._id), serviceKey: svc.key, serviceName: svc.name,
+          amount: repetida ? 0 : calcAmount(cfgDeRegla(rule, appt), pagado), repetida,
           franja: etiquetaFranja(franjaDeRegla(rule, appt)),
         });
+      }
+      // La base por paciente solo cuando ningún servicio de la cita paga por sí
+      // mismo: una tarifa de servicio REEMPLAZA a la base, no se suma. Un servicio
+      // de «solo primera vez» repetido también cubre la cita (paga cero): si no,
+      // la base pagaría justo lo que la regla dice que ya no se paga.
+      if (!cubierta) {
+        const rule = reglasDe(doctorId, 'patient', clinicId)[0];
+        if (rule) {
+          agregar({
+            ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: 'Paciente atendido',
+            amount: calcAmount(cfgDeRegla(rule, appt), pagado),
+            franja: etiquetaFranja(franjaDeRegla(rule, appt)),
+          });
+        }
       }
     }
   }
@@ -1359,7 +1387,7 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
   }
 
   return {
-    query, estados, startDate, endDate, catalogo,
+    query, estados, startDate, endDate, catalogo, doctoresFiltro,
     appts, derivadas, doctores, reglas, reglasDe, reglaDeServicio,
     lineas, ajustesPorDoctor, pagosPorDoctor,
   };
@@ -1394,7 +1422,7 @@ const sumar = (lista) => +lista.reduce((t, l) => t + num(l.amount), 0).toFixed(2
 exports.doctorSummary = async (req, res) => {
   try {
     const calc = await calcularComisionesDoctores(req.clinicId, req.query);
-    const { appts, derivadas, doctores, reglas, reglaDeServicio, lineas, ajustesPorDoctor, pagosPorDoctor, catalogo, estados } = calc;
+    const { appts, derivadas, doctores, reglas, reglaDeServicio, lineas, ajustesPorDoctor, pagosPorDoctor, catalogo, estados, doctoresFiltro } = calc;
     const ESTADOS = ESTADOS_CITA;
 
     const byDoctor = new Map();
@@ -1423,31 +1451,40 @@ exports.doctorSummary = async (req, res) => {
     const rolDe = (doc, clinicId) => (doc.clinics || []).find((c) => String(c.clinic?._id || c.clinic) === clinicId)?.role
       || (doc.worksInAllClinics ? doc.clinics?.[0]?.role : null);
 
+    // Los totales de arriba cuentan cada CITA una vez: con dos doctores en la
+    // misma cita, sumar las filas de los doctores la contaría dos veces.
+    const totals = Object.fromEntries(ESTADOS.map((s) => [s, 0]));
+    let generadoTotal = 0;
     for (const appt of appts) {
-      const doc = appt.doctor;
-      if (!doc || !doc.name) continue;
-      const fila = filaDe(doc);
-      fila.total += 1;
-      const clinicId = idDe(appt.clinic);
-      const nombreSucursal = appt.clinic?.nombreComercial || appt.clinic?.name;
-      if (nombreSucursal) fila.clinics.add(nombreSucursal);
-      if (clinicId) { fila.clinicIds.add(clinicId); fila.referralClinicIds.add(clinicId); }
-      const roleInClinic = rolDe(doc, clinicId);
-      if (roleInClinic) fila.roles.add(roleInClinic);
-      if (fila.byStatus[appt.status] != null) fila.byStatus[appt.status] += 1;
-      // GENERADO: lo que pagaron los pacientes por las citas que el doctor atendió.
-      if (esAtendida(appt)) fila.generated += appointmentPaymentValue(appt);
+      const docs = doctoresQueCuentan(appt, doctoresFiltro).filter((d) => d?.name);
+      if (!docs.length) continue;
+      if (totals[appt.status] != null) totals[appt.status] += 1;
+      if (esAtendida(appt)) generadoTotal += appointmentPaymentValue(appt);
+      // Una fila por cada doctor que atendió la cita, no solo el último (espejo).
+      for (const doc of docs) {
+        const fila = filaDe(doc);
+        fila.total += 1;
+        const clinicId = idDe(appt.clinic);
+        const nombreSucursal = appt.clinic?.nombreComercial || appt.clinic?.name;
+        if (nombreSucursal) fila.clinics.add(nombreSucursal);
+        if (clinicId) { fila.clinicIds.add(clinicId); fila.referralClinicIds.add(clinicId); }
+        const roleInClinic = rolDe(doc, clinicId);
+        if (roleInClinic) fila.roles.add(roleInClinic);
+        if (fila.byStatus[appt.status] != null) fila.byStatus[appt.status] += 1;
+        // GENERADO: lo que pagaron los pacientes por las citas que el doctor atendió.
+        if (esAtendida(appt)) fila.generated += appointmentPaymentValue(appt);
 
-      for (const s of serviciosDeCita(appt, catalogo)) {
-        let svc = fila.services.find((x) => x.key === s.key);
-        if (!svc) {
-          svc = { name: s.name, key: s.key, serviceId: s.id, count: 0, byStatus: {}, clinicIds: new Set() };
-          fila.services.push(svc);
+        for (const s of serviciosDeCita(appt, catalogo)) {
+          let svc = fila.services.find((x) => x.key === s.key);
+          if (!svc) {
+            svc = { name: s.name, key: s.key, serviceId: s.id, count: 0, byStatus: {}, clinicIds: new Set() };
+            fila.services.push(svc);
+          }
+          if (!svc.serviceId && s.id) svc.serviceId = s.id;
+          if (clinicId) svc.clinicIds.add(clinicId);
+          svc.count += 1;
+          svc.byStatus[appt.status] = (svc.byStatus[appt.status] || 0) + 1;
         }
-        if (!svc.serviceId && s.id) svc.serviceId = s.id;
-        if (clinicId) svc.clinicIds.add(clinicId);
-        svc.count += 1;
-        svc.byStatus[appt.status] = (svc.byStatus[appt.status] || 0) + 1;
       }
     }
 
@@ -1598,10 +1635,6 @@ exports.doctorSummary = async (req, res) => {
       };
     }).sort((a, b) => b.total - a.total || b.commissionTotal - a.commissionTotal);
 
-    const totals = Object.fromEntries(ESTADOS.map((s) => [s, 0]));
-    for (const fila of doctors) {
-      for (const s of ESTADOS) totals[s] += fila.byStatus[s] || 0;
-    }
     const suma = (k) => +doctors.reduce((t, d) => t + num(d[k]), 0).toFixed(2);
 
     res.json({
@@ -1612,7 +1645,7 @@ exports.doctorSummary = async (req, res) => {
       totals: {
         total: appts.length,
         byStatus: totals,
-        generated: suma('generated'),
+        generated: +generadoTotal.toFixed(2),
         commissions: suma('commissionTotalWithAdjustments'),
         paid: suma('paidTotal'),
         pending: suma('pendingTotal'),
@@ -1682,9 +1715,16 @@ exports.doctorAppointments = async (req, res) => {
     const ORDEN = { date: 1, startTime: 1, _id: 1 };
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 0, 0), 1000);
     const todas = await Appointment.find(query)
-      .select('patient doctor date startTime agreedValue isCanje advancePayment advanceAmount')
+      .select('patient doctor date startTime agreedValue isCanje advancePayment advanceAmount turns.user turns.kind turns.status turns.order')
       .sort(ORDEN)
       .lean();
+    /**
+     * El doctor de cada FILA. Filtrando por un doctor es ÉL, aunque la cita la
+     * cerrara otro después (el espejo `doctor` es el último que atendió); en el
+     * detalle general, el espejo, como siempre.
+     */
+    const filtroDoc = parseList(req.query.doctor);
+    const doctorDeFila = (a) => (filtroDoc.length ? doctoresQueCuentan(a, filtroDoc)[0] : a.doctor) || null;
     const total = todas.length;
     const pages = limit ? Math.max(Math.ceil(total / limit), 1) : 1;
     const page = limit ? Math.min(Math.max(parseInt(req.query.page, 10) || 1, 1), pages) : 1;
@@ -1762,7 +1802,7 @@ exports.doctorAppointments = async (req, res) => {
     const visitasPaciente = new Map();
     for (const a of todas) {
       const pid = a.patient ? String(a.patient) : null;
-      const did = a.doctor ? String(a.doctor) : null;
+      const did = idDe(doctorDeFila(a)) || null;
       if (!pid || !did) continue;
       const key = `${pid}|${did}`;
       if (!visitasPaciente.has(key)) visitasPaciente.set(key, []);
@@ -1787,7 +1827,7 @@ exports.doctorAppointments = async (req, res) => {
     // doctores del resultado en el rango, que no vienen de un seguimiento. No
     // cuelgan de una cita de la página, así que van solo en la PRIMERA página
     // (en las demás se repetirían).
-    const doctorIds = [...new Set(todas.filter((a) => a.doctor).map((a) => String(a.doctor)))];
+    const doctorIds = [...new Set(todas.flatMap((a) => doctoresQueCuentan(a, filtroDoc).map(idDe)))];
     let manuales = [];
     if (doctorIds.length && page === 1) {
       const filtroDeriva = { fromDoctor: { $in: doctorIds }, date: { $gte: startDate, $lte: endDate } };
@@ -1853,7 +1893,8 @@ exports.doctorAppointments = async (req, res) => {
 
     const appointments = appts.map((a) => {
       const pid = a.patient?._id ? String(a.patient._id) : null;
-      const did = a.doctor?._id ? String(a.doctor._id) : null;
+      const docFila = doctorDeFila(a);
+      const did = idDe(docFila) || null;
       const visit = pid && did ? visitaDe.get(String(a._id)) : null;
       const atendientes = (a.turns || [])
         .filter((t) => t.user)
@@ -1879,10 +1920,10 @@ exports.doctorAppointments = async (req, res) => {
         patient: nombrePaciente(a.patient),
         status: a.status,
         clinic: a.clinic?.nombreComercial || a.clinic?.name || '',
-        // El doctor de la CITA (el espejo). En el detalle general —todas las
-        // citas de todos los doctores— es lo que dice de quién era cada fila.
+        // El doctor de la FILA (ver doctorDeFila). En el detalle general —todas
+        // las citas de todos los doctores— es lo que dice de quién era cada fila.
         doctorId: did,
-        doctorName: a.doctor?.name || '',
+        doctorName: docFila?.name || '',
         services: [
           a.serviceName,
           ...(a.additionalServices || []).map((s) => s.name),
@@ -1913,7 +1954,7 @@ exports.doctorAppointments = async (req, res) => {
 
     const doctorNames = {};
     for (const a of appts) {
-      if (a.doctor?._id) doctorNames[String(a.doctor._id)] = a.doctor.name;
+      for (const d of doctoresDeLaCita(a)) if (d?._id && d.name) doctorNames[String(d._id)] = d.name;
     }
 
     res.json({
@@ -2583,7 +2624,7 @@ exports.doctorReportPdf = async (req, res) => {
     const totalGanado = +(totalComisiones + totalAjustes).toFixed(2);
     const totalPagado = +(sumar(lineas.filter((l) => l.pagada)) + sumar(ajustes.filter((a) => a.pagado))).toFixed(2);
     const totalPendiente = +(totalGanado - totalPagado).toFixed(2);
-    const citasDoctor = appts.filter((a) => !doctorId || idDe(a.doctor) === doctorId).length;
+    const citasDoctor = appts.filter((a) => !doctorId || doctoresQueCuentan(a, [doctorId]).length).length;
 
     const fmtMoney = (v) => `$${Number(v || 0).toFixed(2)}`;
     const fechaCorta = (d) => new Date(d).toISOString().slice(0, 10).split('-').reverse().join('/');

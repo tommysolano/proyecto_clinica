@@ -60,6 +60,9 @@ router.delete('/saved-replies/:id', requireRole(...CALL_CENTER_ROLES), ctrl.dele
 // siempre lo deja pasar. El cliente aplica la misma regla (WhatsappCallContext).
 const CALL_ROLES = ['call_center', 'marketing'];
 const callCtrl = require('../controllers/callController');
+// Registro de llamadas (Fénix): solo lectura, así que también lo ve el
+// administrador aunque no llame.
+router.get('/calls/log', requireRole(...CALL_CENTER_ROLES), require('../controllers/callLogController').callLog);
 router.get('/calls/ice-config', requireRole(...CALL_ROLES), callCtrl.getIceConfig);
 router.get('/calls/pending', requireRole(...CALL_ROLES), callCtrl.getPendingCall);
 router.post('/calls/:callId/accept', requireRole(...CALL_ROLES), callCtrl.acceptCall);
