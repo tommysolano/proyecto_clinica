@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
+import { companiesOf } from '../utils/companies';
 import {
   HiOutlineShieldCheck,
   HiOutlineBuildingOffice2,
@@ -185,7 +186,13 @@ export default function Login() {
                   </p>
                 </div>
                 <div className="space-y-3">
-                  {availableClinics.map((c) => (
+                  {/* Con varias empresas, las sucursales van bajo su empresa (oct-2026). */}
+                  {companiesOf(availableClinics).map((empresa, i, todas) => (
+                    <div key={empresa._id} className="space-y-3">
+                      {todas.length > 1 && (
+                        <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 pt-1">{empresa.name}</p>
+                      )}
+                  {empresa.clinics.map((c) => (
                     <button
                       key={c._id}
                       onClick={() => handleSelectClinic(c._id)}
@@ -198,10 +205,12 @@ export default function Login() {
                       <div className="flex-1">
                         <p className="font-semibold text-slate-800">{c.name}</p>
                         <p className="text-xs text-slate-500">
-                          {c.razonSocial} · Rol: <span className="capitalize">{c.role}</span>
+                          {c.razonSocial ? `${c.razonSocial} · ` : ''}Rol: <span className="capitalize">{c.role}</span>
                         </p>
                       </div>
                     </button>
+                  ))}
+                    </div>
                   ))}
                 </div>
                 <button

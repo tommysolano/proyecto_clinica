@@ -102,6 +102,14 @@ export const ROLES_VEN_TELEFONO = ['admin', 'cajero'];
 export const ROLES_TODA_LA_ORG = ['admin', 'cajero', 'call_center'];
 
 /**
+ * Quién trabaja para TODAS LAS EMPRESAS (oct-2026): el CRM es uno solo, así que el
+ * call center y marketing ven y agendan en la agenda de cualquier empresa. Los demás
+ * ven la de la empresa de su sucursal activa. Espejo de `veTodasLasEmpresas` en
+ * server/utils/clinicScope.js.
+ */
+export const ROLES_TODAS_LAS_EMPRESAS = ['call_center', 'marketing'];
+
+/**
  * Quién LEE la historia clínica sin poder escribir nada: el call center y
  * marketing (sep-2026).
  *

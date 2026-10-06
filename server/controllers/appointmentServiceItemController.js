@@ -2,10 +2,11 @@ const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const { emitToClinic } = require('../realtime');
 const { saneaSueroPlano } = require('../utils/suero');
 const { sincronizarServiciosInventario } = require('../utils/serviciosInventario');
+const { companyOfClinic } = require('../utils/companies');
 
 /**
- * Catálogo de servicios de agenda. Ver el modelo para el porqué de que sea de
- * toda la organización y no por sucursal.
+ * Catálogo de servicios de agenda: uno por EMPRESA (oct-2026), compartido por
+ * todas sus sucursales. Ver el modelo.
  */
 
 // Paleta de la que salen los colores de los servicios nuevos, para que la lista
@@ -31,7 +32,11 @@ exports.list = async (req, res) => {
     await sincronizarServiciosInventario().catch((err) => {
       console.error('[servicios agenda] no se pudo sincronizar con el inventario:', err.message);
     });
-    const filtro = req.query.all ? {} : { active: true, product: { $ne: null } };
+    // Cada empresa ofrece SU catálogo: el de la sucursal donde se agenda (`?clinic=`,
+    // el call center agenda en otra empresa) o el de la activa. Con `all` se leen
+    // citas ya agendadas, que pueden ser de cualquier empresa: van todos.
+    const company = await companyOfClinic(req.query.clinic || req.clinicId);
+    const filtro = req.query.all ? {} : { active: true, product: { $ne: null }, ...(company ? { company } : {}) };
     const items = await AppointmentServiceItem.find(filtro)
       // Solo lo que se usa en pantalla: son cerca de mil y el servidor no
       // comprime las respuestas.
@@ -60,7 +65,8 @@ exports.create = async (req, res) => {
     if (name.length > 80) return res.status(400).json({ message: 'El nombre es demasiado largo' });
 
     const slug = AppointmentServiceItem.slugify(name);
-    const existente = await AppointmentServiceItem.findOne({ slug });
+    const company = await companyOfClinic(req.clinicId);
+    const existente = await AppointmentServiceItem.findOne({ company, slug });
     if (existente) {
       // Si estaba desactivado, volver a usarlo lo reactiva: es lo que quería
       // quien lo está escribiendo.
@@ -73,6 +79,7 @@ exports.create = async (req, res) => {
 
     const item = await AppointmentServiceItem.create({
       clinic: req.clinicId,
+      company,
       name,
       slug,
       color: req.body.color || colorPorNombre(name),
@@ -87,6 +94,7 @@ exports.create = async (req, res) => {
     // devuelve el que quedó, no un error.
     if (error.code === 11000) {
       const item = await AppointmentServiceItem.findOne({
+        company: await companyOfClinic(req.clinicId),
         slug: AppointmentServiceItem.slugify(req.body.name),
       });
       if (item) return res.json(item);
@@ -110,7 +118,7 @@ exports.update = async (req, res) => {
         return res.status(400).json({ message: 'Este servicio sale del inventario: cámbiale el nombre desde Inventario.' });
       }
       const slug = AppointmentServiceItem.slugify(name);
-      const choque = await AppointmentServiceItem.findOne({ slug, _id: { $ne: item._id } });
+      const choque = await AppointmentServiceItem.findOne({ company: item.company, slug, _id: { $ne: item._id } });
       if (choque) return res.status(409).json({ message: `Ya existe el servicio «${choque.name}»` });
       item.name = name;
       item.slug = slug;

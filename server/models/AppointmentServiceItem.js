@@ -27,6 +27,9 @@ const appointmentServiceItemSchema = new mongoose.Schema(
   {
     // Sucursal donde se creó. Trazabilidad, NO filtro de visibilidad.
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', index: true },
+    // Empresa dueña (oct-2026): cada empresa tiene su catálogo de agenda. Sale de la
+    // sucursal del producto de inventario (utils/serviciosInventario).
+    company: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', default: null, index: true },
     name: { type: String, required: true, trim: true },
     // Clave de búsqueda: minúsculas y sin tildes. Es lo que impide que acaben
     // conviviendo «Botox», «botox» y «BOTOX» como tres servicios distintos.
@@ -112,8 +115,9 @@ const appointmentServiceItemSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Un solo servicio por nombre en toda la organización.
-appointmentServiceItemSchema.index({ slug: 1 }, { unique: true });
+/// Un solo servicio por nombre en cada empresa (antes, en toda la organización: el
+// índice viejo `slug_1` lo retira utils/companies.ensureCompanies).
+appointmentServiceItemSchema.index({ company: 1, slug: 1 }, { unique: true });
 
 /** Nombre → clave de búsqueda: sin tildes, sin dobles espacios, en minúsculas. */
 appointmentServiceItemSchema.statics.slugify = function slugify(name) {

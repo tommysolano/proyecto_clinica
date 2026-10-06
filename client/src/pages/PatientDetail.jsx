@@ -453,13 +453,29 @@ export default function PatientDetail() {
     ? String(miTurnoVigente?.nurseInstructions || pasoEnfermeriaPendiente?.nurseInstructions || '').trim()
     : '';
   /**
-   * HIDROTERAPIA (sep-2026): la marcó mostrador al asignar MI paso. Aparece en
+   * HIDROTERAPIA (sep-2026): la marcó mostrador al asignar el paso. Aparece en
    * la barra junto al suero, con un botón para dejar constancia de que se
    * realizó — el mismo gesto que administrar una dosis, sin inventario.
+   *
+   * SE VE AUNQUE EL PASO SEA LIBRE (oct-2026). Solo se leía de MI turno, y en
+   * el paso «cualquier enfermero» —el más común— el turno no tiene dueño hasta
+   * que alguien lo toma: la enfermera abría la ficha y no veía que tocaba
+   * hidroterapia. Antes del check, mostrador lo escribía en «Qué hace» y eso sí
+   * salía siempre. Ahora se lee del paso que le toca a enfermería, igual que
+   * «Qué hace» y las indicaciones; el botón «La realicé» sigue siendo solo de
+   * quien tiene el turno (el servidor marca el turno a su nombre).
    */
-  const hidroterapiaDelPaso = enfermeriaLibre || enfermeriaMia
-    ? (miTurnoVigente?.hidroterapia || null)
+  const pasoEnfermeriaVigente = enTramite
+    ? [...(aptData?.turns || [])]
+        .sort((a, b) => (a.order || 0) - (b.order || 0))
+        .find((t) => t.status === 'pendiente' && t.kind === 'enfermeria')
     : null;
+  const hidroterapiaDelPaso = enfermeriaLibre || enfermeriaMia
+    ? (miTurnoVigente?.hidroterapia?.solicitada
+        ? miTurnoVigente.hidroterapia
+        : (pasoEnfermeriaVigente?.hidroterapia || null))
+    : null;
+  const puedoMarcarHidroterapia = !!miTurnoVigente?.hidroterapia?.solicitada;
   const [marcandoHidro, setMarcandoHidro] = useState(false);
   const marcarHidroterapia = async (realizada) => {
     if (marcandoHidro) return;
@@ -653,6 +669,10 @@ export default function PatientDetail() {
                         Desmarcar
                       </button>
                     </span>
+                  ) : !puedoMarcarHidroterapia ? (
+                    // Paso libre: hasta que no la tome, el turno no es suyo y
+                    // no hay a nombre de quién dejar la constancia.
+                    <span className="text-[11px] text-cyan-800">Tómala para marcarla como realizada</span>
                   ) : (
                     <button
                       type="button"

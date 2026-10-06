@@ -53,7 +53,7 @@ async function resolverAgendadoPor(req, bookedById) {
     return { ok: false, status: 403, message: 'No puedes agendar a nombre de otra persona.' };
   }
 
-  const otro = await User.findOne({ _id: id, active: true }).select('name clinics worksInAllClinics isSuperAdmin');
+  const otro = await User.findOne({ _id: id, active: true }).select('name clinics worksInAllClinics companies isSuperAdmin');
   if (!otro) return { ok: false, status: 400, message: 'La persona que agenda no existe o está inactiva.' };
 
   // Su rol en la sede de la cita; si no trabaja ahí, el de su primera

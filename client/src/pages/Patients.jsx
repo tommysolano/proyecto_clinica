@@ -17,7 +17,6 @@ import PatientFields, {
   payloadDePaciente,
   Field,
 } from '../components/PatientFields';
-import { nombreSucursal } from '../utils/clinicName';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -32,6 +31,8 @@ import {
 } from 'react-icons/hi2';
 import BulkUploadModal from '../components/BulkUploadModal';
 import ServiceItemPicker from '../components/ServiceItemPicker';
+import CompanyClinicSelect from '../components/CompanyClinicSelect';
+import { sameCompany } from '../utils/companies';
 import TimeSlotInput from '../components/TimeSlotInput';
 // La FECHA DE LA CITA (el bloque de agendar, más abajo). Ojo: no es el único
 // DateInput que hubo aquí —el de la fecha de nacimiento se fue a PatientFields—
@@ -686,19 +687,20 @@ export default function Patients() {
                       agendaba en la sede equivocada sin que nadie lo notara
                       (mismo cambio que en la agenda). */}
                   {showClinicSelector && !aptForm.ahora && (
-                    <Field label="Sucursal destino" required>
-                      <select
-                        value={aptForm.clinic}
-                        onChange={(e) => setAptForm({ ...aptForm, clinic: e.target.value, room: '' })}
-                        className="input"
-                        required
-                      >
-                        <option value="">Seleccionar sucursal…</option>
-                        {sedes.map((c) => (
-                          <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
-                        ))}
-                      </select>
-                    </Field>
+                    // Empresa → sucursal (oct-2026); otra empresa, otro catálogo:
+                    // el servicio elegido se limpia.
+                    <CompanyClinicSelect
+                      clinics={sedes}
+                      value={aptForm.clinic}
+                      required
+                      selectClassName="input"
+                      onChange={(id) => setAptForm({
+                        ...aptForm,
+                        clinic: id,
+                        room: '',
+                        ...(sameCompany(sedes, aptForm.clinic, id) ? {} : { serviceItem: null, additionalServices: [] }),
+                      })}
+                    />
                   )}
                   <div className={"grid grid-cols-1 sm:grid-cols-2 gap-3 " + (aptForm.ahora ? 'hidden' : '')}>
                     <Field label="Fecha" required>
@@ -723,6 +725,7 @@ export default function Patients() {
                   </div>
                   <Field label="Servicio *">
                     <ServiceItemPicker
+                      clinic={aptForm.ahora ? '' : aptForm.clinic}
                       value={aptForm.serviceItem}
                       onChange={(item) => setAptForm({ ...aptForm, serviceItem: item })}
                     />
@@ -734,6 +737,7 @@ export default function Patients() {
                       {/* El mismo selector cerrado que el principal (oct-2026):
                           solo servicios del inventario, sin texto libre. */}
                       <ServiceItemPicker
+                        clinic={aptForm.clinic}
                         value={null}
                         onChange={(p) => {
                           if (!p) return;

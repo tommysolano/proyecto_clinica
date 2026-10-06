@@ -36,6 +36,11 @@ const auth = async (req, res, next) => {
 
     if (decoded.clinicId) {
       req.clinicId = decoded.clinicId;
+      // Empresa de la sucursal activa (utils/companies). El mapa se calienta aquí
+      // para que las preguntas síncronas de después (rol, alcance) lo tengan.
+      const { ensureCompanyCache, companyOfClinicSync } = require('../utils/companies');
+      await ensureCompanyCache();
+      req.companyId = companyOfClinicSync(decoded.clinicId);
       const role = user.getRoleForClinic(decoded.clinicId);
       if (!role && !user.isSuperAdmin) {
         return res.status(403).json({ message: 'No tienes acceso a esta clínica' });

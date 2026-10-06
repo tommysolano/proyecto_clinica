@@ -247,8 +247,12 @@ async function resolveBreakdownColumns(mode, { clinicIds, startDate, endDate, us
  */
 async function readableClinicIds(req) {
   const Clinic = require('../models/Clinic');
-  if (req.user?.isSuperAdmin) return (await Clinic.find({ active: true }).select('_id').lean()).map((c) => c._id);
-  const ids = (req.user?.clinics || []).map((c) => c.clinic).filter(Boolean);
+  // Las sedes de la EMPRESA activa: la contabilidad de cada empresa es independiente.
+  const { sisterClinicsSync } = require('../utils/companies');
+  const empresa = new Set(sisterClinicsSync(req.userClinicId || req.clinicId).map(String));
+  const deEmpresa = (ids) => (empresa.size ? ids.filter((id) => empresa.has(String(id))) : ids);
+  if (req.user?.isSuperAdmin) return deEmpresa((await Clinic.find({ active: true }).select('_id').lean()).map((c) => c._id));
+  const ids = deEmpresa((req.user?.clinics || []).map((c) => c.clinic).filter(Boolean));
   return ids.length ? ids : [asObjectId(req.clinicId)];
 }
 

@@ -4,6 +4,7 @@
 //   - Movimientos (kardex): los del mes actual y el anterior en cada ciclo; todo
 //     el año en el ciclo largo. Mismas claves que la importación inicial, así
 //     que un movimiento ya importado se actualiza, no se duplica.
+//   - Productos nuevos: lo creado en Contífico entra aquí (servicios incluidos).
 //   - Stock: el de Contífico (`cantidad_stock`). La clínica decidió que el stock
 //     sea el de Contífico aunque enfermería descuente ampollas aquí (06-10-2026).
 //
@@ -16,12 +17,16 @@ const Record = require('../models/ContificoRecord');
 const Product = require('../models/Product');
 const Warehouse = require('../models/Warehouse');
 const InventoryMovement = require('../models/InventoryMovement');
+const ChartOfAccount = require('../models/ChartOfAccount');
+const InventoryCategory = require('../models/InventoryCategory');
+const mongoose = require('mongoose');
 const ServerLease = require('../models/ServerLease');
 const Notification = require('../models/Notification');
 const SyncState = require('../models/ContificoSyncState');
 const { ContificoApi } = require('./contificoApi');
 const { Extractor, checksum, fmt, parseDate } = require('../scripts/migrateContifico');
 const { monthRange, ecToday } = require('./contificoFinancialSync');
+const { tax } = require('../scripts/migrateContificoProject');
 const { decodeCompressedJson } = require('../utils/compressedJson');
 
 let running = false;
@@ -159,10 +164,106 @@ async function syncMovementMonth({ clinic, api, year, month, commit = true, asse
     absent, productsWithoutCard: missingProducts.size, snapshot: String(extractor.run._id) };
 }
 
-/** Stock de cada producto físico = el de Contífico. Servicios, programas e ilimitados no se tocan. */
+/** externalId de Contífico → _id local, para cuentas (por código) y categorías (CTF-<id>). */
+async function catalogMaps(clinicId) {
+  const [accountRecords, accounts, categoryRecords, categories, unitRecords] = await Promise.all([
+    Record.find({ clinic: clinicId, entity: 'chart_account' }).select('externalId payloadCompressed').lean(),
+    ChartOfAccount.find({ clinic: clinicId }).select('code').lean(),
+    Record.find({ clinic: clinicId, entity: 'category' }).select('externalId payloadCompressed').lean(),
+    InventoryCategory.find({ clinic: clinicId, code: /^CTF-/ }).select('code').lean(),
+    Record.find({ clinic: clinicId, entity: 'unit' }).select('externalId payloadCompressed').lean(),
+  ]);
+  const accountByCode = new Map(accounts.map((row) => [String(row.code), row._id]));
+  const categoryByCode = new Map(categories.map((row) => [String(row.code), row._id]));
+  const payload = (record) => decodeCompressedJson(record.payloadCompressed);
+  return {
+    accounts: new Map(accountRecords.map((record) => [record.externalId, accountByCode.get(String(payload(record).codigo)) || null])),
+    categories: new Map(categoryRecords.map((record) => [record.externalId, {
+      _id: categoryByCode.get(`CTF-${record.externalId}`) || null, payload: payload(record) }])),
+    units: new Map(unitRecords.map((record) => [record.externalId, String(payload(record).nombre || '')])),
+  };
+}
+
+/**
+ * PRODUCTOS NUEVOS DE CONTÍFICO (oct-2026). Antes solo entraba un producto nuevo
+ * cuando aparecía en una venta o compra: un servicio recién creado allá (p. ej. la
+ * colposcopia) no se podía agendar aquí. Ahora, en cada ciclo, lo que existe en
+ * Contífico y aquí no, se crea con los mismos campos que la importación inicial.
+ *
+ * Lo que YA existe aquí no se toca nunca (el usuario reclasifica productos y eso es
+ * suyo): si hay un producto con el mismo código en el catálogo de la empresa, solo se
+ * enlaza para que la sincronización lo reconozca.
+ */
+async function importNewProducts({ clinic, api, rows, maps, commit = true }) {
+  const nuevos = rows.filter((row) => !maps.products.get(String(row.id)) && String(row.codigo || '').trim());
+  if (!nuevos.length) return { created: 0, linked: 0, names: [] };
+  const { sisterClinicsSync, ensureCompanyCache } = require('../utils/companies');
+  await ensureCompanyCache();
+  const empresa = sisterClinicsSync(clinic._id, { includeInactive: true });
+  const existentes = new Map((await Product.find({ clinic: { $in: empresa.length ? empresa : [clinic._id] },
+    code: { $in: nuevos.map((row) => String(row.codigo).trim()) } }).select('code').lean())
+    .map((product) => [String(product.code), product._id]));
+  const catalog = await catalogMaps(clinic._id);
+
+  const docs = [], links = new Map();
+  for (const row of nuevos) {
+    const code = String(row.codigo).trim();
+    if (existentes.has(code)) { links.set(String(row.id), existentes.get(code)); continue; }
+    const physical = String(row.tipo).toUpperCase() === 'PRO';
+    const category = catalog.categories.get(String(row.categoria_id || '')) || {};
+    const stock = physical ? num(row.cantidad_stock) : 0;
+    const salePrice = Math.max(0, num(row.pvp1));
+    const _id = new mongoose.Types.ObjectId();
+    links.set(String(row.id), _id);
+    docs.push({
+      _id, clinic: clinic._id, code, barcode: String(row.codigo_barra || row.codigo_auxiliar || ''),
+      name: String(row.nombre || code), description: String(row.descripcion || ''),
+      category: physical ? 'insumo' : 'servicio', categoria: String(category.payload?.nombre || ''),
+      isComposite: String(row.tipo_producto).toUpperCase() === 'COP',
+      stock, stockByClinic: physical ? [{ clinic: clinic._id, stock }] : [], availableInClinics: [],
+      purchasePrice: Math.max(0, num(row.costo_maximo)), averageCost: Math.max(0, num(row.costo_maximo)),
+      salePrice, salePrices: [{ name: 'General', price: salePrice, active: true }], minStock: Math.max(0, num(row.minimo)),
+      inventoryAccount: catalog.accounts.get(String(category.payload?.cuenta_inventario_id || category.payload?.cuenta_inventario || '')) || null,
+      expenseAccount: catalog.accounts.get(String(row.cuenta_costo_id || category.payload?.cuenta_compra_id || category.payload?.cuenta_compra || '')) || null,
+      incomeAccount: catalog.accounts.get(String(row.cuenta_venta_id || category.payload?.cuenta_venta_id || category.payload?.cuenta_venta || '')) || null,
+      inventoryCategory: category._id || null, unlimited: !physical,
+      unit: catalog.units.get(String(row.unidad || '')) || String(row.unidad?.nombre || 'Unidad'),
+      ...tax(row.porcentaje_iva), active: String(row.estado || 'A') === 'A',
+    });
+  }
+  if (commit) {
+    // Archivados como el resto del catálogo, para que la sincronización los reconozca.
+    const extractor = new Extractor({ api, clinic, commit: true, from: new Date(), through: new Date(), cutoff: new Date() });
+    await extractor.begin();
+    const stage = extractor.stage('products_new');
+    await extractor.archive('product', nuevos, stage);
+    await extractor.saveStage(stage);
+    extractor.run.status = 'COMPLETED'; extractor.run.completedAt = new Date();
+    await extractor.run.save();
+    if (docs.length) await Product.insertMany(docs, { ordered: false });
+    await Record.bulkWrite(nuevos.map((row) => ({ updateOne: {
+      filter: { clinic: clinic._id, entity: 'product', externalId: String(row.id) },
+      update: { $set: { projection: { status: existentes.has(String(row.codigo).trim()) ? 'LINKED_EXISTING' : 'PROJECTED',
+        links: [{ model: 'Product', ref: links.get(String(row.id)), action: existentes.has(String(row.codigo).trim()) ? 'LINK' : 'CREATE' }],
+        warnings: [], projectedAt: new Date() } } } } })), { ordered: false });
+    for (const [id, ref] of links) maps.products.set(id, ref);
+    // Un servicio nuevo se ofrece al agendar en cuanto existe (utils/serviciosInventario).
+    if (docs.some((doc) => doc.category === 'servicio')) {
+      const { sincronizarServiciosInventario } = require('../utils/serviciosInventario');
+      await sincronizarServiciosInventario({ force: true });
+    }
+  }
+  return { created: docs.length, linked: nuevos.length - docs.length, names: docs.map((doc) => doc.name) };
+}
+
+/**
+ * Stock de cada producto físico = el de Contífico. Servicios, programas e ilimitados no
+ * se tocan. Antes, los productos nuevos de Contífico se crean aquí (importNewProducts).
+ */
 async function syncStock({ clinic, api, commit = true }) {
   const rows = await fetchAll(api, '/api/v2/producto/', {});
   const maps = await referenceMaps(clinic._id);
+  const nuevos = await importNewProducts({ clinic, api, rows, maps, commit });
   const ids = rows.map((row) => maps.products.get(String(row.id))).filter(Boolean);
   const products = new Map((await Product.find({ _id: { $in: ids } }).select('category unlimited stock stockByClinic').lean())
     .map((product) => [String(product._id), product]));
@@ -182,7 +283,7 @@ async function syncStock({ clinic, api, commit = true }) {
       stock, stockByClinic: [...others, { clinic: clinic._id, stock }] } } } });
   }
   if (commit) for (let offset = 0; offset < ops.length; offset += 500) await Product.bulkWrite(ops.slice(offset, offset + 500), { ordered: false });
-  return { products: rows.length, updated: ops.length, skippedServices };
+  return { products: rows.length, updated: ops.length, skippedServices, newProducts: nuevos };
 }
 
 async function syncInventory({ includeHistory = false, months: requestedMonths = null, commit = true, trigger = 'MANUAL' } = {}) {
@@ -282,4 +383,4 @@ async function syncInventory({ includeHistory = false, months: requestedMonths =
   }
 }
 
-module.exports = { movementRows, syncMovementMonth, syncStock, syncInventory };
+module.exports = { movementRows, syncMovementMonth, syncStock, syncInventory, importNewProducts };

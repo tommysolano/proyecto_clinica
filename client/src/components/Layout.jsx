@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { roleSatisfies, ROLE_LABELS } from '../utils/roles';
 import NotificationBell from './NotificationBell';
 import AccountingScopeSwitch from './AccountingScopeSwitch';
+import { companiesOf } from '../utils/companies';
 import { isAccountingPath, subscribeAccountingScope } from '../utils/accountingScope';
 import IncomingCallPushPrompt from './IncomingCallPushPrompt';
 import SonidoMensajes from './SonidoMensajes';
@@ -317,6 +318,8 @@ function useAvisosDelSistema(navigate) {
 
 export default function Layout({ children }) {
   const { user, role, activeClinic, clinics, selectClinic, logout } = useAuth();
+  // Quien trabaja en más de una empresa ve de cuál es cada sucursal.
+  const variasEmpresas = companiesOf(clinics).length > 1;
   const location = useLocation();
   const navigate = useNavigate();
   useAvisosDelSistema(navigate);
@@ -471,7 +474,7 @@ export default function Layout({ children }) {
         {clinics.length > 1 && (
           <div className="px-4 mb-3">
             <label className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-1 block mb-1">
-              Sucursal activa
+              {variasEmpresas ? 'Empresa y sucursal' : 'Sucursal activa'}
             </label>
             <select
               value={activeClinic?._id || ''}
@@ -482,11 +485,20 @@ export default function Layout({ children }) {
                   visible de una sucursal es el comercial si lo tiene. Leyéndolo
                   en crudo, este selector era el único sitio que seguía diciendo
                   el nombre legal cuando se renombraba la sede. */}
-              {clinics.map((c) => (
-                <option key={c._id} value={c._id} className="text-slate-800">
-                  {nombreSucursal(c)}
-                </option>
-              ))}
+              {/* Con varias empresas, agrupadas por empresa (oct-2026). */}
+              {variasEmpresas
+                ? companiesOf(clinics).map((e) => (
+                  <optgroup key={e._id} label={e.name} className="text-slate-800">
+                    {e.clinics.map((c) => (
+                      <option key={c._id} value={c._id} className="text-slate-800">{nombreSucursal(c)}</option>
+                    ))}
+                  </optgroup>
+                ))
+                : clinics.map((c) => (
+                  <option key={c._id} value={c._id} className="text-slate-800">
+                    {nombreSucursal(c)}
+                  </option>
+                ))}
             </select>
           </div>
         )}
@@ -672,6 +684,7 @@ export default function Layout({ children }) {
               <h1 className={`font-bold text-slate-800 tracking-tight truncate leading-tight ${isChatsPage ? 'text-sm' : 'text-base sm:text-lg'}`}>{pageTitle}</h1>
               {!isChatsPage && (
                 <p className="hidden sm:block text-[11px] text-slate-400 leading-tight">
+                  {variasEmpresas && activeClinic?.company?.name ? `${activeClinic.company.name} · ` : ''}
                   {activeClinic?.nombreComercial || activeClinic?.name || 'Vikingo'}
                 </p>
               )}

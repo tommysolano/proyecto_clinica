@@ -9,6 +9,7 @@ import WorkflowWindowPicker from '../components/WorkflowWindowPicker';
 import { describeWindow } from '../utils/windowSchedule';
 import { syncTemplateNodes } from '../utils/workflowTemplateButtons';
 import Modal from '../components/Modal';
+import { withCompanyLabels } from '../utils/companies';
 
 const defaultTrigger = () => ({ type: 'appointment_created', audience: 'all', serviceFilter: null, keywords: [], matchType: 'contains', tagFilter: '' });
 // Ventana de envío por defecto: sin restricción (la automatización trabaja 24/7,
@@ -98,7 +99,8 @@ export default function WorkflowEditor() {
         const sedes = Array.isArray(clins.data) ? clins.data : clins.data?.clinics || [];
         // Una sede cerrada no debe ofrecerse como rama nueva (si un flujo viejo
         // ya apuntaba a ella, la condición la sigue enseñando; ver ConditionRow).
-        setClinics(sedes.filter((c) => c.active !== false));
+        // Con varias empresas, cada sucursal lleva el nombre de su empresa delante.
+        setClinics(withCompanyLabels(sedes.filter((c) => c.active !== false)));
         const ad = auds.data || {};
         setAudiences(ad.audiences || []);
         setAudiencesNotice(

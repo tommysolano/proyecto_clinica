@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { EmptyState } from '../PageHeader';
 import { ROLE_LABELS } from '../../utils/roles';
 import { nombreSucursal } from '../../utils/clinicName';
+import { companyKey } from '../../utils/companies';
 import { HiOutlineBuildingOffice2, HiOutlineMagnifyingGlass } from 'react-icons/hi2';
 
 /**
@@ -56,8 +57,14 @@ const ROLES_OPERATIVOS = [
 /** Sin tildes y en minúsculas, para que "Perez" encuentre a "Pérez". */
 const plano = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 
-export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
-  // Cambios sin guardar: { [userId]: { sede: clinicId | '', todas: boolean } }
+/**
+ * VARIAS EMPRESAS (oct-2026). Con más de una empresa, cada persona marca en qué
+ * empresas trabaja (puede ser en varias a la vez) y elige una sucursal en cada una.
+ * Desmarcar una empresa es sacarla de ella («moverla» a otra). «En todas» abarca las
+ * sucursales de sus empresas marcadas. Con una sola empresa todo sigue como antes.
+ */
+export default function StaffClinicsTab({ clinics, users, companies = [], onUsersChange }) {
+  // Cambios sin guardar: { [userId]: { sede, sedes: { [empresa]: clinicId }, empresas: [ids], todas } }
   const [borrador, setBorrador] = useState({});
   const [guardando, setGuardando] = useState(null);
   const [q, setQ] = useState('');
@@ -72,14 +79,50 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
   /** Sucursal guardada ('' si no trabaja en ninguna de las visibles). */
   const sedeGuardada = (u) => idDe(asignacionesVisibles(u)[0]) || SIN_SEDE;
 
+  const multi = companies.length > 1;
+  const gestionadas = new Set(companies.map((c) => String(c._id)));
+  const empresaDe = (clinicId) => companyKey(clinics.find((c) => String(c._id) === String(clinicId)));
+  const sucursalesDe = (empresa) => clinics.filter((c) => companyKey(c) === String(empresa));
+  /** Varias empresas: su sucursal en cada empresa, { [empresa]: clinicId }. */
+  const sedesGuardadas = (u) => {
+    const porEmpresa = {};
+    for (const a of asignacionesVisibles(u)) {
+      const empresa = empresaDe(idDe(a));
+      if (!(empresa in porEmpresa)) porEmpresa[empresa] = idDe(a);
+    }
+    return porEmpresa;
+  };
+  /** Sus empresas (de las que este admin gestiona): las marcadas y las de sus sucursales. */
+  const empresasGuardadas = (u) => [...new Set([
+    ...(u.companies || []).map(String).filter((id) => gestionadas.has(id)),
+    ...Object.keys(sedesGuardadas(u)),
+  ])].sort();
+
   /** Lo que se está MOSTRANDO: el borrador si se tocó la fila, si no lo guardado. */
-  const estado = (u) => borrador[u._id] || { sede: sedeGuardada(u), todas: !!u.worksInAllClinics };
+  const estado = (u) => borrador[u._id] || {
+    sede: sedeGuardada(u), sedes: sedesGuardadas(u), empresas: empresasGuardadas(u), todas: !!u.worksInAllClinics,
+  };
   const sedeActual = (u) => estado(u).sede;
   const todasActual = (u) => estado(u).todas;
 
   /** ¿Esta persona sale en el desplegable de ESTA sede? */
-  const trabajaEn = (u, clinicId) =>
-    todasActual(u) || String(sedeActual(u)) === String(clinicId);
+  const trabajaEn = (u, clinicId) => {
+    if (!multi) return todasActual(u) || String(sedeActual(u)) === String(clinicId);
+    const { sedes, empresas, todas } = estado(u);
+    return todas
+      ? empresas.includes(empresaDe(clinicId))
+      : empresas.some((e) => String(sedes[e] || '') === String(clinicId));
+  };
+
+  /** ¿La fila tiene cambios sin guardar? */
+  const sinGuardar = (u) => {
+    const actual = estado(u);
+    if (actual.todas !== !!u.worksInAllClinics) return true;
+    if (!multi) return actual.sede !== sedeGuardada(u);
+    const guardadas = sedesGuardadas(u);
+    return JSON.stringify([...actual.empresas].sort()) !== JSON.stringify(empresasGuardadas(u))
+      || actual.empresas.some((e) => String(actual.sedes[e] || '') !== String(guardadas[e] || ''));
+  };
 
   /**
    * EL ROL SE CONSERVA, NO SE ELIGE.
@@ -106,9 +149,11 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
     });
 
   const guardar = async (u) => {
-    const { sede, todas } = estado(u);
+    const { sede, sedes, empresas, todas } = estado(u);
     const role = rolDe(u);
-    if (sede && !role) {
+    // Varias empresas: una sucursal por cada empresa marcada.
+    const elegidas = multi ? empresas.map((e) => sedes[e]).filter(Boolean) : (sede ? [sede] : []);
+    if (elegidas.length && !role) {
       toast.error(`${u.name} no tiene rol. Asígnaselo en Configuración → Usuarios.`);
       return;
     }
@@ -123,25 +168,26 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
        * La sucursal viaja también con el check puesto: de ella sale el ROL, que
        * es lo que se extiende a todas las sedes.
        */
-      const assignments = sede ? [{ clinic: sede, role }] : [];
+      const assignments = elegidas.map((clinic) => ({ clinic, role }));
       const { data } = await api.put(`/users/${u._id}/assignments`, {
         assignments,
         worksInAllClinics: todas,
+        ...(multi ? { companies: empresas } : {}),
       });
       onUsersChange((list) =>
         list.map((x) =>
           x._id === u._id
-            ? { ...x, clinics: data.clinics, worksInAllClinics: data.worksInAllClinics }
+            ? { ...x, clinics: data.clinics, worksInAllClinics: data.worksInAllClinics, companies: data.companies }
             : x,
         ),
       );
       descartar(u);
-      const nombre = clinics.find((c) => String(c._id) === String(sede));
+      const nombres = elegidas.map((id) => nombreSucursal(clinics.find((c) => String(c._id) === String(id)))).join(', ');
       toast.success(
         todas
-          ? `${u.name} aparece en todas las sucursales`
-          : sede
-            ? `${u.name} trabaja en ${nombreSucursal(nombre)}`
+          ? `${u.name} aparece en todas las sucursales${multi ? ' de sus empresas' : ''}`
+          : elegidas.length
+            ? `${u.name} trabaja en ${nombres}`
             : `${u.name} ya no está en ninguna sucursal`,
       );
     } catch (err) {
@@ -195,8 +241,13 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
   return (
     <div className="space-y-4">
       <div className="bg-sky-50 border border-sky-200 text-sky-900 text-xs sm:text-sm rounded-xl px-3 py-2">
-        Cada persona trabaja en <b>una</b> sucursal, salvo que marques <b>En todas</b> — para
-        quien rota entre sedes según el horario. De aquí sale quién aparece al asignar la
+        {multi ? (
+          <>Marca en qué <b>empresas</b> trabaja cada persona (pueden ser varias) y su sucursal en cada una;
+          quitar una empresa la saca de ella. <b>En todas</b> la pone en todas las sucursales de sus empresas.</>
+        ) : (
+          <>Cada persona trabaja en <b>una</b> sucursal, salvo que marques <b>En todas</b> — para
+          quien rota entre sedes según el horario.</>
+        )} De aquí sale quién aparece al asignar la
         atención de una cita y a quién le suenan los avisos de enfermería.
       </div>
 
@@ -252,7 +303,7 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
             <tr>
               <th className="text-left px-4 py-3 font-semibold min-w-[220px]">Persona</th>
               <th className="text-left px-3 py-3 font-semibold">Rol</th>
-              <th className="text-left px-3 py-3 font-semibold min-w-[220px]">Sucursal</th>
+              <th className="text-left px-3 py-3 font-semibold min-w-[220px]">{multi ? 'Empresas y sucursal' : 'Sucursal'}</th>
               <th className="text-left px-3 py-3 font-semibold w-32">En todas</th>
               <th className="px-3 py-3 w-40"></th>
             </tr>
@@ -270,8 +321,8 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
               </tr>
             )}
             {visibles.map((u) => {
-              const { sede, todas } = estado(u);
-              const sucio = sede !== sedeGuardada(u) || todas !== !!u.worksInAllClinics;
+              const { sede, sedes, empresas, todas } = estado(u);
+              const sucio = sinGuardar(u);
               const rol = rolDe(u);
               return (
                 <tr
@@ -302,6 +353,47 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
                   </td>
 
                   <td className="px-3 py-2">
+                    {multi ? (
+                      /* VARIAS EMPRESAS: marca en cuáles trabaja y su sucursal en cada una. */
+                      <div className="space-y-1.5">
+                        {companies.map((empresa) => {
+                          const id = String(empresa._id);
+                          const marcada = empresas.includes(id);
+                          const suyas = sucursalesDe(id);
+                          return (
+                            <div key={id} className="flex items-center gap-2 flex-wrap">
+                              <label className="flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer min-w-[120px]">
+                                <input
+                                  type="checkbox"
+                                  checked={marcada}
+                                  onChange={(e) => cambiar(u, {
+                                    empresas: e.target.checked ? [...empresas, id] : empresas.filter((x) => x !== id),
+                                    // Una sola sucursal en la empresa: queda elegida.
+                                    sedes: e.target.checked && !sedes[id] && suyas.length === 1
+                                      ? { ...sedes, [id]: String(suyas[0]._id) }
+                                      : sedes,
+                                  })}
+                                  className="w-4 h-4 accent-emerald-600 cursor-pointer"
+                                />
+                                {empresa.name}
+                              </label>
+                              {marcada && (
+                                <select
+                                  value={sedes[id] || SIN_SEDE}
+                                  onChange={(e) => cambiar(u, { sedes: { ...sedes, [id]: e.target.value } })}
+                                  className={`input text-xs py-1.5 w-auto flex-1 min-w-[140px] ${sedes[id] ? '' : 'border-amber-300 bg-amber-50 text-amber-800'}`}
+                                >
+                                  <option value={SIN_SEDE} disabled>— Sucursal —</option>
+                                  {suyas.map((c) => (
+                                    <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
+                                  ))}
+                                </select>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
                     <select
                       value={sede}
                       onChange={(e) => cambiar(u, { sede: e.target.value })}
@@ -325,9 +417,10 @@ export default function StaffClinicsTab({ clinics, users, onUsersChange }) {
                         <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
                       ))}
                     </select>
+                    )}
                     {todas && (
                       <p className="text-[11px] text-emerald-700 mt-1">
-                        De aquí sale su rol; aparece en todas.
+                        {multi ? 'Aparece en todas las sucursales de sus empresas.' : 'De aquí sale su rol; aparece en todas.'}
                       </p>
                     )}
                   </td>

@@ -1,4 +1,6 @@
 const mongoose = require('mongoose');
+// Registra la empresa: las sucursales se cargan con `populate('company')`.
+require('./Company');
 
 const clinicSchema = new mongoose.Schema(
   {
@@ -7,6 +9,13 @@ const clinicSchema = new mongoose.Schema(
     // en una sola sucursal (Central); el dashboard contable de cada sucursal ligada
     // muestra esos datos filtrados por su centro (ver services/accountingScope).
     accountingCostCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null },
+    // Empresa a la que pertenece (models/Company). Mover la sucursal a otra empresa
+    // es cambiar este campo: citas, ventas y personal la siguen (ver utils/companies).
+    company: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', default: null, index: true },
+    // Al mover una sucursal a otra empresa nace una nueva (POST /clinics/:id/move): la
+    // de origen queda inactiva con su historial y ambas se apuntan entre sí.
+    movedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', default: null },
+    movedFrom: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', default: null },
     ruc: {
       type: String,
       trim: true,

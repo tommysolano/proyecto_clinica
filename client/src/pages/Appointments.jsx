@@ -57,7 +57,8 @@ import SearchableSelect from '../components/SearchableSelect';
 // «Quién atiende» + enfermería + el suero, en un solo bloque compartido con el
 // alta de paciente (Pacientes → «Agendar cita para este paciente»).
 import QuienAtiende, { CAMPOS_QUIEN_ATIENDE, pasosDeAtencion } from '../components/QuienAtiende';
-import { doctorOptionLabel, roleSatisfies, ROLE_LABELS, ROLES_TODA_LA_ORG, ROLES_VEN_CORREO } from '../utils/roles';
+import { doctorOptionLabel, roleSatisfies, ROLE_LABELS, ROLES_TODA_LA_ORG, ROLES_TODAS_LAS_EMPRESAS, ROLES_VEN_CORREO } from '../utils/roles';
+import CompanyClinicSelect, { ClinicOptionsByCompany } from '../components/CompanyClinicSelect';
 
 // 6 estados soportados por el backend.
 const statusColors = {
@@ -490,6 +491,15 @@ function ColaProfesionales({ apt }) {
         {/* Lo que recepción anotó al asignar el paso («Detox, Sueroterapia…»):
             en la propia fila, para que la tarea se vea sin abrir nada. */}
         {t.serviceName && <span className="text-slate-500 font-normal"> · {t.serviceName}</span>}
+        {/* HIDROTERAPIA (oct-2026): el check de mostrador. Antes se escribía
+            en «Qué hace» y salía aquí; con el check dejó de verse en la
+            agenda y la enfermera no se enteraba de que tocaba. */}
+        {esEnf && t.hidroterapia?.solicitada && (
+          <span className="text-cyan-700 font-semibold">
+            {' · 💦 Hidroterapia'}
+            {t.hidroterapia.realizada ? ' ✓' : ''}
+          </span>
+        )}
       </div>
     );
   });
@@ -637,6 +647,16 @@ export default function Appointments() {
   // Para administración/caja contiene todas las sucursales de la organización;
   // para los demás roles se conserva el alcance de sus asignaciones.
   const [clinicasFiltro, setClinicasFiltro] = useState([]);
+  /**
+   * El FILTRO de la agenda: las agendas son por empresa (oct-2026), así que fuera
+   * del CRM (call center, marketing) solo se ofrecen las sucursales de la empresa
+   * activa — las de otra empresa saldrían siempre vacías. Agendar sí puede ir a
+   * otra empresa donde la persona trabaje (`appointmentClinics`).
+   */
+  const empresaActiva = String(activeClinic?.company?._id || activeClinic?.company || '');
+  const sucursalesDelFiltro = hasRole(...ROLES_TODAS_LAS_EMPRESAS) || !empresaActiva
+    ? clinicasFiltro
+    : clinicasFiltro.filter((c) => String(c.company?._id || c.company || '') === empresaActiva);
   const appointmentClinics = (
     veTodaLaOrg && clinicasFiltro.length ? clinicasFiltro : (clinics || [])
   ).filter((c) => c.active !== false);
@@ -2605,16 +2625,14 @@ export default function Appointments() {
                 ))}
               </select>
             )}
-            {(!isDoctor || esOdontologia) && clinicasFiltro.length > 1 && (
+            {(!isDoctor || esOdontologia) && sucursalesDelFiltro.length > 1 && (
               <select
                 value={filter.clinic}
                 onChange={(e) => setFilter({ ...filter, clinic: e.target.value })}
                 className="px-3 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
               >
                 <option value="">Todas las sucursales</option>
-                {clinicasFiltro.map((c) => (
-                  <option key={c._id} value={c._id}>{c.nombreComercial || c.name}</option>
-                ))}
+                <ClinicOptionsByCompany clinics={sucursalesDelFiltro} />
               </select>
             )}
             {/* Filtros por hora: solo tienen sentido en la lista (un día).
@@ -3649,23 +3667,14 @@ export default function Appointments() {
               la organización, aunque su usuario esté asignado a una sola. */}
           {showClinicSelector && (
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                Sucursal destino *
-              </label>
-              <select
-                name="clinic"
+              {/* Empresa → sucursal (oct-2026): si la empresa tiene una sola
+                  sucursal, queda marcada sola. */}
+              <CompanyClinicSelect
+                clinics={appointmentClinics}
                 value={form.clinic}
-                onChange={handleChange}
+                onChange={(id) => setForm((f) => ({ ...f, clinic: id }))}
                 required
-                className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
-              >
-                <option value="">Seleccionar sucursal</option>
-                {appointmentClinics.map((c) => (
-                  <option key={c._id} value={c._id}>
-                    {c.nombreComercial || c.name}
-                  </option>
-                ))}
-              </select>
+              />
             </div>
           )}
 
@@ -3855,6 +3864,7 @@ export default function Appointments() {
               Servicio <span className="text-rose-500">*</span>
             </label>
             <ServiceItemPicker
+              clinic={form.clinic}
               value={form.serviceItem}
               onChange={(item) => setForm((f) => ({ ...f, serviceItem: item }))}
             />
@@ -3877,6 +3887,7 @@ export default function Appointments() {
                 libre. Se queda vacío tras cada elección: los elegidos van
                 en las fichas de abajo. */}
             <ServiceItemPicker
+              clinic={form.clinic}
               value={null}
               onChange={(p) => {
                 if (!p) return;
@@ -4044,6 +4055,7 @@ export default function Appointments() {
                   <div>
                     <label className="text-xs font-medium text-slate-600 block mb-1">Servicio</label>
                     <ServiceItemPicker
+                      clinic={form.clinic}
                       value={it.serviceItem || null}
                       onChange={(item) => setForm((f) => ({
                         ...f,

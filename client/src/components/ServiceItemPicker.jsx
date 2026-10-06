@@ -21,9 +21,11 @@ import { useServiciosAgenda } from '../utils/serviciosAgenda';
  * Props:
  *   value    : { _id, name } | null — el servicio elegido
  *   onChange : (item|null) => void
+ *   clinic   : sucursal donde se agenda; cada empresa tiene su catálogo (oct-2026).
+ *              Sin ella, el de la sucursal activa.
  */
-export default function ServiceItemPicker({ value, onChange, placeholder = 'Escoge un servicio del inventario…' }) {
-  const items = useServiciosAgenda();
+export default function ServiceItemPicker({ value, onChange, clinic = '', placeholder = 'Escoge un servicio del inventario…' }) {
+  const items = useServiciosAgenda(clinic);
 
   return (
     <SearchableSelect

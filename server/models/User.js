@@ -92,6 +92,15 @@ const userSchema = new mongoose.Schema(
      */
     worksInAllClinics: { type: Boolean, default: false },
     /**
+     * EMPRESAS EN LAS QUE TRABAJA (oct-2026). Una persona puede estar en varias a
+     * la vez (el doctor que atiende en las dos). Sus sucursales (`clinics[]`) son
+     * de estas empresas, y «trabaja en todas las sucursales» quiere decir todas
+     * las de ESTAS empresas, no las de cualquiera. Moverla de empresa es cambiar
+     * esta lista. La mantiene utils/companies (se completa con las empresas de
+     * sus sucursales).
+     */
+    companies: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Company' }], default: [] },
+    /**
      * LA ÚLTIMA SEDE QUE ELIGIÓ AL ENTRAR (sep-2026).
      *
      * Para el personal «en todas las sucursales» esta es la sede en la que
@@ -180,8 +189,10 @@ userSchema.methods.getRoleForClinic = function (clinicId) {
   if (!clinicId) return null;
   const found = this.clinics.find((c) => String(c.clinic) === String(clinicId));
   if (found) return found.role;
-  // "Trabaja en todas": vale su asignación, sea cual sea la sede que se pregunte.
-  return this.worksInAllClinics ? this.clinics[0]?.role || null : null;
+  // "Trabaja en todas": todas las sucursales DE SUS EMPRESAS (utils/companies), con
+  // el rol que tiene en esa empresa.
+  const { coversClinic, roleForCoveredClinic } = require('../utils/companies');
+  return coversClinic(this, clinicId) ? roleForCoveredClinic(this, clinicId) : null;
 };
 
 /**
@@ -197,13 +208,28 @@ userSchema.methods.getRoleForClinic = function (clinicId) {
  */
 userSchema.statics.enSucursal = function (clinicId, roles) {
   const rol = Array.isArray(roles) ? { $in: roles } : roles;
+  // «En todas» = en todas las de sus empresas. Sin mapa de empresas, como antes.
+  const { companyOfClinicSync, isCompanyCacheLoaded } = require('../utils/companies');
+  const company = isCompanyCacheLoaded() ? companyOfClinicSync(clinicId) : null;
+  const empresa = company ? { companies: new mongoose.Types.ObjectId(company) } : {};
   return {
     $or: [
       { clinics: { $elemMatch: { clinic: clinicId, role: rol } } },
-      { worksInAllClinics: true, clinics: { $elemMatch: { role: rol } } },
+      { worksInAllClinics: true, ...empresa, clinics: { $elemMatch: { role: rol } } },
     ],
   };
 };
+
+// Quien tiene rol en una sucursal trabaja en su empresa: `companies` siempre incluye
+// las empresas de sus sucursales (utils/companies). Una escritura con updateOne no
+// pasa por aquí; esas rutas llaman a userCompanyIds ellas mismas.
+userSchema.pre('save', async function completarEmpresas() {
+  if (!this.isNew && !this.isModified('clinics') && !this.isModified('companies')) return;
+  const { userCompanyIds, isCompanyCacheLoaded, ensureCompanyCache } = require('../utils/companies');
+  await ensureCompanyCache();
+  if (!isCompanyCacheLoaded()) return;
+  this.companies = userCompanyIds(this).map((id) => new mongoose.Types.ObjectId(id));
+});
 
 userSchema.statics.VALID_ROLES = VALID_ROLES;
 

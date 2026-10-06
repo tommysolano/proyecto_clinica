@@ -218,6 +218,8 @@ async function notificarRol(clinicId, role, datos) {
   // daría por bueno a quien es enfermero en OTRA sucursal y además tiene un rol
   // cualquiera en esta) e incluye a quien trabaja en todas las sedes — que si
   // puede atender aquí, tiene que enterarse de que hay alguien esperando.
+  // «En todas» depende de la empresa de la sucursal (utils/companies).
+  await require('./companies').ensureCompanyCache();
   const usuarios = await User.find({
     ...User.enSucursal(clinicId, role),
     active: { $ne: false },

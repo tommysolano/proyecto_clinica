@@ -8,6 +8,16 @@ const { normName, isPhysicalProduct } = require('../utils/productCategoryResolve
 // Los SERVICIOS del inventario son lo que se ofrece al agendar: tocar uno hace
 // que la agenda se vuelva a sincronizar en la siguiente lectura.
 const { marcarServiciosPendientes } = require('../utils/serviciosInventario');
+const { sisterClinicsSync } = require('../utils/companies');
+
+/**
+ * Sucursales cuyo catálogo es el de esta (oct-2026): las de su empresa, como ObjectId.
+ * Sin mapa de empresas, solo ella.
+ */
+const catalogClinics = (clinicId) => {
+  const ids = sisterClinicsSync(clinicId, { includeInactive: true });
+  return (ids.length ? ids : [String(clinicId)]).map((id) => new (require('mongoose').Types.ObjectId)(id));
+};
 
 /**
  * Resuelve y valida la categoría contable de inventario (`InventoryCategory`,
@@ -101,7 +111,7 @@ async function nextProductCode(clinicId) {
       { new: true, upsert: true }
     );
     const code = fmtCode(updated.seq);
-    const clash = await Product.findOne({ clinic: clinicId, code }).select('_id');
+    const clash = await Product.findOne({ clinic: { $in: catalogClinics(clinicId) }, code }).select('_id');
     if (!clash) return code;
   }
   throw Object.assign(new Error('No se pudo generar un código de producto único'), { status: 500 });
@@ -113,7 +123,7 @@ async function peekProductCode(clinicId) {
   let seq = counter ? counter.seq : 0;
   for (let i = 1; i <= 50; i++) {
     const code = fmtCode(seq + i);
-    const clash = await Product.findOne({ clinic: clinicId, code }).select('_id');
+    const clash = await Product.findOne({ clinic: { $in: catalogClinics(clinicId) }, code }).select('_id');
     if (!clash) return code;
   }
   return fmtCode(seq + 1);
@@ -140,6 +150,8 @@ exports.getProducts = async (req, res) => {
     // veían los productos de la sucursal que los creó, ocultándolos en las demás).
     const query = {
       active: true,
+      // Cada empresa tiene su catálogo (oct-2026): el de las sucursales de su empresa.
+      clinic: { $in: catalogClinics(req.clinicId) },
       $and: [
         {
           $or: [
@@ -265,8 +277,8 @@ exports.createProduct = async (req, res) => {
       // Sin código → el sistema lo genera automáticamente.
       code = await nextProductCode(req.clinicId);
     } else {
-      // Código único en todo el catálogo compartido (no solo dentro de una sucursal).
-      const existing = await Product.findOne({ code });
+      // Código único en el catálogo de la EMPRESA (no solo dentro de una sucursal).
+      const existing = await Product.findOne({ clinic: { $in: catalogClinics(req.clinicId) }, code });
       if (existing) {
         return res.status(400).json({ message: 'Ya existe un producto con ese código' });
       }
@@ -482,11 +494,14 @@ exports.getConsolidated = async (req, res) => {
   try {
     const Clinic = require('../models/Clinic');
     let clinicIds;
+    // Solo las sucursales de la empresa activa: el inventario es de cada empresa.
+    const empresa = new Set(sisterClinicsSync(req.clinicId).map(String));
     if (req.user.isSuperAdmin) {
       clinicIds = (await Clinic.find({ active: true }).select('_id')).map((c) => c._id);
     } else {
       clinicIds = (req.user.clinics || []).map((c) => c.clinic);
     }
+    if (empresa.size) clinicIds = clinicIds.filter((id) => empresa.has(String(id)));
     if (!clinicIds.length) return res.json([]);
 
     const rows = await Product.aggregate([

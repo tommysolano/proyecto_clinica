@@ -1,5 +1,6 @@
 const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const Product = require('../models/Product');
+const { ensureCompanyCache, companyOfClinicSync, defaultCompanyIdSync } = require('./companies');
 
 /**
  * LOS SERVICIOS DE LA AGENDA SALEN DEL INVENTARIO (oct-2026).
@@ -42,33 +43,39 @@ const colorPorNombre = (nombre) => {
 
 async function sincronizar() {
   const slugify = AppointmentServiceItem.slugify;
+  // Cada EMPRESA tiene su catálogo (oct-2026): el producto es de la empresa de su
+  // sucursal, y el servicio de agenda se casa por nombre DENTRO de esa empresa.
+  await ensureCompanyCache();
   const productos = await Product.find({ category: 'servicio', active: true })
     .select('name clinic createdAt')
     .sort({ createdAt: 1, _id: 1 })
     .lean();
 
-  // Un producto por nombre: el más antiguo manda (es el que lleva más tiempo
-  // usándose y el que tiene la historia).
-  const porSlug = new Map();
+  // Un producto por nombre y empresa: el más antiguo manda (es el que lleva más
+  // tiempo usándose y el que tiene la historia).
+  const porClave = new Map();
   for (const p of productos) {
     const name = String(p.name || '').replace(/\s+/g, ' ').trim();
     const slug = slugify(name);
-    if (slug && !porSlug.has(slug)) porSlug.set(slug, { ...p, name });
+    const company = companyOfClinicSync(p.clinic) || defaultCompanyIdSync();
+    const clave = `${company}|${slug}`;
+    if (slug && !porClave.has(clave)) porClave.set(clave, { ...p, name, slug, company });
   }
 
-  const items = await AppointmentServiceItem.find({}).select('slug name product active').lean();
-  const itemPorSlug = new Map(items.map((i) => [i.slug, i]));
+  const items = await AppointmentServiceItem.find({}).select('company slug name product active').lean();
+  const itemPorClave = new Map(items.map((i) => [`${i.company || defaultCompanyIdSync()}|${i.slug}`, i]));
 
   const ops = [];
-  for (const [slug, p] of porSlug) {
-    const it = itemPorSlug.get(slug);
+  for (const [clave, p] of porClave) {
+    const it = itemPorClave.get(clave);
     if (!it) {
       ops.push({
         insertOne: {
           document: {
             clinic: p.clinic,
+            company: p.company,
             name: p.name,
-            slug,
+            slug: p.slug,
             color: colorPorNombre(p.name),
             product: p._id,
             active: true,
@@ -88,8 +95,8 @@ async function sincronizar() {
     if (it.name !== p.name) set.name = p.name;
     if (Object.keys(set).length) ops.push({ updateOne: { filter: { _id: it._id }, update: { $set: set } } });
   }
-  for (const it of items) {
-    if (it.product && !porSlug.has(it.slug)) {
+  for (const [clave, it] of itemPorClave) {
+    if (it.product && !porClave.has(clave)) {
       ops.push({ updateOne: { filter: { _id: it._id }, update: { $set: { product: null } } } });
     }
   }
@@ -103,7 +110,7 @@ async function sincronizar() {
       if (!soloDuplicados) throw err;
     });
   }
-  return { productos: porSlug.size, cambios: ops.length };
+  return { productos: porClave.size, cambios: ops.length };
 }
 
 /**

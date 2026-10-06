@@ -2,6 +2,7 @@ const CommissionRule = require('../models/CommissionRule');
 const mongoose = require('mongoose');
 const Appointment = require('../models/Appointment');
 const User = require('../models/User');
+const { coversClinic, roleForCoveredClinic } = require('../utils/companies');
 const CommissionPosting = require('../models/CommissionPosting');
 const CommissionAdjustment = require('../models/CommissionAdjustment');
 const CommissionPayout = require('../models/CommissionPayout');
@@ -1200,7 +1201,7 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
   const catalogo = await catalogoServicios();
   const doctoresFiltro = parseList(params.doctor);
 
-  const POP_DOCTOR = 'name specialty clinics worksInAllClinics active';
+  const POP_DOCTOR = 'name specialty clinics worksInAllClinics companies active';
   const appts = await Appointment.find(query)
     .populate('doctor', POP_DOCTOR)
     .populate('clinic', 'name nombreComercial')
@@ -1449,7 +1450,7 @@ exports.doctorSummary = async (req, res) => {
       return byDoctor.get(id);
     };
     const rolDe = (doc, clinicId) => (doc.clinics || []).find((c) => String(c.clinic?._id || c.clinic) === clinicId)?.role
-      || (doc.worksInAllClinics ? doc.clinics?.[0]?.role : null);
+      || (coversClinic(doc, clinicId) ? roleForCoveredClinic(doc, clinicId) : null);
 
     // Los totales de arriba cuentan cada CITA una vez: con dos doctores en la
     // misma cita, sumar las filas de los doctores la contaría dos veces.
@@ -1669,12 +1670,12 @@ exports.doctorOptions = async (req, res) => {
     const users = await User.find(porSucursal
       ? User.enSucursal(clinic, DOCTOR_LIKE_ROLES)
       : { 'clinics.role': { $in: DOCTOR_LIKE_ROLES } })
-      .select('name specialty clinics worksInAllClinics active')
+      .select('name specialty clinics worksInAllClinics companies active')
       .sort({ name: 1 })
       .lean();
     res.json(users.map((u) => {
       const filas = (u.clinics || []).filter((c) => DOCTOR_LIKE_ROLES.includes(c.role));
-      const propias = porSucursal && !u.worksInAllClinics
+      const propias = porSucursal && !coversClinic(u, clinic)
         ? filas.filter((c) => String(c.clinic) === String(clinic))
         : filas;
       const roles = [...new Set((propias.length ? propias : filas).map((c) => c.role))];

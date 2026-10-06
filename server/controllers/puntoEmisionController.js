@@ -57,7 +57,7 @@ async function serieUsadaEnOtraSucursal(clinicId, ruc, estab, codigo) {
 /** Usuarios de la sucursal que pueden recibir un punto, con su rol aquí. */
 async function usuariosElegibles(clinicId) {
   const users = await User.find({ ...User.enSucursal(clinicId, ROLES_CON_PUNTO), active: { $ne: false } })
-    .select('name email clinics worksInAllClinics')
+    .select('name email clinics worksInAllClinics companies')
     .sort({ name: 1 });
   return users.map((u) => ({ _id: u._id, name: u.name, email: u.email, role: u.getRoleForClinic(clinicId) }));
 }

@@ -4,6 +4,7 @@ const { validationResult } = require('express-validator');
 const User = require('../models/User');
 const Clinic = require('../models/Clinic');
 const { isAccessBlocked, blockMessage } = require('../utils/accessControl');
+const { ensureCompanyCache, userCompanyIds, clinicsOfCompanySync } = require('../utils/companies');
 
 const ACCESS_EXPIRES = process.env.JWT_EXPIRES_IN || '8h';
 
@@ -26,12 +27,13 @@ const buildPublicUser = (user, activeClinic = null, role = null) => ({
   phone: user.phone,
   clinics: user.clinics || [],
   worksInAllClinics: !!user.worksInAllClinics,
+  companies: user.companies || [],
   activeClinic,
   role,
 });
 
 /** Los campos de sucursal que necesita el selector del frontend. */
-const CAMPOS_SUCURSAL = 'name razonSocial nombreComercial appointmentSlotMinutes';
+const CAMPOS_SUCURSAL = 'name razonSocial nombreComercial appointmentSlotMinutes company';
 
 const aplanar = (clinic, role) => ({
   _id: clinic._id,
@@ -41,6 +43,8 @@ const aplanar = (clinic, role) => ({
   // La rejilla de la agenda viaja con cada sucursal: el call center agenda en
   // sedes distintas desde el mismo formulario.
   appointmentSlotMinutes: clinic.appointmentSlotMinutes || 0,
+  // Empresa de la sucursal: el selector las agrupa por empresa.
+  company: clinic.company ? { _id: clinic.company._id, name: clinic.company.name } : null,
   role,
 });
 
@@ -57,12 +61,18 @@ const aplanar = (clinic, role) => ({
  * razonar sobre `clinics[]`.
  */
 async function sucursalesAccesibles(user) {
-  const todas = user.isSuperAdmin || user.worksInAllClinics;
-  const filtro = todas
+  // "En todas" son todas las sucursales de SUS empresas (utils/companies); el
+  // super-admin, las de todas las empresas.
+  await ensureCompanyCache();
+  const propias = (user.clinics || []).map((c) => String(c.clinic));
+  const enTodas = user.worksInAllClinics
+    ? userCompanyIds(user).flatMap((company) => clinicsOfCompanySync(company))
+    : [];
+  const filtro = user.isSuperAdmin
     ? { active: true }
-    : { _id: { $in: (user.clinics || []).map((c) => c.clinic) }, active: true };
+    : { _id: { $in: [...new Set([...propias, ...enTodas])] }, active: true };
 
-  const clinics = await Clinic.find(filtro).select(CAMPOS_SUCURSAL).sort({ name: 1 });
+  const clinics = await Clinic.find(filtro).select(CAMPOS_SUCURSAL).populate('company', 'name').sort({ name: 1 });
   return clinics
     .map((clinic) => {
       // El super-admin entra como admin allí donde no tenga rol propio; es la
@@ -297,8 +307,8 @@ exports.getMe = async (req, res) => {
     let activeClinic = null;
     if (req.clinicId) {
       activeClinic = await Clinic.findById(req.clinicId).select(
-        'name razonSocial nombreComercial logoUrl appointmentSlotMinutes'
-      );
+        'name razonSocial nombreComercial logoUrl appointmentSlotMinutes company'
+      ).populate('company', 'name nombreComercial logoUrl');
     }
 
     const flatClinics = await sucursalesAccesibles(req.user);

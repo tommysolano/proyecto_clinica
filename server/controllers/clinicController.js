@@ -4,6 +4,11 @@ const User = require('../models/User');
 const Sale = require('../models/Sale');
 const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
+const Company = require('../models/Company');
+const {
+  ensureCompanyCache, invalidateCompanyCache, companyOfClinicSync, userCompanyIds, defaultCompanyIdSync,
+} = require('../utils/companies');
+const { veTodasLasEmpresas } = require('../utils/clinicScope');
 
 // Subida de logo en memoria. Lo guardamos como data URL base64 en clinic.logoUrl
 // para evitar dependencias de disco/CDN externos (entornos cloud con FS efímero).
@@ -84,18 +89,31 @@ exports.getClinics = async (req, res) => {
        * Quién puede AGENDAR lo sigue decidiendo la ruta de citas; esto solo
        * pinta el desplegable.
        */
+      /**
+       * EMPRESAS (oct-2026): cada sucursal viaja con su empresa, para agendar
+       * eligiendo primero la empresa. El CRM (call center, marketing) y el
+       * super-admin agendan en todas; el resto, en las de sus empresas.
+       */
+      await ensureCompanyCache();
+      const filtro = {};
+      if (!req.user.isSuperAdmin && !veTodasLasEmpresas(req)) {
+        const empresas = new Set(userCompanyIds(req.user));
+        const activa = companyOfClinicSync(req.clinicId);
+        if (activa) empresas.add(activa);
+        if (empresas.size) filtro.company = { $in: [...empresas] };
+      }
       const todas = await Clinic.find(
-        {},
-        '_id name nombreComercial active appointmentSlotMinutes'
-      ).sort({ name: 1 });
+        filtro,
+        '_id name nombreComercial active appointmentSlotMinutes company'
+      ).populate('company', 'name').sort({ name: 1 });
       return res.json(todas);
     }
     let clinics;
     if (req.user.isSuperAdmin) {
-      clinics = await Clinic.find().sort({ createdAt: -1 });
+      clinics = await Clinic.find().populate('company', 'name').sort({ createdAt: -1 });
     } else {
       const clinicIds = req.user.clinics.map((c) => c.clinic);
-      clinics = await Clinic.find({ _id: { $in: clinicIds } }).sort({ createdAt: -1 });
+      clinics = await Clinic.find({ _id: { $in: clinicIds } }).populate('company', 'name').sort({ createdAt: -1 });
     }
     res.json(clinics);
   } catch (error) {
@@ -116,6 +134,8 @@ exports.getClinicsOverview = async (req, res) => {
       const ids = req.user.clinics.map((c) => c.clinic);
       clinicMatch._id = { $in: ids };
     }
+    // El consolidado es de la EMPRESA activa: cada empresa compara sus sucursales.
+    if (req.companyId) clinicMatch.company = req.companyId;
     const clinics = await Clinic.find(clinicMatch)
       .select('name nombreComercial')
       .sort({ name: 1 })
@@ -229,7 +249,14 @@ exports.getClinic = async (req, res) => {
  */
 exports.createClinic = async (req, res) => {
   try {
-    const clinic = await Clinic.create({ ...req.body, owner: req.user._id });
+    // Toda sucursal nace dentro de una empresa: la elegida, o la de la sucursal activa.
+    await ensureCompanyCache();
+    const company = req.body.company || req.companyId || defaultCompanyIdSync();
+    if (!company || !(await Company.exists({ _id: company }))) {
+      return res.status(400).json({ message: 'Elige la empresa de la nueva sucursal' });
+    }
+    const clinic = await Clinic.create({ ...req.body, company, owner: req.user._id });
+    invalidateCompanyCache();
 
     // Auto-asignar al creador como admin
     await User.findByIdAndUpdate(req.user._id, {
@@ -251,7 +278,9 @@ exports.updateClinic = async (req, res) => {
       const role = req.user.getRoleForClinic(req.params.id);
       if (role !== 'admin') return res.status(403).json({ message: 'Sin permisos' });
     }
-    const clinic = await Clinic.findByIdAndUpdate(req.params.id, req.body, {
+    // La empresa no se cambia aquí: mover una sucursal es POST /clinics/:id/move.
+    const { company, ...cambios } = req.body;
+    const clinic = await Clinic.findByIdAndUpdate(req.params.id, cambios, {
       new: true,
       runValidators: true,
     });
@@ -259,6 +288,102 @@ exports.updateClinic = async (req, res) => {
     res.json(clinic);
   } catch (error) {
     res.status(500).json({ message: 'Error al actualizar clínica', error: error.message });
+  }
+};
+
+/**
+ * MOVER UNA SUCURSAL A OTRA EMPRESA (oct-2026). Solo super-admin.
+ *
+ * Se mueve la OPERACIÓN y el historial se queda donde se emitió: las facturas
+ * pasadas llevan el RUC de la empresa de origen y sus asientos están en su
+ * contabilidad. Por eso no se cambia la empresa del documento de la sucursal
+ * (eso arrastraría todo su pasado), sino que:
+ *   1. Nace una sucursal NUEVA en la empresa destino, con los datos de la de origen.
+ *   2. Pasan a ella el personal, las citas por venir, los bloqueos por venir y los
+ *      consultorios. El servicio de cada cita se busca por nombre en el catálogo
+ *      de la empresa destino.
+ *   3. La de origen queda inactiva en su empresa, con todo su historial (ventas,
+ *      facturas, caja, contabilidad, citas pasadas) y apuntando a la nueva.
+ * Facturación (certificado, puntos de emisión) se configura en la empresa destino.
+ */
+exports.moveClinic = async (req, res) => {
+  try {
+    const Room = require('../models/Room');
+    const TimeBlock = require('../models/TimeBlock');
+    const AppointmentServiceItem = require('../models/AppointmentServiceItem');
+
+    const origen = await Clinic.findById(req.params.id).lean();
+    if (!origen) return res.status(404).json({ message: 'Sucursal no encontrada' });
+    if (origen.active === false) return res.status(400).json({ message: 'La sucursal está inactiva' });
+    const destino = await Company.findOne({ _id: req.body.company, active: { $ne: false } }).lean();
+    if (!destino) return res.status(400).json({ message: 'Elige una empresa destino activa' });
+    await ensureCompanyCache();
+    if (String(companyOfClinicSync(origen._id)) === String(destino._id)) {
+      return res.status(400).json({ message: 'La sucursal ya es de esa empresa' });
+    }
+
+    const {
+      _id, __v, createdAt, updatedAt, accountingCostCenter, company, movedTo, movedFrom,
+      ruc, razonSocial, ...datos
+    } = origen;
+    const nueva = await Clinic.create({
+      ...datos,
+      company: destino._id,
+      // Datos fiscales: los de la empresa destino (los de origen son de otro RUC).
+      ruc: destino.ruc || undefined,
+      razonSocial: destino.razonSocial || '',
+      active: true,
+      owner: req.user._id,
+      movedFrom: origen._id,
+    });
+    invalidateCompanyCache();
+    await ensureCompanyCache();
+
+    // Personal: cambia esta sucursal por la nueva, con el mismo rol, y pasa a trabajar
+    // también en la empresa destino.
+    const personal = await User.find({ 'clinics.clinic': origen._id }).select('_id activeClinicId');
+    await User.updateMany(
+      { 'clinics.clinic': origen._id },
+      { $set: { 'clinics.$[c].clinic': nueva._id }, $addToSet: { companies: destino._id } },
+      { arrayFilters: [{ 'c.clinic': origen._id }] }
+    );
+    await User.updateMany({ activeClinicId: origen._id }, { $set: { activeClinicId: nueva._id } });
+    const userCache = require('../utils/userCache');
+    personal.forEach((u) => userCache.invalidate(String(u._id)));
+
+    // Citas por venir: a la nueva, con el servicio del catálogo de la empresa destino.
+    const hoy = new Date();
+    hoy.setHours(0, 0, 0, 0);
+    const futuras = await Appointment.find({ clinic: origen._id, date: { $gte: hoy },
+      status: { $in: ['pendiente', 'confirmada'] } }).select('_id serviceItem').lean();
+    const servicios = await AppointmentServiceItem.find({ _id: { $in: futuras.map((a) => a.serviceItem).filter(Boolean) } })
+      .select('slug').lean();
+    const destinoPorSlug = new Map((await AppointmentServiceItem.find({ company: destino._id,
+      slug: { $in: servicios.map((s) => s.slug) } }).select('slug').lean()).map((s) => [s.slug, s._id]));
+    const slugDe = new Map(servicios.map((s) => [String(s._id), s.slug]));
+    if (futuras.length) {
+      await Appointment.bulkWrite(futuras.map((a) => ({ updateOne: { filter: { _id: a._id }, update: { $set: {
+        clinic: nueva._id,
+        serviceItem: a.serviceItem ? destinoPorSlug.get(slugDe.get(String(a.serviceItem))) || a.serviceItem : null,
+      } } } })), { ordered: false });
+    }
+    const bloqueos = await TimeBlock.updateMany({ clinic: origen._id, endDate: { $gte: hoy } }, { $set: { clinic: nueva._id } });
+    const consultorios = await Room.updateMany({ clinic: origen._id }, { $set: { clinic: nueva._id } });
+
+    await Clinic.updateOne({ _id: origen._id }, { $set: { active: false, movedTo: nueva._id } });
+    invalidateCompanyCache();
+
+    res.json({
+      clinic: nueva,
+      moved: {
+        staff: personal.length,
+        appointments: futuras.length,
+        timeBlocks: bloqueos.modifiedCount || 0,
+        rooms: consultorios.modifiedCount || 0,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al mover la sucursal', error: error.message });
   }
 };
 

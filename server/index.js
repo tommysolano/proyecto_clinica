@@ -140,6 +140,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/access-blocks', require('./routes/accessBlocks'));
 app.use('/api/clinics', require('./routes/clinics'));
+app.use('/api/companies', require('./routes/companies'));
 app.use('/api/patients', require('./routes/patients'));
 app.use('/api/lookup', require('./routes/lookup'));
 app.use('/api/clinical-records', require('./routes/clinicalRecords'));
@@ -245,6 +246,12 @@ connectDB().then(() => {
   // antes (la identidad de un número es su TELÉFONO, no el id de su documento).
   // Idempotente y de un par de documentos: puede correrlo cualquier instancia.
   require('./utils/whatsappIdentity').backfillPhoneKeys().catch(() => {});
+
+  // Empresas: crea la principal si aún no existe y le asigna lo que no tenga
+  // empresa. Idempotente y de pocas filas: la corre cualquier instancia.
+  require('./utils/companies').ensureCompanies()
+    .then((r) => console.log('[empresas]', JSON.stringify(r)))
+    .catch((error) => console.error('[empresas] Migración:', error.message));
 
   // Estos listeners reaccionan a acciones atendidas por ESTE proceso HTTP, por
   // eso deben existir en todas las instancias y no únicamente en el líder de

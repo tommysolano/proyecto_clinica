@@ -55,6 +55,37 @@ test('el stock de los insumos queda como en Contífico; los servicios no se toca
   assert.equal((await syncStock({ clinic, api })).updated, 0);
 });
 
+test('un servicio nuevo en Contífico entra como servicio; lo que ya existe aquí no se toca', async () => {
+  const clinic = { _id: new ObjectId(), name: 'Central' };
+  const propio = new ObjectId();
+  await Product.collection.insertOne({ _id: propio, clinic: clinic._id, code: 'COL002', name: 'Mi colposcopia', category: 'servicio',
+    unlimited: true, salePrice: 10, active: true });
+  const api = fakeApi([
+    { id: 'C1', codigo: 'COL001', nombre: 'COLPOSCOPIA', tipo: 'SER', pvp1: '39.000000', porcentaje_iva: 0, estado: 'A' },
+    { id: 'C2', codigo: 'COL002', nombre: 'COLPOSCOPIA DERIVADOS', tipo: 'SER', pvp1: '29.000000', porcentaje_iva: 0, estado: 'A' },
+  ]);
+  const simulacro = await syncStock({ clinic, api, commit: false });
+  assert.deepEqual([simulacro.newProducts.created, simulacro.newProducts.linked], [1, 1]);
+  assert.equal(await Product.countDocuments({ code: 'COL001' }), 0, 'sin commit no crea');
+
+  const r = await syncStock({ clinic, api });
+  assert.deepEqual(r.newProducts.names, ['COLPOSCOPIA']);
+  const nuevo = await Product.findOne({ code: 'COL001' }).lean();
+  assert.equal(nuevo.category, 'servicio');
+  assert.equal(nuevo.unlimited, true);
+  assert.equal(nuevo.salePrice, 39);
+  assert.equal(nuevo.taxRate, 0);
+  const mio = await Product.findById(propio).lean();
+  assert.deepEqual([mio.name, mio.salePrice], ['Mi colposcopia', 10], 'el que ya existía no cambia');
+  const enlace = await Record.findOne({ entity: 'product', externalId: 'C2' }).lean();
+  assert.equal(String(enlace.projection.links[0].ref), String(propio), 'pero queda enlazado');
+  // Se ofrece al agendar.
+  const AppointmentServiceItem = require('../models/AppointmentServiceItem');
+  assert.ok(await AppointmentServiceItem.exists({ slug: 'colposcopia', product: nuevo._id }));
+  // La segunda vez ya no hay nada nuevo.
+  assert.equal((await syncStock({ clinic, api })).newProducts.created, 0);
+});
+
 test('un traslado son dos filas de kardex con las claves de la importación', () => {
   const clinicId = new ObjectId();
   const [product, from, to] = [new ObjectId(), new ObjectId(), new ObjectId()];

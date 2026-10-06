@@ -10,6 +10,8 @@
  * «Cita no encontrada» al asignar el doctor: la agenda le enseñaba al cajero una
  * cita de otra sede y la escritura la buscaba solo en la activa. Fuente única.
  */
+const mongoose = require('mongoose');
+const { ensureCompanyCache, companyOfClinicSync, sisterClinicsSync, userCompanyIds } = require('./companies');
 
 /**
  * ¿VE (Y OPERA) TODA LA ORGANIZACIÓN?
@@ -33,9 +35,17 @@
  * chat y el servidor le contestaba «Cita no encontrada» porque la escritura se
  * buscaba solo en sus sucursales. Leer y escribir tienen que responder igual.
  */
+
 const veTodaLaOrganizacion = (req) =>
   !!req.user?.isSuperAdmin
   || ['admin', 'cajero', 'call_center', 'marketing'].includes(req.role);
+
+/**
+ * ¿TRABAJA PARA TODAS LAS EMPRESAS? (oct-2026) El CRM es uno para todas: call center
+ * y marketing ven y agendan en la agenda de cualquier empresa. Los demás, en la de la
+ * empresa de su sucursal activa (ver sucursalesVisibles).
+ */
+const veTodasLasEmpresas = (req) => ['call_center', 'marketing'].includes(req.role);
 
 /**
  * LAS SUCURSALES CUYOS DATOS ALCANZA ESTA PERSONA. `null` = TODAS (sin filtro).
@@ -56,7 +66,14 @@ const veTodaLaOrganizacion = (req) =>
  * `User.getRoleForClinic` y `User.enSucursal`—: cámbialos juntos.
  */
 const sucursalesVisibles = (req) => {
-  if (veTodaLaOrganizacion(req) || req.user?.worksInAllClinics) return null;
+  // El CRM es de TODAS las empresas: call center y marketing agendan para cualquiera.
+  if (veTodasLasEmpresas(req)) return null;
+  if (veTodaLaOrganizacion(req) || req.user?.worksInAllClinics) {
+    // Las agendas son POR EMPRESA (oct-2026): «toda la organización» es toda la
+    // empresa de la sucursal activa. Sin mapa de empresas, como antes: todas.
+    const hermanas = sisterClinicsSync(req.clinicId, { includeInactive: true });
+    return hermanas.length ? hermanas.map((id) => new mongoose.Types.ObjectId(id)) : null;
+  }
   return (req.user?.clinics || []).map((c) => c.clinic);
 };
 
@@ -110,6 +127,15 @@ async function validarSucursalDestino(req, pedida) {
   if (!destino) {
     return { ok: false, status: 400, message: 'La sucursal destino no existe o está inactiva.' };
   }
+  // Otra EMPRESA: solo el CRM (que es de todas), el super-admin o quien trabaja en ella.
+  await ensureCompanyCache();
+  const empresaDestino = companyOfClinicSync(pedida);
+  const empresaActiva = companyOfClinicSync(req.clinicId);
+  if (empresaDestino && empresaActiva && empresaDestino !== empresaActiva
+      && !veTodasLasEmpresas(req) && !req.user?.isSuperAdmin
+      && !userCompanyIds(req.user).includes(empresaDestino)) {
+    return { ok: false, status: 403, message: 'No trabajas en la empresa de esa sucursal.' };
+  }
   return { ok: true, clinicId: pedida };
 }
 
@@ -155,6 +181,7 @@ async function sucursalOdontologia() {
 
 module.exports = {
   veTodaLaOrganizacion,
+  veTodasLasEmpresas,
   sucursalesVisibles,
   alcanzaSucursal,
   sucursalPedida,

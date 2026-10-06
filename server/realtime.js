@@ -44,7 +44,9 @@ function init(httpServer) {
         socket.handshake.headers?.authorization?.replace('Bearer ', '');
       if (!token) return next(new Error('No token'));
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      const user = await User.findById(decoded.id).select('name email isSuperAdmin clinics worksInAllClinics active');
+      const user = await User.findById(decoded.id).select('name email isSuperAdmin clinics worksInAllClinics companies active');
+      // El rol de quien "trabaja en todas" depende de la empresa de la sucursal.
+      await require('./utils/companies').ensureCompanyCache();
       if (!user || !user.active) return next(new Error('Usuario inactivo'));
       socket.data.user = user;
       socket.data.clinicId = decoded.clinicId || null;

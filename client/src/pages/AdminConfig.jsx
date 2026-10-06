@@ -41,6 +41,8 @@ export default function AdminConfig() {
 
   const [clinics, setClinics] = useState([]);
   const [users, setUsers] = useState([]);
+  // Empresas que este admin gestiona (oct-2026): una persona puede estar en varias.
+  const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const cargar = async () => {
@@ -49,6 +51,7 @@ export default function AdminConfig() {
       const { data } = await api.get('/users/assignments');
       setClinics(data.clinics || []);
       setUsers(data.users || []);
+      setCompanies(data.companies || []);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar la configuración');
     } finally {
@@ -104,7 +107,7 @@ export default function AdminConfig() {
       ) : tab === 'agenda' ? (
         <AgendaTab clinics={clinics} onClinicsChange={setClinics} />
       ) : (
-        <StaffClinicsTab clinics={clinics} users={users} onUsersChange={setUsers} />
+        <StaffClinicsTab clinics={clinics} users={users} companies={companies} onUsersChange={setUsers} />
       )}
     </div>
   );

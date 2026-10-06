@@ -4,7 +4,6 @@ import { Link, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import NumericInput from '../components/NumericInput';
 import useDebounce from '../hooks/useDebounce';
-import { nombreSucursal } from '../utils/clinicName';
 import AppointmentValueFields from '../components/AppointmentValueFields';
 import AgendadoPorSelect from '../components/AgendadoPorSelect';
 import { partirNombreCompleto } from '../utils/fullName';
@@ -61,6 +60,8 @@ import { useSocketEvent, useSocket } from '../context/SocketContext';
 import SameSlotPanel from '../components/SameSlotPanel';
 import TimeSlotInput from '../components/TimeSlotInput';
 import ServiceItemPicker from '../components/ServiceItemPicker';
+import CompanyClinicSelect from '../components/CompanyClinicSelect';
+import { sameCompany } from '../utils/companies';
 import TagEditor from '../components/TagEditor';
 import SuggestInput from '../components/SuggestInput';
 import WhatsappButtons from '../components/WhatsappButtons';
@@ -7003,19 +7004,18 @@ function EditApptModal({ appt, onClose, onSaved }) {
         </p>
 
         {!unaSolaSede && (
-          <div>
-            <label className="text-xs font-medium text-slate-600">Sucursal</label>
-            <select
-              value={clinicId}
-              onChange={(e) => setClinicId(e.target.value)}
-              className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white text-sm"
-            >
-              <option value="">Seleccionar sucursal…</option>
-              {sedes.map((c) => (
-                <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
-              ))}
-            </select>
-          </div>
+          <CompanyClinicSelect
+            clinics={sedes}
+            value={clinicId}
+            label="Sucursal"
+            labelClassName="text-xs font-medium text-slate-600"
+            selectClassName="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white text-sm"
+            onChange={(id) => {
+              // Otra empresa, otro catálogo: el servicio elegido ya no vale.
+              if (!sameCompany(sedes, clinicId, id)) { setServiceItem(null); setExtras([]); }
+              setClinicId(id);
+            }}
+          />
         )}
 
         <div className="grid grid-cols-2 gap-2">
@@ -7051,7 +7051,7 @@ function EditApptModal({ appt, onClose, onSaved }) {
 
         <div>
           <label className="text-xs font-medium text-slate-600">Servicio</label>
-          <ServiceItemPicker value={serviceItem} onChange={setServiceItem} />
+          <ServiceItemPicker clinic={clinicId} value={serviceItem} onChange={setServiceItem} />
         </div>
 
         {puedeFijarValor && (
@@ -7082,6 +7082,7 @@ function EditApptModal({ appt, onClose, onSaved }) {
         <div>
           <label className="text-xs font-medium text-slate-600 block mb-1">Otros servicios (opcional)</label>
           <OtrosServiciosCita
+            clinic={clinicId}
             seleccionados={extras || []}
             principalId={serviceItem?._id}
             onChange={setExtras}
@@ -8022,21 +8023,21 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
                       equivocada — eso no se descubre hasta que el paciente llega a
                       la otra puerta. Por lo mismo no se copia de la cita anterior. */}
                   {!unaSolaSede && (
-                    <div>
-                      <label className="text-xs font-medium text-slate-600">Sucursal *</label>
-                      <select
-                        value={it.clinicId}
-                        onChange={(e) => updateItem(idx, { clinicId: e.target.value })}
-                        className={`w-full border rounded-xl px-2 py-1.5 mt-1 ${
-                          it.clinicId ? 'border-slate-200 bg-white' : 'border-amber-300 bg-amber-50'
-                        }`}
-                      >
-                        <option value="">Seleccionar sucursal…</option>
-                        {sedes.map((c) => (
-                          <option key={c._id} value={c._id}>{nombreSucursal(c)}</option>
-                        ))}
-                      </select>
-                    </div>
+                    <CompanyClinicSelect
+                      clinics={sedes}
+                      value={it.clinicId}
+                      label="Sucursal"
+                      required
+                      labelClassName="text-xs font-medium text-slate-600"
+                      selectClassName={`w-full border rounded-xl px-2 py-1.5 mt-1 ${
+                        it.clinicId ? 'border-slate-200 bg-white' : 'border-amber-300 bg-amber-50'
+                      }`}
+                      onChange={(id) => updateItem(idx, {
+                        clinicId: id,
+                        // Otra empresa, otro catálogo: el servicio elegido ya no vale.
+                        ...(sameCompany(sedes, it.clinicId, id) ? {} : { serviceItem: null, additionalServices: [] }),
+                      })}
+                    />
                   )}
 
                   <div className="grid grid-cols-2 gap-2">
@@ -8058,6 +8059,7 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
                   <div>
                     <label className="text-xs font-medium text-slate-600">Servicio *</label>
                     <ServiceItemPicker
+                      clinic={it.clinicId}
                       value={it.serviceItem || null}
                       onChange={(item) => updateItem(idx, { serviceItem: item })}
                     />
@@ -8067,6 +8069,7 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
                   <div>
                     <label className="text-xs font-medium text-slate-600 block mb-1">Otros servicios (opcional)</label>
                     <OtrosServiciosCita
+                      clinic={it.clinicId}
                       // Se guardan como { _id, name }: el envío ya los reduce a
                       // ids (`s._id || s`) y el nombre hace falta para la ficha.
                       seleccionados={(it.additionalServices || []).map((s) => (
@@ -8155,11 +8158,13 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
  *   seleccionados : [{ _id, name }]
  *   principalId   : el servicio principal (no se repite como adicional)
  *   onChange      : (lista) => void
+ *   clinic        : sucursal de la cita (cada empresa tiene su catálogo)
  */
-function OtrosServiciosCita({ seleccionados = [], principalId, onChange }) {
+function OtrosServiciosCita({ seleccionados = [], principalId, onChange, clinic = '' }) {
   return (
     <div className="space-y-1 mt-1">
       <ServiceItemPicker
+        clinic={clinic}
         value={null}
         placeholder="Añade otro servicio del inventario…"
         onChange={(p) => {

@@ -10,6 +10,7 @@ import Modal from '../Modal';
 import DateInput from '../DateInput';
 import SendTimingBox, { flowSendHourOf } from './SendTimingBox';
 import { todayEc, fmtDate } from '../../utils/date';
+import { withCompanyLabels } from '../../utils/companies';
 
 /**
  * Asistente de RECORDATORIOS DE CITAS: envío masivo a las citas de la agenda.
@@ -102,7 +103,8 @@ export default function AppointmentBlastWizard({ initialDate = '', onClose, onDo
     // con pasos conectados, así que aquí no hay que repetir la regla.
     api.get('/appointment-blasts/workflows').then((r) => setWorkflows(r.data || [])).catch(() => {});
     api.get('/contacts/whatsapp-accounts').then((r) => setAccounts(r.data || [])).catch(() => {});
-    api.get('/clinics', { params: { scope: 'names' } }).then((r) => setClinics(r.data || [])).catch(() => {});
+    // Con varias empresas, cada sucursal lleva delante el nombre de su empresa.
+    api.get('/clinics', { params: { scope: 'names' } }).then((r) => setClinics(withCompanyLabels(r.data || []))).catch(() => {});
     api.get('/users/doctors').then((r) => setDoctors(r.data || [])).catch(() => {});
     api.get('/appointment-service-items').then((r) => setServices(r.data || [])).catch(() => {});
   }, []);

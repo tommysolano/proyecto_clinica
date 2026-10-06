@@ -3,6 +3,7 @@ const multer = require('multer');
 const User = require('../models/User');
 const { VALID_ROLES, DOCTOR_LIKE_ROLES } = require('../constants/roles');
 const { sucursalPedida } = require('../utils/clinicScope');
+const { coversClinic, roleForCoveredClinic } = require('../utils/companies');
 const { encrypt: encryptSecret } = require('../modules/invoicing/ec/crypto');
 const {
   loadP12,
@@ -39,9 +40,22 @@ const clinicasQueGestiona = async (req) => {
   // `appointmentSlotMinutes` viaja aquí para que la pantalla de Configuración
   // pinte sus dos pestañas (personal y agenda) con una sola petición.
   return Clinic.find(filtro)
-    .select('name nombreComercial appointmentSlotMinutes')
+    .select('name nombreComercial appointmentSlotMinutes company')
+    .populate('company', 'name')
     .sort({ name: 1 })
     .lean();
+};
+
+/**
+ * EMPRESAS QUE GESTIONA (oct-2026): las de sus sucursales gestionadas; el super-admin,
+ * todas. Solo en ellas puede poner o quitar a una persona.
+ */
+const empresasQueGestiona = async (req, clinics) => {
+  const Company = require('../models/Company');
+  const filtro = req.user.isSuperAdmin
+    ? { active: { $ne: false } }
+    : { _id: { $in: [...new Set(clinics.map((c) => c.company?._id || c.company).filter(Boolean).map(String))] } };
+  return Company.find(filtro).select('name').sort({ isDefault: -1, name: 1 }).lean();
 };
 
 /**
@@ -61,11 +75,16 @@ exports.getStaffAssignments = async (req, res) => {
     const ids = clinics.map((c) => c._id);
     // Se listan también los desactivados: aparecen en gris y se pueden reactivar
     // sin tener que adivinar que existen.
-    const users = await User.find({ 'clinics.clinic': { $in: ids } })
-      .select('name email specialty active isSuperAdmin clinics worksInAllClinics')
+    const companies = await empresasQueGestiona(req, clinics);
+    // También quien está en una de estas empresas sin sucursal todavía (recién movido).
+    const users = await User.find({ $or: [
+      { 'clinics.clinic': { $in: ids } },
+      { companies: { $in: companies.map((c) => c._id) } },
+    ] })
+      .select('name email specialty active isSuperAdmin clinics worksInAllClinics companies')
       .sort({ name: 1 })
       .lean();
-    res.json({ clinics, users });
+    res.json({ clinics, users, companies });
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener las asignaciones', error: error.message });
   }
@@ -126,6 +145,24 @@ exports.updateStaffAssignments = async (req, res) => {
       }
     }
 
+    /**
+     * EMPRESAS (oct-2026). `companies` es la lista COMPLETA de las empresas que este
+     * admin gestiona en las que trabaja la persona; las que no gestiona se conservan.
+     * Quitar una empresa la saca de sus sucursales (es «moverla» a otra), y no se le
+     * puede dejar una sucursal de una empresa en la que no está.
+     */
+    if (Array.isArray(req.body.companies)) {
+      const gestionadas = new Set((await empresasQueGestiona(req, clinics)).map((c) => String(c._id)));
+      const pedidas = req.body.companies.map(String).filter((id) => gestionadas.has(id));
+      const ajenas = (target.companies || []).map(String).filter((id) => !gestionadas.has(id));
+      const finales = new Set([...ajenas, ...pedidas]);
+      const { companyOfClinicSync } = require('../utils/companies');
+      for (const [clinicId] of porClinica) {
+        if (!finales.has(String(companyOfClinicSync(clinicId)))) porClinica.delete(clinicId);
+      }
+      target.companies = [...finales];
+    }
+
     target.clinics = [...intactas, ...porClinica.values()];
 
     /**
@@ -154,7 +191,7 @@ exports.updateStaffAssignments = async (req, res) => {
     require('../utils/userCache').invalidate(String(target._id));
 
     const populated = await User.findById(target._id)
-      .select('name email specialty active isSuperAdmin clinics worksInAllClinics')
+      .select('name email specialty active isSuperAdmin clinics worksInAllClinics companies')
       .lean();
     res.json(populated);
   } catch (error) {
@@ -615,7 +652,7 @@ exports.getDoctors = async (req, res) => {
       // asignación, igual que resuelve `getRoleForClinic`.
       roleInClinic:
         (d.clinics || []).find((c) => String(c.clinic) === String(clinicId))?.role
-        || (d.worksInAllClinics ? d.clinics?.[0]?.role : null)
+        || (coversClinic(d, clinicId) ? roleForCoveredClinic(d, clinicId) : null)
         || null,
     }));
     res.json(withRole);

@@ -9,34 +9,41 @@ import api from '../api/axios';
  * varios buscadores a la vez (el servicio, los otros servicios, cada cita de la
  * tanda del chat…) y cada uno lo pedía por su cuenta. Aquí se pide una vez y se
  * comparte durante un minuto.
+ *
+ * Cada EMPRESA tiene su catálogo (oct-2026): quien agenda en una sucursal de otra
+ * empresa (el call center) pasa esa sucursal en `clinic` y recibe el de su empresa.
+ * Sin `clinic`, el de la sucursal activa.
  */
 const VIGENCIA_MS = 60 * 1000;
-let pendiente = null;
-let cuando = 0;
+const porSucursal = new Map(); // clinic ('' = la activa) -> { promesa, cuando }
 
-export function cargarServiciosAgenda({ fresco = false } = {}) {
-  if (!fresco && pendiente && Date.now() - cuando < VIGENCIA_MS) return pendiente;
-  cuando = Date.now();
-  pendiente = api
-    .get('/appointment-service-items')
+export function cargarServiciosAgenda({ fresco = false, clinic = '' } = {}) {
+  const clave = clinic ? String(clinic) : '';
+  const hit = porSucursal.get(clave);
+  if (!fresco && hit && Date.now() - hit.cuando < VIGENCIA_MS) return hit.promesa;
+  const promesa = api
+    .get('/appointment-service-items', { params: clave ? { clinic: clave } : {} })
     .then((r) => (Array.isArray(r.data) ? r.data : []))
     .catch((err) => {
       // Un fallo no se queda guardado: el siguiente buscador lo vuelve a pedir.
-      pendiente = null;
+      porSucursal.delete(clave);
       throw err;
     });
-  return pendiente;
+  porSucursal.set(clave, { promesa, cuando: Date.now() });
+  return promesa;
 }
 
 /** La lista, para pintarla en un componente. Vacía mientras llega o si falla. */
-export function useServiciosAgenda() {
-  const [lista, setLista] = useState([]);
+export function useServiciosAgenda(clinic = '') {
+  const [cargada, setCargada] = useState({ clinic: null, lista: [] });
+  const clave = clinic ? String(clinic) : '';
   useEffect(() => {
     let vivo = true;
-    cargarServiciosAgenda()
-      .then((l) => { if (vivo) setLista(l); })
+    cargarServiciosAgenda({ clinic: clave })
+      .then((lista) => { if (vivo) setCargada({ clinic: clave, lista }); })
       .catch(() => {});
     return () => { vivo = false; };
-  }, []);
-  return lista;
+  }, [clave]);
+  // Al cambiar de sucursal no se enseña el catálogo de la anterior mientras llega.
+  return cargada.clinic === clave ? cargada.lista : [];
 }

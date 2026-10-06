@@ -59,6 +59,7 @@ const {
   alcanzaSucursal,
   validarSucursalDestino,
 } = require('../utils/clinicScope');
+const { coversClinic } = require('../utils/companies');
 const { esPrimeraVisita } = require('../utils/firstVisit');
 const { registrarLlegada } = require('../utils/appointmentArrival');
 const { resolverAgendadoPor } = require('../utils/appointmentBooker');
@@ -647,7 +648,7 @@ async function validarPersonalDeLaSede(ids, clinicId) {
 
   const User = require('../models/User');
   const encontrados = await User.find({ _id: { $in: aAsignar } })
-    .select('name clinics active isSuperAdmin worksInAllClinics')
+    .select('name clinics active isSuperAdmin worksInAllClinics companies')
     .lean();
   /**
    * Se juzga solo a quien TIENE sucursales asignadas: si el usuario no tiene
@@ -660,7 +661,7 @@ async function validarPersonalDeLaSede(ids, clinicId) {
   const atiendeAqui = (u) =>
     u.active !== false &&
     (u.isSuperAdmin ||
-      u.worksInAllClinics ||
+      coversClinic(u, clinicId) ||
       !(u.clinics || []).length ||
       (u.clinics || []).some((c) => String(c.clinic) === String(clinicId)));
   const fuera = encontrados.filter((u) => !atiendeAqui(u));

@@ -8,8 +8,9 @@ import EmailStatus from '../components/EmailStatus';
 import useEmailValidation from '../hooks/useEmailValidation';
 import { nombreSucursal } from '../utils/clinicName';
 import { useAuth } from '../context/AuthContext';
-import { HiOutlineBuildingOffice2, HiOutlinePlus, HiOutlinePencil, HiOutlineTrash } from 'react-icons/hi2';
+import { HiOutlineBuildingOffice2, HiOutlinePlus, HiOutlinePencil, HiOutlineTrash, HiOutlineArrowsRightLeft } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
+import CompaniesSection from '../components/CompaniesSection';
 
 const empty = {
   name: '',
@@ -19,6 +20,7 @@ const empty = {
   address: '',
   phone: '',
   email: '',
+  company: '',
 };
 
 export default function Clinics() {
@@ -31,6 +33,10 @@ export default function Clinics() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(empty);
   const [saving, setSaving] = useState(false);
+  // Empresas (oct-2026): solo el super-admin las gestiona y mueve sucursales entre ellas.
+  const [companies, setCompanies] = useState([]);
+  const [moving, setMoving] = useState(null); // sucursal que se mueve
+  const [moveTo, setMoveTo] = useState('');
 
   // Autocompletado por RUC desde el SRI (razón social, nombre comercial, dirección).
   const rucLookup = useSriLookup(form.ruc, {
@@ -79,9 +85,43 @@ export default function Clinics() {
     }
   };
 
+  const loadCompanies = async () => {
+    if (!isSuper) return;
+    try {
+      const res = await api.get('/companies', { params: { active: 'all' } });
+      setCompanies(res.data || []);
+    } catch {
+      setCompanies([]);
+    }
+  };
+
   useEffect(() => {
     load();
+    loadCompanies();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * MOVER A OTRA EMPRESA. Nace una sucursal nueva en la empresa destino con el
+   * personal, las citas por venir y los consultorios; esta queda inactiva con su
+   * historial (ventas, facturas, contabilidad), que es de la empresa donde se emitió.
+   */
+  const move = async () => {
+    if (!moveTo) return;
+    setSaving(true);
+    try {
+      const { data } = await api.post(`/clinics/${moving._id}/move`, { company: moveTo });
+      const m = data.moved || {};
+      toast.success(`Sucursal movida: ${m.staff || 0} persona(s), ${m.appointments || 0} cita(s) por venir y ${m.rooms || 0} consultorio(s)`);
+      setMoving(null);
+      await Promise.all([load(), loadCompanies()]);
+      await refreshMe?.();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al mover la sucursal');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   useEffect(() => {
     loadOverview();
@@ -93,7 +133,8 @@ export default function Clinics() {
 
   const openNew = () => {
     setEditing(null);
-    setForm(empty);
+    // Por defecto, la empresa principal.
+    setForm({ ...empty, company: companies.find((c) => c.isDefault)?._id || companies[0]?._id || '' });
     setModalOpen(true);
   };
 
@@ -107,6 +148,7 @@ export default function Clinics() {
       address: c.address || '',
       phone: c.phone || '',
       email: c.email || '',
+      company: c.company?._id || c.company || '',
     });
     setModalOpen(true);
   };
@@ -160,10 +202,13 @@ export default function Clinics() {
         )}
       </div>
 
+      {isSuper && <CompaniesSection companies={companies} onChanged={() => { loadCompanies(); load(); }} />}
+
       {/* Consolidado por sucursal */}
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden mb-6">
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 border-b border-emerald-50">
-          <h2 className="text-base font-semibold text-slate-800">Consolidado por sucursal</h2>
+          {/* De la empresa de la sucursal activa: cada empresa compara las suyas. */}
+          <h2 className="text-base font-semibold text-slate-800">Consolidado por sucursal de la empresa</h2>
           <div className="flex items-center gap-2 text-sm">
             <DateInput
               value={range.startDate}
@@ -238,6 +283,7 @@ export default function Clinics() {
                   enseñaba el legal, así que renombrar una sede aquí parecía no
                   hacer nada en el resto del sistema (ver `nombreSucursal`). */}
               <th className="text-left px-5 py-3 text-xs font-semibold uppercase">Nombre visible</th>
+              <th className="text-left px-5 py-3 text-xs font-semibold uppercase">Empresa</th>
               <th className="text-left px-5 py-3 text-xs font-semibold uppercase">RUC</th>
               <th className="text-left px-5 py-3 text-xs font-semibold uppercase">Razón social</th>
               <th className="text-left px-5 py-3 text-xs font-semibold uppercase">Email</th>
@@ -247,9 +293,9 @@ export default function Clinics() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} className="text-center py-10 text-slate-500">Cargando...</td></tr>
+              <tr><td colSpan={7} className="text-center py-10 text-slate-500">Cargando...</td></tr>
             ) : clinics.length === 0 ? (
-              <tr><td colSpan={6} className="text-center py-10 text-slate-500">Sin sucursales.</td></tr>
+              <tr><td colSpan={7} className="text-center py-10 text-slate-500">Sin sucursales.</td></tr>
             ) : (
               clinics.map((c) => (
                 <tr key={c._id} className="border-t border-emerald-50 hover:bg-emerald-50/30">
@@ -261,6 +307,7 @@ export default function Clinics() {
                       </span>
                     )}
                   </td>
+                  <td className="px-5 py-3 text-slate-600 text-sm">{c.company?.name || '—'}</td>
                   <td className="px-5 py-3 font-mono text-xs">{c.ruc || '—'}</td>
                   <td className="px-5 py-3 text-slate-600">{c.razonSocial || '—'}</td>
                   <td className="px-5 py-3 text-slate-600">{c.email || '—'}</td>
@@ -277,6 +324,15 @@ export default function Clinics() {
                     >
                       <HiOutlinePencil className="w-4 h-4" />
                     </button>
+                    {isSuper && c.active && companies.length > 1 && (
+                      <button
+                        onClick={() => { setMoveTo(''); setMoving(c); }}
+                        className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer ml-1"
+                        title="Mover a otra empresa"
+                      >
+                        <HiOutlineArrowsRightLeft className="w-4 h-4" />
+                      </button>
+                    )}
                     {isSuper && c.active && (
                       <button
                         onClick={() => remove(c)}
@@ -301,6 +357,27 @@ export default function Clinics() {
         size="lg"
       >
         <form onSubmit={submit} className="space-y-3">
+          {/* La empresa se elige al crear; cambiarla después es «Mover a otra empresa». */}
+          {isSuper && companies.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Empresa *</label>
+              {editing ? (
+                <p className="px-4 py-2.5 rounded-xl text-sm bg-slate-50 border border-slate-100 text-slate-600">
+                  {editing.company?.name || '—'}
+                </p>
+              ) : (
+                <select
+                  required
+                  value={form.company}
+                  onChange={(e) => setForm({ ...form, company: e.target.value })}
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                >
+                  <option value="">Seleccionar empresa</option>
+                  {companies.filter((c) => c.active !== false).map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
+                </select>
+              )}
+            </div>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Field label="Nombre *" value={form.name} onChange={(v) => setForm({ ...form, name: v })} required />
             <Field
@@ -357,6 +434,34 @@ export default function Clinics() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      <Modal isOpen={!!moving} onClose={() => setMoving(null)} title={`Mover ${moving ? nombreSucursal(moving) : ''} a otra empresa`}>
+        <div className="space-y-3">
+          <label className="block text-sm font-medium text-slate-700">Empresa destino
+            <select
+              value={moveTo}
+              onChange={(e) => setMoveTo(e.target.value)}
+              className="w-full mt-1.5 px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+            >
+              <option value="">Seleccionar empresa…</option>
+              {companies
+                .filter((c) => c.active !== false && String(c._id) !== String(moving?.company?._id || moving?.company))
+                .map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
+            </select>
+          </label>
+          <ul className="text-xs text-slate-500 list-disc pl-5 space-y-1">
+            <li>Se crea la sucursal en la empresa destino y pasan a ella el <b>personal</b>, las <b>citas por venir</b>, los bloqueos de agenda por venir y los consultorios.</li>
+            <li>El <b>historial se queda</b> en {moving?.company?.name || 'su empresa'}: ventas, facturas, caja, contabilidad y citas pasadas (son de ese RUC). Esta sucursal queda inactiva allí.</li>
+            <li>En la empresa destino hay que configurar la facturación electrónica (certificado y puntos de emisión) de la sucursal.</li>
+          </ul>
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={() => setMoving(null)} className="px-4 py-2 border border-slate-200 rounded-lg text-sm text-slate-600 hover:bg-slate-50 cursor-pointer bg-white">Cancelar</button>
+            <button type="button" disabled={saving || !moveTo} onClick={move} className="px-5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 cursor-pointer border-none">
+              {saving ? 'Moviendo...' : 'Mover sucursal'}
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   );
