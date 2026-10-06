@@ -363,6 +363,13 @@ function startFinancialSyncJob(leaderOnly) {
       console.log('[contifico-document-sync]', JSON.stringify({ state: documents.state,
         months: documents.months?.map((month) => `${month.month}:${month.state}`), failures: documents.failures }));
     } catch (error) { console.error('[contifico-document-sync] BLOQUEADO:', error.stack || error.message); }
+    // Inventario: movimientos (kardex) y stock, después de ventas y compras.
+    try {
+      const { syncInventory } = require('./contificoInventorySync');
+      const inventory = await syncInventory({ includeHistory: history, trigger: 'AUTO' });
+      console.log('[contifico-inventory-sync]', JSON.stringify({ state: inventory.state, stock: inventory.stock,
+        months: inventory.months?.map((month) => `${month.month}:${month.state}`), failures: inventory.failures }));
+    } catch (error) { console.error('[contifico-inventory-sync] BLOQUEADO:', error.stack || error.message); }
     // Roles de pago: después del mayor, porque su control de completitud son los
     // sueldos contabilizados de cada mes.
     try {
