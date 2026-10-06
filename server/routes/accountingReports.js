@@ -4,6 +4,7 @@ const c = require('../controllers/accountingReportsController');
 const ex = require('../controllers/sriSuperciasReportsController');
 
 router.use(auth, requireClinic, requireRole('admin', 'contabilidad'));
+router.use(require('../middleware/accountingScope')());
 
 // General consolidado
 router.get('/general', c.generalReport);

@@ -3,6 +3,8 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { roleSatisfies, ROLE_LABELS } from '../utils/roles';
 import NotificationBell from './NotificationBell';
+import AccountingScopeSwitch from './AccountingScopeSwitch';
+import { isAccountingPath, subscribeAccountingScope } from '../utils/accountingScope';
 import IncomingCallPushPrompt from './IncomingCallPushPrompt';
 import SonidoMensajes from './SonidoMensajes';
 import { WhatsappCallProvider, useWhatsappCallContext } from '../context/WhatsappCallContext';
@@ -319,6 +321,10 @@ export default function Layout({ children }) {
   const navigate = useNavigate();
   useAvisosDelSistema(navigate);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Cambiar entre sucursal y «Toda la empresa» vuelve a montar la pantalla, que así
+  // recarga sus datos con el nuevo alcance.
+  const [scopeVersion, setScopeVersion] = useState(0);
+  useEffect(() => subscribeAccountingScope(() => setScopeVersion((v) => v + 1)), []);
   // Colapso de la barra lateral en escritorio. En escritorio la barra divide el
   // espacio con el contenido; al colapsarla, el contenido ocupa todo el ancho.
   const [desktopCollapsed, setDesktopCollapsed] = useState(
@@ -675,7 +681,8 @@ export default function Layout({ children }) {
                 persiste mientras la llamada viva, con contacto y cronómetro. */}
             <CallInProgressPill />
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            {isAccountingPath(location.pathname) && <AccountingScopeSwitch clinicId={activeClinic?._id} />}
             {!isChatsPage && (
               <div className="hidden md:flex items-center gap-2 bg-emerald-50 px-3.5 py-2 rounded-xl border border-emerald-100">
                 <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
@@ -703,7 +710,7 @@ export default function Layout({ children }) {
           }
         >
           <div
-            key={location.pathname}
+            key={`${location.pathname}|${scopeVersion}`}
             className={`page-enter mx-auto w-full ${
               isChatsPage ? 'max-w-none h-full' : 'max-w-screen-xl'
             }`}

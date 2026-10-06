@@ -567,6 +567,8 @@ exports._findDuplicatePurchaseInvoice = findDuplicatePurchaseInvoice;
 exports.list = async (req, res) => {
   const { startDate, endDate, supplier, status, docType, q, sort = 'fecha_desc', page = 1, limit = 20 } = req.query;
   const filter = { clinic: req.clinicId };
+  // Sucursal ligada a un centro (middleware/accountingScope): sus líneas de compra.
+  if (req.costCenterScope) filter['items.costCenter'] = req.costCenterScope;
   if (supplier) filter.supplier = supplier;
   if (status) filter.status = status;
   if (docType) filter.docType = docType;

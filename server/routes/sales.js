@@ -3,6 +3,7 @@ const { getSales, getSale, createSale, cancelSale, collectSale } = require('../c
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
+router.use(require('../middleware/accountingScope')({ reads: true }));
 
 // Listado de ventas: solo admin y contabilidad. El cajero NO puede ver el historial.
 router.get('/', requireRole('admin', 'contabilidad'), getSales);

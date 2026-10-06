@@ -3,6 +3,7 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const c = require('../controllers/taxDeclarationController');
 
 router.use(auth, requireClinic, requireRole('admin', 'contabilidad'));
+router.use(require('../middleware/accountingScope')());
 
 // Estructura declarativa del formulario (la UI se dibuja con esto).
 router.get('/definition', c.definition);

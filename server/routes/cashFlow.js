@@ -4,6 +4,7 @@ const { requireCap } = require('../utils/permissions');
 const c = require('../controllers/cashFlowController');
 
 router.use(auth, requireClinic);
+router.use(require('../middleware/accountingScope')());
 
 // Separación LECTURA / ESCRITURA (pedido de la contadora: que otros solo VISUALICEN).
 //   · cashflow.view   → ver la proyección, el detalle de celdas, el Excel y los movimientos.

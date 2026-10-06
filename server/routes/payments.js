@@ -3,6 +3,7 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const c = require('../controllers/paymentController');
 
 router.use(auth, requireClinic);
+router.use(require('../middleware/accountingScope')());
 router.get('/', requireRole('admin', 'contabilidad', 'cajero'), c.list);
 // Excel del listado filtrado: va ANTES de '/:id' o 'export.xlsx' se tomaría por un id.
 router.get('/export.xlsx', requireRole('admin', 'contabilidad'), c.paymentsExcel);

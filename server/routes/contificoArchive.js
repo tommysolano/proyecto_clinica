@@ -3,6 +3,7 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const controller = require('../controllers/contificoArchiveController');
 
 router.use(auth, requireClinic, requireRole('admin', 'contabilidad'));
+router.use(require('../middleware/accountingScope')());
 router.get('/summary', controller.summary);
 router.get('/runs', controller.runs);
 router.get('/records', controller.list);

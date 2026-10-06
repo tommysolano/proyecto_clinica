@@ -116,6 +116,11 @@ function asObjectId(value) {
   return new mongoose.Types.ObjectId(value);
 }
 
+// Sucursal ligada a un centro (middleware/accountingScope): ventas de su centro y
+// compras con líneas de su centro.
+const saleCenter = (req) => (req.costCenterScope ? { costCenter: asObjectId(req.costCenterScope) } : {});
+const purchaseCenter = (req) => (req.costCenterScope ? { 'items.costCenter': asObjectId(req.costCenterScope) } : {});
+
 function accountBalanceFromNature(account, debit, credit) {
   return account.nature === 'DEBITO' ? debit - credit : credit - debit;
 }
@@ -251,7 +256,7 @@ async function readableClinicIds(req) {
  * Saldos por cuenta en el período. Con `mode` distinto de `none` devuelve además
  * `byColumn` (importe por mes / centro de costo / sede) para el reporte en columnas.
  */
-async function getAccountBalances(clinicId, { startDate, endDate, mode = 'none', clinicIds } = {}) {
+async function getAccountBalances(clinicId, { startDate, endDate, mode = 'none', clinicIds, costCenter = null } = {}) {
   const ids = clinicIds?.length ? clinicIds.map(asObjectId) : [asObjectId(clinicId)];
   const match = { clinic: { $in: ids }, status: 'CONTABILIZADO' };
   if (startDate || endDate) {
@@ -261,8 +266,10 @@ async function getAccountBalances(clinicId, { startDate, endDate, mode = 'none',
   }
   const bucket = breakdownExpr(mode);
   const agg = await JournalEntry.aggregate([
-    { $match: match },
+    { $match: costCenter ? { ...match, 'lines.costCenter': asObjectId(costCenter) } : match },
     { $unwind: '$lines' },
+    // Solo las líneas del centro: así presenta Contífico el resultado de un centro de costo.
+    ...(costCenter ? [{ $match: { 'lines.costCenter': asObjectId(costCenter) } }] : []),
     {
       $group: {
         _id: bucket ? { account: '$lines.account', bucket } : '$lines.account',
@@ -394,7 +401,10 @@ exports.incomeStatement = async (req, res) => {
     // Solo el desglose por sede sale de la sede activa: el resto se queda en ella.
     const clinicIds = mode === 'clinic' ? await readableClinicIds(req) : null;
 
-    const balances = await getAccountBalances(req.clinicId, { startDate, endDate, mode, clinicIds });
+    // Sucursal ligada a un centro (middleware/accountingScope): el resultado de su centro.
+    // Los desgloses por centro o por sede ya separan, así que muestran la empresa.
+    const costCenter = ['none', 'month'].includes(mode) ? req.costCenterScope : null;
+    const balances = await getAccountBalances(req.clinicId, { startDate, endDate, mode, clinicIds, costCenter });
     const columns = mode === 'none'
       ? []
       : await resolveBreakdownColumns(mode, { clinicIds: clinicIds || [asObjectId(req.clinicId)], startDate, endDate, usados: balances.usados });
@@ -796,7 +806,7 @@ exports.accountFlow = async (req, res) => {
 exports.salesSummary = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-    const match = { clinic: oid(req.clinicId), status: 'completada' };
+    const match = { clinic: oid(req.clinicId), status: 'completada', ...saleCenter(req) };
     if (startDate || endDate) {
       match.createdAt = {};
       if (startDate) match.createdAt.$gte = new Date(startDate);
@@ -812,7 +822,7 @@ exports.salesSummary = async (req, res) => {
 
 exports.salesByProduct = async (req, res) => {
   const { startDate, endDate } = req.query;
-  const match = { clinic: oid(req.clinicId), status: 'completada' };
+  const match = { clinic: oid(req.clinicId), status: 'completada', ...saleCenter(req) };
   if (startDate || endDate) {
     match.createdAt = {};
     if (startDate) match.createdAt.$gte = new Date(startDate);
@@ -832,7 +842,7 @@ exports.salesByProduct = async (req, res) => {
 
 exports.salesByCashier = async (req, res) => {
   const { startDate, endDate } = req.query;
-  const match = { clinic: oid(req.clinicId), status: 'completada' };
+  const match = { clinic: oid(req.clinicId), status: 'completada', ...saleCenter(req) };
   if (startDate || endDate) {
     match.createdAt = {};
     if (startDate) match.createdAt.$gte = new Date(startDate);
@@ -853,7 +863,7 @@ exports.salesWeekly = async (req, res) => {
   const start = new Date(y, 0, 1);
   const end = new Date(y, 11, 31, 23, 59, 59);
   const rows = await Sale.aggregate([
-    { $match: { clinic: oid(req.clinicId), status: 'completada', createdAt: { $gte: start, $lte: end } } },
+    { $match: { clinic: oid(req.clinicId), status: 'completada', ...saleCenter(req), createdAt: { $gte: start, $lte: end } } },
     { $group: { _id: { week: { $isoWeek: '$createdAt' }, year: { $isoWeekYear: '$createdAt' } }, count: { $sum: 1 }, total: { $sum: '$total' } } },
     { $sort: { '_id.year': 1, '_id.week': 1 } },
   ]);
@@ -866,7 +876,7 @@ exports.salesByPeriod = async (req, res) => {
     const mongoose = require('mongoose');
     const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
     const granularity = req.query.granularity || 'month';
-    const match = { clinic: clinicObjId, status: 'completada', ...dateMatch(req) };
+    const match = { clinic: clinicObjId, status: 'completada', ...saleCenter(req), ...dateMatch(req) };
     let groupId;
     if (granularity === 'quarter') {
       groupId = { $concat: [{ $dateToString: { format: '%Y', date: '$createdAt' } }, '-T', { $toString: { $ceil: { $divide: [{ $month: '$createdAt' }, 3] } } }] };
@@ -885,7 +895,7 @@ exports.salesByPeriod = async (req, res) => {
 /** Ventas por vendedor (createdBy). */
 exports.salesBySeller = async (req, res) => {
   try {
-    const match = { clinic: oid(req.clinicId), status: 'completada', ...dateMatch(req) };
+    const match = { clinic: oid(req.clinicId), status: 'completada', ...saleCenter(req), ...dateMatch(req) };
     const rows = await Sale.aggregate([
       { $match: match },
       { $group: { _id: '$createdBy', count: { $sum: 1 }, total: { $sum: '$total' } } },
@@ -899,7 +909,7 @@ exports.salesBySeller = async (req, res) => {
 /** Costo de venta por categoría de producto. */
 exports.costOfSalesByCategory = async (req, res) => {
   try {
-    const match = { clinic: oid(req.clinicId), status: 'completada', ...dateMatch(req) };
+    const match = { clinic: oid(req.clinicId), status: 'completada', ...saleCenter(req), ...dateMatch(req) };
     const sales = await Sale.find(match).populate('items.product', 'purchasePrice averageCost category');
     const byCat = {};
     for (const s of sales) {
@@ -934,7 +944,7 @@ exports.costOfSalesByCategory = async (req, res) => {
 exports.costOfSales = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-    const match = { clinic: oid(req.clinicId), status: 'completada' };
+    const match = { clinic: oid(req.clinicId), status: 'completada', ...saleCenter(req) };
     if (startDate || endDate) {
       match.createdAt = {};
       if (startDate) match.createdAt.$gte = new Date(startDate);
@@ -1021,7 +1031,7 @@ exports.salesDrilldown = async (req, res) => {
       return res.status(400).json({ message: 'Esta fila no tiene detalle de ventas.' });
     }
     const key = req.query.key == null ? '' : String(req.query.key);
-    const match = { clinic: oid(req.clinicId), status: 'completada', ...dateMatch(req) };
+    const match = { clinic: oid(req.clinicId), status: 'completada', ...saleCenter(req), ...dateMatch(req) };
 
     // Vendedor / cajero: el reporte agrupa por ese campo, así que se filtra en el match.
     if (dimension === 'seller') match.createdBy = key ? asObjectId(key) : null;
@@ -1509,7 +1519,7 @@ exports.generalReport = async (req, res) => {
   try {
     const mongoose = require('mongoose');
     const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
-    const salesMatch = { clinic: clinicObjId, status: 'completada', ...dateMatch(req) };
+    const salesMatch = { clinic: clinicObjId, status: 'completada', ...saleCenter(req), ...dateMatch(req) };
 
     // Ventas
     const [salesAgg] = await Sale.aggregate([
@@ -1520,7 +1530,7 @@ exports.generalReport = async (req, res) => {
 
     // Ventas anuladas
     const [voidedAgg] = await Sale.aggregate([
-      { $match: { clinic: clinicObjId, status: 'anulada', ...dateMatch(req) } },
+      { $match: { clinic: clinicObjId, status: 'anulada', ...saleCenter(req), ...dateMatch(req) } },
       { $group: { _id: null, count: { $sum: 1 }, total: { $sum: '$total' } } },
     ]);
 
@@ -1552,7 +1562,7 @@ exports.generalReport = async (req, res) => {
     const grossProfit = +(sales.total - cost).toFixed(2);
 
     // Compras
-    const purchaseMatch = { clinic: clinicObjId, status: { $ne: 'ANULADA' }, ...dateMatch(req, 'fechaEmision') };
+    const purchaseMatch = { clinic: clinicObjId, status: { $ne: 'ANULADA' }, ...purchaseCenter(req), ...dateMatch(req, 'fechaEmision') };
     const [purchasesAgg] = await PurchaseInvoice.aggregate([
       { $match: purchaseMatch },
       { $group: { _id: null, count: { $sum: 1 }, subtotal: { $sum: '$subtotal' }, iva: { $sum: '$iva' }, total: { $sum: '$total' }, retentions: { $sum: '$retentionTotal' } } },
@@ -1561,7 +1571,7 @@ exports.generalReport = async (req, res) => {
 
     // Cuentas por pagar (saldo pendiente de proveedores)
     const [apAgg] = await PurchaseInvoice.aggregate([
-      { $match: { clinic: clinicObjId, status: 'REGISTRADA', balance: { $gt: 0 } } },
+      { $match: { clinic: clinicObjId, status: 'REGISTRADA', balance: { $gt: 0 }, ...purchaseCenter(req) } },
       { $group: { _id: null, total: { $sum: '$balance' }, count: { $sum: 1 } } },
     ]);
 

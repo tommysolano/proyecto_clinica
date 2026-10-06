@@ -41,6 +41,9 @@ const paymentSchema = new mongoose.Schema(
     reference: { type: String, default: '' },
     total: { type: Number, required: true },
     applications: { type: [applicationSchema], default: [] },
+    // Centro de costo del documento aplicado. Lo rellena la sincronización con
+    // Contífico (services/contificoCostCenters) para filtrar por sucursal.
+    costCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null, index: true },
     appliedAmount: { type: Number, default: 0 },
     advanceAmount: { type: Number, default: 0 }, // anticipo (sin aplicar)
     description: { type: String, default: '' },

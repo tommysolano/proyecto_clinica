@@ -3,6 +3,7 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const c = require('../controllers/sriAnnexController');
 
 router.use(auth, requireClinic);
+router.use(require('../middleware/accountingScope')());
 
 const accounting = requireRole('admin', 'contabilidad');
 

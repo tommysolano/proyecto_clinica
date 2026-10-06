@@ -9,6 +9,11 @@ const { addSalesSheet, findSalesForSheet } = require('../services/salesWorkbook'
 const oid = (v) => new mongoose.Types.ObjectId(v);
 const fail = (res, e) => res.status(e.status || 400).json({ message: e.message });
 
+// Sucursal ligada a un centro (middleware/accountingScope): las ventas de su centro.
+const centerMatch = (req) => (req.costCenterScope ? { costCenter: oid(req.costCenterScope) } : {});
+const scopedQuery = (req) => (req.costCenterScope && !req.query.costCenter
+  ? { ...req.query, costCenter: String(req.costCenterScope) } : req.query);
+
 /** Construye el rango de fechas a partir del query. */
 function dateRange(req) {
   const { startDate, endDate } = req.query;
@@ -63,7 +68,7 @@ exports.summary = async (req, res) => {
   try {
     const range = dateRange(req);
     const productIds = await resolveProductIds(req);
-    const baseMatch = { clinic: oid(req.clinicId) };
+    const baseMatch = { clinic: oid(req.clinicId), ...centerMatch(req) };
     if (range) baseMatch.createdAt = range;
     if (productIds.length) baseMatch['items.product'] = { $in: productIds.map(oid) };
 
@@ -124,7 +129,7 @@ exports.summary = async (req, res) => {
  */
 exports.report = async (req, res) => {
   try {
-    const data = await salesReport.buildSalesReport(req.clinicId, req.query);
+    const data = await salesReport.buildSalesReport(req.clinicId, scopedQuery(req));
     res.json(data);
   } catch (e) { fail(res, e); }
 };
@@ -142,7 +147,7 @@ const head = (ws, argb = 'FF047857') => {
  */
 exports.exportReportExcel = async (req, res) => {
   try {
-    const data = await salesReport.buildSalesReport(req.clinicId, req.query);
+    const data = await salesReport.buildSalesReport(req.clinicId, scopedQuery(req));
     const wb = new ExcelJS.Workbook();
 
     // ── Ventas: una fila por documento ──────────────────────────────────────────────────
@@ -286,6 +291,7 @@ exports.exportSalesSheetExcel = async (req, res) => {
     const productIds = await resolveProductIds(req);
     const sales = await findSalesForSheet(req.clinicId, {
       range,
+      costCenter: req.costCenterScope,
       status: req.query.status,
       productIds: productIds.map(oid),
     });
@@ -403,7 +409,7 @@ exports.exportExcel = async (req, res) => {
   try {
     const range = dateRange(req);
     const productIds = await resolveProductIds(req);
-    const match = { clinic: oid(req.clinicId), status: 'completada' };
+    const match = { clinic: oid(req.clinicId), status: 'completada', ...centerMatch(req) };
     if (range) match.createdAt = range;
     if (productIds.length) match['items.product'] = { $in: productIds.map(oid) };
 

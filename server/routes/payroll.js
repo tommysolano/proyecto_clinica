@@ -4,6 +4,7 @@ const c = require('../controllers/payrollController');
 const d = require('../controllers/employeeDeductionController');
 
 router.use(auth, requireClinic);
+router.use(require('../middleware/accountingScope')());
 
 // Deducciones al personal y consumo interno (se ubican antes de las rutas con :id).
 router.get('/deductions', requireRole('admin', 'contabilidad'), d.listDeductions);

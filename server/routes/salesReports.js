@@ -3,6 +3,7 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const c = require('../controllers/salesReportsController');
 
 router.use(auth, requireClinic, requireRole('admin', 'contabilidad', 'cajero', 'marketing'));
+router.use(require('../middleware/accountingScope')());
 
 // Categorías de servicios (agrupación REAL del negocio, no una búsqueda guardada).
 router.get('/categories', c.listCategories);

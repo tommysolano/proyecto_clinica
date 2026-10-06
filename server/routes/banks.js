@@ -3,6 +3,7 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const c = require('../controllers/bankController');
 
 router.use(auth, requireClinic);
+router.use(require('../middleware/accountingScope')({ skip: ['/payment-options'] }));
 
 // Opciones de medios de pago para el cobro (cajero/recepción/admin/contabilidad)
 router.get('/payment-options', requireRole('admin', 'contabilidad', 'cajero', 'enfermero'), c.paymentOptions);

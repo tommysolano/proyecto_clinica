@@ -24,6 +24,15 @@ function mapMensajes(node) {
 exports.list = async (req, res) => {
   const { kind, direction, startDate, endDate, page = 1, limit = 20 } = req.query;
   const filter = { clinic: req.clinicId };
+  // Sucursal ligada a un centro (middleware/accountingScope): las notas de sus documentos.
+  if (req.costCenterScope) {
+    const refs = await CreditDebitNote.distinct('refDoc', { clinic: req.clinicId });
+    const [invoices, purchases] = await Promise.all([
+      Invoice.find({ _id: { $in: refs }, costCenter: req.costCenterScope }).distinct('_id'),
+      PurchaseInvoice.find({ _id: { $in: refs }, 'items.costCenter': req.costCenterScope }).distinct('_id'),
+    ]);
+    filter.refDoc = { $in: [...invoices, ...purchases] };
+  }
   if (kind) filter.kind = kind;
   if (direction) filter.direction = direction;
   if (startDate || endDate) {

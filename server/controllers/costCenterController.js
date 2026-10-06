@@ -1,4 +1,8 @@
 const CostCenter = require('../models/CostCenter');
+const { describeScope } = require('../services/accountingScope');
+
+/** Centro de costo con el que la sucursal activa filtra la contabilidad (middleware/accountingScope). */
+exports.scope = (req, res) => res.json(describeScope(req.accountingScope));
 
 exports.list = async (req, res) => {
   const filter = { clinic: req.clinicId };

@@ -29,6 +29,7 @@ const { ContificoApi } = require('./contificoApi');
 const { Extractor, checksum, fmt } = require('../scripts/migrateContifico');
 const { Projector, contificoPurchaseStatus } = require('../scripts/migrateContificoProject');
 const { monthRange, ecToday } = require('./contificoFinancialSync');
+const { refreshCostCenters } = require('./contificoCostCenters');
 
 let running = false;
 const LEASE_NAME = 'contifico-document-sync';
@@ -347,6 +348,18 @@ async function syncDocuments({ includeHistory = false, months: requestedMonths =
       try {
         assertLease();
         const outcome = await syncDocumentMonth({ clinic, api, year, month, commit, assertLease });
+        // El centro de costo de las compras puede estar solo en su asiento, y la
+        // contadora puede cambiarlo sin tocar el documento: se recalcula siempre.
+        if (commit) {
+          try {
+            assertLease();
+            outcome.costCenters = await refreshCostCenters({ clinicId: clinic._id,
+              from: new Date(Date.UTC(year, month - 1, 1)), to: new Date(Date.UTC(year, month, 1) - 1) });
+          } catch (error) {
+            outcome.costCenters = { error: error.message };
+            console.error(`[contifico-document-sync] Centros de costo ${key}:`, error.stack || error.message);
+          }
+        }
         result.push(outcome);
         console.log(`[contifico-document-sync] ${key}: ${outcome.state}, ${outcome.source} documentos`);
         if (commit) await Notification.updateMany({ clinic: clinic._id, type: 'contifico_sync_blocked',

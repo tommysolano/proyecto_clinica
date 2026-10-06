@@ -3,6 +3,7 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const c = require('../controllers/retentionVoucherController');
 
 router.use(auth, requireClinic);
+router.use(require('../middleware/accountingScope')({ reads: true }));
 router.get('/', requireRole('admin', 'contabilidad'), c.list);
 router.get('/config', requireRole('admin', 'contabilidad'), c.config);
 router.get('/:id', requireRole('admin', 'contabilidad'), c.get);

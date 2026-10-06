@@ -149,7 +149,8 @@ function dateGroupExpr(granularity, field) {
  */
 exports.getAccountingDashboard = async (req, res) => {
   try {
-    const scope = await accountingScope(req.clinicId, { company: req.query.scope === 'company' });
+    const company = req.query.scope === 'company' || String(req.get('x-accounting-scope') || '').toLowerCase() === 'company';
+    const scope = await accountingScope(req.clinicId, { company });
     const clinicObjId = scope.dataClinic;
     const ccId = scope.costCenter?._id || null;
     const granularity = req.query.granularity || 'month';

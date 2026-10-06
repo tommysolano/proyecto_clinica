@@ -3,6 +3,7 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const c = require('../controllers/fiscalPeriodController');
 
 router.use(auth, requireClinic);
+router.use(require('../middleware/accountingScope')());
 router.get('/', requireRole('admin', 'contabilidad'), c.list);
 router.post('/', requireRole('admin', 'contabilidad'), c.create);
 router.post('/:id/close', requireRole('admin', 'contabilidad'), c.close);

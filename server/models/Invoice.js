@@ -60,6 +60,9 @@ const invoiceSchema = new mongoose.Schema(
       index: true,
     },
     sale: { type: mongoose.Schema.Types.ObjectId, ref: 'Sale' },
+    // Centro de costo de la venta. Lo rellena la sincronización con Contífico
+    // (services/contificoCostCenters) para filtrar por sucursal.
+    costCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null, index: true },
     // Documento
     tipoDocumento: { type: String, enum: ['factura'], default: 'factura' },
     claveAcceso: { type: String, required: true, unique: true, index: true },

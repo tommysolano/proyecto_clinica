@@ -747,6 +747,10 @@ exports.warehouseStock = async (req, res) => {
     // Los deficit historicos no son disponibilidad FIFO, pero deben verse en el reporte.
     const match = { clinic: new (require('mongoose').Types.ObjectId)(req.clinicId), qtyRemaining: { $ne: 0 } };
     if (req.query.warehouse) match.warehouse = new (require('mongoose').Types.ObjectId)(req.query.warehouse);
+    // Sucursal ligada a un centro (middleware/accountingScope): las bodegas de su centro.
+    else if (req.costCenterScope) {
+      match.warehouse = { $in: await Warehouse.find({ clinic: req.clinicId, costCenter: req.costCenterScope }).distinct('_id') };
+    }
     const rows = await InventoryLayer.aggregate([
       { $match: match },
       { $group: {

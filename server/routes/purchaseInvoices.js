@@ -3,6 +3,8 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const c = require('../controllers/purchaseInvoiceController');
 
 router.use(auth, requireClinic);
+// /wipe borra las compras de la sucursal activa: desde otra sucursal no alcanza a la empresa.
+router.use(require('../middleware/accountingScope')({ skip: ['/wipe'] }));
 router.get('/', requireRole('admin', 'contabilidad'), c.list);
 router.get('/recurring-accounts', requireRole('admin', 'contabilidad'), c.recurringAccounts);
 router.get('/:id', requireRole('admin', 'contabilidad'), c.get);

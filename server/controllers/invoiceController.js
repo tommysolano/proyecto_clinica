@@ -311,6 +311,8 @@ exports.list = async (req, res) => {
   try {
     const { startDate, endDate, estado, patient, puntoEmision, page = 1, limit = 20 } = req.query;
     const query = { clinic: req.clinicId };
+    // Sucursal ligada a un centro (middleware/accountingScope): las facturas de sus ventas.
+    if (req.costCenterScope) query.costCenter = req.costCenterScope;
     if (estado) query.estado = estado;
     if (puntoEmision) query.puntoEmision = puntoEmision;
     if (startDate && endDate) {
@@ -353,6 +355,7 @@ exports.bulkPdf = async (req, res) => {
   try {
     const { startDate, endDate, estado, patient, client } = req.query;
     const query = { clinic: req.clinicId, estado: estado || 'AUTORIZADO' };
+    if (req.costCenterScope) query.costCenter = req.costCenterScope;
     if (startDate && endDate) {
       query.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999') };
     }

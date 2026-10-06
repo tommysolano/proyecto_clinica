@@ -46,6 +46,8 @@ const escaparRegex = (v) => String(v).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$
 function buildPaymentFilter(req) {
   const { type, startDate, endDate, partyRef, status, q, method, bankAccount } = req.query;
   const filter = { clinic: req.clinicId };
+  // Sucursal ligada a un centro (middleware/accountingScope): los de sus documentos.
+  if (req.costCenterScope) filter.costCenter = req.costCenterScope;
   if (type) filter.type = type;
   if (partyRef) filter.partyRef = partyRef;
   if (status) filter.status = status;

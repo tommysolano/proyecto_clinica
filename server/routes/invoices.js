@@ -3,6 +3,7 @@ const ctrl = require('../controllers/invoiceController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
+router.use(require('../middleware/accountingScope')({ reads: true }));
 
 const allow = requireRole('admin', 'cajero', 'contabilidad');
 

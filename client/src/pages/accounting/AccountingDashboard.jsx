@@ -14,17 +14,16 @@ const PIE_COLORS = ['#10b981', '#0ea5e9', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4
 export default function AccountingDashboard() {
   const [data, setData] = useState(null);
   const [granularity, setGranularity] = useState('month');
-  // Una sucursal ligada a un centro de costo ve ese centro; «Toda la empresa», el consolidado.
-  const [company, setCompany] = useState(false);
   const [showLowStock, setShowLowStock] = useState(false);
 
   const load = async () => {
     try {
-      const r = await api.get('/dashboard/accounting', { params: { granularity, periods: 12, ...(company ? { scope: 'company' } : {}) } });
+      // Sucursal o «Toda la empresa»: lo decide el selector de la cabecera (AccountingScopeSwitch).
+      const r = await api.get('/dashboard/accounting', { params: { granularity, periods: 12 } });
       setData(r.data);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [granularity, company]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [granularity]);
 
   if (!data) return <div className="p-8 text-slate-400">Cargando dashboard...</div>;
   const bankBalances = data.banks || [];
@@ -57,14 +56,6 @@ export default function AccountingDashboard() {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineChartPie className="text-emerald-600" /> Dashboard Contable</h1>
         <div className="flex items-end gap-2 flex-wrap">
-          {scope.linked && (
-            <label className="text-xs text-slate-500 flex flex-col">Centro de costo
-              <select value={company ? 'company' : 'cc'} onChange={(e) => setCompany(e.target.value === 'company')} className="px-3 py-2 border border-slate-200 rounded-lg bg-white">
-                <option value="cc">{scope.sucursalCostCenter?.name || 'De la sucursal'}</option>
-                <option value="company">Toda la empresa</option>
-              </select>
-            </label>
-          )}
           <label className="text-xs text-slate-500 flex flex-col">Período
             <select value={granularity} onChange={(e) => setGranularity(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg bg-white">
               <option value="day">Diario</option><option value="week">Semanal</option><option value="month">Mensual</option><option value="quarter">Trimestral</option><option value="year">Anual</option>

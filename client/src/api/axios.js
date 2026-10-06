@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { isCompanyScope } from '../utils/accountingScope';
 
 // En producción (Vercel) VITE_API_URL apunta al backend de Render.
 // En desarrollo el proxy de Vite redirige '/api' → localhost:5000.
@@ -87,6 +88,8 @@ const cloneData = (data) => {
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
+  // Contabilidad de toda la empresa en vez del centro de costo de la sucursal.
+  if (isCompanyScope()) config.headers['X-Accounting-Scope'] = 'company';
   const key = catalogKey(config);
   if (key) {
     const network = axios.getAdapter(config.adapter || axios.defaults.adapter);

@@ -73,6 +73,8 @@ exports.getSales = async (req, res) => {
   try {
     const { startDate, endDate, status, patient, product, client, page = 1, limit = 20 } = req.query;
     const query = { clinic: req.clinicId };
+    // Sucursal ligada a un centro (middleware/accountingScope): sus ventas.
+    if (req.costCenterScope) query.costCenter = req.costCenterScope;
 
     if (startDate && endDate) {
       query.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
