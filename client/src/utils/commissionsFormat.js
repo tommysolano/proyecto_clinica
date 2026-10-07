@@ -58,7 +58,7 @@ export const statusLabel = (s) =>
 
 export const fmtAtendientes = (a) =>
   (a.atendientes || [])
-    .map((t) => `${t.name}${t.kind === 'enfermeria' ? ' (enfermería)' : ''}`)
+    .map((t) => `${t.name}${t.kind === 'enfermeria' ? ` (enfermería${t.serviceName ? `: ${t.serviceName}` : ''})` : ''}`)
     .join(' → ');
 
 export const fmtPago = (a) => {

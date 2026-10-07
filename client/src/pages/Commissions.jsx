@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import {
   HiOutlineCurrencyDollar, HiOutlineMegaphone, HiOutlineUserGroup, HiOutlineDocumentArrowDown,
   HiOutlinePlusCircle, HiOutlineCheckBadge, HiOutlineArrowsRightLeft,
-  HiOutlineChatBubbleLeftRight, HiOutlineCalendarDays, HiOutlineHeart,
+  HiOutlineChatBubbleLeftRight, HiOutlineCalendarDays, HiOutlineHeart, HiOutlineBeaker,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import Modal from '../components/Modal';
@@ -24,6 +24,33 @@ const monthAgo = () => {
   const [y, m, d] = todayEc().split('-').map(Number);
   const f = new Date(y, m - 1, d - 30);
   return `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, '0')}-${String(f.getDate()).padStart(2, '0')}`;
+};
+
+/**
+ * DOCTORES Y ENFERMERÍA son el mismo apartado con otra gente (oct-2026): las mismas
+ * rutas con `area=enfermeria`, las mismas tarifas, ajustes, pagos y PDF. Cambian los
+ * rótulos y que enfermería no tiene derivaciones.
+ */
+const TEXTOS = {
+  doctores: {
+    area: 'doctor',
+    persona: 'doctor',
+    Persona: 'Doctor',
+    plural: 'doctores',
+    buscar: 'Escribe un doctor o especialidad...',
+    etiqueta: doctorOptionLabel,
+    derivaciones: true,
+  },
+  enfermeria: {
+    area: 'enfermeria',
+    persona: 'enfermero/a',
+    Persona: 'Enfermero/a',
+    plural: 'enfermeros',
+    buscar: 'Escribe un enfermero...',
+    // Sin «Dr.»: el título es solo de los médicos.
+    etiqueta: (d) => d?.name || '',
+    derivaciones: false,
+  },
 };
 
 const RULE_ENDPOINT = {
@@ -57,7 +84,15 @@ export default function Commissions() {
    */
   const { user } = useAuth();
   const isSuper = !!user?.isSuperAdmin;
-  const [tab, setTab] = useState(isSuper ? 'doctores' : 'marketing');
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState(() => {
+    if (!isSuper) return 'marketing';
+    return searchParams.get('tab') === 'enfermeria' ? 'enfermeria' : 'doctores';
+  });
+  // Doctores o enfermería: el mismo apartado (ver TEXTOS).
+  const esPersonal = tab === 'doctores' || tab === 'enfermeria';
+  const T = TEXTOS[tab] || TEXTOS.doctores;
+  const area = T.area;
   const [start, setStart] = useState(monthAgo());
   const [end, setEnd] = useState(today());
   const [clinic, setClinic] = useState('all');
@@ -67,7 +102,10 @@ export default function Commissions() {
   const [clinics, setClinics] = useState([]);
   const [doctors, setDoctors] = useState([]);
   const [services, setServices] = useState([]);
-  const [data, setData] = useState(null);
+  const [rawData, setData] = useState(null);
+  // El resumen solo vale para su área: al cambiar de pestaña no se enseñan los
+  // doctores bajo «Enfermería» mientras llega la respuesta (ni al revés).
+  const data = rawData && (rawData.area || 'doctor') === area ? rawData : null;
   const [dataCC, setDataCC] = useState(null);
   // Apartado marketing: por qué fecha se filtra (la de la cita o el día en que
   // se agendó), el agente elegido y el listado de pacientes nuevos.
@@ -101,6 +139,7 @@ export default function Commissions() {
     if (doctorFilter.length) params.doctor = doctorFilter.join(',');
     if (statusFilter.length) params.status = statusFilter.join(',');
     if (serviceFilter.length) params.service = serviceFilter.join(',');
+    if (tab === 'enfermeria') params.area = 'enfermeria';
     return params;
   };
 
@@ -110,11 +149,11 @@ export default function Commissions() {
     setLoading(true);
     try {
       const [resDoc, resCC] = await Promise.all([
-        isSuper ? api.get('/commissions/doctor-summary', { params: filtrosActuales() }) : null,
-        api.get('/commissions/callcenter-summary', { params: filtrosCC() }),
+        isSuper && esPersonal ? api.get('/commissions/doctor-summary', { params: filtrosActuales() }) : null,
+        tab === 'marketing' ? api.get('/commissions/callcenter-summary', { params: filtrosCC() }) : null,
       ]);
       if (resDoc) setData(resDoc.data);
-      setDataCC(resCC.data);
+      if (resCC) setDataCC(resCC.data);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar el resumen');
     } finally {
@@ -135,11 +174,20 @@ export default function Commissions() {
    * sucursal concreta y listaba los de la sucursal activa de la sesión.
    */
   useEffect(() => {
-    if (!isSuper) return;
-    api.get('/commissions/doctors', { params: { clinic } })
+    if (!isSuper || !esPersonal) return;
+    setDoctors([]);
+    api.get('/commissions/doctors', { params: { clinic, area } })
       .then((r) => setDoctors(r.data || []))
       .catch(() => setDoctors([]));
-  }, [clinic, isSuper]);
+  }, [clinic, isSuper, esPersonal, area]);
+
+  // Doctores y enfermeros son gente distinta: el filtro de personas no pasa de una
+  // pestaña a la otra.
+  const cambiarTab = (t) => {
+    if (t === tab) return;
+    setDoctorFilter([]);
+    setTab(t);
+  };
 
   /**
    * LA PÁGINA SE ACTUALIZA SOLA. Cualquier cambio de filtro —fechas, sucursal,
@@ -207,6 +255,7 @@ export default function Commissions() {
     if (serviceFilter.length) params.set('service', serviceFilter.join(','));
     if (doctorId === 'todos' && doctorFilter.length) params.set('doctor', doctorFilter.join(','));
     if (doctorName) params.set('name', doctorName);
+    if (tab === 'enfermeria') params.set('area', 'enfermeria');
     return `/commissions/${doctorId}?${params.toString()}`;
   };
 
@@ -368,7 +417,7 @@ export default function Commissions() {
   // fechas distintas.
   const openPayout = (doctor) => {
     setPayoutPreview(null);
-    setPayout({ start, end, note: '', doctorId: doctor.doctorId, name: doctor.name, doctor });
+    setPayout({ start, end, note: '', doctorId: doctor.doctorId, name: doctor.name, doctor, area });
   };
 
   /**
@@ -382,7 +431,7 @@ export default function Commissions() {
       setLoadingPreview(true);
       try {
         const r = await api.get('/commissions/doctor-summary', {
-          params: { start: payout.start, end: payout.end, clinic, doctor: payout.doctorId },
+          params: { start: payout.start, end: payout.end, clinic, doctor: payout.doctorId, area: payout.area },
         });
         setPayoutPreview((r.data?.doctors || []).find((d) => d.doctorId === payout.doctorId) || null);
       } catch {
@@ -392,7 +441,7 @@ export default function Commissions() {
       }
     }, 300);
     return () => clearTimeout(t);
-  }, [payout?.start, payout?.end, payout?.doctorId, clinic]);
+  }, [payout?.start, payout?.end, payout?.doctorId, payout?.area, clinic]);
 
   const payoutTotal = Number(payoutPreview?.pendingTotal || 0);
 
@@ -406,6 +455,7 @@ export default function Commissions() {
         clinic,
         doctors: [payout.doctorId],
         note: payout.note,
+        area: payout.area,
       });
       const creado = r.data?.created?.[0];
       toast.success(`Pago registrado: ${payout.name}, ${money(creado?.amount)}`);
@@ -466,7 +516,7 @@ export default function Commissions() {
         <div className="flex gap-1 bg-slate-100 rounded-xl p-1">
           <button
             type="button"
-            onClick={() => setTab('doctores')}
+            onClick={() => cambiarTab('doctores')}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm cursor-pointer border-none ${
               tab === 'doctores' ? 'bg-white text-emerald-700 font-semibold shadow-sm' : 'text-slate-500 hover:text-slate-700'
             }`}
@@ -475,7 +525,16 @@ export default function Commissions() {
           </button>
           <button
             type="button"
-            onClick={() => setTab('marketing')}
+            onClick={() => cambiarTab('enfermeria')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm cursor-pointer border-none ${
+              tab === 'enfermeria' ? 'bg-white text-emerald-700 font-semibold shadow-sm' : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <HiOutlineBeaker className="w-4 h-4" /> Enfermería
+          </button>
+          <button
+            type="button"
+            onClick={() => cambiarTab('marketing')}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm cursor-pointer border-none ${
               tab === 'marketing' ? 'bg-white text-emerald-700 font-semibold shadow-sm' : 'text-slate-500 hover:text-slate-700'
             }`}
@@ -514,8 +573,8 @@ export default function Commissions() {
               </select>
             </label>
           )}
-          {tab === 'doctores' && (
-            <label className="text-sm">Doctor
+          {esPersonal && (
+            <label className="text-sm">{T.Persona}
               <div className="mt-1 min-w-[240px]">
                 {/* CON BUSCADOR: se escribe el nombre o el rol («gineco»,
                     «general») y el resultado se añade como chip. Debajo de cada
@@ -530,12 +589,12 @@ export default function Commissions() {
                       setDoctorFilter([...doctorFilter, p._id]);
                     }
                   }}
-                  placeholder="Escribe un doctor o especialidad..."
+                  placeholder={T.buscar}
                 />
               </div>
             </label>
           )}
-          {tab === 'doctores' && (
+          {esPersonal && (
             <label className="text-sm">Servicio
               <div className="mt-1">
                 <ProductAutocomplete
@@ -559,7 +618,7 @@ export default function Commissions() {
           </button>
         </div>
 
-        {tab === 'doctores' && (
+        {esPersonal && (
           <>
             <div className="flex flex-wrap gap-1.5 items-center">
               <span className="text-xs text-slate-500">Estados:</span>
@@ -583,7 +642,7 @@ export default function Commissions() {
               <div className="flex flex-wrap gap-1.5">
                 {doctorFilter.map((id) => (
                   <span key={id} className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-slate-100 text-xs text-slate-700">
-                    {doctorOptionLabel(doctors.find((d) => String(d._id) === String(id)) || { name: 'Doctor', roleInClinic: '' })}
+                    {T.etiqueta(doctors.find((d) => String(d._id) === String(id)) || { name: T.Persona, roleInClinic: '' })}
                     <button
                       type="button"
                       onClick={() => setDoctorFilter(doctorFilter.filter((x) => String(x) !== String(id)))}
@@ -619,7 +678,7 @@ export default function Commissions() {
 
       {loading && <div className="text-slate-500">Cargando...</div>}
 
-      {tab === 'doctores' && data && (
+      {esPersonal && data && (
         <div className="space-y-3">
           {/* Totales del filtro: lo que pagaron los pacientes y lo que se debe a los doctores. */}
           <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-3">
@@ -635,7 +694,7 @@ export default function Commissions() {
                 label="Comisiones ganadas"
                 tone="emerald"
                 value={money(data.totals?.commissions)}
-                hint="Lo que ganaron los doctores: servicios, paciente atendido, derivaciones realizadas y ajustes"
+                hint={`Lo que ganaron los ${T.plural}: servicios, paciente atendido${T.derivaciones ? ', derivaciones realizadas' : ''} y ajustes`}
               />
               <Stat label="Ya pagado" tone="teal" value={money(data.totals?.paid)} hint="Comisiones que caen dentro de un pago registrado" />
               <Stat label="Por pagar" tone="amber" value={money(data.totals?.pending)} hint="Comisiones ganadas que aún no se han pagado" />
@@ -646,7 +705,7 @@ export default function Commissions() {
                   —fecha, paciente, servicios, estado, pago, seguimientos y
                   derivaciones— pero de TODOS los doctores que cumplan los filtros. */}
               <a href={urlDetalleGeneral()} target="_blank" rel="noreferrer" className="text-emerald-600 hover:underline font-semibold">
-                Ver todas las citas y derivaciones
+                {T.derivaciones ? 'Ver todas las citas y derivaciones' : 'Ver todas las citas'}
               </a>
             </p>
           </div>
@@ -692,7 +751,7 @@ export default function Commissions() {
                         <button
                           type="button"
                           onClick={() => downloadPdf(d)}
-                          title="Descargar reporte PDF de comisiones del doctor (fecha, paciente, concepto, comisión y si está pagada)"
+                          title={`Descargar reporte PDF de comisiones del ${T.persona} (fecha, paciente, concepto, comisión y si está pagada)`}
                           className="inline-flex items-center gap-1 border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-emerald-700 rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer"
                         >
                           <HiOutlineDocumentArrowDown className="w-3.5 h-3.5" /> PDF
@@ -700,7 +759,7 @@ export default function Commissions() {
                         <button
                           type="button"
                           onClick={() => openAdjustEditor(d)}
-                          title="Sumar (o restar) un valor a las comisiones del doctor con una observación"
+                          title={`Sumar (o restar) un valor a las comisiones del ${T.persona} con una observación`}
                           className="inline-flex items-center gap-1 border border-amber-200 bg-white text-amber-700 hover:bg-amber-50 rounded-full px-2.5 py-1 text-[11px] font-semibold cursor-pointer"
                         >
                           <HiOutlinePlusCircle className="w-3.5 h-3.5" /> Ajuste
@@ -709,7 +768,7 @@ export default function Commissions() {
                           type="button"
                           onClick={() => openPayout(d)}
                           disabled={!(d.pendingTotal > 0)}
-                          title="Marcar como pagadas las comisiones de este doctor en un período"
+                          title={`Marcar como pagadas las comisiones de este ${T.persona} en un período`}
                           className="inline-flex items-center gap-1 border-none bg-teal-600 text-white hover:bg-teal-700 rounded-full px-3 py-1 text-[11px] font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           <HiOutlineCheckBadge className="w-3.5 h-3.5" /> Marcar como pagado
@@ -719,26 +778,31 @@ export default function Commissions() {
 
                     {/* LAS CIFRAS DEL DOCTOR, con nombre claro: cuánto pagaron sus
                         pacientes y cuánto ganó él, cuánto ya se le pagó y cuánto falta. */}
-                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                      <Stat label="Citas" value={d.total} hint="Citas del doctor en el filtro" />
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                      <Stat label="Citas" value={d.total} hint={`Citas del ${T.persona} en el filtro`} />
+                      <Stat
+                        label="Pacientes"
+                        value={d.patients ?? '—'}
+                        hint={`Pacientes distintos que atendió este ${T.persona} (un paciente con varias citas cuenta una vez)`}
+                      />
                       <Stat
                         label="Generado (pacientes)"
                         tone="sky"
                         value={money(d.generated)}
-                        hint="Lo que pagaron los pacientes por las citas que atendió este doctor"
+                        hint={`Lo que pagaron los pacientes por las citas que atendió este ${T.persona}`}
                       />
                       <Stat
                         label="Comisión ganada"
                         tone="emerald"
                         value={money(d.commissionTotalWithAdjustments)}
-                        hint={`Servicios, paciente atendido y derivaciones: ${money(d.commissionTotal)}${d.adjustments?.length ? ` · ajustes ${d.adjustmentTotal >= 0 ? '+' : ''}${money(d.adjustmentTotal)}` : ''}`}
+                        hint={`Servicios${T.derivaciones ? ', paciente atendido y derivaciones' : ' y paciente atendido'}: ${money(d.commissionTotal)}${d.adjustments?.length ? ` · ajustes ${d.adjustmentTotal >= 0 ? '+' : ''}${money(d.adjustmentTotal)}` : ''}`}
                       />
                       <Stat label="Ya pagado" tone="teal" value={money(d.paidTotal)} />
                       <Stat label="Por pagar" tone="amber" value={money(d.pendingTotal)} />
                     </div>
                     {!d.hasConfiguredCommissions && (
                       <p className="text-[11px] text-slate-400">
-                        Sin comisiones configuradas: define abajo lo que gana por servicio, por paciente o por derivación.
+                        Sin comisiones configuradas: define abajo lo que gana por servicio{T.derivaciones ? ', por paciente o por derivación' : ' o por paciente'}.
                       </p>
                     )}
                   </div>
@@ -777,7 +841,7 @@ export default function Commissions() {
                                 onClick={() => openEditor('service', d, svc)}
                                 disabled={!svc.serviceId}
                                 title={svc.serviceId
-                                  ? `Definir lo que gana el doctor por esta atención${svc.commission?.repeated ? ` · ${svc.commission.repeated} cita(s) sin comisión: el paciente ya lo había recibido` : ''}`
+                                  ? `Definir lo que gana el ${T.persona} por esta atención${svc.commission?.repeated ? ` · ${svc.commission.repeated} cita(s) sin comisión: el paciente ya lo había recibido` : ''}`
                                   : 'Servicio sin vínculo al catálogo de Agenda'}
                                 className={svc.serviceId
                                   ? chipBtn(!!svc.commission)
@@ -789,12 +853,14 @@ export default function Commissions() {
                           ))}
                         </div>
                       ) : (
-                        <p className="text-xs text-slate-400">Sin servicios registrados en las citas de este doctor.</p>
+                        <p className="text-xs text-slate-400">Sin servicios registrados en las citas de este {T.persona}.</p>
                       )}
                     </div>
 
                     {/* DERIVACIONES: el doctor gana solo cuando el paciente SE HACE
-                        la derivación. Las indicadas que no se realizaron no pagan. */}
+                        la derivación. Las indicadas que no se realizaron no pagan.
+                        Enfermería no deriva. */}
+                    {T.derivaciones && (
                     <div>
                       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                         <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide inline-flex items-center gap-1">
@@ -845,6 +911,7 @@ export default function Commissions() {
                         </div>
                       )}
                     </div>
+                    )}
 
                     {(d.adjustments || []).length > 0 && (
                       <div>
@@ -917,7 +984,7 @@ export default function Commissions() {
                         rel="noreferrer"
                         className="text-xs text-emerald-600 hover:underline"
                       >
-                        Ver citas y derivaciones ({d.total})
+                        {T.derivaciones ? 'Ver citas y derivaciones' : 'Ver citas'} ({d.total})
                       </a>
                     </div>
                   </div>
@@ -1242,7 +1309,7 @@ export default function Commissions() {
               </div>
               {commissionForm.timeBands.length === 0 ? (
                 <p className="text-xs text-slate-400">
-                  Opcional. Úsalo si el doctor gana distinto en la mañana y en la tarde. Sin horarios, paga el mismo valor todo el día.
+                  Opcional. Úsalo si el {T.persona} gana distinto en la mañana y en la tarde. Sin horarios, paga el mismo valor todo el día.
                 </p>
               ) : (
                 <>
@@ -1307,7 +1374,7 @@ export default function Commissions() {
                 <span>
                   <b>Solo la primera vez</b> que el paciente recibe este servicio
                   <span className="block text-xs text-slate-500 mt-0.5">
-                    Si el paciente vuelve a hacérselo (con cualquier doctor o en cualquier sucursal), el doctor ya no gana comisión por esa cita.
+                    Si el paciente vuelve a hacérselo (con cualquier profesional o en cualquier sucursal), el {T.persona} ya no gana comisión por esa cita.
                   </span>
                 </span>
               </label>
@@ -1358,7 +1425,7 @@ export default function Commissions() {
             </div>
 
             <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-              Este valor se suma al total de comisiones del doctor en el período (también admite un valor negativo para descontar). Úsalo cuando una comisión no se contabilizó correctamente en el sistema.
+              Este valor se suma al total de comisiones del {T.persona} en el período (también admite un valor negativo para descontar). Úsalo cuando una comisión no se contabilizó correctamente en el sistema.
             </p>
 
             <label className="block text-sm text-slate-700">

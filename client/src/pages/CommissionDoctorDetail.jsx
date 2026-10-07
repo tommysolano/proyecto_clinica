@@ -40,7 +40,15 @@ export default function CommissionDoctorDetail() {
    * de la pantalla de Comisiones.
    */
   const esGeneral = doctorId === 'todos';
-  const doctorName = searchParams.get('name') || 'Doctor';
+  // Comisiones > Enfermería abre este mismo detalle con `area=enfermeria` (oct-2026):
+  // las citas de los enfermeros, sin derivaciones (enfermería no deriva).
+  const esEnf = searchParams.get('area') === 'enfermeria';
+  const area = esEnf ? 'enfermeria' : undefined;
+  const persona = esEnf ? 'enfermero/a' : 'doctor';
+  const Persona = esEnf ? 'Enfermero/a' : 'Doctor';
+  // Sin «Dr.» para enfermería: el título es solo de los médicos.
+  const etiqueta = (d) => (esEnf ? d?.name || '' : doctorOptionLabel(d));
+  const doctorName = searchParams.get('name') || Persona;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [clinics, setClinics] = useState([]);
@@ -77,17 +85,17 @@ export default function CommissionDoctorDetail() {
 
   useEffect(() => {
     if (!esGeneral) return;
-    api.get('/commissions/doctors', { params: { clinic } })
+    api.get('/commissions/doctors', { params: { clinic, area } })
       .then((r) => setDoctors(r.data || []))
       .catch(() => setDoctors([]));
-  }, [clinic, esGeneral]);
+  }, [clinic, esGeneral, area]);
 
   useEffect(() => {
     const t = setTimeout(async () => {
       setLoading(true);
       try {
         const params = { limit: POR_PAGINA, page };
-        ['start', 'end', 'clinic', 'status', 'service'].forEach((k) => {
+        ['start', 'end', 'clinic', 'status', 'service', 'area'].forEach((k) => {
           if (searchParams.get(k)) params[k] = searchParams.get(k);
         });
         // El corte por doctor: el de la URL en el modo individual, y el del
@@ -123,7 +131,7 @@ export default function CommissionDoctorDetail() {
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-sm">
         <Link
-          to="/commissions"
+          to={esEnf ? '/commissions?tab=enfermeria' : '/commissions'}
           className="inline-flex items-center gap-1 text-emerald-600 hover:underline bg-transparent border-none cursor-pointer"
         >
           <HiOutlineArrowLeft className="w-4 h-4" /> Volver a Comisiones
@@ -133,7 +141,7 @@ export default function CommissionDoctorDetail() {
       <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
         {esGeneral ? (
           <>
-            <HiOutlineUserGroup className="text-emerald-600" /> Citas de todos los doctores
+            <HiOutlineUserGroup className="text-emerald-600" /> Citas de todos los {esEnf ? 'enfermeros' : 'doctores'}
           </>
         ) : (
           <>
@@ -169,7 +177,7 @@ export default function CommissionDoctorDetail() {
             </select>
           </label>
           {esGeneral && (
-            <label className="text-sm">Doctor
+            <label className="text-sm">{Persona}
               <div className="mt-1 min-w-[260px]">
                 {/* Se escribe el nombre o la especialidad; debajo de cada
                     doctor sale su rol (general o especialidad). */}
@@ -181,7 +189,7 @@ export default function CommissionDoctorDetail() {
                   onSelect={(p) => {
                     if (p && !doctorFilter.includes(String(p._id))) setParam('doctor', [...doctorFilter, String(p._id)]);
                   }}
-                  placeholder="Escribe un doctor o especialidad..."
+                  placeholder={esEnf ? 'Escribe un enfermero...' : 'Escribe un doctor o especialidad...'}
                 />
               </div>
             </label>
@@ -212,7 +220,7 @@ export default function CommissionDoctorDetail() {
           <div className="flex flex-wrap gap-1.5">
             {doctorFilter.map((id) => (
               <span key={id} className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-slate-100 text-xs text-slate-700">
-                {doctorOptionLabel(doctors.find((d) => String(d._id) === id) || { name: data?.doctorNames?.[id] || 'Doctor', roleInClinic: '' })}
+                {etiqueta(doctors.find((d) => String(d._id) === id) || { name: data?.doctorNames?.[id] || Persona, roleInClinic: '' })}
                 <button
                   type="button"
                   onClick={() => setParam('doctor', doctorFilter.filter((x) => x !== id))}
@@ -227,7 +235,7 @@ export default function CommissionDoctorDetail() {
               onClick={() => setParam('doctor', [])}
               className="text-xs text-emerald-600 hover:underline bg-transparent border-none cursor-pointer px-1"
             >
-              Quitar doctores
+              Quitar {esEnf ? 'enfermeros' : 'doctores'}
             </button>
           </div>
         )}
@@ -267,7 +275,7 @@ export default function CommissionDoctorDetail() {
                     <th className="text-left px-3 py-2">Atendida por</th>
                     <th className="text-left px-3 py-2">Pago</th>
                     <th className="text-left px-3 py-2">Seguimiento</th>
-                    <th className="text-left px-3 py-2">Derivaciones</th>
+                    {!esEnf && <th className="text-left px-3 py-2">Derivaciones</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -282,7 +290,7 @@ export default function CommissionDoctorDetail() {
                         <span className="text-slate-800 font-medium">{a.patient}</span>
                         {a.visitsTotal > 1 ? (
                           <span
-                            title={`Este doctor atendió ${a.visitsTotal} veces a este paciente en el filtro`}
+                            title={`Este ${persona} atendió ${a.visitsTotal} veces a este paciente en el filtro`}
                             className="ml-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px] font-semibold"
                           >
                             visita {a.visitNumber}/{a.visitsTotal}
@@ -302,7 +310,7 @@ export default function CommissionDoctorDetail() {
                             doctores. */}
                         {esGeneral && a.doctorName && (
                           <span className="block text-[10px] text-emerald-700 font-semibold mt-0.5">
-                            Dr. {a.doctorName}
+                            {esEnf ? a.doctorName : `Dr. ${a.doctorName}`}
                           </span>
                         )}
                         {a.multiprofesional && (
@@ -342,6 +350,7 @@ export default function CommissionDoctorDetail() {
                           <span className="text-slate-300">—</span>
                         )}
                       </td>
+                      {!esEnf && (
                       <td className="px-3 py-2 min-w-[190px]">
                         {(a.derivaciones || []).length > 0 ? (
                           <div className="space-y-1">
@@ -361,6 +370,7 @@ export default function CommissionDoctorDetail() {
                           <span className="text-slate-300">—</span>
                         )}
                       </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -369,13 +379,13 @@ export default function CommissionDoctorDetail() {
                     <tr>
                       <td colSpan={5} className="px-3 py-2 text-right font-semibold text-emerald-700">Pagos de esta página</td>
                       <td className="px-3 py-2 whitespace-nowrap font-semibold text-emerald-700">{money(data.totals?.pagePayments)}</td>
-                      <td colSpan={2}></td>
+                      <td colSpan={esEnf ? 1 : 2}></td>
                     </tr>
                   )}
                   <tr>
                     <td colSpan={5} className="px-3 py-2 text-right font-semibold text-emerald-800">Total pagos del filtro</td>
                     <td className="px-3 py-2 whitespace-nowrap font-bold text-emerald-800">{money(totalPagos)}</td>
-                    <td colSpan={2}></td>
+                    <td colSpan={esEnf ? 1 : 2}></td>
                   </tr>
                 </tfoot>
               </table>
@@ -388,6 +398,7 @@ export default function CommissionDoctorDetail() {
 
           <Paginador pagination={data.pagination} onPage={irAPagina} unidad="citas" />
 
+          {!esEnf && (
           <div className="bg-white rounded-xl border border-slate-200 px-4 py-3">
             <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide mb-1 inline-flex items-center gap-1">
               <HiOutlineArrowsRightLeft className="w-3.5 h-3.5" /> Derivaciones de los doctores ({derivaciones.length})
@@ -442,6 +453,7 @@ export default function CommissionDoctorDetail() {
               <p className="text-xs text-slate-400">Sin derivaciones en las citas del filtro.</p>
             )}
           </div>
+          )}
         </div>
       )}
     </div>

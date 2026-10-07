@@ -538,6 +538,50 @@ function filtroCitasConDoctor(ids) {
   };
 }
 
+/**
+ * LOS ENFERMEROS QUE ATENDIERON UNA CITA (oct-2026, Comisiones > Enfermería): los
+ * de sus turnos de enfermería con dueño (no omitidos) y el espejo
+ * `attendedByNurse`, que cubre las citas sin turnos. Es la misma regla que
+ * `doctoresDeLaCita`: con dos enfermeras en un detox, cuentan las dos.
+ *
+ * Devuelve los valores tal cual vienen (documento poblado o id).
+ */
+function enfermerosQueAtienden(apt) {
+  const vistos = new Set();
+  const out = [];
+  const candidatos = [
+    ...turnosOrdenados(apt)
+      .filter((t) => t.kind === 'enfermeria' && t.user && t.status !== 'omitido')
+      .map((t) => t.user),
+    apt.attendedByNurse,
+  ];
+  for (const n of candidatos) {
+    const id = idDe(n);
+    if (!id || vistos.has(id)) continue;
+    vistos.add(id);
+    out.push(n);
+  }
+  return out;
+}
+
+/**
+ * Condición de Mongo: citas que atendió alguno de estos enfermeros —o, sin ids,
+ * cualquier enfermero—, por su turno o por el espejo. La misma regla que
+ * `enfermerosQueAtienden`, para que filtrar y contar digan lo mismo.
+ */
+function filtroCitasConEnfermero(ids = []) {
+  const lista = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
+  let quien = { $ne: null };
+  if (lista.length === 1) [quien] = lista;
+  else if (lista.length) quien = { $in: lista };
+  return {
+    $or: [
+      { attendedByNurse: quien },
+      { turns: { $elemMatch: { kind: 'enfermeria', user: quien, status: { $ne: 'omitido' } } } },
+    ],
+  };
+}
+
 module.exports = {
   turnosOrdenados,
   turnoVigente,
@@ -557,4 +601,6 @@ module.exports = {
   filtroCitasDelDoctor,
   doctoresDeLaCita,
   filtroCitasConDoctor,
+  enfermerosQueAtienden,
+  filtroCitasConEnfermero,
 };
