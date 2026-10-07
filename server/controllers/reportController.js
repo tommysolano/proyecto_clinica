@@ -537,3 +537,89 @@ exports.exportSalesByItem = async (req, res) => {
 };
 
 
+
+/**
+ * TIEMPOS DE LOS DOCTORES (oct-2026, Fénix → «Tiempos de Doctores»).
+ *
+ * Por doctor: cuánto tardó cada atención del rango, el promedio, y qué está
+ * haciendo AHORA (en consulta, con pacientes esperando, en cola detrás de otro
+ * profesional, citas agendadas de hoy). El cálculo vive en
+ * `utils/tiemposDoctores.js`; aquí solo se leen las citas.
+ *
+ * Alcance: las sucursales que la persona ve (`sucursalesVisibles`), o una sola
+ * con `?clinic=<id>`. El rango por defecto es HOY y se limita a 92 días: es una
+ * pantalla, no una exportación.
+ */
+exports.doctorTimes = async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const User = require('../models/User');
+    const { DOCTOR_LIKE_ROLES } = require('../constants/roles');
+    const { sucursalesVisibles, alcanzaSucursal } = require('../utils/clinicScope');
+    const { parseLocalDate } = require('../utils/appointmentDate');
+    const { construirTiempos } = require('../utils/tiemposDoctores');
+
+    // Sucursales: las visibles, o la pedida si llega a ella.
+    let sedes = sucursalesVisibles(req); // null = todas
+    const pedida = req.query.clinic;
+    if (pedida && pedida !== 'all' && mongoose.Types.ObjectId.isValid(String(pedida))) {
+      if (!alcanzaSucursal(req, pedida)) return res.status(403).json({ message: 'No tienes acceso a esa sucursal' });
+      sedes = [new mongoose.Types.ObjectId(String(pedida))];
+    }
+    const filtroSede = sedes === null ? {} : { clinic: { $in: sedes } };
+
+    const hoy = new Date();
+    const ymdHoy = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-${String(hoy.getDate()).padStart(2, '0')}`;
+    const dia = (ymd, fin) => {
+      const d = parseLocalDate(ymd);
+      if (!d || Number.isNaN(d.getTime())) return null;
+      if (fin) d.setHours(23, 59, 59, 999);
+      else d.setHours(0, 0, 0, 0);
+      return d;
+    };
+    const desde = dia(req.query.startDate || ymdHoy, false);
+    const hasta = dia(req.query.endDate || req.query.startDate || ymdHoy, true);
+    if (!desde || !hasta) return res.status(400).json({ message: 'Fechas inválidas' });
+    if (desde > hasta) return res.status(400).json({ message: 'La fecha inicial es posterior a la final' });
+    if ((hasta - desde) / 86400000 > 92) {
+      return res.status(400).json({ message: 'El rango no puede pasar de 92 días' });
+    }
+
+    const CAMPOS = 'date startTime status serviceName patient clinic doctor turns consultationStartedAt consultationEndedAt attentionAssignedAt';
+    const leer = (query) =>
+      Appointment.find({ ...query, ...filtroSede })
+        .select(CAMPOS)
+        .populate('patient', 'firstName lastName')
+        .populate('clinic', 'name nombreComercial')
+        .populate('doctor', 'name')
+        .populate('turns.user', 'name')
+        .lean();
+
+    const [historial, deHoy] = await Promise.all([
+      leer({
+        date: { $gte: desde, $lte: hasta },
+        status: { $nin: ['cancelada', 'no_asistio'] },
+        $or: [{ 'turns.kind': 'doctor' }, { doctor: { $ne: null } }],
+      }),
+      leer({
+        date: { $gte: dia(ymdHoy, false), $lte: dia(ymdHoy, true) },
+        status: { $nin: ['cancelada', 'no_asistio', 'completada'] },
+      }),
+    ]);
+
+    // Todos los doctores de esas sucursales, aunque hoy no tengan nada: «libre»
+    // también es una respuesta.
+    const rol = { $in: DOCTOR_LIKE_ROLES };
+    const filtroDoctores = sedes === null
+      ? { clinics: { $elemMatch: { role: rol } } }
+      : { $or: sedes.flatMap((c) => User.enSucursal(c, DOCTOR_LIKE_ROLES).$or) };
+    const doctores = await User.find({ active: true, ...filtroDoctores })
+      .select('name specialty')
+      .lean();
+
+    res.json(construirTiempos({ doctores, historial, deHoy, ahora: new Date() }));
+  } catch (error) {
+    console.error('[doctorTimes] ERROR:', error);
+    res.status(500).json({ message: 'Error al calcular los tiempos de los doctores', error: error.message });
+  }
+};

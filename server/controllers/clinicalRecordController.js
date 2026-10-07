@@ -1451,8 +1451,6 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
     }
   }
   await apt.save();
-  // Constancia en Observaciones del paciente (quién atendió, qué servicio).
-  require('../utils/observacionesAutomaticas').registrarVisita(apt._id, req.user._id);
   // Si la cita quedó COMPLETADA, ya no espera a nadie: sus avisos de campana
   // se apagan aquí también (el reclamo es solo un camino).
   if (apt.status === 'completada') {
@@ -1983,6 +1981,14 @@ exports.addFollowUp = async (req, res) => {
         .json({ message: 'Primero debe crear la ficha clínica del paciente' });
     }
 
+    // La receta queda en Observaciones del paciente (no espera: ver
+    // utils/observacionesAutomaticas).
+    require('../utils/observacionesAutomaticas').registrarReceta(
+      patientId,
+      (record.followUps || []).slice(-1)[0]?._id,
+      req.user._id
+    );
+
     /**
      * AVANCE DE TURNO. Una cita puede pasar por varios profesionales: guardar el
      * seguimiento ya NO la cierra sin más, cierra EL TURNO de quien lo escribió.
@@ -2465,6 +2471,8 @@ exports.updateFollowUp = async (req, res) => {
 
     record.updatedBy = req.user._id;
     await record.save();
+    // La constancia de la receta sigue a la corrección (la firma, la del autor).
+    require('../utils/observacionesAutomaticas').registrarReceta(patientId, fu._id, fu.createdBy);
 
     emitToClinic(req.clinicId, 'clinicalRecord:updated', { patient: patientId });
     const poblado = await ClinicalRecord.findById(record._id)

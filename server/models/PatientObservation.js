@@ -63,11 +63,12 @@ const patientObservationSchema = new mongoose.Schema(
     /**
      * REGISTRO AUTOMÁTICO (sep-2026): la escribe el sistema, no una persona.
      *
-     *  · 'visita' → una por cita (`ref`): servicios, quién atendió, valor o canje,
-     *    adelanto y quién registró el cobro. Se REESCRIBE cada vez que la cita
-     *    cambia, así que siempre dice lo último.
-     *  · 'venta'  → una por venta (`ref`): qué se llevó, cuánto, cómo pagó y
-     *    quién cobró. Al anularse la venta, lo dice.
+     *  · 'receta' → una por seguimiento con receta (`ref` = el seguimiento): qué
+     *    se recetó, quién y cuándo. Se REESCRIBE si se corrige la receta.
+     *  · 'venta'  → una por venta (`ref`): qué compró y el total. Al anularse la
+     *    venta, lo dice.
+     *  · 'visita' → YA NO SE ESCRIBE (oct-2026): era una por cita con servicios,
+     *    quién atendió y el cobro. Quedan las antiguas.
      *  · 'compra' → lo que caja registra de la receta desde la agenda (una por
      *    guardado, sin `ref`).
      *
@@ -75,7 +76,7 @@ const patientObservationSchema = new mongoose.Schema(
      * pasó, y el cajero que figura como autor no puede reescribir su propio cobro.
      */
     auto: {
-      kind: { type: String, enum: ['visita', 'venta', 'compra', null], default: null },
+      kind: { type: String, enum: ['visita', 'venta', 'compra', 'receta', null], default: null },
       ref: { type: mongoose.Schema.Types.ObjectId, default: null },
     },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },

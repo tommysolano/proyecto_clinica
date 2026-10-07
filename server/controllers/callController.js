@@ -26,7 +26,12 @@ const { notificarLlamadaEntrante } = require('../utils/pushNotifications');
 
 // Una entrante que nadie contesta no puede quedarse "sonando" para siempre en
 // la UI: si Meta no manda 'terminate' se marca perdida por tiempo.
-const RINGING_TIMEOUT_MS = 60 * 1000;
+//
+// Es una RED DE SEGURIDAD, no el cierre normal (ese lo manda Meta). Con 60 s
+// cerraba llamadas que seguían sonando en el teléfono del contacto mientras el
+// agente despertaba el móvil y abría la app desde el aviso: al contestar, «ya no
+// está sonando». 90 s y nunca mientras alguien la está contestando.
+const RINGING_TIMEOUT_MS = 90 * 1000;
 
 function csv(value) {
   return String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
@@ -291,7 +296,11 @@ exports.acceptCall = async (req, res) => {
       return res.status(403).json({ message: 'Este chat está reservado para otro asesor mediante un workflow' });
     }
     if (call.status !== 'ringing') {
-      return res.status(409).json({ message: 'Esa llamada ya no está sonando.' });
+      return res.status(409).json({
+        message: call.status === 'active'
+          ? `Esa llamada ya la contestó ${call.agentName || 'otro asesor'}.`
+          : 'Esa llamada ya no está sonando: el contacto colgó.',
+      });
     }
     const sdp = String(req.body.sdp || '');
     if (!sdp) return res.status(400).json({ message: 'Falta la sesión de audio (SDP) del navegador' });
@@ -299,14 +308,58 @@ exports.acceptCall = async (req, res) => {
     const resolved = await resolveCallingAccountForCall(call, conv);
     if (!resolved.ok) return res.status(400).json({ message: resolved.reason });
 
+    /**
+     * UN SOLO «ACEPTAR» POR LLAMADA (oct-2026). Se reserva la llamada ANTES de
+     * hablar con Meta. Sin el candado, dos peticiones (doble toque, el aviso y
+     * el panel, dos dispositivos) llegaban juntas a Meta: la primera conectaba
+     * su audio, la segunda volvía con «el contacto colgó» y el navegador cerraba
+     * la pantalla con la primera conexión todavía viva. La reserva caduca a los
+     * 45 s por si el navegador que la tomó se cayó a mitad.
+     */
+    const ahora = new Date();
+    const reservada = await Call.findOneAndUpdate(
+      {
+        _id: call._id,
+        status: 'ringing',
+        $or: [{ acceptingAt: null }, { acceptingAt: { $lt: new Date(ahora.getTime() - 45000) } }],
+      },
+      { $set: { acceptingBy: req.user._id, acceptingAt: ahora } },
+      { new: true }
+    );
+    if (!reservada) {
+      const actual = await Call.findById(call._id).select('status agentName acceptingBy');
+      const mia = String(actual?.acceptingBy || '') === String(req.user._id);
+      return res.status(409).json({
+        message: actual?.status === 'ringing'
+          ? (mia ? 'Ya estás contestando esta llamada en otra pantalla.' : 'Otro asesor está contestando esta llamada.')
+          : actual?.status === 'active'
+            ? `Esa llamada ya la contestó ${actual.agentName || 'otro asesor'}.`
+            : 'Esa llamada ya no está sonando: el contacto colgó.',
+      });
+    }
+    const soltarReserva = async () =>
+      Call.updateOne({ _id: call._id, acceptingBy: req.user._id }, { $set: { acceptingBy: null, acceptingAt: null } });
+
     const r = await calls.acceptCall(resolved.creds, call.callId, sdp);
     if (!r.ok) {
-      call.status = 'failed';
-      call.endedAt = new Date();
-      call.errorMessage = r.error || 'No se pudo aceptar la llamada';
-      await call.save();
-      emitToCallCenter('call:ended', callPayload(call));
-      return res.status(502).json({ message: call.errorMessage });
+      // Solo se da por fallida si sigue sonando: si el contacto colgó mientras
+      // tanto, el cierre del webhook ya la dejó como corresponde.
+      const fallida = await Call.findOneAndUpdate(
+        { _id: call._id, status: 'ringing' },
+        {
+          $set: {
+            status: 'failed',
+            endedAt: new Date(),
+            errorMessage: r.error || 'No se pudo aceptar la llamada',
+            acceptingBy: null,
+            acceptingAt: null,
+            offerSdp: '',
+          },
+        },
+        { new: true }
+      );
+      if (fallida) emitToCallCenter('call:ended', callPayload(fallida));
+      return res.status(502).json({ message: r.error || 'No se pudo aceptar la llamada' });
     }
     // El agente que contesta se queda con la llamada (y con el chat si estaba libre).
     //
@@ -323,11 +376,18 @@ exports.acceptCall = async (req, res) => {
           agent: req.user._id,
           agentName: req.user.name,
           offerSdp: '',
+          acceptingBy: null,
+          acceptingAt: null,
         },
       },
       { new: true }
     );
     if (!aceptada) {
+      // Meta SÍ conectó, pero la llamada ya estaba cerrada aquí (el contacto
+      // colgó en ese instante). El navegador va a cerrar su audio: se cuelga
+      // también en Meta, para que nadie se quede en una llamada muda.
+      await soltarReserva().catch(() => {});
+      await calls.terminateCall(resolved.creds, call.callId).catch(() => {});
       return res.status(409).json({ message: 'El contacto colgó antes de que se pudiera contestar.' });
     }
     if (conv && !conv.assignedTo) {
@@ -432,17 +492,21 @@ async function finishCall(call, { status, errorMessage = '' } = {}) {
 
 // Marca como perdida una entrante que nadie contestó (o una saliente que nunca
 // fue respondida) si Meta no manda el 'terminate'.
-function scheduleRingingTimeout(callId) {
+function scheduleRingingTimeout(callId, delayMs = RINGING_TIMEOUT_MS) {
   const t = setTimeout(async () => {
     try {
       const fresh = await Call.findById(callId);
-      if (fresh && fresh.status === 'ringing') {
-        await finishCall(fresh, { status: 'missed' });
+      if (!fresh || fresh.status !== 'ringing') return;
+      // Alguien la está contestando ahora mismo: se vuelve a mirar en un rato.
+      if (fresh.acceptingAt && Date.now() - new Date(fresh.acceptingAt).getTime() < 45000) {
+        scheduleRingingTimeout(callId, 30 * 1000);
+        return;
       }
+      await finishCall(fresh, { status: 'missed' });
     } catch {
       /* noop */
     }
-  }, RINGING_TIMEOUT_MS);
+  }, delayMs);
   t.unref?.();
 }
 
@@ -508,6 +572,21 @@ async function handleConnect(clinicId, ev, account) {
     const call = await Call.findOne({ callId: ev.callId });
     if (!call) {
       console.warn('[whatsapp calls] answer de una llamada desconocida:', ev.callId);
+      return;
+    }
+    // Un «connect» de una ENTRANTE no es el answer de nadie: el answer lo puso
+    // este CRM al contestar. Tratarlo como saliente la reactivaba y mandaba al
+    // navegador un SDP que no le corresponde.
+    if (call.direction === 'in') return;
+    // Un reintento del mismo webhook no vuelve a aplicar el answer. Y si el
+    // contacto contesta cuando aquí ya se dio por perdida, el navegador ya cerró
+    // su audio: se cuelga en Meta para que no se quede en una llamada muda.
+    if (call.status !== 'ringing') {
+      if (call.status === 'missed') {
+        const conv = await Conversation.findById(call.conversation);
+        const resolved = await resolveCallingAccountForCall(call, conv);
+        if (resolved.ok) await calls.terminateCall(resolved.creds, call.callId).catch(() => {});
+      }
       return;
     }
     call.status = 'active';

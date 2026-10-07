@@ -50,6 +50,17 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
   // Altavoz apagado por defecto (estilo WhatsApp): la voz va a la salida por
   // defecto del sistema y el agente la sube al altavoz cuando quiere.
   const [speakerOn, setSpeakerOn] = useState(false);
+  /**
+   * CONTESTANDO (oct-2026). Contestar tarda unos segundos (micrófono, servidores
+   * ICE, recolección de candidatos) y mientras tanto el botón seguía vivo: un
+   * segundo toque —o el «Contestar» del aviso más el del panel— lanzaba OTRA
+   * conexión. La primera era la que Meta conectaba; la segunda fallaba con
+   * «el contacto colgó» y, al limpiar, cerraba solo la suya: la primera quedaba
+   * HUÉRFANA con el micrófono abierto. El contacto oía al agente y el agente,
+   * con la pantalla ya cerrada, no oía nada. Ahora contestar es de una sola vez.
+   */
+  const [accepting, setAccepting] = useState(false);
+  const acceptingRef = useRef(false);
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
@@ -163,6 +174,14 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
 
   // Prepara la conexión WebRTC: micrófono + reproducción de la voz del contacto.
   const buildPeerConnection = useCallback(async () => {
+    // Nunca dos conexiones vivas: si quedó una de un intento anterior, se cierra
+    // con su micrófono antes de abrir la nueva (ver `accepting`).
+    if (pcRef.current) {
+      try { pcRef.current.close(); } catch { /* ya cerrada */ }
+      pcRef.current = null;
+    }
+    localStreamRef.current?.getTracks().forEach((t) => t.stop());
+    localStreamRef.current = null;
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -238,12 +257,16 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
 
   /** Acepta la llamada entrante que está sonando. */
   const acceptCall = useCallback(async () => {
-    if (!call || call.direction !== 'in') return;
+    if (!call || call.direction !== 'in' || call.status !== 'ringing') return;
+    // Ya se está contestando: un segundo toque no abre otra conexión.
+    if (acceptingRef.current) return;
     const offer = pendingOfferRef.current;
     if (!offer) {
       toast.error('No llegó la sesión de audio de la llamada');
       return;
     }
+    acceptingRef.current = true;
+    setAccepting(true);
     try {
       const pc = await buildPeerConnection();
       await pc.setRemoteDescription({ type: 'offer', sdp: offer });
@@ -266,38 +289,72 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
         pendingOfferRef.current = offerToRetry;
       }
       toast.error(err.response?.data?.message || err.message || 'No se pudo aceptar la llamada');
+    } finally {
+      acceptingRef.current = false;
+      setAccepting(false);
     }
   }, [call, buildPeerConnection, cleanup, startTimer]);
 
   // Al abrir la PWA desde una notificacion no existe un socket historico que
   // pueda repetir el evento. Se recupera del servidor el OFFER que aun esta
   // sonando y se reconstruye exactamente el mismo panel de llamada entrante.
-  useEffect(() => {
-    let cancelled = false;
-    const config = pendingCallId ? { params: { callId: pendingCallId } } : undefined;
-    api.get('/chats/calls/pending', config)
-      .then(({ data }) => {
+  /**
+   * SIEMPRE SE PUEDE ABRIR (oct-2026). Al despertar el teléfono desde el aviso,
+   * la red suele tardar unos segundos en volver: una sola petición fallida
+   * dejaba la app abierta sin llamada aunque siguiera sonando. Ahora, si se
+   * viene del aviso (`pendingCallId`), se reintenta varias veces. Y cada vez que
+   * la app vuelve a primer plano se pregunta de nuevo: con la app en segundo
+   * plano el socket está dormido y el `call:incoming` se pierde.
+   */
+  const callRef = useRef(null);
+  callRef.current = call;
+  const recuperarPendiente = useCallback(async (callId, { intentos = 1 } = {}) => {
+    for (let i = 0; i < intentos; i += 1) {
+      if (callRef.current) return;
+      try {
+        const { data } = await api.get('/chats/calls/pending', callId ? { params: { callId } } : undefined);
         const incoming = data?.call;
-        if (cancelled || !incoming?.callId || !incoming?.sdp) return;
-        setCall((current) => {
-          if (current) return current;
-          pendingOfferRef.current = incoming.sdp;
-          return {
-            callId: incoming.callId,
-            conversationId: incoming.conversationId,
-            direction: 'in',
-            status: 'ringing',
-            contactName: incoming.contactName,
-            phone: incoming.phone,
-          };
-        });
-      })
-      .catch(() => {
-        // La bandeja sigue funcionando; puede que la llamada terminara durante
-        // el arranque o que el telefono recuperara internet demasiado tarde.
-      });
-    return () => { cancelled = true; };
-  }, [pendingCallId]);
+        if (!incoming?.callId || !incoming?.sdp) {
+          // Sin llamada pendiente: si la pedía el aviso, puede que aún no se vea
+          // (réplica atrasada); se mira una vez más y se deja.
+          if (!callId || i >= 1) return;
+        } else {
+          setCall((current) => {
+            if (current) return current;
+            pendingOfferRef.current = incoming.sdp;
+            return {
+              callId: incoming.callId,
+              conversationId: incoming.conversationId,
+              direction: 'in',
+              status: 'ringing',
+              contactName: incoming.contactName,
+              phone: incoming.phone,
+            };
+          });
+          return;
+        }
+      } catch {
+        // Sin red todavía: se reintenta.
+      }
+      await new Promise((r) => setTimeout(r, 1500 + i * 1000));
+    }
+  }, []);
+
+  useEffect(() => {
+    recuperarPendiente(pendingCallId, { intentos: pendingCallId ? 6 : 1 });
+  }, [pendingCallId, recuperarPendiente]);
+
+  useEffect(() => {
+    const alVolver = () => {
+      if (document.visibilityState === 'visible' && !callRef.current) recuperarPendiente('', { intentos: 2 });
+    };
+    document.addEventListener('visibilitychange', alVolver);
+    window.addEventListener('online', alVolver);
+    return () => {
+      document.removeEventListener('visibilitychange', alVolver);
+      window.removeEventListener('online', alVolver);
+    };
+  }, [recuperarPendiente]);
 
   // La accion Contestar del aviso abre la PWA con answerCall=<id>. El toque en
   // la notificacion es la decision explicita del usuario: una vez recuperado el
@@ -340,7 +397,9 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
   // El contacto contestó: aplicar su SDP answer para que empiece a oírse.
   useSocketEvent('call:answered', async (payload) => {
     const pc = pcRef.current;
-    if (!pc || !call || payload.callId !== call.callId) return;
+    // Solo en las SALIENTES: en una entrante este navegador ya puso el answer y
+    // aplicar otro rompía la conexión (y colgaba).
+    if (!pc || !call || payload.callId !== call.callId || call.direction !== 'out') return;
     try {
       await pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp });
       setCall((c) => (c ? { ...c, status: 'active' } : c));
@@ -395,6 +454,7 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
     muted,
     needsAudioUnlock,
     speakerOn,
+    accepting,
     startCall,
     acceptCall,
     rejectCall,

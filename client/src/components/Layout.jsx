@@ -217,6 +217,7 @@ const MENU_GROUPS = [
       { path: '/analytics', label: 'Analíticas', roles: ['admin', 'marketing'] },
       { path: '/call-center-config', label: 'Config. Call Center', roles: ['admin', 'marketing'] },
       { path: '/reports', label: 'Reportes de Atención', roles: ['admin', 'marketing'] },
+      { path: '/doctor-times', label: 'Tiempos de Doctores', roles: ['admin', 'marketing', 'call_center'] },
     ],
   },
   {

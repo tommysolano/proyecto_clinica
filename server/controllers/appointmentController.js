@@ -3,7 +3,6 @@ const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
 const Patient = require('../models/Patient');
 const PatientObservation = require('../models/PatientObservation');
-const { registrarVisita } = require('../utils/observacionesAutomaticas');
 const Notification = require('../models/Notification');
 // Se importa aunque no se use directamente aquí: `populate('serviceItem')` falla
 // con "Schema hasn't been registered" si el modelo no se ha cargado nunca.
@@ -2280,8 +2279,6 @@ exports.endConsultation = async (req, res) => {
       appointment.status = 'completada';
     }
     await appointment.save();
-    // Constancia en Observaciones del paciente (no espera: ver utils/observacionesAutomaticas).
-    registrarVisita(appointment._id, req.user._id);
     // Quien cerró SU turno deja de sonar aunque la cita siga viva (ver
     // `apagarAvisoDeCitaPara`): con enfermería detrás, el aviso del doctor no
     // esperaba a que la cita entera terminara — que a veces nunca termina.
@@ -2711,8 +2708,6 @@ exports.markAttended = async (req, res) => {
     // utils/appointmentArrival.js.
     registrarLlegada(apt);
     await apt.save();
-    // Constancia en Observaciones del paciente (no espera: ver utils/observacionesAutomaticas).
-    registrarVisita(apt._id, req.user._id);
     if (apt.referral) {
       try {
         const Referral = require('../models/Referral');
@@ -3256,8 +3251,6 @@ exports.updateServiceAndValue = async (req, res) => {
     if (!cambio) return res.status(400).json({ message: 'No hay nada que cambiar' });
 
     await apt.save();
-    // Constancia en Observaciones del paciente (no espera: ver utils/observacionesAutomaticas).
-    registrarVisita(apt._id, req.user._id);
 
     const populated = await Appointment.findById(apt._id)
       .populate('patient', POPULATE_PATIENT)
@@ -3484,6 +3477,15 @@ exports.assignDoctor = async (req, res) => {
      * puerta que el resto (`resolverServicioAgenda`) y ANTES del suero, para que
      * un servicio nuevo con suero de serie se siembre en la ficha aquí mismo.
      */
+    /**
+     * EL MOTIVO DE LA CITA, en el mismo gesto (oct-2026): la pantalla de asignar
+     * lo exige y lo deja corregir. Solo si viene: una pantalla vieja que no lo
+     * manda no puede borrarlo.
+     */
+    if (typeof req.body.reason === 'string' && req.body.reason.trim()) {
+      apt.reason = req.body.reason.trim();
+    }
+
     if (req.body.serviceItem !== undefined) {
       const svc = await resolverServicioAgenda(req.body.serviceItem);
       apt.serviceItem = svc?._id || null;
@@ -3597,8 +3599,6 @@ exports.assignDoctor = async (req, res) => {
      */
     if (pasos.length && !apt.attentionAssignedAt) apt.attentionAssignedAt = new Date();
     await apt.save();
-    // Constancia en Observaciones del paciente (no espera: ver utils/observacionesAutomaticas).
-    registrarVisita(apt._id, req.user._id);
 
     /**
      * EL AVISO DE QUIEN YA NO LE TOCA, SE APAGA (sep-2026).
@@ -4217,8 +4217,6 @@ exports.nurseComplete = async (req, res) => {
       apt.consultationEndedAt = new Date();
     }
     await apt.save();
-    // Constancia en Observaciones del paciente (no espera: ver utils/observacionesAutomaticas).
-    registrarVisita(apt._id, req.user._id);
 
     /**
      * Al siguiente le llega la cita ahora, en su pantalla y en su móvil. Tres

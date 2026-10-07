@@ -45,6 +45,15 @@ const callSchema = new mongoose.Schema(
     // Agente que la atendió/originó (queda vacío en una entrante no atendida).
     agent: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     agentName: { type: String, trim: true, default: '' },
+    /**
+     * QUIÉN LA ESTÁ CONTESTANDO, mientras Meta confirma (oct-2026). Es el candado
+     * que impide dos «aceptar» a la vez sobre la misma llamada: el segundo
+     * conectaba otra sesión de audio y dejaba la primera huérfana (el contacto
+     * oía al agente y el agente no oía nada). También frena el temporizador de
+     * «perdida» mientras se contesta.
+     */
+    acceptingBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    acceptingAt: { type: Date, default: null },
 
     startedAt: { type: Date, default: Date.now },
     connectedAt: { type: Date, default: null },

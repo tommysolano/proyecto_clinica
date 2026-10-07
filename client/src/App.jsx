@@ -93,6 +93,7 @@ const Commissions = pagina(() => import('./pages/Commissions'));
 const CommissionDoctorDetail = pagina(() => import('./pages/CommissionDoctorDetail'));
 const Settings = pagina(() => import('./pages/Settings'));
 const Reports = pagina(() => import('./pages/Reports'));
+const DoctorTimes = pagina(() => import('./pages/DoctorTimes'));
 const Discounts = pagina(() => import('./pages/Discounts'));
 const Rooms = pagina(() => import('./pages/Rooms'));
 const Blocks = pagina(() => import('./pages/Blocks'));
@@ -674,6 +675,14 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'marketing']}>
                       <Reports />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/doctor-times"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing', 'call_center']}>
+                      <DoctorTimes />
                     </RoleRoute>
                   }
                 />

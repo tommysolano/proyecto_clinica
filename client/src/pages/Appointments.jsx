@@ -977,9 +977,13 @@ export default function Appointments() {
       } else if (miTurno === peticionRef.current) {
         setBloquesDia([]);
       }
-    } catch {
+    } catch (err) {
       if (miTurno !== peticionRef.current) return;
-      toast.error('Error al cargar citas');
+      // Con el MOTIVO (oct-2026): un «Error al cargar citas» a secas no dejaba
+      // saber por qué fallaba solo para una doctora; el servidor sí lo manda.
+      const detalle = err.response?.data?.error || err.message || '';
+      toast.error(detalle ? `Error al cargar citas: ${detalle}` : 'Error al cargar citas');
+      console.error('[agenda] Error al cargar citas', err.response?.status, err.response?.data || err);
     } finally {
       if (miTurno === peticionRef.current) setLoading(false);
     }
@@ -1484,6 +1488,16 @@ export default function Appointments() {
     // El servicio vuelve a ser obligatorio: cada cita debe decir a qué viene.
     if (!form.serviceItem) {
       toast.error('Selecciona un servicio');
+      return;
+    }
+    // EL MOTIVO TAMBIÉN (oct-2026, a pedido de la clínica): al crearla. Editar
+    // una cita vieja que no lo tenía no se bloquea por eso.
+    if (!editing && !String(form.reason || '').trim()) {
+      toast.error('Escribe el motivo de la cita');
+      return;
+    }
+    if (!editing && (form.extraAppointments || []).some((it) => it.date && it.startTime && !String(it.reason || '').trim())) {
+      toast.error('Escribe el motivo de cada cita adicional');
       return;
     }
 
@@ -3844,12 +3858,13 @@ export default function Appointments() {
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
-              Motivo de consulta
+              Motivo de consulta {!editing && <span className="text-rose-500">*</span>}
             </label>
             <textarea
               name="reason"
               value={form.reason}
               onChange={handleChange}
+              required={!editing}
               rows={2}
               className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 resize-none"
             />
@@ -4044,7 +4059,7 @@ export default function Appointments() {
                   </div>
                   <input
                     type="text"
-                    placeholder="Motivo (opcional)"
+                    placeholder="Motivo *"
                     value={it.reason}
                     onChange={(e) => setForm((f) => ({
                       ...f,

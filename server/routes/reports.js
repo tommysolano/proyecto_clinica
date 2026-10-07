@@ -28,4 +28,8 @@ router.get('/sales-by-item.xlsx', requireRole('admin', 'contabilidad'), contable
 router.get('/attention', requireRole('admin', 'marketing'), ctrl.attentionReport);
 router.get('/patient-adherence/:patientId', requireRole('admin', 'marketing'), ctrl.patientAdherence);
 
+// Tiempos de los doctores (Fénix): cuánto tarda cada atención, el promedio y qué
+// está haciendo cada doctor ahora mismo.
+router.get('/doctor-times', requireRole('admin', 'marketing', 'call_center'), ctrl.doctorTimes);
+
 module.exports = router;

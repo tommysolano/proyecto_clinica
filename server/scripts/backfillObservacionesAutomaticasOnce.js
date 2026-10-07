@@ -11,7 +11,8 @@
  *
  * ─── QUÉ HACE ──────────────────────────────────────────────────────────────────────
  *  1. Ventas con paciente (también las anuladas, que lo dicen) → registro 'venta'.
- *  2. Citas asistidas/completadas, o con valor/canje/adelanto → registro 'visita'.
+ *  2. (Hasta oct-2026 también las citas, como registro 'visita'. La clínica pidió que la
+ *     bitácora diga solo recetas y compras: ver utils/observacionesAutomaticas.js.)
  *  3. Las «Compra registrada desde la agenda» que caja ya escribía se marcan 'compra'.
  * Cada registro va FECHADO cuando pasó, no hoy. Es idempotente (un registro por
  * cita y por venta, índice único): repetirlo reescribe, no duplica.
@@ -26,7 +27,6 @@ const { connect, disconnect } = require('./_common');
 
 const OneTimeTask = require('../models/OneTimeTask');
 const Sale = require('../models/Sale');
-const Appointment = require('../models/Appointment');
 const PatientObservation = require('../models/PatientObservation');
 // Registrados para los populate de los textos.
 require('../models/User');
@@ -35,7 +35,7 @@ require('../models/Product');
 require('../models/BankAccount');
 require('../models/CreditCard');
 require('../models/AppointmentServiceItem');
-const { registrarVisita, registrarVenta } = require('../utils/observacionesAutomaticas');
+const { registrarVenta } = require('../utils/observacionesAutomaticas');
 
 // v2: el primer intento corrió dentro del deploy, lo mató el corte de 10 min del SSH
 // y dejó su marca en RUNNING. Clave nueva para no esperar a que caduque; repetir lo
@@ -43,16 +43,6 @@ const { registrarVisita, registrarVenta } = require('../utils/observacionesAutom
 const TASK_KEY = 'observaciones-automaticas-2026-09-29-v2';
 const STALE_RUNNING_MS = 20 * 60 * 1000;
 const LOTE = 20;
-
-const FILTRO_VISITAS = {
-  patient: { $ne: null },
-  $or: [
-    { status: { $in: ['asistida', 'completada'] } },
-    { isCanje: true },
-    { agreedValue: { $ne: null } },
-    { advancePayment: { $nin: ['', null] } },
-  ],
-};
 
 /** De LOTE en LOTE: uno a uno serían horas contra Atlas, todos a la vez lo tumban. */
 async function enLotes(ids, fn, log, etiqueta) {
@@ -67,14 +57,12 @@ async function enLotes(ids, fn, log, etiqueta) {
 
 async function rellenar({ commit = false, log = console.log } = {}) {
   const ventas = await Sale.find({ patient: { $ne: null } }).select('_id createdBy').lean();
-  const citas = await Appointment.find(FILTRO_VISITAS).select('_id createdBy valueSetBy').lean();
   const compras = await PatientObservation.countDocuments({
     'auto.kind': null, text: /^Compra registrada desde la agenda/,
   });
   log(`   • Ventas con paciente: ${ventas.length}`);
-  log(`   • Citas atendidas o con cobro anotado: ${citas.length}`);
   log(`   • Compras de receta ya escritas por caja: ${compras}`);
-  const stats = { ventas: ventas.length, visitas: citas.length, compras };
+  const stats = { ventas: ventas.length, compras };
   if (!commit) {
     log('\nDRY-RUN: ejecuta con --commit para escribirlas.');
     return { ...stats, dryRun: true };
@@ -82,13 +70,12 @@ async function rellenar({ commit = false, log = console.log } = {}) {
 
   const opts = { fechaOriginal: true, lanzar: true };
   await enLotes(ventas, (v) => registrarVenta(v._id, v.createdBy, opts), log, 'ventas');
-  await enLotes(citas, (c) => registrarVisita(c._id, c.valueSetBy || c.createdBy, opts), log, 'citas');
   await PatientObservation.updateMany(
     { 'auto.kind': null, text: /^Compra registrada desde la agenda/ },
     { $set: { auto: { kind: 'compra', ref: null } } },
     { timestamps: false }
   );
-  log(`\n✅  ${ventas.length} venta(s) y ${citas.length} cita(s) registradas en Observaciones.`);
+  log(`\n✅  ${ventas.length} venta(s) registradas en Observaciones.`);
   return stats;
 }
 

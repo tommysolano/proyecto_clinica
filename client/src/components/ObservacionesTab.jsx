@@ -53,7 +53,8 @@ const observationFileSize = (bytes) => {
  * cita, cada venta y lo que caja registra de la receta. Solo el admin los
  * corrige: son la constancia de un cobro, no una nota de quien figura.
  */
-const AUTO_LABEL = { visita: 'Atención', venta: 'Venta', compra: 'Compra de receta' };
+// 'visita' ya no se escribe (oct-2026); se deja para las antiguas.
+const AUTO_LABEL = { receta: 'Receta', visita: 'Atención', venta: 'Compra', compra: 'Compra de receta' };
 const FILTROS = [['todas', 'Todas'], ['escritas', 'Escritas'], ['auto', 'Automáticas']];
 
 const sePuedeVer = (att) => {

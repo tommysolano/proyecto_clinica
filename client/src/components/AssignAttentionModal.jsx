@@ -232,6 +232,15 @@ export default function AssignAttentionModal({
   // Nota de recepción al recibir al paciente. No se queda en la cita: va a la
   // bitácora de Observaciones del paciente, junto a las demás.
   const [observacion, setObservacion] = useState('');
+  /**
+   * OBSERVACIÓN Y MOTIVO, OBLIGATORIOS AL ASIGNAR (oct-2026, a pedido de la
+   * clínica). Las observaciones automáticas ya no cuentan la visita —solo la
+   * receta y las compras—, así que lo que pasa en mostrador lo escribe quien
+   * recibe al paciente. El motivo viene de la cita y se puede corregir aquí; si
+   * se agendó sin él, aquí se completa.
+   */
+  const [motivo, setMotivo] = useState(apt?.reason || '');
+  const [intentoGuardar, setIntentoGuardar] = useState(false);
   const contador = useRef(0);
   const [suerosDeFicha, setSuerosDeFicha] = useState([]);
 
@@ -403,6 +412,19 @@ export default function AssignAttentionModal({
      * estaba prohibido. Se avisa, porque la cita se queda sin dueño, pero se
      * deja hacer.
      */
+    // Asignar a alguien exige escribir la observación y el motivo de la cita.
+    // Guardar SIN nadie (corregir un no-show, quitar un doctor) no los pide.
+    if (cola.length && (!observacion.trim() || !motivo.trim())) {
+      setIntentoGuardar(true);
+      toast.error(
+        !motivo.trim() && !observacion.trim()
+          ? 'Escribe el motivo de la cita y la observación del paciente'
+          : !motivo.trim()
+            ? 'Escribe el motivo de la cita'
+            : 'Escribe la observación del paciente'
+      );
+      return;
+    }
     if (!cola.length && !confirm('Vas a dejar la cita sin nadie asignado. ¿Continuar?')) return;
     /**
      * Y si al guardar FALTA un doctor que ya estaba en la cola, se pregunta
@@ -463,6 +485,7 @@ export default function AssignAttentionModal({
         // El servicio de la cita, tal como quede aquí (vacío = quitarlo).
         serviceItem: servicio?._id || null,
         observation: observacion.trim(),
+        reason: motivo.trim(),
         // Solo se mandan si este rol puede fijarlos: así una asignación hecha por
         // enfermería no viaja con los campos vacíos y borra el valor que caja ya
         // había anotado.
@@ -1068,20 +1091,45 @@ export default function AssignAttentionModal({
           />
         )}
 
+        {/* Motivo de la cita: viene de la cita y se puede corregir aquí. */}
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">
+            Motivo de la cita {cola.length > 0 && <span className="text-rose-500">*</span>}
+          </label>
+          <input
+            type="text"
+            value={motivo}
+            onChange={(e) => setMotivo(e.target.value)}
+            placeholder="Control, dolor lumbar, primera consulta…"
+            className={`w-full px-4 py-2.5 border rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 ${
+              intentoGuardar && cola.length > 0 && !motivo.trim() ? 'border-rose-400' : 'border-slate-200'
+            }`}
+          />
+          {intentoGuardar && cola.length > 0 && !motivo.trim() && (
+            <p className="text-[11px] text-rose-600 mt-1">Escribe el motivo de la cita.</p>
+          )}
+        </div>
+
         {/* Observación del paciente */}
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1.5">
-            Observación <span className="font-normal text-slate-400">(opcional)</span>
+            Observación {cola.length > 0
+              ? <span className="text-rose-500">*</span>
+              : <span className="font-normal text-slate-400">(opcional)</span>}
           </label>
           <textarea
             value={observacion}
             onChange={(e) => setObservacion(e.target.value)}
             rows={2}
             placeholder="Vino con la mamá, pidió factura a nombre de la empresa…"
-            className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 resize-none"
+            className={`w-full px-4 py-2.5 border rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 resize-none ${
+              intentoGuardar && cola.length > 0 && !observacion.trim() ? 'border-rose-400' : 'border-slate-200'
+            }`}
           />
-          <p className="text-[11px] text-slate-400 mt-1">
-            Se guarda en <b>Observaciones</b> del paciente, no en la cita.
+          <p className={`text-[11px] mt-1 ${intentoGuardar && cola.length > 0 && !observacion.trim() ? 'text-rose-600' : 'text-slate-400'}`}>
+            {intentoGuardar && cola.length > 0 && !observacion.trim()
+              ? 'Escribe la observación: es obligatoria al asignar a un doctor o enfermero.'
+              : <>Se guarda en <b>Observaciones</b> del paciente, no en la cita.</>}
           </p>
         </div>
 

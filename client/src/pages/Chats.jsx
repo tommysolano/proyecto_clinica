@@ -7772,6 +7772,10 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
         if (!it.serviceItem) {
           return toast.error(`La cita #${i + 1}: escoge el servicio.`);
         }
+        // Y el motivo (oct-2026, a pedido de la clínica).
+        if (!String(it.reason || '').trim()) {
+          return toast.error(`La cita #${i + 1}: escribe el motivo.`);
+        }
       }
     }
 
@@ -8053,7 +8057,7 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
                     </div>
                   </div>
                   <div>
-                    <label className="text-xs font-medium text-slate-600">Motivo (opcional)</label>
+                    <label className="text-xs font-medium text-slate-600">Motivo <span className="text-rose-500">*</span></label>
                     <input value={it.reason} onChange={(e) => updateItem(idx, { reason: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
                   </div>
                   <div>

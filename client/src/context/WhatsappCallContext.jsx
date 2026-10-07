@@ -78,6 +78,7 @@ function ActiveWhatsappCallProvider({ children }) {
         muted={voiceCall.muted}
         needsAudioUnlock={voiceCall.needsAudioUnlock}
         speakerOn={voiceCall.speakerOn}
+        accepting={voiceCall.accepting}
         minimized={minimized}
         onMinimize={() => setMinimized(true)}
         onExpand={() => setMinimized(false)}

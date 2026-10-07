@@ -1,23 +1,25 @@
 /**
  * OBSERVACIONES AUTOMÁTICAS (sep-2026, a petición de la clínica).
  *
- * La bitácora de Observaciones del paciente se llena SOLA con lo que pasa en
- * caja y en la consulta: qué servicios se hizo, quién lo atendió, cuánto se
- * cobró, quién lo cobró, cómo pagó y qué se llevó de la receta. Antes eso
- * había que ir a buscarlo a la agenda, a Ventas y a la cita, cada cosa por su
- * lado — o anotarlo a mano.
+ * La bitácora de Observaciones del paciente se llena SOLA con dos cosas, y
+ * SOLO con esas dos (oct-2026):
  *
- * Dos registros, cada uno UNO por origen (`auto.kind` + `auto.ref`, índice
- * único): se REESCRIBEN cuando el origen cambia, así que no se duplican con
- * los reintentos y siempre dicen lo último.
+ *  · RECETA — por seguimiento con receta: qué se le recetó, quién y cuándo.
+ *  · COMPRA — por venta con paciente: qué compró y por cuánto (y si se anuló).
  *
- *  · VISITA — por cita atendida (o con valor anotado): servicios, profesionales
- *    que atendieron, valor o canje, adelanto y quién registró el cobro.
- *  · VENTA  — por venta con paciente: productos/servicios, total, forma de
- *    pago (con banco o tarjeta), quién cobró y, si se anuló, que se anuló.
+ * Antes también se escribía una VISITA por cada cita (servicios, quién atendió,
+ * valor, adelanto, quién cobró, forma de pago…) y la venta traía el detalle de
+ * caja (banco, tarjeta, cajero). La clínica pidió quitarlo: la bitácora se llenaba
+ * de datos de caja y lo que el equipo busca ahí es qué se recetó y qué compró. Lo
+ * que caja anota de la agenda (`auto.kind: 'compra'`, en appointmentController)
+ * sigue: también es una compra.
  *
- * NUNCA rompe lo que la llamó: si falla, se avisa en consola y ya. Un cobro no
- * puede caerse porque no se pudo escribir su constancia.
+ * Cada registro es UNO por origen (`auto.kind` + `auto.ref`, índice único): se
+ * REESCRIBE cuando el origen cambia, así que no se duplica con los reintentos y
+ * siempre dice lo último.
+ *
+ * NUNCA rompe lo que la llamó: si falla, se avisa en consola y ya. Guardar una
+ * receta o un cobro no puede caerse porque no se pudo escribir su constancia.
  */
 const PatientObservation = require('../models/PatientObservation');
 
@@ -31,29 +33,7 @@ const fechaHora = (d) => (d
   }).format(new Date(d))
   : '');
 const dinero = (n) => `$${(Number(n) || 0).toFixed(2)}`;
-/** Nombre de la sede, aparte: poblar `clinic` la dejaría en null si no se encuentra. */
-async function nombreDeSede(clinicId) {
-  if (!clinicId) return '';
-  const Clinic = require('../models/Clinic');
-  const c = await Clinic.findById(clinicId).select('name nombreComercial').lean();
-  return c?.nombreComercial || c?.name || '';
-}
 const nombre = (u) => (u && typeof u === 'object' ? u.name || '' : '');
-
-const FORMA_OPERATIVA = {
-  efectivo: 'Efectivo',
-  transferencia: 'Transferencia',
-  tarjeta_credito: 'Tarjeta de crédito',
-  tarjeta_debito: 'Tarjeta de débito',
-};
-const FORMA_VENTA = {
-  efectivo: 'Efectivo',
-  tarjeta: 'Tarjeta',
-  transferencia: 'Transferencia',
-  credito: 'Crédito (por cobrar)',
-  mixto: 'Pago dividido',
-};
-const TIPO_ITEM = { servicio: 'servicio', programa: 'programa', insumo: 'producto' };
 
 /**
  * Crea o reescribe el registro automático de ese origen.
@@ -61,13 +41,13 @@ const TIPO_ITEM = { servicio: 'servicio', programa: 'programa', insumo: 'product
  * `fecha` (solo el relleno histórico) fecha el registro cuando PASÓ, no hoy: si
  * no, un año de ventas aparecería de golpe encima de todo como si fuera de hoy.
  */
-async function guardar({ kind, ref, clinic, patient, userId, text, fecha = null }) {
+async function guardar({ kind, ref, clinic, patient, userId, text, fecha: cuando = null }) {
   if (!patient || !ref || !text || !userId) return;
   const alta = { clinic, patient, createdBy: userId, auto: { kind, ref }, attachments: [] };
-  if (fecha) {
+  if (cuando) {
     await PatientObservation.updateOne(
       { 'auto.kind': kind, 'auto.ref': ref },
-      { $set: { text }, $setOnInsert: { ...alta, createdAt: fecha, updatedAt: fecha } },
+      { $set: { text }, $setOnInsert: { ...alta, createdAt: cuando, updatedAt: cuando } },
       { upsert: true, timestamps: false }
     );
     return;
@@ -79,174 +59,103 @@ async function guardar({ kind, ref, clinic, patient, userId, text, fecha = null 
   );
 }
 
-/* ------------------------------------------------------------------ VISITA */
+/* ------------------------------------------------------------------ RECETA */
 
-function textoDeVisita(apt, sede = '') {
-  const lineas = ['Atención registrada automáticamente'];
-  lineas.push(`Cita: ${[fecha(apt.date), apt.startTime, sede].filter(Boolean).join(' · ')}`);
+/** Lo que va dentro de un suero, en una línea: «Cloruro 250 ml + Vitamina C ×2». */
+function composicionSuero(it) {
+  const partes = [];
+  if (it.serumBase?.name || it.serumBase?.volumeMl) {
+    partes.push([it.serumBase?.name || 'Cloruro', it.serumBase?.volumeMl ? `${it.serumBase.volumeMl} ml` : ''].filter(Boolean).join(' '));
+  }
+  for (const c of it.serumComponents || []) {
+    if (!c?.name) continue;
+    partes.push(`${c.name}${Number(c.quantity) > 1 ? ` ×${c.quantity}` : ''}`);
+  }
+  return partes.join(' + ');
+}
 
-  const servicios = [
-    apt.serviceName || apt.serviceItem?.name || '',
-    ...(apt.additionalServices || []).map((s) => s.name || s.serviceItem?.name || ''),
-    ...(apt.services || []).map((s) => s.name || s.product?.name || ''),
-  ].map((s) => String(s).trim()).filter(Boolean);
-  const unicos = [...new Set(servicios)];
-  if (unicos.length) {
-    lineas.push('', 'Servicios:');
-    for (const s of unicos) lineas.push(`• ${s}`);
+/**
+ * Texto de la receta de un seguimiento, o '' si no recetó nada.
+ *
+ * Solo la RECETA: lo que llegó como derivación (`fromDerivacion`) es un servicio
+ * al que se le manda, no algo que se le receta.
+ */
+function textoDeReceta(fu) {
+  const items = (fu.recetaItems || []).filter((it) => it && !it.fromDerivacion && String(it.name || '').trim());
+  if (!items.length) return '';
+  const quien = nombre(fu.createdBy);
+  const lineas = [`Receta · ${fecha(fu.fecha || fu.createdAt)}${quien ? ` · ${quien}` : ''}`];
+  for (const it of items) {
+    const detalle = [it.dose, it.frequency, it.duration].map((x) => String(x || '').trim()).filter(Boolean).join(' · ');
+    lineas.push(`• ${it.name} × ${it.quantity ?? 1}${detalle ? ` · ${detalle}` : ''}`);
+    if (it.isSerum) {
+      const comp = composicionSuero(it);
+      if (comp) lineas.push(`  ${comp}`);
+    }
+    if (String(it.instructions || '').trim()) lineas.push(`  Indicaciones: ${String(it.instructions).trim()}`);
   }
-
-  // Quién atendió: los turnos cerrados, en orden; en las citas viejas, los espejos.
-  const atendieron = [];
-  const turnos = [...(apt.turns || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
-  for (const t of turnos) {
-    if (t.status !== 'completado' || !nombre(t.user)) continue;
-    atendieron.push(`${nombre(t.user)} (${t.kind === 'enfermeria' ? 'enfermería' : 'médico'})`);
-  }
-  if (!turnos.length) {
-    if (nombre(apt.doctor)) atendieron.push(`${nombre(apt.doctor)} (médico)`);
-    if (nombre(apt.attendedByNurse)) atendieron.push(`${nombre(apt.attendedByNurse)} (enfermería)`);
-  }
-  const vigente = turnos.find((t) => t.status === 'pendiente' && nombre(t.user));
-  if (atendieron.length) lineas.push('', `Atendido por: ${[...new Set(atendieron)].join(', ')}`);
-  else if (vigente) lineas.push('', `Asignado a: ${nombre(vigente.user)}`);
-
-  // Lo que se cobra por la visita (dato operativo de mostrador).
-  const cobro = [];
-  if (apt.isCanje) cobro.push('Canje (sin cobro en dinero)');
-  else if (apt.agreedValue != null) cobro.push(`Valor de la cita: ${dinero(apt.agreedValue)}`);
-  // «No pagó aún» se dice tal cual: un valor sin pago no es un cobro.
-  if (!apt.isCanje && !apt.advancePayment && apt.agreedValue != null) cobro.push('Pago: no pagó aún');
-  if (apt.advancePayment) {
-    const forma = FORMA_OPERATIVA[apt.advanceMethod] ? ` · ${FORMA_OPERATIVA[apt.advanceMethod]}` : '';
-    if (apt.advancePayment === 'total') cobro.push(`Pagó todo por adelantado${forma}`);
-    else if (apt.advancePayment === 'prepagado') cobro.push(`Prepagado${forma}`);
-    else cobro.push(`Abono por adelantado: ${dinero(apt.advanceAmount)}${forma}`);
-  }
-  if (cobro.length) {
-    lineas.push('', ...cobro);
-    const quien = nombre(apt.valueSetBy);
-    const cuando = apt.valueSetAt ? ` (${fechaHora(apt.valueSetAt)})` : '';
-    if (quien) lineas.push(`${apt.advancePayment ? 'Cobro registrado por' : 'Valor anotado por'}: ${quien}${cuando}`);
-  }
-  if (apt.status === 'completada') lineas.push('', 'Estado: atención terminada');
-  else if (apt.status === 'asistida') lineas.push('', 'Estado: en atención');
   return lineas.join('\n');
 }
 
 /**
- * Registro de la VISITA. Solo cuando ya hay algo que contar: el paciente vino
- * (asistida/completada) o mostrador anotó lo que se cobra. Una cita agendada
- * sin más no es historia del paciente todavía.
+ * Registro de la RECETA de un seguimiento. Si el seguimiento se corrige y se
+ * quita la receta entera, la constancia se borra: diría algo que ya no es.
  */
-async function registrarVisita(aptOrId, userId, { fechaOriginal = false, lanzar = false } = {}) {
+async function registrarReceta(patientId, followUpId, userId, { lanzar = false } = {}) {
   try {
-    const Appointment = require('../models/Appointment');
-    const id = aptOrId?._id || aptOrId;
-    const apt = await Appointment.findById(id)
-      .populate('turns.user', 'name')
-      .populate('doctor', 'name')
-      .populate('attendedByNurse', 'name')
-      .populate('valueSetBy', 'name')
-      .populate('serviceItem', 'name')
+    if (!patientId || !followUpId) return;
+    const ClinicalRecord = require('../models/ClinicalRecord');
+    const record = await ClinicalRecord.findOne({ patient: patientId })
+      .select('clinic patient followUps')
+      .populate('followUps.createdBy', 'name')
       .lean();
-    if (!apt?.patient) return;
-    const vino = ['asistida', 'completada'].includes(apt.status);
-    const conValor = apt.isCanje || apt.agreedValue != null || !!apt.advancePayment;
-    if (!vino && !conValor) return;
+    const fu = (record?.followUps || []).find((f) => String(f._id) === String(followUpId));
+    if (!fu) return;
+    const text = textoDeReceta(fu);
+    if (!text) {
+      await PatientObservation.deleteOne({ 'auto.kind': 'receta', 'auto.ref': fu._id });
+      return;
+    }
     await guardar({
-      kind: 'visita',
-      ref: apt._id,
-      clinic: apt.clinic,
-      patient: apt.patient,
-      userId: userId || apt.valueSetBy?._id || apt.createdBy,
-      text: textoDeVisita(apt, await nombreDeSede(apt.clinic)),
-      fecha: fechaOriginal ? (apt.consultationEndedAt || apt.arrivedAt || apt.date) : null,
+      kind: 'receta',
+      ref: fu._id,
+      clinic: record.clinic,
+      patient: record.patient,
+      userId: userId || fu.createdBy?._id || fu.createdBy,
+      text,
     });
   } catch (e) {
     if (lanzar) throw e;
-    console.warn('[observaciones automáticas] visita:', e.message);
+    console.warn('[observaciones automáticas] receta:', e.message);
   }
 }
 
-/* ------------------------------------------------------------------- VENTA */
+/* ------------------------------------------------------------------ COMPRA */
 
-function formaDePago(p) {
-  const base = FORMA_VENTA[p.method] || p.method || '';
-  const extra = [];
-  if (p.bankAccount && typeof p.bankAccount === 'object') {
-    extra.push([p.bankAccount.bank, p.bankAccount.name].filter(Boolean).join(' '));
-  }
-  if (p.method === 'tarjeta') {
-    const tarjeta = (p.creditCard && typeof p.creditCard === 'object' && p.creditCard.name) || p.cardBrandSnapshot || '';
-    if (tarjeta) extra.push(tarjeta);
-    if (p.cardTypeSnapshot) extra.push(p.cardTypeSnapshot.toLowerCase());
-    if (p.cardDeferredMonths > 0) extra.push(`diferido ${p.cardDeferredMonths} meses`);
-  }
-  if (p.reference) extra.push(`ref. ${p.reference}`);
-  return extra.length ? `${base} (${extra.join(' · ')})` : base;
-}
+const TIPO_ITEM = { servicio: 'servicio', programa: 'programa', insumo: 'producto' };
 
-function textoDeVenta(sale, sede = '') {
-  const lineas = [sale.status === 'anulada' ? 'Venta ANULADA' : 'Venta registrada automáticamente'];
-  lineas.push([sale.saleNumber ? `N.º ${sale.saleNumber}` : '', fechaHora(sale.createdAt), sede].filter(Boolean).join(' · '));
-  if (sale.appointment) {
-    const a = sale.appointment;
-    const cita = typeof a === 'object' ? [fecha(a.date), a.startTime, a.serviceName].filter(Boolean).join(' · ') : '';
-    lineas.push(`Cobro de la cita${cita ? `: ${cita}` : ''}`);
-  }
-
-  lineas.push('', 'Detalle:');
+/** Qué compró y por cuánto. Sin forma de pago, banco ni cajero (oct-2026). */
+function textoDeVenta(sale) {
+  const anulada = sale.status === 'anulada';
+  const lineas = [`${anulada ? 'Compra ANULADA' : 'Compra'} · ${fechaHora(sale.createdAt)}`];
   for (const it of sale.items || []) {
     const tipo = TIPO_ITEM[it.category] || TIPO_ITEM[it.product?.category] || '';
     const nom = it.productName || it.product?.name || 'Ítem';
-    const total = it.lineTotal || it.subtotal || 0;
-    lineas.push(`• ${nom} × ${it.quantity}${tipo ? ` (${tipo})` : ''} · ${dinero(total)}`);
+    lineas.push(`• ${nom} × ${it.quantity}${tipo ? ` (${tipo})` : ''}`);
   }
-  if (sale.discountTotal > 0) lineas.push(`Descuento: ${dinero(sale.discountTotal)}`);
-  lineas.push('', `Total cobrado: ${dinero(sale.total)}`);
-
-  const pagos = (sale.payments || []).filter((p) => p && p.method);
-  if (pagos.length > 1) {
-    lineas.push('Forma de pago:');
-    for (const p of pagos) lineas.push(`• ${formaDePago(p)} · ${dinero(p.amount)}`);
-  } else {
-    const unico = pagos[0] || {
-      method: sale.paymentMethod,
-      bankAccount: sale.bankAccount,
-      creditCard: sale.creditCard,
-      cardDeferredMonths: sale.cardDeferredMonths,
-    };
-    lineas.push(`Forma de pago: ${formaDePago(unico)}`);
-  }
-  if (sale.balance > 0 && sale.status !== 'anulada') lineas.push(`Saldo pendiente: ${dinero(sale.balance)}`);
-
-  const cobro = nombre(sale.createdBy) || nombre(sale.cashier);
-  if (cobro) lineas.push(`Cobrado por: ${cobro}`);
-  const atendio = [nombre(sale.doctor), nombre(sale.nurse)].filter(Boolean);
-  if (atendio.length) lineas.push(`Atendido por: ${atendio.join(', ')}`);
-  if (nombre(sale.recommendedBy)) lineas.push(`Recomendado por: ${nombre(sale.recommendedBy)}`);
-  if (sale.status === 'anulada') lineas.push('', `Anulada el ${fechaHora(sale.updatedAt)}`);
+  lineas.push(`Total: ${dinero(sale.total)}`);
+  if (anulada) lineas.push(`Anulada el ${fechaHora(sale.updatedAt)}`);
   return lineas.join('\n');
 }
 
-/** Registro de la VENTA (solo si tiene paciente: consumidor final no tiene ficha). */
+/** Registro de la COMPRA (solo si tiene paciente: consumidor final no tiene ficha). */
 async function registrarVenta(saleOrId, userId, { fechaOriginal = false, lanzar = false } = {}) {
   try {
     const Sale = require('../models/Sale');
     const id = saleOrId?._id || saleOrId;
     const sale = await Sale.findById(id)
-      .populate('createdBy', 'name')
-      .populate('cashier', 'name')
-      .populate('doctor', 'name')
-      .populate('nurse', 'name')
-      .populate('recommendedBy', 'name')
-      .populate('appointment', 'date startTime serviceName')
+      .select('clinic patient status items total createdAt updatedAt createdBy')
       .populate('items.product', 'name category')
-      .populate('bankAccount', 'name bank')
-      .populate('creditCard', 'name')
-      .populate('payments.bankAccount', 'name bank')
-      .populate('payments.creditCard', 'name')
       .lean();
     if (!sale?.patient) return;
     await guardar({
@@ -254,8 +163,8 @@ async function registrarVenta(saleOrId, userId, { fechaOriginal = false, lanzar 
       ref: sale._id,
       clinic: sale.clinic,
       patient: sale.patient,
-      userId: userId || sale.createdBy?._id,
-      text: textoDeVenta(sale, await nombreDeSede(sale.clinic)),
+      userId: userId || sale.createdBy,
+      text: textoDeVenta(sale),
       fecha: fechaOriginal ? sale.createdAt : null,
     });
   } catch (e) {
@@ -264,4 +173,4 @@ async function registrarVenta(saleOrId, userId, { fechaOriginal = false, lanzar 
   }
 }
 
-module.exports = { registrarVisita, registrarVenta, textoDeVisita, textoDeVenta };
+module.exports = { registrarReceta, registrarVenta, textoDeReceta, textoDeVenta };

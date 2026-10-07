@@ -274,6 +274,11 @@ export default function Patients() {
         toast.error('Selecciona un servicio para la cita');
         return;
       }
+      // Y el motivo (oct-2026, a pedido de la clínica).
+      if (!String(aptForm.reason || '').trim()) {
+        toast.error('Escribe el motivo de la cita');
+        return;
+      }
       // Con varias sedes, la sucursal es obligatoria y ya no se hereda de la
       // activa: agendar en la equivocada no se descubre hasta que el paciente
       // llega a la otra puerta.
@@ -772,7 +777,7 @@ export default function Patients() {
                       )}
                     </Field>
                   )}
-                  <Field label="Motivo">
+                  <Field label={aptForm.ahora ? 'Motivo' : 'Motivo *'}>
                     <textarea
                       value={aptForm.reason}
                       onChange={(e) => setAptForm({ ...aptForm, reason: e.target.value })}

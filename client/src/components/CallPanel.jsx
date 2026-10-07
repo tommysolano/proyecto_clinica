@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   HiOutlinePhone,
@@ -11,8 +12,29 @@ import {
   HiOutlineChevronUp,
   HiOutlineChatBubbleLeftRight,
   HiOutlineLockClosed,
+  HiOutlineMinus,
 } from 'react-icons/hi2';
 import { formatDuration } from '../hooks/useVoiceRecorder';
+
+/**
+ * ¿Pantalla de teléfono? La pantalla completa es solo para el móvil (oct-2026):
+ * en el escritorio tapaba el CRM entero en cuanto entraba una llamada y el
+ * agente perdía de vista lo que estaba haciendo. Allí vuelve el panel flotante.
+ */
+const CONSULTA_MOVIL = '(max-width: 767px)';
+function useEsMovil() {
+  const [movil, setMovil] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia?.(CONSULTA_MOVIL).matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia?.(CONSULTA_MOVIL);
+    if (!mq) return undefined;
+    const alCambiar = () => setMovil(mq.matches);
+    mq.addEventListener?.('change', alCambiar);
+    return () => mq.removeEventListener?.('change', alCambiar);
+  }, []);
+  return !!movil;
+}
 
 /** Botón redondo grande con su rótulo debajo, como los de WhatsApp. */
 function BotonLlamada({ onClick, label, title, icon, tono = 'neutro', activo = false, disabled = false, grande = false, rebote = false }) {
@@ -40,8 +62,10 @@ function BotonLlamada({ onClick, label, title, icon, tono = 'neutro', activo = f
 }
 
 /**
- * Llamada de WhatsApp en curso, A PANTALLA COMPLETA (oct-2026), como en
- * WhatsApp: al entrar una llamada, al llamar y durante la conversación.
+ * Llamada de WhatsApp en curso. En el MÓVIL va A PANTALLA COMPLETA (oct-2026),
+ * como en WhatsApp: al entrar una llamada, al llamar y durante la conversación.
+ * En el ESCRITORIO es el panel flotante de abajo a la derecha (el de antes): no
+ * tapa el CRM.
  *
  * MINIMIZAR no cuelga: la deja en una pastilla para seguir usando el CRM
  * (abrir la ficha, agendar, escribir en el chat), que era la razón del panel
@@ -69,7 +93,9 @@ export default function CallPanel({
   onToggleMute,
   onToggleSpeaker,
   onResumeAudio,
+  accepting = false,
 }) {
+  const esMovil = useEsMovil();
   if (!call) return null;
 
   const isIncoming = call.direction === 'in';
@@ -109,6 +135,123 @@ export default function CallPanel({
     );
   }
 
+  // ESCRITORIO: panel flotante, sin tapar el CRM.
+  if (!esMovil) {
+    return createPortal(
+      <div
+        role="dialog"
+        aria-label={`Llamada con ${contactLabel}`}
+        className="fixed bottom-4 right-4 z-[10001] w-[320px] max-w-[calc(100vw-2rem)] bg-white rounded-2xl shadow-2xl shadow-slate-900/25 ring-1 ring-slate-900/10 overflow-hidden"
+      >
+        <div className="px-4 py-4 flex items-center gap-3 bg-emerald-600 text-white">
+          <div className="relative flex-shrink-0">
+            <div className="w-11 h-11 rounded-full bg-white/20 flex items-center justify-center font-bold">
+              {initials}
+            </div>
+            {ringing && <span className="absolute inset-0 rounded-full ring-2 ring-white/70 animate-ping" />}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="font-semibold truncate">{contactLabel}</div>
+            <div className="text-xs text-emerald-50 flex items-center gap-1">
+              {isIncoming && ringing && <HiOutlinePhoneArrowDownLeft className="w-3.5 h-3.5" />}
+              <span className={ringing ? '' : 'tabular-nums'}>{accepting ? 'Conectando…' : statusText}</span>
+            </div>
+          </div>
+          {onOpenChat && (
+            <button
+              type="button"
+              onClick={onOpenChat}
+              title="Abrir el chat del contacto (la llamada sigue)"
+              className="flex-shrink-0 w-8 h-8 rounded-lg bg-white/10 border-none cursor-pointer flex items-center justify-center hover:bg-white/20 text-white"
+            >
+              <HiOutlineChatBubbleLeftRight className="w-4 h-4" />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onMinimize}
+            title="Minimizar la llamada (sigue en curso)"
+            className="flex-shrink-0 w-8 h-8 rounded-lg bg-white/10 border-none cursor-pointer flex items-center justify-center hover:bg-white/20 text-white"
+          >
+            <HiOutlineMinus className="w-4 h-4" />
+          </button>
+        </div>
+
+        {muted && !ringing && (
+          <p className="m-0 mx-4 mt-3 text-xs text-slate-500 text-center">Tu micrófono está silenciado</p>
+        )}
+        {needsAudioUnlock && !ringing && (
+          <button
+            type="button"
+            onClick={onResumeAudio}
+            className="mx-4 mt-3 w-[calc(100%-2rem)] py-2 rounded-lg bg-amber-50 text-amber-900 border border-amber-200 cursor-pointer hover:bg-amber-100 flex items-center justify-center gap-1.5 text-sm font-medium"
+          >
+            <HiOutlineSpeakerWave className="w-4 h-4" /> Activar audio del contacto
+          </button>
+        )}
+
+        <div className="px-4 py-3 flex items-center justify-center gap-3">
+          {isIncoming && ringing ? (
+            <>
+              <button
+                type="button"
+                onClick={onReject}
+                disabled={accepting}
+                title="Rechazar la llamada"
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 text-white border-none cursor-pointer hover:bg-rose-700 flex items-center justify-center gap-1.5 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <HiOutlinePhoneXMark className="w-4 h-4" /> Rechazar
+              </button>
+              <button
+                type="button"
+                onClick={onAccept}
+                disabled={accepting}
+                title="Contestar la llamada"
+                className="flex-1 py-2.5 rounded-xl bg-emerald-600 text-white border-none cursor-pointer hover:bg-emerald-700 flex items-center justify-center gap-1.5 text-sm font-medium disabled:opacity-60 disabled:cursor-wait"
+              >
+                <HiOutlinePhone className="w-4 h-4" /> {accepting ? 'Conectando…' : 'Contestar'}
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onToggleMute}
+                disabled={ringing}
+                title={muted ? 'Activar el micrófono' : 'Silenciar el micrófono'}
+                className={`w-11 h-11 rounded-full border flex items-center justify-center cursor-pointer disabled:opacity-40 ${
+                  muted ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                <HiOutlineMicrophone className="w-5 h-5" />
+              </button>
+              <button
+                type="button"
+                onClick={onToggleSpeaker}
+                title={speakerOn ? 'Bajar del altavoz al auricular' : 'Subir al altavoz'}
+                className={`w-11 h-11 rounded-full border flex items-center justify-center cursor-pointer ${
+                  speakerOn ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                {speakerOn ? <HiOutlineSpeakerWave className="w-5 h-5" /> : <HiOutlineSpeakerXMark className="w-5 h-5" />}
+              </button>
+              <button
+                type="button"
+                onClick={onHangUp}
+                title={ringing ? 'Cancelar la llamada' : 'Colgar'}
+                className="flex-1 py-2.5 rounded-xl bg-rose-600 text-white border-none cursor-pointer hover:bg-rose-700 flex items-center justify-center gap-1.5 text-sm font-medium"
+              >
+                <HiOutlinePhoneXMark className="w-4 h-4" /> {ringing ? 'Cancelar' : 'Colgar'}
+              </button>
+            </>
+          )}
+        </div>
+      </div>,
+      document.body
+    );
+  }
+
+  // MÓVIL: pantalla completa, como WhatsApp.
   return createPortal(
     <div
       role="dialog"
@@ -167,7 +310,7 @@ export default function CallPanel({
           {ringing && (isIncoming
             ? <HiOutlinePhoneArrowDownLeft className="w-4 h-4" />
             : <HiOutlinePhoneArrowUpRight className="w-4 h-4" />)}
-          {statusText}
+          {accepting ? 'Conectando…' : statusText}
         </p>
         {muted && !ringing && (
           <p className="m-0 mt-3 text-xs px-3 py-1 rounded-full bg-white/10 text-white/80">Tu micrófono está silenciado</p>
@@ -187,8 +330,17 @@ export default function CallPanel({
       <div className="px-6 pb-2">
         {isIncoming && ringing ? (
           <div className="flex items-start justify-center gap-20 sm:gap-28">
-            <BotonLlamada onClick={onReject} label="Rechazar" title="Rechazar la llamada" icon={HiOutlinePhoneXMark} tono="rojo" grande />
-            <BotonLlamada onClick={onAccept} label="Contestar" title="Contestar la llamada" icon={HiOutlinePhone} tono="verde" grande rebote />
+            <BotonLlamada onClick={onReject} disabled={accepting} label="Rechazar" title="Rechazar la llamada" icon={HiOutlinePhoneXMark} tono="rojo" grande />
+            <BotonLlamada
+              onClick={onAccept}
+              disabled={accepting}
+              label={accepting ? 'Conectando…' : 'Contestar'}
+              title="Contestar la llamada"
+              icon={HiOutlinePhone}
+              tono="verde"
+              grande
+              rebote={!accepting}
+            />
           </div>
         ) : (
           <div className="flex items-start justify-center gap-8 sm:gap-12">
