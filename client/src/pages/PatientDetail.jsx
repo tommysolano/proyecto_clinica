@@ -764,6 +764,7 @@ export default function PatientDetail() {
                 .filter(Boolean)
                 .join(' · ')}
             </p>
+            {hasRole('admin', 'cajero', 'contabilidad') && <SaldoAFavorChip patientId={id} />}
             <div className="mt-1.5 sm:mt-2">
               <TagEditor
                 value={patient.tags || []}
@@ -5285,6 +5286,62 @@ function AplicacionesEnfermeria({ lista }) {
         })}
       </ul>
     </div>
+  );
+}
+
+// ──────────────── Saldo a favor del paciente ────────────────
+
+const TIPO_SALDO = { ANTICIPO: 'Abono', APLICACION: 'Usado', REVERSO: 'Anulación' };
+
+/**
+ * SALDO A FAVOR (oct-2026): lo que el paciente pagó de más (o dejó de anticipo)
+ * y todavía no usó. Se ve en la cabecera de la ficha para quien cobra y para
+ * contabilidad; al tocarlo, de dónde salió cada peso.
+ */
+function SaldoAFavorChip({ patientId }) {
+  const [datos, setDatos] = useState(null);
+  const [abierto, setAbierto] = useState(false);
+  useEffect(() => {
+    let vivo = true;
+    api.get(`/patients/${patientId}/saldo-a-favor`)
+      .then((r) => { if (vivo) setDatos(r.data); })
+      .catch(() => { if (vivo) setDatos(null); });
+    return () => { vivo = false; };
+  }, [patientId]);
+  if (!datos || (!(datos.saldo > 0.005) && !(datos.movimientos || []).length)) return null;
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setAbierto(true)}
+        className={`mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-semibold border cursor-pointer ${
+          datos.saldo > 0.005 ? 'bg-sky-50 text-sky-800 border-sky-200' : 'bg-slate-50 text-slate-500 border-slate-200'
+        }`}
+      >
+        Saldo a favor: ${Number(datos.saldo || 0).toFixed(2)}
+      </button>
+      <Modal isOpen={abierto} onClose={() => setAbierto(false)} title="Saldo a favor del paciente" size="md">
+        <p className="m-0 mb-3 text-sm text-slate-700">
+          Disponible: <b>${Number(datos.saldo || 0).toFixed(2)}</b>. Se usa al cobrar con la forma de pago «Saldo a favor».
+        </p>
+        <ul className="m-0 p-0 list-none divide-y divide-slate-100 border border-slate-200 rounded-xl">
+          {(datos.movimientos || []).map((m) => (
+            <li key={m._id} className="flex items-center justify-between gap-3 px-3 py-2 text-xs">
+              <span className="min-w-0">
+                <span className="font-medium text-slate-800">{TIPO_SALDO[m.type] || m.type}</span>
+                <span className="text-slate-500"> · {fmtDateTime(m.date)}</span>
+                <span className="block text-slate-500 truncate">
+                  {m.description}{m.createdBy?.name ? ` · ${m.createdBy.name}` : ''}
+                </span>
+              </span>
+              <span className={`shrink-0 font-mono font-semibold ${m.amount >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
+                {m.amount >= 0 ? '+' : '−'}${Math.abs(m.amount).toFixed(2)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </Modal>
+    </>
   );
 }
 

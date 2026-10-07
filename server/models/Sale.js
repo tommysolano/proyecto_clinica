@@ -44,7 +44,8 @@ const saleItemSchema = new mongoose.Schema({
 // Cada renglón lleva sus propios datos de banco/tarjeta según el método.
 const salePaymentSchema = new mongoose.Schema(
   {
-    method: { type: String, enum: ['efectivo', 'tarjeta', 'transferencia', 'credito'], required: true },
+    // 'anticipo' = se paga con el SALDO A FAVOR del paciente (ver models/PatientCredit).
+    method: { type: String, enum: ['efectivo', 'tarjeta', 'transferencia', 'credito', 'anticipo'], required: true },
     amount: { type: Number, required: true, min: 0 },
     // Fecha del pago (por defecto la de la venta). Un cobro posterior de la CxC NO va aquí:
     // vive en su propio `Payment` y se une al reporte desde allí.
@@ -118,7 +119,7 @@ const saleSchema = new mongoose.Schema(
     // varios. El desglose real está en `payments`.
     paymentMethod: {
       type: String,
-      enum: ['efectivo', 'tarjeta', 'transferencia', 'credito', 'mixto', 'desconocido'],
+      enum: ['efectivo', 'tarjeta', 'transferencia', 'credito', 'anticipo', 'mixto', 'desconocido'],
       default: 'efectivo',
     },
     // Desglose de pago (uno o varios métodos). Fuente de verdad del cómo se pagó.
@@ -154,6 +155,13 @@ const saleSchema = new mongoose.Schema(
     creditDays: { type: Number, default: null },
     dueDate: { type: Date, default: null },
     balance: { type: Number, default: 0 },
+    /**
+     * SALDO A FAVOR que dejó esta venta (oct-2026): el paciente pagó MÁS que el total
+     * (p.ej. 300 por un servicio de 100 porque sigue un tratamiento). Se factura solo lo
+     * vendido; el excedente queda como anticipo del paciente (pasivo «Anticipos de
+     * clientes») y se usa en sus próximas ventas con el método 'anticipo'.
+     */
+    advanceCreated: { type: Number, default: 0 },
     paid: { type: Boolean, default: true },
     status: {
       type: String,

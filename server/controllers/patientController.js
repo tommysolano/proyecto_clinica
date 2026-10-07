@@ -630,3 +630,28 @@ exports.bulkTag = async (req, res) => {
     res.status(500).json({ message: 'Error al etiquetar pacientes', error: error.message });
   }
 };
+
+/**
+ * SALDO A FAVOR del paciente en la sucursal (oct-2026): cuánto le queda y de
+ * dónde salió cada peso (ver models/PatientCredit). Lo usan el cobro —para
+ * ofrecer pagar con él— y la ficha del paciente.
+ */
+exports.getSaldoAFavor = async (req, res) => {
+  try {
+    const PatientCredit = require('../models/PatientCredit');
+    const { saldoDisponible } = require('../utils/saldoAFavor');
+    const [saldo, movimientos] = await Promise.all([
+      saldoDisponible(req.clinicId, req.params.id),
+      PatientCredit.find({ clinic: req.clinicId, patient: req.params.id })
+        .populate('sale', 'saleNumber total')
+        .populate('payment', 'number total')
+        .populate('createdBy', 'name')
+        .sort({ date: -1, createdAt: -1 })
+        .limit(100)
+        .lean(),
+    ]);
+    res.json({ saldo, movimientos });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener el saldo a favor', error: error.message });
+  }
+};

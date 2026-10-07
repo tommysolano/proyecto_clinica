@@ -7,6 +7,7 @@ const {
   deletePatient,
   searchReferralCandidates,
   getPatientPurchases,
+  getSaldoAFavor,
   bulkTag,
   mergePatient,
 } = require('../controllers/patientController');
@@ -50,6 +51,8 @@ router.get('/:id', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfe
 // información ECONÓMICA —qué compró, cuánto pagó—: solo administración y
 // contabilidad. Quien atiende ve el avance del tratamiento en la propia ficha.
 router.get('/:id/purchases', requireRole('admin', 'contabilidad'), getPatientPurchases);
+// Saldo a favor del paciente (anticipos): lo ve quien cobra y contabilidad.
+router.get('/:id/saldo-a-favor', requireRole('admin', 'cajero', 'contabilidad'), getSaldoAFavor);
 // Crear / editar: incluye doctor (con restricción de campos sensibles en el controller)
 // 'doctor' EXPANDE a las especialidades (óptica incluida): en óptica el paciente
 // llega sin cita previa y quien lo registra es el propio optómetra.

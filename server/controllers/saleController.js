@@ -350,7 +350,8 @@ exports.createSale = async (req, res) => {
         // Si el cliente envía `payments`, se usa (pago dividido: p.ej. mitad
         // efectivo + mitad tarjeta, o una parte a crédito). Si no, se sintetiza
         // un solo pago del método clásico (compatibilidad con clientes viejos).
-        const VALID_METHODS = new Set(['efectivo', 'tarjeta', 'transferencia', 'credito']);
+        // 'anticipo' = con el SALDO A FAVOR del paciente (ver utils/saldoAFavor).
+        const VALID_METHODS = new Set(['efectivo', 'tarjeta', 'transferencia', 'credito', 'anticipo']);
         const rawPayments = Array.isArray(req.body.payments) && req.body.payments.length
           ? req.body.payments
           : [{
@@ -418,10 +419,48 @@ exports.createSale = async (req, res) => {
           if (!VALID_METHODS.has(p.method)) throw Object.assign(new Error(`Método de pago inválido: ${p.method}`), { status: 400 });
         }
         const paidSum = +txPayments.reduce((s, p) => s + p.amount, 0).toFixed(2);
-        if (Math.abs(paidSum - txTotals.total) > 0.01) {
-          throw Object.assign(new Error(`Los pagos ($${paidSum.toFixed(2)}) no cuadran con el total de la venta ($${txTotals.total.toFixed(2)})`), { status: 400 });
+        if (paidSum < txTotals.total - 0.01) {
+          throw Object.assign(new Error(`Los pagos ($${paidSum.toFixed(2)}) no cubren el total de la venta ($${txTotals.total.toFixed(2)})`), { status: 400 });
         }
         const creditoAmount = +txPayments.filter((p) => p.method === 'credito').reduce((s, p) => s + p.amount, 0).toFixed(2);
+
+        /**
+         * SALDO A FAVOR (oct-2026). El paciente puede pagar MÁS que el total —300 por
+         * un servicio de 100, porque sigue un tratamiento—: se factura solo lo vendido
+         * y el excedente queda como anticipo suyo (pasivo, ver más abajo). Solo con
+         * paciente (tiene que haber de quién es) y solo con dinero que de verdad entra:
+         * un excedente «a crédito» o pagado con el mismo saldo no es un anticipo.
+         *
+         * Y puede pagar CON su saldo (método 'anticipo'), hasta lo que tenga.
+         */
+        const { saldoDisponible, registrar: registrarSaldo } = require('../utils/saldoAFavor');
+        const excedente = +(paidSum - txTotals.total).toFixed(2);
+        const anticipoUsado = +txPayments.filter((p) => p.method === 'anticipo').reduce((s, p) => s + p.amount, 0).toFixed(2);
+        if (excedente > 0.01) {
+          if (!patient) {
+            throw Object.assign(new Error(
+              `Los pagos ($${paidSum.toFixed(2)}) superan el total ($${txTotals.total.toFixed(2)}). Para dejar el `
+              + 'excedente como saldo a favor, la venta tiene que ser de un paciente.'
+            ), { status: 400 });
+          }
+          if (creditoAmount > 0 || anticipoUsado > 0) {
+            throw Object.assign(new Error(
+              'Un saldo a favor solo puede salir de dinero que entra (efectivo, transferencia o tarjeta): '
+              + 'quita la parte a crédito o la que se paga con saldo a favor.'
+            ), { status: 400 });
+          }
+        }
+        if (anticipoUsado > 0) {
+          if (!patient) {
+            throw Object.assign(new Error('Pagar con saldo a favor requiere la venta de un paciente'), { status: 400 });
+          }
+          const disponible = await saldoDisponible(req.clinicId, patient, { session });
+          if (anticipoUsado > disponible + 0.01) {
+            throw Object.assign(new Error(
+              `El paciente tiene $${disponible.toFixed(2)} de saldo a favor; no alcanza para $${anticipoUsado.toFixed(2)}.`
+            ), { status: 400, code: 'SALDO_A_FAVOR_INSUFICIENTE' });
+          }
+        }
 
         /**
          * PLAZO DE CRÉDITO. El cajero elige los días (5, 15, 30…) y de ahí sale el vencimiento;
@@ -490,6 +529,7 @@ exports.createSale = async (req, res) => {
           dueDate: creditoAmount > 0 ? txDueDate : null,
           balance: creditoAmount,
           paid: creditoAmount <= 0.01,
+          advanceCreated: excedente > 0.01 ? excedente : 0,
           notes,
           isFirstVisit: txIsFirstVisit,
           clientCity,
@@ -603,7 +643,9 @@ exports.createSale = async (req, res) => {
             if (p.method === 'efectivo') role = 'caja';
             else if (p.method === 'tarjeta') role = 'tarjetasPorLiquidar';
             else if (p.method === 'transferencia') role = 'bancos';
-            acc = await getAccount(req.clinicId, role);
+            // Pagar con saldo a favor baja el pasivo «Anticipos de clientes».
+            else if (p.method === 'anticipo') role = 'anticipoClientes';
+            acc = await getAccount(req.clinicId, role, { session });
           }
           if (p.method === 'credito') clientesAcc = acc;
           txLines.push({ account: acc._id, debit: p.amount, credit: 0, description: `Venta ${txSale.saleNumber} (${p.method})` });
@@ -683,6 +725,12 @@ exports.createSale = async (req, res) => {
         if (txTotals.discountTaxBase > 0) {
           const desc = await getAccount(req.clinicId, 'descuentoVentas');
           txLines.push({ account: desc._id, debit: txTotals.discountTaxBase, credit: 0, description: 'Descuento en venta' });
+        }
+        // El EXCEDENTE no es ingreso: es lo que se le debe al paciente hasta que lo
+        // use (pasivo «Anticipos de clientes»). El dinero ya entró por sus débitos.
+        if (excedente > 0.01) {
+          const anticipoAcc = await getAccount(req.clinicId, 'anticipoClientes', { session });
+          txLines.push({ account: anticipoAcc._id, debit: 0, credit: excedente, description: `Saldo a favor del paciente (venta ${txSale.saleNumber})` });
         }
 
         // Asiento de COSTO por producto vendido (Débito: costo de venta / Crédito: inventario),
@@ -765,6 +813,21 @@ exports.createSale = async (req, res) => {
           txSale.costJournalEntry = costEntry._id;
         }
         await txSale.save({ session });
+
+        // El detalle del saldo a favor por paciente, en la MISMA transacción que el
+        // asiento: lo que dejó de más y lo que usó (ver utils/saldoAFavor).
+        if (excedente > 0.01) {
+          await registrarSaldo({
+            clinic: req.clinicId, patient, type: 'ANTICIPO', amount: excedente, date: saleDate,
+            sale: txSale._id, description: `Excedente de la venta ${txSale.saleNumber}`, createdBy: req.user._id,
+          }, { session });
+        }
+        if (anticipoUsado > 0) {
+          await registrarSaldo({
+            clinic: req.clinicId, patient, type: 'APLICACION', amount: -anticipoUsado, date: saleDate,
+            sale: txSale._id, description: `Pago de la venta ${txSale.saleNumber}`, createdBy: req.user._id,
+          }, { session });
+        }
 
         // ── El dinero que entra por BANCO también entra al LIBRO DE BANCOS ──────────────
         // Una venta cobrada por transferencia debitaba la cuenta contable del banco en el
@@ -931,6 +994,12 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
   }
 
   await assertPeriodOpen(clinicId, reversalDate, { session });
+
+  // SALDO A FAVOR: se deshace lo que movió la venta (lo que dejó y lo que usó). Va
+  // primero porque puede impedir la anulación: si lo que dejó ya se gastó.
+  await require('../utils/saldoAFavor').revertirDe({
+    clinicId, filtro: { sale: sale._id }, userId, date: reversalDate, session,
+  });
 
   // Kardex: devuelve a sus capas originales lo consumido por las salidas de esta venta.
   const salidas = await InventoryMovement.find({

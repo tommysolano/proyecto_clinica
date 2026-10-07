@@ -335,6 +335,16 @@ exports.create = async (req, res) => {
           createdBy: req.user._id,
         }], { session });
 
+        // El ANTICIPO de un paciente suma a su SALDO A FAVOR (oct-2026): se usa en
+        // sus próximas ventas, igual que el excedente de una venta.
+        if (type === 'COBRO' && Number(advanceAmount || 0) > 0
+          && (partyModel || 'Patient') === 'Patient' && partyRef) {
+          await require('../utils/saldoAFavor').registrar({
+            clinic: req.clinicId, patient: partyRef, type: 'ANTICIPO', amount: Number(advanceAmount),
+            date: txDate, payment: payment._id, description: `Anticipo del cobro ${number}`, createdBy: req.user._id,
+          }, { session });
+        }
+
         const lines = [];
         if (type === 'COBRO') {
           if (method === 'EFECTIVO') {
@@ -797,6 +807,10 @@ exports.void = async (req, res) => {
         await assertPeriodOpen(req.clinicId, p.date, { session });
         const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
         await assertPeriodOpen(req.clinicId, reversalDate, { session });
+        // Su anticipo sale del saldo a favor (no si ya se gastó: ver revertirDe).
+        await require('../utils/saldoAFavor').revertirDe({
+          clinicId: req.clinicId, filtro: { payment: p._id }, userId: req.user._id, date: reversalDate, session,
+        });
 
         if (p.journalEntry) {
           await reverseEntry({

@@ -158,6 +158,8 @@ exports.emitFromSale = async (req, res) => {
       tarjeta_credito: '19',
       transferencia: '20',
       credito: '20',
+      // Pagada con el saldo a favor del paciente (anticipo): 15 = compensación de deudas.
+      anticipo: '15',
     };
 
     const totalSinImpuestos = +(sale.items || [])

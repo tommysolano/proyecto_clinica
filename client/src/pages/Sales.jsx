@@ -40,7 +40,8 @@ const paymentMethods = {
   credito: 'Crédito (CxC)',
 };
 // Etiqueta legible de un método (incluye 'mixto' para el detalle).
-const methodLabel = (m) => paymentMethods[m] || (m === 'mixto' ? 'Pago mixto' : m || '—');
+const methodLabel = (m) => paymentMethods[m]
+  || (m === 'mixto' ? 'Pago mixto' : m === 'anticipo' ? 'Saldo a favor' : m || '—');
 
 /**
  * TIPO DE TARJETA. Contablemente no es lo mismo: el débito entra casi de inmediato y el
@@ -485,6 +486,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   // usarlo antes de su declaración rompía la página completa con ReferenceError)
   const splitPaid = splitPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
   const splitRemaining = +(total - splitPaid).toFixed(2);
+
   const enableSplit = () => {
     // Al activar, arranca con lo que haya en el método simple + el restante sugerido.
     setSplitPayments([{ method: form.paymentMethod || 'efectivo', amount: +total.toFixed(2), bankAccount: form.bankAccount || '', creditCard: form.creditCard || '', cardPos: form.cardPos || '', cardLote: form.cardLote || '', cardVoucher: form.cardVoucher || '', cardDeferredType: form.cardDeferredType || 'CORRIENTE', cardDeferredMonths: form.cardDeferredMonths || 0 }]);
@@ -697,6 +699,37 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [citaPorCobrar, products]);
 
+  /**
+   * SALDO A FAVOR DEL PACIENTE (oct-2026). Si paga MÁS que el total (300 por un
+   * servicio de 100 porque sigue un tratamiento), se factura solo lo vendido y el
+   * excedente queda a su favor; y lo que ya tiene a favor se puede usar como
+   * forma de pago («Saldo a favor»). El paciente de la venta es el de la cita, o
+   * el que se eligió en el buscador.
+   */
+  const pacienteVenta = citaPorCobrar
+    ? String(citaPorCobrar.patient?._id || citaPorCobrar.patient || '')
+    : String(form.patient || '');
+  const [saldoAFavor, setSaldoAFavor] = useState(0);
+  useEffect(() => {
+    if (!modalOpen || !pacienteVenta) { setSaldoAFavor(0); return undefined; }
+    let vivo = true;
+    api.get(`/patients/${pacienteVenta}/saldo-a-favor`)
+      .then((r) => { if (vivo) setSaldoAFavor(Number(r.data?.saldo) || 0); })
+      .catch(() => { if (vivo) setSaldoAFavor(0); });
+    return () => { vivo = false; };
+  }, [modalOpen, pacienteVenta]);
+  const metodosDePago = saldoAFavor > 0.005
+    ? { ...paymentMethods, anticipo: `Saldo a favor ($${saldoAFavor.toFixed(2)})` }
+    : paymentMethods;
+  /** Usar el saldo a favor: un renglón con lo que alcanza y el resto en efectivo. */
+  const usarSaldoAFavor = () => {
+    const usa = +Math.min(saldoAFavor, total).toFixed(2);
+    const resto = +(total - usa).toFixed(2);
+    const fila = (method, amount) => ({ method, amount, bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 });
+    setSplitPayments(resto > 0.01 ? [fila('anticipo', usa), fila('efectivo', resto)] : [fila('anticipo', usa)]);
+    setSplitMode(true);
+  };
+
   /** Cerrar el formulario: incrustado, se le avisa a la agenda. */
   const cerrarVenta = () => {
     setModalOpen(false);
@@ -786,9 +819,25 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       if (splitMode) {
         const rows = splitPayments.filter((p) => (Number(p.amount) || 0) > 0);
         if (!rows.length) { setSaving(false); return toast.error('Agrega al menos un método de pago con monto'); }
-        if (Math.abs(splitRemaining) > 0.01) {
+        if (splitRemaining > 0.01) {
           setSaving(false);
-          return toast.error(`Los pagos ($${splitPaid.toFixed(2)}) no cuadran con el total ($${total.toFixed(2)}). Falta $${splitRemaining.toFixed(2)}.`);
+          return toast.error(`Los pagos ($${splitPaid.toFixed(2)}) no cubren el total ($${total.toFixed(2)}). Falta $${splitRemaining.toFixed(2)}.`);
+        }
+        // Pago DE MÁS: el excedente queda a favor del paciente (lo valida también el servidor).
+        if (splitRemaining < -0.01) {
+          if (!pacienteVenta) {
+            setSaving(false);
+            return toast.error(`Sobran $${(-splitRemaining).toFixed(2)}. Para dejarlo como saldo a favor, elige un paciente.`);
+          }
+          if (rows.some((p) => p.method === 'credito' || p.method === 'anticipo')) {
+            setSaving(false);
+            return toast.error('El saldo a favor solo puede salir de dinero que entra (efectivo, transferencia o tarjeta).');
+          }
+        }
+        const usaSaldo = rows.filter((p) => p.method === 'anticipo').reduce((s, p) => s + (Number(p.amount) || 0), 0);
+        if (usaSaldo > saldoAFavor + 0.01) {
+          setSaving(false);
+          return toast.error(`El paciente solo tiene $${saldoAFavor.toFixed(2)} de saldo a favor.`);
         }
         for (const p of rows) {
           if (p.method === 'transferencia' && payOptions.accounts.length && !p.bankAccount) { setSaving(false); return toast.error('Selecciona la cuenta bancaria en el pago por transferencia'); }
@@ -817,6 +866,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         if (form.paymentMethod === 'tarjeta' && payOptions.cards.length && !form.creditCard) {
           setSaving(false);
           return toast.error('Selecciona la tarjeta / POS');
+        }
+        if (form.paymentMethod === 'anticipo' && total > saldoAFavor + 0.01) {
+          setSaving(false);
+          return toast.error(`El saldo a favor ($${saldoAFavor.toFixed(2)}) no alcanza: usa «Usar saldo a favor» para completar con otro método.`);
         }
         paymentPayload = {
           bankAccount: form.paymentMethod === 'transferencia' ? form.bankAccount || null : null,
@@ -876,6 +929,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
             ? 'Venta registrada y enlazada a la cita'
             : 'Venta registrada'
       );
+      if (Number(res.data?.advanceCreated) > 0.005) {
+        toast.success(`Quedan $${Number(res.data.advanceCreated).toFixed(2)} a favor del paciente para sus próximas ventas.`, { duration: 7000 });
+      }
       // Avisos no bloqueantes (p.ej. servicios sin categoría: su ingreso fue a la cuenta genérica).
       for (const w of (res.data?.warnings || [])) toast(w, { icon: '⚠️', duration: 7000 });
       setCcMismatch(null);
@@ -1551,11 +1607,33 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                       onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })}
                       className="input"
                     >
-                      {Object.entries(paymentMethods).map(([k, v]) => (
+                      {Object.entries(metodosDePago).map(([k, v]) => (
                         <option key={k} value={k}>{v}</option>
                       ))}
                     </select>
                     <button type="button" onClick={enableSplit} className="mt-1 text-xs text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0">Dividir en varios métodos</button>
+                    {/* Pagar de más: se divide y se sube el monto; el excedente queda a favor. */}
+                    {pacienteVenta && (
+                      <button
+                        type="button"
+                        onClick={enableSplit}
+                        title="Se factura solo el total; lo que pague de más queda como saldo a favor del paciente"
+                        className="mt-1 block text-xs text-sky-700 hover:underline bg-transparent border-none cursor-pointer p-0"
+                      >
+                        ¿Paga de más? Dejar saldo a favor
+                      </button>
+                    )}
+                  </div>
+                )}
+                {/* SALDO A FAVOR disponible del paciente: se puede usar para pagar. */}
+                {saldoAFavor > 0.005 && (
+                  <div className="sm:col-span-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2">
+                    <span className="text-xs text-sky-900">
+                      El paciente tiene <b>${saldoAFavor.toFixed(2)}</b> de saldo a favor.
+                    </span>
+                    <button type="button" onClick={usarSaldoAFavor} className="btn-secondary text-xs">
+                      Usar saldo a favor
+                    </button>
                   </div>
                 )}
                 {!splitMode && form.paymentMethod === 'transferencia' && (
@@ -1697,7 +1775,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                         <div className="w-36">
                           <label className="lbl">Método</label>
                           <select value={p.method} onChange={(e) => setSplitRow(i, { method: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })} className="input">
-                            {Object.entries(paymentMethods).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                            {Object.entries(metodosDePago).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                           </select>
                         </div>
                         <div className="w-28">
@@ -1764,9 +1842,13 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                       <button type="button" onClick={addSplitRow} className="text-emerald-600 text-sm flex items-center gap-1 bg-transparent border-none cursor-pointer"><HiOutlinePlus className="w-4 h-4" /> Agregar método</button>
                       <div className="text-sm text-slate-600">
                         Pagado: <b className="font-mono">${splitPaid.toFixed(2)}</b> / Total: <b className="font-mono">${total.toFixed(2)}</b>
-                        {Math.abs(splitRemaining) > 0.01
-                          ? <span className={`ml-2 font-semibold ${splitRemaining > 0 ? 'text-amber-600' : 'text-rose-600'}`}>{splitRemaining > 0 ? `Falta $${splitRemaining.toFixed(2)}` : `Sobra $${(-splitRemaining).toFixed(2)}`}</span>
-                          : <span className="ml-2 text-emerald-600 font-semibold">✓ Cuadra</span>}
+                        {splitRemaining > 0.01
+                          ? <span className="ml-2 font-semibold text-amber-600">Falta ${splitRemaining.toFixed(2)}</span>
+                          : splitRemaining < -0.01
+                            ? (pacienteVenta
+                              ? <span className="ml-2 font-semibold text-sky-700" title="Se factura solo el total; el excedente queda como saldo a favor del paciente">Queda a favor del paciente: ${(-splitRemaining).toFixed(2)}</span>
+                              : <span className="ml-2 font-semibold text-rose-600">Sobra ${(-splitRemaining).toFixed(2)} (elige un paciente para dejarlo a su favor)</span>)
+                            : <span className="ml-2 text-emerald-600 font-semibold">✓ Cuadra</span>}
                       </div>
                     </div>
                     {splitPayments.some((p) => p.method === 'credito') && (
