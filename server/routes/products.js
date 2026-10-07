@@ -6,6 +6,7 @@ const {
   updateProduct,
   deleteProduct,
   previewNextCode,
+  getSueroComponentes,
 } = require('../controllers/productController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
