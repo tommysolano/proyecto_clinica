@@ -35,11 +35,23 @@ const saneaComposicionSuero = (it) => {
     .map((c) => {
       const nombre = String(c?.name || '').trim();
       if (!nombre) return null;
-      const delCatalogo = buscarComponenteSuero({ code: c?.code, name: nombre });
+      /**
+       * Con CÓDIGO, manda el código (oct-2026): las ampollas se eligen ahora del
+       * inventario y su código es el del producto. Buscar también por nombre
+       * podía cambiarlo por el del catálogo fijo —mismo nombre, otro código— y
+       * al aplicar no se encontraba el producto. Sin código, se intenta por
+       * nombre como siempre.
+       */
+      const codigo = String(c?.code || '').trim();
+      const delCatalogo = codigo
+        ? buscarComponenteSuero({ code: codigo })
+        : buscarComponenteSuero({ name: nombre });
       const cantidad = Number(c?.quantity);
       return {
-        code: delCatalogo?.code || String(c?.code || '').trim(),
-        name: delCatalogo?.name || nombre,
+        code: codigo || delCatalogo?.code || '',
+        // Lo elegido con código se guarda con el nombre con que se eligió (el del
+        // producto del inventario).
+        name: codigo ? nombre : delCatalogo?.name || nombre,
         grupo:
           delCatalogo?.grupo ||
           (['ampolla', 'molecula', 'otro'].includes(c?.grupo) ? c.grupo : 'otro'),

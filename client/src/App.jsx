@@ -407,7 +407,7 @@ function AppRoutes() {
                 <Route
                   path="/message-templates"
                   element={
-                    <RoleRoute roles={['admin', 'marketing']}>
+                    <RoleRoute roles={['admin', 'marketing', 'call_center']}>
                       <MessageTemplates />
                     </RoleRoute>
                   }

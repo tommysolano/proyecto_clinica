@@ -146,6 +146,17 @@ function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, p
         ];
 
   const completados = (apt.turns || []).filter((t) => t.status === 'completado');
+  /**
+   * La hidro YA HECHA no se borra al volver a guardar la asignación (oct-2026):
+   * la cola pendiente se rehace entera y la constancia de la enfermera se perdía
+   * en cuanto mostrador corregía cualquier otra cosa del paso.
+   */
+  const hidroHecha = new Map();
+  (apt.turns || []).forEach((t) => {
+    if (t.kind === 'enfermeria' && t.status === 'pendiente' && t.hidroterapia?.realizada) {
+      hidroHecha.set(String(t.user?._id || t.user || ''), t.hidroterapia);
+    }
+  });
   let order = completados.length;
   const nuevos = [];
 
@@ -199,7 +210,14 @@ function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, p
         // HIDROTERAPIA (sep-2026): la marca mostrador al asignar; la enfermera
         // la ve en su barra de atención y da fe de si la realizó.
         hidroterapia: paso?.hidroterapia
-          ? { solicitada: true, realizada: false, realizadaAt: null, realizadaBy: null }
+          ? hidroHecha.has(String(uid || ''))
+            ? {
+                solicitada: true,
+                realizada: true,
+                realizadaAt: hidroHecha.get(String(uid || '')).realizadaAt || null,
+                realizadaBy: hidroHecha.get(String(uid || '')).realizadaBy || null,
+              }
+            : { solicitada: true, realizada: false, realizadaAt: null, realizadaBy: null }
           : undefined,
       });
     }

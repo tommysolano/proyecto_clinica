@@ -6,16 +6,15 @@ router.use(auth, requireClinic);
 // CRM global: opera sobre la clínica ancla del call center (no por sucursal).
 router.use(require('../middleware/callCenterScope'));
 
-const ROLES = ['admin', 'marketing'];
+// El call center crea, edita y manda a aprobar plantillas igual que marketing.
+const ROLES = ['admin', 'marketing', 'call_center'];
 
 // Carga masiva por Excel (descargar plantilla + subir lleno). Antes de '/:id'.
 const bulk = require('../controllers/marketingImportController');
 router.get('/bulk/template', requireRole(...ROLES), bulk.downloadPlantillasTemplate);
 router.post('/bulk', requireRole(...ROLES), bulk.uploadMiddleware, bulk.importPlantillasExcel);
 
-// El call center puede LEER la lista (para elegir plantilla en un paso de
-// automatización), pero no crear/editar/borrar plantillas.
-router.get('/', requireRole(...ROLES, 'call_center'), ctrl.list);
+router.get('/', requireRole(...ROLES), ctrl.list);
 router.post('/', requireRole(...ROLES), ctrl.create);
 router.post('/upload-image', requireRole(...ROLES), ctrl.uploadHeaderImage);
 router.post('/sync-whatsapp', requireRole(...ROLES), ctrl.syncWhatsapp);

@@ -16,6 +16,9 @@ router.use(auth, requireClinic);
 // paneles de marketing. La escritura sigue restringida.
 router.get('/', requireRole('admin', 'cajero', 'contabilidad', 'marketing', 'doctor', 'call_center', 'enfermero'), getProducts);
 // Debe ir antes de '/:id' para no ser capturada como parámetro.
+// Ampollas y moléculas del inventario para armar un suero (receta, asignación de
+// enfermería y servicios de agenda).
+router.get('/suero-componentes', requireRole('admin', 'cajero', 'contabilidad', 'marketing', 'doctor', 'call_center', 'enfermero'), getSueroComponentes);
 router.get('/next-code', requireRole('admin', 'contabilidad'), previewNextCode);
 router.get('/:id', requireRole('admin', 'cajero', 'contabilidad', 'marketing', 'doctor', 'call_center', 'enfermero'), getProduct);
 router.post('/', requireRole('admin', 'contabilidad'), createProduct);

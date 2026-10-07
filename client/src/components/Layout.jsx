@@ -206,7 +206,7 @@ const MENU_GROUPS = [
       { path: '/opportunities', label: 'Oportunidades', roles: ['admin', 'call_center', 'marketing'] },
       { path: '/campaigns', label: 'Campañas', roles: ['admin', 'marketing'] },
       { path: '/segments', label: 'Segmentos', roles: ['admin', 'marketing'] },
-      { path: '/message-templates', label: 'Plantillas de Mensaje', roles: ['admin', 'marketing'] },
+      { path: '/message-templates', label: 'Plantillas de Mensaje', roles: ['admin', 'marketing', 'call_center'] },
       { path: '/whatsapp-spend', label: 'Gasto de WhatsApp', roles: ['admin', 'marketing'] },
       { path: '/saved-replies', label: 'Mensajes Guardados', roles: ['admin', 'call_center', 'marketing'] },
       { path: '/workflows', label: 'Automatizaciones', roles: ['admin', 'marketing', 'call_center'] },

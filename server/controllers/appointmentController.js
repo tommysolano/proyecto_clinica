@@ -2792,9 +2792,14 @@ exports.setSerumStatus = async (req, res) => {
  * aquí se cierra el círculo: `realizada` a true con quién y cuándo, o se
  * desmarca. Es el mismo gesto que administrar un suero, sin inventario.
  *
- * El enfermero marca SU turno (el pendiente a su nombre, o el vigente si es
- * abierto que él reclamó); administración y mostrador pueden marcar cualquier
- * turno enviando `turnId`.
+ * Administración y mostrador pueden marcar cualquier turno enviando `turnId`.
+ *
+ * CUALQUIER ENFERMERO DE LA CITA LA MARCA (oct-2026). Antes solo valía un
+ * turno pendiente a SU nombre: en el paso libre había que tomarlo primero, y
+ * si ya había cerrado su parte no había dónde marcarla — la hidro quedaba sin
+ * constancia. Ahora se busca, por orden: su turno pendiente, otro suyo, uno
+ * pendiente de enfermería y por último cualquiera con hidro. Es lo mismo que el
+ * suero: lo administra el enfermero que lo pone, sea o no su turno.
  */
 exports.marcarHidroterapia = async (req, res) => {
   try {
@@ -2808,19 +2813,23 @@ exports.marcarHidroterapia = async (req, res) => {
     if (req.body?.turnId && esMostrador) {
       turno = (apt.turns || []).find((t) => String(t._id) === String(req.body.turnId));
     } else {
-      // El suyo: un turno de enfermería pendiente a su nombre (reclamado o no).
-      turno = (apt.turns || []).find(
-        (t) =>
-          t.kind === 'enfermeria' &&
-          t.status === 'pendiente' &&
-          String(t.user?._id || t.user || '') === miIdStr
+      const conHidro = (apt.turns || []).filter(
+        (t) => t.kind === 'enfermeria' && t.hidroterapia?.solicitada
       );
+      // Marcar busca una sin hacer; desmarcar, una hecha.
+      const candidatos = conHidro.filter((t) => !!t.hidroterapia.realizada !== realizada);
+      const esMio = (t) => String(t.user?._id || t.user || '') === miIdStr;
+      turno =
+        candidatos.find((t) => esMio(t) && t.status === 'pendiente') ||
+        candidatos.find(esMio) ||
+        candidatos.find((t) => t.status === 'pendiente') ||
+        candidatos[0] ||
+        conHidro.find(esMio) ||
+        conHidro[0] ||
+        null;
     }
-    if (!turno) {
-      return res.status(403).json({ message: 'No tienes un paso de enfermería que marcar en esta cita' });
-    }
-    if (!turno.hidroterapia?.solicitada) {
-      return res.status(400).json({ message: 'Este paso no tiene hidroterapia marcada' });
+    if (!turno?.hidroterapia?.solicitada) {
+      return res.status(400).json({ message: 'Esta cita no tiene hidroterapia marcada' });
     }
 
     turno.hidroterapia.realizada = realizada;

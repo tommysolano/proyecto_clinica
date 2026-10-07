@@ -201,6 +201,83 @@ exports.getProducts = async (req, res) => {
   }
 };
 
+/**
+ * AMPOLLAS Y MOLÉCULAS DEL SUERO, SACADAS DEL INVENTARIO (oct-2026).
+ *
+ * El selector del suero ofrecía la lista fija de `constants/sueroterapia.js`, y
+ * esa lista se quedaba atrás de lo que la clínica de verdad tiene en la percha
+ * (y con códigos que a veces no eran los del producto: la ampolla se aplicaba
+ * sin descontar nada). Ahora se ofrece lo que está en el inventario con la
+ * categoría AMPOLLAS o MOLÉCULAS — la contable (`inventoryCategory`) o, en los
+ * productos viejos, el texto `categoria`. El código que viaja es el del
+ * producto, que es justo con el que se descuenta al aplicar.
+ */
+const GRUPO_SUERO = (nombre) => {
+  const n = normName(nombre || '');
+  if (n.includes('MOLECUL')) return 'molecula';
+  if (n.includes('AMPOLL')) return 'ampolla';
+  return null;
+};
+
+exports.getSueroComponentes = async (req, res) => {
+  try {
+    const clinicas = catalogClinics(req.clinicId);
+    const categorias = await InventoryCategory.find({ clinic: { $in: clinicas } })
+      .select('name')
+      .lean();
+    const grupoDeCategoria = new Map();
+    categorias.forEach((c) => {
+      const g = GRUPO_SUERO(c.name);
+      if (g) grupoDeCategoria.set(String(c._id), g);
+    });
+
+    const productos = await Product.find({
+      active: true,
+      clinic: { $in: clinicas },
+      $and: [
+        {
+          $or: [
+            { availableInClinics: { $exists: false } },
+            { availableInClinics: { $size: 0 } },
+            { availableInClinics: req.clinicId },
+          ],
+        },
+        {
+          $or: [
+            { inventoryCategory: { $in: [...grupoDeCategoria.keys()] } },
+            { categoria: { $regex: 'ampoll|mol[eé]cul', $options: 'i' } },
+          ],
+        },
+      ],
+    })
+      .select('code name stock unlimited clinic inventoryCategory categoria')
+      .sort({ name: 1 })
+      .lean();
+
+    // Un código por opción: con varias sucursales en la empresa el mismo producto
+    // puede estar dado de alta en cada una. Gana el de esta sede.
+    const porCodigo = new Map();
+    productos.forEach((p) => {
+      const code = String(p.code || '').trim();
+      if (!code) return;
+      const grupo =
+        grupoDeCategoria.get(String(p.inventoryCategory || '')) || GRUPO_SUERO(p.categoria) || 'ampolla';
+      const previo = porCodigo.get(code);
+      if (previo && String(previo.clinic) === String(req.clinicId)) return;
+      porCodigo.set(code, {
+        code,
+        name: p.name,
+        grupo,
+        stock: p.unlimited ? null : Number(p.stock) || 0,
+        clinic: p.clinic,
+      });
+    });
+    res.json([...porCodigo.values()].map(({ clinic, ...o }) => o));
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener las ampollas y moléculas' });
+  }
+};
+
 exports.getProduct = async (req, res) => {
   try {
     // Catálogo compartido: el producto se puede consultar desde cualquier sucursal.

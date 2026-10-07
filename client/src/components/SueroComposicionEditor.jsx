@@ -170,7 +170,7 @@ export default function SueroComposicionEditor({ base, componentes, onChangeBase
           className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-white bg-sky-600 border-none cursor-pointer"
         >
           <HiOutlinePlus className="w-3.5 h-3.5" />
-          {filas.length ? 'Añadir o quitar del catálogo' : 'Añadir ampollas o moléculas'}
+          {filas.length ? 'Añadir o quitar del inventario' : 'Añadir ampollas o moléculas'}
         </button>
         <button
           type="button"

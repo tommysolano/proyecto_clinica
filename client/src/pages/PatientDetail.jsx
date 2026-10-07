@@ -475,7 +475,9 @@ export default function PatientDetail() {
         ? miTurnoVigente.hidroterapia
         : (pasoEnfermeriaVigente?.hidroterapia || null))
     : null;
-  const puedoMarcarHidroterapia = !!miTurnoVigente?.hidroterapia?.solicitada;
+  // Cualquier enfermero de la cita la puede marcar (oct-2026, ver
+  // `marcarHidroterapia` en el servidor): ya no hace falta tomar el paso antes.
+  const puedoMarcarHidroterapia = !!hidroterapiaDelPaso?.solicitada;
   const [marcandoHidro, setMarcandoHidro] = useState(false);
   const marcarHidroterapia = async (realizada) => {
     if (marcandoHidro) return;
@@ -846,7 +848,15 @@ export default function PatientDetail() {
                 )}
               </>
             ))}
-          {tabActiva === 'seguimientos' && <SeguimientosTab patientId={id} appointmentId={appointmentId} comoTerapeuta={comoTerapeuta} />}
+          {tabActiva === 'seguimientos' && (
+            <SeguimientosTab
+              patientId={id}
+              appointmentId={appointmentId}
+              comoTerapeuta={comoTerapeuta}
+              cita={aptData}
+              onCitaCambio={setAptData}
+            />
+          )}
           {tabActiva === 'terapias' && <TerapiasComplementariasTab patientId={id} appointmentId={appointmentId} />}
           {tabActiva === 'archivos' && <ArchivosTab patientId={id} appointmentId={appointmentId} />}
           {tabActiva === 'citas' && <CitasTab patientId={id} />}
@@ -2520,7 +2530,7 @@ function SueroResumen({ item, className = '' }) {
   );
 }
 
-function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
+function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false, cita = null, onCitaCambio }) {
   const navigate = useNavigate();
   const { hasRole, user } = useAuth();
   const isOptica = hasRole('optica');
@@ -4231,6 +4241,12 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false }) {
         </div>
       )}
 
+      {/* HIDROTERAPIA DE LA CITA (oct-2026): enfermería la ve aquí, junto al
+          suero que va a aplicar, con su check de «ya se la realizó». */}
+      {esEnfermero && appointmentId && (
+        <HidroterapiaDeLaCita cita={cita} onCambio={onCitaCambio} />
+      )}
+
       {/* El historial NO es una tabla: la columna del medio lleva la consulta
           entera (diagnósticos, receta, signos, adjuntos) y en un teléfono se
           quedaba en un hilo de texto con scroll lateral. En el móvil cada
@@ -5268,6 +5284,81 @@ function AplicacionesEnfermeria({ lista }) {
           );
         })}
       </ul>
+    </div>
+  );
+}
+
+// ──────────────── Hidroterapia de la cita ────────────────
+
+/**
+ * LA HIDROTERAPIA QUE MARCÓ MOSTRADOR, con el check de enfermería (oct-2026).
+ *
+ * Solo salía en la barra de atención, y esa barra depende de que el paso de
+ * enfermería sea el vigente y esté libre o a su nombre: en cuanto algo de eso
+ * no cuadraba, la enfermera no se enteraba de que tocaba hidro. Ahora va donde
+ * ve el suero —la pestaña de seguimientos de la cita— y se lee de CUALQUIER
+ * paso de enfermería de la cita, pendiente o cerrado. El check lo puede marcar
+ * cualquier enfermero (el servidor elige el turno, ver `marcarHidroterapia`).
+ */
+function HidroterapiaDeLaCita({ cita, onCambio }) {
+  const [busy, setBusy] = useState(false);
+  const pasos = (cita?.turns || []).filter(
+    (t) => t.kind === 'enfermeria' && t.hidroterapia?.solicitada
+  );
+  if (!cita || !pasos.length) return null;
+  const hecho = pasos.find((t) => t.hidroterapia.realizada);
+  const realizada = !!hecho;
+
+  const marcar = async (valor) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/appointments/${cita._id}/hidroterapia`, { realizada: valor });
+      onCambio?.(data);
+      toast.success(valor ? 'Hidroterapia registrada como realizada' : 'Hidroterapia desmarcada');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo marcar la hidroterapia');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const quien = hecho?.hidroterapia?.realizadaBy?.name || '';
+  const cuando = hecho?.hidroterapia?.realizadaAt
+    ? new Date(hecho.hidroterapia.realizadaAt).toLocaleString('es-EC', { dateStyle: 'short', timeStyle: 'short' })
+    : '';
+
+  return (
+    <div
+      className={`mb-3 rounded-xl border px-3 py-2.5 ${
+        realizada ? 'border-emerald-200 bg-emerald-50/70' : 'border-cyan-200 bg-cyan-50/70'
+      }`}
+    >
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="text-[10px] font-bold uppercase tracking-wide text-cyan-800 bg-cyan-100 rounded px-1.5 py-0.5">
+          💦 Hidroterapia
+        </span>
+        <span className="text-xs text-slate-600">Indicada por mostrador para esta cita</span>
+      </div>
+      <label
+        className={`mt-2 flex items-center gap-2 text-sm font-medium cursor-pointer select-none ${
+          realizada ? 'text-emerald-800' : 'text-slate-800'
+        } ${busy ? 'opacity-60' : ''}`}
+      >
+        <input
+          type="checkbox"
+          className="w-5 h-5 accent-emerald-600 cursor-pointer"
+          checked={realizada}
+          disabled={busy}
+          onChange={(e) => marcar(e.target.checked)}
+        />
+        El paciente ya se realizó la hidroterapia
+      </label>
+      {realizada && (quien || cuando) && (
+        <p className="m-0 mt-1 ml-7 text-[11px] text-emerald-700">
+          {[quien, cuando].filter(Boolean).join(' · ')}
+        </p>
+      )}
     </div>
   );
 }

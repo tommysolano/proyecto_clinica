@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { HiOutlineCheck, HiOutlineMagnifyingGlass, HiOutlinePencil } from 'react-icons/hi2';
 import Modal from './Modal';
-import { SUERO_OPCIONES, SUERO_GRUPO_LABEL, claveSuero } from '../constants/sueroterapia';
+import api from '../api/axios';
+import { SUERO_GRUPO_LABEL, claveSuero } from '../constants/sueroterapia';
 
 /**
  * QUÉ LLEVA DENTRO EL SUERO: el catálogo entero, a pantalla completa.
@@ -24,7 +25,32 @@ import { SUERO_OPCIONES, SUERO_GRUPO_LABEL, claveSuero } from '../constants/suer
  * escribí» lo receta igual. Lo que sí se ve es la diferencia entre las dos
  * cosas, porque no es cosmética: sin `code` no hay de dónde descontar el
  * inventario, y el médico tiene derecho a saberlo antes de guardar.
+ *
+ * LAS OPCIONES SALEN DEL INVENTARIO (oct-2026): los productos con categoría
+ * AMPOLLAS o MOLÉCULAS (`GET /products/suero-componentes`), no la lista fija de
+ * `constants/sueroterapia.js`. Lo que se ofrece es lo que la clínica tiene dado
+ * de alta, con el código del producto — el mismo con el que se descuenta al
+ * aplicar — y su stock a la vista.
  */
+
+/**
+ * Se piden una vez por sesión: el selector se abre varias veces en la misma
+ * receta y la lista no cambia de un minuto a otro. Si la petición falla, se
+ * olvida para que el siguiente intento vuelva a pedirla.
+ */
+let opcionesCache = null;
+const cargarOpciones = () => {
+  if (!opcionesCache) {
+    opcionesCache = api
+      .get('/products/suero-componentes')
+      .then((r) => (Array.isArray(r.data) ? r.data : []))
+      .catch((e) => {
+        opcionesCache = null;
+        throw e;
+      });
+  }
+  return opcionesCache;
+};
 
 /**
  * Texto → clave de comparación. Se apoya en `claveSuero` a propósito: es la
@@ -33,8 +59,6 @@ import { SUERO_OPCIONES, SUERO_GRUPO_LABEL, claveSuero } from '../constants/suer
  * luego no se encuentra al guardar.
  */
 const plano = (s) => claveSuero(s).toLowerCase();
-
-const PORCODIGO = new Map(SUERO_OPCIONES.map((o) => [o.code, o]));
 
 function Chip({ tono, children, title }) {
   const tonos = {
@@ -59,6 +83,31 @@ export default function SelectorComponentesSuero({ isOpen, seleccionados = [], o
   const [cursor, setCursor] = useState(0);
   const refLista = useRef(null);
   const refBusqueda = useRef(null);
+  const [opciones, setOpciones] = useState([]);
+  const [cargando, setCargando] = useState(false);
+  const [errorCarga, setErrorCarga] = useState('');
+  const PORCODIGO = useMemo(() => new Map(opciones.map((o) => [o.code, o])), [opciones]);
+
+  // Las ampollas y moléculas del inventario, al abrir.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    let vivo = true;
+    setCargando(true);
+    setErrorCarga('');
+    cargarOpciones()
+      .then((lista) => {
+        if (vivo) setOpciones(lista);
+      })
+      .catch((e) => {
+        if (vivo) setErrorCarga(e.response?.data?.message || 'No se pudo cargar el inventario');
+      })
+      .finally(() => {
+        if (vivo) setCargando(false);
+      });
+    return () => {
+      vivo = false;
+    };
+  }, [isOpen]);
 
   // Al abrir se parte de lo que la preparación YA lleva: el selector sirve tanto
   // para añadir como para quitar, y reabrirlo tiene que enseñar el estado real.
@@ -75,15 +124,15 @@ export default function SelectorComponentesSuero({ isOpen, seleccionados = [], o
 
   const cuentas = useMemo(
     () => ({
-      todo: SUERO_OPCIONES.length,
-      ampolla: SUERO_OPCIONES.filter((o) => o.grupo === 'ampolla').length,
-      molecula: SUERO_OPCIONES.filter((o) => o.grupo === 'molecula').length,
+      todo: opciones.length,
+      ampolla: opciones.filter((o) => o.grupo === 'ampolla').length,
+      molecula: opciones.filter((o) => o.grupo === 'molecula').length,
     }),
-    []
+    [opciones]
   );
 
   const filtradas = useMemo(() => {
-    const base = grupo === 'todo' ? SUERO_OPCIONES : SUERO_OPCIONES.filter((o) => o.grupo === grupo);
+    const base = grupo === 'todo' ? opciones : opciones.filter((o) => o.grupo === grupo);
     // Se busca por PALABRAS SUELTAS, no por subcadena. Con una sola subcadena,
     // «azul metileno» no encontraba «AZUL DE METILENO 3ML MOL» (le sobra el
     // «DE») y «triptofano gaba» no encontraba «TRIPTOFANO + GABA TAB». El
@@ -101,7 +150,7 @@ export default function SelectorComponentesSuero({ isOpen, seleccionados = [], o
       ...coinciden.filter((o) => plano(o.name).startsWith(q)),
       ...coinciden.filter((o) => !plano(o.name).startsWith(q)),
     ];
-  }, [busqueda, grupo]);
+  }, [busqueda, grupo, opciones]);
 
   useEffect(() => setCursor(0), [busqueda, grupo]);
 
@@ -121,7 +170,7 @@ export default function SelectorComponentesSuero({ isOpen, seleccionados = [], o
   const escrito = busqueda.trim();
   // Solo se ofrece escribir a mano si de verdad no está en el catálogo: si está,
   // lo que hay que hacer es marcarlo, para que se lleve su código.
-  const hayExacto = SUERO_OPCIONES.some((o) => claveSuero(o.name) === claveSuero(escrito));
+  const hayExacto = opciones.some((o) => claveSuero(o.name) === claveSuero(escrito));
   const puedeEscribir = !!escrito && !hayExacto;
 
   const confirmar = (extraLibre = null) => {
@@ -235,9 +284,12 @@ export default function SelectorComponentesSuero({ isOpen, seleccionados = [], o
                   <span className="mt-1 flex flex-wrap items-center gap-1">
                     <Chip tono="gris">{SUERO_GRUPO_LABEL[o.grupo] || 'Otro'}</Chip>
                     <Chip tono="verde" title="Con este código se descuenta del inventario">{o.code}</Chip>
-                    {!o.activo && (
-                      <Chip tono="ambar" title="El laboratorio la dio de baja. Se puede recetar igual.">
-                        dada de baja
+                    {o.stock != null && (
+                      <Chip
+                        tono={o.stock > 0 ? 'gris' : 'ambar'}
+                        title="Existencias en el inventario. Se puede recetar igual aunque no haya."
+                      >
+                        {o.stock > 0 ? `stock ${o.stock}` : 'sin stock'}
                       </Chip>
                     )}
                   </span>
@@ -246,7 +298,18 @@ export default function SelectorComponentesSuero({ isOpen, seleccionados = [], o
             );
           })}
 
-          {filtradas.length === 0 && (
+          {cargando && opciones.length === 0 && (
+            <p className="px-3 py-6 text-center text-sm text-slate-400">Cargando el inventario…</p>
+          )}
+          {!cargando && errorCarga && (
+            <p className="px-3 py-6 text-center text-sm text-red-600">{errorCarga}</p>
+          )}
+          {!cargando && !errorCarga && opciones.length === 0 && (
+            <p className="px-3 py-6 text-center text-sm text-slate-400">
+              No hay productos en el inventario con la categoría Ampollas o Moléculas.
+            </p>
+          )}
+          {opciones.length > 0 && filtradas.length === 0 && (
             <p className="px-3 py-6 text-center text-sm text-slate-400">
               Nada coincide con «{escrito}».
             </p>
