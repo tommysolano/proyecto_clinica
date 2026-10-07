@@ -70,6 +70,19 @@ const userSchema = new mongoose.Schema(
      * pantalla sepa que tiene que preguntar.
      */
     alsoTherapist: { type: Boolean, default: false },
+    /**
+     * FACTURA DESDE LA AGENDA (oct-2026, en prueba).
+     *
+     * Con esto encendido, al recibir una cita el cajero/administrador COBRA
+     * primero —con el mismo formulario de Ventas: consumidor final o factura,
+     * forma de pago, pago dividido— y después asigna el doctor o enfermero; y la
+     * receta se cobra como una venta de verdad. Sin él, la agenda sigue como
+     * siempre (el valor y el pago se anotan como dato operativo).
+     *
+     * Lo enciende SOLO el super administrador (Configuración → Facturación), para
+     * probar el punto de venta con una persona antes de abrirlo a todos.
+     */
+    canBill: { type: Boolean, default: false },
     // Asignaciones de clínicas con su rol en cada una
     clinics: { type: [userClinicSchema], default: [] },
     /**

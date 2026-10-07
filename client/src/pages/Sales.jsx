@@ -119,7 +119,19 @@ const activePriceOf = (product) => {
   return list.find((p) => p.active) || list[0];
 };
 
-export default function Sales() {
+/**
+ * Props del modo INCRUSTADO (oct-2026, factura desde la agenda). La página de
+ * Ventas se monta sin ellas. La agenda la monta con:
+ *   embebido       solo los modales, sin la página;
+ *   citaId         la cita que se cobra (la venta nace enlazada a ella);
+ *   itemsIniciales [{ product, quantity }] — la RECETA a cobrar. Sin esto se
+ *                  cobra la VISITA: los servicios de la cita, su valor acordado y
+ *                  lo que ya abonó;
+ *   onCobrado(venta) al registrar la venta (venta = null si se continúa sin
+ *                  cobrar un canje);
+ *   onCerrar()     al cerrar sin cobrar.
+ */
+export default function Sales({ embebido = false, citaId = null, itemsIniciales = null, onCobrado, onCerrar } = {}) {
   const { hasRole } = useAuth();
   const [journalSale, setJournalSale] = useState(null); // venta cuyos asientos se consultan (solo lectura)
   const canCreate = hasRole('admin', 'cajero', 'contabilidad');
@@ -244,7 +256,7 @@ export default function Sales() {
   }, []);
 
   const fetchSales = async () => {
-    if (!canViewHistory) { setLoading(false); return; }
+    if (!canViewHistory || embebido) { setLoading(false); return; }
     try {
       const params = {};
       if (filter.startDate) params.startDate = filter.startDate;
@@ -513,27 +525,183 @@ export default function Sales() {
   const citaCargadaRef = useRef(null);
   const [searchParams] = useSearchParams();
   const citaParam = searchParams.get('cita');
+  // Incrustada en la agenda, la cita llega por props; en la página, por la URL.
+  const citaObjetivo = embebido ? citaId : citaParam;
+  const modoReceta = Array.isArray(itemsIniciales);
+  /**
+   * A NOMBRE DE QUIÉN SE FACTURA (oct-2026): consumidor final, el paciente de la
+   * cita (sus datos se llenan solos) u otra persona (se busca o se escribe). En
+   * los tres casos la venta queda enlazada al PACIENTE de la cita: a quién se le
+   * factura no cambia quién se atendió.
+   */
+  const [pacienteCita, setPacienteCita] = useState(null);
+  const [facturarA, setFacturarA] = useState('paciente');
+  const datosDePaciente = (p) => ({
+    clientName: `${p?.firstName || ''} ${p?.lastName || ''}`.trim(),
+    clientCedula: p?.cedula || '',
+    clientEmail: p?.email || '',
+    clientPhone: p?.phone || '',
+    clientAddress: p?.address || '',
+  });
+  const elegirFacturarA = (modo) => {
+    setFacturarA(modo);
+    setPatientSearch('');
+    setPickedFromList(false);
+    setClientResults([]);
+    if (modo === 'consumidor') {
+      setForm((f) => ({ ...f, clientName: 'Consumidor Final', clientCedula: '9999999999999', clientEmail: '', clientPhone: '', clientAddress: '' }));
+    } else if (modo === 'paciente' && pacienteCita) {
+      setForm((f) => ({ ...f, ...datosDePaciente(pacienteCita) }));
+    } else if (modo === 'otro') {
+      setForm((f) => ({ ...f, clientName: '', clientCedula: '', clientEmail: '', clientPhone: '', clientAddress: '' }));
+    }
+  };
+  // Lo que no se pudo precargar porque no está en el inventario (se avisa).
+  const [noPrecargados, setNoPrecargados] = useState([]);
+  // Clave de idempotencia de ESTE cobro: un doble clic no registra dos ventas.
+  const claveCobroRef = useRef('');
+
   useEffect(() => {
-    if (!canCreate || !citaParam || citaCargadaRef.current === citaParam) return undefined;
-    citaCargadaRef.current = citaParam;
-    api.get(`/appointments/${citaParam}`)
-      .then(({ data: apt }) => {
-        setCitaPorCobrar(apt);
-        openNew();
+    if (!canCreate || !citaObjetivo || citaCargadaRef.current === citaObjetivo) return undefined;
+    citaCargadaRef.current = citaObjetivo;
+    let vivo = true;
+    (async () => {
+      try {
+        const { data: apt } = await api.get(`/appointments/${citaObjetivo}`);
         const pid = apt.patient?._id || apt.patient;
-        const enLista = patients.find((p) => String(p._id) === String(pid));
-        if (pid && enLista) handlePatientSelect(String(pid));
-        else if (pid) setForm((f) => ({ ...f, patient: pid }));
+        // Solo SU paciente, con los datos del comprobante: no hace falta esperar a
+        // la lista entera de pacientes para empezar a cobrar.
+        const pac = pid
+          ? (await api.get(`/patients/${pid}`, { params: { withContact: 1 } }).catch(() => null))?.data || null
+          : null;
+        if (!vivo) return;
+        setCitaPorCobrar(apt);
+        setPacienteCita(pac);
+        openNew();
+        claveCobroRef.current = `cita-${apt._id}-${modoReceta ? 'receta' : 'visita'}-${Date.now()}`;
+        const conDatos = !!String(pac?.cedula || '').trim();
+        setFacturarA(conDatos ? 'paciente' : 'consumidor');
         setForm((f) => ({
           ...f,
+          patient: pid ? String(pid) : '',
+          ...(conDatos ? datosDePaciente(pac) : {}),
           appointment: String(apt._id),
-          notes: `Cobro de la cita del ${String(apt.date || '').slice(0, 10)} ${apt.startTime || ''}${apt.serviceItem?.name ? ` · ${apt.serviceItem.name}` : ''}`,
+          notes: `${modoReceta ? 'Receta' : 'Cobro'} de la cita del ${String(apt.date || '').slice(0, 10)} ${apt.startTime || ''}${apt.serviceItem?.name ? ` · ${apt.serviceItem.name}` : ''}`,
         }));
-      })
-      .catch(() => toast.error('No se pudo leer la cita a cobrar'));
-    return undefined;
+      } catch {
+        toast.error('No se pudo leer la cita a cobrar');
+        if (embebido) onCerrar?.();
+      }
+    })();
+    return () => {
+      vivo = false;
+      // Si se desmonta antes de terminar (o React repite el efecto), se vuelve a
+      // cargar en la siguiente vuelta en vez de quedarse sin cita.
+      citaCargadaRef.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [citaParam, patients]);
+  }, [citaObjetivo]);
+
+  /**
+   * LO QUE SE COBRA, PRECARGADO (oct-2026). En la visita: los servicios de la
+   * cita (su producto del inventario), con el VALOR ACORDADO como descuento si
+   * es menor que la lista, y lo ya ABONADO al agendar como un pago más. En la
+   * receta: los productos que recetó el doctor. Todo se puede cambiar antes de
+   * cobrar; lo que no está en el inventario se avisa y no se inventa.
+   */
+  const precargaRef = useRef(false);
+  useEffect(() => {
+    if (!citaPorCobrar || precargaRef.current || !products.length) return;
+    precargaRef.current = true;
+    const lineas = [];
+    const faltan = [];
+    const agregar = (productId, qty, nombre) => {
+      const product = products.find((p) => String(p._id) === String(productId));
+      if (!product) { if (nombre) faltan.push(nombre); return; }
+      const ya = lineas.find((l) => String(l.product) === String(product._id));
+      if (ya) { ya.quantity += qty; return; }
+      const lista = priceListOf(product);
+      const elegido = activePriceOf(product);
+      lineas.push({
+        product: product._id,
+        productName: product.name,
+        category: product.category,
+        unlimited: product.unlimited === true,
+        quantity: qty,
+        unitPrice: elegido.price,
+        priceName: elegido.name,
+        priceList: lista,
+        taxRate: product.taxRate,
+        stock: product.stock,
+        discount: 0,
+        treatment: '',
+      });
+    };
+    const apt = citaPorCobrar;
+    if (modoReceta) {
+      for (const it of itemsIniciales) {
+        if (it.product) agregar(it.product, Number(it.quantity) > 0 ? Number(it.quantity) : 1, it.name);
+        else if (it.name) faltan.push(it.name);
+      }
+    } else {
+      const svc = apt.serviceItem;
+      if (svc?.product) agregar(svc.product, 1, svc.name || apt.serviceName);
+      else if (svc?.name || apt.serviceName) faltan.push(svc?.name || apt.serviceName);
+      for (const extra of apt.additionalServices || []) {
+        const si = extra.serviceItem;
+        if (si?.product) agregar(si.product, 1, si.name || extra.name);
+        else if (extra.name || si?.name) faltan.push(extra.name || si?.name);
+      }
+      // El valor acordado manda: si es menor que la lista, la diferencia va como
+      // descuento (línea por línea, hasta agotarla).
+      const bruto = lineas.reduce((s, l) => s + l.unitPrice * l.quantity, 0);
+      const acordado = apt.isCanje ? null : apt.agreedValue;
+      if (acordado != null && lineas.length && Number(acordado) < bruto) {
+        let rebaja = +(bruto - Number(acordado)).toFixed(2);
+        for (const l of lineas) {
+          const d = Math.min(rebaja, +(l.unitPrice * l.quantity).toFixed(2));
+          l.discount = +d.toFixed(2);
+          rebaja = +(rebaja - d).toFixed(2);
+          if (rebaja <= 0) break;
+        }
+      }
+      // Lo ya abonado al agendar entra como un PAGO de esta venta con su forma;
+      // lo que falta, en efectivo (el cajero lo cambia si paga de otra forma).
+      const neto = lineas.reduce((s, l) => s + l.unitPrice * l.quantity - (Number(l.discount) || 0), 0);
+      if (apt.advancePayment && !apt.isCanje && neto > 0) {
+        const abonado = apt.advancePayment === 'abono'
+          ? Math.min(Number(apt.advanceAmount) || 0, neto)
+          : neto;
+        const FORMA = {
+          efectivo: { method: 'efectivo', cardType: '' },
+          transferencia: { method: 'transferencia', cardType: '' },
+          tarjeta_credito: { method: 'tarjeta', cardType: 'CREDITO' },
+          tarjeta_debito: { method: 'tarjeta', cardType: 'DEBITO' },
+        }[apt.advanceMethod] || { method: 'efectivo', cardType: '' };
+        const fila = (base, amount) => ({
+          method: base.method, cardType: base.cardType, amount: +amount.toFixed(2),
+          bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '',
+          cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0,
+        });
+        const resto = +(neto - abonado).toFixed(2);
+        if (abonado > 0 && resto > 0.01) {
+          setSplitPayments([fila(FORMA, abonado), fila({ method: 'efectivo', cardType: '' }, resto)]);
+          setSplitMode(true);
+        } else if (abonado > 0) {
+          setForm((f) => ({ ...f, paymentMethod: FORMA.method, cardType: FORMA.cardType }));
+        }
+      }
+    }
+    setForm((f) => ({ ...f, items: lineas }));
+    setNoPrecargados(faltan);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [citaPorCobrar, products]);
+
+  /** Cerrar el formulario: incrustado, se le avisa a la agenda. */
+  const cerrarVenta = () => {
+    setModalOpen(false);
+    if (embebido) onCerrar?.();
+  };
 
   /** Suelta el enlace con la cita (el cajero decide registrarla suelta). */
   const soltarCita = () => {
@@ -692,6 +860,14 @@ export default function Sales() {
           treatment: i.treatment || null,
         })),
         ...extra,
+        // Cobrando una cita: la venta es SIEMPRE de su paciente (aunque se le
+        // facture a otra persona) y un doble clic no registra dos ventas.
+        ...(citaPorCobrar && form.appointment
+          ? {
+              patient: String(citaPorCobrar.patient?._id || citaPorCobrar.patient || '') || null,
+              idempotencyKey: claveCobroRef.current || undefined,
+            }
+          : {}),
       });
       toast.success(
         extra.costCenterConfirmed
@@ -709,6 +885,8 @@ export default function Sales() {
       // Factura electrónica desde el punto de venta de quien cobra (no bloquea la venta:
       // si falla, la venta queda registrada y se puede facturar luego).
       if (facturarAlGuardar && puedeFacturarAqui && res.data?._id) emitirFactura(res.data);
+      // Incrustada en la agenda: la agenda sigue (asignar doctor/enfermero).
+      if (embebido) onCobrado?.(res.data);
     } catch (err) {
       const data = err.response?.data;
       if (data?.code === 'COST_CENTER_MISMATCH') {
@@ -836,6 +1014,874 @@ export default function Sales() {
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
     finally { setCollectBusy(false); }
   };
+
+  /**
+   * LOS MODALES DE LA VENTA, aparte del resto de la página: la agenda los usa
+   * INCRUSTADOS (`embebido`) para cobrar una cita sin salir de ella — el mismo
+   * formulario, la misma contabilidad (ver Appointments → CobrarCitaModal).
+   */
+  const modalesDeVenta = (
+    <>
+        <Modal
+          isOpen={modalOpen}
+          onClose={cerrarVenta}
+          title={embebido ? (modoReceta ? 'Cobrar la receta' : 'Cobrar la cita') : 'Nueva Venta'}
+          size="xl"
+        >
+          {/* El modal está ordenado por SECCIONES, en el orden en que se cobra: quién es el
+              cliente → de dónde sale la mercadería → qué se lleva → cómo paga. El aviso de
+              consumidor final va arriba del todo porque condiciona la factura entera. */}
+          {citaPorCobrar && (
+            <div className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 p-3">
+              <p className="text-xs text-emerald-900 m-0">
+                {modoReceta ? 'Cobrando la receta de la cita del ' : 'Cobrando la cita del '}
+                <b>{String(citaPorCobrar.date || '').slice(0, 10)} {citaPorCobrar.startTime || ''}</b>
+                {citaPorCobrar.serviceItem?.name ? ` · ${citaPorCobrar.serviceItem.name}` : ''}.
+                {!modoReceta && (
+                  <>
+                    {' '}Abonado al reservar: <b>${Number(citaPorCobrar.advanceAmount || 0).toFixed(2)}</b>
+                    {citaPorCobrar.agreedValue != null
+                      ? <> de <b>${Number(citaPorCobrar.agreedValue).toFixed(2)}</b> acordados</>
+                      : ''}.
+                  </>
+                )}
+                {' '}La venta queda <b>enlazada a la cita</b>
+                {!modoReceta && citaPorCobrar.advancePayment ? ' y lo ya abonado entra como un pago (revisa a qué cuenta llegó)' : ''}.
+              </p>
+              {!embebido && (
+                <button
+                  type="button"
+                  onClick={soltarCita}
+                  className="shrink-0 text-xs text-slate-500 underline bg-transparent border-none cursor-pointer hover:text-rose-600"
+                >
+                  Quitar
+                </button>
+              )}
+            </div>
+          )}
+          {/* CANJE o valor cero: no hay dinero que cobrar; se sigue a la asignación. */}
+          {embebido && !modoReceta && citaPorCobrar && (citaPorCobrar.isCanje || citaPorCobrar.agreedValue === 0) && (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-200 bg-sky-50 p-3">
+              <p className="m-0 text-xs text-sky-900">
+                {citaPorCobrar.isCanje ? 'Esta cita es un CANJE: no se cobra en dinero.' : 'Esta cita tiene valor $0.00: no hay nada que cobrar.'}
+              </p>
+              <button
+                type="button"
+                onClick={() => { setModalOpen(false); onCobrado?.(null); }}
+                className="btn-secondary text-xs"
+              >
+                Continuar sin cobrar
+              </button>
+            </div>
+          )}
+          {noPrecargados.length > 0 && (
+            <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 m-0">
+              No están en el inventario y no se precargaron: <b>{noPrecargados.join(', ')}</b>. Si se cobran, agrégalos abajo con su producto.
+            </p>
+          )}
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <ConsumidorFinalAlert cedula={form.clientCedula} />
+
+            {/* A NOMBRE DE QUIÉN SE FACTURA (cobro de una cita). */}
+            {citaPorCobrar && (
+              <div className="flex flex-wrap gap-2">
+                {[
+                  ['paciente', 'Datos del paciente', !pacienteCita?.cedula],
+                  ['consumidor', 'Consumidor final', false],
+                  ['otro', 'A otra persona', false],
+                ].map(([k, label, deshabilitado]) => (
+                  <button
+                    key={k}
+                    type="button"
+                    disabled={deshabilitado}
+                    title={deshabilitado ? 'El paciente no tiene cédula registrada' : undefined}
+                    onClick={() => elegirFacturarA(k)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                      facturarA === k
+                        ? 'bg-emerald-600 text-white border-emerald-600'
+                        : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+                {facturarA === 'otro' && (
+                  <span className="text-[11px] text-slate-500 self-center">
+                    Búscala abajo o escribe sus datos. La venta sigue siendo del paciente de la cita.
+                  </span>
+                )}
+              </div>
+            )}
+
+            <FormSection title="Datos del cliente" icon={HiOutlineUser}>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="sm:col-span-3 relative">
+                <label className="lbl">Buscar cliente registrado (opcional)</label>
+                <input
+                  type="text"
+                  value={patientSearch}
+                  onChange={(e) => onClientSearch(e.target.value)}
+                  placeholder="Escribe nombre, cédula o RUC..."
+                  className="input"
+                />
+                {/* Busca en los DOS maestros: pacientes de la clínica y personas registradas como
+                    CLIENTE en Personas (proveedores/clientes). Antes solo miraba pacientes. */}
+                {patientSearch && !pickedFromList && (() => {
+                  // Por PALABRAS SUELTAS y sin tildes (ver utils/nameSearch): «tommy
+                  // solano» encuentra a «TOMMY NELSON SOLANO PEÑAFIEL», que
+                  // comparando la cadena entera no aparecía.
+                  const pac = patients
+                    .filter((p) => nameMatches(patientSearch, p.firstName, p.lastName, p.cedula, p.phone))
+                    .slice(0, 15);
+                  return (
+                    <div className="absolute z-10 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white border border-emerald-100 rounded-xl shadow-lg">
+                      {pac.map((p) => (
+                        <button
+                          type="button"
+                          key={p._id}
+                          onClick={() => handlePatientSelect(p._id)}
+                          className="w-full text-left px-4 py-2 text-sm hover:bg-emerald-50 cursor-pointer bg-white border-none border-b border-emerald-50"
+                        >
+                          <span className="font-medium text-slate-800">
+                            {p.firstName} {p.lastName}
+                          </span>
+                          <span className="text-slate-400 ml-2">{p.cedula}</span>
+                          {p.phone && (
+                            <span className="text-slate-400 ml-2">• {p.phone}</span>
+                          )}
+                          <span className="ml-2 text-[10px] uppercase text-emerald-600">Paciente</span>
+                        </button>
+                      ))}
+                      {clientResults.map((c) => (
+                        <button
+                          type="button"
+                          key={c._id}
+                          onClick={() => handleClientSelect(c)}
+                          className="w-full text-left px-4 py-2 text-sm hover:bg-sky-50 cursor-pointer bg-white border-none border-b border-emerald-50"
+                        >
+                          <span className="font-medium text-slate-800">{c.razonSocial || c.nombreComercial}</span>
+                          <span className="text-slate-400 ml-2">{c.ruc}</span>
+                          <span className="ml-2 text-[10px] uppercase text-sky-600">Cliente</span>
+                        </button>
+                      ))}
+                      {!pac.length && !clientResults.length && (
+                        <p className="px-4 py-2 text-xs text-slate-400">
+                          Sin coincidencias. Se buscó entre los pacientes y entre las personas registradas como cliente.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
+                {/* También tras elegir una PERSONA (que no deja `patient`): sin esto no había
+                    forma de volver a Consumidor Final salvo reabrir el modal. */}
+                {(form.patient || pickedFromList) && (
+                  <button
+                    type="button"
+                    onClick={() => { setClientResults([]); handlePatientSelect(''); }}
+                    className="absolute right-3 top-9 text-xs text-emerald-600 hover:text-emerald-800 bg-transparent border-none cursor-pointer"
+                  >
+                    Limpiar
+                  </button>
+                )}
+              </div>
+              <div>
+                <label className="lbl">Cliente</label>
+                <input
+                  value={form.clientName}
+                  onChange={(e) => setForm({ ...form, clientName: e.target.value })}
+                  className="input"
+                />
+              </div>
+              <div>
+                <label className="lbl">Cédula / RUC / Pasaporte <span className="text-rose-500">*</span></label>
+                {/* Obligatoria: sin identificación la venta no se puede facturar ni declarar (ATS).
+                    Si no se identifica al comprador, va Consumidor Final (9999999999999). */}
+                <input
+                  value={form.clientCedula}
+                  onChange={(e) => setForm({ ...form, clientCedula: e.target.value })}
+                  className="input"
+                  required
+                  minLength={5}
+                  maxLength={20}
+                  placeholder="Cédula, RUC o pasaporte"
+                />
+                <SriStatus status={cedulaLookup} />
+              </div>
+              <div>
+                <label className="lbl">Email cliente</label>
+                <input
+                  type="email"
+                  value={form.clientEmail}
+                  onChange={(e) => setForm({ ...form, clientEmail: e.target.value })}
+                  className="input"
+                />
+                <EmailStatus status={emailCheck} onApplySuggestion={(s) => setForm({ ...form, clientEmail: s })} />
+              </div>
+              <div>
+                <label className="lbl">Teléfono cliente</label>
+                <input
+                  value={form.clientPhone}
+                  onChange={(e) => setForm({ ...form, clientPhone: e.target.value })}
+                  className="input"
+                />
+              </div>
+              <div className="sm:col-span-3">
+                <label className="lbl">Dirección cliente</label>
+                <input
+                  value={form.clientAddress}
+                  onChange={(e) => setForm({ ...form, clientAddress: e.target.value })}
+                  className="input"
+                />
+              </div>
+              <div>
+                <label className="lbl">Ciudad</label>
+                <select
+                  value={form.clientCity === 'Guayaquil' ? 'Guayaquil' : 'Otra'}
+                  onChange={(e) => {
+                    if (e.target.value === 'Guayaquil') {
+                      setForm({ ...form, clientCity: 'Guayaquil' });
+                    } else {
+                      setForm({ ...form, clientCity: '', clientZone: '' });
+                    }
+                  }}
+                  className="input"
+                >
+                  <option value="Guayaquil">Guayaquil</option>
+                  <option value="Otra">Otra ciudad</option>
+                </select>
+                {form.clientCity !== 'Guayaquil' && (
+                  <input
+                    value={form.clientCity}
+                    onChange={(e) => setForm({ ...form, clientCity: e.target.value })}
+                    placeholder="Nombre de la ciudad"
+                    className="input mt-1"
+                  />
+                )}
+              </div>
+              <div>
+                <label className="lbl">
+                  {form.clientCity === 'Guayaquil' ? 'Zona / Parroquia' : 'Sector'}
+                </label>
+                {form.clientCity === 'Guayaquil' ? (
+                  <>
+                    <input
+                      list="guayaquil-zones-datalist"
+                      value={form.clientZone}
+                      onChange={(e) => setForm({ ...form, clientZone: e.target.value })}
+                      placeholder="Ej. Tarqui, Urdesa, Alborada..."
+                      className="input"
+                    />
+                    <datalist id="guayaquil-zones-datalist">
+                      {guayaquilZones.map((z) => (
+                        <option key={z.name} value={z.name}>
+                          {z.parroquia}
+                        </option>
+                      ))}
+                    </datalist>
+                    {form.clientZone && !guayaquilZones.some((z) => z.name.toLowerCase() === form.clientZone.toLowerCase()) && (
+                      <p className="text-[11px] text-amber-600 mt-1">
+                        Zona no reconocida. Selecciona una de la lista.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <input
+                    value={form.clientZone}
+                    onChange={(e) => setForm({ ...form, clientZone: e.target.value })}
+                    className="input"
+                  />
+                )}
+              </div>
+              <div>
+                <label className="lbl">Recomendado por (comisión)</label>
+                <select
+                  value={form.recommendedBy || ''}
+                  onChange={(e) => setForm({ ...form, recommendedBy: e.target.value })}
+                  className="input"
+                >
+                  <option value="">— Nadie / No aplica —</option>
+                  {staff.map((u) => (
+                    <option key={u._id} value={u._id}>{u.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            </FormSection>
+
+            {/* Bodega y centro de costo. La bodega decide de qué capas FIFO sale la mercadería
+                (y por tanto el costo de venta) y PROPONE el centro. Una venta de solo servicios
+                no necesita bodega: entonces no hay centro de bodega que proponer. */}
+            {warehouses.length > 0 && (
+              <FormSection
+                title="Bodega y centro de costo"
+                subtitle="La bodega decide de qué existencias sale la mercadería (y con ello el costo de venta) y propone el centro."
+                icon={HiOutlineBuildingStorefront}
+              >
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="lbl">Bodega (de dónde sale la mercadería)</label>
+                    <select value={form.warehouse || ''} onChange={(e) => onPickWarehouse(e.target.value)} className="input">
+                      <option value="">— Sin bodega (stock general) —</option>
+                      {warehouses.map((w) => (
+                        <option key={w._id} value={w._id}>{w.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="lbl">Centro de costo</label>
+                    <select value={form.costCenter || ''} onChange={(e) => setForm({ ...form, costCenter: e.target.value })} className="input">
+                      <option value="">— Sin centro —</option>
+                      {costCenters.map((c) => (
+                        <option key={c._id} value={c._id}>{c.code} - {c.name}</option>
+                      ))}
+                    </select>
+                    {form.warehouse && centroEsperado && !centroDistinto && form.costCenter && (
+                      <p className="text-xs text-slate-500 mt-1">Propuesto por la bodega. Puedes cambiarlo.</p>
+                    )}
+                  </div>
+                  {centroDistinto && (
+                    <div className="sm:col-span-2 bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
+                      <b>Centro distinto al de la bodega.</b> La bodega{' '}
+                      <b>{warehouses.find((w) => String(w._id) === String(form.warehouse))?.name}</b> espera{' '}
+                      <b>{nombreCentro(centroEsperado) || '(sin centro)'}</b> y la venta se registrará con{' '}
+                      <b>{nombreCentro(form.costCenter)}</b>. Al guardar se te pedirá confirmarlo y quedará auditado.
+                    </div>
+                  )}
+                </div>
+              </FormSection>
+            )}
+
+            <FormSection title="Producto / servicio" icon={HiOutlineShoppingCart}>
+            {/* Agregar productos: el buscador manda (es lo que hay que leer para elegir bien) y
+                la cantidad ocupa un ancho fijo pequeño. Anchos con `basis/shrink-0` en vez de
+                `flex-1` + `w-20` sueltos, para que el buscador no se colapse. */}
+            <div className="bg-emerald-50/50 rounded-xl p-4">
+              <div className="flex flex-wrap sm:flex-nowrap items-end gap-2">
+                <div className="basis-full sm:basis-auto sm:flex-1 min-w-0">
+                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">Producto o servicio</label>
+                  <ProductAutocomplete
+                    products={products}
+                    value={currentItem.product}
+                    onSelect={(p) =>
+                      // Al cambiar de producto se descarta el precio elegido: pertenecía al anterior.
+                      setCurrentItem({ ...currentItem, product: p?._id || '', priceName: '' })
+                    }
+                    placeholder="Buscar producto o servicio..."
+                    filter={(p) => p.active !== false}
+                  />
+                </div>
+                {/* Lista de precios del producto elegido. Solo aparece si tiene más de uno: con un
+                    único precio el desplegable sería ruido. Por defecto viene marcado el activo. */}
+                {(() => {
+                  const prod = products.find((p) => p._id === currentItem.product);
+                  const lista = prod ? priceListOf(prod) : [];
+                  if (lista.length < 2) return null;
+                  const sel = currentItem.priceName || activePriceOf(prod).name;
+                  return (
+                    <div className="basis-full sm:basis-auto sm:w-52 shrink-0">
+                      <label className="block text-[11px] font-semibold text-slate-500 mb-1">Precio</label>
+                      <select
+                        value={sel}
+                        onChange={(e) => setCurrentItem({ ...currentItem, priceName: e.target.value })}
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white outline-none"
+                      >
+                        {lista.map((p) => (
+                          <option key={p.name} value={p.name}>
+                            {p.name} — ${Number(p.price).toFixed(2)}{p.active ? ' (activo)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })()}
+                <div className="w-24 shrink-0">
+                  <label className="block text-[11px] font-semibold text-slate-500 mb-1">Cantidad</label>
+                  <NumericInput
+                    min="1"
+                    value={currentItem.quantity}
+                    onChange={(e) =>
+                      setCurrentItem({ ...currentItem, quantity: e.target.value })
+                    }
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white text-center outline-none"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={addItem}
+                  className="shrink-0 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium cursor-pointer border-none"
+                >
+                  Agregar
+                </button>
+              </div>
+            </div>
+
+            {form.items.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="tbl">
+                  <thead>
+                    <tr className="border-b border-slate-200">
+                      <th className="text-left py-2">Producto</th>
+                      <th className="text-right py-2">Precio</th>
+                      <th className="text-center py-2">Cant.</th>
+                      <th className="text-right py-2">Desc. $</th>
+                      {form.patient && treatments.length > 0 && (
+                        <th className="text-left py-2 pl-2">Tratamiento</th>
+                      )}
+                      <th className="text-right py-2">Subtotal</th>
+                      <th className="text-right py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {form.items.map((item, idx) => (
+                      <tr key={idx} className="border-b border-slate-100">
+                        <td className="py-2 text-slate-800">{item.productName}</td>
+                        {/* El precio también se puede cambiar DESPUÉS de agregar la línea: es
+                            habitual darse cuenta al final de que va a precio corporativo. Solo
+                            se ofrecen los precios de la lista del producto (el backend los valida). */}
+                        <td className="py-2 text-right">
+                          {(item.priceList || []).length > 1 ? (
+                            <select
+                              value={item.priceName || ''}
+                              onChange={(e) => {
+                                const elegido = item.priceList.find((p) => p.name === e.target.value);
+                                if (!elegido) return;
+                                const items = [...form.items];
+                                items[idx] = { ...items[idx], priceName: elegido.name, unitPrice: elegido.price };
+                                setForm({ ...form, items });
+                              }}
+                              title="Precio de la lista del producto"
+                              className="px-2 py-1 border border-slate-300 rounded text-sm bg-white outline-none text-right"
+                            >
+                              {item.priceList.map((p) => (
+                                <option key={p.name} value={p.name}>{p.name} — ${Number(p.price).toFixed(2)}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <>${item.unitPrice.toFixed(2)}</>
+                          )}
+                        </td>
+                        <td className="py-2 text-center">
+                          <NumericInput
+                            min="1"
+                            value={item.quantity}
+                            onChange={(e) => updateItemQty(idx, e.target.value)}
+                            className="w-16 px-2 py-1 border border-slate-300 rounded text-center text-sm outline-none"
+                          />
+                        </td>
+                        <td className="py-2 text-right">
+                          <NumericInput
+                            min="0"
+                            step="0.01"
+                            value={item.discount ?? 0}
+                            onChange={(e) => {
+                              const items = [...form.items];
+                              items[idx].discount = parseFloat(e.target.value) || 0;
+                              setForm({ ...form, items });
+                            }}
+                            className="w-20 px-2 py-1 border border-slate-300 rounded text-right text-sm outline-none"
+                          />
+                        </td>
+                        {form.patient && treatments.length > 0 && (
+                          <td className="py-2 pl-2">
+                            <select
+                              value={item.treatment || ''}
+                              onChange={(e) => {
+                                const items = [...form.items];
+                                items[idx].treatment = e.target.value;
+                                setForm({ ...form, items });
+                              }}
+                              className="w-full px-2 py-1 border border-slate-300 rounded text-sm bg-white"
+                            >
+                              <option value="">— Ninguno —</option>
+                              {treatments.map((t) => (
+                                <option key={t._id} value={t._id}>
+                                  {t.name || t.product?.name || 'Tratamiento'}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                        )}
+                        <td className="py-2 text-right font-medium">
+                          ${(item.unitPrice * item.quantity - (Number(item.discount) || 0)).toFixed(2)}
+                        </td>
+                        <td className="py-2 text-right">
+                          <button
+                            type="button"
+                            onClick={() => removeItem(idx)}
+                            className="p-1 text-red-400 hover:text-red-600 bg-transparent border-none cursor-pointer"
+                          >
+                            <HiOutlineTrash className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {form.items.length > 0 && (
+              <div className="bg-emerald-50/50 rounded-xl p-4 space-y-1">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Subtotal:</span>
+                  <span className="font-medium">${subtotal.toFixed(2)}</span>
+                </div>
+                {discountTotal > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500">Descuento:</span>
+                    <span className="font-medium text-rose-600">-${discountTotal.toFixed(2)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-base font-bold border-t border-emerald-200 pt-2">
+                  <span>Total:</span>
+                  <span className="text-emerald-700">${total.toFixed(2)}</span>
+                </div>
+              </div>
+            )}
+            </FormSection>
+
+            {/* ── Método(s) de pago y todas sus subopciones ────────────────────────────── */}
+            <FormSection title="Método de pago" icon={HiOutlineBanknotes}>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {!splitMode && (
+                  <div>
+                    <label className="lbl">Forma de pago</label>
+                    <select
+                      value={form.paymentMethod}
+                      onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })}
+                      className="input"
+                    >
+                      {Object.entries(paymentMethods).map(([k, v]) => (
+                        <option key={k} value={k}>{v}</option>
+                      ))}
+                    </select>
+                    <button type="button" onClick={enableSplit} className="mt-1 text-xs text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0">Dividir en varios métodos</button>
+                  </div>
+                )}
+                {!splitMode && form.paymentMethod === 'transferencia' && (
+                  <div className="sm:col-span-2">
+                    <label className="lbl">Cuenta bancaria de destino</label>
+                    <select
+                      value={form.bankAccount || ''}
+                      onChange={(e) => setForm({ ...form, bankAccount: e.target.value })}
+                      className="input"
+                    >
+                      <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas configuradas'}</option>
+                      {payOptions.accounts.map((a) => (
+                        <option key={a._id} value={a._id}>{a.name} — {a.bank} ({a.accountNumber})</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {!splitMode && form.paymentMethod === 'tarjeta' && (
+                  <>
+                    {/* Débito o crédito: contablemente NO es lo mismo (el crédito queda por
+                        liquidar, con comisión y retención) y el reporte los separa en columnas. */}
+                    <div>
+                      <label className="lbl">Tipo de tarjeta</label>
+                      <select
+                        value={form.cardType || ''}
+                        onChange={(e) => setForm({ ...form, cardType: e.target.value, creditCard: '', cardPos: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })}
+                        className="input"
+                      >
+                        <option value="">Seleccionar tipo…</option>
+                        {CARD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="lbl">Tarjeta / Adquirente</label>
+                      <select
+                        value={form.creditCard || ''}
+                        onChange={(e) => setForm({ ...form, creditCard: e.target.value, cardPos: '' })}
+                        className="input"
+                      >
+                        <option value="">{cardOptions.length ? 'Seleccionar tarjeta…' : 'No hay tarjetas configuradas'}</option>
+                        {cardOptions.map((c) => (
+                          <option key={c._id} value={c._id}>{c.name} ({c.brand}{c.acquirer ? ` · ${c.acquirer}` : ''})</option>
+                        ))}
+                      </select>
+                    </div>
+                    {(() => {
+                      const card = payOptions.cards.find((c) => c._id === form.creditCard);
+                      if (!card || !card.pos?.length) return null;
+                      return (
+                        <div>
+                          <label className="lbl">POS / Terminal</label>
+                          <select
+                            value={form.cardPos || ''}
+                            onChange={(e) => setForm({ ...form, cardPos: e.target.value })}
+                            className="input"
+                          >
+                            <option value="">Seleccionar POS…</option>
+                            {card.pos.map((p) => (
+                              <option key={p.code} value={p.code}>{p.name || p.code}{p.terminal ? ` · ${p.terminal}` : ''}</option>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    })()}
+                    <div>
+                      <label className="lbl">N° de lote</label>
+                      <input
+                        value={form.cardLote || ''}
+                        onChange={(e) => setForm({ ...form, cardLote: e.target.value })}
+                        placeholder="Del voucher POS (para la liquidación)"
+                        className="input"
+                      />
+                    </div>
+                    <div>
+                      <label className="lbl">N° de voucher</label>
+                      <input
+                        value={form.cardVoucher || ''}
+                        onChange={(e) => setForm({ ...form, cardVoucher: e.target.value })}
+                        placeholder="Opcional"
+                        className="input"
+                      />
+                    </div>
+                    {form.cardType === 'CREDITO' && (
+                      <>
+                        <div>
+                          <label className="lbl">Diferido</label>
+                          <select
+                            value={form.cardDeferredType || 'CORRIENTE'}
+                            onChange={(e) => setForm({ ...form, cardDeferredType: e.target.value, cardDeferredMonths: e.target.value === 'CORRIENTE' ? 0 : (form.cardDeferredMonths || 3) })}
+                            className="input"
+                          >
+                            {DEFERRED_TYPES.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}
+                          </select>
+                        </div>
+                        {form.cardDeferredType && form.cardDeferredType !== 'CORRIENTE' && (
+                          <div>
+                            <label className="lbl">Meses</label>
+                            <select value={form.cardDeferredMonths || 3} onChange={(e) => setForm({ ...form, cardDeferredMonths: +e.target.value })} className="input">
+                              {DEFERRED_MONTHS.map((m) => <option key={m} value={m}>{m} meses</option>)}
+                            </select>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
+                )}
+                {!splitMode && form.paymentMethod === 'credito' && (
+                  <>
+                    <div>
+                      <label className="lbl">Plazo de crédito</label>
+                      <select
+                        value={form.creditTerm ?? 30}
+                        onChange={(e) => setForm({ ...form, creditTerm: e.target.value === 'CUSTOM' ? 'CUSTOM' : +e.target.value, dueDate: '' })}
+                        className="input"
+                      >
+                        {CREDIT_TERMS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                        <option value="CUSTOM">Otra fecha…</option>
+                      </select>
+                      {form.creditTerm !== 'CUSTOM' && (
+                        <p className="text-[11px] text-slate-500 mt-1">Vence el {vencimientoDesdePlazo(form.creditTerm ?? 30)}</p>
+                      )}
+                    </div>
+                    {form.creditTerm === 'CUSTOM' && (
+                      <div>
+                        <label className="lbl">Vence (fecha exacta)</label>
+                        <DateInput value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
+                      </div>
+                    )}
+                  </>
+                )}
+                {splitMode && (
+                  <div className="sm:col-span-3 rounded-xl border border-slate-200 p-3 space-y-2 bg-slate-50/40">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-semibold text-slate-700">Pago dividido (varios métodos)</span>
+                      <button type="button" onClick={() => { setSplitMode(false); setSplitPayments([]); }} className="text-xs text-slate-500 hover:text-slate-700 bg-transparent border-none cursor-pointer">Volver a un solo método</button>
+                    </div>
+                    {splitPayments.map((p, i) => (
+                      <div key={i} className="flex flex-wrap items-end gap-2 bg-white rounded-lg border border-slate-100 p-2">
+                        <div className="w-36">
+                          <label className="lbl">Método</label>
+                          <select value={p.method} onChange={(e) => setSplitRow(i, { method: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })} className="input">
+                            {Object.entries(paymentMethods).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                          </select>
+                        </div>
+                        <div className="w-28">
+                          <label className="lbl">Monto</label>
+                          <NumericInput step="0.01" value={p.amount} onChange={(e) => setSplitRow(i, { amount: e.target.value })} className="input" />
+                        </div>
+                        {p.method === 'transferencia' && (
+                          <div className="flex-1 min-w-[180px]">
+                            <label className="lbl">Cuenta bancaria</label>
+                            <select value={p.bankAccount || ''} onChange={(e) => setSplitRow(i, { bankAccount: e.target.value })} className="input">
+                              <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas'}</option>
+                              {payOptions.accounts.map((a) => <option key={a._id} value={a._id}>{a.name} — {a.bank}</option>)}
+                            </select>
+                          </div>
+                        )}
+                        {p.method === 'tarjeta' && (
+                          <>
+                            <div className="w-28">
+                              <label className="lbl">Tipo</label>
+                              <select value={p.cardType || ''} onChange={(e) => setSplitRow(i, { cardType: e.target.value, creditCard: '' })} className="input">
+                                <option value="">Tipo…</option>
+                                {CARD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                              </select>
+                            </div>
+                            <div className="flex-1 min-w-[150px]">
+                              <label className="lbl">Tarjeta</label>
+                              <select value={p.creditCard || ''} onChange={(e) => setSplitRow(i, { creditCard: e.target.value })} className="input">
+                                <option value="">{cardsOfType(p.cardType).length ? 'Seleccionar…' : 'No hay tarjetas'}</option>
+                                {cardsOfType(p.cardType).map((c) => <option key={c._id} value={c._id}>{c.name} ({c.brand})</option>)}
+                              </select>
+                            </div>
+                            <div className="w-24">
+                              <label className="lbl">N° lote</label>
+                              <input value={p.cardLote || ''} onChange={(e) => setSplitRow(i, { cardLote: e.target.value })} className="input" />
+                            </div>
+                            {p.cardType === 'CREDITO' && (
+                              <>
+                                <div className="w-40">
+                                  <label className="lbl">Diferido</label>
+                                  <select
+                                    value={p.cardDeferredType || 'CORRIENTE'}
+                                    onChange={(e) => setSplitRow(i, { cardDeferredType: e.target.value, cardDeferredMonths: e.target.value === 'CORRIENTE' ? 0 : (p.cardDeferredMonths || 3) })}
+                                    className="input"
+                                  >
+                                    {DEFERRED_TYPES.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}
+                                  </select>
+                                </div>
+                                {p.cardDeferredType && p.cardDeferredType !== 'CORRIENTE' && (
+                                  <div className="w-24">
+                                    <label className="lbl">Meses</label>
+                                    <select value={p.cardDeferredMonths || 3} onChange={(e) => setSplitRow(i, { cardDeferredMonths: +e.target.value })} className="input">
+                                      {DEFERRED_MONTHS.map((m) => <option key={m} value={m}>{m}</option>)}
+                                    </select>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </>
+                        )}
+                        <button type="button" onClick={() => removeSplitRow(i)} className="text-rose-500 hover:text-rose-600 pb-2 bg-transparent border-none cursor-pointer" title="Quitar método"><HiOutlineTrash className="w-4 h-4" /></button>
+                      </div>
+                    ))}
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <button type="button" onClick={addSplitRow} className="text-emerald-600 text-sm flex items-center gap-1 bg-transparent border-none cursor-pointer"><HiOutlinePlus className="w-4 h-4" /> Agregar método</button>
+                      <div className="text-sm text-slate-600">
+                        Pagado: <b className="font-mono">${splitPaid.toFixed(2)}</b> / Total: <b className="font-mono">${total.toFixed(2)}</b>
+                        {Math.abs(splitRemaining) > 0.01
+                          ? <span className={`ml-2 font-semibold ${splitRemaining > 0 ? 'text-amber-600' : 'text-rose-600'}`}>{splitRemaining > 0 ? `Falta $${splitRemaining.toFixed(2)}` : `Sobra $${(-splitRemaining).toFixed(2)}`}</span>
+                          : <span className="ml-2 text-emerald-600 font-semibold">✓ Cuadra</span>}
+                      </div>
+                    </div>
+                    {splitPayments.some((p) => p.method === 'credito') && (
+                      <div className="flex flex-wrap items-end gap-2">
+                        <div className="w-48">
+                          <label className="lbl">Plazo (parte a crédito)</label>
+                          <select
+                            value={form.creditTerm ?? 30}
+                            onChange={(e) => setForm({ ...form, creditTerm: e.target.value === 'CUSTOM' ? 'CUSTOM' : +e.target.value, dueDate: '' })}
+                            className="input"
+                          >
+                            {CREDIT_TERMS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                            <option value="CUSTOM">Otra fecha…</option>
+                          </select>
+                        </div>
+                        {form.creditTerm === 'CUSTOM' ? (
+                          <div className="w-48">
+                            <label className="lbl">Vence</label>
+                            <DateInput value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-slate-500 pb-2">Vence el {vencimientoDesdePlazo(form.creditTerm ?? 30)}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </FormSection>
+
+            {canInvoice && (miPunto.usaPuntos || miPunto.punto) && (
+              puedeFacturarAqui ? (
+                <label className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50/50 px-4 py-3 text-sm text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4"
+                    checked={facturarAlGuardar}
+                    onChange={(e) => setFacturarAlGuardar(e.target.checked)}
+                  />
+                  <span>
+                    Emitir factura electrónica al cobrar · serie{' '}
+                    <b className="font-mono">{miPunto.punto.establecimiento}-{miPunto.punto.codigo}</b>
+                    {miPunto.punto.nombre ? ` (${miPunto.punto.nombre})` : ''}
+                  </span>
+                </label>
+              ) : (
+                <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 m-0">
+                  No tienes un punto de emisión (caja) asignado: la venta se registra, pero no podrás facturarla.
+                  Pide al administrador que te asigne uno en Configuración SRI.
+                </p>
+              )
+            )}
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setModalOpen(false)}
+                className="px-5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-600 hover:bg-slate-50 cursor-pointer bg-white"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={saving || form.items.length === 0}
+                className="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-sm font-medium disabled:opacity-50 cursor-pointer border-none shadow-lg shadow-emerald-200/50"
+              >
+                {saving ? 'Procesando...' : `Cobrar $${total.toFixed(2)}`}
+              </button>
+            </div>
+          </form>
+        </Modal>
+
+        {/* El backend rechazó la venta porque su centro no es el predeterminado de la bodega.
+            No se bloquea: se explica y se confirma. La venta queda con el centro ELEGIDO. */}
+        <Modal isOpen={!!ccMismatch} onClose={() => setCcMismatch(null)} title="Centro de costo distinto al de la bodega" size="md">
+          {ccMismatch && (
+            <div className="space-y-3">
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
+                La bodega <b>{ccMismatch.warehouse?.name}</b> tiene un centro de costo predeterminado distinto
+                del que estás usando en esta venta.
+              </div>
+              <table className="w-full text-sm">
+                <tbody>
+                  <tr className="border-t">
+                    <td className="px-3 py-2 font-medium text-slate-700">Centro esperado (bodega)</td>
+                    <td className="px-3 py-2 text-right">{ccMismatch.esperado?.code} - {ccMismatch.esperado?.name}</td>
+                  </tr>
+                  <tr className="border-t bg-amber-50">
+                    <td className="px-3 py-2 font-medium text-slate-700">Centro elegido</td>
+                    <td className="px-3 py-2 text-right font-semibold text-amber-700">{ccMismatch.elegido?.code} - {ccMismatch.elegido?.name}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p className="text-xs text-slate-500">
+                La venta, su asiento de ingreso, el costo de venta (COGS) y la salida de inventario
+                quedarán con <b>{ccMismatch.elegido?.name}</b>. La diferencia queda auditada.
+              </p>
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setCcMismatch(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Volver a revisar</button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => { setSaving(true); enviarVenta(ccMismatch.paymentPayload, { costCenterConfirmed: true }).catch((e) => toast.error(e.response?.data?.message || 'Error al crear venta')); }}
+                  className="px-4 py-2 bg-amber-600 text-white rounded-xl shadow-sm shadow-amber-600/20"
+                >
+                  Registrar con el centro elegido
+                </button>
+              </div>
+            </div>
+          )}
+        </Modal>
+    </>
+  );
+
+  if (embebido) return modalesDeVenta;
 
   return (
     <div className="space-y-6">
@@ -1067,797 +2113,7 @@ export default function Sales() {
         </div>
       </div>
 
-      <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title="Nueva Venta" size="xl">
-        {/* El modal está ordenado por SECCIONES, en el orden en que se cobra: quién es el
-            cliente → de dónde sale la mercadería → qué se lleva → cómo paga. El aviso de
-            consumidor final va arriba del todo porque condiciona la factura entera. */}
-        {citaPorCobrar && (
-          <div className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 p-3">
-            <p className="text-xs text-emerald-900 m-0">
-              Cobrando la cita del <b>{String(citaPorCobrar.date || '').slice(0, 10)} {citaPorCobrar.startTime || ''}</b>
-              {citaPorCobrar.serviceItem?.name ? ` · ${citaPorCobrar.serviceItem.name}` : ''}.
-              {' '}Abonado al reservar: <b>${Number(citaPorCobrar.advanceAmount || 0).toFixed(2)}</b>
-              {citaPorCobrar.agreedValue != null
-                ? <> de <b>${Number(citaPorCobrar.agreedValue).toFixed(2)}</b> acordados</>
-                : ''}. La venta queda <b>enlazada a la cita</b> — si el paciente ya abonó, cobra aquí el resto.
-            </p>
-            <button
-              type="button"
-              onClick={soltarCita}
-              className="shrink-0 text-xs text-slate-500 underline bg-transparent border-none cursor-pointer hover:text-rose-600"
-            >
-              Quitar
-            </button>
-          </div>
-        )}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <ConsumidorFinalAlert cedula={form.clientCedula} />
-
-          <FormSection title="Datos del cliente" icon={HiOutlineUser}>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="sm:col-span-3 relative">
-              <label className="lbl">Buscar cliente registrado (opcional)</label>
-              <input
-                type="text"
-                value={patientSearch}
-                onChange={(e) => onClientSearch(e.target.value)}
-                placeholder="Escribe nombre, cédula o RUC..."
-                className="input"
-              />
-              {/* Busca en los DOS maestros: pacientes de la clínica y personas registradas como
-                  CLIENTE en Personas (proveedores/clientes). Antes solo miraba pacientes. */}
-              {patientSearch && !pickedFromList && (() => {
-                // Por PALABRAS SUELTAS y sin tildes (ver utils/nameSearch): «tommy
-                // solano» encuentra a «TOMMY NELSON SOLANO PEÑAFIEL», que
-                // comparando la cadena entera no aparecía.
-                const pac = patients
-                  .filter((p) => nameMatches(patientSearch, p.firstName, p.lastName, p.cedula, p.phone))
-                  .slice(0, 15);
-                return (
-                  <div className="absolute z-10 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white border border-emerald-100 rounded-xl shadow-lg">
-                    {pac.map((p) => (
-                      <button
-                        type="button"
-                        key={p._id}
-                        onClick={() => handlePatientSelect(p._id)}
-                        className="w-full text-left px-4 py-2 text-sm hover:bg-emerald-50 cursor-pointer bg-white border-none border-b border-emerald-50"
-                      >
-                        <span className="font-medium text-slate-800">
-                          {p.firstName} {p.lastName}
-                        </span>
-                        <span className="text-slate-400 ml-2">{p.cedula}</span>
-                        {p.phone && (
-                          <span className="text-slate-400 ml-2">• {p.phone}</span>
-                        )}
-                        <span className="ml-2 text-[10px] uppercase text-emerald-600">Paciente</span>
-                      </button>
-                    ))}
-                    {clientResults.map((c) => (
-                      <button
-                        type="button"
-                        key={c._id}
-                        onClick={() => handleClientSelect(c)}
-                        className="w-full text-left px-4 py-2 text-sm hover:bg-sky-50 cursor-pointer bg-white border-none border-b border-emerald-50"
-                      >
-                        <span className="font-medium text-slate-800">{c.razonSocial || c.nombreComercial}</span>
-                        <span className="text-slate-400 ml-2">{c.ruc}</span>
-                        <span className="ml-2 text-[10px] uppercase text-sky-600">Cliente</span>
-                      </button>
-                    ))}
-                    {!pac.length && !clientResults.length && (
-                      <p className="px-4 py-2 text-xs text-slate-400">
-                        Sin coincidencias. Se buscó entre los pacientes y entre las personas registradas como cliente.
-                      </p>
-                    )}
-                  </div>
-                );
-              })()}
-              {/* También tras elegir una PERSONA (que no deja `patient`): sin esto no había
-                  forma de volver a Consumidor Final salvo reabrir el modal. */}
-              {(form.patient || pickedFromList) && (
-                <button
-                  type="button"
-                  onClick={() => { setClientResults([]); handlePatientSelect(''); }}
-                  className="absolute right-3 top-9 text-xs text-emerald-600 hover:text-emerald-800 bg-transparent border-none cursor-pointer"
-                >
-                  Limpiar
-                </button>
-              )}
-            </div>
-            <div>
-              <label className="lbl">Cliente</label>
-              <input
-                value={form.clientName}
-                onChange={(e) => setForm({ ...form, clientName: e.target.value })}
-                className="input"
-              />
-            </div>
-            <div>
-              <label className="lbl">Cédula / RUC / Pasaporte <span className="text-rose-500">*</span></label>
-              {/* Obligatoria: sin identificación la venta no se puede facturar ni declarar (ATS).
-                  Si no se identifica al comprador, va Consumidor Final (9999999999999). */}
-              <input
-                value={form.clientCedula}
-                onChange={(e) => setForm({ ...form, clientCedula: e.target.value })}
-                className="input"
-                required
-                minLength={5}
-                maxLength={20}
-                placeholder="Cédula, RUC o pasaporte"
-              />
-              <SriStatus status={cedulaLookup} />
-            </div>
-            <div>
-              <label className="lbl">Email cliente</label>
-              <input
-                type="email"
-                value={form.clientEmail}
-                onChange={(e) => setForm({ ...form, clientEmail: e.target.value })}
-                className="input"
-              />
-              <EmailStatus status={emailCheck} onApplySuggestion={(s) => setForm({ ...form, clientEmail: s })} />
-            </div>
-            <div>
-              <label className="lbl">Teléfono cliente</label>
-              <input
-                value={form.clientPhone}
-                onChange={(e) => setForm({ ...form, clientPhone: e.target.value })}
-                className="input"
-              />
-            </div>
-            <div className="sm:col-span-3">
-              <label className="lbl">Dirección cliente</label>
-              <input
-                value={form.clientAddress}
-                onChange={(e) => setForm({ ...form, clientAddress: e.target.value })}
-                className="input"
-              />
-            </div>
-            <div>
-              <label className="lbl">Ciudad</label>
-              <select
-                value={form.clientCity === 'Guayaquil' ? 'Guayaquil' : 'Otra'}
-                onChange={(e) => {
-                  if (e.target.value === 'Guayaquil') {
-                    setForm({ ...form, clientCity: 'Guayaquil' });
-                  } else {
-                    setForm({ ...form, clientCity: '', clientZone: '' });
-                  }
-                }}
-                className="input"
-              >
-                <option value="Guayaquil">Guayaquil</option>
-                <option value="Otra">Otra ciudad</option>
-              </select>
-              {form.clientCity !== 'Guayaquil' && (
-                <input
-                  value={form.clientCity}
-                  onChange={(e) => setForm({ ...form, clientCity: e.target.value })}
-                  placeholder="Nombre de la ciudad"
-                  className="input mt-1"
-                />
-              )}
-            </div>
-            <div>
-              <label className="lbl">
-                {form.clientCity === 'Guayaquil' ? 'Zona / Parroquia' : 'Sector'}
-              </label>
-              {form.clientCity === 'Guayaquil' ? (
-                <>
-                  <input
-                    list="guayaquil-zones-datalist"
-                    value={form.clientZone}
-                    onChange={(e) => setForm({ ...form, clientZone: e.target.value })}
-                    placeholder="Ej. Tarqui, Urdesa, Alborada..."
-                    className="input"
-                  />
-                  <datalist id="guayaquil-zones-datalist">
-                    {guayaquilZones.map((z) => (
-                      <option key={z.name} value={z.name}>
-                        {z.parroquia}
-                      </option>
-                    ))}
-                  </datalist>
-                  {form.clientZone && !guayaquilZones.some((z) => z.name.toLowerCase() === form.clientZone.toLowerCase()) && (
-                    <p className="text-[11px] text-amber-600 mt-1">
-                      Zona no reconocida. Selecciona una de la lista.
-                    </p>
-                  )}
-                </>
-              ) : (
-                <input
-                  value={form.clientZone}
-                  onChange={(e) => setForm({ ...form, clientZone: e.target.value })}
-                  className="input"
-                />
-              )}
-            </div>
-            <div>
-              <label className="lbl">Recomendado por (comisión)</label>
-              <select
-                value={form.recommendedBy || ''}
-                onChange={(e) => setForm({ ...form, recommendedBy: e.target.value })}
-                className="input"
-              >
-                <option value="">— Nadie / No aplica —</option>
-                {staff.map((u) => (
-                  <option key={u._id} value={u._id}>{u.name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          </FormSection>
-
-          {/* Bodega y centro de costo. La bodega decide de qué capas FIFO sale la mercadería
-              (y por tanto el costo de venta) y PROPONE el centro. Una venta de solo servicios
-              no necesita bodega: entonces no hay centro de bodega que proponer. */}
-          {warehouses.length > 0 && (
-            <FormSection
-              title="Bodega y centro de costo"
-              subtitle="La bodega decide de qué existencias sale la mercadería (y con ello el costo de venta) y propone el centro."
-              icon={HiOutlineBuildingStorefront}
-            >
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="lbl">Bodega (de dónde sale la mercadería)</label>
-                  <select value={form.warehouse || ''} onChange={(e) => onPickWarehouse(e.target.value)} className="input">
-                    <option value="">— Sin bodega (stock general) —</option>
-                    {warehouses.map((w) => (
-                      <option key={w._id} value={w._id}>{w.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="lbl">Centro de costo</label>
-                  <select value={form.costCenter || ''} onChange={(e) => setForm({ ...form, costCenter: e.target.value })} className="input">
-                    <option value="">— Sin centro —</option>
-                    {costCenters.map((c) => (
-                      <option key={c._id} value={c._id}>{c.code} - {c.name}</option>
-                    ))}
-                  </select>
-                  {form.warehouse && centroEsperado && !centroDistinto && form.costCenter && (
-                    <p className="text-xs text-slate-500 mt-1">Propuesto por la bodega. Puedes cambiarlo.</p>
-                  )}
-                </div>
-                {centroDistinto && (
-                  <div className="sm:col-span-2 bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
-                    <b>Centro distinto al de la bodega.</b> La bodega{' '}
-                    <b>{warehouses.find((w) => String(w._id) === String(form.warehouse))?.name}</b> espera{' '}
-                    <b>{nombreCentro(centroEsperado) || '(sin centro)'}</b> y la venta se registrará con{' '}
-                    <b>{nombreCentro(form.costCenter)}</b>. Al guardar se te pedirá confirmarlo y quedará auditado.
-                  </div>
-                )}
-              </div>
-            </FormSection>
-          )}
-
-          <FormSection title="Producto / servicio" icon={HiOutlineShoppingCart}>
-          {/* Agregar productos: el buscador manda (es lo que hay que leer para elegir bien) y
-              la cantidad ocupa un ancho fijo pequeño. Anchos con `basis/shrink-0` en vez de
-              `flex-1` + `w-20` sueltos, para que el buscador no se colapse. */}
-          <div className="bg-emerald-50/50 rounded-xl p-4">
-            <div className="flex flex-wrap sm:flex-nowrap items-end gap-2">
-              <div className="basis-full sm:basis-auto sm:flex-1 min-w-0">
-                <label className="block text-[11px] font-semibold text-slate-500 mb-1">Producto o servicio</label>
-                <ProductAutocomplete
-                  products={products}
-                  value={currentItem.product}
-                  onSelect={(p) =>
-                    // Al cambiar de producto se descarta el precio elegido: pertenecía al anterior.
-                    setCurrentItem({ ...currentItem, product: p?._id || '', priceName: '' })
-                  }
-                  placeholder="Buscar producto o servicio..."
-                  filter={(p) => p.active !== false}
-                />
-              </div>
-              {/* Lista de precios del producto elegido. Solo aparece si tiene más de uno: con un
-                  único precio el desplegable sería ruido. Por defecto viene marcado el activo. */}
-              {(() => {
-                const prod = products.find((p) => p._id === currentItem.product);
-                const lista = prod ? priceListOf(prod) : [];
-                if (lista.length < 2) return null;
-                const sel = currentItem.priceName || activePriceOf(prod).name;
-                return (
-                  <div className="basis-full sm:basis-auto sm:w-52 shrink-0">
-                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">Precio</label>
-                    <select
-                      value={sel}
-                      onChange={(e) => setCurrentItem({ ...currentItem, priceName: e.target.value })}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white outline-none"
-                    >
-                      {lista.map((p) => (
-                        <option key={p.name} value={p.name}>
-                          {p.name} — ${Number(p.price).toFixed(2)}{p.active ? ' (activo)' : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                );
-              })()}
-              <div className="w-24 shrink-0">
-                <label className="block text-[11px] font-semibold text-slate-500 mb-1">Cantidad</label>
-                <NumericInput
-                  min="1"
-                  value={currentItem.quantity}
-                  onChange={(e) =>
-                    setCurrentItem({ ...currentItem, quantity: e.target.value })
-                  }
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white text-center outline-none"
-                />
-              </div>
-              <button
-                type="button"
-                onClick={addItem}
-                className="shrink-0 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium cursor-pointer border-none"
-              >
-                Agregar
-              </button>
-            </div>
-          </div>
-
-          {form.items.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="tbl">
-                <thead>
-                  <tr className="border-b border-slate-200">
-                    <th className="text-left py-2">Producto</th>
-                    <th className="text-right py-2">Precio</th>
-                    <th className="text-center py-2">Cant.</th>
-                    <th className="text-right py-2">Desc. $</th>
-                    {form.patient && treatments.length > 0 && (
-                      <th className="text-left py-2 pl-2">Tratamiento</th>
-                    )}
-                    <th className="text-right py-2">Subtotal</th>
-                    <th className="text-right py-2"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {form.items.map((item, idx) => (
-                    <tr key={idx} className="border-b border-slate-100">
-                      <td className="py-2 text-slate-800">{item.productName}</td>
-                      {/* El precio también se puede cambiar DESPUÉS de agregar la línea: es
-                          habitual darse cuenta al final de que va a precio corporativo. Solo
-                          se ofrecen los precios de la lista del producto (el backend los valida). */}
-                      <td className="py-2 text-right">
-                        {(item.priceList || []).length > 1 ? (
-                          <select
-                            value={item.priceName || ''}
-                            onChange={(e) => {
-                              const elegido = item.priceList.find((p) => p.name === e.target.value);
-                              if (!elegido) return;
-                              const items = [...form.items];
-                              items[idx] = { ...items[idx], priceName: elegido.name, unitPrice: elegido.price };
-                              setForm({ ...form, items });
-                            }}
-                            title="Precio de la lista del producto"
-                            className="px-2 py-1 border border-slate-300 rounded text-sm bg-white outline-none text-right"
-                          >
-                            {item.priceList.map((p) => (
-                              <option key={p.name} value={p.name}>{p.name} — ${Number(p.price).toFixed(2)}</option>
-                            ))}
-                          </select>
-                        ) : (
-                          <>${item.unitPrice.toFixed(2)}</>
-                        )}
-                      </td>
-                      <td className="py-2 text-center">
-                        <NumericInput
-                          min="1"
-                          value={item.quantity}
-                          onChange={(e) => updateItemQty(idx, e.target.value)}
-                          className="w-16 px-2 py-1 border border-slate-300 rounded text-center text-sm outline-none"
-                        />
-                      </td>
-                      <td className="py-2 text-right">
-                        <NumericInput
-                          min="0"
-                          step="0.01"
-                          value={item.discount ?? 0}
-                          onChange={(e) => {
-                            const items = [...form.items];
-                            items[idx].discount = parseFloat(e.target.value) || 0;
-                            setForm({ ...form, items });
-                          }}
-                          className="w-20 px-2 py-1 border border-slate-300 rounded text-right text-sm outline-none"
-                        />
-                      </td>
-                      {form.patient && treatments.length > 0 && (
-                        <td className="py-2 pl-2">
-                          <select
-                            value={item.treatment || ''}
-                            onChange={(e) => {
-                              const items = [...form.items];
-                              items[idx].treatment = e.target.value;
-                              setForm({ ...form, items });
-                            }}
-                            className="w-full px-2 py-1 border border-slate-300 rounded text-sm bg-white"
-                          >
-                            <option value="">— Ninguno —</option>
-                            {treatments.map((t) => (
-                              <option key={t._id} value={t._id}>
-                                {t.name || t.product?.name || 'Tratamiento'}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                      )}
-                      <td className="py-2 text-right font-medium">
-                        ${(item.unitPrice * item.quantity - (Number(item.discount) || 0)).toFixed(2)}
-                      </td>
-                      <td className="py-2 text-right">
-                        <button
-                          type="button"
-                          onClick={() => removeItem(idx)}
-                          className="p-1 text-red-400 hover:text-red-600 bg-transparent border-none cursor-pointer"
-                        >
-                          <HiOutlineTrash className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {form.items.length > 0 && (
-            <div className="bg-emerald-50/50 rounded-xl p-4 space-y-1">
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-500">Subtotal:</span>
-                <span className="font-medium">${subtotal.toFixed(2)}</span>
-              </div>
-              {discountTotal > 0 && (
-                <div className="flex justify-between text-sm">
-                  <span className="text-slate-500">Descuento:</span>
-                  <span className="font-medium text-rose-600">-${discountTotal.toFixed(2)}</span>
-                </div>
-              )}
-              <div className="flex justify-between text-base font-bold border-t border-emerald-200 pt-2">
-                <span>Total:</span>
-                <span className="text-emerald-700">${total.toFixed(2)}</span>
-              </div>
-            </div>
-          )}
-          </FormSection>
-
-          {/* ── Método(s) de pago y todas sus subopciones ────────────────────────────── */}
-          <FormSection title="Método de pago" icon={HiOutlineBanknotes}>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              {!splitMode && (
-                <div>
-                  <label className="lbl">Forma de pago</label>
-                  <select
-                    value={form.paymentMethod}
-                    onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })}
-                    className="input"
-                  >
-                    {Object.entries(paymentMethods).map(([k, v]) => (
-                      <option key={k} value={k}>{v}</option>
-                    ))}
-                  </select>
-                  <button type="button" onClick={enableSplit} className="mt-1 text-xs text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0">Dividir en varios métodos</button>
-                </div>
-              )}
-              {!splitMode && form.paymentMethod === 'transferencia' && (
-                <div className="sm:col-span-2">
-                  <label className="lbl">Cuenta bancaria de destino</label>
-                  <select
-                    value={form.bankAccount || ''}
-                    onChange={(e) => setForm({ ...form, bankAccount: e.target.value })}
-                    className="input"
-                  >
-                    <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas configuradas'}</option>
-                    {payOptions.accounts.map((a) => (
-                      <option key={a._id} value={a._id}>{a.name} — {a.bank} ({a.accountNumber})</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              {!splitMode && form.paymentMethod === 'tarjeta' && (
-                <>
-                  {/* Débito o crédito: contablemente NO es lo mismo (el crédito queda por
-                      liquidar, con comisión y retención) y el reporte los separa en columnas. */}
-                  <div>
-                    <label className="lbl">Tipo de tarjeta</label>
-                    <select
-                      value={form.cardType || ''}
-                      onChange={(e) => setForm({ ...form, cardType: e.target.value, creditCard: '', cardPos: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })}
-                      className="input"
-                    >
-                      <option value="">Seleccionar tipo…</option>
-                      {CARD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="lbl">Tarjeta / Adquirente</label>
-                    <select
-                      value={form.creditCard || ''}
-                      onChange={(e) => setForm({ ...form, creditCard: e.target.value, cardPos: '' })}
-                      className="input"
-                    >
-                      <option value="">{cardOptions.length ? 'Seleccionar tarjeta…' : 'No hay tarjetas configuradas'}</option>
-                      {cardOptions.map((c) => (
-                        <option key={c._id} value={c._id}>{c.name} ({c.brand}{c.acquirer ? ` · ${c.acquirer}` : ''})</option>
-                      ))}
-                    </select>
-                  </div>
-                  {(() => {
-                    const card = payOptions.cards.find((c) => c._id === form.creditCard);
-                    if (!card || !card.pos?.length) return null;
-                    return (
-                      <div>
-                        <label className="lbl">POS / Terminal</label>
-                        <select
-                          value={form.cardPos || ''}
-                          onChange={(e) => setForm({ ...form, cardPos: e.target.value })}
-                          className="input"
-                        >
-                          <option value="">Seleccionar POS…</option>
-                          {card.pos.map((p) => (
-                            <option key={p.code} value={p.code}>{p.name || p.code}{p.terminal ? ` · ${p.terminal}` : ''}</option>
-                          ))}
-                        </select>
-                      </div>
-                    );
-                  })()}
-                  <div>
-                    <label className="lbl">N° de lote</label>
-                    <input
-                      value={form.cardLote || ''}
-                      onChange={(e) => setForm({ ...form, cardLote: e.target.value })}
-                      placeholder="Del voucher POS (para la liquidación)"
-                      className="input"
-                    />
-                  </div>
-                  <div>
-                    <label className="lbl">N° de voucher</label>
-                    <input
-                      value={form.cardVoucher || ''}
-                      onChange={(e) => setForm({ ...form, cardVoucher: e.target.value })}
-                      placeholder="Opcional"
-                      className="input"
-                    />
-                  </div>
-                  {form.cardType === 'CREDITO' && (
-                    <>
-                      <div>
-                        <label className="lbl">Diferido</label>
-                        <select
-                          value={form.cardDeferredType || 'CORRIENTE'}
-                          onChange={(e) => setForm({ ...form, cardDeferredType: e.target.value, cardDeferredMonths: e.target.value === 'CORRIENTE' ? 0 : (form.cardDeferredMonths || 3) })}
-                          className="input"
-                        >
-                          {DEFERRED_TYPES.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}
-                        </select>
-                      </div>
-                      {form.cardDeferredType && form.cardDeferredType !== 'CORRIENTE' && (
-                        <div>
-                          <label className="lbl">Meses</label>
-                          <select value={form.cardDeferredMonths || 3} onChange={(e) => setForm({ ...form, cardDeferredMonths: +e.target.value })} className="input">
-                            {DEFERRED_MONTHS.map((m) => <option key={m} value={m}>{m} meses</option>)}
-                          </select>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </>
-              )}
-              {!splitMode && form.paymentMethod === 'credito' && (
-                <>
-                  <div>
-                    <label className="lbl">Plazo de crédito</label>
-                    <select
-                      value={form.creditTerm ?? 30}
-                      onChange={(e) => setForm({ ...form, creditTerm: e.target.value === 'CUSTOM' ? 'CUSTOM' : +e.target.value, dueDate: '' })}
-                      className="input"
-                    >
-                      {CREDIT_TERMS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-                      <option value="CUSTOM">Otra fecha…</option>
-                    </select>
-                    {form.creditTerm !== 'CUSTOM' && (
-                      <p className="text-[11px] text-slate-500 mt-1">Vence el {vencimientoDesdePlazo(form.creditTerm ?? 30)}</p>
-                    )}
-                  </div>
-                  {form.creditTerm === 'CUSTOM' && (
-                    <div>
-                      <label className="lbl">Vence (fecha exacta)</label>
-                      <DateInput value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
-                    </div>
-                  )}
-                </>
-              )}
-              {splitMode && (
-                <div className="sm:col-span-3 rounded-xl border border-slate-200 p-3 space-y-2 bg-slate-50/40">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-semibold text-slate-700">Pago dividido (varios métodos)</span>
-                    <button type="button" onClick={() => { setSplitMode(false); setSplitPayments([]); }} className="text-xs text-slate-500 hover:text-slate-700 bg-transparent border-none cursor-pointer">Volver a un solo método</button>
-                  </div>
-                  {splitPayments.map((p, i) => (
-                    <div key={i} className="flex flex-wrap items-end gap-2 bg-white rounded-lg border border-slate-100 p-2">
-                      <div className="w-36">
-                        <label className="lbl">Método</label>
-                        <select value={p.method} onChange={(e) => setSplitRow(i, { method: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })} className="input">
-                          {Object.entries(paymentMethods).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                        </select>
-                      </div>
-                      <div className="w-28">
-                        <label className="lbl">Monto</label>
-                        <NumericInput step="0.01" value={p.amount} onChange={(e) => setSplitRow(i, { amount: e.target.value })} className="input" />
-                      </div>
-                      {p.method === 'transferencia' && (
-                        <div className="flex-1 min-w-[180px]">
-                          <label className="lbl">Cuenta bancaria</label>
-                          <select value={p.bankAccount || ''} onChange={(e) => setSplitRow(i, { bankAccount: e.target.value })} className="input">
-                            <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas'}</option>
-                            {payOptions.accounts.map((a) => <option key={a._id} value={a._id}>{a.name} — {a.bank}</option>)}
-                          </select>
-                        </div>
-                      )}
-                      {p.method === 'tarjeta' && (
-                        <>
-                          <div className="w-28">
-                            <label className="lbl">Tipo</label>
-                            <select value={p.cardType || ''} onChange={(e) => setSplitRow(i, { cardType: e.target.value, creditCard: '' })} className="input">
-                              <option value="">Tipo…</option>
-                              {CARD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-                            </select>
-                          </div>
-                          <div className="flex-1 min-w-[150px]">
-                            <label className="lbl">Tarjeta</label>
-                            <select value={p.creditCard || ''} onChange={(e) => setSplitRow(i, { creditCard: e.target.value })} className="input">
-                              <option value="">{cardsOfType(p.cardType).length ? 'Seleccionar…' : 'No hay tarjetas'}</option>
-                              {cardsOfType(p.cardType).map((c) => <option key={c._id} value={c._id}>{c.name} ({c.brand})</option>)}
-                            </select>
-                          </div>
-                          <div className="w-24">
-                            <label className="lbl">N° lote</label>
-                            <input value={p.cardLote || ''} onChange={(e) => setSplitRow(i, { cardLote: e.target.value })} className="input" />
-                          </div>
-                          {p.cardType === 'CREDITO' && (
-                            <>
-                              <div className="w-40">
-                                <label className="lbl">Diferido</label>
-                                <select
-                                  value={p.cardDeferredType || 'CORRIENTE'}
-                                  onChange={(e) => setSplitRow(i, { cardDeferredType: e.target.value, cardDeferredMonths: e.target.value === 'CORRIENTE' ? 0 : (p.cardDeferredMonths || 3) })}
-                                  className="input"
-                                >
-                                  {DEFERRED_TYPES.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}
-                                </select>
-                              </div>
-                              {p.cardDeferredType && p.cardDeferredType !== 'CORRIENTE' && (
-                                <div className="w-24">
-                                  <label className="lbl">Meses</label>
-                                  <select value={p.cardDeferredMonths || 3} onChange={(e) => setSplitRow(i, { cardDeferredMonths: +e.target.value })} className="input">
-                                    {DEFERRED_MONTHS.map((m) => <option key={m} value={m}>{m}</option>)}
-                                  </select>
-                                </div>
-                              )}
-                            </>
-                          )}
-                        </>
-                      )}
-                      <button type="button" onClick={() => removeSplitRow(i)} className="text-rose-500 hover:text-rose-600 pb-2 bg-transparent border-none cursor-pointer" title="Quitar método"><HiOutlineTrash className="w-4 h-4" /></button>
-                    </div>
-                  ))}
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <button type="button" onClick={addSplitRow} className="text-emerald-600 text-sm flex items-center gap-1 bg-transparent border-none cursor-pointer"><HiOutlinePlus className="w-4 h-4" /> Agregar método</button>
-                    <div className="text-sm text-slate-600">
-                      Pagado: <b className="font-mono">${splitPaid.toFixed(2)}</b> / Total: <b className="font-mono">${total.toFixed(2)}</b>
-                      {Math.abs(splitRemaining) > 0.01
-                        ? <span className={`ml-2 font-semibold ${splitRemaining > 0 ? 'text-amber-600' : 'text-rose-600'}`}>{splitRemaining > 0 ? `Falta $${splitRemaining.toFixed(2)}` : `Sobra $${(-splitRemaining).toFixed(2)}`}</span>
-                        : <span className="ml-2 text-emerald-600 font-semibold">✓ Cuadra</span>}
-                    </div>
-                  </div>
-                  {splitPayments.some((p) => p.method === 'credito') && (
-                    <div className="flex flex-wrap items-end gap-2">
-                      <div className="w-48">
-                        <label className="lbl">Plazo (parte a crédito)</label>
-                        <select
-                          value={form.creditTerm ?? 30}
-                          onChange={(e) => setForm({ ...form, creditTerm: e.target.value === 'CUSTOM' ? 'CUSTOM' : +e.target.value, dueDate: '' })}
-                          className="input"
-                        >
-                          {CREDIT_TERMS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-                          <option value="CUSTOM">Otra fecha…</option>
-                        </select>
-                      </div>
-                      {form.creditTerm === 'CUSTOM' ? (
-                        <div className="w-48">
-                          <label className="lbl">Vence</label>
-                          <DateInput value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
-                        </div>
-                      ) : (
-                        <p className="text-[11px] text-slate-500 pb-2">Vence el {vencimientoDesdePlazo(form.creditTerm ?? 30)}</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </FormSection>
-
-          {canInvoice && (miPunto.usaPuntos || miPunto.punto) && (
-            puedeFacturarAqui ? (
-              <label className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50/50 px-4 py-3 text-sm text-slate-700 cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="w-4 h-4"
-                  checked={facturarAlGuardar}
-                  onChange={(e) => setFacturarAlGuardar(e.target.checked)}
-                />
-                <span>
-                  Emitir factura electrónica al cobrar · serie{' '}
-                  <b className="font-mono">{miPunto.punto.establecimiento}-{miPunto.punto.codigo}</b>
-                  {miPunto.punto.nombre ? ` (${miPunto.punto.nombre})` : ''}
-                </span>
-              </label>
-            ) : (
-              <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 m-0">
-                No tienes un punto de emisión (caja) asignado: la venta se registra, pero no podrás facturarla.
-                Pide al administrador que te asigne uno en Configuración SRI.
-              </p>
-            )
-          )}
-
-          <div className="flex justify-end gap-3 pt-2">
-            <button
-              type="button"
-              onClick={() => setModalOpen(false)}
-              className="px-5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-600 hover:bg-slate-50 cursor-pointer bg-white"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={saving || form.items.length === 0}
-              className="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-sm font-medium disabled:opacity-50 cursor-pointer border-none shadow-lg shadow-emerald-200/50"
-            >
-              {saving ? 'Procesando...' : `Cobrar $${total.toFixed(2)}`}
-            </button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* El backend rechazó la venta porque su centro no es el predeterminado de la bodega.
-          No se bloquea: se explica y se confirma. La venta queda con el centro ELEGIDO. */}
-      <Modal isOpen={!!ccMismatch} onClose={() => setCcMismatch(null)} title="Centro de costo distinto al de la bodega" size="md">
-        {ccMismatch && (
-          <div className="space-y-3">
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
-              La bodega <b>{ccMismatch.warehouse?.name}</b> tiene un centro de costo predeterminado distinto
-              del que estás usando en esta venta.
-            </div>
-            <table className="w-full text-sm">
-              <tbody>
-                <tr className="border-t">
-                  <td className="px-3 py-2 font-medium text-slate-700">Centro esperado (bodega)</td>
-                  <td className="px-3 py-2 text-right">{ccMismatch.esperado?.code} - {ccMismatch.esperado?.name}</td>
-                </tr>
-                <tr className="border-t bg-amber-50">
-                  <td className="px-3 py-2 font-medium text-slate-700">Centro elegido</td>
-                  <td className="px-3 py-2 text-right font-semibold text-amber-700">{ccMismatch.elegido?.code} - {ccMismatch.elegido?.name}</td>
-                </tr>
-              </tbody>
-            </table>
-            <p className="text-xs text-slate-500">
-              La venta, su asiento de ingreso, el costo de venta (COGS) y la salida de inventario
-              quedarán con <b>{ccMismatch.elegido?.name}</b>. La diferencia queda auditada.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setCcMismatch(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Volver a revisar</button>
-              <button
-                type="button"
-                disabled={saving}
-                onClick={() => { setSaving(true); enviarVenta(ccMismatch.paymentPayload, { costCenterConfirmed: true }).catch((e) => toast.error(e.response?.data?.message || 'Error al crear venta')); }}
-                className="px-4 py-2 bg-amber-600 text-white rounded-xl shadow-sm shadow-amber-600/20"
-              >
-                Registrar con el centro elegido
-              </button>
-            </div>
-          </div>
-        )}
-      </Modal>
+      {modalesDeVenta}
 
       <Modal
         isOpen={!!detailModal}

@@ -660,3 +660,51 @@ exports.getDoctors = async (req, res) => {
     res.status(500).json({ message: 'Error al obtener doctores', error: error.message });
   }
 };
+
+/**
+ * FACTURA DESDE LA AGENDA — quién la tiene (oct-2026, solo super admin).
+ *
+ * Se ofrece al personal que cobra: administradores y cajeros de cualquier
+ * sucursal. Es una lista corta a propósito: el punto de venta se prueba con una
+ * persona y se abre después.
+ */
+exports.getBillingStaff = async (req, res) => {
+  try {
+    const users = await User.find({
+      active: { $ne: false },
+      clinics: { $elemMatch: { role: { $in: ['admin', 'cajero'] } } },
+    })
+      .select('name email canBill clinics.role clinics.clinic')
+      .populate('clinics.clinic', 'name nombreComercial')
+      .sort({ name: 1 })
+      .lean();
+    res.json(users.map((u) => ({
+      _id: u._id,
+      name: u.name,
+      email: u.email,
+      canBill: !!u.canBill,
+      sucursales: (u.clinics || [])
+        .filter((c) => ['admin', 'cajero'].includes(c.role))
+        .map((c) => ({ nombre: c.clinic?.nombreComercial || c.clinic?.name || '', rol: c.role })),
+    })));
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener el personal de caja', error: error.message });
+  }
+};
+
+/** Enciende o apaga la factura desde la agenda para una persona (solo super admin). */
+exports.setBillingPermission = async (req, res) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      { $set: { canBill: !!req.body?.canBill } },
+      { new: true }
+    ).select('name canBill');
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    // Sin esperar el TTL de la caché: el cambio tiene que notarse ya.
+    require('../utils/userCache').invalidate(user._id);
+    res.json({ _id: user._id, name: user.name, canBill: !!user.canBill });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al guardar el permiso', error: error.message });
+  }
+};

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
+import { useState, useEffect, useRef, useMemo, Fragment, lazy, Suspense } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import api from '../api/axios';
@@ -11,6 +11,8 @@ import SameSlotPanel from '../components/SameSlotPanel';
 import AssignAttentionModal from '../components/AssignAttentionModal';
 import AppointmentServiceValueModal from '../components/AppointmentServiceValueModal';
 import AppointmentFollowUpModal from '../components/AppointmentFollowUpModal';
+// El formulario de Ventas, incrustado para cobrar una cita (solo se descarga si se usa).
+const VentaIncrustada = lazy(() => import('./Sales'));
 import SeguimientosPacienteModal from '../components/SeguimientosPacienteModal';
 // Los datos del paciente se corrigen desde la propia cita: es el MISMO
 // formulario que el de la página de Pacientes (ver components/PatientFields).
@@ -50,6 +52,7 @@ import {
   HiOutlineClipboardDocumentList,
   HiOutlineLockClosed,
   HiOutlineArrowRightCircle,
+  HiOutlineBanknotes,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import TimeSlotInput from '../components/TimeSlotInput';
@@ -593,6 +596,15 @@ export default function Appointments() {
   // Quién puede ejecutar el flujo asistir → cobrar → derivar (requiere cobrar).
   const canCharge = hasRole('admin', 'cajero');
   /**
+   * FACTURA DESDE LA AGENDA (oct-2026, en prueba): quien la tiene encendida
+   * (User.canBill, lo decide el super admin) COBRA antes de asignar la atención,
+   * con el formulario de Ventas, y cobra la receta como una venta de verdad. El
+   * resto sigue como siempre.
+   */
+  const facturaEnAgenda = canCharge && !!user?.canBill;
+  // { appointment, receta?: [{ product, quantity, name }], luegoAsignar?: bool }
+  const [cobrarCita, setCobrarCita] = useState(null);
+  /**
    * Quién trabaja con TODA la organización y no solo con su sede. No es lo mismo
    * que `canCharge`: el call center no cobra, pero atiende el teléfono de la
    * clínica entera —ve dónde está agendado un paciente y agenda donde le pidan—.
@@ -675,6 +687,18 @@ export default function Appointments() {
   const [saving, setSaving] = useState(false);
   // Modal para asignar doctor al marcar 'asistida'
   const [assignModal, setAssignModal] = useState(null); // { appointment }
+  /**
+   * Recibir al paciente. Con factura desde la agenda, una cita que llega y aún
+   * no se cobró pasa PRIMERO por el cobro; al registrarlo se abre la asignación.
+   * Reasignar una cita ya cobrada (o ya en atención) no vuelve a cobrar.
+   */
+  const abrirAsignacion = (apt) => {
+    if (facturaEnAgenda && !apt?.cobro && ['pendiente', 'confirmada', 'no_asistio'].includes(apt?.status)) {
+      setCobrarCita({ appointment: apt, luegoAsignar: true });
+      return;
+    }
+    setAssignModal({ appointment: apt });
+  };
   // Corregir el servicio y el valor de una cita, incluso ya completada. Es lo
   // único que mostrador puede tocar después de que el paciente fue atendido.
   const [serviceValueModal, setServiceValueModal] = useState(null); // cita
@@ -1360,7 +1384,7 @@ export default function Appointments() {
     const apt = appointments.find((a) => String(a._id) === String(editing));
     if (!apt) return;
     setModalOpen(false);
-    setAssignModal({ appointment: apt });
+    abrirAsignacion(apt);
   };
 
   /**
@@ -3082,11 +3106,27 @@ export default function Appointments() {
                         marcadas como ausentes: si el paciente aparece, hay
                         que poder recibirlo sin pelearse con el estado. */
                     if (canCharge && ['pendiente', 'confirmada', 'asistida', 'no_asistio', 'completada'].includes(apt.status)) {
+                      /**
+                       * FACTURA DESDE LA AGENDA: cobrar la cita (con la venta
+                       * de verdad) cuando todavía no tiene su cobro. Al recibir
+                       * al paciente «Asignar atención» ya pasa por aquí solo;
+                       * esto sirve también para cobrar después.
+                       */
+                      if (facturaEnAgenda && !apt.cobro) {
+                        opciones.push({
+                          id: 'cobrar',
+                          label: 'Cobrar la cita',
+                          icon: HiOutlineBanknotes,
+                          fn: () => setCobrarCita({ appointment: apt }),
+                        });
+                      }
                       opciones.push({
                         id: 'asignar',
-                        label: 'Asignar atención',
+                        label: facturaEnAgenda && !apt.cobro && ['pendiente', 'confirmada', 'no_asistio'].includes(apt.status)
+                          ? 'Cobrar y asignar atención'
+                          : 'Asignar atención',
                         icon: HiOutlineUserPlus,
-                        fn: () => setAssignModal({ appointment: apt }),
+                        fn: () => abrirAsignacion(apt),
                       });
                       /**
                        * EL SUERO DE ENFERMERÍA (sep-2026). Si la cita quedó
@@ -3544,6 +3584,17 @@ export default function Appointments() {
                               }
                             >
                               💧 {apt.serumStatus === 'aplazado' ? 'Suero pendiente' : 'Falta asignar suero'}
+                            </span>
+                          </div>
+                        )}
+                        {/* FACTURA DESDE LA AGENDA: lo cobrado de la cita (sus ventas). */}
+                        {canCharge && apt.cobro && (
+                          <div className="mt-1">
+                            <span
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase whitespace-nowrap bg-emerald-100 text-emerald-800 cursor-default"
+                              title={apt.cobro.ventas.map((v) => `${v.saleNumber || 'Venta'} · $${Number(v.total || 0).toFixed(2)}`).join('\n')}
+                            >
+                              <HiOutlineBanknotes className="w-3 h-3" /> Cobrada · ${Number(apt.cobro.total || 0).toFixed(2)}
                             </span>
                           </div>
                         )}
@@ -4595,7 +4646,7 @@ export default function Appointments() {
                     <button
                       type="button"
                       onClick={() => {
-                        setAssignModal({ appointment: detailModal });
+                        abrirAsignacion(detailModal);
                         setDetailModal(null);
                       }}
                       className="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-100 text-emerald-700 hover:bg-emerald-200 border-none cursor-pointer"
@@ -4841,7 +4892,33 @@ export default function Appointments() {
           nurses={nurses}
           onClose={() => setAssignModal(null)}
           onDone={fetchAppointments}
+          // Con factura desde la agenda el dinero ya entró por la venta: el
+          // valor y el adelanto «operativos» sobran y confundirían.
+          ocultarValor={facturaEnAgenda}
         />
+      )}
+
+      {/**
+        * COBRAR LA CITA / LA RECETA (factura desde la agenda, oct-2026): el MISMO
+        * formulario de Ventas, incrustado. La venta queda enlazada a la cita y
+        * con su asiento, su caja y, si hay punto de emisión, su factura. Al
+        * cobrar al recibir al paciente, se sigue con la asignación.
+        */}
+      {cobrarCita && (
+        <Suspense fallback={null}>
+          <VentaIncrustada
+            embebido
+            citaId={cobrarCita.appointment._id}
+            itemsIniciales={cobrarCita.receta || null}
+            onCerrar={() => setCobrarCita(null)}
+            onCobrado={() => {
+              const { appointment: apt, luegoAsignar } = cobrarCita;
+              setCobrarCita(null);
+              fetchAppointments();
+              if (luegoAsignar) setAssignModal({ appointment: apt });
+            }}
+          />
+        </Suspense>
       )}
 
       {/**
@@ -4896,6 +4973,14 @@ export default function Appointments() {
           appointment={consultaModal}
           onClose={() => setConsultaModal(null)}
           onPurchaseSaved={fetchAppointments}
+          // Factura desde la agenda: la receta se cobra como una venta de verdad.
+          onCobrarReceta={facturaEnAgenda
+            ? (receta) => {
+                const apt = consultaModal;
+                setConsultaModal(null);
+                setCobrarCita({ appointment: apt, receta });
+              }
+            : null}
         />
       )}
 

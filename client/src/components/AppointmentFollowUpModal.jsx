@@ -34,7 +34,7 @@ import {
  *
  * Props: appointment (la cita), onClose
  */
-export default function AppointmentFollowUpModal({ appointment, onClose, onPurchaseSaved }) {
+export default function AppointmentFollowUpModal({ appointment, onClose, onPurchaseSaved, onCobrarReceta = null }) {
   const { hasRole, user } = useAuth();
   const puedeRegistrarCobro = user?.isSuperAdmin || hasRole('admin', 'cajero');
   const [data, setData] = useState(null);
@@ -65,7 +65,15 @@ export default function AppointmentFollowUpModal({ appointment, onClose, onPurch
           </p>
         </div>
 
-        {puedeRegistrarCobro && (
+        {/**
+          * FACTURA DESDE LA AGENDA (oct-2026): con ella encendida la receta se
+          * cobra como una VENTA (formulario de Ventas, con su contabilidad), no
+          * como el registro operativo de siempre.
+          */}
+        {puedeRegistrarCobro && onCobrarReceta && data && (
+          <CobrarRecetaComoVenta followUps={data.followUps} onCobrar={onCobrarReceta} />
+        )}
+        {puedeRegistrarCobro && !onCobrarReceta && (
           <CobroReceta appointment={appointment} onSaved={onPurchaseSaved} />
         )}
 
@@ -116,6 +124,49 @@ export default function AppointmentFollowUpModal({ appointment, onClose, onPurch
         </div>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * LA RECETA COMO VENTA (factura desde la agenda, oct-2026). Junta lo que el
+ * doctor recetó en esta cita —medicamentos e insumos, no servicios ni sueros— y
+ * lo manda al formulario de Ventas, donde se quita lo que el paciente no se
+ * lleva, se elige cómo factura y cómo paga.
+ */
+function CobrarRecetaComoVenta({ followUps, onCobrar }) {
+  const receta = [];
+  for (const fu of followUps || []) {
+    for (const it of fu.recetaItems || []) {
+      if (it.isService || it.isSerum || it.fromDerivacion || !String(it.name || '').trim()) continue;
+      receta.push({
+        product: it.product?._id || it.product || null,
+        quantity: Number(it.quantity) > 0 ? Number(it.quantity) : 1,
+        name: it.name,
+      });
+    }
+  }
+  if (!receta.length) return null;
+  return (
+    <div className="rounded-xl border border-violet-200 bg-violet-50/60 px-4 py-3 space-y-2">
+      <p className="m-0 text-sm font-semibold text-violet-900">Receta de esta cita</p>
+      <ul className="m-0 pl-4 text-xs text-slate-700 space-y-0.5">
+        {receta.map((r, i) => (
+          <li key={i}>
+            {r.name} × {r.quantity}
+            {!r.product && <span className="text-amber-700"> · no está en el inventario</span>}
+          </li>
+        ))}
+      </ul>
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={() => onCobrar(receta)}
+          className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-violet-600 text-white hover:bg-violet-700 cursor-pointer border-none"
+        >
+          Cobrar la receta
+        </button>
+      </div>
+    </div>
   );
 }
 

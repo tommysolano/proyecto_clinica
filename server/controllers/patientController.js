@@ -286,6 +286,14 @@ exports.getPatient = async (req, res) => {
   try {
     const patient = await Patient.findById(req.params.id);
     if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
+    // Cobrar una cita desde la agenda (oct-2026) pide los datos de facturación de
+    // SU paciente sin bajar la lista entera: misma regla que la lista
+    // (`?withContact=1` + capacidad `patients.billingData`).
+    // Solo lo que lleva un comprobante, no la ficha entera.
+    if (wantsBillingContact(req)) {
+      const { _id, firstName, lastName, cedula, email, phone, address } = patient.toObject();
+      return res.json({ _id, firstName, lastName, cedula, email, phone, address });
+    }
     res.json(sanitizeForRole(patient, req));
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener paciente' });

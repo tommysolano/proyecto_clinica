@@ -121,7 +121,7 @@ const POPULATE_CREATOR = 'name email';
  * bolsa: sin ese dato ofrecía «escoger el suero» como si no hubiera ninguno, y lo
  * que escogía mostrador se escribía como una SEGUNDA receta con el mismo nombre.
  */
-const POPULATE_SERVICE_ITEM = 'name color nursingService autoSerum';
+const POPULATE_SERVICE_ITEM = 'name color nursingService autoSerum product';
 
 // Convierte 'YYYY-MM-DD' (o ISO) a Date en zona local, fijando 12:00 para evitar
 // que el cambio de zona horaria mueva el día al guardar/leer.
@@ -469,6 +469,40 @@ exports.getAppointments = async (req, res) => {
       return res.json(marcadas);
     }
 
+    /**
+     * LO COBRADO DE CADA CITA (oct-2026, factura desde la agenda). Para quien
+     * cobra: la agenda pide cobrar antes de asignar, y para eso tiene que saber
+     * si la cita ya tiene su venta. Son las ventas vigentes enlazadas a la cita.
+     */
+    if (req.user?.isSuperAdmin || ['admin', 'cajero'].includes(req.role)) {
+      const Sale = require('../models/Sale');
+      const ventas = appointments.length
+        ? await Sale.find({ appointment: { $in: appointments.map((a) => a._id) }, status: 'completada' })
+          .select('appointment saleNumber total createdAt')
+          .sort({ createdAt: 1 })
+          .lean()
+        : [];
+      if (ventas.length) {
+        const porCita = new Map();
+        for (const v of ventas) {
+          const k = String(v.appointment);
+          if (!porCita.has(k)) porCita.set(k, []);
+          porCita.get(k).push({ _id: v._id, saleNumber: v.saleNumber, total: v.total });
+        }
+        return res.json(appointments.map((a) => {
+          const o = a.toJSON();
+          const lista = porCita.get(String(a._id));
+          if (lista) {
+            o.cobro = {
+              ventas: lista,
+              total: Math.round(lista.reduce((s, v) => s + (Number(v.total) || 0), 0) * 100) / 100,
+            };
+          }
+          return o;
+        }));
+      }
+    }
+
     res.json(appointments);
   } catch (error) {
     console.error('[getAppointments] ERROR:', error);
@@ -531,6 +565,8 @@ exports.getAppointment = async (req, res) => {
       .populate('doctor', POPULATE_DOCTOR)
       .populate('createdBy', POPULATE_CREATOR)
       .populate('serviceItem', POPULATE_SERVICE_ITEM)
+      // Con su producto del inventario: cobrar la cita los precarga como ítems.
+      .populate('additionalServices.serviceItem', 'name product')
       .populate('turns.user', POPULATE_DOCTOR)
       .populate('clinic', 'name nombreComercial')
       .populate('rescheduleHistory.rescheduledBy', 'name email')

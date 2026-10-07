@@ -153,6 +153,27 @@ exports.createSale = async (req, res) => {
       return res.status(400).json({ message: 'Debe agregar al menos un ítem' });
     }
 
+    /**
+     * COBRAR UNA CITA = FACTURA DESDE LA AGENDA (oct-2026, en prueba). Solo quien
+     * tiene `User.canBill` (lo enciende el super admin) registra ventas enlazadas
+     * a una cita; y la cita tiene que existir y ser de una sucursal que ve.
+     */
+    if (req.body.appointment) {
+      if (!req.user?.isSuperAdmin && !req.user?.canBill) {
+        return res.status(403).json({
+          message: 'No tienes habilitada la facturación desde la agenda. La activa el super administrador en Configuración.',
+          code: 'BILLING_DISABLED',
+        });
+      }
+      const Appointment = require('../models/Appointment');
+      const { sucursalesVisibles } = require('../utils/clinicScope');
+      const cita = await Appointment.findById(req.body.appointment).select('clinic patient').lean();
+      const visibles = sucursalesVisibles(req);
+      if (!cita || (visibles !== null && !visibles.some((c) => String(c) === String(cita.clinic)))) {
+        return res.status(404).json({ message: 'La cita a cobrar no existe o no es de tu sucursal' });
+      }
+    }
+
     // IDENTIFICACIÓN OBLIGATORIA del comprador. Ninguna venta puede quedar sin cédula, RUC o
     // pasaporte: el ATS y el anexo de ventas del SRI la exigen, y sin ella no hay a quién
     // cobrarle si la venta queda a crédito.

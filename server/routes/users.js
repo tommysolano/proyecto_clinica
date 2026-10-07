@@ -16,8 +16,10 @@ const {
   signatureCertUploadMiddleware,
   getStaffAssignments,
   updateStaffAssignments,
+  getBillingStaff,
+  setBillingPermission,
 } = require('../controllers/userController');
-const { auth, requireClinic, requireRole } = require('../middleware/auth');
+const { auth, requireClinic, requireRole, requireSuperAdmin } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
 
@@ -53,6 +55,9 @@ router.delete('/me/signature-cert', deleteMySignatureCert);
 // Va ANTES de '/:id' — si no, Express leería "assignments" como un id.
 router.get('/assignments', requireRole('admin'), getStaffAssignments);
 router.put('/:id/assignments', requireRole('admin'), updateStaffAssignments);
+// Factura desde la agenda (oct-2026): solo el super administrador decide quién la tiene.
+router.get('/billing', requireSuperAdmin, getBillingStaff);
+router.patch('/:id/billing', requireSuperAdmin, setBillingPermission);
 
 router.get('/', requireRole('admin'), getUsers);
 router.get('/:id', requireRole('admin'), getUser);

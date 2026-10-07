@@ -59,6 +59,8 @@ export default function AssignAttentionModal({
   nurses: nursesDeLaSedeActiva = [],
   onClose,
   onDone,
+  // Factura desde la agenda: el cobro ya fue una venta, el valor operativo sobra.
+  ocultarValor = false,
 }) {
   const apt = appointment;
 
@@ -358,7 +360,7 @@ export default function AssignAttentionModal({
    * servidor tampoco se lo aceptaría: es lo que se le va a cobrar, no una
    * decisión de quien atiende.
    */
-  const puedeFijarValor = hasRole('admin', 'cajero');
+  const puedeFijarValor = hasRole('admin', 'cajero') && !ocultarValor;
   // Se precargan con lo que ya tenga la cita: reabrir el modal para añadir un
   // doctor no puede borrar el importe que ya se había anotado.
   const [valor, setValor] = useState(

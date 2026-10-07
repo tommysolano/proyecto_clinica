@@ -6,12 +6,15 @@ import PageHeader from '../components/PageHeader';
 import StaffClinicsTab from '../components/config/StaffClinicsTab';
 import AgendaTab from '../components/config/AgendaTab';
 import ServiciosTab from '../components/config/ServiciosTab';
+import FacturacionTab from '../components/config/FacturacionTab';
+import { useAuth } from '../context/AuthContext';
 import {
   HiOutlineCog6Tooth,
   HiOutlineUsers,
   HiOutlineCalendarDays,
   HiOutlineTag,
   HiOutlineArrowPath,
+  HiOutlineBanknotes,
 } from 'react-icons/hi2';
 
 /**
@@ -33,11 +36,15 @@ const TABS = [
   { id: 'personal', label: 'Personal por sucursal', icon: HiOutlineUsers },
   { id: 'agenda', label: 'Agenda', icon: HiOutlineCalendarDays },
   { id: 'servicios', label: 'Duración de servicios', icon: HiOutlineTag },
+  // Solo el super admin: quién factura desde la agenda (oct-2026, en prueba).
+  { id: 'facturacion', label: 'Facturación', icon: HiOutlineBanknotes, superOnly: true },
 ];
 
 export default function AdminConfig() {
+  const { user } = useAuth();
+  const pestanas = TABS.filter((t) => !t.superOnly || user?.isSuperAdmin);
   const [params, setParams] = useSearchParams();
-  const tab = TABS.some((t) => t.id === params.get('tab')) ? params.get('tab') : 'personal';
+  const tab = pestanas.some((t) => t.id === params.get('tab')) ? params.get('tab') : 'personal';
 
   const [clinics, setClinics] = useState([]);
   const [users, setUsers] = useState([]);
@@ -78,7 +85,7 @@ export default function AdminConfig() {
       </PageHeader>
 
       <div className="flex gap-1 border-b border-slate-200 overflow-x-auto">
-        {TABS.map((t) => {
+        {pestanas.map((t) => {
           const activa = t.id === tab;
           return (
             <button
@@ -102,6 +109,8 @@ export default function AdminConfig() {
         <div className="flex items-center justify-center h-64">
           <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-600"></div>
         </div>
+      ) : tab === 'facturacion' ? (
+        <FacturacionTab />
       ) : tab === 'servicios' ? (
         <ServiciosTab />
       ) : tab === 'agenda' ? (
