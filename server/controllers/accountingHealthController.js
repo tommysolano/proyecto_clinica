@@ -5,6 +5,7 @@ const Receivable = require('../models/Receivable');
 const Payable = require('../models/Payable');
 const Sale = require('../models/Sale');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
+const Reconciliation = require('../models/Reconciliation');
 const { getAccount } = require('../utils/accountMap');
 const { resolveReceivableEconomicObligations } = require('../services/receivableObligations');
 
@@ -110,6 +111,19 @@ exports.check = async (req, res) => {
       findings.push({ level: 'warn', code: 'PURCHASE_NO_ENTRY', message: `${purchasesNoEntry} compra(s) sin asiento contable` });
     }
 
+    // Las hojas locales cerradas antes del saldo ajustado conservan sus cifras originales.
+    // Se identifican para revisión documental; nunca se reabren ni se corrigen por suma.
+    const localClosed = { clinic: req.clinicId, status: 'CONCILIADO', source: { $ne: 'CONTIFICO' } };
+    const [legacyReconciliations, unbalancedReconciliations] = await Promise.all([
+      Reconciliation.countDocuments({ ...localClosed, adjustedDifference: null }),
+      Reconciliation.countDocuments({ ...localClosed,
+        $or: [{ adjustedDifference: { $gt: 0.01 } }, { adjustedDifference: { $lt: -0.01 } }] }),
+    ]);
+    if (legacyReconciliations) findings.push({ level: 'warn', code: 'RECONCILIATION_LEGACY_UNVERIFIED',
+      message: `${legacyReconciliations} conciliación(es) local(es) cerrada(s) antes del cálculo de partidas en tránsito; revisar contra el extracto` });
+    if (unbalancedReconciliations) findings.push({ level: 'error', code: 'RECONCILIATION_UNBALANCED',
+      message: `${unbalancedReconciliations} conciliación(es) cerrada(s) con diferencia ajustada; revisar el extracto y sus movimientos` });
+
     res.json({
       ok: findings.filter((f) => f.level === 'error').length === 0,
       checkedAt: new Date(),
@@ -120,6 +134,8 @@ exports.check = async (req, res) => {
         cxcSubledger: arSub,
         cxpLedger,
         cxpSubledger: apSub,
+        legacyReconciliations,
+        unbalancedReconciliations,
       },
       findings,
       warningCount: findings.filter((f) => f.level === 'warn').length,

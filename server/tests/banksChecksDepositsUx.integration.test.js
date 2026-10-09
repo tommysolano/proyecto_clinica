@@ -25,6 +25,7 @@ const suppliers = require('../controllers/supplierController');
 const deposits = require('../controllers/cashDepositController');
 const invoices = require('../controllers/invoiceController');
 const cashClosing = require('../controllers/cashClosingController');
+const accountingHealth = require('../controllers/accountingHealthController');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const BankCheck = require('../models/BankCheck');
@@ -269,7 +270,92 @@ test('una venta cobrada por transferencia deja movimiento en el banco y se puede
   })));
   assert.equal(rec.items.length, 1);
   assert.equal(rec.bookBalance, 100);
-  assert.equal(rec.difference, 0, 'el libro cuadra con el extracto');
+  assert.equal(rec.difference, 0, 'los saldos brutos son iguales');
+  assert.equal(rec.adjustedDifference, 100, 'el cobro sigue en tránsito hasta marcarlo en el extracto');
+});
+
+test('la conciliación arrastra cheques en tránsito y permite marcarlos cuando el banco los cobra', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const bank = await makeBank(clinicId);
+  await BankAccount.updateOne({ _id: bank._id }, { initialBalance: 1000, bookBalance: 1000 });
+  const check = await BankTransaction.create({ clinic: clinicId, bankAccount: bank._id,
+    date: new Date('2026-01-10T12:00:00Z'), type: 'CHEQUE_EMITIDO', amount: 300, direction: -1 });
+  const start = (cutDate, statementBalance) => run(banks.startReconciliation,
+    H.mockReq(clinicId, userId, { bankAccount: bank._id, cutDate, statementBalance }));
+  const close = (id) => run(banks.closeReconciliation,
+    H.mockReq(clinicId, userId, {}, { params: { id: String(id) } }));
+  const update = (id, items) => run(banks.updateReconciliation,
+    H.mockReq(clinicId, userId, { items }, { params: { id: String(id) } }));
+
+  const jan = ok(await start('2026-01-31T23:59:59Z', 1000));
+  assert.equal(jan.bookBalance, 700);
+  assert.equal(jan.outstandingBalance, -300);
+  assert.equal(jan.adjustedBalance, 1000);
+  assert.equal(jan.adjustedDifference, 0);
+  ok(await close(jan._id));
+  assert.equal((await BankTransaction.findById(check._id)).reconciled, false);
+
+  const deposit = await BankTransaction.create({ clinic: clinicId, bankAccount: bank._id,
+    date: new Date('2026-02-10T12:00:00Z'), type: 'DEPOSITO', amount: 200, direction: 1 });
+  const feb = ok(await start('2026-02-28T23:59:59Z', 1200));
+  assert.equal(feb.items.length, 2);
+  const febSaved = ok(await update(feb._id, feb.items.map((item) => ({
+    transaction: item.transaction._id, matched: String(item.transaction._id) === String(deposit._id),
+  }))));
+  assert.equal(febSaved.bookBalance, 900);
+  assert.equal(febSaved.outstandingBalance, -300);
+  assert.equal(febSaved.adjustedBalance, 1200);
+  assert.equal(febSaved.adjustedDifference, 0);
+  ok(await close(feb._id));
+
+  const mar = ok(await start('2026-03-31T23:59:59Z', 900));
+  assert.equal(mar.items.length, 1);
+  const marSaved = ok(await update(mar._id, [{ transaction: check._id, matched: true }]));
+  assert.equal(marSaved.outstandingBalance, 0);
+  assert.equal(marSaved.adjustedDifference, 0);
+  ok(await close(mar._id));
+  assert.equal((await BankTransaction.findById(check._id)).reconciled, true);
+});
+
+test('no se cierra una conciliación que difiere del extracto o tiene líneas sin aplicar', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const bank = await makeBank(clinicId);
+  const tx = await BankTransaction.create({ clinic: clinicId, bankAccount: bank._id,
+    date: new Date('2026-04-10T12:00:00Z'), type: 'DEPOSITO', amount: 100, direction: 1 });
+  const rec = ok(await run(banks.startReconciliation, H.mockReq(clinicId, userId,
+    { bankAccount: bank._id, cutDate: '2026-04-30T23:59:59Z', statementBalance: 80 })));
+  const saved = ok(await run(banks.updateReconciliation, H.mockReq(clinicId, userId,
+    { items: [{ transaction: tx._id, matched: true }] }, { params: { id: String(rec._id) } })));
+  assert.equal(saved.adjustedDifference, -20);
+  const attempt = await run(banks.closeReconciliation, H.mockReq(clinicId, userId, {},
+    { params: { id: String(rec._id) } }));
+  assert.equal(attempt.statusCode, 409);
+  assert.equal((await Reconciliation.findById(rec._id)).status, 'BORRADOR');
+  assert.equal((await BankTransaction.findById(tx._id)).reconciled, false);
+
+  await Reconciliation.updateOne({ _id: rec._id }, { statementBalance: 100,
+    statementLines: [{ amount: 10, matched: false }] });
+  const pendingLine = await run(banks.closeReconciliation, H.mockReq(clinicId, userId, {},
+    { params: { id: String(rec._id) } }));
+  assert.equal(pendingLine.statusCode, 409);
+  assert.equal((await Reconciliation.findById(rec._id)).status, 'BORRADOR');
+});
+
+test('salud contable distingue conciliaciones antiguas sin verificar y cierres descuadrados', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const bank = await makeBank(clinicId);
+  await Reconciliation.create([
+    { clinic: clinicId, bankAccount: bank._id, cutDate: new Date('2026-01-31T23:59:59Z'),
+      status: 'CONCILIADO', source: 'LOCAL', statementBalance: 100, bookBalance: 90 },
+    { clinic: clinicId, bankAccount: bank._id, cutDate: new Date('2026-02-28T23:59:59Z'),
+      status: 'CONCILIADO', source: 'LOCAL', statementBalance: 100, bookBalance: 90,
+      outstandingBalance: 0, adjustedBalance: 90, adjustedDifference: 10 },
+  ]);
+  const report = ok(await run(accountingHealth.check, H.mockReq(clinicId, userId)));
+  assert.equal(report.summary.legacyReconciliations, 1);
+  assert.equal(report.summary.unbalancedReconciliations, 1);
+  assert.ok(report.findings.some((finding) => finding.code === 'RECONCILIATION_LEGACY_UNVERIFIED'));
+  assert.ok(report.findings.some((finding) => finding.code === 'RECONCILIATION_UNBALANCED'));
 });
 
 test('anular la venta descuenta del banco lo que había entrado', async () => {

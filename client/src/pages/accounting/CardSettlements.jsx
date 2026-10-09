@@ -237,7 +237,7 @@ export default function CardSettlements() {
   const explicarBusquedaVacia = async (params) => {
     if (!params.lote) {
       setPickerHint('No hay ventas con tarjeta en ese rango de fechas.');
-      return toast('Sin facturas con tarjeta para esos filtros', { icon: 'ℹ️' });
+      return toast('Sin cobros con tarjeta para esos filtros', { icon: 'ℹ️' });
     }
     try {
       const r = await api.get('/card-settlements/card-sales', { params: { lote: params.lote, includeSettled: true } });
@@ -247,8 +247,8 @@ export default function CardSettlements() {
       } else {
         setPickerHint(`Hay ${todas.length} venta(s) del lote ${params.lote}, pero quedaron fuera: o están fuera del rango de fechas, o ya están vinculadas a otra liquidación. Quita las fechas y marca «Incluir ya liquidadas» para verlas.`);
       }
-    } catch { setPickerHint('Sin facturas con tarjeta para esos filtros.'); }
-    toast('Sin facturas con tarjeta para esos filtros', { icon: 'ℹ️' });
+    } catch { setPickerHint('Sin cobros con tarjeta para esos filtros.'); }
+    toast('Sin cobros con tarjeta para esos filtros', { icon: 'ℹ️' });
   };
 
   const pickedList = pickerResults.filter((s) => picked[s.paymentKey]);
@@ -257,7 +257,7 @@ export default function CardSettlements() {
   const toggleAll = () => { const v = !allPicked; const p = {}; pickerResults.forEach((s) => { p[s.paymentKey] = v; }); setPicked(p); };
 
   const addPicked = () => {
-    if (!pickedList.length) return toast.error('Selecciona al menos una factura');
+    if (!pickedList.length) return toast.error('Selecciona al menos un cobro con tarjeta');
     const newSources = pickedList.map((s) => ({
       sale: s._id, paymentIndex: s.paymentIndex, saleNumber: s.saleNumber, date: s.createdAt,
       lote: s.cardLote || '', voucher: s.cardVoucher || '', amount: round(+s.cardAmount || 0),
@@ -275,7 +275,7 @@ export default function CardSettlements() {
     });
     setPickerResults((rs) => rs.filter((s) => !picked[s.paymentKey]));
     setPicked({});
-    toast.success(`${newSources.length} factura(s) cargada(s) · $${fmt(pickedTotal)}`);
+    toast.success(`${newSources.length} voucher(s) cargado(s) · $${fmt(pickedTotal)}`);
   };
 
   const clearSources = () => setForm((f) => ({ ...f, sourceSales: [] }));
@@ -494,7 +494,7 @@ export default function CardSettlements() {
             {!!(form.sourceSales || []).length && (
               <div className="text-xs bg-white border rounded-lg px-3 py-2 space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-600"><b>{form.sourceSales.length}</b> venta(s) vinculada(s) · <b className="font-mono">${fmt(sourcesTotal)}</b></span>
+                  <span className="text-slate-600"><b>{form.sourceSales.length}</b> voucher(s) vinculado(s) · <b className="font-mono">${fmt(sourcesTotal)}</b></span>
                   {!form.batch && <button type="button" onClick={clearSources} className="text-rose-600 hover:underline">Quitar vínculo</button>}
                 </div>
                 {form.batch && (form.sourceSales || []).map((item) => <div key={`${item.sale}:${item.paymentIndex ?? '*'}`} className="flex items-center justify-between border-t pt-1">
@@ -715,10 +715,10 @@ export default function CardSettlements() {
             )}
             {!!(viewItem.sourceSales || []).length && (
               <div>
-                <p className="font-semibold mb-1">Facturas vinculadas ({viewItem.sourceSales.length})</p>
+                <p className="font-semibold mb-1">Vouchers vinculados ({viewItem.sourceSales.length})</p>
                 <table className="tbl text-xs">
                   <thead className="bg-slate-50"><tr><th className="px-2 py-1 text-left">Venta</th><th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Lote</th><th className="px-2 py-1 text-left">Voucher</th><th className="px-2 py-1 text-right">Monto</th></tr></thead>
-                  <tbody>{viewItem.sourceSales.map((x, i) => (<tr key={i} className="border-t"><td className="px-2 py-1 font-mono">{x.saleNumber}</td><td className="px-2 py-1">{fmtDate(x.date)}</td><td className="px-2 py-1 font-mono">{x.lote || '—'}</td><td className="px-2 py-1 font-mono">{x.voucher || '—'}</td><td className="px-2 py-1 text-right font-mono">{fmt(x.amount)}</td></tr>))}</tbody>
+                  <tbody>{viewItem.sourceSales.map((x, i) => (<tr key={i} className="border-t"><td className="px-2 py-1 font-mono">{x.saleNumber}{x.paymentIndex != null ? ` · Pago #${x.paymentIndex + 1}` : ''}</td><td className="px-2 py-1">{fmtDate(x.date)}</td><td className="px-2 py-1 font-mono">{x.lote || '—'}</td><td className="px-2 py-1 font-mono">{x.voucher || '—'}</td><td className="px-2 py-1 text-right font-mono">{fmt(x.amount)}</td></tr>))}</tbody>
                 </table>
               </div>
             )}

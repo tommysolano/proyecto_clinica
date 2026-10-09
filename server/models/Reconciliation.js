@@ -62,6 +62,12 @@ const reconciliationSchema = new mongoose.Schema(
     statementBalance: { type: Number, default: 0 }, // saldo bancario (extracto)
     bookBalance: { type: Number, default: 0 },      // saldo contable (libro)
     difference: { type: Number, default: 0 },
+    // Conciliación local: libro menos partidas todavía en tránsito. La diferencia
+    // ajustada es la que debe llegar a cero frente al extracto bancario.
+    outstandingBalance: { type: Number, default: null },
+    adjustedBalance: { type: Number, default: null },
+    adjustedDifference: { type: Number, default: null },
+    pendingCount: { type: Number, default: null },
     items: { type: [reconciliationItemSchema], default: [] },
     statementLines: { type: [statementLineSchema], default: [] },
     // BORRADOR = Pendiente (en proceso) · CONCILIADO = terminado

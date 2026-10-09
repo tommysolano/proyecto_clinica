@@ -721,6 +721,23 @@ async function bookBalanceAt(clinicId, bank, cutDate, session) {
   return +(((bank.initialBalance || 0) + (agg[0]?.total || 0))).toFixed(2);
 }
 
+/** Saldo del extracto esperado: libro menos movimientos que el banco aún no procesó. */
+async function refreshAdjustedReconciliation(rec, clinicId, session = null, loaded = null) {
+  const pendingIds = (rec.items || []).filter((item) => !item.matched)
+    .map((item) => String(item.transaction?._id || item.transaction));
+  const txs = loaded || await BankTransaction.find({
+    _id: { $in: pendingIds }, clinic: clinicId, bankAccount: rec.bankAccount,
+    voided: false, date: { $lte: rec.cutDate },
+  }).select('amount direction').session(session).lean();
+  const pending = new Set(pendingIds);
+  const outstanding = txs.reduce((sum, tx) => pending.has(String(tx._id))
+    ? sum + Number(tx.amount || 0) * Number(tx.direction || 0) : sum, 0);
+  rec.pendingCount = txs.filter((tx) => pending.has(String(tx._id))).length;
+  rec.outstandingBalance = +outstanding.toFixed(2);
+  rec.adjustedBalance = +(Number(rec.bookBalance || 0) - rec.outstandingBalance).toFixed(2);
+  rec.adjustedDifference = +(Number(rec.statementBalance || 0) - rec.adjustedBalance).toFixed(2);
+}
+
 /**
  * Recarga en la conciliación los movimientos del libro pendientes hasta su fecha de corte y
  * recalcula el saldo contable, CONSERVANDO los "marcados" que ya tenía.
@@ -732,8 +749,8 @@ async function bookBalanceAt(clinicId, bank, cutDate, session) {
  *
  * @returns {boolean} true si cambió algo (hay que guardar)
  */
-async function syncReconciliationItems(rec, clinicId, cutDate) {
-  const bank = await BankAccount.findOne({ _id: rec.bankAccount, clinic: clinicId });
+async function syncReconciliationItems(rec, clinicId, cutDate, session = null) {
+  const bank = await BankAccount.findOne({ _id: rec.bankAccount, clinic: clinicId }).session(session);
   if (!bank) throw Object.assign(new Error('Cuenta no encontrada'), { status: 404 });
   const cut = cutDate ? new Date(cutDate) : rec.cutDate;
   const txs = await BankTransaction.find({
@@ -743,20 +760,22 @@ async function syncReconciliationItems(rec, clinicId, cutDate) {
     // (comisiones, intereses…), que nacen con `reconciled: true`: si no, la recarga los
     // expulsaría de la conciliación que los generó.
     $or: [{ reconciled: false }, { reconciliation: rec._id }],
-  }).sort({ date: 1 });
+  }).sort({ date: 1 }).session(session);
   const prevFlags = new Map((rec.items || []).map((it) => [String(it.transaction?._id || it.transaction), it]));
   const antes = [...prevFlags.keys()].join(',');
+  const adjustedBefore = rec.adjustedDifference;
   rec.items = txs.map((t) => {
     const prev = prevFlags.get(String(t._id));
     return { transaction: t._id, matched: prev ? !!prev.matched : false, statementRef: prev?.statementRef || '' };
   });
   rec.cutDate = cut;
   rec.periodEnd = cut;
-  const saldo = await bookBalanceAt(clinicId, bank, cut);
+  const saldo = await bookBalanceAt(clinicId, bank, cut, session);
   const cambio = antes !== txs.map((t) => String(t._id)).join(',') || rec.bookBalance !== saldo;
   rec.bookBalance = saldo;
   rec.difference = +(rec.statementBalance - rec.bookBalance).toFixed(2);
-  return cambio;
+  await refreshAdjustedReconciliation(rec, clinicId, session, txs);
+  return cambio || adjustedBefore !== rec.adjustedDifference;
 }
 
 /** Devuelve la conciliación con sus movimientos del libro y líneas del extracto poblados. */
@@ -786,13 +805,15 @@ exports.startReconciliation = async (req, res) => {
     }).sort({ date: 1 });
     const items = txs.map((t) => ({ transaction: t._id, matched: false }));
     const bookBalance = await bookBalanceAt(req.clinicId, bank, cut);
-    const rec = await Reconciliation.create({
+    const rec = new Reconciliation({
       clinic: req.clinicId, bankAccount: bank._id,
       cutDate: cut, periodEnd: cut, description,
       statementBalance: Number(statementBalance) || 0, bookBalance,
       difference: +((Number(statementBalance) || 0) - bookBalance).toFixed(2),
       items, createdBy: req.user._id,
     });
+    await refreshAdjustedReconciliation(rec, req.clinicId, null, txs);
+    await rec.save();
     res.status(201).json(await populatedReconciliation(rec._id));
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
@@ -838,6 +859,7 @@ exports.updateReconciliation = async (req, res) => {
     if (req.body.description !== undefined) rec.description = req.body.description;
     if (req.body.notes !== undefined) rec.notes = req.body.notes;
     rec.difference = +(rec.statementBalance - rec.bookBalance).toFixed(2);
+    await refreshAdjustedReconciliation(rec, req.clinicId);
     await rec.save();
     res.json(await populatedReconciliation(rec._id));
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
@@ -908,6 +930,15 @@ exports.closeReconciliation = async (req, res) => {
       if (!rec) throw Object.assign(new Error('No encontrada'), { status: 404 });
       if (rec.source === 'CONTIFICO') throw Object.assign(new Error(CONTIFICO_READONLY), { status: 400 });
       if (rec.status === 'CONCILIADO') throw Object.assign(new Error('Ya está conciliada'), { status: 400 });
+      await syncReconciliationItems(rec, req.clinicId, rec.cutDate, session);
+      if (Math.abs(rec.adjustedDifference) > 0.01) {
+        throw Object.assign(new Error(`El extracto difiere del saldo conciliado en $${Math.abs(rec.adjustedDifference).toFixed(2)}. Revisa las partidas pendientes.`),
+          { status: 409, code: 'RECONCILIATION_DIFFERENCE' });
+      }
+      if (rec.statementLines.some((line) => !line.matched)) {
+        throw Object.assign(new Error('Hay líneas del extracto sin movimiento del libro. Empareja o registra esas líneas antes de cerrar.'),
+          { status: 409, code: 'STATEMENT_LINES_PENDING' });
+      }
       rec.status = 'CONCILIADO';
       rec.closedAt = new Date();
       await rec.save({ session });
@@ -967,6 +998,7 @@ exports.reconcileImport = async (req, res) => {
     });
     rec.statementLines = statementLines;
     rec.difference = +(rec.statementBalance - rec.bookBalance).toFixed(2);
+    await refreshAdjustedReconciliation(rec, req.clinicId);
     await rec.save();
     const matched = statementLines.filter((l) => l.matched).length;
     const out = await populatedReconciliation(rec._id);
@@ -1023,6 +1055,7 @@ exports.reconcileCreateMovements = async (req, res) => {
       // El saldo contable sube/baja con los nuevos movimientos.
       rec.bookBalance = await bookBalanceAt(req.clinicId, bank, rec.cutDate, session);
       rec.difference = +(rec.statementBalance - rec.bookBalance).toFixed(2);
+      await refreshAdjustedReconciliation(rec, req.clinicId, session);
       await rec.save({ session });
       return rec._id;
     });

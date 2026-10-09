@@ -149,8 +149,8 @@ exports.searchCardSales = async (req, res) => {
       const rx = loteRegex(lote);
       and.push({ $or: [{ cardLote: rx }, { 'payments.cardLote': rx }] });
     }
-    if (cardPos) filter.cardPos = cardPos;
-    if (creditCard) filter.creditCard = creditCard;
+    if (cardPos) and.push({ $or: [{ cardPos }, { 'payments.cardPos': cardPos }] });
+    if (creditCard) and.push({ $or: [{ creditCard }, { 'payments.creditCard': creditCard }] });
     if (from || to) {
       filter.createdAt = {};
       if (from) filter.createdAt.$gte = new Date(`${from}T00:00:00.000`);
@@ -158,7 +158,7 @@ exports.searchCardSales = async (req, res) => {
     }
     let usedVouchers = [];
     if (!includeSettled || includeSettled === 'false') {
-      const settled = await CardSettlement.find({ clinic: req.clinicId, status: { $ne: 'ANULADO' } })
+      const settled = await CardSettlement.find({ clinic: req.clinicId, status: 'CONTABILIZADO' })
         .select('sourceSales').lean();
       usedVouchers = settled.flatMap((s) => s.sourceSales || []);
       if (forBatch === 'true' || forBatch === true) {
@@ -173,16 +173,26 @@ exports.searchCardSales = async (req, res) => {
       // la transacción sin que la contadora las vuelva a sumar a mano.
       .select('saleNumber clientName total createdAt cardLote cardVoucher cardPos creditCard invoice payments taxableSubtotal subtotal0 subtotalExento subtotalNoObjeto taxAmount')
       .populate('creditCard', 'name brand')
+      .populate('payments.creditCard', 'name brand')
       .sort({ createdAt: 1 })
       .limit(500);
     const rows = [];
     for (const sale of sales) {
       const parts = (sale.payments || []).map((p, index) => ({ payment: p, index }))
         .filter(({ payment }) => payment.method === 'tarjeta');
-      const selected = lote?.trim()
-        ? parts.filter(({ payment }) => loteRegex(lote).test(payment.cardLote || '')) : parts;
+      // La cabecera conserva los datos de la primera tarjeta. Solo sirve de respaldo
+      // cuando hay un unico pago con tarjeta y el renglon historico esta incompleto.
+      const matches = (payment, field, expected, match) => !expected ||
+        match(payment?.[field] || (parts.length === 1 ? sale[field] : null), expected);
+      const selected = parts.filter(({ payment }) =>
+        matches(payment, 'cardLote', lote?.trim(), (value, search) => loteRegex(search).test(value || '')) &&
+        matches(payment, 'cardPos', cardPos, (value, search) => value === search) &&
+        matches(payment, 'creditCard', creditCard, (value, search) => String(value?._id || value || '') === String(search)));
       const candidates = parts.length ? selected
-        : sale.paymentMethod === 'tarjeta' && (!lote?.trim() || loteRegex(lote).test(sale.cardLote || ''))
+        : sale.paymentMethod === 'tarjeta' &&
+          (!lote?.trim() || loteRegex(lote).test(sale.cardLote || '')) &&
+          (!cardPos || sale.cardPos === cardPos) &&
+          (!creditCard || String(sale.creditCard?._id || sale.creditCard || '') === String(creditCard))
           ? [{ payment: null, index: null }] : [];
       for (const { payment, index } of candidates) {
         const item = { sale: sale._id, paymentIndex: index };
@@ -191,9 +201,11 @@ exports.searchCardSales = async (req, res) => {
         if (cardAmount <= 0) continue;
         rows.push({ ...sale.toObject(), cardAmount, cardPaymentCount: parts.length || 1,
           paymentIndex: index, paymentKey: voucherIdentity.key(item),
-          cardLote: payment?.cardLote || sale.cardLote,
-          cardVoucher: payment?.cardVoucher || sale.cardVoucher,
-          cardBrand: payment?.cardBrandSnapshot || '', cardPos: payment?.cardPos || sale.cardPos });
+          cardLote: payment?.cardLote || (parts.length <= 1 ? sale.cardLote : ''),
+          cardVoucher: payment?.cardVoucher || (parts.length <= 1 ? sale.cardVoucher : ''),
+          cardBrand: payment?.cardBrandSnapshot || '',
+          cardPos: payment?.cardPos || (parts.length <= 1 ? sale.cardPos : ''),
+          creditCard: payment?.creditCard || (parts.length <= 1 ? sale.creditCard : null) });
       }
     }
     res.json(rows);
@@ -602,18 +614,19 @@ exports.cancel = async (req, res) => {
         await syncBatchStatus(s.batch, req.clinicId, session);
         const saleIds = (s.sourceSales || []).map((x) => x.sale).filter(Boolean);
         if (saleIds.length) {
-          await Sale.updateMany(
-            { _id: { $in: saleIds }, cardSettlement: s._id },
-            { cardSettlement: null },
-            { session }
-          );
+          for (const saleId of new Set(saleIds.map(String))) {
+            const other = await CardSettlement.findOne({ clinic: req.clinicId, status: 'CONTABILIZADO',
+              'sourceSales.sale': saleId }).sort({ accreditedAt: -1 }).select('_id').session(session);
+            await Sale.updateOne({ _id: saleId, clinic: req.clinicId, cardSettlement: s._id },
+              { cardSettlement: other?._id || null }, { session });
+          }
         }
         return s._id;
       });
       const settlement = await CardSettlement.findById(settlementId);
       return res.json(settlement);
     }
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) { res.status(e.status || 400).json({ code: e.code, message: e.message }); }
 };
 
 exports.remove = async (req, res) => {

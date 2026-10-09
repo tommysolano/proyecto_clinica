@@ -81,7 +81,8 @@ export default function Reconciliations() {
       };
       const r = await api.put(`/banks/reconciliations/${selected._id}`, payload);
       setSelected(r.data); load(); toast.success('Guardado');
-    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+      return true;
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); return false; }
     finally { setBusy(false); }
   };
 
@@ -90,7 +91,7 @@ export default function Reconciliations() {
     if (!confirm(`¿Marcar como CONCILIADA?${pend ? ` Quedan ${pend} movimiento(s) sin marcar.` : ''}`)) return;
     setBusy(true);
     try {
-      await save();
+      if (!(await save())) return;
       const r = await api.post(`/banks/reconciliations/${selected._id}/close`);
       setSelected(r.data); load(); toast.success('Conciliada');
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
@@ -208,16 +209,22 @@ export default function Reconciliations() {
                 </div>
                 <div className="flex justify-between"><span className="text-slate-500">Cuenta de Banco:</span><b className="text-right">{selected.bankAccount?.name}{selected.bankAccount?.bank ? ` · ${selected.bankAccount.bank}` : ''}</b></div>
                 <div className="flex justify-between"><span className="text-slate-500">Saldo Contable:</span><b>${fmt(selected.bookBalance)}</b></div>
+                {selected.source !== 'CONTIFICO' && selected.adjustedDifference != null && <>
+                  <div className="flex justify-between"><span className="text-slate-500">Partidas en tránsito ({selected.pendingCount ?? 0}):</span><b>${fmt(selected.outstandingBalance ?? 0)}</b></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Saldo conciliado:</span><b>${fmt(selected.adjustedBalance ?? selected.bookBalance)}</b></div>
+                </>}
                 <div className="flex justify-between items-start"><span className="text-slate-500">Descripción:</span>
                   <input value={selected.description || ''} disabled={!isDraft} onChange={(e) => setSelected({ ...selected, description: e.target.value })}
                     placeholder="P/R conciliación bancaria…" className="w-48 border border-slate-200 rounded px-2 py-1 text-sm disabled:bg-slate-50" />
                 </div>
-                <div className="flex justify-between"><span className="text-slate-500">Diferencia:</span>
-                  <b className={Math.abs((Number(selected.statementBalance) || 0) - (selected.bookBalance || 0)) < 0.01 ? 'text-emerald-700' : 'text-rose-600'}>
-                    ${fmt((Number(selected.statementBalance) || 0) - (selected.bookBalance || 0))}
+                <div className="flex justify-between"><span className="text-slate-500">{selected.source === 'CONTIFICO' ? 'Diferencia:' : selected.adjustedDifference == null ? 'Diferencia histórica:' : 'Diferencia conciliada:'}</span>
+                  <b className={Math.abs(selected.adjustedDifference ?? ((Number(selected.statementBalance) || 0) - (selected.bookBalance || 0))) < 0.01 ? 'text-emerald-700' : 'text-rose-600'}>
+                    ${fmt(selected.adjustedDifference ?? ((Number(selected.statementBalance) || 0) - (selected.bookBalance || 0)))}
                   </b>
                 </div>
               </div>
+              {selected.source !== 'CONTIFICO' && selected.status === 'CONCILIADO' && selected.adjustedDifference == null &&
+                <p className="mt-3 text-xs text-amber-700">Esta hoja cerró antes del cálculo de partidas en tránsito. Revisa el extracto y los movimientos; la cifra histórica no se recalcula automáticamente.</p>}
               {isDraft && (
                 <div className="flex flex-wrap gap-2 mt-4 justify-end">
                   <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls,text/csv,text/plain" onChange={onImportFile} className="hidden" />

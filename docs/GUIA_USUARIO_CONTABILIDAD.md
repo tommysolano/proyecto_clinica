@@ -432,14 +432,19 @@ extracto del banco ahora se hace **dentro de esta misma pantalla** (ya no hay un
 1. **Nueva conciliación** (modal): **Cuenta bancaria \***, **Fecha de corte \*** (la fecha final hasta la
    que concilias), **Saldo bancario (extracto)** y **Descripción** (ej. "P/R CONCILIACION BANCARIA 02-2026").
    Pulsa **Iniciar**. El sistema trae **todos los movimientos del libro pendientes hasta esa fecha**.
-2. Arriba ves el panel **Información de la Conciliación**: Fecha de Corte, Cuenta de Banco, Descripción,
-   **Saldo Bancario**, **Saldo Contable** (lo que dice tu libro) y **Diferencia**.
+2. Arriba ves **Saldo Bancario** (extracto), **Saldo Contable** (libro), **Partidas en tránsito**
+   (movimientos todavía sin marcar), **Saldo conciliado** (libro menos esas partidas) y
+   **Diferencia conciliada** (extracto menos saldo conciliado). Un cheque girado que el banco aún
+   no cobró puede dejar diferentes los saldos de libro y extracto, mientras la diferencia
+   conciliada es cero.
 3. **Marca ✓** cada movimiento del libro que también aparece en el extracto del banco. O usa **Importar
    extracto (CSV/Excel)** para que el sistema **empareje y marque solo** los que coinciden por monto y fecha.
    - El extracto importado se lista abajo. Las líneas **sin coincidencia** puedes convertirlas en movimiento
      con **Crear movimiento** (+ código de contrapartida opcional), y se agregan ya conciliadas.
-4. **Estados:** mientras trabajas queda en **Pendiente**; cuando terminas pulsa **Conciliar** y pasa a
-   **Conciliado** (ya no se edita). Usa **Guardar** para conservar el avance sin cerrar.
+4. **Estados:** mientras trabajas queda en **Pendiente**; usa **Guardar** para conservar el avance.
+   **Conciliar** cierra la hoja cuando la diferencia conciliada es cero y no quedan líneas del
+   extracto importado sin aplicar. Los movimientos en tránsito pueden seguir pendientes y
+   aparecerán en la siguiente conciliación hasta que el banco los procese.
 
 > El **archivo del banco** puede ser **CSV o Excel** (.xlsx/.xls). El sistema detecta la fila de encabezados,
 > admite columnas separadas de **Débito/Crédito** y lee importes con miles y coma decimal (ej. `1.234,56`).
@@ -505,6 +510,7 @@ documentos pendientes (baja la **Cartera**). Incluye **Pago masivo** a proveedor
 - **Vouchers** — **Voucher** por cada cobro: **Voucher #**, **Lote**, **Últ. 4** (últimos 4 dígitos),
   **Monto bruto**. Abajo ves el **Total bruto**.
 - **Crear lote.** El lote agrupa vouchers; **Liquidar** abre **Nueva liquidación** con banco y ventas del lote precargados. Solo **Acreditar** la liquidación registra banco y asiento. Un lote puede quedar **PARCIAL** hasta liquidar todos sus vouchers.
+- Si una venta se pagó con dos tarjetas, el buscador muestra **Pago #1** y **Pago #2** por separado. Cada voucher conserva su lote e importe y puede liquidarse junto al otro o en una liquidación distinta; un voucher ya usado deja de aparecer entre los pendientes.
 
 ### 5.21 Liquidaciones
 **Para qué sirve:** registrar la **liquidación de la adquirente**: el **depósito** que te acreditan, la
@@ -748,6 +754,8 @@ si falló.
 ### 5.43 Salud Contable
 **Para qué sirve:** un **diagnóstico** automático. Muestra indicadores y una lista de **Hallazgos**
 (asientos descuadrados, cuentas sin mapear, inconsistencias). **Corrige antes de declarar.**
+También distingue conciliaciones locales antiguas que necesitan revisión documental de
+conciliaciones cerradas con diferencia ajustada. La alerta no modifica la hoja ni el mayor.
 
 ---
 
