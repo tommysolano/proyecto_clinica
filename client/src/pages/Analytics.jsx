@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
@@ -33,6 +33,21 @@ import { fmtDate, todayEc } from '../utils/date';
 const money = (v) => `$${Number(v || 0).toLocaleString('es-EC', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const pct = (v) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(0)}%`);
 const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+/** Días que tiene el mes 'YYYY-MM'. */
+const diasDelMes = (ym) => {
+  const [y, m] = String(ym || '').split('-').map(Number);
+  return y && m ? new Date(y, m, 0).getDate() : 30;
+};
+/**
+ * Solo números, con UN separador decimal (la coma se toma como punto) y dos
+ * decimales. Es un campo de texto a propósito: el `type="number"` deja escribir
+ * «e», signos y cambia el valor con la rueda del ratón.
+ */
+const soloMonto = (texto) => {
+  const limpio = String(texto || '').replace(',', '.').replace(/[^\d.]/g, '');
+  const [entero, ...resto] = limpio.split('.');
+  return resto.length ? `${entero}.${resto.join('').slice(0, 2)}` : entero;
+};
 const nombreMes = (ym) => {
   const [y, m] = String(ym || '').split('-');
   return y && m ? `${MESES[Number(m) - 1] || m} ${y}` : ym;
@@ -101,7 +116,7 @@ export default function Analytics() {
       {tab === 'programas' ? (
         <PestanaProgramas programas={programas} cargando={cargandoProgramas} onCambio={cargarProgramas} />
       ) : (
-        <PestanaResultados hayProgramas={programas.length > 0} irAProgramas={() => setTab('programas')} />
+        <PestanaResultados programas={programas} onCambio={cargarProgramas} irAProgramas={() => setTab('programas')} />
       )}
     </div>
   );
@@ -215,6 +230,8 @@ function EditorPrograma({ programa, otros, onClose, onGuardado }) {
   const [nuevoMes, setNuevoMes] = useState(Number(hoy.slice(5, 7)));
   const [nuevoAnio, setNuevoAnio] = useState(Number(hoy.slice(0, 4)));
   const [nuevoMonto, setNuevoMonto] = useState('');
+  // El gasto se puede escribir del MES o POR DÍA; se guarda siempre del mes.
+  const [modoGasto, setModoGasto] = useState('mes');
 
   useEffect(() => {
     api.get('/ad-programs/ad-sources')
@@ -243,23 +260,38 @@ function EditorPrograma({ programa, otros, onClose, onGuardado }) {
     ]);
   };
 
-  const anadirGasto = () => {
-    const monto = Number(nuevoMonto);
-    if (!Number.isFinite(monto) || monto < 0 || nuevoMonto === '') return toast.error('Escribe el monto del gasto.');
+  /** El gasto escrito, ya convertido al del mes (null si no hay uno válido). */
+  const gastoEscrito = () => {
+    if (!nuevoMonto) return null;
+    const valor = Number(nuevoMonto);
+    if (!Number.isFinite(valor) || valor < 0) return null;
     const mes = `${nuevoAnio}-${String(nuevoMes).padStart(2, '0')}`;
-    setGastos((prev) => {
-      // Un gasto por mes: si ya estaba, se reemplaza.
-      const resto = prev.filter((g) => g.mes !== mes);
-      return [...resto, { mes, monto, nota: '' }].sort((a, b) => b.mes.localeCompare(a.mes));
-    });
+    const monto = modoGasto === 'dia' ? valor * diasDelMes(mes) : valor;
+    return { mes, monto: Math.round(monto * 100) / 100, nota: '' };
+  };
+  // Un gasto por mes: si ya estaba, se reemplaza.
+  const conGasto = (lista, g) =>
+    [...lista.filter((x) => x.mes !== g.mes), g].sort((a, b) => b.mes.localeCompare(a.mes));
+
+  const anadirGasto = () => {
+    const g = gastoEscrito();
+    if (!g) return toast.error('Escribe el monto del gasto.');
+    setGastos((prev) => conGasto(prev, g));
     setNuevoMonto('');
   };
 
   const guardar = async () => {
     if (!name.trim()) return toast.error('Escribe el nombre del programa.');
+    /**
+     * EL MONTO ESCRITO Y SIN «AÑADIR» TAMBIÉN SE GUARDA (oct-2026): se escribía
+     * el gasto, se pulsaba Guardar y el programa quedaba con $0 — el monto solo
+     * entraba con el botón «Añadir», y nada lo decía.
+     */
+    const pendiente = gastoEscrito();
+    const gastosFinales = pendiente ? conGasto(gastos, pendiente) : gastos;
     setGuardando(true);
     try {
-      const body = { name: name.trim(), gastos, anuncios, servicios };
+      const body = { name: name.trim(), gastos: gastosFinales, anuncios, servicios };
       if (programa._id) await api.put(`/ad-programs/${programa._id}`, body);
       else await api.post('/ad-programs', body);
       toast.success('Programa guardado');
@@ -285,7 +317,24 @@ function EditorPrograma({ programa, otros, onClose, onGuardado }) {
         {/* GASTO EN PUBLICIDAD, POR MES */}
         <section>
           <h4 className="m-0 mb-1 text-sm font-semibold text-slate-700">Gasto en publicidad</h4>
-          <p className="m-0 mb-2 text-[11px] text-slate-500">Lo que se invierte en anuncios para este programa, mes a mes.</p>
+          <p className="m-0 mb-2 text-[11px] text-slate-500">
+            Lo que se invierte en anuncios para este programa. Escríbelo del mes o por día: en los resultados se
+            reparte por día y solo cuentan los días que ya pasaron.
+          </p>
+          <div className="flex gap-1 bg-slate-100 rounded-lg p-0.5 w-fit mb-2">
+            {[['mes', 'Gasto del mes'], ['dia', 'Gasto por día']].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setModoGasto(id)}
+                className={`px-2.5 py-1 rounded-md text-xs border-none cursor-pointer ${
+                  modoGasto === id ? 'bg-white text-emerald-700 font-semibold shadow-sm' : 'bg-transparent text-slate-500'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="flex flex-wrap items-end gap-2">
             <select value={nuevoMes} onChange={(e) => setNuevoMes(Number(e.target.value))} className="border border-slate-200 rounded-xl px-2 py-2 text-sm">
               {MESES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
@@ -296,12 +345,18 @@ function EditorPrograma({ programa, otros, onClose, onGuardado }) {
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
               <input
-                type="number" min="0" step="0.01" value={nuevoMonto}
-                onChange={(e) => setNuevoMonto(e.target.value)}
+                type="text" inputMode="decimal" value={nuevoMonto}
+                onChange={(e) => setNuevoMonto(soloMonto(e.target.value))}
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); anadirGasto(); } }}
-                placeholder="0.00" className="w-32 border border-slate-200 rounded-xl pl-6 pr-2 py-2 text-sm"
+                placeholder={modoGasto === 'dia' ? '0.00 por día' : '0.00 del mes'}
+                className="w-36 border border-slate-200 rounded-xl pl-6 pr-2 py-2 text-sm"
               />
             </div>
+            {modoGasto === 'dia' && gastoEscrito() && (
+              <span className="text-[11px] text-slate-500 pb-2.5">
+                = {money(gastoEscrito().monto)} en {nombreMes(gastoEscrito().mes).toLowerCase()} ({diasDelMes(gastoEscrito().mes)} días)
+              </span>
+            )}
             <button type="button" onClick={anadirGasto}
               className="px-3 py-2 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm font-medium cursor-pointer">
               Añadir
@@ -313,6 +368,7 @@ function EditorPrograma({ programa, otros, onClose, onGuardado }) {
                 <li key={g.mes} className="flex items-center justify-between gap-2 px-3 py-1.5 text-sm bg-white">
                   <span className="text-slate-700">{nombreMes(g.mes)}</span>
                   <span className="flex items-center gap-2">
+                    <span className="text-[11px] text-slate-400">{money(g.monto / diasDelMes(g.mes))} por día ·</span>
                     <b className="text-slate-800">{money(g.monto)}</b>
                     <button type="button" title="Quitar" onClick={() => setGastos((prev) => prev.filter((x) => x.mes !== g.mes))}
                       className="p-1 text-slate-400 hover:text-rose-600 bg-transparent border-none cursor-pointer">
@@ -452,42 +508,61 @@ function EditorPrograma({ programa, otros, onClose, onGuardado }) {
 
 // ─── Pestaña RESULTADOS ─────────────────────────────────────────────────────
 
-function PestanaResultados({ hayProgramas, irAProgramas }) {
+function PestanaResultados({ programas, onCambio, irAProgramas }) {
   const hoy = todayEc();
   const [desde, setDesde] = useState(`${hoy.slice(0, 7)}-01`);
   const [hasta, setHasta] = useState(hoy);
   const [por, setPor] = useState('creacion');
+  // '' = todos los programas; un id = la vista completa de ese programa.
+  const [programaId, setProgramaId] = useState('');
   // El resultado recuerda de qué consulta es: mientras no llegue el de la
   // consulta actual, se está calculando.
   const [resultado, setResultado] = useState({ clave: '', data: null });
   const [abierto, setAbierto] = useState(null);
-  const clave = `${desde}|${hasta}|${por}`;
+  const [recarga, setRecarga] = useState(0);
+  const clave = `${desde}|${hasta}|${por}|${recarga}`;
   const cargando = !!desde && !!hasta && resultado.clave !== clave;
   const data = resultado.data;
 
   useEffect(() => {
     if (!desde || !hasta) return undefined;
     let vivo = true;
+    const miClave = `${desde}|${hasta}|${por}|${recarga}`;
     api.get('/ad-programs/analytics', { params: { from: desde, to: hasta, por } })
-      .then(({ data: d }) => { if (vivo) setResultado({ clave: `${desde}|${hasta}|${por}`, data: d }); })
+      .then(({ data: d }) => { if (vivo) setResultado({ clave: miClave, data: d }); })
       .catch((err) => {
         if (!vivo) return;
         toast.error(err.response?.data?.message || 'No se pudieron calcular las analíticas');
-        setResultado((r) => ({ ...r, clave: `${desde}|${hasta}|${por}` }));
+        setResultado((r) => ({ ...r, clave: miClave }));
       });
     return () => { vivo = false; };
-  }, [desde, hasta, por]);
+  }, [desde, hasta, por, recarga]);
 
   const filas = useMemo(() => data?.programas || [], [data]);
+  const elegido = programaId ? filas.find((p) => String(p._id) === programaId) : null;
   const total = useMemo(() => filas.reduce((t, p) => ({
     gasto: t.gasto + p.gasto,
+    chats: t.chats + (p.chats || 0),
     citas: t.citas + p.citas,
     efectivas: t.efectivas + p.efectivas,
     ingresos: t.ingresos + p.ingresos,
-  }), { gasto: 0, citas: 0, efectivas: 0, ingresos: 0 }), [filas]);
-  const roiTotal = total.gasto ? (total.ingresos - total.gasto) / total.gasto : null;
+  }), { gasto: 0, chats: 0, citas: 0, efectivas: 0, ingresos: 0 }), [filas]);
 
-  if (!hayProgramas) {
+  /** Un anuncio sin programa → al programa escogido (sin salir de los resultados). */
+  const asignarAnuncio = async (adId, destinoId) => {
+    const p = programas.find((x) => String(x._id) === String(destinoId));
+    if (!p) return;
+    try {
+      await api.put(`/ad-programs/${p._id}`, { ...p, anuncios: [...(p.anuncios || []), { adId }] });
+      toast.success(`Anuncio añadido a «${p.name}»`);
+      await onCambio();
+      setRecarga((n) => n + 1);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo asignar el anuncio');
+    }
+  };
+
+  if (!programas.length) {
     return (
       <div className="bg-white border border-dashed border-slate-300 rounded-xl p-6 text-center text-sm text-slate-500">
         Primero define tus programas en la pestaña{' '}
@@ -496,17 +571,19 @@ function PestanaResultados({ hayProgramas, irAProgramas }) {
     );
   }
 
-  const kpi = (label, valor, sub) => (
-    <div className="bg-white border border-slate-200 rounded-xl px-4 py-3">
-      <div className="text-xs text-slate-500">{label}</div>
-      <div className="text-xl font-bold text-slate-800 mt-0.5">{valor}</div>
-      {sub && <div className="text-[11px] text-slate-400 mt-0.5">{sub}</div>}
-    </div>
-  );
+  const subGasto = data?.diasDelGasto
+    ? `proporcional a ${data.diasDelGasto} día(s) transcurrido(s)`
+    : 'sin gasto en los días del rango';
 
   return (
     <div className="space-y-4">
       <div className="bg-white rounded-xl border border-slate-200 p-3 flex flex-wrap gap-3 items-end">
+        <label className="text-sm">Programa
+          <select value={programaId} onChange={(e) => setProgramaId(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm min-w-[180px]">
+            <option value="">Todos los programas</option>
+            {programas.map((p) => <option key={p._id} value={String(p._id)}>{p.name}</option>)}
+          </select>
+        </label>
         <label className="text-sm">Desde<DateInput value={desde} onChange={(e) => setDesde(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
         <label className="text-sm">Hasta<DateInput value={hasta} onChange={(e) => setHasta(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
         <label className="text-sm">Contar por
@@ -515,98 +592,276 @@ function PestanaResultados({ hayProgramas, irAProgramas }) {
             <option value="cita">Fecha de la cita</option>
           </select>
         </label>
+        {programaId && (
+          <button type="button" onClick={() => setProgramaId('')}
+            className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-sm cursor-pointer">
+            Ver todos
+          </button>
+        )}
         {cargando && <span className="text-xs text-slate-400 pb-2">Calculando…</span>}
       </div>
 
-      <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
-        {kpi('Gasto en publicidad', money(total.gasto), 'de los meses del rango')}
-        {kpi('Citas desde chat', total.citas, `${total.efectivas} efectivas`)}
-        {kpi('Ingresos', money(total.ingresos), 'de citas efectivas')}
-        {kpi('Retorno (ROI)', pct(roiTotal), total.gasto ? `costo por efectiva ${total.efectivas ? money(total.gasto / total.efectivas) : '—'}` : 'sin gasto registrado')}
-      </div>
+      {programaId ? (
+        elegido ? <VistaPrograma p={elegido} subGasto={subGasto} /> : <p className="text-sm text-slate-400">Cargando…</p>
+      ) : (
+        <>
+          <div className="grid gap-3 grid-cols-2 lg:grid-cols-5">
+            <Kpi label="Inversión en publicidad" valor={money(total.gasto)} sub={subGasto} />
+            <Kpi label="Chats de anuncios" valor={total.chats} sub="de los anuncios de los programas" />
+            <Kpi label="Citas desde chat" valor={total.citas} sub={`${total.efectivas} asistieron`} />
+            <Kpi label="Ingresos" valor={money(total.ingresos)} sub="de citas efectivas" />
+            <Kpi
+              label="Retorno (ROI)"
+              valor={pct(total.gasto ? (total.ingresos - total.gasto) / total.gasto : null)}
+              sub={total.gasto && total.efectivas ? `costo por efectiva ${money(total.gasto / total.efectivas)}` : 'sin gasto registrado'}
+            />
+          </div>
 
-      <div className="tbl-wrap">
-        <div className="tbl-scroll">
-          <table className="tbl">
-            <thead className="bg-slate-50 text-slate-600">
-              <tr>
-                <th className="text-left px-3 py-2">Programa</th>
-                <th className="text-right px-3 py-2">Gasto</th>
-                <th className="text-right px-3 py-2">Citas</th>
-                <th className="text-right px-3 py-2">Efectivas</th>
-                <th className="text-right px-3 py-2">Canceladas</th>
-                <th className="text-right px-3 py-2">No asistió</th>
-                <th className="text-right px-3 py-2">Pendientes</th>
-                <th className="text-right px-3 py-2">Canjes</th>
-                <th className="text-right px-3 py-2">Ingresos</th>
-                <th className="text-right px-3 py-2">Por agendar</th>
-                <th className="text-right px-3 py-2">Costo / efectiva</th>
-                <th className="text-right px-3 py-2">ROI</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filas.map((p) => {
-                const open = abierto === String(p._id);
-                return (
-                  <Fragment key={p._id}>
+          <div className="tbl-wrap">
+            <div className="tbl-scroll">
+              <table className="tbl">
+                <thead className="bg-slate-50 text-slate-600">
+                  <tr>
+                    <th className="text-left px-3 py-2">Programa</th>
+                    <th className="text-right px-3 py-2">Inversión</th>
+                    <th className="text-right px-3 py-2">Chats</th>
+                    <th className="text-right px-3 py-2">Citas</th>
+                    <th className="text-right px-3 py-2">Efectivas</th>
+                    <th className="text-right px-3 py-2">Canceladas</th>
+                    <th className="text-right px-3 py-2">No asistió</th>
+                    <th className="text-right px-3 py-2">Pendientes</th>
+                    <th className="text-right px-3 py-2">Canjes</th>
+                    <th className="text-right px-3 py-2">Ingresos</th>
+                    <th className="text-right px-3 py-2">Por agendar</th>
+                    <th className="text-right px-3 py-2">Costo / efectiva</th>
+                    <th className="text-right px-3 py-2">ROI</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filas.map((p) => (
                     <tr
+                      key={p._id}
                       className="border-t border-slate-100 cursor-pointer hover:bg-slate-50"
-                      onClick={() => setAbierto(open ? null : String(p._id))}
+                      title="Ver todo el programa"
+                      onClick={() => setProgramaId(String(p._id))}
                     >
                       <td className="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">
-                        {open ? <HiOutlineChevronDown className="inline w-4 h-4 mr-1" /> : <HiOutlineChevronRight className="inline w-4 h-4 mr-1" />}
-                        {p.name}
+                        <HiOutlineChevronRight className="inline w-4 h-4 mr-1" />{p.name}
                       </td>
-                      <td className="px-3 py-2 text-right">{money(p.gasto)}</td>
-                      <td className="px-3 py-2 text-right font-semibold">{p.citas}</td>
-                      <td className="px-3 py-2 text-right text-emerald-700">{p.efectivas}</td>
-                      <td className="px-3 py-2 text-right text-rose-700">{p.canceladas}</td>
-                      <td className="px-3 py-2 text-right text-amber-700">{p.noAsistio}</td>
-                      <td className="px-3 py-2 text-right text-slate-500">{p.pendientes}</td>
-                      <td className="px-3 py-2 text-right">{p.canjes}</td>
-                      <td className="px-3 py-2 text-right font-semibold">{money(p.ingresos)}</td>
-                      <td className="px-3 py-2 text-right text-slate-500" title="Valor de las citas que siguen en pie (pendientes + efectivas)">{money(p.valorAgendado)}</td>
-                      <td className="px-3 py-2 text-right">{p.costoPorEfectiva === null ? '—' : money(p.costoPorEfectiva)}</td>
-                      <td className={`px-3 py-2 text-right font-semibold ${p.roi === null ? '' : p.roi >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{pct(p.roi)}</td>
+                      <CeldasNumeros r={p} />
                     </tr>
-                    {open && (
-                      <tr className="bg-slate-50/60">
-                        <td colSpan={12} className="px-3 py-3">
-                          <DetalleCitas citas={p.citasDetalle || []} />
+                  ))}
+                  {data?.sinPrograma?.citas > 0 && (
+                    <>
+                      <tr
+                        className="border-t border-slate-200 text-slate-500 cursor-pointer hover:bg-slate-50"
+                        onClick={() => setAbierto(abierto === 'sin' ? null : 'sin')}
+                        title="Citas desde chat que no son de ningún programa"
+                      >
+                        <td className="px-3 py-2 italic">
+                          {abierto === 'sin' ? <HiOutlineChevronDown className="inline w-4 h-4 mr-1" /> : <HiOutlineChevronRight className="inline w-4 h-4 mr-1" />}
+                          Sin programa{data.sinPrograma.conAnuncio ? ` (${data.sinPrograma.conAnuncio} con anuncio sin asignar)` : ''}
                         </td>
+                        <CeldasNumeros r={{ ...data.sinPrograma, gasto: null, chats: null, costoPorEfectiva: null, roi: null }} />
                       </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-              {data?.sinPrograma?.citas > 0 && (
-                <tr className="border-t border-slate-200 text-slate-500">
-                  <td className="px-3 py-2 italic" title="Citas desde chat cuyo anuncio no está en ningún programa (o que no vinieron de un anuncio)">
-                    Sin programa{data.sinPrograma.conAnuncio ? ` (${data.sinPrograma.conAnuncio} con anuncio sin asignar)` : ''}
-                  </td>
-                  <td className="px-3 py-2 text-right">—</td>
-                  <td className="px-3 py-2 text-right">{data.sinPrograma.citas}</td>
-                  <td className="px-3 py-2 text-right">{data.sinPrograma.efectivas}</td>
-                  <td className="px-3 py-2 text-right">{data.sinPrograma.canceladas}</td>
-                  <td className="px-3 py-2 text-right">{data.sinPrograma.noAsistio}</td>
-                  <td className="px-3 py-2 text-right">{data.sinPrograma.pendientes}</td>
-                  <td className="px-3 py-2 text-right">{data.sinPrograma.canjes}</td>
-                  <td className="px-3 py-2 text-right">{money(data.sinPrograma.ingresos)}</td>
-                  <td className="px-3 py-2 text-right">{money(data.sinPrograma.valorAgendado)}</td>
-                  <td className="px-3 py-2 text-right">—</td>
-                  <td className="px-3 py-2 text-right">—</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                      {abierto === 'sin' && (
+                        <tr className="bg-slate-50/60">
+                          <td colSpan={13} className="px-3 py-3">
+                            <AnunciosSinPrograma
+                              anuncios={data.anunciosSinPrograma || []}
+                              programas={programas}
+                              onAsignar={asignarAnuncio}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
 
       <p className="text-[11px] text-slate-400 m-0">
         <b>Efectivas</b> = asistidas o completadas. <b>Ingresos</b> = valor asignado a las citas efectivas, sin canjes
-        ni servicios marcados «no genera ingresos». Una cita es del programa por el <b>anuncio</b> del que vino su chat;
-        si el chat no vino de un anuncio de ningún programa, por su <b>servicio</b> (cuando ese servicio es de un solo programa).
+        ni servicios marcados «no genera ingresos». La <b>inversión</b> se reparte por día y solo cuentan los días ya
+        transcurridos. Una cita es del programa por el <b>anuncio</b> del que vino su chat; si el chat no vino de un
+        anuncio de ningún programa, por su <b>servicio</b> (cuando ese servicio es de un solo programa).
       </p>
+    </div>
+  );
+}
+
+function Kpi({ label, valor, sub }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 min-w-0">
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className="text-xl font-bold text-slate-800 mt-0.5 break-words">{valor}</div>
+      {sub && <div className="text-[11px] text-slate-400 mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
+/** Las columnas numéricas comunes a programa, anuncio y «sin programa». */
+function CeldasNumeros({ r, sinGasto = false }) {
+  const guion = (v, f = (x) => x) => (v === null || v === undefined ? '—' : f(v));
+  return (
+    <>
+      {!sinGasto && <td className="px-3 py-2 text-right">{guion(r.gasto, money)}</td>}
+      <td className="px-3 py-2 text-right">{guion(r.chats)}</td>
+      <td className="px-3 py-2 text-right font-semibold">{r.citas}</td>
+      <td className="px-3 py-2 text-right text-emerald-700">{r.efectivas}</td>
+      <td className="px-3 py-2 text-right text-rose-700">{r.canceladas}</td>
+      <td className="px-3 py-2 text-right text-amber-700">{r.noAsistio}</td>
+      <td className="px-3 py-2 text-right text-slate-500">{r.pendientes}</td>
+      <td className="px-3 py-2 text-right">{r.canjes}</td>
+      <td className="px-3 py-2 text-right font-semibold">{money(r.ingresos)}</td>
+      <td className="px-3 py-2 text-right text-slate-500" title="Valor de las citas que siguen en pie (pendientes + efectivas)">{money(r.valorAgendado)}</td>
+      {!sinGasto && (
+        <>
+          <td className="px-3 py-2 text-right">{guion(r.costoPorEfectiva, money)}</td>
+          <td className={`px-3 py-2 text-right font-semibold ${r.roi === null || r.roi === undefined ? '' : r.roi >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{pct(r.roi)}</td>
+        </>
+      )}
+    </>
+  );
+}
+
+/**
+ * TODO UN PROGRAMA: su inversión, chats, citas, asistencias, ingresos y ROI;
+ * cuántas citas trajo cada anuncio, y la lista de citas.
+ */
+function VistaPrograma({ p, subGasto }) {
+  const costoPorCita = p.citas ? p.gasto / p.citas : null;
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 grid-cols-2 lg:grid-cols-6">
+        <Kpi label="Inversión" valor={money(p.gasto)} sub={subGasto} />
+        <Kpi label="Chats" valor={p.chats} sub="llegaron por sus anuncios" />
+        <Kpi label="Citas" valor={p.citas} sub={costoPorCita === null ? '' : `${money(costoPorCita)} por cita`} />
+        <Kpi
+          label="Asistencias"
+          valor={p.efectivas}
+          sub={`${p.citas ? Math.round((p.efectivas / p.citas) * 100) : 0}% · ${p.canceladas} canceladas · ${p.noAsistio} no asistió`}
+        />
+        <Kpi label="Ingresos" valor={money(p.ingresos)} sub={`${p.canjes} canje(s) · ${money(p.valorAgendado)} por agendar`} />
+        <Kpi
+          label="ROI"
+          valor={pct(p.roi)}
+          sub={p.costoPorEfectiva === null ? 'sin gasto o sin asistencias' : `${money(p.costoPorEfectiva)} por asistencia`}
+        />
+      </div>
+
+      <div>
+        <h3 className="m-0 mb-2 text-sm font-semibold text-slate-700">Por anuncio</h3>
+        <div className="tbl-wrap">
+          <div className="tbl-scroll">
+            <table className="tbl">
+              <thead className="bg-slate-50 text-slate-600">
+                <tr>
+                  <th className="text-left px-3 py-2">Anuncio</th>
+                  <th className="text-right px-3 py-2">Chats</th>
+                  <th className="text-right px-3 py-2">Citas</th>
+                  <th className="text-right px-3 py-2">Efectivas</th>
+                  <th className="text-right px-3 py-2">Canceladas</th>
+                  <th className="text-right px-3 py-2">No asistió</th>
+                  <th className="text-right px-3 py-2">Pendientes</th>
+                  <th className="text-right px-3 py-2">Canjes</th>
+                  <th className="text-right px-3 py-2">Ingresos</th>
+                  <th className="text-right px-3 py-2">Por agendar</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(p.anuncios || []).length === 0 && (
+                  <tr><td colSpan={10} className="px-3 py-4 text-center text-slate-400">Este programa no tiene anuncios.</td></tr>
+                )}
+                {[...(p.anuncios || [])]
+                  .sort((a, b) => b.citas - a.citas || b.chats - a.chats)
+                  .map((a) => (
+                    <tr key={a.adId || 'servicio'} className="border-t border-slate-100">
+                      <td className="px-3 py-2">
+                        {a.porServicio ? (
+                          <span className="italic text-slate-500">Sin anuncio (por servicio)</span>
+                        ) : (
+                          <>
+                            <span className="inline-flex items-center gap-1 font-mono text-xs text-slate-800">
+                              <HiOutlineMegaphone className="w-3.5 h-3.5 text-indigo-500" /> {a.adId}
+                            </span>
+                            {(a.titular || a.workflowName) && (
+                              <div className="text-[11px] text-slate-500 break-words">
+                                {a.titular ? `«${a.titular}»` : ''}{a.titular && a.workflowName ? ' · ' : ''}{a.workflowName}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </td>
+                      <CeldasNumeros r={a} sinGasto />
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h3 className="m-0 mb-2 text-sm font-semibold text-slate-700">Citas ({(p.citasDetalle || []).length})</h3>
+        <div className="bg-white border border-slate-200 rounded-xl p-3">
+          <DetalleCitas citas={p.citasDetalle || []} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Los anuncios que trajeron citas sin ser de ningún programa, para asignarlos ahí mismo. */
+function AnunciosSinPrograma({ anuncios, programas, onAsignar }) {
+  if (!anuncios.length) {
+    return <p className="m-0 text-sm text-slate-400">Estas citas vinieron de chats sin anuncio.</p>;
+  }
+  return (
+    <div className="space-y-2">
+      <p className="m-0 text-xs text-slate-500">
+        Anuncios que trajeron citas y no están en ningún programa. Asígnalos para que cuenten.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="text-slate-500">
+            <tr>
+              <th className="text-left px-2 py-1">Anuncio</th>
+              <th className="text-right px-2 py-1">Citas</th>
+              <th className="text-right px-2 py-1">Efectivas</th>
+              <th className="text-right px-2 py-1">Ingresos</th>
+              <th className="text-left px-2 py-1">Asignar a</th>
+            </tr>
+          </thead>
+          <tbody>
+            {anuncios.map((a) => (
+              <tr key={a.adId} className="border-t border-slate-200/70">
+                <td className="px-2 py-1.5">
+                  <span className="font-mono text-slate-800">{a.adId}</span>
+                  {a.titular && <div className="text-[11px] text-slate-500 break-words">«{a.titular}»</div>}
+                </td>
+                <td className="px-2 py-1.5 text-right font-semibold">{a.citas}</td>
+                <td className="px-2 py-1.5 text-right text-emerald-700">{a.efectivas}</td>
+                <td className="px-2 py-1.5 text-right">{money(a.ingresos)}</td>
+                <td className="px-2 py-1.5">
+                  <select
+                    value=""
+                    onChange={(e) => e.target.value && onAsignar(a.adId, e.target.value)}
+                    className="border border-slate-200 rounded-lg px-2 py-1 text-xs bg-white"
+                  >
+                    <option value="">Escoger programa…</option>
+                    {programas.map((p) => <option key={p._id} value={String(p._id)}>{p.name}</option>)}
+                  </select>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

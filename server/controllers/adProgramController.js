@@ -203,15 +203,38 @@ function diaLocal(value, fin = false) {
     : new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0);
 }
 
-/** Meses 'YYYY-MM' que toca el rango (para sumar el gasto). */
-function mesesDelRango(desde, hasta) {
-  const meses = new Set();
-  const d = new Date(desde.getFullYear(), desde.getMonth(), 1);
-  while (d <= hasta) {
-    meses.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-    d.setMonth(d.getMonth() + 1);
+/** Número de día absoluto de una fecha local (para contar días sin líos de hora). */
+const numeroDeDia = (d) => Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+
+/**
+ * EL GASTO DEL RANGO, PROPORCIONAL POR DÍA (oct-2026).
+ *
+ * El gasto se registra por mes, pero se reparte a partes iguales entre los días
+ * del mes y solo cuentan los días YA TRANSCURRIDOS: al 9 de octubre, un gasto
+ * de $775 en octubre pesa 775 ÷ 31 × 9. Antes se sumaba el mes entero en cuanto
+ * el rango lo tocaba, y el costo por cita de un mes a medias salía inflado.
+ *
+ * @returns {{ gasto: number, dias: number }} el gasto y los días que se contaron
+ */
+function gastoDelRango(gastos, desde, hasta, hoy = new Date()) {
+  const finHoy = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate(), 23, 59, 59, 999);
+  const fin = hasta < finHoy ? hasta : finHoy;
+  if (fin < desde) return { gasto: 0, dias: 0 };
+  let gasto = 0;
+  const diasContados = new Set();
+  for (const g of gastos || []) {
+    const [y, m] = String(g.mes || '').split('-').map(Number);
+    if (!y || !m) continue;
+    const inicioMes = new Date(y, m - 1, 1);
+    const finMes = new Date(y, m, 0);
+    const diasDelMes = finMes.getDate();
+    const a = Math.max(numeroDeDia(inicioMes), numeroDeDia(desde));
+    const b = Math.min(numeroDeDia(finMes), numeroDeDia(fin));
+    if (b < a) continue;
+    gasto += ((Number(g.monto) || 0) / diasDelMes) * (b - a + 1);
+    for (let d = a; d <= b; d += 1) diasContados.add(d);
   }
-  return meses;
+  return { gasto: Math.round(gasto * 100) / 100, dias: diasContados.size };
 }
 
 /** El anuncio del que salió la cita: el de la oportunidad que la agendó, o el del chat. */
@@ -273,10 +296,51 @@ exports.analytics = async (req, res) => {
         alias = await require('../utils/metaAds').resolveAdAliases(idsConfigurados);
       } catch { /* el id exacto sigue valiendo */ }
     }
+    // Cualquier alias → el programa, y → el id tal como se configuró.
     const programaDeAnuncio = new Map();
+    const anuncioConfigurado = new Map();
     for (const p of programas) {
       for (const a of p.anuncios || []) {
-        for (const id of alias.get(a.adId) || [a.adId]) programaDeAnuncio.set(String(id), String(p._id));
+        for (const id of alias.get(a.adId) || [a.adId]) {
+          programaDeAnuncio.set(String(id), String(p._id));
+          anuncioConfigurado.set(String(id), a.adId);
+        }
+      }
+    }
+
+    /**
+     * LOS CHATS QUE TRAJO CADA ANUNCIO en el rango: el chat que nació de él, o
+     * una oportunidad que se abrió en el rango por ese anuncio (un chat viejo
+     * que vuelve a escribir desde otro anuncio). Siempre por fecha de llegada.
+     */
+    const chatsPorAnuncio = new Map(); // id configurado → Set(conv)
+    const chatsPorPrograma = new Map(); // programa → Set(conv)
+    const todosLosAlias = [...programaDeAnuncio.keys()];
+    if (todosLosAlias.length) {
+      const enRango = { $gte: desde, $lte: hasta };
+      const llegadas = await Conversation.find({
+        clinic: req.clinicId,
+        $or: [
+          { 'attribution.adId': { $in: todosLosAlias }, createdAt: enRango },
+          { opportunities: { $elemMatch: { 'attribution.adId': { $in: todosLosAlias }, createdAt: enRango } } },
+        ],
+      }).select('createdAt attribution.adId opportunities.attribution.adId opportunities.createdAt').lean();
+      const dentro = (f) => f && new Date(f) >= desde && new Date(f) <= hasta;
+      for (const conv of llegadas) {
+        const ids = new Set();
+        if (dentro(conv.createdAt) && conv.attribution?.adId) ids.add(limpiarId(conv.attribution.adId));
+        for (const o of conv.opportunities || []) {
+          if (dentro(o.createdAt) && o.attribution?.adId) ids.add(limpiarId(o.attribution.adId));
+        }
+        for (const id of ids) {
+          const prog = programaDeAnuncio.get(id);
+          if (!prog) continue;
+          const conf = anuncioConfigurado.get(id);
+          if (!chatsPorAnuncio.has(conf)) chatsPorAnuncio.set(conf, new Set());
+          chatsPorAnuncio.get(conf).add(String(conv._id));
+          if (!chatsPorPrograma.has(prog)) chatsPorPrograma.set(prog, new Set());
+          chatsPorPrograma.get(prog).add(String(conv._id));
+        }
       }
     }
 
@@ -303,6 +367,22 @@ exports.analytics = async (req, res) => {
     const resumen = new Map(programas.map((p) => [String(p._id), vacio()]));
     const detalle = new Map(programas.map((p) => [String(p._id), []]));
     const sinPrograma = { ...vacio(), conAnuncio: 0 };
+    // Por anuncio dentro de cada programa: `${programa}|${idConfigurado}` (o '|servicio').
+    const porAnuncio = new Map();
+    // Los anuncios que trajeron citas y no son de ningún programa, para asignarlos.
+    const sueltos = new Map();
+    /** Suma una cita a un acumulado (resumen, anuncio o suelto). */
+    const sumar = (r, { grupo, valor, isCanje, generaIngresos, sinValor }) => {
+      r.citas += 1;
+      r[grupo] += 1;
+      if (isCanje) r.canjes += 1;
+      else if (!generaIngresos) r.sinIngreso += 1;
+      else if (sinValor) r.sinValor += 1;
+      // Lo que se espera cobrar de lo que sigue en pie; ingreso = solo lo atendido.
+      const cuenta = !isCanje && generaIngresos;
+      if (cuenta && grupo !== 'canceladas' && grupo !== 'noAsistio') r.valorAgendado += valor;
+      if (cuenta && grupo === 'efectivas') r.ingresos += valor;
+    };
 
     for (const c of citas) {
       const conv = convPorId.get(String(c.conversation));
@@ -326,20 +406,30 @@ exports.analytics = async (req, res) => {
         : null;
       const generaIngresos = servicioProg ? servicioProg.generaIngresos !== false : true;
 
-      const r = programaId ? resumen.get(programaId) : sinPrograma;
-      r.citas += 1;
-      r[grupo] += 1;
-      if (c.isCanje) r.canjes += 1;
-      else if (!generaIngresos) r.sinIngreso += 1;
-      else if (c.agreedValue === null || c.agreedValue === undefined) r.sinValor += 1;
-      // Lo que se espera cobrar de lo que sigue en pie; ingreso = solo lo atendido.
-      const cuenta = !c.isCanje && generaIngresos;
-      if (cuenta && grupo !== 'canceladas' && grupo !== 'noAsistio') r.valorAgendado += valor;
-      if (cuenta && grupo === 'efectivas') r.ingresos += valor;
+      const datosCita = {
+        grupo,
+        valor,
+        isCanje: !!c.isCanje,
+        generaIngresos,
+        sinValor: c.agreedValue === null || c.agreedValue === undefined,
+      };
+      sumar(programaId ? resumen.get(programaId) : sinPrograma, datosCita);
       if (!programaId) {
-        if (adId) sinPrograma.conAnuncio += 1;
+        if (adId) {
+          sinPrograma.conAnuncio += 1;
+          if (!sueltos.has(adId)) sueltos.set(adId, { adId, titular: '', ...vacio() });
+          const s = sueltos.get(adId);
+          sumar(s, datosCita);
+          if (!s.titular && conv.attribution?.campaign) s.titular = conv.attribution.campaign;
+        }
         continue;
       }
+      const idConfigurado = atribucion === 'anuncio' ? anuncioConfigurado.get(adId) || adId : '';
+      const claveAnuncio = `${programaId}|${idConfigurado}`;
+      if (!porAnuncio.has(claveAnuncio)) porAnuncio.set(claveAnuncio, { titular: '', ...vacio() });
+      const pa = porAnuncio.get(claveAnuncio);
+      sumar(pa, datosCita);
+      if (!pa.titular && atribucion === 'anuncio' && conv.attribution?.campaign) pa.titular = conv.attribution.campaign;
 
       detalle.get(programaId).push({
         _id: c._id,
@@ -358,19 +448,38 @@ exports.analytics = async (req, res) => {
         canje: !!c.isCanje,
         generaIngresos,
         atribucion,
-        adId,
+        adId: idConfigurado || adId,
       });
     }
 
-    const meses = mesesDelRango(desde, hasta);
+    let diasDelGasto = 0;
     const filas = programas.map((p) => {
-      const r = resumen.get(String(p._id));
-      const gasto = (p.gastos || []).filter((g) => meses.has(g.mes)).reduce((s, g) => s + (Number(g.monto) || 0), 0);
+      const pid = String(p._id);
+      const r = resumen.get(pid);
+      const { gasto, dias } = gastoDelRango(p.gastos, desde, hasta);
+      diasDelGasto = Math.max(diasDelGasto, dias);
+
+      // Una fila por anuncio del programa —también los que no trajeron nada,
+      // que es justo lo que hay que ver—, y al final las caídas por servicio.
+      const anuncios = (p.anuncios || []).map((a) => {
+        const pa = porAnuncio.get(`${pid}|${a.adId}`) || { titular: '', ...vacio() };
+        return {
+          adId: a.adId,
+          workflowName: a.workflowName || '',
+          ...pa,
+          chats: chatsPorAnuncio.get(a.adId)?.size || 0,
+        };
+      });
+      const porServicio = porAnuncio.get(`${pid}|`);
+      if (porServicio) anuncios.push({ adId: '', workflowName: '', ...porServicio, chats: 0, porServicio: true });
+
       return {
         _id: p._id,
         name: p.name,
         color: p.color,
         gasto,
+        chats: chatsPorPrograma.get(pid)?.size || 0,
+        anuncios,
         ...r,
         // Lo que costó cada cita y cada cita efectiva; ROI = (ingresos - gasto) / gasto.
         costoPorCita: r.citas ? gasto / r.citas : null,
@@ -380,8 +489,20 @@ exports.analytics = async (req, res) => {
       };
     });
 
-    res.json({ desde: req.query.from, hasta: req.query.to, por, programas: filas, sinPrograma });
+    res.json({
+      desde: req.query.from,
+      hasta: req.query.to,
+      por,
+      diasDelGasto,
+      programas: filas,
+      sinPrograma,
+      // Los que más citas trajeron primero: son los que vale la pena asignar.
+      anunciosSinPrograma: [...sueltos.values()].sort((a, b) => b.citas - a.citas),
+    });
   } catch (error) {
     res.status(500).json({ message: 'Error al calcular las analíticas', error: error.message });
   }
 };
+
+// Para los tests: el prorrateo del gasto por día.
+exports._gastoDelRango = gastoDelRango;

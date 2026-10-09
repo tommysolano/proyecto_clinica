@@ -112,8 +112,42 @@ test('citas por programa: estados, ingresos, canjes y servicios sin ingreso', as
   assert.equal(p.sinIngreso, 1, 'la valoración no genera ingresos');
   assert.equal(p.ingresos, 80, 'solo lo atendido, sin canje ni servicio sin ingreso');
   assert.equal(p.valorAgendado, 120, 'lo que sigue en pie: 80 + 40');
-  assert.equal(p.gasto, 100, 'solo el gasto de los meses del rango');
-  assert.equal(p.costoPorEfectiva, 100 / 3);
+  // Un solo día del rango: 100 ÷ días del mes (el gasto de 2001 no entra).
+  const diasDelMes = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+  assert.equal(p.gasto, Math.round((100 / diasDelMes) * 100) / 100, 'gasto proporcional a los días');
+  assert.equal(p.costoPorEfectiva, p.gasto / 3);
+  // Por anuncio: AD1 trajo 6 citas; la del servicio va en su propia fila.
+  const ad1 = p.anuncios.find((a) => a.adId === 'AD1');
+  assert.equal(ad1.citas, 6);
+  assert.equal(ad1.efectivas, 3);
+  assert.equal(ad1.chats, 1, 'el chat que llegó hoy por AD1');
+  assert.equal(p.anuncios.find((a) => a.porServicio).citas, 1);
+  assert.equal(p.chats, 1);
   assert.equal(p.citasDetalle.filter((d) => d.atribucion === 'servicio').length, 1);
   assert.equal(r.sinPrograma.citas, 1);
+});
+
+test('el gasto del mes se reparte por día y solo cuentan los días ya transcurridos', () => {
+  const g = [{ mes: '2026-10', monto: 775 }];
+  const hoy = new Date(2026, 9, 9, 15, 0);
+  // Del 1 al 9 de octubre: 775 / 31 * 9 = 225.
+  assert.deepEqual(ctrl._gastoDelRango(g, new Date(2026, 9, 1), new Date(2026, 9, 31, 23, 59), hoy), { gasto: 225, dias: 9 });
+  // Un rango que termina en el futuro no suma los días que aún no pasan.
+  assert.equal(ctrl._gastoDelRango(g, new Date(2026, 9, 1), new Date(2026, 11, 31), hoy).gasto, 225);
+  // Mes completo ya pasado: entero.
+  assert.equal(ctrl._gastoDelRango(g, new Date(2026, 9, 1), new Date(2026, 9, 31, 23, 59), new Date(2026, 10, 5)).gasto, 775);
+});
+
+test('los anuncios que traen citas y no son de ningún programa se listan para asignarlos', async () => {
+  const { clinicId, userId, otro, patient } = await seed();
+  ok(await H.runController(ctrl.create, pedir(clinicId, userId, { name: 'Detox', anuncios: [{ adId: 'AD1' }] })));
+  const c = await chat(clinicId, patient, 'AD-SUELTO');
+  await Conversation.updateOne({ _id: c._id }, { $set: { 'attribution.campaign': 'Promo octubre' } });
+  await cita(clinicId, patient, c, otro, { status: 'asistida', agreedValue: 30 });
+
+  const r = ok(await H.runController(ctrl.analytics, pedir(clinicId, userId, {}, { query: { from: hoy(), to: hoy() } })));
+  assert.equal(r.anunciosSinPrograma.length, 1);
+  assert.equal(r.anunciosSinPrograma[0].adId, 'AD-SUELTO');
+  assert.equal(r.anunciosSinPrograma[0].titular, 'Promo octubre');
+  assert.equal(r.anunciosSinPrograma[0].ingresos, 30);
 });
