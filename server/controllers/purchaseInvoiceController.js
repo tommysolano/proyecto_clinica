@@ -1075,7 +1075,7 @@ const SRI_COLUMNS = {
  */
 function parseSriReport(raw) {
   const rawLines = String(raw || '').split(/\r?\n/).map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim());
-  if (!rawLines.length) return { rows: [], errors: [] };
+  if (!rawLines.length) return { rows: [], errors: [], sourceRows: 0 };
 
   // Detecta el separador: tab prioritario; luego ';', '|' y por último ',' (sin romper decimales).
   const sample = rawLines[0];
@@ -1122,7 +1122,7 @@ function parseSriReport(raw) {
       subtotal, iva, total, ivaRate: snapIvaRate(iva, subtotal),
     });
   }
-  return { rows, errors };
+  return { rows, errors, sourceRows: rawLines.length - startRow };
 }
 
 /**
@@ -1138,11 +1138,16 @@ exports.importTxt = async (req, res) => {
   try {
     const raw = req.body?.content || req.body?.text;
     if (!raw) return res.status(400).json({ message: 'content vacío' });
-    const { rows, errors } = parseSriReport(raw);
-    if (!rows.length) return res.json({ created: 0, skipped: 0, errors });
+    const { rows, errors, sourceRows } = parseSriReport(raw);
+    if (!rows.length) return res.json({ sourceRows, validRows: 0, created: 0, skipped: 0,
+      duplicateInFile: 0, duplicateInSystem: 0, invalidRows: errors.length, excludedByDocumentType: 0, errors });
 
     // 1) Proveedores: trae los existentes por RUC en una sola consulta; crea los faltantes.
     const rucs = [...new Set(rows.map((r) => r.ruc))];
+    await Supplier.updateMany(
+      { clinic: req.clinicId, ruc: { $in: rucs }, roles: { $ne: 'PROVEEDOR' } },
+      { $addToSet: { roles: 'PROVEEDOR' } }
+    );
     const existingSups = await Supplier.find({ clinic: req.clinicId, ruc: { $in: rucs } });
     const supByRuc = new Map(existingSups.map((s) => [s.ruc, s]));
     const newSupplierDocs = [];
@@ -1174,7 +1179,7 @@ exports.importTxt = async (req, res) => {
     const existingSerieKeys = new Set(existingInv.map((e) => `${e.supplier}|${e.serie}`));
 
     // 3) Construye los documentos nuevos (deduplicando también dentro del propio archivo).
-    let skipped = 0;
+    let skipped = 0, duplicateInFile = 0, duplicateInSystem = 0;
     const seenInFile = new Set();
     const docs = [];
     for (const r of rows) {
@@ -1182,9 +1187,9 @@ exports.importTxt = async (req, res) => {
       if (!sup) { errors.push({ line: r.line, error: `No se pudo crear/encontrar el proveedor ${r.ruc}` }); continue; }
       const serieKey = `${sup._id}|${r.serie}`;
       const fileKey = r.claveAcceso || serieKey;
-      if (seenInFile.has(fileKey)) { skipped++; continue; }
+      if (seenInFile.has(fileKey)) { skipped++; duplicateInFile++; continue; }
       seenInFile.add(fileKey);
-      if ((r.claveAcceso && existingClaves.has(r.claveAcceso)) || (r.serie && existingSerieKeys.has(serieKey))) { skipped++; continue; }
+      if ((r.claveAcceso && existingClaves.has(r.claveAcceso)) || (r.serie && existingSerieKeys.has(serieKey))) { skipped++; duplicateInSystem++; continue; }
       // La fecha del comprobante se respeta TAL CUAL viene del SRI (nunca se reescribe): el
       // importador debe poder cargar meses anteriores, que es justamente para lo que sirve.
       // Un mes ya cerrado lo sigue bloqueando el período fiscal al contabilizar.
@@ -1220,12 +1225,14 @@ exports.importTxt = async (req, res) => {
         // Con ordered:false, los duplicados que se colaron se cuentan como omitidos.
         const ok = e?.insertedDocs?.length || 0;
         skipped += docs.length - ok;
+        duplicateInSystem += docs.length - ok;
         return e?.insertedDocs || [];
       });
       created = inserted.length;
     }
 
-    res.json({ created, skipped, errors });
+    res.json({ sourceRows, validRows: rows.length, created, skipped,
+      duplicateInFile, duplicateInSystem, invalidRows: errors.length, excludedByDocumentType: 0, errors });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -1406,21 +1413,37 @@ exports.importXml = async (req, res) => {
   try {
     const xmls = Array.isArray(req.body?.xmls) ? req.body.xmls : (req.body?.content ? [req.body.content] : []);
     if (!xmls.length) return res.status(400).json({ message: 'No se recibieron XML' });
-    let created = 0, skipped = 0;
+    let created = 0, skipped = 0, duplicateInFile = 0, duplicateInSystem = 0;
+    const seenInFile = new Set();
     const errors = [];
     for (let i = 0; i < xmls.length; i++) {
       try {
         const p = parsePurchaseInvoiceXml(xmls[i]);
         if (!p.ruc) { errors.push({ index: i + 1, error: 'XML sin RUC' }); continue; }
-        let sup = await Supplier.findOne({ clinic: req.clinicId, ruc: p.ruc });
-        if (!sup) sup = await Supplier.create({ clinic: req.clinicId, ruc: p.ruc, razonSocial: p.razonSocial || p.ruc });
+        const fileKey = p.claveAcceso || `${p.ruc}|${p.serie}`;
+        if (seenInFile.has(fileKey)) { skipped++; duplicateInFile++; continue; }
+        seenInFile.add(fileKey);
+        const sup = await Supplier.findOneAndUpdate(
+          { clinic: req.clinicId, ruc: p.ruc },
+          {
+            $setOnInsert: { clinic: req.clinicId, ruc: p.ruc, razonSocial: p.razonSocial || p.ruc },
+            $addToSet: { roles: 'PROVEEDOR' },
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: false }
+        );
+        const sourceContact = { address: p.address, phone: p.phone, email: p.email };
+        const missingContact = Object.fromEntries(Object.entries(sourceContact)
+          .filter(([key, value]) => value && !sup[key]));
+        if (Object.keys(missingContact).length) {
+          await Supplier.updateOne({ _id: sup._id, clinic: req.clinicId }, { $set: missingContact });
+        }
         // Evitar duplicados (clave de acceso / autorización / proveedor+serie / estab-pto-secuencial),
         // sin contar comprobantes anulados. Misma regla que el registro manual y la autorización.
         const dup = await findDuplicatePurchaseInvoice({
           clinicId: req.clinicId, supplier: sup._id, serie: p.serie, claveAcceso: p.claveAcceso,
           autorizacion: p.autorizacion, estab: p.estab, ptoEmi: p.ptoEmi, secuencial: p.secuencial,
         });
-        if (dup) { skipped++; continue; }
+        if (dup) { skipped++; duplicateInSystem++; continue; }
         // Igual que el importador TXT: se conserva la fecha de emisión del XML del SRI, aunque
         // sea de un mes anterior. Reescribirla falsearía el 103/104 y el ATS, que suman por la
         // fecha del comprobante.
@@ -1441,7 +1464,9 @@ exports.importXml = async (req, res) => {
         created++;
       } catch (err) { errors.push({ index: i + 1, error: err.message }); }
     }
-    res.json({ created, skipped, errors });
+    res.json({ sourceRows: xmls.length, validRows: xmls.length - errors.length,
+      created, skipped, duplicateInFile, duplicateInSystem,
+      invalidRows: errors.length, excludedByDocumentType: 0, errors });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 

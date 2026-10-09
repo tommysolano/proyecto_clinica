@@ -2,6 +2,7 @@ const Payment = require('../models/Payment');
 const Invoice = require('../models/Invoice');
 const Receivable = require('../models/Receivable');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
+const JournalEntry = require('../models/JournalEntry');
 const Supplier = require('../models/Supplier');
 const { resolvePurchaseDueDate } = require('../utils/purchaseDueDate');
 const BankAccount = require('../models/BankAccount');
@@ -18,6 +19,32 @@ const {
   readIdempotencyKey, fingerprint, assertSameFingerprint, normalize: N, conflict,
 } = require('../utils/idempotency');
 const { sendError } = require('../utils/apiError');
+
+/** Un pago solo puede cancelar una CxP que ya exista en el mayor. */
+async function assertPurchasePosted(pi, clinicId, session) {
+  if (!['REGISTRADA', 'PAGADA'].includes(pi.status) || !pi.journalEntry) {
+    throw Object.assign(new Error('La compra aún no está contabilizada. Verifica y contabiliza antes de registrar pagos.'), {
+      status: 409, payload: { code: 'NOT_POSTED' },
+    });
+  }
+  const entry = await JournalEntry.findOne({
+    _id: pi.journalEntry,
+    clinic: clinicId,
+    status: 'CONTABILIZADO',
+    isReversed: { $ne: true },
+  }).session(session);
+  if (entry?.sourceModel === 'PurchaseInvoice' && String(entry.sourceRef) === String(pi._id)) return;
+  // Una compra migrada puede apuntar a un asiento importado, pero su Payable
+  // también se importa por separado. Aplicarla como compra local abriría otra CxP.
+  if (pi.sourceModel === 'ContificoRecord' && entry?.sourceModel === 'ContificoRecord') {
+    throw Object.assign(new Error('Esta compra migrada requiere conciliar su cuenta por pagar antes de registrar el pago desde Compras.'), {
+      status: 409, payload: { code: 'MIGRATED_PAYABLE_REVIEW' },
+    });
+  }
+  throw Object.assign(new Error('La compra no tiene un asiento vigente. Revisa su contabilización antes de pagar.'), {
+    status: 409, payload: { code: 'NOT_POSTED' },
+  });
+}
 
 async function nextNumber(clinicId, type, session = null) {
   const prefix = type === 'COBRO' ? 'CB-' : 'PG-';
@@ -235,6 +262,7 @@ exports.create = async (req, res) => {
             const pi = await PurchaseInvoice.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
             if (!pi) throw Object.assign(new Error('Compra no encontrada'), { status: 400 });
             if (pi.status === 'ANULADA') throw Object.assign(new Error('No se puede pagar una compra anulada'), { status: 400 });
+            await assertPurchasePosted(pi, req.clinicId, session);
             await assertPeriodOpen(req.clinicId, pi.fechaEmision, { session });
             const balance = Number(pi.balance ?? pi.total ?? 0);
             if (a.amount > balance + 0.01) throw Object.assign(new Error(`El pago excede el saldo de ${pi.serie || 'compra'}`), { status: 400 });
@@ -641,6 +669,7 @@ exports.createBulk = async (req, res) => {
           .session(session);
         if (!pi) throw Object.assign(new Error('Compra no encontrada'), { status: 400 });
         if (pi.status === 'ANULADA') throw Object.assign(new Error(`No se puede pagar una compra anulada (${pi.serie || ''})`), { status: 400 });
+        await assertPurchasePosted(pi, req.clinicId, session);
         await assertPeriodOpen(req.clinicId, pi.fechaEmision, { session });
         const balance = Number(pi.balance ?? pi.total ?? 0);
         if (it.amount > balance + 0.01) throw Object.assign(new Error(`El pago excede el saldo de ${pi.serie || 'la compra'}`), { status: 400 });
@@ -825,6 +854,7 @@ exports.void = async (req, res) => {
         if (p.bankTransaction) {
           const tx = await BankTransaction.findById(p.bankTransaction).session(session);
           if (tx && !tx.voided) {
+            if (tx.reconciled) throw Object.assign(new Error('El movimiento bancario está conciliado: reabre la conciliación antes de anular el cobro o pago'), { status: 409, code: 'BANK_RECONCILED' });
             tx.voided = true;
             tx.voidedAt = reversalDate;
             tx.voidedBy = req.user._id;

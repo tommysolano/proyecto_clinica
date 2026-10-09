@@ -6,6 +6,7 @@ const Payable = require('../models/Payable');
 const Sale = require('../models/Sale');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 const { getAccount } = require('../utils/accountMap');
+const { resolveReceivableEconomicObligations } = require('../services/receivableObligations');
 
 function round2(n) {
   return +Number(n || 0).toFixed(2);
@@ -65,7 +66,26 @@ exports.check = async (req, res) => {
     }
 
     const cxc = await ledgerBalanceFor('clientes');
-    const arSub = await subledgerBalance(Receivable);
+    const obligations = await resolveReceivableEconomicObligations({ clinicId: req.clinicId });
+    const arDocs = await Receivable.find({ clinic: req.clinicId, status: { $in: ['ABIERTO', 'PARCIAL'] } }).select('_id balance').lean();
+    const paired = new Set();
+    let arAmount = 0;
+    for (const doc of arDocs) {
+      const linked = obligations.byReceivable.get(String(doc._id));
+      if (!linked) { arAmount += Number(doc.balance || 0); continue; }
+      if (paired.has(linked.obligation.key)) continue;
+      paired.add(linked.obligation.key);
+      arAmount += linked.obligation.balance;
+    }
+    const arSub = round2(arAmount);
+    if (obligations.duplicadas.length) {
+      findings.push({ level: 'warn', code: 'AR_DUPLICATE_DOCUMENTS',
+        message: `${obligations.duplicadas.length} par(es) venta/factura comparten una obligación; se contaron una sola vez` });
+    }
+    if (obligations.ambiguas.length) {
+      findings.push({ level: 'error', code: 'AR_AMBIGUOUS',
+        message: `${obligations.ambiguas.length} obligación(es) tienen cobros divergentes y requieren revisión` });
+    }
     const cxcDiff = round2(cxc.balance - arSub);
     if (Math.abs(cxcDiff) > 0.01) {
       findings.push({ level: 'warn', code: 'AR_MISMATCH', message: `CxC mayor (${cxc.balance}) ≠ subledger Receivables (${arSub}); diferencia ${cxcDiff}` });
@@ -102,6 +122,8 @@ exports.check = async (req, res) => {
         cxpSubledger: apSub,
       },
       findings,
+      warningCount: findings.filter((f) => f.level === 'warn').length,
+      errorCount: findings.filter((f) => f.level === 'error').length,
     });
   } catch (e) {
     res.status(500).json({ message: 'Error en chequeo de salud contable', error: e.message });

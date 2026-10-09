@@ -32,6 +32,8 @@ test('importa TODAS las facturas del TXT (sin tope de 100) y el total las reflej
   const res = await runController(purchaseCtrl.importTxt, mockReq(clinicId, userId, { content: lines.join('\n') }));
   assert.equal(res.statusCode, 200, JSON.stringify(res.payload));
   assert.equal(res.payload.created, N, `debió crear ${N} facturas, creó ${res.payload.created}`);
+  assert.equal(res.payload.sourceRows, N, 'el total del archivo excluye la cabecera');
+  assert.equal(res.payload.validRows, N);
   assert.equal(res.payload.errors.length, 0, JSON.stringify(res.payload.errors));
   assert.equal(await PurchaseInvoice.countDocuments({ clinic: clinicId }), N, 'todas deben quedar en la base');
 

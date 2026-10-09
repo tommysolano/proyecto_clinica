@@ -18,6 +18,7 @@ import ReactFlow, {
   SelectionMode,
   getBezierPath,
   useNodesState,
+  useUpdateNodeInternals,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import {
@@ -593,6 +594,37 @@ function PasteButton({ onClick, count = 1 }) {
   );
 }
 
+/**
+ * LAS SALIDAS DE UN NODO CAMBIAN → REACT FLOW LAS VUELVE A MEDIR (oct-2026).
+ *
+ * React Flow solo registra los puntos de salida (handles) al medir el nodo, y
+ * solo lo vuelve a medir si cambia de tamaño. El nodo Dividir NO cambia de
+ * tamaño al añadir una ruta, así que la ruta nueva quedaba sin registrar: la
+ * conexión que salía de ella no se dibujaba (el paso creado con su "+" aparecía
+ * suelto), no se podía arrastrar una conexión desde ella y las rutas viejas
+ * seguían saliendo de su posición anterior. Con cada cambio de salidas se avisa.
+ */
+function useSalidasMedidas(id, salidas) {
+  const updateNodeInternals = useUpdateNodeInternals();
+  const clave = salidas.join('|');
+  useEffect(() => {
+    if (id) updateNodeInternals(id);
+  }, [id, clave, updateNodeInternals]);
+}
+
+/**
+ * REPARTO EQUITATIVO de un Dividir aleatorio: 100 entre todas las rutas, con el
+ * sobrante de la división a las primeras (3 rutas → 34/33/33; 4 → 25 cada una).
+ * Se aplica al añadir o quitar una ruta, para que la suma siga siendo 100.
+ */
+const repartoEquitativo = (routes) => {
+  const n = routes.length;
+  if (!n) return routes;
+  const base = Math.floor(100 / n);
+  const sobra = 100 - base * n;
+  return routes.map((r, i) => ({ ...r, percent: base + (i < sobra ? 1 : 0) }));
+};
+
 // Fila de controles bajo un nodo: el "+" para añadir y, si hay algo copiado, el
 // botón de pegar al lado. Posición absoluta respecto al nodo.
 function AddRow({ data, handle, left = '50%' }) {
@@ -714,7 +746,7 @@ function ActionNode({ data, selected }) {
 
 // Un mensaje con botones se comporta como una bifurcación: cada botón tiene
 // su propia salida y `default` cubre otra respuesta o el tiempo agotado.
-function MessageNode({ data, selected }) {
+function MessageNode({ id, data, selected }) {
   const buttons = messageButtonsOf(data);
   const branchButtons = branchButtonsOf(data._type, data);
   const outs = [
@@ -733,6 +765,7 @@ function MessageNode({ data, selected }) {
   ];
   const used = new Set(data._usedHandles || []);
   const n = outs.length;
+  useSalidasMedidas(id, outs.map((o) => o.id));
   return (
     <div className="relative group">
       <NodeActions data={data} />
@@ -792,7 +825,7 @@ function MessageNode({ data, selected }) {
 // Nodo Condición / Objetivo. La Condición puede tener VARIAS ramas (if /
 // else-if): una salida por rama, evaluadas en orden, más la salida "SI NO" para
 // cuando ninguna se cumple. El Objetivo mantiene sus dos salidas SÍ / NO.
-function BranchNode({ data, selected }) {
+function BranchNode({ id, data, selected }) {
   const isCond = data._type === 'condition';
   const outs = isCond
     ? [
@@ -805,6 +838,7 @@ function BranchNode({ data, selected }) {
     ];
   const n = outs.length;
   const used = new Set(data._usedHandles || []);
+  useSalidasMedidas(id, outs.map((o) => o.id));
   return (
     <div className="relative group">
       <NodeActions data={data} />
@@ -845,15 +879,19 @@ function BranchNode({ data, selected }) {
 // Nodo Dividir (bifurcación): una salida por RUTA, repartidas a lo ancho del
 // nodo. Cada handle usa el id de la ruta; el "+" bajo cada ruta libre permite
 // encadenar su rama. Estilo Daplox/GoHighLevel (Random Split).
-function SplitNode({ data, selected }) {
+function SplitNode({ id, data, selected }) {
   const routes = data.routes || [];
   const byClinic = data.distribution === 'clinic';
   const used = new Set(data._usedHandles || []);
   const n = Math.max(routes.length, 1);
+  useSalidasMedidas(id, routes.map((r) => r.id));
   return (
     <div className="relative group">
       <NodeActions data={data} />
-      <div className={`rounded-xl border bg-fuchsia-50 px-3 py-2.5 text-xs shadow-sm min-w-[230px] ${selected ? 'border-fuchsia-500 ring-2 ring-fuchsia-200' : 'border-fuchsia-300'}`}>
+      {/* Crece con las rutas, como Condición: cada "+" necesita su sitio. */}
+      <div
+        style={{ minWidth: Math.max(230, n * 80) }}
+        className={`rounded-xl border bg-fuchsia-50 px-3 py-2.5 text-xs shadow-sm ${selected ? 'border-fuchsia-500 ring-2 ring-fuchsia-200' : 'border-fuchsia-300'}`}>
         <Handle type="target" position={Position.Top} style={{ background: '#94a3b8' }} />
         <div className="flex items-center gap-2">
           <StepIcon type="split" />
@@ -1872,8 +1910,10 @@ export default function WorkflowGraphEditor({
   // arista que salía de esa ruta (si no, quedaría una conexión huérfana).
   const removeSplitRoute = (nodeId, routeId) => {
     const node = modelNodes.find((n) => n.id === nodeId);
-    const routes = (node?.data?.routes || []).filter((r) => r.id !== routeId);
-    if (routes.length < 1) return; // un split necesita al menos una ruta
+    const quedan = (node?.data?.routes || []).filter((r) => r.id !== routeId);
+    if (quedan.length < 1) return; // un split necesita al menos una ruta
+    // En el reparto aleatorio, las que quedan se reparten el 100% a partes iguales.
+    const routes = node?.data?.distribution === 'clinic' ? quedan : repartoEquitativo(quedan);
     const nextNodes = modelNodes.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, routes } } : n));
     const nextEdges = edges.filter((e) => !(e.source === nodeId && e.sourceHandle === routeId));
     onChange?.({ nodes: nextNodes, edges: nextEdges });
@@ -3090,8 +3130,10 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
       if (byClinic) {
         set({ routes: [...routes, { id: newRouteId(), name: 'Sucursal', clinicId: '' }] });
       } else {
+        // El % se REPARTE entre todas (antes la nueva entraba con 0% y las
+        // demás se quedaban como estaban: 33/33/33/0 en vez de 25 cada una).
         const n = routes.length + 1;
-        set({ routes: [...routes, { id: newRouteId(), name: `Ruta ${String.fromCharCode(64 + n)}`, percent: 0 }] });
+        set({ routes: repartoEquitativo([...routes, { id: newRouteId(), name: `Ruta ${String.fromCharCode(64 + n)}` }]) });
       }
     };
     // Al cambiar de modo NO se tocan los ids de ruta (las conexiones se conservan):

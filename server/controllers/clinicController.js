@@ -9,6 +9,7 @@ const {
   ensureCompanyCache, invalidateCompanyCache, companyOfClinicSync, userCompanyIds, defaultCompanyIdSync,
 } = require('../utils/companies');
 const { veTodasLasEmpresas } = require('../utils/clinicScope');
+const { runInTransaction, seedChartOfAccounts } = require('../utils/accounting');
 
 // Subida de logo en memoria. Lo guardamos como data URL base64 en clinic.logoUrl
 // para evitar dependencias de disco/CDN externos (entornos cloud con FS efímero).
@@ -255,13 +256,15 @@ exports.createClinic = async (req, res) => {
     if (!company || !(await Company.exists({ _id: company }))) {
       return res.status(400).json({ message: 'Elige la empresa de la nueva sucursal' });
     }
-    const clinic = await Clinic.create({ ...req.body, company, owner: req.user._id });
-    invalidateCompanyCache();
-
-    // Auto-asignar al creador como admin
-    await User.findByIdAndUpdate(req.user._id, {
-      $push: { clinics: { clinic: clinic._id, role: 'admin' } },
+    const clinic = await runInTransaction(async (session) => {
+      const [created] = await Clinic.create([{ ...req.body, company, owner: req.user._id }], { session });
+      await seedChartOfAccounts(created._id, { session });
+      await User.findByIdAndUpdate(req.user._id, {
+        $push: { clinics: { clinic: created._id, role: 'admin' } },
+      }, { session });
+      return created;
     });
+    invalidateCompanyCache();
     // `clinics` sí se lee desde `req.user` (getRoleForClinic): si no se invalida,
     // el creador no podría entrar a su clínica recién creada hasta el TTL.
     require('../utils/userCache').invalidate(req.user._id);
@@ -326,15 +329,19 @@ exports.moveClinic = async (req, res) => {
       _id, __v, createdAt, updatedAt, accountingCostCenter, company, movedTo, movedFrom,
       ruc, razonSocial, ...datos
     } = origen;
-    const nueva = await Clinic.create({
-      ...datos,
-      company: destino._id,
-      // Datos fiscales: los de la empresa destino (los de origen son de otro RUC).
-      ruc: destino.ruc || undefined,
-      razonSocial: destino.razonSocial || '',
-      active: true,
-      owner: req.user._id,
-      movedFrom: origen._id,
+    const nueva = await runInTransaction(async (session) => {
+      const [created] = await Clinic.create([{
+        ...datos,
+        company: destino._id,
+        // Datos fiscales: los de la empresa destino (los de origen son de otro RUC).
+        ruc: destino.ruc || undefined,
+        razonSocial: destino.razonSocial || '',
+        active: true,
+        owner: req.user._id,
+        movedFrom: origen._id,
+      }], { session });
+      await seedChartOfAccounts(created._id, { session });
+      return created;
     });
     invalidateCompanyCache();
     await ensureCompanyCache();

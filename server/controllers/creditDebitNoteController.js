@@ -10,6 +10,7 @@ const { generarClaveAcceso } = require('../modules/invoicing/ec/accessKey');
 const { buildNotaCreditoXml } = require('../modules/invoicing/ec/xmlBuilder');
 const { signXml } = require('../modules/invoicing/ec/xadesSigner');
 const { enviarComprobante, autorizarComprobante } = require('../modules/invoicing/ec/sriClient');
+const { sriVatCode } = require('../utils/tax');
 
 function fmtFecha(d) {
   const dt = d ? new Date(d) : new Date();
@@ -67,16 +68,21 @@ function affectedSerie(origin) {
  */
 function deriveNoteTax(body = {}, subtotal, iva) {
   const num = (x) => +Number(x || 0).toFixed(2);
+  const inferRate = (base, tax) => {
+    if (!tax || !base) return 0;
+    const known = [5, 12, 13, 14, 15];
+    return known.find((rate) => Math.abs(num(base * rate / 100) - tax) <= 0.01) || null;
+  };
   if (body.taxBreakdown && typeof body.taxBreakdown === 'object') {
     const tb = body.taxBreakdown;
     const taxBreakdown = {
       base0: num(tb.base0), baseGravada: num(tb.baseGravada), baseExento: num(tb.baseExento),
       baseNoObjeto: num(tb.baseNoObjeto), iva: num(tb.iva != null ? tb.iva : iva),
     };
-    const rate = body.ivaRate != null ? Number(body.ivaRate) : (taxBreakdown.baseGravada > 0 ? 15 : 0);
+    const rate = body.ivaRate != null ? Number(body.ivaRate) : inferRate(taxBreakdown.baseGravada, taxBreakdown.iva);
     return { ivaRate: rate, taxBreakdown };
   }
-  const rate = body.ivaRate != null ? Number(body.ivaRate) : (iva > 0 ? 15 : 0);
+  const rate = body.ivaRate != null ? Number(body.ivaRate) : inferRate(subtotal, iva);
   const gravada = rate > 0 || iva > 0;
   return {
     ivaRate: rate,
@@ -114,6 +120,10 @@ exports.create = async (req, res) => {
       // base de su MISMA tarifa. Se toma el desglose explícito si viene; si no, se infiere
       // del IVA (>0 ⇒ base gravada ≠0%, =0 ⇒ base tarifa 0%).
       const { ivaRate: noteRate, taxBreakdown: noteTb } = deriveNoteTax(req.body, noteSubtotal, noteIva);
+      if (noteRate == null || ![0, 5, 12, 13, 14, 15].includes(noteRate)
+        || (noteIva > 0 && Math.abs(+(noteTb.baseGravada * noteRate / 100).toFixed(2) - noteIva) > 0.01)) {
+        throw Object.assign(new Error('La tarifa de IVA de la nota no concilia con su base e impuesto'), { status: 400 });
+      }
 
       const origin = await getOrigin(refModel, refDoc, req.clinicId, session);
       if (!origin) throw Object.assign(new Error('Documento referencia no encontrado'), { status: 404 });
@@ -258,8 +268,14 @@ exports.emit = async (req, res) => {
 
     const subtotal = +Number(note.subtotal || 0).toFixed(2);
     const iva = +Number(note.iva || 0).toFixed(2);
-    const codigoPorcentaje = iva > 0 ? '4' : '0';
-    const tarifa = iva > 0 ? 15 : 0;
+    const tarifa = Number(note.ivaRate || 0);
+    if (iva > 0 && (!tarifa || Math.abs(+((note.taxBreakdown?.baseGravada || subtotal) * tarifa / 100).toFixed(2) - iva) > 0.01)) {
+      return res.status(400).json({ message: 'Tarifa e IVA de la nota no concilian; corrige el documento antes de emitir' });
+    }
+    if (iva > 0 && (note.taxBreakdown?.base0 > 0 || note.taxBreakdown?.baseExento > 0 || note.taxBreakdown?.baseNoObjeto > 0)) {
+      return res.status(400).json({ message: 'La emisión XML de notas con varias tarifas requiere detalle tributario por línea' });
+    }
+    const codigoPorcentaje = sriVatCode(note.taxBreakdown?.baseExento > 0 ? 'EXENTO' : note.taxBreakdown?.baseNoObjeto > 0 ? 'NO_OBJETO' : '', tarifa);
     const numDocModificado = `${invoice.estab}-${invoice.ptoEmi}-${invoice.secuencial}`;
 
     const detalles = (Array.isArray(note.items) && note.items.length ? note.items : [{

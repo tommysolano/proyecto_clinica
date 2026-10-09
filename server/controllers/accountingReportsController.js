@@ -861,6 +861,76 @@ exports.salesByCashier = async (req, res) => {
   res.json(rows);
 };
 
+// Eventos de cobro, no facturación. Una venta mixta aporta solo sus renglones
+// efectivamente pagados; un cobro posterior pertenece a quien lo registró.
+exports.collectionsByCashier = async (req, res) => {
+  try {
+    const start = req.query.startDate ? startOfDay(req.query.startDate) : startOfDay(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+    const end = req.query.endDate ? endOfDay(req.query.endDate) : endOfDay(new Date());
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end < start || end - start > 366 * 86400000) {
+      return res.status(400).json({ message: 'Seleccione un rango válido de máximo 366 días' });
+    }
+    const clinic = req.clinicId;
+    const sales = await Sale.find({ clinic, status: 'completada',
+      $or: [{ createdAt: { $gte: start, $lte: end } }, { 'payments.date': { $gte: start, $lte: end } }] })
+      .select('saleNumber total paymentMethod payments cashier createdBy createdAt').lean();
+    const payments = await Payment.find({ clinic, type: 'COBRO', status: 'REGISTRADO', date: { $gte: start, $lte: end } })
+      .select('number date method total createdBy').lean();
+    const directEntries = await JournalEntry.find({ clinic, source: 'COBRO', sourceModel: 'Sale',
+      sourceAction: /^COLLECT:/, status: 'CONTABILIZADO', isReversed: false,
+      date: { $gte: start, $lte: end } })
+      .select('_id date sourceRef createdBy lines').lean();
+    const BankTransaction = require('../models/BankTransaction');
+    const bankEntries = await BankTransaction.find({ clinic, journalEntry: { $in: directEntries.map((j) => j._id) }, direction: 1 })
+      .select('journalEntry').lean();
+    const bankIds = new Set(bankEntries.map((b) => String(b.journalEntry)));
+    const saleIds = [...new Set(directEntries.map((j) => String(j.sourceRef)))];
+    const collectedSales = await Sale.find({ clinic, _id: { $in: saleIds }, status: 'completada' }).select('saleNumber').lean();
+    const saleNumbers = new Map(collectedSales.map((s) => [String(s._id), s.saleNumber]));
+    const events = [];
+    const add = (date, cashier, method, amount, number, origin) => {
+      const value = +Number(amount || 0).toFixed(2);
+      if (value <= 0 || !date || date < start || date > end) return;
+      events.push({ date, cashier: cashier ? String(cashier) : null, method, amount: value, number, origin });
+    };
+    for (const sale of sales) {
+      const parts = sale.payments?.length ? sale.payments : [{ method: sale.paymentMethod, amount: sale.total }];
+      for (const p of parts) {
+        if (!['efectivo', 'tarjeta', 'transferencia'].includes(p.method)) continue;
+        add(p.date ? new Date(p.date) : sale.createdAt, sale.cashier || sale.createdBy,
+          p.method.toUpperCase(), p.amount, sale.saleNumber, 'VENTA');
+      }
+    }
+    for (const p of payments) add(p.date, p.createdBy, p.method, p.total, p.number, 'COBRO');
+    for (const j of directEntries) {
+      if (!saleNumbers.has(String(j.sourceRef))) continue;
+      const amount = Number(j.totalDebit || j.lines?.reduce((n, l) => n + Number(l.debit || 0), 0) || 0);
+      add(j.date, j.createdBy, bankIds.has(String(j._id)) ? 'TRANSFERENCIA' : 'EFECTIVO',
+        amount, saleNumbers.get(String(j.sourceRef)), 'COBRO_VENTA');
+    }
+    const ids = [...new Set(events.map((e) => e.cashier).filter(Boolean))];
+    const User = require('../models/User');
+    const users = await User.find({ _id: { $in: ids } }).select('name').lean();
+    const names = new Map(users.map((u) => [String(u._id), u.name]));
+    const totals = new Map();
+    for (const e of events) {
+      const key = e.cashier || 'SIN_ASIGNAR';
+      const row = totals.get(key) || { cashier: e.cashier, name: names.get(key) || 'Sin asignar', count: 0, total: 0, byMethod: {} };
+      row.count++;
+      row.total += e.amount;
+      row.byMethod[e.method] = (row.byMethod[e.method] || 0) + e.amount;
+      totals.set(key, row);
+      e.cashierName = row.name;
+    }
+    const round = (n) => +n.toFixed(2);
+    const summary = [...totals.values()].map((r) => ({ ...r, total: round(r.total),
+      byMethod: Object.fromEntries(Object.entries(r.byMethod).map(([k, v]) => [k, round(v)])) }))
+      .sort((a, b) => b.total - a.total);
+    res.json({ startDate: start, endDate: end, total: round(events.reduce((n, e) => n + e.amount, 0)),
+      summary, events: events.sort((a, b) => b.date - a.date) });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
 exports.salesWeekly = async (req, res) => {
   const { year } = req.query;
   const y = parseInt(year) || new Date().getFullYear();

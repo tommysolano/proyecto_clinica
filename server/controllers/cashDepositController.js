@@ -1,10 +1,13 @@
 const CashDeposit = require('../models/CashDeposit');
 const Sale = require('../models/Sale');
 const Payment = require('../models/Payment');
+const JournalEntry = require('../models/JournalEntry');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const Counter = require('../models/Counter');
 const ChartOfAccount = require('../models/ChartOfAccount');
+const AccountBalance = require('../models/AccountBalance');
+const mongoose = require('mongoose');
 const { createEntry, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { normalizeSalePayments } = require('../services/salePayments');
@@ -54,6 +57,56 @@ async function nextDepositNumber(clinicId, session) {
 function efectivoDeVenta(sale) {
   const { rows } = normalizeSalePayments(sale);
   return round2(rows.filter((r) => r.method === 'efectivo').reduce((s, r) => s + r.amount, 0));
+}
+
+// La ruta histórica collectSale registra el abono en un asiento COBRO sin crear Payment.
+// Se ofrece como documento independiente; los abonos transferidos ya están en Banco.
+async function directCashCollections(clinicId, range = {}, session = null) {
+  const query = JournalEntry.find({ clinic: clinicId, source: 'COBRO', sourceModel: 'Sale',
+    sourceAction: /^COLLECT:/, status: 'CONTABILIZADO', isReversed: false, cashDeposit: null,
+    ...(Object.keys(range).length ? { date: range } : {}) })
+    .select('_id number date sourceRef lines').sort({ date: 1 }).lean();
+  const entries = await (session ? query.session(session) : query);
+  if (!entries.length) return [];
+  const bankQuery = BankTransaction.find({ clinic: clinicId, journalEntry: { $in: entries.map((e) => e._id) }, voided: false })
+    .select('journalEntry').lean();
+  const bankTx = await (session ? bankQuery.session(session) : bankQuery);
+  const bankIds = new Set(bankTx.map((b) => String(b.journalEntry)));
+  const saleQuery = Sale.find({ clinic: clinicId, _id: { $in: entries.map((e) => e.sourceRef) }, status: 'completada' })
+    .select('_id saleNumber clientName').lean();
+  const sales = await (session ? saleQuery.session(session) : saleQuery);
+  const saleMap = new Map(sales.map((s) => [String(s._id), s]));
+  return entries.filter((e) => !bankIds.has(String(e._id)) && saleMap.has(String(e.sourceRef)))
+    .map((e) => ({ docModel: 'JournalEntry', docRef: e._id,
+      sourceSale: e.sourceRef,
+      number: saleMap.get(String(e.sourceRef)).saleNumber || e.number,
+      docDate: e.date, party: saleMap.get(String(e.sourceRef)).clientName || '',
+      amount: round2(e.lines?.reduce((n, l) => n + Number(l.debit || 0), 0)) }))
+    .filter((e) => e.amount > 0.005);
+}
+
+/** Saldo en Caja que no está respaldado por ventas/cobros aún pendientes de depósito. */
+async function manualCashAvailable(clinicId, session = null) {
+  const caja = await getAccount(clinicId, 'caja', { session });
+  const agg = AccountBalance.aggregate([
+    { $match: { clinic: new mongoose.Types.ObjectId(String(clinicId)), account: caja._id } },
+    { $group: { _id: null, debit: { $sum: '$debit' }, credit: { $sum: '$credit' } } },
+  ]);
+  const balances = session ? await agg.session(session) : await agg;
+  const querySales = Sale.find({
+    clinic: clinicId, status: 'completada', cashDeposit: null,
+    $or: [{ paymentMethod: 'efectivo' }, { 'payments.method': 'efectivo' }],
+  }).select('paymentMethod payments total');
+  const queryPayments = Payment.find({
+    clinic: clinicId, type: 'COBRO', method: 'EFECTIVO', status: 'REGISTRADO', cashDeposit: null,
+  }).select('total');
+  const sales = await (session ? querySales.session(session) : querySales);
+  const payments = await (session ? queryPayments.session(session) : queryPayments);
+  const direct = await directCashCollections(clinicId, {}, session);
+  const pending = sales.reduce((sum, sale) => sum + efectivoDeVenta(sale), 0)
+    + payments.reduce((sum, payment) => sum + Number(payment.total || 0), 0)
+    + direct.reduce((sum, item) => sum + item.amount, 0);
+  return Math.max(0, round2((balances[0]?.debit || 0) - (balances[0]?.credit || 0) - pending));
 }
 
 /**
@@ -106,6 +159,7 @@ exports.pending = async (req, res) => {
         .lean(),
     ]);
 
+    const direct = await directCashCollections(req.clinicId, rangoVenta);
     const items = [
       ...ventas.map((s) => ({
         docModel: 'Sale',
@@ -127,9 +181,11 @@ exports.pending = async (req, res) => {
         amount: round2(p.total),
         mixta: false,
       })),
+      ...direct,
     ].sort((a, b) => new Date(a.docDate) - new Date(b.docDate));
 
-    res.json({ items, total: round2(items.reduce((s, i) => s + i.amount, 0)), count: items.length });
+    const manualAvailable = await manualCashAvailable(req.clinicId);
+    res.json({ items, total: round2(items.reduce((s, i) => s + i.amount, 0)), count: items.length, manualAvailable });
   } catch (e) {
     res.status(500).json({ message: 'Error al listar el efectivo pendiente de depósito', error: e.message });
   }
@@ -186,6 +242,8 @@ exports.create = async (req, res) => {
     voucher: req.body?.voucherNumber || null,
     date: N.date(req.body?.date),
     docs: (req.body?.items || []).map((i) => `${i.docModel}:${N.id(i.docRef)}`).sort(),
+    manualAmount: N.num(req.body?.manualAmount),
+    manualReason: String(req.body?.manualReason || '').trim(),
   });
   try {
     if (idempotencyKey) {
@@ -199,11 +257,22 @@ exports.create = async (req, res) => {
     const depositId = await runInTransaction(async (session) => {
       const { bankAccount, voucherNumber, description } = req.body;
       const seleccion = Array.isArray(req.body.items) ? req.body.items : [];
+      if (req.body.manualAmount !== undefined && (!Number.isFinite(Number(req.body.manualAmount)) || Number(req.body.manualAmount) < 0)) {
+        throw Object.assign(new Error('El importe manual del depósito debe ser cero o positivo'), { status: 400 });
+      }
+      const manualAmount = round2(req.body.manualAmount);
+      const manualReason = String(req.body.manualReason || '').trim();
       if (!bankAccount) throw Object.assign(new Error('Selecciona la cuenta bancaria del depósito'), { status: 400 });
       if (!String(voucherNumber || '').trim()) {
         throw Object.assign(new Error('El número de papeleta del banco es obligatorio: es el amarre con el estado de cuenta.'), { status: 400 });
       }
-      if (!seleccion.length) throw Object.assign(new Error('Selecciona al menos un documento en efectivo'), { status: 400 });
+      if (!seleccion.length && manualAmount <= 0) throw Object.assign(new Error('Selecciona documentos en efectivo o indica un saldo libre de Caja'), { status: 400 });
+      if (seleccion.length && manualAmount > 0) throw Object.assign(new Error('Registra el saldo libre de Caja en un depósito separado de las ventas y cobros'), { status: 400 });
+      if (manualAmount > 0 && !manualReason) throw Object.assign(new Error('Indica el origen del saldo libre de Caja'), { status: 400 });
+      const claves = seleccion.map((item) => `${item.docModel}:${String(item.docRef || '')}`);
+      if (new Set(claves).size !== claves.length) {
+        throw Object.assign(new Error('Un mismo cobro o venta no puede incluirse dos veces en el depósito'), { status: 400, code: 'DUPLICATE_DEPOSIT_ITEM' });
+      }
 
       const txDate = req.body.date ? new Date(req.body.date) : new Date();
       await assertPeriodOpen(req.clinicId, txDate, { session });
@@ -236,12 +305,23 @@ exports.create = async (req, res) => {
             docModel: 'Payment', docRef: p._id, number: p.number,
             docDate: p.date, party: p.partyName || '', amount: round2(p.total),
           });
+        } else if (sel.docModel === 'JournalEntry') {
+          const available = await directCashCollections(req.clinicId, {}, session);
+          const source = available.find((i) => String(i.docRef) === String(sel.docRef));
+          if (!source) throw Object.assign(new Error('El cobro de venta ya no está disponible para depósito'), { status: 409 });
+          items.push(source);
         } else {
           throw Object.assign(new Error('Documento no válido para un depósito de efectivo'), { status: 400 });
         }
       }
 
-      const total = round2(items.reduce((s, i) => s + i.amount, 0));
+      if (manualAmount > 0) {
+        const available = await manualCashAvailable(req.clinicId, session);
+        if (manualAmount > available + 0.01) {
+          throw Object.assign(new Error(`El saldo libre de Caja disponible es $${available.toFixed(2)}`), { status: 409, code: 'CASH_UNASSIGNED_INSUFFICIENT' });
+        }
+      }
+      const total = round2(items.reduce((s, i) => s + i.amount, 0) + manualAmount);
       if (total <= 0) throw Object.assign(new Error('El depósito no puede ser de cero'), { status: 400 });
 
       const number = await nextDepositNumber(req.clinicId, session);
@@ -253,6 +333,8 @@ exports.create = async (req, res) => {
         voucherNumber: String(voucherNumber).trim(),
         description: description || `Depósito de efectivo ${number}`,
         items,
+        manualAmount,
+        manualReason,
         total,
         idempotencyKey,
         idempotencyFingerprint: idempotencyKey ? idemFingerprint : null,
@@ -301,11 +383,15 @@ exports.create = async (req, res) => {
       // NO se les toca la forma de pago: siguen siendo cobros en efectivo.
       const ventas = items.filter((i) => i.docModel === 'Sale').map((i) => i.docRef);
       const pagos = items.filter((i) => i.docModel === 'Payment').map((i) => i.docRef);
+      const directos = items.filter((i) => i.docModel === 'JournalEntry').map((i) => i.docRef);
       if (ventas.length) {
         await Sale.updateMany({ _id: { $in: ventas }, clinic: req.clinicId }, { $set: { cashDeposit: deposit._id } }, { session });
       }
       if (pagos.length) {
         await Payment.updateMany({ _id: { $in: pagos }, clinic: req.clinicId }, { $set: { cashDeposit: deposit._id } }, { session });
+      }
+      if (directos.length) {
+        await JournalEntry.updateMany({ _id: { $in: directos }, clinic: req.clinicId, cashDeposit: null }, { $set: { cashDeposit: deposit._id } }, { session });
       }
       return deposit._id;
     });
@@ -368,11 +454,15 @@ exports.void = async (req, res) => {
 
       const ventas = d.items.filter((i) => i.docModel === 'Sale').map((i) => i.docRef);
       const pagos = d.items.filter((i) => i.docModel === 'Payment').map((i) => i.docRef);
+      const directos = d.items.filter((i) => i.docModel === 'JournalEntry').map((i) => i.docRef);
       if (ventas.length) {
         await Sale.updateMany({ _id: { $in: ventas }, clinic: req.clinicId }, { $set: { cashDeposit: null } }, { session });
       }
       if (pagos.length) {
         await Payment.updateMany({ _id: { $in: pagos }, clinic: req.clinicId }, { $set: { cashDeposit: null } }, { session });
+      }
+      if (directos.length) {
+        await JournalEntry.updateMany({ _id: { $in: directos }, clinic: req.clinicId, cashDeposit: d._id }, { $set: { cashDeposit: null } }, { session });
       }
 
       d.status = 'ANULADO';

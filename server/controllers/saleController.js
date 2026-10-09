@@ -993,6 +993,35 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
     );
   }
 
+  // Una venta ya incluida en un depósito o liquidación no puede desaparecer del
+  // submayor mientras el documento de Tesorería siga vigente. Deshacer primero
+  // esos documentos conserva la trazabilidad del dinero hasta el banco.
+  const CashDeposit = require('../models/CashDeposit');
+  const CreditCardBatch = require('../models/CreditCardBatch');
+  const CardSettlement = require('../models/CardSettlement');
+  const Payment = require('../models/Payment');
+  const JournalEntry = require('../models/JournalEntry');
+  const activeDeposit = sale.cashDeposit && await CashDeposit.exists({ _id: sale.cashDeposit, clinic: clinicId, status: 'REGISTRADO' }).session(session);
+  const depositedCollection = await JournalEntry.exists({ clinic: clinicId, sourceModel: 'Sale', sourceRef: sale._id,
+    source: 'COBRO', cashDeposit: { $ne: null }, isReversed: false }).session(session);
+  if (activeDeposit || depositedCollection) {
+    throw Object.assign(new Error('Anula primero el depósito de efectivo de esta venta o sus cobros'), { status: 409 });
+  }
+  const activeSettlement = (sale.cardSettlement && await CardSettlement.exists({ _id: sale.cardSettlement,
+    clinic: clinicId, status: 'CONTABILIZADO' }).session(session)) ||
+    await CardSettlement.exists({ clinic: clinicId, status: 'CONTABILIZADO',
+      'sourceSales.sale': sale._id }).session(session);
+  const activeBatch = await CreditCardBatch.exists({ clinic: clinicId, status: { $ne: 'ANULADO' }, 'vouchers.sale': sale._id }).session(session);
+  if (activeSettlement || activeBatch) {
+    throw Object.assign(new Error('Anula primero la liquidación y el lote de tarjeta de esta venta'), { status: 409 });
+  }
+  const refs = [sale._id, sale.invoice?._id].filter(Boolean);
+  const activePayment = await Payment.exists({ clinic: clinicId, type: 'COBRO', status: 'REGISTRADO',
+    $or: [{ 'applications.docRef': { $in: refs } }, { 'applications.appliedTo.sourceRef': { $in: refs } }] }).session(session);
+  if (activePayment) {
+    throw Object.assign(new Error('Anula primero los cobros registrados sobre esta venta o factura'), { status: 409 });
+  }
+
   await assertPeriodOpen(clinicId, reversalDate, { session });
 
   // SALDO A FAVOR: se deshace lo que movió la venta (lo que dejó y lo que usó). Va
@@ -1053,7 +1082,6 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
 
   // Revertir cobros previos (venta a crédito): reversa cada asiento de COBRO y
   // anula su movimiento bancario para que Clientes y caja/banco queden cuadrados.
-  const JournalEntry = require('../models/JournalEntry');
   const BankTransaction = require('../models/BankTransaction');
   const cobros = await JournalEntry.find({
     clinic: clinicId,
@@ -1216,6 +1244,12 @@ exports.collectSale = async (req, res) => {
         }
 
         const method = req.body.paymentMethod || 'efectivo';
+        if (!['efectivo', 'transferencia'].includes(method)) {
+          throw Object.assign(new Error('Este cobro directo solo admite efectivo o transferencia; registra otros medios desde Pagos / Cobros'), { status: 400 });
+        }
+        if (method === 'transferencia' && !req.body.bankAccount) {
+          throw Object.assign(new Error('Selecciona la cuenta bancaria para el cobro por transferencia'), { status: 400 });
+        }
         const date = req.body.date ? new Date(req.body.date) : new Date();
         await assertPeriodOpen(req.clinicId, date, { session });
 

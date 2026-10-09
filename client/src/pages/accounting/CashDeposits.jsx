@@ -312,7 +312,7 @@ export default function CashDeposits() {
                       {/* Cada documento del depósito lleva a su venta o cobro:
                           es la única forma de cuadrar la papeleta contra el origen. */}
                       <td className="px-2 py-1 font-mono">
-                        <SourceDocLink model={i.docModel} id={i.docRef} number={i.number} />
+                        <SourceDocLink model={i.sourceSale ? 'Sale' : i.docModel} id={i.sourceSale || i.docRef} number={i.number} />
                         <span className="text-slate-400 ml-1">{i.docModel === 'Sale' ? 'venta' : 'cobro'}</span>
                       </td>
                       <td className="px-2 py-1">{fmtDate(i.docDate)}</td>

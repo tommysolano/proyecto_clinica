@@ -341,8 +341,7 @@ sumando todas las bodegas, con detalle por producto.
 **Acciones por fila:** 👁️ **Ver** (valor inicial, depreciado y actual + historial de depreciación) y
 ✏️ **Editar**.
 
-**Correr depreciación mensual** — botón **Correr depreciación** (modal): **Año** y **Mes** → **Procesar**.
-Genera un **asiento consolidado**; es **idempotente** (no duplica si lo corres dos veces el mismo mes).
+**Correr depreciación mensual** — elige **Año** y **Mes**, marca **Depreciar meses pendientes** y pulsa **Vista previa**. Allí verás el importe por período y si alguna cuenta o período cerrado impide contabilizar. **Procesar** genera un asiento por mes elegible, en orden, hasta 24 meses por operación. Repetir la operación no duplica meses ya registrados. Al cerrar un período mensual, el sistema procesa automáticamente la depreciación pendiente y cierra el período en una sola transacción. Si alguna cuenta falta o un mes anterior está cerrado con depreciación pendiente, se detiene el cierre para revisión.
 
 ### 5.11 Kardex
 **Para qué sirve:** consultar el **historial** de un producto.
@@ -353,6 +352,10 @@ Genera un **asiento consolidado**; es **idempotente** (no duplica si lo corres d
 ---
 
 ## Grupo: Bancos y Tesorería
+
+### Cobros por cajero *(Tesorería)*
+
+Selecciona un rango de fechas para ver lo efectivamente recibido por cada cajero y medio de pago, con detalle de venta, cobro de cartera o anticipo. Una venta mixta aporta solo sus pagos reales; el crédito pendiente y el consumo de saldo a favor no suman como entrada nueva. La atribución del pago inicial sigue al cajero de la venta y los cobros posteriores a quien los registró.
 
 ### 5.12 Cuentas Bancarias
 **Para qué sirve:** registrar tus cuentas, ver su **saldo** y sus **movimientos**.
@@ -380,12 +383,11 @@ Genera un **asiento consolidado**; es **idempotente** (no duplica si lo corres d
 ### 5.13 Caja (efectivo pendiente de depósito)
 **Para qué sirve:** ver el **efectivo de ventas** aún no llevado al banco y **depositarlo**.
 
-**La pantalla:** tres tarjetas (**Efectivo en caja**, **Seleccionado**, **Cuentas bancarias disponibles**)
-y una tabla con cada venta en efectivo pendiente.
+**La pantalla:** muestra ventas y cobros en efectivo pendientes de depósito, importe seleccionado y saldo libre de caja. Un cobro directo de una venta a crédito también aparece con enlace a esa venta.
 
 **Depositar al banco:**
-1. **Marca** las ventas a depositar (casilla por fila, o la del encabezado para todas).
-2. Pulsa **Depositar a banco**.
+1. **Marca** las ventas o cobros a depositar (casilla por fila, o la del encabezado para todos).
+2. Pulsa **Depositar documentos**. Para fondos de caja que no pertenecen a esos documentos, usa **Depositar saldo libre** e indica su origen.
 3. En el modal: **Cuenta bancaria destino \***, **Número de papeleta/comprobante \*** (el que da el
    banco), **Fecha** y **Descripción**.
 4. **Confirmar depósito.** Crea el movimiento bancario y su asiento (efectivo → banco).
@@ -401,12 +403,11 @@ tuya, y cada cajero administra sus movimientos por separado.
    **transferencia** y **efectivo esperado**, todo en vivo.
 
 **Registrar un movimiento durante el turno (caja chica)** — botón **+ Movimiento** (modal):
-- **Tipo de movimiento \*** — *Ingreso a caja*, *Gasto (caja chica)*, *Egreso*, *Retiro* o *Depósito a
-  banco*.
+- **Tipo de movimiento \*** — *Ingreso a caja*, *Gasto (caja chica)*, *Egreso* o *Retiro*.
 - **Monto ($) \*** y **Descripción** (concepto).
-- **Cuenta de gasto / Cuenta de ingreso** *(para todos menos Depósito)* — elige la cuenta contable del
+- **Cuenta de gasto / Cuenta de ingreso** — elige la cuenta contable del
   gasto/ingreso; si la dejas en "por defecto", usa *Otros gastos*/*Otros ingresos*.
-- **Banco destino \*** *(solo Depósito a banco)*.
+- El traspaso al banco se registra en **Caja → Depósitos**, con papeleta y origen del efectivo.
 - Cada movimiento se puede **anular** desde su fila (revierte su asiento).
 
 **Cerrar la caja:**
@@ -503,8 +504,7 @@ documentos pendientes (baja la **Cartera**). Incluye **Pago masivo** a proveedor
 - **% comisión**, **% retención**, **% IVA comisión**, **Banco de acreditación \***.
 - **Vouchers** — **Voucher** por cada cobro: **Voucher #**, **Lote**, **Últ. 4** (últimos 4 dígitos),
   **Monto bruto**. Abajo ves el **Total bruto**.
-- **Crear lote.** Un lote **ABIERTO** muestra ✓ **Liquidar**: registra en banco el **neto** (bruto −
-  comisión − IVA − retención) con su asiento.
+- **Crear lote.** El lote agrupa vouchers; **Liquidar** abre **Nueva liquidación** con banco y ventas del lote precargados. Solo **Acreditar** la liquidación registra banco y asiento. Un lote puede quedar **PARCIAL** hasta liquidar todos sus vouchers.
 
 ### 5.21 Liquidaciones
 **Para qué sirve:** registrar la **liquidación de la adquirente**: el **depósito** que te acreditan, la
@@ -652,7 +652,7 @@ colgar la cuenta y el sistema arma el código solo.
 - **Abrir** (si no existe) → crea el período **ABIERTO**.
 - **Cerrar** (si está ABIERTO) → pasa a **CERRADO** (protegido; reabrible).
 - **Reabrir** / **Bloquear** (si está CERRADO) — *Bloquear* es **definitivo**.
-- **Apertura de año** — genera el asiento de apertura con los saldos al cierre del año anterior.
+- **Crear período de enero** — abre enero sin asiento de apertura: el libro mayor es continuo y ya conserva los saldos del ejercicio anterior.
 - **Cierre anual** — genera el asiento de utilidad/pérdida del año.
 
 > **Solo se puede contabilizar en un período abierto.**
@@ -686,7 +686,7 @@ asientos** (úsalo si algo se ve descuadrado).
 **Para qué sirve:** registrar clientes, proveedores, empleados y vendedores.
 
 **Nueva/editar persona** (modal):
-- **Roles** — elige uno: Cliente / Proveedor / Empleado / Vendedor.
+- **Roles** — marca uno o varios: Cliente / Proveedor / Empleado / Vendedor. Una persona puede ser cliente y proveedor a la vez; editarla conserva los roles que no desmarques.
 - **Tipo de identificación** — RUC / Cédula / Pasaporte.
 - **RUC / CI \*** — ej. `0991234567001`.
 - **Razón social / Nombre \*** y **Nombre comercial** (opcional).
@@ -727,6 +727,7 @@ etiqueta junto al título. Busca por proveedor/RUC/serie/autorización y filtra 
 **Importar del SRI** — **Importar SRI** (modal):
 - **XML:** carga uno o varios **XML** de facturas recibidas → **Importar**. Entran como **POR AUTORIZAR**.
 - **TXT:** carga/pega el anexo `RUC|RazonSocial|Tipo|Serie|Autorizacion|Fecha|Subtotal|IVA|Total`.
+- El resumen distingue **incorporadas**, **ya existentes**, **repetidas en el archivo** y **errores**. La cifra total corresponde al archivo cargado. Los XML conservan dirección, correo y teléfono si esos campos vienen en el documento, y la persona recibe el rol **Proveedor**.
 
 **Autorizar una importada:** en su fila, **Verificar / Autorizar** → revisa datos, **asigna la cuenta de
 gasto de cada ítem** y pulsa **Autorizar y contabilizar**.
@@ -847,7 +848,7 @@ interno.
 
 ### 6.6 Cierre de mes (contable)
 1. Revisa **Salud Contable** y corrige hallazgos.
-2. Corre la **depreciación** de Activos Fijos.
+2. Revisa la **vista previa de depreciación** de Activos Fijos; el cierre mensual la contabiliza automáticamente. Si hay más de 24 meses pendientes, procésalos por tramos antes del cierre.
 3. **Reconoce** los **Ingresos Diferidos** que correspondan.
 4. Revisa **Balance de Comprobación**; si hace falta, **Recalcula** en *Saldos por Período*.
 5. Genera y cierra la **Nómina**.

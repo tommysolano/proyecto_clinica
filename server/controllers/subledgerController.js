@@ -31,7 +31,8 @@ const centerFilter = (req) => (req.costCenterScope ? { costCenter: req.costCente
  */
 function buildListFilter(req) {
   const filter = { clinic: req.clinicId, ...centerFilter(req) };
-  if (req.query.status) filter.status = req.query.status;
+  if (req.query.status === 'PENDING') filter.status = { $in: ['ABIERTO', 'PARCIAL'] };
+  else if (req.query.status) filter.status = req.query.status;
   else filter.status = { $ne: 'ANULADO' };
   if (req.query.partyRef) filter['party.ref'] = req.query.partyRef;
   if (req.query.q) filter['party.name'] = { $regex: escaparRegex(req.query.q), $options: 'i' };

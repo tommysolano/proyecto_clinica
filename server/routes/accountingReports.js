@@ -35,6 +35,7 @@ router.get('/cash-flow-indirect', c.indirectCashFlow);
 router.get('/sales/summary', c.salesSummary);
 router.get('/sales/by-product', c.salesByProduct);
 router.get('/sales/by-cashier', c.salesByCashier);
+router.get('/collections/by-cashier', c.collectionsByCashier);
 router.get('/sales/by-seller', c.salesBySeller);
 router.get('/sales/by-period', c.salesByPeriod);
 router.get('/sales/weekly', c.salesWeekly);

@@ -38,6 +38,7 @@ router.post('/counts/:id/confirm', verInventario, requireCap('count.confirm'), c
 
 // Activos fijos
 router.get('/assets', requireRole('admin', 'contabilidad'), c.listAssets);
+router.get('/assets/depreciation-preview', requireRole('admin', 'contabilidad'), c.previewDepreciation);
 router.get('/assets/:id', requireRole('admin', 'contabilidad'), c.getAsset);
 router.post('/assets', requireRole('admin', 'contabilidad'), c.createAsset);
 router.put('/assets/:id', requireRole('admin', 'contabilidad'), c.updateAsset);

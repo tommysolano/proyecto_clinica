@@ -16,6 +16,8 @@ import DateInput from '../../components/DateInput';
 export default function CashBox() {
   const [pending, setPending] = useState([]);
   const [total, setTotal] = useState(0);
+  const [manualAvailable, setManualAvailable] = useState(0);
+  const [depositMode, setDepositMode] = useState('documents');
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(new Set());
   const [bankAccounts, setBankAccounts] = useState([]);
@@ -26,6 +28,8 @@ export default function CashBox() {
     voucher: '',
     date: today(),
     description: '',
+    manualAmount: '',
+    manualReason: '',
   });
 
   const load = async () => {
@@ -39,6 +43,7 @@ export default function CashBox() {
       ]);
       setPending(r1.data?.items || []);
       setTotal(Number(r1.data?.total || 0));
+      setManualAvailable(Number(r1.data?.manualAvailable || 0));
       setBankAccounts(r2.data || []);
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al cargar caja');
@@ -81,8 +86,18 @@ export default function CashBox() {
       bankAccount: bankAccounts[0]?._id || '',
       voucher: '',
       date: today(),
-      description: `Depósito ventas en efectivo (${selected.size} venta(s))`,
+      description: `Depósito de efectivo (${selected.size} documento(s))`,
+      manualAmount: '', manualReason: '',
     });
+    setDepositMode('documents');
+    setShowDeposit(true);
+  };
+
+  const openManualDeposit = () => {
+    if (manualAvailable <= 0) return toast.error('No hay saldo libre de caja para depositar');
+    setForm({ bankAccount: bankAccounts[0]?._id || '', voucher: '', date: today(),
+      description: 'Depósito de saldo libre de caja', manualAmount: '', manualReason: '' });
+    setDepositMode('manual');
     setShowDeposit(true);
   };
 
@@ -90,10 +105,14 @@ export default function CashBox() {
     e.preventDefault();
     if (!form.bankAccount) return toast.error('Selecciona una cuenta bancaria');
     if (!form.voucher.trim()) return toast.error('Ingresa el número de comprobante');
+    if (depositMode === 'manual' && (!Number.isFinite(Number(form.manualAmount)) || Number(form.manualAmount) <= 0 || Number(form.manualAmount) > manualAvailable)) return toast.error('Ingresa un importe válido dentro del saldo libre');
+    if (depositMode === 'manual' && !form.manualReason.trim()) return toast.error('Indica el origen del efectivo');
     setSubmitting(true);
     try {
       const res = await api.post('/cash-deposits', {
-        items: pending.filter((i) => selected.has(keyOf(i))).map((i) => ({ docModel: i.docModel, docRef: i.docRef })),
+        items: depositMode === 'manual' ? [] : pending.filter((i) => selected.has(keyOf(i))).map((i) => ({ docModel: i.docModel, docRef: i.docRef })),
+        manualAmount: depositMode === 'manual' ? Number(form.manualAmount) : 0,
+        manualReason: depositMode === 'manual' ? form.manualReason.trim() : '',
         bankAccount: form.bankAccount,
         voucherNumber: form.voucher.trim(),
         date: form.date,
@@ -122,21 +141,19 @@ export default function CashBox() {
             hechos está en <b>Bancos → Depósitos</b>.
           </p>
         </div>
-        <button
-          onClick={openDeposit}
-          disabled={selected.size === 0}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed border-none cursor-pointer"
-        >
-          <HiOutlineArrowsRightLeft className="w-4 h-4" />
-          Depositar a banco {selected.size > 0 && `(${selected.size})`}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={openManualDeposit} disabled={manualAvailable <= 0} className="px-4 py-2 rounded-lg border border-emerald-600 bg-white text-emerald-700 text-sm font-medium disabled:opacity-50 cursor-pointer">Depositar saldo libre</button>
+          <button onClick={openDeposit} disabled={selected.size === 0} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed border-none cursor-pointer">
+            <HiOutlineArrowsRightLeft className="w-4 h-4" /> Depositar documentos {selected.size > 0 && `(${selected.size})`}
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
-          <p className="text-xs uppercase font-semibold text-emerald-700">Efectivo en caja</p>
+          <p className="text-xs uppercase font-semibold text-emerald-700">Documentos por depositar</p>
           <p className="text-3xl font-bold text-emerald-800">{fmt(total)}</p>
-          <p className="text-xs text-emerald-700 mt-1">{pending.length} venta(s) pendientes</p>
+          <p className="text-xs text-emerald-700 mt-1">{pending.length} venta(s) o cobro(s)</p>
         </div>
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
           <p className="text-xs uppercase font-semibold text-blue-700">Seleccionado</p>
@@ -148,6 +165,10 @@ export default function CashBox() {
           <p className="text-3xl font-bold text-slate-800">{bankAccounts.length}</p>
           <p className="text-xs text-slate-600 mt-1">disponibles para depósito</p>
         </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-700">
+        Saldo libre de caja disponible para depósito: <strong>{fmt(manualAvailable)}</strong>. Registra su origen al depositarlo.
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
@@ -191,7 +212,7 @@ export default function CashBox() {
                 {/* El número lleva AL documento (venta o cobro): desde la caja se
                     necesita comprobar de dónde salió cada billete. */}
                 <td className="px-3 py-2 font-mono">
-                  <SourceDocLink model={s.docModel} id={s.docRef} number={s.number || '—'} />
+                  <SourceDocLink model={s.sourceSale ? 'Sale' : s.docModel} id={s.sourceSale || s.docRef} number={s.number || '—'} />
                 </td>
                 <td className="px-3 py-2 text-slate-800">{s.party || '—'}</td>
                 <td className="px-3 py-2 text-slate-600">{s.docModel === 'Sale' ? 'Venta' : 'Cobro'}{s.mixta ? ' (mixta)' : ''}</td>
@@ -218,9 +239,14 @@ export default function CashBox() {
         <form onSubmit={submitDeposit} className="space-y-3">
           <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
             <p className="text-xs text-emerald-700 font-medium uppercase">Total a depositar</p>
-            <p className="text-2xl font-bold text-emerald-800">{fmt(selectedTotal)}</p>
-            <p className="text-xs text-emerald-700">{selected.size} venta(s) seleccionada(s)</p>
+            <p className="text-2xl font-bold text-emerald-800">{fmt(depositMode === 'manual' ? Number(form.manualAmount || 0) : selectedTotal)}</p>
+            <p className="text-xs text-emerald-700">{depositMode === 'manual' ? 'Saldo libre de caja' : `${selected.size} documento(s) seleccionado(s)`}</p>
           </div>
+
+          {depositMode === 'manual' && <>
+            <div><label className="block text-sm font-medium text-slate-700 mb-1">Importe * (máximo {fmt(manualAvailable)})</label><input type="number" min="0.01" max={manualAvailable} step="0.01" value={form.manualAmount} onChange={(e) => setForm((f) => ({ ...f, manualAmount: e.target.value }))} className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" required /></div>
+            <div><label className="block text-sm font-medium text-slate-700 mb-1">Origen del efectivo *</label><input value={form.manualReason} onChange={(e) => setForm((f) => ({ ...f, manualReason: e.target.value }))} className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm" required /></div>
+          </>}
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">

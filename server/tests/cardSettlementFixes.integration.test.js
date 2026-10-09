@@ -96,6 +96,19 @@ test('con pago dividido encuentra el lote del SEGUNDO renglón de tarjeta', asyn
 
   const r = await run(ctrl.searchCardSales, H.mockReq(clinicId, userId, {}, { query: { lote: '222' } }));
   assert.equal(r.payload.length, 1, 'el lote del renglón dividido también se busca');
+  assert.equal(r.payload[0].cardAmount, 200, 'el importe del voucher es el del renglón, no el total de la venta');
+  assert.equal(r.payload[0].paymentIndex, 1);
+});
+
+test('una venta mixta con una sola tarjeta propone solo la parte cobrada con tarjeta', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  await makeSale(clinicId, { lote: 'MIX', total: 100, payments: [
+    { method: 'efectivo', amount: 60 }, { method: 'tarjeta', amount: 40, cardLote: 'MIX', cardVoucher: 'V-40' },
+  ] });
+  const found = await run(ctrl.searchCardSales, H.mockReq(clinicId, userId, {}, { query: { lote: 'MIX' } }));
+  assert.equal(found.statusCode, 200);
+  assert.equal(found.payload[0].cardAmount, 40);
+  assert.equal(found.payload[0].cardVoucher, 'V-40');
 });
 
 test('el rango de fechas sigue acotando cuando se usa a propósito', async () => {
@@ -267,7 +280,7 @@ test('los movimientos creados desde el extracto siguen en la conciliación al re
 });
 
 // ── 5. Lotes de tarjeta ──────────────────────────────────────────────────────
-test('liquidar un lote deposita en el banco elegido, no en el primero de la clínica', async () => {
+test('el lote solo agrupa; una liquidación vinculada deposita en el banco elegido', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const primero = await makeBank(clinicId, 'Banco Uno');
   const elegido = await makeBank(clinicId, 'Banco Dos');
@@ -279,13 +292,61 @@ test('liquidar un lote deposita en el banco elegido, no en el primero de la clí
   }))).payload;
   assert.equal(lote.grossAmount, 1000);
 
-  // El cliente ya manda el banco, pero aunque no lo mandara debe usar el del lote.
-  const r = await run(batchCtrl.liquidate, H.mockReq(clinicId, userId, {}, { params: { id: String(lote._id) } }));
+  const blocked = await run(batchCtrl.liquidate, H.mockReq(clinicId, userId, {}, { params: { id: String(lote._id) } }));
+  assert.equal(blocked.statusCode, 409);
+  assert.equal(await BankTransaction.countDocuments({ clinic: clinicId }), 0);
+
+  const created = await run(ctrl.create, H.mockReq(clinicId, userId, {
+    issueDate: new Date(), batch: lote._id, bankAccount: String(elegido._id),
+    transactions: [{ recap: '0457', deposit: 1000, commission: 50, iva: 7.5 }],
+  }));
+  assert.equal(created.statusCode, 201, JSON.stringify(created.payload));
+  const r = await run(ctrl.accredit, H.mockReq(clinicId, userId, {}, { params: { id: String(created.payload._id) } }));
   assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
 
   const bt = await BankTransaction.findById(r.payload.bankTransaction);
   assert.equal(String(bt.bankAccount), String(elegido._id), 'el depósito va al banco del lote');
   assert.notEqual(String(bt.bankAccount), String(primero._id));
+  const actual = await CreditCardBatch.findById(lote._id);
+  assert.equal(actual.status, 'LIQUIDADO');
+  assert.equal(actual.settledAmount, 1000);
+});
+
+test('dos liquidaciones parciales actualizan el lote y anular una restaura el pendiente', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const bank = await makeBank(clinicId);
+  const a = await makeSale(clinicId, { lote: '120', total: 100 });
+  const b = await makeSale(clinicId, { lote: '120', total: 200 });
+  const batch = await run(batchCtrl.create, H.mockReq(clinicId, userId, {
+    closeDate: new Date(), acquirer: 'Datafast', bankAccount: String(bank._id),
+    vouchers: [{ sale: a._id, voucherNumber: 'A', lote: '120', grossAmount: 100 },
+      { sale: b._id, voucherNumber: 'B', lote: '120', grossAmount: 200 }],
+  }));
+  assert.equal(batch.statusCode, 201, JSON.stringify(batch.payload));
+  const makeSettlement = async (saleId, amount) => {
+    const draft = await run(ctrl.create, H.mockReq(clinicId, userId, {
+      issueDate: new Date(), batch: batch.payload._id, bankAccount: bank._id,
+      sourceSales: [{ sale: saleId, amount }], transactions: [{ recap: '120', deposit: amount, commission: 0, iva: 0 }],
+    }));
+    assert.equal(draft.statusCode, 201, JSON.stringify(draft.payload));
+    const posted = await run(ctrl.accredit, H.mockReq(clinicId, userId, {}, { params: { id: String(draft.payload._id) } }));
+    assert.equal(posted.statusCode, 200, JSON.stringify(posted.payload));
+    return posted.payload;
+  };
+  await makeSettlement(a._id, 100);
+  assert.equal((await CreditCardBatch.findById(batch.payload._id)).status, 'PARCIAL');
+  const second = await makeSettlement(b._id, 200);
+  assert.equal((await CreditCardBatch.findById(batch.payload._id)).status, 'LIQUIDADO');
+  const duplicateBatch = await run(batchCtrl.create, H.mockReq(clinicId, userId, {
+    closeDate: new Date(), acquirer: 'Datafast', bankAccount: bank._id,
+    vouchers: [{ sale: a._id, voucherNumber: 'A2', lote: '121', grossAmount: 100 }],
+  }));
+  assert.equal(duplicateBatch.statusCode, 409);
+  const voided = await run(ctrl.cancel, H.mockReq(clinicId, userId, {}, { params: { id: String(second._id) } }));
+  assert.equal(voided.statusCode, 200, JSON.stringify(voided.payload));
+  const actual = await CreditCardBatch.findById(batch.payload._id);
+  assert.equal(actual.status, 'PARCIAL');
+  assert.equal(actual.settledAmount, 100);
 });
 
 test('doble clic al crear un lote crea UNO solo', async () => {
@@ -333,4 +394,135 @@ test('un cobro ya incluido en un lote no se vuelve a ofrecer (forBatch)', async 
 
   const despues = await run(ctrl.searchCardSales, H.mockReq(clinicId, userId, {}, { query: { lote: '0457', forBatch: 'true' } }));
   assert.equal(despues.payload.length, 0, 'ese cobro ya está en un lote: no se puede contar dos veces');
+});
+
+test('dos pagos de tarjeta de la misma venta se liquidan por voucher sin duplicar uno', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const bank = await makeBank(clinicId);
+  const sale = await makeSale(clinicId, { lote: '111', total: 300, payments: [
+    { method: 'tarjeta', amount: 100, cardLote: '111', cardVoucher: 'V-1' },
+    { method: 'tarjeta', amount: 200, cardLote: '222', cardVoucher: 'V-2' },
+  ] });
+  const found = await run(ctrl.searchCardSales, H.mockReq(clinicId, userId, {}, { query: { forBatch: 'true' } }));
+  assert.equal(found.statusCode, 200, JSON.stringify(found.payload));
+  assert.deepEqual(found.payload.map((x) => [x.paymentIndex, x.cardAmount]), [[0, 100], [1, 200]]);
+
+  const makeBatch = async (index, amount, lote) => run(batchCtrl.create, H.mockReq(clinicId, userId, {
+    closeDate: new Date(), acquirer: 'Datafast', bankAccount: bank._id,
+    vouchers: [{ sale: sale._id, paymentIndex: index, voucherNumber: `V-${index + 1}`, lote, grossAmount: amount }],
+  }));
+  const firstBatch = await makeBatch(0, 100, '111');
+  assert.equal(firstBatch.statusCode, 201, JSON.stringify(firstBatch.payload));
+  const remaining = await run(ctrl.searchCardSales, H.mockReq(clinicId, userId, {}, { query: { forBatch: 'true' } }));
+  assert.deepEqual(remaining.payload.map((x) => x.paymentIndex), [1]);
+  const secondBatch = await makeBatch(1, 200, '222');
+  assert.equal(secondBatch.statusCode, 201, JSON.stringify(secondBatch.payload));
+  const duplicate = await makeBatch(0, 100, '111');
+  assert.equal(duplicate.statusCode, 409);
+
+  for (const [batch, index, amount] of [[firstBatch, 0, 100], [secondBatch, 1, 200]]) {
+    const draft = await run(ctrl.create, H.mockReq(clinicId, userId, {
+      issueDate: new Date(), batch: batch.payload._id, bankAccount: bank._id,
+      sourceSales: [{ sale: sale._id, paymentIndex: index, amount }],
+      transactions: [{ recap: index ? '222' : '111', deposit: amount, commission: 0, iva: 0 }],
+    }));
+    assert.equal(draft.statusCode, 201, JSON.stringify(draft.payload));
+    const posted = await run(ctrl.accredit, H.mockReq(clinicId, userId, {},
+      { params: { id: String(draft.payload._id) } }));
+    assert.equal(posted.statusCode, 200, JSON.stringify(posted.payload));
+  }
+  assert.equal((await CreditCardBatch.findById(firstBatch.payload._id)).status, 'LIQUIDADO');
+  assert.equal((await CreditCardBatch.findById(secondBatch.payload._id)).status, 'LIQUIDADO');
+  assert.equal(await CardSettlement.countDocuments({ clinic: clinicId, status: 'CONTABILIZADO' }), 2);
+});
+
+test('un lote con dos vouchers de la misma venta conserva el segundo tras liquidar el primero', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const bank = await makeBank(clinicId);
+  const sale = await makeSale(clinicId, { lote: 'MIX', total: 300, payments: [
+    { method: 'tarjeta', amount: 100, cardLote: 'MIX', cardVoucher: 'V-1' },
+    { method: 'tarjeta', amount: 200, cardLote: 'MIX', cardVoucher: 'V-2' },
+  ] });
+  const batch = await run(batchCtrl.create, H.mockReq(clinicId, userId, {
+    closeDate: new Date(), acquirer: 'Datafast', bankAccount: bank._id,
+    vouchers: [{ sale: sale._id, paymentIndex: 0, grossAmount: 100, lote: 'MIX' },
+      { sale: sale._id, paymentIndex: 1, grossAmount: 200, lote: 'MIX' }],
+  }));
+  assert.equal(batch.statusCode, 201, JSON.stringify(batch.payload));
+  const draft = await run(ctrl.create, H.mockReq(clinicId, userId, {
+    issueDate: new Date(), batch: batch.payload._id, bankAccount: bank._id,
+    sourceSales: [{ sale: sale._id, paymentIndex: 0, amount: 100 }],
+    transactions: [{ recap: 'MIX', deposit: 100, commission: 0, iva: 0 }],
+  }));
+  assert.equal(draft.statusCode, 201, JSON.stringify(draft.payload));
+  const posted = await run(ctrl.accredit, H.mockReq(clinicId, userId, {},
+    { params: { id: String(draft.payload._id) } }));
+  assert.equal(posted.statusCode, 200, JSON.stringify(posted.payload));
+  const remaining = await run(batchCtrl.get, H.mockReq(clinicId, userId, {},
+    { params: { id: String(batch.payload._id) } }));
+  assert.equal(remaining.statusCode, 200, JSON.stringify(remaining.payload));
+  assert.deepEqual(remaining.payload.availableVouchers.map((v) => v.paymentIndex), [1]);
+  assert.equal(remaining.payload.status, 'PARCIAL');
+});
+
+test('los dos vouchers de una venta pueden ir juntos en una liquidación', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const bank = await makeBank(clinicId);
+  const sale = await makeSale(clinicId, { lote: 'MIX', total: 300, payments: [
+    { method: 'tarjeta', amount: 100, cardLote: 'MIX' },
+    { method: 'tarjeta', amount: 200, cardLote: 'MIX' },
+  ] });
+  const batch = await run(batchCtrl.create, H.mockReq(clinicId, userId, {
+    closeDate: new Date(), acquirer: 'Datafast', bankAccount: bank._id,
+    vouchers: [{ sale: sale._id, paymentIndex: 0, grossAmount: 100, lote: 'MIX' },
+      { sale: sale._id, paymentIndex: 1, grossAmount: 200, lote: 'MIX' }],
+  }));
+  assert.equal(batch.statusCode, 201, JSON.stringify(batch.payload));
+  const draft = await run(ctrl.create, H.mockReq(clinicId, userId, {
+    issueDate: new Date(), batch: batch.payload._id, bankAccount: bank._id,
+    sourceSales: [{ sale: sale._id, paymentIndex: 0, amount: 100 },
+      { sale: sale._id, paymentIndex: 1, amount: 200 }],
+    transactions: [{ recap: 'MIX', deposit: 300, commission: 0, iva: 0 }],
+  }));
+  assert.equal(draft.statusCode, 201, JSON.stringify(draft.payload));
+  const posted = await run(ctrl.accredit, H.mockReq(clinicId, userId, {},
+    { params: { id: String(draft.payload._id) } }));
+  assert.equal(posted.statusCode, 200, JSON.stringify(posted.payload));
+  assert.equal((await CreditCardBatch.findById(batch.payload._id)).status, 'LIQUIDADO');
+  assert.equal((await BankAccount.findById(bank._id)).bookBalance, 300);
+});
+
+test('dos peticiones simultáneas no toman el mismo voucher en lotes distintos', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const bank = await makeBank(clinicId);
+  const sale = await makeSale(clinicId, { lote: 'RACE', total: 100 });
+  const body = { closeDate: new Date(), acquirer: 'Datafast', bankAccount: bank._id,
+    vouchers: [{ sale: sale._id, paymentIndex: 0, grossAmount: 100, lote: 'RACE' }] };
+  const results = await Promise.all([1, 2].map(() => run(batchCtrl.create, H.mockReq(clinicId, userId, body))));
+  assert.equal(results.filter((r) => r.statusCode === 201).length, 1, JSON.stringify(results));
+  assert.equal(await CreditCardBatch.countDocuments({ clinic: clinicId, status: { $ne: 'ANULADO' } }), 1);
+  const created = results.find((r) => r.statusCode === 201).payload;
+  const canceled = await run(batchCtrl.cancel, H.mockReq(clinicId, userId, {},
+    { params: { id: String(created._id) } }));
+  assert.equal(canceled.statusCode, 200, JSON.stringify(canceled.payload));
+  const retry = await run(batchCtrl.create, H.mockReq(clinicId, userId, body));
+  assert.equal(retry.statusCode, 201, JSON.stringify(retry.payload));
+});
+
+test('dos liquidaciones simultáneas no acreditan dos veces el mismo voucher', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const bank = await makeBank(clinicId);
+  const sale = await makeSale(clinicId, { lote: 'POST', total: 100 });
+  const body = { issueDate: new Date(), bankAccount: bank._id,
+    sourceSales: [{ sale: sale._id, paymentIndex: 0, amount: 100 }],
+    transactions: [{ recap: 'POST', deposit: 100, commission: 0, iva: 0 }] };
+  const a = await run(ctrl.create, H.mockReq(clinicId, userId, body));
+  const b = await run(ctrl.create, H.mockReq(clinicId, userId, body));
+  assert.equal(a.statusCode, 201, JSON.stringify(a.payload));
+  assert.equal(b.statusCode, 201, JSON.stringify(b.payload));
+  const posted = await Promise.all([a, b].map((draft) => run(ctrl.accredit,
+    H.mockReq(clinicId, userId, {}, { params: { id: String(draft.payload._id) } }))));
+  assert.equal(posted.filter((r) => r.statusCode === 200).length, 1, JSON.stringify(posted));
+  assert.equal(await CardSettlement.countDocuments({ clinic: clinicId, status: 'CONTABILIZADO' }), 1);
+  assert.equal(await BankTransaction.countDocuments({ clinic: clinicId, sourceModel: 'CardSettlement' }), 1);
 });

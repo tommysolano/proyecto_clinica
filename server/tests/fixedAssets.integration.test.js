@@ -13,6 +13,9 @@ const ChartOfAccount = require('../models/ChartOfAccount');
 const InventoryCategory = require('../models/InventoryCategory');
 const FixedAsset = require('../models/FixedAsset');
 const JournalEntry = require('../models/JournalEntry');
+const FiscalPeriod = require('../models/FiscalPeriod');
+const fiscal = require('../controllers/fiscalPeriodController');
+const { getOrCreatePeriod } = require('../utils/accounting');
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -273,4 +276,87 @@ test('14) activos legacy (con cuentas propias) siguen depreciando', async () => 
   assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
   assert.equal(r.payload.totalDepreciation, 100);
   assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
+});
+
+test('meses pendientes se contabilizan una vez por período y la repetición no duplica el mayor', async () => {
+  const { clinicId, userId, depAcc, accumAcc, assetAcc } = await setup();
+  const start = new Date(Y, M - 3, 1); // dos meses anteriores y el actual
+  const asset = await FixedAsset.create({
+    clinic: clinicId, code: 'AF-PEND', name: 'Equipo pendiente',
+    assetAccount: assetAcc._id, depreciationAccount: depAcc._id,
+    accumDepreciationAccount: accumAcc._id, acquisitionDate: start, startDate: start,
+    acquisitionCost: 1200, residualValue: 0, depreciationRate: 10,
+    usefulLifeMonths: 12, monthlyDepreciation: 100, bookValue: 1200,
+  });
+  const single = await H.runController(inv.runDepreciation, H.mockReq(clinicId, userId, { year: Y, month: M }));
+  assert.equal(single.statusCode, 409, JSON.stringify(single.payload));
+  const preview = await H.runController(inv.previewDepreciation, H.mockReq(clinicId, userId, {}, { query: { year: Y, month: M, catchUp: 'true' } }));
+  assert.equal(preview.statusCode, 200, JSON.stringify(preview.payload));
+  assert.equal(preview.payload.periods.length, 3);
+  assert.equal(preview.payload.total, 300);
+  const first = await H.runController(inv.runDepreciation, H.mockReq(clinicId, userId, { year: Y, month: M, catchUp: true }));
+  assert.equal(first.statusCode, 200, JSON.stringify(first.payload));
+  assert.equal(first.payload.periods.length, 3);
+  assert.equal(first.payload.totalDepreciation, 300);
+  assert.equal(await JournalEntry.countDocuments({ clinic: clinicId, source: 'DEPRECIACION' }), 3);
+  const again = await H.runController(inv.runDepreciation, H.mockReq(clinicId, userId, { year: Y, month: M, catchUp: true }));
+  assert.equal(again.statusCode, 200, JSON.stringify(again.payload));
+  assert.equal(again.payload.totalDepreciation, 0);
+  assert.equal((await FixedAsset.findById(asset._id)).history.length, 3);
+  assert.equal(await H.accountBalanceByCode(clinicId, depAcc.code), 300);
+  assert.equal(await H.accountBalanceByCode(clinicId, accumAcc.code), -300);
+  const emptyPreview = await H.runController(inv.previewDepreciation, H.mockReq(clinicId, userId, {}, { query: { year: Y, month: M } }));
+  assert.equal(emptyPreview.statusCode, 200, JSON.stringify(emptyPreview.payload));
+  assert.equal(emptyPreview.payload.total, 0);
+});
+
+test('cerrar el mes anterior deprecia activos y cierra el período en la misma operación', async () => {
+  const { clinicId, userId, depAcc, accumAcc, assetAcc } = await setup();
+  const previous = new Date(Y, M - 2, 1);
+  const period = await getOrCreatePeriod(clinicId, previous);
+  const asset = await FixedAsset.create({ clinic: clinicId, code: 'AF-CIERRE', name: 'Equipo',
+    assetAccount: assetAcc._id, depreciationAccount: depAcc._id, accumDepreciationAccount: accumAcc._id,
+    acquisitionDate: previous, startDate: previous, acquisitionCost: 1200,
+    residualValue: 0, depreciationRate: 10, usefulLifeMonths: 12,
+    monthlyDepreciation: 100, bookValue: 1200 });
+  const closed = await H.runController(fiscal.close, H.mockReq(clinicId, userId,
+    {}, { params: { id: String(period._id) } }));
+  assert.equal(closed.statusCode, 200, JSON.stringify(closed.payload));
+  assert.equal(closed.payload.depreciation.totalDepreciation, 100);
+  assert.equal((await FixedAsset.findById(asset._id)).accumulatedDepreciation, 100);
+  assert.equal((await FiscalPeriod.findById(period._id)).status, 'CERRADO');
+  assert.equal(await JournalEntry.countDocuments({ clinic: clinicId, source: 'DEPRECIACION' }), 1);
+});
+
+test('si falta una cuenta de depreciación el mes permanece abierto y no se crea asiento', async () => {
+  const { clinicId, userId, accumAcc, assetAcc } = await setup();
+  const previous = new Date(Y, M - 2, 1);
+  const period = await getOrCreatePeriod(clinicId, previous);
+  const asset = await FixedAsset.create({ clinic: clinicId, code: 'AF-INCOMPLETO', name: 'Equipo',
+    assetAccount: assetAcc._id, accumDepreciationAccount: accumAcc._id,
+    acquisitionDate: previous, startDate: previous, acquisitionCost: 1200,
+    residualValue: 0, depreciationRate: 10, usefulLifeMonths: 12,
+    monthlyDepreciation: 100, bookValue: 1200 });
+  const blocked = await H.runController(fiscal.close, H.mockReq(clinicId, userId,
+    {}, { params: { id: String(period._id) } }));
+  assert.equal(blocked.statusCode, 400, JSON.stringify(blocked.payload));
+  assert.equal((await FiscalPeriod.findById(period._id)).status, 'ABIERTO');
+  assert.equal((await FixedAsset.findById(asset._id)).history.length, 0);
+  assert.equal(await JournalEntry.countDocuments({ clinic: clinicId, source: 'DEPRECIACION' }), 0);
+});
+
+test('el cierre anual incorpora la depreciación pendiente antes del resultado', async () => {
+  const { clinicId, userId, depAcc, accumAcc, assetAcc } = await setup();
+  const year = Y - 1;
+  const december = new Date(year, 11, 1);
+  await FixedAsset.create({ clinic: clinicId, code: 'AF-ANUAL', name: 'Equipo',
+    assetAccount: assetAcc._id, depreciationAccount: depAcc._id, accumDepreciationAccount: accumAcc._id,
+    acquisitionDate: december, startDate: december, acquisitionCost: 1200,
+    residualValue: 0, depreciationRate: 10, usefulLifeMonths: 12,
+    monthlyDepreciation: 100, bookValue: 1200 });
+  const closed = await H.runController(fiscal.closeYear, H.mockReq(clinicId, userId, { year }));
+  assert.equal(closed.statusCode, 200, JSON.stringify(closed.payload));
+  assert.equal(closed.payload.utilidad, -100);
+  assert.equal(await JournalEntry.countDocuments({ clinic: clinicId, source: 'DEPRECIACION' }), 1);
+  assert.equal((await FiscalPeriod.findOne({ clinic: clinicId, year, month: 12 })).status, 'CERRADO');
 });

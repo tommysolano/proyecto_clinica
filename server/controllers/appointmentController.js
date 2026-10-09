@@ -419,8 +419,16 @@ async function construirQueryAgenda(req, {
       ...(porNombre ? [porNombre] : []),
       ...(telefono ? [{ phone: telefono }, { whatsapp: telefono }, { otherPhones: telefono }] : []),
     ];
+    /**
+     * SIN FILTRAR AL PACIENTE POR SUCURSAL (oct-2026). Los pacientes son de
+     * TODAS las sedes y empresas: su `clinic` es solo donde se registró. Al
+     * buscarlo aquí por esa sucursal, el paciente que registró el call center
+     * (o la otra sede) no aparecía, y la agenda —calendario y lista— salía en
+     * blanco aunque tuviera citas. Desde multiempresa le pasaba también a
+     * administración y caja con «todas las sucursales». Las CITAS ya van
+     * recortadas por sucursal en `query.clinic`; eso basta.
+     */
     const matched = await Patient.find({
-      ...(clinicScope !== null ? { clinic: clinicScope } : {}),
       // Sin ninguna alternativa (texto de solo signos) no debe casar nada, y
       // un `$or: []` lo rechaza mongo.
       ...(alternativas.length ? { $or: alternativas } : { _id: null }),

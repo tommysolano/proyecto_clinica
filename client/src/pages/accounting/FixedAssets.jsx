@@ -34,7 +34,8 @@ export default function FixedAssets() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [detail, setDetail] = useState(null);
-  const [depForm, setDepForm] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1 });
+  const [depForm, setDepForm] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1, catchUp: true });
+  const [depPreview, setDepPreview] = useState(null);
   const [showDep, setShowDep] = useState(false);
 
   const load = async () => {
@@ -132,8 +133,15 @@ export default function FixedAssets() {
   useDocDeepLink((id) => openDetail({ _id: id }));
 
   const runDep = async () => {
-    try { const r = await api.post('/inventory-advanced/assets/run-depreciation', depForm); toast.success(`Depreciado: $${fmt(r.data.totalDepreciation)}`); setShowDep(false); load(); }
+    if (!depPreview || depPreview.target !== `${depForm.year}-${String(depForm.month).padStart(2, '0')}`) return toast.error('Actualiza la vista previa antes de procesar');
+    if (depPreview.blocked || depPreview.tooMany) return toast.error('Resuelve los períodos bloqueados o procesa por tramos');
+    try { const r = await api.post('/inventory-advanced/assets/run-depreciation', depForm); toast.success(`${r.data.periods?.length || 0} mes(es) depreciados: $${fmt(r.data.totalDepreciation)}`); setShowDep(false); load(); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+
+  const previewDep = async () => {
+    try { setDepPreview((await api.get('/inventory-advanced/assets/depreciation-preview', { params: depForm })).data); }
+    catch (e) { setDepPreview(null); toast.error(e.response?.data?.message || 'Error al calcular pendientes'); }
   };
 
   const inputCls = 'w-full border border-slate-200 rounded-xl px-3.5 py-2.5';
@@ -144,7 +152,7 @@ export default function FixedAssets() {
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineBuildingLibrary className="text-emerald-600" /> Activos Fijos</h1>
         <div className="flex gap-2">
           <Link to="/accounting/inv-categories?kind=ACTIVO_FIJO" className="px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg flex items-center gap-2 hover:bg-slate-50"><HiOutlineSquares2X2 /> Categorías y tipos</Link>
-          <button onClick={() => setShowDep(true)} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineCalculator /> Correr depreciación</button>
+          <button onClick={() => { setDepPreview(null); setShowDep(true); }} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineCalculator /> Correr depreciación</button>
           <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nuevo</button>
         </div>
       </div>
@@ -284,12 +292,14 @@ export default function FixedAssets() {
       </Modal>
 
       <Modal isOpen={showDep} onClose={() => setShowDep(false)} title="Correr depreciación mensual">
-        <p className="text-sm text-slate-500 mb-3">Genera un asiento contable consolidando la depreciación del mes seleccionado. Es idempotente por período.</p>
+        <p className="text-sm text-slate-500 mb-3">Genera un asiento por cada mes pendiente hasta el período elegido. Un mes ya contabilizado no se repite. Máximo 24 meses por operación.</p>
         <div className="grid grid-cols-2 gap-3 mb-3">
-          <Field label="Año"><NumericInput value={depForm.year} onChange={(e) => setDepForm({ ...depForm, year: +e.target.value })} className={inputCls} /></Field>
-          <Field label="Mes"><NumericInput min="1" max="12" value={depForm.month} onChange={(e) => setDepForm({ ...depForm, month: +e.target.value })} className={inputCls} /></Field>
+          <Field label="Año"><NumericInput value={depForm.year} onChange={(e) => { setDepForm({ ...depForm, year: +e.target.value }); setDepPreview(null); }} className={inputCls} /></Field>
+          <Field label="Mes"><NumericInput min="1" max="12" value={depForm.month} onChange={(e) => { setDepForm({ ...depForm, month: +e.target.value }); setDepPreview(null); }} className={inputCls} /></Field>
         </div>
-        <div className="flex justify-end gap-2"><button onClick={() => setShowDep(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={runDep} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Procesar</button></div>
+        <label className="flex items-center gap-2 text-sm text-slate-700 mb-3"><input type="checkbox" checked={depForm.catchUp} onChange={(e) => { setDepForm({ ...depForm, catchUp: e.target.checked }); setDepPreview(null); }} /> Depreciar meses pendientes</label>
+        {depPreview && <div className="mb-3 max-h-52 overflow-y-auto rounded-lg border border-slate-200 text-sm"><div className="p-2 font-semibold">Pendiente: ${fmt(depPreview.total)} en {depPreview.periods.length} mes(es)</div>{depPreview.periods.map((p) => <div key={p.period} className={`flex justify-between border-t p-2 ${p.blocked ? 'text-rose-700 bg-rose-50' : ''}`}><span>{p.period} · {p.count} activo(s) {p.reason && `· ${p.reason}`}</span><strong>${fmt(p.amount)}</strong></div>)}{depPreview.tooMany && <p className="p-2 text-rose-700">Hay más de 24 meses; seleccione un corte anterior.</p>}</div>}
+        <div className="flex justify-end gap-2"><button onClick={() => setShowDep(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={previewDep} className="px-4 py-2 border border-emerald-600 text-emerald-700 rounded-xl">Vista previa</button><button onClick={runDep} disabled={!depPreview || depPreview.blocked || depPreview.tooMany} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 disabled:opacity-50">Procesar</button></div>
       </Modal>
     </div>
   );

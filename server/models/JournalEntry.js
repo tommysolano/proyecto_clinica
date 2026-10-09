@@ -36,6 +36,7 @@ const journalEntrySchema = new mongoose.Schema(
     sourceRef: { type: mongoose.Schema.Types.ObjectId, default: null },
     sourceModel: { type: String, default: null },
     sourceAction: { type: String, default: null },
+    cashDeposit: { type: mongoose.Schema.Types.ObjectId, ref: 'CashDeposit', default: null },
     lines: { type: [journalLineSchema], default: [] },
     totalDebit: { type: Number, default: 0 },
     totalCredit: { type: Number, default: 0 },

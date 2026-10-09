@@ -546,6 +546,7 @@ exports.anular = async (req, res) => {
     }
 
     const config = await InvoicingConfig.findOne({ clinic: req.clinicId });
+    if (!config) return res.status(400).json({ message: 'Configura la facturación antes de anular la factura' });
     const xmlAnulacion = buildAnulacionXml({
       claveAcceso: invoice.claveAcceso,
       ruc: config.ruc,
@@ -555,48 +556,38 @@ exports.anular = async (req, res) => {
       fecha: invoice.fechaEmision,
     });
 
-    invoice.estado = 'ANULADA';
-    invoice.anuladaAt = new Date();
-    invoice.anuladaBy = req.user._id;
-    invoice.motivoAnulacion = motivo;
-    invoice.xmlAnulacion = xmlAnulacion;
-    await invoice.save();
-
-    // Opcional: reversar también la venta asociada (asientos, inventario, CxC).
-    // Por defecto se reversa para que la contabilidad quede cuadrada al anular.
+    // La anulación local de factura y el reverso operativo de su venta deben
+    // confirmarse juntos: si un cobro ya se depositó, se rechazan ambos cambios.
     let saleReversed = false;
-    let saleWarning = null;
     const anularVenta = req.body.anularVenta !== false; // default true
-    if (anularVenta && invoice.sale) {
-      try {
-        const { runInTransaction } = require('../utils/accounting');
+    const { runInTransaction } = require('../utils/accounting');
+    await runInTransaction(async (session) => {
+      const current = await Invoice.findOne({ _id: invoice._id, clinic: req.clinicId }).session(session);
+      if (!current || current.estado === 'ANULADA') throw Object.assign(new Error('Factura ya anulada'), { status: 409 });
+      current.estado = 'ANULADA';
+      current.anuladaAt = new Date();
+      current.anuladaBy = req.user._id;
+      current.motivoAnulacion = motivo;
+      current.xmlAnulacion = xmlAnulacion;
+      await current.save({ session });
+      if (anularVenta && current.sale) {
         const { reverseSaleTx } = require('./saleController');
-        await runInTransaction(async (session) => {
-          await reverseSaleTx(session, {
-            clinicId: req.clinicId,
-            saleId: invoice.sale,
-            userId: req.user._id,
-            reversalDate: new Date(),
-            allowInvoiced: true,
-          });
-        });
+        await reverseSaleTx(session, { clinicId: req.clinicId, saleId: current.sale,
+          userId: req.user._id, reversalDate: new Date(), allowInvoiced: true });
         saleReversed = true;
-        require('../utils/observacionesAutomaticas').registrarVenta(invoice.sale, req.user._id);
-      } catch (e) {
-        // No revertimos la anulación de la factura: solo avisamos del problema
-        // con la venta (p. ej. ya estaba anulada o período cerrado).
-        saleWarning = e.message;
       }
-    }
+    });
+    if (saleReversed) require('../utils/observacionesAutomaticas').registrarVenta(invoice.sale, req.user._id);
+    const updatedInvoice = await Invoice.findById(invoice._id);
 
     res.json({
       message:
         'Factura marcada como anulada localmente. Recuerde que la anulación efectiva debe realizarse en el portal del SRI (https://srienlinea.sri.gob.ec).',
-      invoice,
+      invoice: updatedInvoice,
       saleReversed,
-      saleWarning,
+      saleWarning: null,
     });
   } catch (error) {
-    res.status(500).json({ message: 'Error al anular factura', error: error.message });
+    res.status(error.status || 500).json({ message: 'Error al anular factura', error: error.message });
   }
 };

@@ -1,6 +1,6 @@
 const FiscalPeriod = require('../models/FiscalPeriod');
 const JournalEntry = require('../models/JournalEntry');
-const { getOrCreatePeriod } = require('../utils/accounting');
+const { getOrCreatePeriod, runInTransaction } = require('../utils/accounting');
 
 exports.list = async (req, res) => {
   const { year } = req.query;
@@ -23,15 +23,38 @@ exports.create = async (req, res) => {
 
 exports.close = async (req, res) => {
   try {
-    const p = await FiscalPeriod.findOne({ _id: req.params.id, clinic: req.clinicId });
-    if (!p) return res.status(404).json({ message: 'No encontrado' });
-    if (p.status !== 'ABIERTO') return res.status(400).json({ message: 'Solo se pueden cerrar períodos abiertos' });
-    p.status = 'CERRADO';
-    p.closedAt = new Date();
-    p.closedBy = req.user._id;
-    await p.save();
-    res.json(p);
-  } catch (e) { res.status(400).json({ message: e.message }); }
+    const result = await runInTransaction(async (session) => {
+      const p = await FiscalPeriod.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+      if (!p) throw Object.assign(new Error('No encontrado'), { status: 404 });
+      if (p.status !== 'ABIERTO') throw Object.assign(new Error('Solo se pueden cerrar períodos abiertos'), { status: 400 });
+      const start = new Date(p.year, p.month - 1, 1);
+      const end = new Date(p.year, p.month, 1);
+      const drafts = await JournalEntry.countDocuments({ clinic: req.clinicId, status: 'BORRADOR',
+        $or: [{ period: p._id }, { date: { $gte: start, $lt: end } }] }).session(session);
+      if (drafts) throw Object.assign(new Error(`Hay ${drafts} asiento(s) en borrador en este período. Apruébalos o elimínalos antes de cerrar.`),
+        { status: 409, code: 'DRAFTS_PENDING', drafts });
+      // El cierre con activos depreciables antes del fin de mes adelantaría un
+      // gasto que todavía no se ha devengado.
+      if (end > new Date()) {
+        const FixedAsset = require('../models/FixedAsset');
+        const eligible = await FixedAsset.exists({ clinic: req.clinicId, status: 'ACTIVO',
+          monthlyDepreciation: { $gt: 0 }, startDate: { $lt: end } }).session(session);
+        if (eligible) throw Object.assign(new Error('Espera al fin del mes para cerrar y depreciar los activos'),
+          { status: 409, code: 'DEPRECIATION_MONTH_OPEN' });
+      }
+      const depreciation = await require('./inventoryAdvancedController').processDepreciation({
+        clinicId: req.clinicId, userId: req.user._id, year: p.year, month: p.month,
+        catchUp: true, session,
+      });
+      p.status = 'CERRADO';
+      p.closedAt = new Date();
+      p.closedBy = req.user._id;
+      await p.save({ session });
+      return { ...p.toObject(), depreciation };
+    });
+    res.json(result);
+  } catch (e) { res.status(e.status || 400).json({ message: e.message,
+    ...(e.code ? { code: e.code } : {}), ...(e.drafts ? { drafts: e.drafts } : {}) }); }
 };
 
 exports.reopen = async (req, res) => {
@@ -61,16 +84,51 @@ exports.lock = async (req, res) => {
  */
 exports.closeYear = async (req, res) => {
   try {
-    const { year } = req.body;
-    if (!year) return res.status(400).json({ message: 'year requerido' });
+    const year = Number(req.body.year);
+    if (!Number.isInteger(year) || year < 1900 || year > 9999) return res.status(400).json({ message: 'Año inválido' });
+    const existingClose = await JournalEntry.findOne({ clinic: req.clinicId, source: 'CIERRE', status: 'CONTABILIZADO',
+      date: { $gte: new Date(year, 0, 1), $lt: new Date(year + 1, 0, 1) } });
+    if (existingClose) {
+      const reopened = await FiscalPeriod.countDocuments({ clinic: req.clinicId, year, status: 'ABIERTO' });
+      if (reopened) return res.status(409).json({ message: 'Hay un cierre anual contabilizado y meses reabiertos; requiere revisión contable' });
+      return res.json({ message: 'Cierre anual ya ejecutado', asiento: existingClose, alreadyClosed: true });
+    }
+    const yearStart = new Date(Number(year), 0, 1);
+    const nextYearStart = new Date(Number(year) + 1, 0, 1);
+    const drafts = await JournalEntry.countDocuments({
+      clinic: req.clinicId, status: 'BORRADOR', date: { $gte: yearStart, $lt: nextYearStart },
+    });
+    if (drafts) return res.status(409).json({
+      code: 'DRAFTS_PENDING',
+      message: `Hay ${drafts} asiento(s) en borrador en el ejercicio ${year}. Apruébalos o elimínalos antes de cerrar.`,
+      drafts,
+    });
     const ChartOfAccount = require('../models/ChartOfAccount');
     const { createEntry } = require('../utils/accounting');
     const { getAccount } = require('../utils/accountMap');
+    const result = await runInTransaction(async (session) => {
+      const existingInTx = await JournalEntry.findOne({ clinic: req.clinicId, source: 'CIERRE', status: 'CONTABILIZADO',
+        date: { $gte: yearStart, $lt: nextYearStart } }).session(session);
+      if (existingInTx) return { message: 'Cierre anual ya ejecutado', asiento: existingInTx, alreadyClosed: true };
+      const december = await FiscalPeriod.findOne({ clinic: req.clinicId, year, month: 12 }).session(session);
+      if (december && december.status !== 'ABIERTO') throw Object.assign(new Error('Diciembre está cerrado; reábralo antes del cierre anual'), { status: 409 });
 
     // Asegurar que todos los meses estén creados (sin cerrar todavía: el asiento
     // de cierre debe registrarse con el período de diciembre aún ABIERTO).
     for (let m = 1; m <= 12; m++) {
-      await getOrCreatePeriod(req.clinicId, new Date(year, m - 1, 15));
+      await getOrCreatePeriod(req.clinicId, new Date(year, m - 1, 15), { session });
+    }
+
+    const FixedAsset = require('../models/FixedAsset');
+    const depreciable = await FixedAsset.exists({ clinic: req.clinicId, status: 'ACTIVO',
+      monthlyDepreciation: { $gt: 0 }, startDate: { $lt: nextYearStart } }).session(session);
+    if (depreciable) {
+      // El resultado anual debe incluir la depreciación pendiente. Si alguno de
+      // esos meses ya está cerrado, el servicio detiene el cierre para revisión.
+      await require('./inventoryAdvancedController').processDepreciation({
+        clinicId: req.clinicId, userId: req.user._id, year, month: 12,
+        catchUp: true, session,
+      });
     }
 
     // Calcular saldos de cuentas de ingreso/gasto/costo del año.
@@ -83,8 +141,8 @@ exports.closeYear = async (req, res) => {
       { $match: { clinic: clinicOid, date: { $gte: start, $lte: end }, status: 'CONTABILIZADO' } },
       { $unwind: '$lines' },
       { $group: { _id: '$lines.account', debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
-    ]);
-    const accounts = await ChartOfAccount.find({ clinic: req.clinicId, type: { $in: ['INGRESO', 'GASTO', 'COSTO'] } });
+    ]).session(session);
+    const accounts = await ChartOfAccount.find({ clinic: req.clinicId, type: { $in: ['INGRESO', 'GASTO', 'COSTO'] } }).session(session);
     const accMap = new Map(accounts.map((a) => [String(a._id), a]));
     const lines = [];
     let netIngreso = 0;
@@ -110,7 +168,7 @@ exports.closeYear = async (req, res) => {
     }
     const utilidad = netIngreso - netGastoCosto;
     if (Math.abs(utilidad) > 0.001) {
-      const resultado = await getAccount(req.clinicId, 'resultadoEjercicio');
+      const resultado = await getAccount(req.clinicId, 'resultadoEjercicio', { session });
       if (utilidad >= 0) {
         lines.push({ account: resultado._id, debit: 0, credit: utilidad, description: 'Utilidad del ejercicio' });
       } else {
@@ -124,78 +182,45 @@ exports.closeYear = async (req, res) => {
         date: end,
         description: `Cierre anual ${year}`,
         source: 'CIERRE',
+        sourceModel: 'FiscalPeriod',
+        sourceRef: (await FiscalPeriod.findOne({ clinic: req.clinicId, year, month: 12 }).session(session))._id,
+        sourceAction: `YEAR_CLOSE:${year}`,
         lines,
         userId: req.user._id,
+        session,
       });
     }
 
     // Ahora sí: cerrar todos los meses del año.
     await FiscalPeriod.updateMany(
       { clinic: req.clinicId, year, status: 'ABIERTO' },
-      { status: 'CERRADO', closedAt: new Date(), closedBy: req.user._id }
+      { status: 'CERRADO', closedAt: new Date(), closedBy: req.user._id }, { session }
     );
 
-    res.json({ message: 'Cierre anual ejecutado', utilidad, asiento: entry });
+    return { message: 'Cierre anual ejecutado', utilidad, asiento: entry };
+    });
+    res.json(result);
   } catch (e) {
-    res.status(400).json({ message: e.message });
+    res.status(e.status || 400).json({ message: e.message });
   }
 };
 
-/**
- * Apertura de año: genera el asiento de APERTURA del 1‑ene con los saldos de
- * cuentas de balance (Activo/Pasivo/Patrimonio) al cierre del año anterior.
- * Las cuentas de resultado no se arrastran (van a resultados acumulados).
- */
+/** El mayor es continuo: los saldos de balance pasan al año siguiente sin otro asiento. */
 exports.openYear = async (req, res) => {
   try {
     const { year } = req.body;
     if (!year) return res.status(400).json({ message: 'year requerido' });
-    const ChartOfAccount = require('../models/ChartOfAccount');
-    const { createEntry } = require('../utils/accounting');
-    const { getAccount } = require('../utils/accountMap');
-
-    // Evitar duplicar la apertura
-    const dup = await JournalEntry.findOne({ clinic: req.clinicId, source: 'APERTURA', date: { $gte: new Date(year, 0, 1), $lte: new Date(year, 0, 2) } });
-    if (dup) return res.status(400).json({ message: `Ya existe asiento de apertura para ${year} (${dup.number})` });
-
-    // Saldos acumulados hasta el 31‑dic del año anterior
-    const cutoff = new Date(year - 1, 11, 31, 23, 59, 59);
-    const agg = await JournalEntry.aggregate([
-      { $match: { clinic: new (require('mongoose').Types.ObjectId)(req.clinicId), date: { $lte: cutoff }, status: 'CONTABILIZADO' } },
-      { $unwind: '$lines' },
-      { $group: { _id: '$lines.account', debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
-    ]);
-    const accounts = await ChartOfAccount.find({ clinic: req.clinicId });
-    const accMap = new Map(accounts.map((a) => [String(a._id), a]));
-
-    const lines = [];
-    let totalDebit = 0, totalCredit = 0;
-    for (const row of agg) {
-      const acc = accMap.get(String(row._id));
-      if (!acc) continue;
-      if (!['ACTIVO', 'PASIVO', 'PATRIMONIO'].includes(acc.type)) continue;
-      const net = +(row.debit - row.credit).toFixed(2);
-      if (Math.abs(net) < 0.005) continue;
-      if (net > 0) { lines.push({ account: acc._id, debit: net, credit: 0, description: `Saldo inicial ${acc.code}` }); totalDebit += net; }
-      else { lines.push({ account: acc._id, debit: 0, credit: -net, description: `Saldo inicial ${acc.code}` }); totalCredit += -net; }
-    }
-    if (!lines.length) return res.status(400).json({ message: 'No hay saldos de balance para aperturar' });
-
-    // Cuadrar contra resultados acumulados si hay diferencia (utilidad/pérdida no distribuida)
-    const diff = +(totalDebit - totalCredit).toFixed(2);
-    if (Math.abs(diff) >= 0.01) {
-      const acumulados = await getAccount(req.clinicId, 'resultadosAcumulados');
-      if (diff > 0) lines.push({ account: acumulados._id, debit: 0, credit: diff, description: 'Resultados acumulados (apertura)' });
-      else lines.push({ account: acumulados._id, debit: -diff, credit: 0, description: 'Resultados acumulados (apertura)' });
-    }
-
     await getOrCreatePeriod(req.clinicId, new Date(year, 0, 1));
-    const entry = await createEntry({
-      clinicId: req.clinicId, date: new Date(year, 0, 1),
-      description: `Apertura ejercicio ${year}`, source: 'APERTURA',
-      lines, userId: req.user._id,
+    const historicalOpening = await JournalEntry.findOne({
+      clinic: req.clinicId, source: 'APERTURA',
+      date: { $gte: new Date(year, 0, 1), $lt: new Date(year, 0, 2) },
+      status: 'CONTABILIZADO',
+    }).select('number');
+    res.json({
+      message: 'El mayor es continuo: los saldos ya pasan al nuevo ejercicio sin asiento de apertura.',
+      policy: 'CONTINUOUS_LEDGER', asiento: null,
+      historicalOpening: historicalOpening?.number || null,
     });
-    res.json({ message: 'Apertura generada', asiento: entry });
   } catch (e) {
     res.status(e.status || 400).json({ message: e.message });
   }

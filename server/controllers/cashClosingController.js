@@ -333,13 +333,11 @@ exports.cancel = async (req, res) => {
 
 /**
  * Registra un movimiento de caja (ingreso vario, gasto/egreso de caja chica,
- * retiro o depósito a banco) en la sesión abierta, con su asiento contra Caja.
+ * retiro) en la sesión abierta, con su asiento contra Caja.
  */
 exports.addMovement = async (req, res) => {
   try {
     const ChartOfAccount = require('../models/ChartOfAccount');
-    const BankAccount = require('../models/BankAccount');
-    const BankTransaction = require('../models/BankTransaction');
     const movementId = await runInTransaction(async (session) => {
       const open = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA', openedBy: req.user._id }).session(session);
       if (!open) throw Object.assign(new Error('No tienes una caja abierta'), { status: 400 });
@@ -347,6 +345,9 @@ exports.addMovement = async (req, res) => {
       const { type, description } = req.body;
       if (!['INGRESO', 'EGRESO', 'GASTO', 'RETIRO', 'DEPOSITO'].includes(type)) {
         throw Object.assign(new Error('Tipo de movimiento inválido'), { status: 400 });
+      }
+      if (type === 'DEPOSITO') {
+        throw Object.assign(new Error('Registra el traspaso desde Caja > Depósitos para vincularlo a una sola fuente de efectivo'), { status: 409, code: 'CASH_DEPOSIT_REQUIRED' });
       }
       const amount = +(Number(req.body.amount) || 0).toFixed(2);
       if (amount <= 0) throw Object.assign(new Error('Monto inválido'), { status: 400 });
@@ -356,8 +357,6 @@ exports.addMovement = async (req, res) => {
       const caja = await getAccount(req.clinicId, 'caja', { session });
       const lines = [];
       let counterpartAccount = null;
-      let bank = null;
-      let bankTx = null;
 
       // Resolver cuenta contraparte (si la envían por id) o por defecto según el tipo.
       async function resolveCounterpart(defaultRole) {
@@ -372,12 +371,6 @@ exports.addMovement = async (req, res) => {
         counterpartAccount = await resolveCounterpart('otrosIngresos');
         lines.push({ account: caja._id, debit: amount, credit: 0, description: description || 'Ingreso a caja' });
         lines.push({ account: counterpartAccount._id, debit: 0, credit: amount, description: description || 'Ingreso a caja' });
-      } else if (type === 'DEPOSITO') {
-        if (!req.body.bankAccount) throw Object.assign(new Error('bankAccount requerido para depósito'), { status: 400 });
-        bank = await BankAccount.findOne({ _id: req.body.bankAccount, clinic: req.clinicId }).session(session);
-        if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
-        lines.push({ account: bank.chartAccount, debit: amount, credit: 0, description: description || 'Depósito a banco' });
-        lines.push({ account: caja._id, debit: 0, credit: amount, description: description || 'Depósito a banco' });
       } else {
         // EGRESO / GASTO / RETIRO
         counterpartAccount = await resolveCounterpart('otrosGastos');
@@ -388,7 +381,7 @@ exports.addMovement = async (req, res) => {
       const entry = await createEntry({
         clinicId: req.clinicId, date,
         description: description || `Movimiento de caja ${type}`,
-        source: type === 'DEPOSITO' ? 'BANCO' : 'CAJA', sourceModel: 'CashMovement',
+        source: 'CAJA', sourceModel: 'CashMovement',
         lines, userId: req.user._id, session,
       });
 
@@ -400,32 +393,14 @@ exports.addMovement = async (req, res) => {
         amount,
         description: description || '',
         counterpartAccount: counterpartAccount?._id || null,
-        bankAccount: bank?._id || null,
         journalEntry: entry._id,
         createdBy: req.user._id,
       }], { session });
 
-      // Vincular el asiento al movimiento (sourceRef) y crear el BankTransaction del depósito.
+      // Vincular el asiento al movimiento de caja.
       entry.sourceRef = movement._id;
       await entry.save({ session });
 
-      if (type === 'DEPOSITO' && bank) {
-        [bankTx] = await BankTransaction.create([{
-          clinic: req.clinicId,
-          bankAccount: bank._id,
-          date,
-          type: 'DEPOSITO',
-          amount,
-          direction: 1,
-          description: description || 'Depósito de caja',
-          journalEntry: entry._id,
-          sourceModel: 'CashMovement',
-          sourceRef: movement._id,
-          createdBy: req.user._id,
-        }], { session });
-        movement.bankTransaction = bankTx._id;
-        await movement.save({ session });
-      }
       return movement._id;
     });
     const movement = await CashMovement.findById(movementId);
@@ -470,8 +445,15 @@ exports.voidMovement = async (req, res) => {
       if (mov.bankTransaction) {
         const tx = await BankTransaction.findById(mov.bankTransaction).session(session);
         if (tx && !tx.voided) {
+          if (tx.reconciled) throw Object.assign(new Error('El depósito está conciliado: reabre la conciliación antes de anularlo'), { status: 409, code: 'BANK_RECONCILED' });
           tx.voided = true; tx.voidedAt = date; tx.voidedBy = req.user._id;
           await tx.save({ session });
+          const BankAccount = require('../models/BankAccount');
+          await BankAccount.updateOne(
+            { _id: tx.bankAccount, clinic: req.clinicId },
+            { $inc: { bookBalance: -(Number(tx.amount || 0) * Number(tx.direction || 0)) } },
+            { session }
+          );
         }
       }
       mov.voided = true;

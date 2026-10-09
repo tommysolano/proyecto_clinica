@@ -137,6 +137,7 @@ export default function PurchaseInvoices() {
   const [importTxt, setImportTxt] = useState('');
   const [importTxtName, setImportTxtName] = useState('');
   const [xmlContents, setXmlContents] = useState([]); // array de strings XML
+  const [importSummary, setImportSummary] = useState(null);
   const [suppliers, setSuppliers] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [products, setProducts] = useState([]);
@@ -843,13 +844,18 @@ export default function PurchaseInvoices() {
         ? await api.post('/purchase-invoices/import-xml', { xmls: xmlContents }, { timeout: 120000 })
         : await api.post('/purchase-invoices/import-txt', { text: importTxt }, { timeout: 120000 });
       const { created = 0, skipped = 0, errors = [] } = r.data || {};
+      const sourceRows = Number.isFinite(Number(r.data?.sourceRows))
+        ? Number(r.data.sourceRows) : created + skipped + errors.length;
+      setImportSummary({ sourceRows, created, skipped, failed: errors.length,
+        duplicateInFile: r.data?.duplicateInFile || 0, duplicateInSystem: r.data?.duplicateInSystem || 0,
+        kind: importMode === 'xml' ? 'facturas XML' : 'comprobantes del reporte TXT' });
       if (created === 0 && errors.length) {
         const first = errors[0];
-        toast.error(`No se importó ninguna fila. ${errors.length} con error. Ej. línea ${first.line || first.index || '?'}: ${first.error || ''}`);
+        toast.error(`${sourceRows} en el archivo SRI; ninguna cargada. ${errors.length} con error. Ej. línea ${first.line || first.index || '?'}: ${first.error || ''}`, { duration: 8000 });
       } else if (created === 0 && skipped > 0) {
-        toast(`Nada nuevo: las ${skipped} facturas del archivo ya estaban registradas.`, { icon: 'ℹ️' });
+        toast(`${sourceRows} en el archivo SRI; ninguna nueva, ${skipped} ya registrada(s) o repetida(s).`, { icon: 'ℹ️', duration: 8000 });
       } else {
-        toast.success(`${created} importada(s)${skipped ? `, ${skipped} repetida(s)` : ''}${errors.length ? `, ${errors.length} con error` : ''}`);
+        toast.success(`${sourceRows} en el archivo SRI; ${created} cargada(s), ${skipped} repetida(s)${errors.length ? `, ${errors.length} con error` : ''}`, { duration: 8000 });
         if (created) toast('Quedan POR CONTABILIZAR. Clasifica sus líneas (gasto/inventario/activo) y contabilízalas.', { icon: 'ℹ️' });
       }
       setShowImport(false); setXmlContents([]); setImportTxt(''); setImportTxtName(''); load();
@@ -920,6 +926,13 @@ export default function PurchaseInvoices() {
           ]} />
         </div>
       </div>
+
+      {importSummary && (
+        <div role="status" className="flex items-start justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+          <span>Último archivo SRI cargado: <b>{importSummary.sourceRows} {importSummary.kind}</b>; <b>{importSummary.created}</b> incorporado(s), <b>{importSummary.duplicateInSystem}</b> ya en el sistema, <b>{importSummary.duplicateInFile}</b> repetido(s) en el archivo, <b>{importSummary.failed}</b> con error. Este total corresponde al archivo recibido, no a todos los comprobantes disponibles en el SRI.</span>
+          <button type="button" onClick={() => setImportSummary(null)} className="text-blue-700 hover:text-blue-900" aria-label="Cerrar resumen de importación"><HiOutlineXMark /></button>
+        </div>
+      )}
 
       {/* Buscador */}
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-3 flex flex-wrap items-center gap-3">

@@ -109,6 +109,7 @@ const BankAccounts = pagina(() => import('./pages/accounting/BankAccounts'));
 const BankMovements = pagina(() => import('./pages/accounting/BankMovements'));
 const CashDeposits = pagina(() => import('./pages/accounting/CashDeposits'));
 const CashBox = pagina(() => import('./pages/accounting/CashBox'));
+const CashierCollections = pagina(() => import('./pages/accounting/CashierCollections'));
 const Reconciliations = pagina(() => import('./pages/accounting/Reconciliations'));
 const Suppliers = pagina(() => import('./pages/accounting/Suppliers'));
 const Payments = pagina(() => import('./pages/accounting/Payments'));
@@ -615,6 +616,7 @@ function AppRoutes() {
                   ['banks', BankAccounts],
                   ['bank-movements', BankMovements],
                   ['cash', CashBox],
+                  ['cashier-collections', CashierCollections],
                   ['cash-deposits', CashDeposits],
                   ['cash-closing', CashClosing],
                   ['reconciliations', Reconciliations],

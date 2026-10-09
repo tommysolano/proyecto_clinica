@@ -20,11 +20,11 @@ export default function FiscalPeriods() {
     try { await api.post('/fiscal-periods', { year, month }); toast.success('Creado'); load(); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
-  const close = async (p) => { if (!confirm('¿Cerrar período?')) return; try { await api.post(`/fiscal-periods/${p._id}/close`); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
+  const close = async (p) => { if (!confirm('¿Cerrar período? Se contabilizará la depreciación pendiente de sus activos.')) return; try { const r = await api.post(`/fiscal-periods/${p._id}/close`); toast.success(`Período cerrado · ${r.data.depreciation?.processed || 0} depreciación(es) registradas`); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
   const reopen = async (p) => { if (!confirm('¿Reabrir?')) return; try { await api.post(`/fiscal-periods/${p._id}/reopen`); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
   const lock = async (p) => { if (!confirm('¿Bloquear definitivamente?')) return; try { await api.post(`/fiscal-periods/${p._id}/lock`); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
   const closeYear = async () => { if (!confirm(`¿Realizar cierre del año ${year}? Generará asiento de utilidad/pérdida.`)) return; try { const r = await api.post('/fiscal-periods/close-year', { year }); toast.success(`Cierre OK. Asiento ${r.data.asiento?.number || '—'}`); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
-  const openYear = async () => { if (!confirm(`¿Generar asiento de apertura del año ${year} con los saldos al cierre de ${year - 1}?`)) return; try { const r = await api.post('/fiscal-periods/open-year', { year }); toast.success(`Apertura OK. Asiento ${r.data.asiento?.number || '—'}`); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
+  const openYear = async () => { try { const r = await api.post('/fiscal-periods/open-year', { year }); toast.success(r.data.message); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
 
   const byMonth = (m) => list.find((p) => p.year === year && p.month === m);
 
@@ -36,7 +36,7 @@ export default function FiscalPeriods() {
           <label className="text-xs text-slate-500 flex flex-col">Año
             <NumericInput value={year} onChange={(e) => setYear(+e.target.value)} className="w-28 px-3 py-2 border border-slate-200 rounded-lg" />
           </label>
-          <button onClick={openYear} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 h-[38px]">Apertura de año</button>
+          <button onClick={openYear} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 h-[38px]">Crear período de enero</button>
           <button onClick={closeYear} className="px-4 py-2 bg-rose-600 text-white rounded-lg h-[38px]">Cierre anual</button>
         </div>
       </div>

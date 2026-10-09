@@ -23,6 +23,7 @@ const hoyLocal = () => {
 export default function Receivables() {
   const [side, setSide] = useState('AR'); // AR = CxC, AP = CxP
   const [view, setView] = useState('aging'); // aging | docs
+  const [docStatus, setDocStatus] = useState('PENDING');
   const [asOf, setAsOf] = useState(hoyLocal()); // fecha de corte del aging / días vencidos
   const [q, setQ] = useState(''); // filtro por nombre de cliente/proveedor
   const [aging, setAging] = useState({ rows: [], totals: {} });
@@ -35,8 +36,9 @@ export default function Receivables() {
     const p = { side };
     if (asOf) p.asOf = asOf;
     if (q.trim()) p.q = q.trim();
+    if (view === 'docs') p.status = docStatus;
     return p;
-  }, [side, asOf, q]);
+  }, [side, asOf, q, view, docStatus]);
 
   const load = useCallback(async () => {
     try {
@@ -148,6 +150,7 @@ export default function Receivables() {
 
       {view === 'docs' && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-2 p-3 border-b text-sm"><label>Mostrar <select value={docStatus} onChange={(e) => setDocStatus(e.target.value)} className="ml-2 border border-slate-200 rounded-lg px-2 py-1"><option value="PENDING">Pendientes de {side === 'AR' ? 'cobro' : 'pago'}</option><option value="PAGADO">Historial {side === 'AR' ? 'cobrado' : 'pagado'}</option><option value="">Todos los documentos</option></select></label><strong>Saldo de esta vista: ${fmt(docs.reduce((n, d) => n + Number(d.balance || 0), 0))}</strong></div>
           <table className="tbl">
             <thead className="bg-emerald-50 text-xs uppercase"><tr>
               <th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Tipo</th>

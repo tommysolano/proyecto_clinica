@@ -161,6 +161,20 @@ const BANDEJAS = [
 ];
 
 /**
+ * LAS BURBUJAS DEL DOCTOR (oct-2026, a pedido de la clínica): las mismas
+ * bandejas del enfermero, por SU turno, con los nombres que usa el consultorio.
+ * Pendiente = mostrador ya le asignó la atención y no la ha empezado;
+ * Asistida = la está atendiendo (empezó su turno y no lo cerró);
+ * Completada = cerró su parte o la cita terminó.
+ */
+const BANDEJAS_DOCTOR = [
+  ['pendiente', 'Pendientes'],
+  ['atendido', 'Asistidas'],
+  ['finalizado', 'Completadas'],
+  ['todas', 'Todas'],
+];
+
+/**
  * BURBUJAS DE ESTADO (sep-2026, a pedido del usuario): las burbujas de antes,
  * vueltas como filtros rápidos para MARKETING, CALL CENTER, CAJERO Y
  * ADMINISTRACIÓN. Filtran por el ESTADO de la cita —no por turnos, como las
@@ -822,7 +836,14 @@ export default function Appointments() {
    * de la agenda ni las ve — mostrador y administración ya llevan su propio
    * control por estado de la cita, y los botones solo les ocupaban sitio.
    */
-  const [bandeja, setBandeja] = useState(isNurse ? 'pendiente' : 'todas');
+  /**
+   * LOS DOCTORES TAMBIÉN (oct-2026): todas las especialidades y óptica, con las
+   * burbujas Pendientes / Asistidas / Completadas por SU turno (ver
+   * `bandejaDe`). Como el enfermero, entran por «Pendientes», que es su cola.
+   */
+  const usaBandejas = isNurse || isDoctor;
+  const bandejasDelRol = isDoctor ? BANDEJAS_DOCTOR : BANDEJAS;
+  const [bandeja, setBandeja] = useState(usaBandejas ? 'pendiente' : 'todas');
 
   /**
    * BURBUJAS DE ESTADO para marketing, call center, cajero y administración
@@ -1514,16 +1535,8 @@ export default function Appointments() {
       toast.error('Selecciona un servicio');
       return;
     }
-    // EL MOTIVO TAMBIÉN (oct-2026, a pedido de la clínica): al crearla. Editar
-    // una cita vieja que no lo tenía no se bloquea por eso.
-    if (!editing && !String(form.reason || '').trim()) {
-      toast.error('Escribe el motivo de la cita');
-      return;
-    }
-    if (!editing && (form.extraAppointments || []).some((it) => it.date && it.startTime && !String(it.reason || '').trim())) {
-      toast.error('Escribe el motivo de cada cita adicional');
-      return;
-    }
+    // EL MOTIVO ES OPCIONAL (oct-2026, a pedido de los usuarios): se exigió
+    // unos días y estorbaba al agendar; el servicio ya dice a qué viene.
 
     /**
      * DOS FILAS EN LA MISMA HORA, ANTES DE MANDAR NADA. Las citas adicionales
@@ -1837,7 +1850,7 @@ export default function Appointments() {
       filter.timeTo && `Hasta las ${filter.timeTo}`,
       filter.patientQuery?.trim() && `Paciente: «${filter.patientQuery.trim()}»`,
       view === 'list' && bandeja !== 'todas'
-        && `Bandeja: ${(BANDEJAS.find(([id]) => id === bandeja) || [])[1] || bandeja}`,
+        && `Bandeja: ${(bandejasDelRol.find(([id]) => id === bandeja) || [])[1] || bandeja}`,
     ].filter(Boolean).join(' · ');
 
     const id = toast.loading('Preparando el Excel…');
@@ -2250,7 +2263,7 @@ export default function Appointments() {
   }, [citasFiltradas]);
 
   const filteredAppointments = useMemo(() => {
-    if (isNurse) {
+    if (usaBandejas) {
       if (bandeja === 'todas') return citasFiltradas;
       return citasFiltradas.filter((a) => bandejaDe(a) === bandeja);
     }
@@ -2261,7 +2274,7 @@ export default function Appointments() {
     }
     return citasFiltradas;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [citasFiltradas, bandeja, burbujaEstado, isNurse, isDoctor, miId, veBurbujasEstado]);
+  }, [citasFiltradas, bandeja, burbujaEstado, usaBandejas, isNurse, isDoctor, miId, veBurbujasEstado]);
 
   /**
    * LAS FILAS DEL DÍA: citas MEZCLADAS con los bloqueos de horario, por hora.
@@ -2531,8 +2544,11 @@ export default function Appointments() {
           {/* LOS FILTROS NO SON DEL ENFERMERO (sep-2026): su bandeja ya decide
               qué ve, y los desplegables —que no usaba— le empujaban la lista de
               trabajo fuera de la pantalla. Quedan el buscador y la navegación
-              del día. */}
-          {!isNurse && (
+              del día.
+              NI DEL DOCTOR (oct-2026, a pedido de la clínica): ninguna
+              especialidad los usaba; le queda el buscador del paciente y sus
+              burbujas. */}
+          {!isNurse && !isDoctor && (
           <button
             type="button"
             onClick={() => setFiltrosAbiertos((v) => !v)}
@@ -2553,7 +2569,7 @@ export default function Appointments() {
           </button>
           )}
 
-          {!isNurse && (
+          {!isNurse && !isDoctor && (
           <div
             className={`${filtrosAbiertos ? 'grid' : 'hidden'} md:grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2`}
           >
@@ -2817,10 +2833,13 @@ export default function Appointments() {
         * («nadie la ha tomado» / «la estoy atendiendo» / «terminé mi parte») y
         * al resto de la agenda solo le llenaban la pantalla — mostrador y
         * administración ya llevan la agenda por el estado de la cita.
+        *
+        * Y PARA LOS DOCTORES (oct-2026): Pendientes / Asistidas / Completadas,
+        * por su turno (ver BANDEJAS_DOCTOR).
         */}
-      {view !== 'calendar' && isNurse && (
+      {view !== 'calendar' && usaBandejas && (
         <div className="flex gap-1.5 overflow-x-auto mb-2 md:mb-3 pb-0.5">
-          {BANDEJAS.map(([id, label]) => (
+          {bandejasDelRol.map(([id, label]) => (
             <button
               key={id}
               onClick={() => {
@@ -3909,13 +3928,12 @@ export default function Appointments() {
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
-              Motivo de consulta {!editing && <span className="text-rose-500">*</span>}
+              Motivo de consulta <span className="text-slate-400 font-normal">(opcional)</span>
             </label>
             <textarea
               name="reason"
               value={form.reason}
               onChange={handleChange}
-              required={!editing}
               rows={2}
               className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 resize-none"
             />
@@ -4110,7 +4128,7 @@ export default function Appointments() {
                   </div>
                   <input
                     type="text"
-                    placeholder="Motivo *"
+                    placeholder="Motivo (opcional)"
                     value={it.reason}
                     onChange={(e) => setForm((f) => ({
                       ...f,

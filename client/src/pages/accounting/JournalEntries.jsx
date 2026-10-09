@@ -124,7 +124,10 @@ export default function JournalEntries() {
                   <button onClick={() => setViewing(e._id)} className="p-1.5 text-blue-600" title="Ver"><HiOutlineEye className="w-4 h-4" /></button>
                   {e.status === 'BORRADOR' && <button onClick={() => approve(e)} className="p-1.5 text-emerald-600" title="Aprobar/contabilizar"><HiOutlineCheckCircle className="w-4 h-4" /></button>}
                   {e.status === 'BORRADOR' && <button onClick={() => removeDraft(e)} className="p-1.5 text-rose-500" title="Eliminar borrador"><HiOutlineTrash className="w-4 h-4" /></button>}
-                  {e.status === 'CONTABILIZADO' && <button onClick={() => reverse(e)} className="p-1.5 text-rose-600" title="Reversar"><HiOutlineArrowUturnLeft className="w-4 h-4" /></button>}
+                  {e.status === 'CONTABILIZADO' && !e.isReversed && !e.reverses
+                    && ['MANUAL', 'AJUSTE'].includes(e.source)
+                    && !e.sourceModel && !e.sourceRef && !e.sourceAction
+                    && <button onClick={() => reverse(e)} className="p-1.5 text-rose-600" title="Reversar"><HiOutlineArrowUturnLeft className="w-4 h-4" /></button>}
                 </td>
               </tr>
             ))}

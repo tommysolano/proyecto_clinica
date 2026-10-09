@@ -10,6 +10,7 @@ import AccountSelect from '../../components/AccountSelect';
 import SourceDocLink from '../../components/SourceDocLink';
 import { newIdempotencyKey, withIdempotencyKey } from '../../utils/idempotency';
 import DateInput from '../../components/DateInput';
+import { useLocation } from 'react-router-dom';
 
 // Las retenciones se derivan de las bases digitadas en las transacciones: una fila RENTA (si hay
 // base ret IR) y/o una fila IVA (si hay base ret IVA). El código SRI se escoge del catálogo de
@@ -23,7 +24,7 @@ const emptyMeta = () => ({ issueDate: today(), retentionNumber: '', authorizatio
 const EMPTY = {
   issueDate: today(), docType: 'LIQUIDACION', supplier: '', bankAccount: '', docNumber: '',
   receivableAccount: '', commissionAccount: '', ivaAccount: '', retIvaAccount: '', retIrAccount: '',
-  transactions: [{ ...EMPTY_TXN }], sourceSales: [], notes: '',
+  transactions: [{ ...EMPTY_TXN }], sourceSales: [], batch: null, notes: '',
 };
 // El rango de fechas arranca VACÍO a propósito: antes venía con la fecha de hoy y, al buscar
 // por N° de lote, ese rango se seguía enviando y descartaba las ventas de días anteriores
@@ -33,6 +34,7 @@ const EMPTY_PICKER = { lote: '', from: '', to: '', includeSettled: false };
 const round = (n) => +(Number(n) || 0).toFixed(2);
 
 export default function CardSettlements() {
+  const location = useLocation();
   const [list, setList] = useState([]);
   const [banks, setBanks] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
@@ -57,6 +59,7 @@ export default function CardSettlements() {
   const [accreditItem, setAccreditItem] = useState(null); // liquidación a acreditar
   const [accreditDate, setAccreditDate] = useState(today());
   const [accrediting, setAccrediting] = useState(false);
+  const [batchInfo, setBatchInfo] = useState(null);
 
   const load = async () => {
     try { const r = await api.get('/card-settlements'); setList(r.data || []); }
@@ -70,6 +73,37 @@ export default function CardSettlements() {
     api.get('/retention-rules', { params: { active: 'true' } }).then((r) => setRules(r.data || [])).catch(() => {});
     load();
   }, []);
+
+  useEffect(() => {
+    const batchId = new URLSearchParams(location.search).get('batch');
+    if (!batchId) return;
+    let active = true;
+    api.get(`/credit-card-batches/${batchId}`).then(({ data: batch }) => {
+      if (!active) return;
+      const available = batch.availableVouchers || [];
+      const sales = available.filter((v) => v.sale).map((v) => ({
+        sale: v.sale._id || v.sale, saleNumber: v.sale.saleNumber || '', date: v.date || v.sale.createdAt,
+        paymentIndex: v.paymentIndex ?? null,
+        lote: v.lote || '', voucher: v.voucherNumber || '', amount: round(v.grossAmount),
+      }));
+      const linkedTotal = round(sales.reduce((sum, item) => sum + item.amount, 0));
+      const deposit = linkedTotal || round(batch.manualPending);
+      if (deposit <= 0) return toast('Este lote no tiene vouchers pendientes de liquidar', { icon: 'ℹ️' });
+      setEditId(null); setRetMeta(EMPTY_RET_META()); resetPicker();
+      setIdemKey(newIdempotencyKey());
+      setBatchInfo({ code: batch.code, manualPending: round(batch.manualPending) });
+      setForm({ ...EMPTY, batch: batch._id,
+        bankAccount: batch.bankAccount?._id || batch.bankAccount || '',
+        sourceSales: sales,
+        transactions: [{ ...EMPTY_TXN, recap: available[0]?.lote || batch.code, deposit,
+          commission: round(deposit * Number(batch.commissionRate || 0) / 100),
+          iva: round(deposit * Number(batch.commissionRate || 0) * Number(batch.ivaCommissionRate || 0) / 10000),
+        }],
+      });
+      setShow(true);
+    }).catch((e) => { if (active) toast.error(e.response?.data?.message || 'No se pudo abrir el lote'); });
+    return () => { active = false; };
+  }, [location.key]);
 
   // Reglas por tipo (para el dropdown) e indexadas por código (para resolver el %).
   const rulesByType = useMemo(() => ({
@@ -134,6 +168,7 @@ export default function CardSettlements() {
   const resetPicker = () => { setPicker(EMPTY_PICKER); setPickerResults([]); setPicked({}); setPickerHint(''); };
   const openNew = () => {
     setEditId(null); setForm(EMPTY); setRetMeta(EMPTY_RET_META()); resetPicker();
+    setBatchInfo(null);
     setIdemKey(newIdempotencyKey()); // clave nueva: es otra liquidación
     setShow(true);
   };
@@ -154,6 +189,7 @@ export default function CardSettlements() {
         })),
         sourceSales: d.sourceSales || [],
       });
+      setBatchInfo(null);
       // Los datos que digita el usuario (fecha/número/autorización/código) se rehidratan por tipo;
       // la base, el % y el valor se vuelven a derivar solos.
       const rm = EMPTY_RET_META();
@@ -183,10 +219,10 @@ export default function CardSettlements() {
       if (picker.to) params.to = picker.to;
       if (picker.includeSettled) params.includeSettled = true;
       const r = await api.get('/card-settlements/card-sales', { params });
-      const already = new Set((form.sourceSales || []).map((x) => String(x.sale)));
-      const results = (r.data || []).filter((s) => !already.has(String(s._id)));
+      const already = new Set((form.sourceSales || []).map((x) => `${x.sale}:${x.paymentIndex ?? '*'}`));
+      const results = (r.data || []).filter((s) => !already.has(s.paymentKey));
       setPickerResults(results);
-      const pick = {}; results.forEach((s) => { pick[s._id] = true; });
+      const pick = {}; results.forEach((s) => { pick[s.paymentKey] = true; });
       setPicked(pick);
       if (!results.length) await explicarBusquedaVacia(params);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
@@ -215,28 +251,29 @@ export default function CardSettlements() {
     toast('Sin facturas con tarjeta para esos filtros', { icon: 'ℹ️' });
   };
 
-  const pickedList = pickerResults.filter((s) => picked[s._id]);
-  const pickedTotal = round(pickedList.reduce((a, s) => a + (+s.total || 0), 0));
+  const pickedList = pickerResults.filter((s) => picked[s.paymentKey]);
+  const pickedTotal = round(pickedList.reduce((a, s) => a + (+s.cardAmount || 0), 0));
   const allPicked = pickerResults.length > 0 && pickedList.length === pickerResults.length;
-  const toggleAll = () => { const v = !allPicked; const p = {}; pickerResults.forEach((s) => { p[s._id] = v; }); setPicked(p); };
+  const toggleAll = () => { const v = !allPicked; const p = {}; pickerResults.forEach((s) => { p[s.paymentKey] = v; }); setPicked(p); };
 
   const addPicked = () => {
     if (!pickedList.length) return toast.error('Selecciona al menos una factura');
     const newSources = pickedList.map((s) => ({
-      sale: s._id, saleNumber: s.saleNumber, date: s.createdAt,
-      lote: s.cardLote || '', voucher: s.cardVoucher || '', amount: round(+s.total || 0),
+      sale: s._id, paymentIndex: s.paymentIndex, saleNumber: s.saleNumber, date: s.createdAt,
+      lote: s.cardLote || '', voucher: s.cardVoucher || '', amount: round(+s.cardAmount || 0),
     }));
     // Bases propuestas desde las facturas cargadas: gravada = base con IVA de las ventas;
     // 0% = tarifa 0 + exentas + no objeto. La contadora las puede corregir a mano.
-    const baseConIva = round(pickedList.reduce((a, s) => a + (+s.taxableSubtotal || 0), 0));
-    const baseSinIva = round(pickedList.reduce((a, s) => a + (+s.subtotal0 || 0) + (+s.subtotalExento || 0) + (+s.subtotalNoObjeto || 0), 0));
+    const share = (s) => Number(s.total || 0) > 0 ? Number(s.cardAmount || 0) / Number(s.total) : 0;
+    const baseConIva = round(pickedList.reduce((a, s) => a + (+s.taxableSubtotal || 0) * share(s), 0));
+    const baseSinIva = round(pickedList.reduce((a, s) => a + ((+s.subtotal0 || 0) + (+s.subtotalExento || 0) + (+s.subtotalNoObjeto || 0)) * share(s), 0));
     const txn = { ...EMPTY_TXN, date: picker.to || picker.from || today(), recap: picker.lote || '', deposit: pickedTotal, baseConIva, baseSinIva };
     setForm((f) => {
       // Descarta la fila vacía inicial (sin depósito ni #recap)
       const base = (f.transactions || []).filter((t) => (+t.deposit || 0) !== 0 || (t.recap || '').trim());
       return { ...f, sourceSales: [...(f.sourceSales || []), ...newSources], transactions: [...base, txn] };
     });
-    setPickerResults((rs) => rs.filter((s) => !picked[s._id]));
+    setPickerResults((rs) => rs.filter((s) => !picked[s.paymentKey]));
     setPicked({});
     toast.success(`${newSources.length} factura(s) cargada(s) · $${fmt(pickedTotal)}`);
   };
@@ -348,6 +385,10 @@ export default function CardSettlements() {
       {/* Modal crear/editar */}
       <Modal isOpen={show} onClose={() => setShow(false)} title={editId ? 'Editar liquidación' : 'Registrar liquidación de tarjeta'} size="full">
         <form onSubmit={submit} className="space-y-4">
+          {batchInfo && <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+            Liquidación del lote <b>{batchInfo.code}</b>. El importe bruto de las ventas vinculadas debe coincidir con el depósito de esta liquidación.
+            {batchInfo.manualPending > 0 && <span> Hay ${fmt(batchInfo.manualPending)} de vouchers manuales que pueden registrarse en una liquidación separada.</span>}
+          </div>}
           {/* Cabecera */}
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             <label className="text-xs text-slate-500">Fecha de emisión
@@ -426,8 +467,8 @@ export default function CardSettlements() {
                   </thead>
                   <tbody>
                     {pickerResults.map((s) => (
-                      <tr key={s._id} className={`border-t ${picked[s._id] ? 'bg-emerald-50/60' : ''}`}>
-                        <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={!!picked[s._id]} onChange={(e) => setPicked({ ...picked, [s._id]: e.target.checked })} /></td>
+                      <tr key={s.paymentKey} className={`border-t ${picked[s.paymentKey] ? 'bg-emerald-50/60' : ''}`}>
+                        <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={!!picked[s.paymentKey]} onChange={(e) => setPicked({ ...picked, [s.paymentKey]: e.target.checked })} /></td>
                         {/* El número de venta abre la venta: al liquidar tarjetas hay
                             que poder comprobar el voucher contra el documento real. */}
                         <td className="px-2 py-1.5 font-mono">
@@ -435,10 +476,10 @@ export default function CardSettlements() {
                         </td>
                         <td className="px-2 py-1.5">{fmtDate(s.createdAt)}</td>
                         <td className="px-2 py-1.5">{s.clientName}</td>
-                        <td className="px-2 py-1.5">{s.creditCard?.name || '—'}</td>
+                        <td className="px-2 py-1.5">{s.cardBrand || s.creditCard?.name || '—'}</td>
                         <td className="px-2 py-1.5 font-mono">{s.cardLote || '—'}</td>
                         <td className="px-2 py-1.5 font-mono">{s.cardVoucher || '—'}</td>
-                        <td className="px-2 py-1.5 text-right font-mono">${fmt(s.total)}</td>
+                        <td className="px-2 py-1.5 text-right font-mono">${fmt(s.cardAmount)}{s.cardPaymentCount > 1 && <span className="block text-slate-500">Pago #{s.paymentIndex + 1}</span>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -451,9 +492,16 @@ export default function CardSettlements() {
             )}
 
             {!!(form.sourceSales || []).length && (
-              <div className="flex items-center justify-between text-xs bg-white border rounded-lg px-3 py-2">
-                <span className="text-slate-600"><b>{form.sourceSales.length}</b> factura(s) vinculada(s) a esta liquidación · <b className="font-mono">${fmt(sourcesTotal)}</b></span>
-                <button type="button" onClick={clearSources} className="text-rose-600 hover:underline">Quitar vínculo</button>
+              <div className="text-xs bg-white border rounded-lg px-3 py-2 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-600"><b>{form.sourceSales.length}</b> venta(s) vinculada(s) · <b className="font-mono">${fmt(sourcesTotal)}</b></span>
+                  {!form.batch && <button type="button" onClick={clearSources} className="text-rose-600 hover:underline">Quitar vínculo</button>}
+                </div>
+                {form.batch && (form.sourceSales || []).map((item) => <div key={`${item.sale}:${item.paymentIndex ?? '*'}`} className="flex items-center justify-between border-t pt-1">
+                  <span>{item.saleNumber || String(item.sale).slice(-6)}{item.paymentIndex != null ? ` · Pago #${item.paymentIndex + 1}` : ''} · {item.lote || 'sin lote'} · ${fmt(item.amount)}</span>
+                  <button type="button" onClick={() => setForm((f) => ({ ...f, sourceSales: f.sourceSales.filter((row) => `${row.sale}:${row.paymentIndex ?? '*'}` !== `${item.sale}:${item.paymentIndex ?? '*'}`) }))} className="text-rose-600 hover:underline">Excluir</button>
+                </div>)}
+                {form.batch && <p className="text-amber-700">Si excluyes ventas para liquidar solo una parte, ajusta también el depósito bruto de la transacción.</p>}
               </div>
             )}
           </div>

@@ -1337,84 +1337,165 @@ exports.disposeAsset = async (req, res) => {
 /**
  * Corre depreciación mensual para todos los activos activos (idempotente por período).
  */
-exports.runDepreciation = async (req, res) => {
+exports.previewDepreciation = async (req, res) => {
   try {
-    const { year, month } = req.body;
-    {
-      const result = await runInTransaction(async (session) => {
-        const y = parseInt(year);
-        const m = parseInt(month);
-        if (!y || !m || m < 1 || m > 12) throw Object.assign(new Error('year y month invalidos'), { status: 400 });
-        const period = `${y}-${String(m).padStart(2, '0')}`;
-        const endOfMonth = new Date(y, m, 0, 23, 59, 59);
-        await assertPeriodOpen(req.clinicId, endOfMonth, { session });
+    const y = Number(req.query.year), m = Number(req.query.month);
+    if (!Number.isInteger(y) || y < 1900 || !Number.isInteger(m) || m < 1 || m > 12) {
+      return res.status(400).json({ message: 'Año y mes inválidos' });
+    }
+    const target = y * 12 + m - 1;
+    const now = new Date();
+    if (target > now.getFullYear() * 12 + now.getMonth()) {
+      return res.status(400).json({ message: 'No se puede depreciar un período futuro' });
+    }
+    const assets = await FixedAsset.find({ clinic: req.clinicId, status: 'ACTIVO' })
+      .populate('category').lean();
+    const pending = [];
+    for (const asset of assets) {
+      if (Number(asset.monthlyDepreciation) <= 0) continue;
+      const start = new Date(asset.startDate);
+      const first = asset.lastDepreciationPeriod
+        ? Number(asset.lastDepreciationPeriod.slice(0, 4)) * 12 + Number(asset.lastDepreciationPeriod.slice(5, 7))
+        : start.getFullYear() * 12 + start.getMonth();
+      if (first > target) continue;
+      let remaining = +(asset.acquisitionCost - (asset.residualValue || 0) - asset.accumulatedDepreciation).toFixed(2);
+      for (let idx = first; idx <= target && remaining > 0; idx++) {
+        const py = Math.floor(idx / 12), pm = idx % 12 + 1;
+        const period = `${py}-${String(pm).padStart(2, '0')}`;
+        const amount = +Math.min(asset.monthlyDepreciation, remaining).toFixed(2);
+        if (amount <= 0) break;
+        pending.push({ period, asset: asset._id, code: asset.code, name: asset.name, amount,
+          missingAccounts: !((asset.depreciationAccount || asset.category?.depreciationAccount)
+            && (asset.accumDepreciationAccount || asset.category?.accumDepreciationAccount)) });
+        remaining = +(remaining - amount).toFixed(2);
+      }
+    }
+    const periodKeys = [...new Set(pending.map((p) => p.period))].sort();
+    const periodDocs = periodKeys.length
+      ? await require('../models/FiscalPeriod').find({ clinic: req.clinicId,
+        $or: periodKeys.map((p) => ({ year: Number(p.slice(0, 4)), month: Number(p.slice(5, 7)) })) })
+        .select('year month status').lean()
+      : [];
+    const closed = new Set(periodDocs.filter((p) => p.status !== 'ABIERTO')
+      .map((p) => `${p.year}-${String(p.month).padStart(2, '0')}`));
+    const periods = periodKeys.map((period) => {
+      const rows = pending.filter((p) => p.period === period);
+      return { period, count: rows.length, amount: +rows.reduce((n, p) => n + p.amount, 0).toFixed(2),
+        blocked: closed.has(period) || rows.some((r) => r.missingAccounts),
+        reason: closed.has(period) ? 'Período cerrado' : rows.some((r) => r.missingAccounts) ? 'Cuentas de depreciación incompletas' : '',
+        assets: rows };
+    });
+    res.json({ target: `${y}-${String(m).padStart(2, '0')}`, periods,
+      total: +periods.reduce((n, p) => n + p.amount, 0).toFixed(2),
+      blocked: periods.some((p) => p.blocked) || (req.query.catchUp === 'false' && periods.some((p) => p.period !== `${y}-${String(m).padStart(2, '0')}`)),
+      tooMany: periods.length > 24 });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
 
-        const assets = await FixedAsset.find({ clinic: req.clinicId, status: 'ACTIVO' })
-          .populate('category')
-          .session(session);
+async function processDepreciation({ clinicId, userId, year, month, catchUp = false, session: existingSession = null }) {
+    const y = Number(year);
+    const m = Number(month);
+    if (!Number.isInteger(y) || y < 1900 || !Number.isInteger(m) || m < 1 || m > 12) {
+      throw Object.assign(new Error('Año y mes inválidos'), { status: 400 });
+    }
+    const targetIndex = y * 12 + m - 1;
+    const current = new Date();
+    if (targetIndex > current.getFullYear() * 12 + current.getMonth()) {
+      throw Object.assign(new Error('No se puede depreciar un período futuro'), { status: 400 });
+    }
+    const result = await runInTransaction(async (session) => {
+      const assets = await FixedAsset.find({ clinic: clinicId, status: 'ACTIVO' })
+        .populate('category').session(session);
+      const indexOf = (date) => date.getFullYear() * 12 + date.getMonth();
+      const nextIndex = (asset) => asset.lastDepreciationPeriod
+        ? Number(asset.lastDepreciationPeriod.slice(0, 4)) * 12 + Number(asset.lastDepreciationPeriod.slice(5, 7))
+        : indexOf(new Date(asset.startDate));
+      const eligible = assets.filter((a) =>
+        Number(a.monthlyDepreciation) > 0 &&
+        a.acquisitionCost - (a.residualValue || 0) - a.accumulatedDepreciation > 0 &&
+        nextIndex(a) <= targetIndex
+      );
+      if (!catchUp && eligible.some((a) => nextIndex(a) < targetIndex)) {
+        throw Object.assign(new Error('Hay meses anteriores pendientes; use Depreciar meses pendientes'), { status: 409 });
+      }
+      const firstIndex = catchUp && eligible.length
+        ? Math.min(...eligible.map(nextIndex))
+        : targetIndex;
+      if (targetIndex - firstIndex >= 24) {
+        throw Object.assign(new Error('Hay más de 24 meses pendientes; procese por tramos'), { status: 400 });
+      }
+      const results = [];
+      for (let idx = firstIndex; idx <= targetIndex; idx++) {
+        const py = Math.floor(idx / 12);
+        const pm = idx % 12 + 1;
+        const period = `${py}-${String(pm).padStart(2, '0')}`;
+        const endOfMonth = new Date(py, pm, 0, 23, 59, 59);
+        const pending = assets.filter((a) =>
+          Number(a.monthlyDepreciation) > 0 &&
+          nextIndex(a) <= idx &&
+          new Date(a.startDate) <= endOfMonth &&
+          a.acquisitionCost - (a.residualValue || 0) - a.accumulatedDepreciation > 0
+        );
+        if (!pending.length) continue;
+        await assertPeriodOpen(clinicId, endOfMonth, { session });
         let totalDep = 0;
         const lines = [];
         const touchedAssets = [];
-        for (const asset of assets) {
-          if (asset.lastDepreciationPeriod >= period) continue;
-          if (new Date(asset.startDate) > endOfMonth) continue;
+        for (const asset of pending) {
           const remainingBase = (asset.acquisitionCost - (asset.residualValue || 0)) - asset.accumulatedDepreciation;
-          if (remainingBase <= 0) continue;
           const dep = +Math.min(asset.monthlyDepreciation, remainingBase).toFixed(2);
+          if (dep <= 0) continue;
           const depAccount = asset.depreciationAccount || asset.category?.depreciationAccount;
           const accumAccount = asset.accumDepreciationAccount || asset.category?.accumDepreciationAccount;
           if (!depAccount || !accumAccount) {
-            throw Object.assign(new Error(`Activo ${asset.code} sin cuentas de depreciacion completas`), { status: 400 });
+            throw Object.assign(new Error(`Activo ${asset.code} sin cuentas de depreciación completas`), { status: 400 });
           }
           asset.accumulatedDepreciation = +(asset.accumulatedDepreciation + dep).toFixed(2);
           asset.bookValue = +(asset.acquisitionCost - asset.accumulatedDepreciation).toFixed(2);
           asset.lastDepreciationPeriod = period;
-          asset.history.push({
-            period,
-            date: endOfMonth,
-            amount: dep,
-            accumulated: asset.accumulatedDepreciation,
-            bookValue: asset.bookValue,
-          });
+          asset.history.push({ period, date: endOfMonth, amount: dep,
+            accumulated: asset.accumulatedDepreciation, bookValue: asset.bookValue });
           await asset.save({ session });
           touchedAssets.push(asset._id);
           totalDep += dep;
-          lines.push({ account: depAccount, debit: dep, credit: 0, description: `Depreciacion ${asset.code} ${period}` });
-          lines.push({ account: accumAccount, debit: 0, credit: dep, description: `Depreciacion acumulada ${asset.code}` });
+          lines.push({ account: depAccount, debit: dep, credit: 0, description: `Depreciación ${asset.code} ${period}` });
+          lines.push({ account: accumAccount, debit: 0, credit: dep, description: `Depreciación acumulada ${asset.code}` });
         }
+        if (!lines.length) continue;
+        const map = new Map();
+        for (const l of lines) {
+          const key = `${l.account}-${l.debit > 0 ? 'D' : 'C'}`;
+          const cur = map.get(key) || { account: l.account, debit: 0, credit: 0, description: 'Depreciación mensual' };
+          cur.debit = +(cur.debit + l.debit).toFixed(2);
+          cur.credit = +(cur.credit + l.credit).toFixed(2);
+          map.set(key, cur);
+        }
+        const entry = await createEntry({ clinicId, date: endOfMonth,
+          description: `Depreciación ${period}`, source: 'DEPRECIACION',
+          sourceModel: 'FixedAsset', sourceRef: touchedAssets[0],
+          sourceAction: `DEPRECIATION:${period}`, lines: Array.from(map.values()),
+          userId, session });
+        await FixedAsset.updateMany(
+          { _id: { $in: touchedAssets }, clinic: clinicId, lastDepreciationPeriod: period, status: 'ACTIVO' },
+          { $set: { 'history.$[h].journalEntry': entry._id } },
+          { arrayFilters: [{ 'h.period': period }], session }
+        );
+        results.push({ period, processed: touchedAssets.length,
+          totalDepreciation: +totalDep.toFixed(2), journalEntry: entry });
+      }
+      return { period: `${y}-${String(m).padStart(2, '0')}`,
+        processed: results.reduce((n, p) => n + p.processed, 0),
+        totalDepreciation: +results.reduce((n, p) => n + p.totalDepreciation, 0).toFixed(2),
+        journalEntry: results.at(-1)?.journalEntry || null, periods: results };
+    }, { session: existingSession });
+    return result;
+}
 
-        let entry = null;
-        if (lines.length) {
-          const map = new Map();
-          for (const l of lines) {
-            const key = `${l.account}-${l.debit > 0 ? 'D' : 'C'}`;
-            const cur = map.get(key) || { account: l.account, debit: 0, credit: 0, description: 'Depreciacion mensual' };
-            cur.debit = +(cur.debit + l.debit).toFixed(2);
-            cur.credit = +(cur.credit + l.credit).toFixed(2);
-            map.set(key, cur);
-          }
-          entry = await createEntry({
-            clinicId: req.clinicId,
-            date: endOfMonth,
-            description: `Depreciacion ${period}`,
-            source: 'DEPRECIACION',
-            sourceModel: 'FixedAsset',
-            sourceRef: touchedAssets[0],
-            sourceAction: `DEPRECIATION:${period}`,
-            lines: Array.from(map.values()),
-            userId: req.user._id,
-            session,
-          });
-          await FixedAsset.updateMany(
-            { _id: { $in: touchedAssets }, clinic: req.clinicId, lastDepreciationPeriod: period, status: 'ACTIVO' },
-            { $set: { 'history.$[h].journalEntry': entry._id } },
-            { arrayFilters: [{ 'h.period': period }], session }
-          );
-        }
-        return { period, processed: touchedAssets.length, totalDepreciation: +totalDep.toFixed(2), journalEntry: entry };
-      });
-      return res.json(result);
-    }
+exports.processDepreciation = processDepreciation;
+
+exports.runDepreciation = async (req, res) => {
+  try {
+    return res.json(await processDepreciation({ ...req.body, clinicId: req.clinicId, userId: req.user._id }));
   } catch (e) {
     res.status(e.status || 400).json({ message: e.message });
   }

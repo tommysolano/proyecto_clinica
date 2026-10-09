@@ -253,13 +253,29 @@ async function resolveReceivableEconomicObligations({ clinicId, saleIds = null, 
     else if (c.sourceModel === 'Invoice') cxcInv.set(String(c.sourceRef), c);
   }
 
+  // Indexar una sola vez los cobros por documento. En una empresa con miles de
+  // ventas, recorrer TODOS los cobros para cada pareja venta/factura era O(V×P)
+  // y hacía impracticables el diagnóstico y la antigüedad de cartera.
+  const paymentsByDoc = new Map();
+  for (const payment of pagos) {
+    const refs = new Set((payment.applications || []).filter((a) => a.docRef)
+      .map((a) => `${a.docModel}:${String(a.docRef)}`));
+    for (const ref of refs) {
+      if (!paymentsByDoc.has(ref)) paymentsByDoc.set(ref, []);
+      paymentsByDoc.get(ref).push(payment);
+    }
+  }
+
   const out = { ...vacio, byReceivable: new Map(), bySale: new Map(), byInvoice: new Map() };
   for (const venta of ventas) {
     const saleId = String(venta._id);
     const invoiceId = String(venta.invoice);
     const rv = cxcSale.get(saleId) || null;
     const rf = cxcInv.get(invoiceId) || null;
-    const cobros = collectionsOfPair(pagos, saleId, invoiceId);
+    const pairPayments = new Map();
+    for (const payment of paymentsByDoc.get(`Sale:${saleId}`) || []) pairPayments.set(String(payment._id), payment);
+    for (const payment of paymentsByDoc.get(`Invoice:${invoiceId}`) || []) pairPayments.set(String(payment._id), payment);
+    const cobros = collectionsOfPair([...pairPayments.values()], saleId, invoiceId);
     const c = classifyPair({ venta, rv, rf, cobros });
 
     const canonicalCxc = c.canonical.sourceModel === 'Sale' ? rv : rf;

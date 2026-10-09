@@ -147,6 +147,7 @@ const MENU_GROUPS = [
     key: 'tesoreria', label: 'Tesorería', icon: HiOutlineBanknotes, items: [
       { path: '/cash-register', label: 'Caja (Apertura/Cierre)', roles: ['admin', 'contabilidad', 'cajero'] },
       { path: '/accounting/cash', label: 'Movimientos de Caja', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/cashier-collections', label: 'Cobros por cajero', roles: ['admin', 'contabilidad'] },
     ],
   },
   {

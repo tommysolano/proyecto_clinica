@@ -50,6 +50,11 @@ function parsePurchaseInvoiceXml(raw) {
 
   const ruc = text(infoTributaria, 'ruc');
   const razonSocial = text(infoTributaria, 'razonSocial');
+  const address = text(infoTributaria, 'dirMatriz');
+  const adicionales = Array.from(factura.getElementsByTagName('campoAdicional'));
+  const adicional = (pattern) => adicionales.find((node) => pattern.test(node.getAttribute('nombre') || ''))?.textContent?.trim() || '';
+  const phone = adicional(/tel[eé]fono|celular|phone/i);
+  const email = adicional(/correo|e-?mail/i);
   const estab = text(infoTributaria, 'estab');
   const ptoEmi = text(infoTributaria, 'ptoEmi');
   const secuencial = text(infoTributaria, 'secuencial');
@@ -104,7 +109,7 @@ function parsePurchaseInvoiceXml(raw) {
   }
 
   return {
-    ruc, razonSocial, estab, ptoEmi, secuencial, serie, claveAcceso, autorizacion,
+    ruc, razonSocial, address, phone, email, estab, ptoEmi, secuencial, serie, claveAcceso, autorizacion,
     fechaEmision, items,
     subtotal: +totalSinImpuestos.toFixed(2),
     iva: +iva.toFixed(2),

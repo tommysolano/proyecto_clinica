@@ -34,7 +34,7 @@ const TIPO_LABEL = {
   INTERES: 'Interés', COBRO: 'Cobro', PAGO: 'Pago', AJUSTE: 'Ajuste',
 };
 const EMPTY_MOV = { bankAccount: '', date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', counterAccountCode: '', description: '', reference: '', voucherNumber: '', voucherUrl: '', partyName: '', costCenter: '' };
-const EMPTY_FILTER = { bankAccount: '', type: '', startDate: '', endDate: '', q: '', costCenter: '' };
+const EMPTY_FILTER = { bankAccount: '', type: '', startDate: '', endDate: '', q: '', costCenter: '', status: '', reconciled: '' };
 
 /**
  * Documentos origen que se pueden anular DESDE AQUÍ, con el efecto completo en el
@@ -268,6 +268,13 @@ export default function BankMovements() {
             <input value={filter.q} onChange={(e) => setFiltro({ q: e.target.value })} placeholder="Persona, comprobante, cheque…" className="w-full border border-slate-200 rounded-xl pl-8 pr-3 py-2 text-sm" />
           </div>
         </label>
+        <label className="text-xs text-slate-500">Estado
+          <select value={filter.status} onChange={(e) => setFiltro({ status: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm"><option value="">Todos</option><option value="VIGENTE">Vigentes</option><option value="ANULADO">Anulados</option></select>
+        </label>
+        <label className="text-xs text-slate-500">Conciliación
+          <select value={filter.reconciled} onChange={(e) => setFiltro({ reconciled: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm"><option value="">Todas</option><option value="true">Conciliados</option><option value="false">Pendientes</option></select>
+        </label>
+        <button onClick={() => { setPage(1); setFilter({ ...EMPTY_FILTER }); }} className="px-3 py-2 rounded-xl border border-slate-200 bg-white text-slate-600 text-sm">Limpiar filtros</button>
       </div>
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-x-auto">

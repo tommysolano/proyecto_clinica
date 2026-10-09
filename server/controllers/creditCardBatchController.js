@@ -1,10 +1,12 @@
 const CreditCardBatch = require('../models/CreditCardBatch');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
+const CardSettlement = require('../models/CardSettlement');
+const Sale = require('../models/Sale');
 const Counter = require('../models/Counter');
-const { createEntry, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
-const { getAccount } = require('../utils/accountMap');
+const { reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { readIdempotencyKey, fingerprint, assertSameFingerprint, normalize: N } = require('../utils/idempotency');
+const voucherIdentity = require('../utils/cardVoucherIdentity');
 
 exports.list = async (req, res) => {
   const filter = { clinic: req.clinicId };
@@ -17,9 +19,22 @@ exports.list = async (req, res) => {
 
 exports.get = async (req, res) => {
   const b = await CreditCardBatch.findOne({ _id: req.params.id, clinic: req.clinicId })
-    .populate('bankAccount', 'name');
+    .populate('bankAccount', 'name')
+    .populate('vouchers.sale', 'saleNumber createdAt');
   if (!b) return res.status(404).json({ message: 'No encontrado' });
-  res.json(b);
+  const settled = await CardSettlement.find({ clinic: req.clinicId, batch: b._id, status: 'CONTABILIZADO' })
+    .select('sourceSales totalDeposit').lean();
+  const usedVouchers = settled.flatMap((item) => item.sourceSales || []);
+  const manualSettled = settled.filter((item) => !(item.sourceSales || []).length)
+    .reduce((sum, item) => sum + Number(item.totalDeposit || 0), 0);
+  const manualGross = (b.vouchers || []).filter((v) => !v.sale)
+    .reduce((sum, item) => sum + Number(item.grossAmount || 0), 0);
+  res.json({
+    ...b.toObject(),
+    availableVouchers: (b.vouchers || []).filter((v) => !v.sale || !usedVouchers.some((used) =>
+      voucherIdentity.conflicts({ sale: v.sale._id || v.sale, paymentIndex: v.paymentIndex }, used))),
+    manualPending: Math.max(0, +(manualGross - manualSettled).toFixed(2)),
+  });
 };
 
 /**
@@ -49,6 +64,7 @@ async function nextBatchCode(clinicId) {
 /** Deja solo los campos del schema y normaliza importes (los vouchers llegan del cliente). */
 const cleanVouchers = (vouchers) => (Array.isArray(vouchers) ? vouchers : []).map((v) => ({
   sale: v.sale || null,
+  paymentIndex: voucherIdentity.paymentIndex(v.paymentIndex),
   invoice: v.invoice || null,
   voucherNumber: String(v.voucherNumber || '').trim(),
   lote: String(v.lote || '').trim(),
@@ -57,6 +73,49 @@ const cleanVouchers = (vouchers) => (Array.isArray(vouchers) ? vouchers : []).ma
   grossAmount: +(Number(v.grossAmount) || 0).toFixed(2),
   date: v.date || null,
 }));
+
+async function validateVouchers(clinicId, vouchers, exceptBatch = null) {
+  if (!vouchers.length || vouchers.some((v) => v.grossAmount <= 0)) {
+    throw Object.assign(new Error('El lote necesita vouchers con importe positivo'), { status: 400 });
+  }
+  const saleVouchers = vouchers.filter((v) => v.sale);
+  const ids = [...new Set(saleVouchers.map((v) => String(v.sale)))];
+  if (saleVouchers.some((v) => Number.isNaN(v.paymentIndex)) ||
+      saleVouchers.some((v, i) => saleVouchers.slice(i + 1).some((other) => voucherIdentity.conflicts(v, other)))) {
+    throw Object.assign(new Error('Un mismo renglón de tarjeta no puede repetirse dentro del lote'), { status: 409, code: 'CARD_BATCH_DUPLICATE_SALE' });
+  }
+  if (!ids.length) return;
+  const sales = await Sale.find({ _id: { $in: ids }, clinic: clinicId, status: 'completada' })
+    .select('paymentMethod payments total');
+  if (sales.length !== ids.length) throw Object.assign(new Error('Una venta del lote no existe en esta clínica'), { status: 409, code: 'CARD_BATCH_INVALID_SALE' });
+  const byId = new Map(sales.map((sale) => [String(sale._id), sale]));
+  for (const voucher of vouchers.filter((v) => v.sale)) {
+    const sale = byId.get(String(voucher.sale));
+    const cards = (sale.payments || []).map((p, index) => ({ ...p.toObject(), index }))
+      .filter((p) => p.method === 'tarjeta');
+    if (cards.length > 1 && voucher.paymentIndex === null) {
+      throw Object.assign(new Error('Indica el renglón de pago de tarjeta de esta venta'), { status: 409, code: 'CARD_MULTI_VOUCHER_REVIEW' });
+    }
+    const card = voucher.paymentIndex !== null
+      ? cards.find((p) => p.index === voucher.paymentIndex) : cards[0];
+    const cardAmount = card ? Number(card.amount || 0)
+      : !cards.length && voucher.paymentIndex === null && sale.paymentMethod === 'tarjeta' ? Number(sale.total || 0) : 0;
+    if (cardAmount <= 0 || Math.abs(voucher.grossAmount - cardAmount) > 0.01) {
+      throw Object.assign(new Error('Una venta no tiene un cobro con tarjeta por el importe del voucher'), { status: 409, code: 'CARD_BATCH_AMOUNT' });
+    }
+  }
+  const usedBatches = await CreditCardBatch.find({
+    clinic: clinicId, _id: { $ne: exceptBatch }, status: { $ne: 'ANULADO' },
+    'vouchers.sale': { $in: ids },
+  }).select('code vouchers');
+  const usedBatch = usedBatches.find((b) => b.vouchers.some((used) => saleVouchers.some((v) => voucherIdentity.conflicts(v, used))));
+  if (usedBatch) throw Object.assign(new Error(`Un voucher ya pertenece al lote ${usedBatch.code}`), { status: 409, code: 'CARD_BATCH_SALE_USED' });
+  const usedSettlements = await CardSettlement.find({
+    clinic: clinicId, status: 'CONTABILIZADO', 'sourceSales.sale': { $in: ids },
+  }).select('code sourceSales');
+  const usedSettlement = usedSettlements.find((s) => s.sourceSales.some((used) => saleVouchers.some((v) => voucherIdentity.conflicts(v, used))));
+  if (usedSettlement) throw Object.assign(new Error(`Un voucher ya fue liquidado en ${usedSettlement.code}`), { status: 409, code: 'CARD_SALE_SETTLED' });
+}
 
 /** Recalcula comisión, IVA de la comisión, retención y neto a partir de los vouchers. */
 function recomputeBatch(b) {
@@ -86,7 +145,8 @@ exports.create = async (req, res) => {
     retentionRate: N.num(body.retentionRate),
     ivaCommissionRate: N.num(body.ivaCommissionRate),
     bankAccount: N.id(body.bankAccount),
-    vouchers: vouchers.map((v) => ({ voucherNumber: v.voucherNumber, lote: v.lote, grossAmount: N.num(v.grossAmount) })),
+    vouchers: vouchers.map((v) => ({ sale: N.id(v.sale), paymentIndex: v.paymentIndex,
+      voucherNumber: v.voucherNumber, lote: v.lote, grossAmount: N.num(v.grossAmount) })),
   });
   try {
     if (idemKey) {
@@ -96,6 +156,7 @@ exports.create = async (req, res) => {
         return res.json({ ...previo.toObject(), idempotentReplay: true });
       }
     }
+    await validateVouchers(req.clinicId, vouchers);
     const code = await nextBatchCode(req.clinicId);
     const draft = {
       ...body, clinic: req.clinicId, code, vouchers,
@@ -119,6 +180,9 @@ exports.create = async (req, res) => {
         return res.json({ ...previo.toObject(), idempotentReplay: true });
       }
     }
+    if (e.code === 11000 && e.keyPattern?.['vouchers.sale']) {
+      return res.status(409).json({ code: 'CARD_BATCH_SALE_USED', message: 'Este voucher ya pertenece a otro lote vigente' });
+    }
     res.status(e.status || 400).json({ message: e.message });
   }
 };
@@ -129,87 +193,30 @@ exports.update = async (req, res) => {
     if (!b) return res.status(404).json({ message: 'No encontrado' });
     if (b.status !== 'ABIERTO') return res.status(400).json({ message: 'No editable' });
     const { code, status, clinic, journalEntry, bankTransaction, idempotencyKey, idempotencyFingerprint, ...rest } = req.body;
+    const nextVouchers = rest.vouchers !== undefined ? cleanVouchers(rest.vouchers) : b.vouchers;
+    await validateVouchers(req.clinicId, nextVouchers, b._id);
     Object.assign(b, rest);
-    if (rest.vouchers !== undefined) b.vouchers = cleanVouchers(rest.vouchers);
+    if (rest.vouchers !== undefined) b.vouchers = nextVouchers;
     recomputeBatch(b);
     await b.save();
     res.json(b);
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    if (e.code === 11000 && e.keyPattern?.['vouchers.sale']) {
+      return res.status(409).json({ code: 'CARD_BATCH_SALE_USED', message: 'Este voucher ya pertenece a otro lote vigente' });
+    }
+    res.status(e.status || 400).json({ message: e.message });
+  }
 };
 
-/** Liquida: registra depósito en banco real, gasto comisión + IVA, retención por cobrar, y descarga "tarjetas por liquidar". */
+/** Los lotes solo agrupan vouchers; la acreditación económica ocurre en CardSettlement. */
 exports.liquidate = async (req, res) => {
-  try {
-    const { bankAccount, liquidationDate } = req.body;
-    {
-      const batchId = await runInTransaction(async (session) => {
-        const b = await CreditCardBatch.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
-        if (!b) throw Object.assign(new Error('No encontrado'), { status: 404 });
-        if (b.status !== 'ABIERTO') throw Object.assign(new Error('No es ABIERTO'), { status: 400 });
-        const txDate = liquidationDate ? new Date(liquidationDate) : new Date();
-        await assertPeriodOpen(req.clinicId, txDate, { session });
-        // El banco es el que se envía o, si no viene, el que se eligió al crear el lote.
-        // Sin esta guardia el filtro quedaba `{ clinic }` (mongoose descarta las claves
-        // `undefined`) y el depósito caía en la PRIMERA cuenta de la clínica, no en la elegida.
-        const bankId = bankAccount || b.bankAccount;
-        if (!bankId) throw Object.assign(new Error('Selecciona el banco donde se acredita el lote'), { status: 400 });
-        const bank = await BankAccount.findOne({ _id: bankId, clinic: req.clinicId }).session(session);
-        if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
-
-        const ChartOfAccount = require('../models/ChartOfAccount');
-        const bankAcc = await ChartOfAccount.findOne({ _id: bank.chartAccount, clinic: req.clinicId }).session(session);
-        if (!bankAcc) throw Object.assign(new Error('La cuenta bancaria no tiene cuenta contable asociada'), { status: 400 });
-        const tarjetasXliq = await getAccount(req.clinicId, 'tarjetasPorLiquidar', { session });
-        const comision = await getAccount(req.clinicId, 'comisionTarjeta', { session });
-        const ivaCompras = await getAccount(req.clinicId, 'ivaCompras', { session });
-        const retXcobrar = await getAccount(req.clinicId, 'retRentaPorCobrar', { session });
-
-        const lines = [];
-        if (b.netAmount > 0) lines.push({ account: bankAcc._id, debit: b.netAmount, credit: 0, description: `Deposito liquidacion ${b.code}` });
-        if (b.commissionAmount > 0) lines.push({ account: comision._id, debit: b.commissionAmount, credit: 0, description: 'Comision tarjeta' });
-        if (b.ivaCommissionAmount > 0 && ivaCompras) lines.push({ account: ivaCompras._id, debit: b.ivaCommissionAmount, credit: 0, description: 'IVA comision' });
-        if (b.retentionAmount > 0) lines.push({ account: retXcobrar._id, debit: b.retentionAmount, credit: 0, description: 'Retencion por cobrar' });
-        if (b.grossAmount > 0) lines.push({ account: tarjetasXliq._id, debit: 0, credit: b.grossAmount, description: 'Cancelacion tarjetas por liquidar' });
-
-        const [bt] = await BankTransaction.create([{
-          clinic: req.clinicId,
-          bankAccount: bank._id,
-          date: txDate,
-          type: 'DEPOSITO',
-          amount: b.netAmount,
-          direction: 1,
-          description: `Liquidacion tarjetas ${b.code}`,
-          reference: b.code,
-          sourceModel: 'CreditCardBatch',
-          sourceRef: b._id,
-          createdBy: req.user._id,
-        }], { session });
-        const entry = await createEntry({
-          clinicId: req.clinicId,
-          date: txDate,
-          description: `Liquidacion tarjetas ${b.code}`,
-          source: 'TARJETA',
-          sourceRef: b._id,
-          sourceModel: 'CreditCardBatch',
-          sourceAction: 'LIQUIDATE',
-          lines,
-          userId: req.user._id,
-          session,
-        });
-        bt.journalEntry = entry._id;
-        await bt.save({ session });
-        b.status = 'LIQUIDADO';
-        b.liquidationDate = txDate;
-        b.bankAccount = bank._id;
-        b.journalEntry = entry._id;
-        b.bankTransaction = bt._id;
-        await b.save({ session });
-        return b._id;
-      });
-      const batch = await CreditCardBatch.findById(batchId).populate('bankAccount', 'name');
-      return res.json(batch);
-    }
-  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+  const batch = await CreditCardBatch.findOne({ _id: req.params.id, clinic: req.clinicId }).select('_id');
+  if (!batch) return res.status(404).json({ message: 'Lote no encontrado' });
+  return res.status(409).json({
+    code: 'SETTLEMENT_REQUIRED',
+    message: 'Registra una nueva liquidación para este lote. El lote no crea un segundo depósito bancario.',
+    batch: batch._id,
+  });
 };
 
 exports.cancel = async (req, res) => {
@@ -219,6 +226,8 @@ exports.cancel = async (req, res) => {
         const b = await CreditCardBatch.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
         if (!b) throw Object.assign(new Error('No encontrado'), { status: 404 });
         if (b.status === 'ANULADO') throw Object.assign(new Error('Ya anulado'), { status: 400 });
+        const activeSettlements = await CardSettlement.countDocuments({ clinic: req.clinicId, batch: b._id, status: { $ne: 'ANULADO' } }).session(session);
+        if (activeSettlements) throw Object.assign(new Error('Anula primero las liquidaciones vinculadas a este lote'), { status: 409, code: 'CARD_BATCH_HAS_SETTLEMENTS' });
         const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
         await assertPeriodOpen(req.clinicId, reversalDate, { session });
         if (b.journalEntry) {
@@ -234,6 +243,7 @@ exports.cancel = async (req, res) => {
         if (b.bankTransaction) {
           const tx = await BankTransaction.findById(b.bankTransaction).session(session);
           if (tx && !tx.voided) {
+            if (tx.reconciled) throw Object.assign(new Error('El depósito del lote está conciliado: reabre la conciliación antes de anularlo'), { status: 409, code: 'BANK_RECONCILED' });
             tx.voided = true;
             tx.voidedAt = reversalDate;
             tx.voidedBy = req.user._id;

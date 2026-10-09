@@ -23,12 +23,16 @@ const payments = require('../controllers/paymentController');
 const sales = require('../controllers/saleController');
 const suppliers = require('../controllers/supplierController');
 const deposits = require('../controllers/cashDepositController');
+const invoices = require('../controllers/invoiceController');
+const cashClosing = require('../controllers/cashClosingController');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const BankCheck = require('../models/BankCheck');
 const Reconciliation = require('../models/Reconciliation');
 const CostCenter = require('../models/CostCenter');
 const Sale = require('../models/Sale');
+const Invoice = require('../models/Invoice');
+const InvoicingConfig = require('../models/InvoicingConfig');
 const Supplier = require('../models/Supplier');
 const { getAccount } = require('../utils/accountMap');
 
@@ -344,6 +348,87 @@ test('el depósito lista el efectivo pendiente, lo lleva al banco y no lo ofrece
 
   const led = await H.assertLedgerBalanced(clinicId);
   assert.ok(led.balanced, `mayor descuadrado ${led.debit} vs ${led.credit}`);
+});
+
+test('anular una factura con efectivo depositado no deja factura y venta en estados distintos', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const bank = await makeBank(clinicId);
+  const prod = await servicio(clinicId);
+  const venta = ok(await run(sales.createSale, H.mockReq(clinicId, userId, {
+    clientName: 'Contado', clientCedula: '9999999999999', items: [linea(prod)], paymentMethod: 'efectivo',
+  })));
+  await InvoicingConfig.create({ clinic: clinicId, ruc: '1790012345001', razonSocial: 'Clínica de prueba' });
+  const factura = await Invoice.create({ clinic: clinicId, sale: venta._id,
+    claveAcceso: '0'.repeat(49) + '1', secuencial: '000000001', estab: '001', ptoEmi: '001',
+    ambiente: '1', fechaEmision: '09/10/2026', estado: 'AUTORIZADO', total: 100 });
+  await Sale.updateOne({ _id: venta._id }, { invoice: factura._id });
+  ok(await run(deposits.create, H.mockReq(clinicId, userId, {
+    date: hoy(), bankAccount: String(bank._id), voucherNumber: 'PAP-FACTURA',
+    items: [{ docModel: 'Sale', docRef: String(venta._id) }],
+  })));
+
+  const rejected = await run(invoices.anular, H.mockReq(clinicId, userId,
+    { motivo: 'Error comprobado' }, { params: { id: String(factura._id) } }));
+  assert.equal(rejected.statusCode, 409, JSON.stringify(rejected.payload));
+  assert.equal((await Invoice.findById(factura._id)).estado, 'AUTORIZADO');
+  assert.notEqual((await Sale.findById(venta._id)).status, 'anulada');
+  assert.equal((await BankAccount.findById(bank._id)).bookBalance, 100);
+});
+
+test('un cobro directo de venta a crédito aparece en pendientes y se deposita una sola vez', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const bank = await makeBank(clinicId);
+  const prod = await servicio(clinicId);
+  const venta = ok(await run(sales.createSale, H.mockReq(clinicId, userId, {
+    clientName: 'Crédito', clientCedula: '0912345678', items: [linea(prod)], paymentMethod: 'credito',
+  })));
+  ok(await run(sales.collectSale, H.mockReq(clinicId, userId,
+    { amount: 40, paymentMethod: 'efectivo' }, { params: { id: String(venta._id) } })));
+  const pending = ok(await run(deposits.pending, H.mockReq(clinicId, userId, {}, { query: {} })));
+  const cobro = pending.items.find((i) => i.docModel === 'JournalEntry');
+  assert.ok(cobro, 'el cobro directo debe figurar con su asiento origen');
+  assert.equal(cobro.amount, 40);
+  const duplicate = await run(deposits.create, H.mockReq(clinicId, userId, {
+    date: hoy(), bankAccount: String(bank._id), voucherNumber: 'PAP-DUP',
+    items: [{ docModel: 'JournalEntry', docRef: String(cobro.docRef) },
+      { docModel: 'JournalEntry', docRef: String(cobro.docRef) }],
+  }));
+  assert.equal(duplicate.statusCode, 400);
+  const dep = ok(await run(deposits.create, H.mockReq(clinicId, userId, {
+    date: hoy(), bankAccount: String(bank._id), voucherNumber: 'PAP-COBRO',
+    items: [{ docModel: 'JournalEntry', docRef: String(cobro.docRef) }],
+  })));
+  assert.equal(dep.total, 40);
+  const after = ok(await run(deposits.pending, H.mockReq(clinicId, userId, {}, { query: {} })));
+  assert.equal(after.items.length, 0);
+  assert.equal((await BankAccount.findById(bank._id)).bookBalance, 40);
+  const blockedSale = await run(sales.cancelSale, H.mockReq(clinicId, userId, {}, { params: { id: String(venta._id) } }));
+  assert.equal(blockedSale.statusCode, 409, 'la venta no se anula mientras su cobro está depositado');
+  ok(await run(deposits.void, H.mockReq(clinicId, userId, { reason: 'Corrección' }, { params: { id: String(dep._id) } })));
+  const restored = ok(await run(deposits.pending, H.mockReq(clinicId, userId, {}, { query: {} })));
+  assert.equal(restored.items.filter((i) => i.docModel === 'JournalEntry').length, 1);
+  assert.equal((await BankAccount.findById(bank._id)).bookBalance, 0);
+});
+
+test('saldo libre de caja se deposita con motivo y no permite repetir el mismo efectivo', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const bank = await makeBank(clinicId);
+  ok(await run(cashClosing.open, H.mockReq(clinicId, userId, { openingBalance: 0 })));
+  ok(await run(cashClosing.addMovement, H.mockReq(clinicId, userId,
+    { type: 'INGRESO', amount: 75, description: 'Cambio de fondo' })));
+  const before = ok(await run(deposits.pending, H.mockReq(clinicId, userId, {}, { query: {} })));
+  assert.equal(before.manualAvailable, 75);
+  const dep = ok(await run(deposits.create, H.mockReq(clinicId, userId, {
+    date: hoy(), bankAccount: String(bank._id), voucherNumber: 'PAP-LIBRE',
+    items: [], manualAmount: 75, manualReason: 'Cambio de fondo',
+  })));
+  assert.equal(dep.total, 75);
+  const again = await run(deposits.create, H.mockReq(clinicId, userId, {
+    date: hoy(), bankAccount: String(bank._id), voucherNumber: 'PAP-DOBLE',
+    items: [], manualAmount: 75, manualReason: 'Cambio de fondo',
+  }));
+  assert.equal(again.statusCode, 409);
+  assert.equal((await BankAccount.findById(bank._id)).bookBalance, 75);
 });
 
 test('de una venta mixta solo se deposita la parte en efectivo', async () => {

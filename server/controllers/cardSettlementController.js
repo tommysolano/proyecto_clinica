@@ -5,13 +5,111 @@ const ChartOfAccount = require('../models/ChartOfAccount');
 const Counter = require('../models/Counter');
 const RetentionRule = require('../models/RetentionRule');
 const Sale = require('../models/Sale');
+const CreditCardBatch = require('../models/CreditCardBatch');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { readIdempotencyKey, fingerprint, assertSameFingerprint, normalize: N } = require('../utils/idempotency');
+const voucherIdentity = require('../utils/cardVoucherIdentity');
 
 const round = (n) => +(Number(n) || 0).toFixed(2);
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const RET_TYPES = ['RENTA', 'IVA'];
+
+async function syncBatchStatus(batchId, clinicId, session) {
+  if (!batchId) return;
+  const batch = await CreditCardBatch.findOne({ _id: batchId, clinic: clinicId }).session(session);
+  if (!batch || batch.status === 'ANULADO' || batch.journalEntry) return;
+  const settlements = await CardSettlement.find({
+    clinic: clinicId, batch: batch._id, status: 'CONTABILIZADO',
+  }).select('totalDeposit').session(session);
+  const settled = round(settlements.reduce((sum, item) => sum + Number(item.totalDeposit || 0), 0));
+  batch.settledAmount = settled;
+  batch.status = settled <= 0.005 ? 'ABIERTO'
+    : settled < Number(batch.grossAmount || 0) - 0.01 ? 'PARCIAL'
+      : settled > Number(batch.grossAmount || 0) + 0.01 ? 'SOBRANTE' : 'LIQUIDADO';
+  await batch.save({ session });
+}
+
+async function validateSourceSales(settlement, clinicId, session) {
+  const sources = settlement.sourceSales || [];
+  const ids = [...new Set(sources.map((item) => String(item.sale || '')).filter(Boolean))];
+  if (sources.some((item) => !item.sale || Number.isNaN(voucherIdentity.paymentIndex(item.paymentIndex))) ||
+      sources.some((item, i) => sources.slice(i + 1).some((other) => voucherIdentity.conflicts(item, other)))) {
+    throw Object.assign(new Error('Cada voucher de origen debe estar identificado una sola vez'), { status: 409, code: 'CARD_SOURCE_DUPLICATE' });
+  }
+  if (settlement.batch) {
+    const batch = await CreditCardBatch.findOne({ _id: settlement.batch, clinic: clinicId }).session(session);
+    if (!batch || batch.status === 'ANULADO' || batch.journalEntry) {
+      throw Object.assign(new Error('El lote no está disponible para recibir esta liquidación'), { status: 409, code: 'CARD_BATCH_UNAVAILABLE' });
+    }
+    const batchVouchers = (batch.vouchers || []).filter((v) => v.sale);
+    if (sources.some((item) => !batchVouchers.some((v) => voucherIdentity.conflicts(item, v)))) {
+      throw Object.assign(new Error('Las ventas de la liquidación deben pertenecer al lote'), { status: 409, code: 'CARD_BATCH_SOURCES' });
+    }
+    const sourceTotal = round(sources.reduce((sum, item) => sum + Number(item.amount || 0), 0));
+    if (sources.length && Math.abs(sourceTotal - settlement.totalDeposit) > 0.01) {
+      throw Object.assign(new Error('El bruto de las ventas seleccionadas no coincide con la liquidación'), { status: 409, code: 'CARD_BATCH_AMOUNT' });
+    }
+    for (const item of sources) {
+      const voucher = batchVouchers.find((v) => voucherIdentity.conflicts(item, v));
+      if (Math.abs(Number(item.amount || 0) - Number(voucher.grossAmount || 0)) > 0.01) {
+        throw Object.assign(new Error('El importe de una venta no coincide con su voucher del lote'), { status: 409, code: 'CARD_VOUCHER_AMOUNT' });
+      }
+    }
+    const posted = await CardSettlement.find({ clinic: clinicId, batch: batch._id, status: 'CONTABILIZADO' })
+      .select('totalDeposit sourceSales').session(session);
+    const already = round(posted.reduce((sum, item) => sum + Number(item.totalDeposit || 0), 0));
+    if (!sources.length) {
+      const manualGross = round((batch.vouchers || []).filter((v) => !v.sale)
+        .reduce((sum, v) => sum + Number(v.grossAmount || 0), 0));
+      const manualPosted = round(posted.filter((item) => !(item.sourceSales || []).length)
+        .reduce((sum, item) => sum + Number(item.totalDeposit || 0), 0));
+      if (settlement.totalDeposit > manualGross - manualPosted + 0.01) {
+        throw Object.assign(new Error('La liquidación sin ventas identificadas supera los vouchers manuales pendientes del lote'), { status: 409, code: 'CARD_MANUAL_OVERPAID' });
+      }
+    }
+    if (already + settlement.totalDeposit > Number(batch.grossAmount || 0) + 0.01) {
+      throw Object.assign(new Error('La liquidación supera el bruto pendiente del lote'), { status: 409, code: 'CARD_BATCH_OVERPAID' });
+    }
+  }
+  if (!sources.length) return;
+  const owningBatches = await CreditCardBatch.find({
+    clinic: clinicId, status: { $ne: 'ANULADO' }, 'vouchers.sale': { $in: ids },
+  }).select('code vouchers').session(session);
+  const owningBatch = owningBatches.find((batch) => batch.vouchers.some((voucher) =>
+    sources.some((source) => voucherIdentity.conflicts(source, voucher)) &&
+    String(batch._id) !== String(settlement.batch || '')));
+  if (owningBatch && String(owningBatch._id) !== String(settlement.batch || '')) {
+    throw Object.assign(new Error(`Una venta pertenece al lote ${owningBatch.code}; liquídala desde ese lote`), { status: 409, code: 'CARD_BATCH_REQUIRED' });
+  }
+  const sales = await Sale.find({ _id: { $in: ids }, clinic: clinicId, status: 'completada' })
+    .select('paymentMethod payments total').session(session);
+  if (sales.length !== ids.length) {
+    throw Object.assign(new Error('Una venta de origen no existe o no está completada en esta clínica'), { status: 409, code: 'CARD_SOURCE_INVALID' });
+  }
+  const saleById = new Map(sales.map((sale) => [String(sale._id), sale]));
+  for (const item of sources) {
+    const sale = saleById.get(String(item.sale));
+    const cards = (sale.payments || []).map((p, index) => ({ method: p.method, amount: p.amount, index }))
+      .filter((p) => p.method === 'tarjeta');
+    const index = voucherIdentity.paymentIndex(item.paymentIndex);
+    if (cards.length > 1 && index === null) {
+      throw Object.assign(new Error('Indica el renglón de pago de tarjeta de esta venta'), { status: 409, code: 'CARD_MULTI_VOUCHER_REVIEW' });
+    }
+    const card = index !== null ? cards.find((p) => p.index === index) : cards[0];
+    const cardAmount = card ? Number(card.amount || 0)
+      : !cards.length && index === null && sale.paymentMethod === 'tarjeta' ? Number(sale.total || 0) : 0;
+    if (cardAmount <= 0 || Math.abs(Number(item.amount || 0) - cardAmount) > 0.01) {
+      throw Object.assign(new Error('Una venta no tiene un cobro con tarjeta por el importe indicado'), { status: 409, code: 'CARD_SOURCE_AMOUNT' });
+    }
+  }
+  const others = await CardSettlement.find({
+    clinic: clinicId, _id: { $ne: settlement._id }, status: 'CONTABILIZADO',
+    'sourceSales.sale': { $in: ids },
+  }).select('code sourceSales').session(session);
+  const other = others.find((s) => s.sourceSales.some((used) => sources.some((item) => voucherIdentity.conflicts(item, used))));
+  if (other) throw Object.assign(new Error(`Una venta ya figura en la liquidación ${other.code}`), { status: 409, code: 'CARD_SOURCE_ALREADY_SETTLED' });
+}
 
 /**
  * Expresión con la que se busca un N° de lote del POS.
@@ -58,17 +156,16 @@ exports.searchCardSales = async (req, res) => {
       if (from) filter.createdAt.$gte = new Date(`${from}T00:00:00.000`);
       if (to) filter.createdAt.$lte = new Date(`${to}T23:59:59.999`);
     }
+    let usedVouchers = [];
     if (!includeSettled || includeSettled === 'false') {
-      // Un cobro solo puede estar en UN lote y en UNA liquidación: si ya está en cualquiera de
-      // los dos (mientras no se anule) no se vuelve a ofrecer, para no contarlo dos veces.
-      const used = await CardSettlement.distinct('sourceSales.sale', { clinic: req.clinicId, status: { $ne: 'ANULADO' } });
-      const excluded = [...used];
+      const settled = await CardSettlement.find({ clinic: req.clinicId, status: { $ne: 'ANULADO' } })
+        .select('sourceSales').lean();
+      usedVouchers = settled.flatMap((s) => s.sourceSales || []);
       if (forBatch === 'true' || forBatch === true) {
-        const CreditCardBatch = require('../models/CreditCardBatch');
-        const enLote = await CreditCardBatch.distinct('vouchers.sale', { clinic: req.clinicId, status: { $ne: 'ANULADO' } });
-        excluded.push(...enLote.filter(Boolean));
+        const batches = await CreditCardBatch.find({ clinic: req.clinicId, status: { $ne: 'ANULADO' } })
+          .select('vouchers').lean();
+        usedVouchers.push(...batches.flatMap((b) => b.vouchers || []));
       }
-      if (excluded.length) filter._id = { $nin: excluded };
     }
     filter.$and = and;
     const sales = await Sale.find(filter)
@@ -78,7 +175,28 @@ exports.searchCardSales = async (req, res) => {
       .populate('creditCard', 'name brand')
       .sort({ createdAt: 1 })
       .limit(500);
-    res.json(sales);
+    const rows = [];
+    for (const sale of sales) {
+      const parts = (sale.payments || []).map((p, index) => ({ payment: p, index }))
+        .filter(({ payment }) => payment.method === 'tarjeta');
+      const selected = lote?.trim()
+        ? parts.filter(({ payment }) => loteRegex(lote).test(payment.cardLote || '')) : parts;
+      const candidates = parts.length ? selected
+        : sale.paymentMethod === 'tarjeta' && (!lote?.trim() || loteRegex(lote).test(sale.cardLote || ''))
+          ? [{ payment: null, index: null }] : [];
+      for (const { payment, index } of candidates) {
+        const item = { sale: sale._id, paymentIndex: index };
+        if (usedVouchers.some((used) => voucherIdentity.conflicts(item, used))) continue;
+        const cardAmount = payment ? round(payment.amount) : round(sale.total);
+        if (cardAmount <= 0) continue;
+        rows.push({ ...sale.toObject(), cardAmount, cardPaymentCount: parts.length || 1,
+          paymentIndex: index, paymentKey: voucherIdentity.key(item),
+          cardLote: payment?.cardLote || sale.cardLote,
+          cardVoucher: payment?.cardVoucher || sale.cardVoucher,
+          cardBrand: payment?.cardBrandSnapshot || '', cardPos: payment?.cardPos || sale.cardPos });
+      }
+    }
+    res.json(rows);
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
@@ -270,6 +388,11 @@ exports.create = async (req, res) => {
     docNumber: b.docNumber || null,
     supplier: N.id(b.supplier),
     bankAccount: N.id(b.bankAccount),
+    batch: N.id(b.batch),
+    sourceSales: (b.sourceSales || []).map((item) => ({
+      sale: N.id(item.sale), paymentIndex: voucherIdentity.paymentIndex(item.paymentIndex), amount: N.num(item.amount),
+      lote: item.lote || '', voucher: item.voucher || '',
+    })),
     transactions: (b.transactions || []).map((t) => ({
       recap: t.recap || null,
       date: N.date(t.date),
@@ -297,6 +420,7 @@ exports.create = async (req, res) => {
       idempotencyFingerprint: idemKey ? idemFingerprint : null,
     });
     await recomputeSettlement(s, req.clinicId);
+    await validateSourceSales(s, req.clinicId);
     const problemas = [...baseProblems(s), ...retentionProblems(s)];
     if (problemas.length) return res.status(400).json({ message: problemas.join(' ') });
     await s.save();
@@ -324,6 +448,7 @@ exports.update = async (req, res) => {
     const { code, status, journalEntry, bankTransaction, clinic, idempotencyKey, idempotencyFingerprint, ...rest } = req.body;
     Object.assign(s, rest);
     await recomputeSettlement(s, req.clinicId);
+    await validateSourceSales(s, req.clinicId);
     const problemas = [...baseProblems(s), ...retentionProblems(s)];
     if (problemas.length) return res.status(400).json({ message: problemas.join(' ') });
     await s.save();
@@ -346,6 +471,7 @@ exports.accredit = async (req, res) => {
         if (!s.bankAccount) throw Object.assign(new Error('Selecciona el banco donde se acredita'), { status: 400 });
 
         await recomputeSettlement(s, req.clinicId, session);
+        await validateSourceSales(s, req.clinicId, session);
         const problemas = retentionProblems(s);
         if (problemas.length) throw Object.assign(new Error(problemas.join(' ')), { status: 400 });
         const accreditedAt = req.body.accreditedAt ? new Date(req.body.accreditedAt) : (s.issueDate || new Date());
@@ -414,6 +540,7 @@ exports.accredit = async (req, res) => {
         s.journalEntry = entry._id;
         s.bankTransaction = bt._id;
         await s.save({ session });
+        await syncBatchStatus(s.batch, req.clinicId, session);
         const saleIds = (s.sourceSales || []).map((x) => x.sale).filter(Boolean);
         if (saleIds.length) {
           await Sale.updateMany(
@@ -427,7 +554,12 @@ exports.accredit = async (req, res) => {
       const settlement = await CardSettlement.findById(settlementId);
       return res.json(settlement);
     }
-  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+  } catch (e) {
+    if (e.code === 11000 && e.keyPattern?.['sourceSales.sale']) {
+      return res.status(409).json({ code: 'CARD_SOURCE_ALREADY_SETTLED', message: 'Este voucher ya se acreditó en otra liquidación' });
+    }
+    res.status(e.status || 400).json({ message: e.message });
+  }
 };
 
 exports.cancel = async (req, res) => {
@@ -452,6 +584,7 @@ exports.cancel = async (req, res) => {
         if (s.bankTransaction) {
           const tx = await BankTransaction.findById(s.bankTransaction).session(session);
           if (tx && !tx.voided) {
+            if (tx.reconciled) throw Object.assign(new Error('El depósito de la liquidación está conciliado: reabre la conciliación antes de anularla'), { status: 409, code: 'BANK_RECONCILED' });
             tx.voided = true;
             tx.voidedAt = reversalDate;
             tx.voidedBy = req.user._id;
@@ -466,6 +599,7 @@ exports.cancel = async (req, res) => {
         }
         s.status = 'ANULADO';
         await s.save({ session });
+        await syncBatchStatus(s.batch, req.clinicId, session);
         const saleIds = (s.sourceSales || []).map((x) => x.sale).filter(Boolean);
         if (saleIds.length) {
           await Sale.updateMany(

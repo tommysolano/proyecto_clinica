@@ -97,8 +97,8 @@ exports.list = async (req, res) => {
     const filter = { clinic: req.clinicId };
     if (startDate || endDate) {
       filter.date = {};
-      if (startDate) filter.date.$gte = new Date(startDate);
-      if (endDate) filter.date.$lte = new Date(endDate);
+      if (startDate) filter.date.$gte = startOfDay(startDate);
+      if (endDate) filter.date.$lte = endOfDay(endDate);
     }
     if (source) filter.source = source;
     if (status) filter.status = status;
@@ -222,6 +222,17 @@ exports.removeDraft = async (req, res) => {
 
 exports.reverse = async (req, res) => {
   try {
+    const entry = await JournalEntry.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!entry) return res.status(404).json({ message: 'Asiento no encontrado' });
+    // Un documento operativo debe anularse desde su propio flujo: el reverso directo
+    // dejaría vigentes su saldo, submayor y movimientos auxiliares.
+    if (!['MANUAL', 'AJUSTE'].includes(entry.source)
+      || entry.sourceModel || entry.sourceRef || entry.sourceAction) {
+      return res.status(409).json({
+        code: 'DOCUMENT_REVERSAL_REQUIRED',
+        message: 'Este asiento pertenece a un documento. Anula o corrige el documento de origen para reversarlo.',
+      });
+    }
     const rev = await reverseEntry({
       clinicId: req.clinicId,
       entryId: req.params.id,

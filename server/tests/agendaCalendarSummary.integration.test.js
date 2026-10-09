@@ -116,3 +116,29 @@ test('GET /appointments acepta VARIOS servicios separados por coma', async () =>
   // filtro multi-servicio, la segunda alternativa pisaba a la primera.
   assert.equal(r.payload.length, 5, JSON.stringify(r.payload.map((a) => a.status)));
 });
+
+/**
+ * EL BUSCADOR ENCUENTRA AL PACIENTE REGISTRADO EN OTRA SEDE (oct-2026).
+ * Los pacientes son de todas las sucursales: su `clinic` es solo donde se
+ * registró. La agenda lo buscaba SOLO entre los de la sucursal mirada y el
+ * calendario y la lista salían en blanco aunque tuviera citas aquí.
+ */
+test('el buscador de paciente no filtra al paciente por la sede donde se registró', async () => {
+  const { clinicId, userId, hoy } = await seed();
+  const Clinic = require('../models/Clinic');
+  const otra = await Clinic.create({ name: 'Otra sede' });
+  const lejano = await Patient.create({
+    clinic: otra._id, firstName: 'Lucía', lastName: 'Mora', cedula: '0911223344', phone: '0991234567',
+  });
+  await Appointment.create({
+    clinic: clinicId, patient: lejano._id, date: hoy, startTime: '11:00', status: 'pendiente',
+  });
+  for (const [q, sede] of [['lucia mora', String(clinicId)], ['0911223344', 'all'], ['099 123 4567', String(clinicId)]]) {
+    const query = { startDate: ymd(hoy), endDate: ymd(hoy), clinic: sede, q };
+    const cal = await H.runController(appt.getCalendarSummary, H.mockReq(clinicId, userId, {}, { role: 'cajero', query }));
+    assert.equal(cal.payload[0]?.total, 1, `calendario con «${q}»: ${JSON.stringify(cal.payload)}`);
+    const lista = await H.runController(appt.getAppointments, H.mockReq(clinicId, userId, {}, { role: 'cajero', query }));
+    assert.equal(lista.payload.length, 1, `lista con «${q}»`);
+    assert.equal(String(lista.payload[0].patient._id), String(lejano._id));
+  }
+});

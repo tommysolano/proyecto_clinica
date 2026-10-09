@@ -61,3 +61,10 @@ test('maneja decimales con punto inicial (".42")', () => {
   const { rows } = _parseSriReport(SRI_TXT);
   assert.equal(rows[2].iva, 0.42);
 });
+
+test('cuenta comprobantes del archivo sin incluir cabecera y conserva los inválidos en el total', () => {
+  const { rows, errors, sourceRows } = _parseSriReport(`${SRI_TXT}\nFILA_INCOMPLETA`);
+  assert.equal(sourceRows, 6);
+  assert.equal(rows.length, 5);
+  assert.equal(errors.length, 1);
+});

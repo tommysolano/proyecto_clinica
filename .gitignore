@@ -1,5 +1,6 @@
 node_modules/
 .env
+micartaonline.zip
 server/storage/
 # Sesiones locales de whatsapp-web.js (perfiles de Chrome)
 .wwebjs_auth/

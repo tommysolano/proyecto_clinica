@@ -521,12 +521,17 @@ test('FLUJO 19 — Cierre anual genera asiento de resultados (clinicId string, c
   assert.ok(r.payload.asiento, 'debe generarse asiento de cierre');
   // Resultado del ejercicio (3.3.02) acreditado 180 (utilidad)
   assert.equal(await H.accountBalanceByCode(clinicId, '3.3.02'), -180);
+  const again = await H.runController(fiscal.closeYear, H.mockReq(cid, userId, { year: hoy.getFullYear() }));
+  assert.equal(again.statusCode, 200, JSON.stringify(again.payload));
+  assert.equal(again.payload.alreadyClosed, true);
+  assert.equal(String(again.payload.asiento._id), String(r.payload.asiento._id));
+  assert.equal(await H.accountBalanceByCode(clinicId, '3.3.02'), -180, 'el reintento no duplica el resultado');
   const led = await H.assertLedgerBalanced(clinicId);
   assert.ok(led.balanced, `mayor descuadrado ${led.debit} vs ${led.credit}`);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-test('FLUJO 20 — Apertura de año arrastra saldos de balance (Activo/Pasivo/Patrimonio)', async () => {
+test('FLUJO 20 — Enero conserva los saldos del mayor continuo sin duplicar asiento de apertura', async () => {
   const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-12-15') });
   const cid = String(clinicId);
   const serv = await H.makeProduct(clinicId, { category: 'servicio', salePrice: 100, unlimited: true, taxCategory: 'IVA_0' });
@@ -538,8 +543,10 @@ test('FLUJO 20 — Apertura de año arrastra saldos de balance (Activo/Pasivo/Pa
   await H.runController(fiscal.closeYear, H.mockReq(cid, userId, { year: 2026 }));
   const r = await H.runController(fiscal.openYear, H.mockReq(cid, userId, { year: 2027 }));
   assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
-  assert.ok(r.payload.asiento, 'debe generar asiento de apertura');
-  // El asiento de apertura debe estar cuadrado
+  assert.equal(r.payload.policy, 'CONTINUOUS_LEDGER');
+  assert.equal(r.payload.asiento, null, 'no debe duplicar saldos en un mayor continuo');
+  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.01.01'), 100);
+  assert.equal(await H.accountBalanceByCode(clinicId, '3.3.02'), -100);
   const led = await H.assertLedgerBalanced(clinicId);
   assert.ok(led.balanced, `mayor descuadrado ${led.debit} vs ${led.credit}`);
 });

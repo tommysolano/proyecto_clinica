@@ -11,6 +11,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const ExcelJS = require('exceljs');
 const H = require('./_integrationHelpers');
+const accountingHealth = require('../controllers/accountingHealthController');
+const subledgerController = require('../controllers/subledgerController');
 
 const svc = require('../services/cashFlowService');
 const ctrl = require('../controllers/cashFlowController');
@@ -153,6 +155,32 @@ test('1) venta con factura y dos CxC sin pagos: SAFE_DUPLICATE, canónica la ven
 
   const data = await proj(clinicId, HOY, dia(20));
   assert.equal(celda(data, dia(6), 'INGRESO', 'CLIENTES'), 400, 'una obligación = un importe');
+});
+
+test('la salud contable cuenta una sola obligación de venta y factura duplicadas', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: dia(-5) });
+  await parFacturado(clinicId, { total: 400 });
+  const report = await run(accountingHealth.check, H.mockReq(clinicId, userId));
+  assert.equal(report.statusCode, 200, JSON.stringify(report.payload));
+  assert.equal(report.payload.summary.cxcSubledger, 400);
+  assert.ok(report.payload.findings.some((f) => f.code === 'AR_DUPLICATE_DOCUMENTS'));
+  assert.equal(report.payload.warningCount, report.payload.findings.filter((f) => f.level === 'warn').length);
+});
+
+test('documentos de cartera separa saldos pendientes del historial cobrado', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: dia(-5) });
+  const { sale } = await parFacturado(clinicId, { total: 400, cxcFactura: false });
+  const open = await run(subledgerController.list, H.mockReq(clinicId, userId, {}, { query: { side: 'AR', status: 'PENDING' } }));
+  assert.equal(open.statusCode, 200, JSON.stringify(open.payload));
+  assert.equal(open.payload.length, 1);
+  const receivable = await Receivable.findOne({ clinic: clinicId, sourceModel: 'Sale', sourceRef: sale._id });
+  receivable.applied = 400;
+  await receivable.save();
+  const pending = await run(subledgerController.list, H.mockReq(clinicId, userId, {}, { query: { side: 'AR', status: 'PENDING' } }));
+  const history = await run(subledgerController.list, H.mockReq(clinicId, userId, {}, { query: { side: 'AR', status: 'PAGADO' } }));
+  assert.equal(pending.payload.length, 0);
+  assert.equal(history.payload.length, 1);
+  assert.equal(history.payload[0].balance, 0);
 });
 
 test('2) cobro solo en la CxC de la VENTA: DIVERGENT resoluble, manda la venta', async () => {

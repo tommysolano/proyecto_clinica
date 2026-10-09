@@ -66,6 +66,7 @@ const cardSettlementSchema = new mongoose.Schema(
     docType: { type: String, default: 'LIQUIDACION' },  // tipo de documento
     supplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', default: null }, // proveedor (adquirente)
     bankAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'BankAccount', default: null }, // banco
+    batch: { type: mongoose.Schema.Types.ObjectId, ref: 'CreditCardBatch', default: null, index: true },
     docNumber: { type: String, default: '' },           // numero de documento
 
     transactions: { type: [settlementTxnSchema], default: [] },
@@ -78,6 +79,7 @@ const cardSettlementSchema = new mongoose.Schema(
         new mongoose.Schema(
           {
             sale: { type: mongoose.Schema.Types.ObjectId, ref: 'Sale' },
+            paymentIndex: { type: Number, default: null, min: 0 },
             saleNumber: { type: String, default: '' },
             date: { type: Date },
             lote: { type: String, default: '' },
@@ -127,6 +129,12 @@ cardSettlementSchema.index({ clinic: 1, code: 1 }, { unique: true });
 cardSettlementSchema.index(
   { clinic: 1, idempotencyKey: 1 },
   { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
+);
+cardSettlementSchema.index(
+  { clinic: 1, 'sourceSales.sale': 1, 'sourceSales.paymentIndex': 1 },
+  { unique: true, partialFilterExpression: {
+    'sourceSales.sale': { $type: 'objectId' }, status: 'CONTABILIZADO',
+  } }
 );
 
 module.exports = mongoose.model('CardSettlement', cardSettlementSchema);

@@ -162,15 +162,28 @@ test('importación TXT no aplica la cuenta de gasto del proveedor (queda por cla
 // ─────────────────────────────────────────────────────────────────────────────
 test('importación XML deja la factura POR_AUTORIZAR sin cuenta asignada', async () => {
   const { clinicId, userId, gasto } = await setup();
-  await Supplier.create({ clinic: clinicId, ruc: '1790283380001', razonSocial: 'DINERS', defaultExpenseAccount: gasto._id });
-  const XML = `<?xml version="1.0" encoding="UTF-8"?><factura><infoTributaria><ruc>1790283380001</ruc><razonSocial>DINERS</razonSocial><estab>001</estab><ptoEmi>014</ptoEmi><secuencial>000000123</secuencial><claveAcceso>XYZ123</claveAcceso></infoTributaria><infoFactura><fechaEmision>${FECHA_HOY}</fechaEmision><totalSinImpuestos>50.00</totalSinImpuestos><importeTotal>50.00</importeTotal></infoFactura><detalles><detalle><descripcion>Servicio</descripcion><cantidad>1</cantidad><precioUnitario>50</precioUnitario><descuento>0</descuento><precioTotalSinImpuesto>50</precioTotalSinImpuesto></detalle></detalles></factura>`;
+  await Supplier.create({ clinic: clinicId, ruc: '1790283380001', razonSocial: 'DINERS', roles: ['CLIENTE'], defaultExpenseAccount: gasto._id });
+  const XML = `<?xml version="1.0" encoding="UTF-8"?><factura><infoTributaria><ruc>1790283380001</ruc><razonSocial>DINERS</razonSocial><dirMatriz>Av. Principal 123</dirMatriz><estab>001</estab><ptoEmi>014</ptoEmi><secuencial>000000123</secuencial><claveAcceso>XYZ123</claveAcceso></infoTributaria><infoFactura><fechaEmision>${FECHA_HOY}</fechaEmision><totalSinImpuestos>50.00</totalSinImpuestos><importeTotal>50.00</importeTotal></infoFactura><detalles><detalle><descripcion>Servicio</descripcion><cantidad>1</cantidad><precioUnitario>50</precioUnitario><descuento>0</descuento><precioTotalSinImpuesto>50</precioTotalSinImpuesto></detalle></detalles><infoAdicional><campoAdicional nombre="Email">proveedor@example.com</campoAdicional><campoAdicional nombre="Teléfono">0999999999</campoAdicional></infoAdicional></factura>`;
   const imp = await H.runController(purchase.importXml, H.mockReq(clinicId, userId, { xmls: [XML] }));
   assert.equal(imp.statusCode, 200, JSON.stringify(imp.payload));
   assert.equal(imp.payload.created, 1, JSON.stringify(imp.payload));
+  assert.equal(imp.payload.sourceRows, 1);
+  assert.equal(imp.payload.validRows, 1);
   const inv = await PurchaseInvoice.findOne({ clinic: clinicId, importedFromXml: true });
   assert.ok(inv);
   assert.equal(inv.status, 'POR_AUTORIZAR');
   assert.equal(inv.items[0].account, null, 'sin cuenta de gasto por defecto');
+  const person = await Supplier.findOne({ clinic: clinicId, ruc: '1790283380001' });
+  assert.deepEqual([...person.roles].sort(), ['CLIENTE', 'PROVEEDOR']);
+  assert.equal(person.address, 'Av. Principal 123');
+  assert.equal(person.email, 'proveedor@example.com');
+  assert.equal(person.phone, '0999999999');
+  const repeat = await H.runController(purchase.importXml, H.mockReq(clinicId, userId, { xmls: [XML, XML] }));
+  assert.equal(repeat.statusCode, 200, JSON.stringify(repeat.payload));
+  assert.equal(repeat.payload.sourceRows, 2);
+  assert.equal(repeat.payload.created, 0);
+  assert.equal(repeat.payload.duplicateInFile, 1);
+  assert.equal(repeat.payload.duplicateInSystem, 1);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

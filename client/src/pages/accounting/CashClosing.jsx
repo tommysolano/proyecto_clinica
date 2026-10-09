@@ -8,7 +8,7 @@ import { fmt, fmtDate } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import AccountSelect from '../../components/AccountSelect';
 
-const MOV_EMPTY = { type: 'GASTO', amount: 0, description: '', bankAccount: '', counterpartAccount: '' };
+const MOV_EMPTY = { type: 'GASTO', amount: 0, description: '', counterpartAccount: '' };
 
 export default function CashClosing() {
   const [list, setList] = useState([]);
@@ -22,7 +22,6 @@ export default function CashClosing() {
   const [movements, setMovements] = useState([]);
   const [movModal, setMovModal] = useState(false);
   const [movForm, setMovForm] = useState(MOV_EMPTY);
-  const [banks, setBanks] = useState([]);
   const [accounts, setAccounts] = useState([]);
 
   const load = async () => {
@@ -42,10 +41,6 @@ export default function CashClosing() {
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   useEffect(() => { load(); }, []);
-  // OJO: la ruta es /banks/accounts. Con '/banks' (que no existe) la petición
-  // devolvía 404 y el desplegable de "Banco destino" salía SIEMPRE vacío, así que
-  // no se podía depositar el efectivo de la caja.
-  useEffect(() => { api.get('/banks/accounts').then((r) => setBanks(r.data || [])).catch(() => {}); }, []);
   useEffect(() => {
     api.get('/chart-of-accounts')
       .then((r) => setAccounts(r.data || []))
@@ -280,7 +275,6 @@ export default function CashClosing() {
               <option value="GASTO">Gasto (caja chica)</option>
               <option value="EGRESO">Egreso</option>
               <option value="RETIRO">Retiro</option>
-              <option value="DEPOSITO">Depósito a banco</option>
             </select>
           </Field>
           <Field label="Monto ($)" required>
@@ -289,8 +283,7 @@ export default function CashClosing() {
           <Field label="Descripción">
             <input placeholder="Concepto del movimiento" value={movForm.description} onChange={(e) => setMovForm({ ...movForm, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
           </Field>
-          {movForm.type !== 'DEPOSITO' && (
-            <Field label={movForm.type === 'INGRESO' ? 'Cuenta de ingreso' : 'Cuenta de gasto'}>
+          <Field label={movForm.type === 'INGRESO' ? 'Cuenta de ingreso' : 'Cuenta de gasto'}>
               <AccountSelect
                 accounts={accounts}
                 value={movForm.counterpartAccount}
@@ -298,16 +291,7 @@ export default function CashClosing() {
                 filter={(a) => (movForm.type === 'INGRESO' ? a.code?.startsWith('4.') : (a.code?.startsWith('6.') || a.code?.startsWith('5.')))}
                 emptyOption={movForm.type === 'INGRESO' ? 'Otros ingresos (por defecto)' : 'Otros gastos (por defecto)'}
               />
-            </Field>
-          )}
-          {movForm.type === 'DEPOSITO' && (
-            <Field label="Banco destino" required>
-              <select required value={movForm.bankAccount} onChange={(e) => setMovForm({ ...movForm, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-                <option value="">Selecciona…</option>
-                {banks.map((b) => <option key={b._id} value={b._id}>{b.name}</option>)}
-              </select>
-            </Field>
-          )}
+          </Field>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setMovModal(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button disabled={busy} className="px-4 py-2 bg-emerald-600 text-white rounded-xl disabled:opacity-60">Registrar</button></div>
         </form>
       </Modal>

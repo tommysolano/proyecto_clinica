@@ -14,8 +14,9 @@ const mongoose = require('mongoose');
 const cashDepositItemSchema = new mongoose.Schema(
   {
     // Qué documento aportó el efectivo: una venta del mostrador o un cobro de cartera.
-    docModel: { type: String, enum: ['Sale', 'Payment'], required: true },
+    docModel: { type: String, enum: ['Sale', 'Payment', 'JournalEntry'], required: true },
     docRef: { type: mongoose.Schema.Types.ObjectId, required: true, refPath: 'items.docModel' },
+    sourceSale: { type: mongoose.Schema.Types.ObjectId, ref: 'Sale', default: null },
     number: { type: String, default: '' },
     docDate: { type: Date, default: null },
     party: { type: String, default: '' },
@@ -36,6 +37,8 @@ const cashDepositSchema = new mongoose.Schema(
     voucherNumber: { type: String, required: true, trim: true },
     description: { type: String, default: '' },
     items: { type: [cashDepositItemSchema], default: [] },
+    manualAmount: { type: Number, default: 0 },
+    manualReason: { type: String, default: '' },
     total: { type: Number, required: true, default: 0 },
     journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     bankTransaction: { type: mongoose.Schema.Types.ObjectId, ref: 'BankTransaction', default: null },

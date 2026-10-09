@@ -8,6 +8,7 @@ import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import { newIdempotencyKey, withIdempotencyKey } from '../../utils/idempotency';
 import DateInput from '../../components/DateInput';
+import { useNavigate } from 'react-router-dom';
 
 const EMPTY = { closeDate: today(), cardType: 'CREDITO', acquirer: '', commissionRate: 5, retentionRate: 0, ivaCommissionRate: 15, bankAccount: '', vouchers: [] };
 // Sin fechas por defecto: si se busca por lote, un rango preestablecido escondería los cobros
@@ -17,6 +18,7 @@ const EMPTY_PICKER = { lote: '', from: '', to: '' };
 const round = (n) => +(Number(n) || 0).toFixed(2);
 
 export default function CreditCardBatches() {
+  const navigate = useNavigate();
   const [list, setList] = useState([]);
   const [banks, setBanks] = useState([]);
   const [show, setShow] = useState(false);
@@ -61,10 +63,10 @@ export default function CreditCardBatches() {
       if (picker.from) params.from = picker.from;
       if (picker.to) params.to = picker.to;
       const r = await api.get('/card-settlements/card-sales', { params });
-      const yaEnLote = new Set((form.vouchers || []).map((v) => String(v.sale || '')));
-      const results = (r.data || []).filter((s) => !yaEnLote.has(String(s._id)));
+      const yaEnLote = new Set((form.vouchers || []).map((v) => `${v.sale || ''}:${v.paymentIndex ?? '*'}`));
+      const results = (r.data || []).filter((s) => !yaEnLote.has(s.paymentKey));
       setPickerResults(results);
-      const pick = {}; results.forEach((s) => { pick[s._id] = true; });
+      const pick = {}; results.forEach((s) => { pick[s.paymentKey] = true; });
       setPicked(pick);
       if (!results.length) {
         setPickerHint('No hay cobros con tarjeta pendientes para esos filtros: o no existen, o ya están en otro lote / liquidación.');
@@ -74,21 +76,21 @@ export default function CreditCardBatches() {
     finally { setSearching(false); }
   };
 
-  const pickedList = pickerResults.filter((s) => picked[s._id]);
-  const pickedTotal = round(pickedList.reduce((a, s) => a + (+s.total || 0), 0));
+  const pickedList = pickerResults.filter((s) => picked[s.paymentKey]);
+  const pickedTotal = round(pickedList.reduce((a, s) => a + (+s.cardAmount || 0), 0));
   const allPicked = pickerResults.length > 0 && pickedList.length === pickerResults.length;
-  const toggleAll = () => { const v = !allPicked; const p = {}; pickerResults.forEach((s) => { p[s._id] = v; }); setPicked(p); };
+  const toggleAll = () => { const v = !allPicked; const p = {}; pickerResults.forEach((s) => { p[s.paymentKey] = v; }); setPicked(p); };
 
   const addPicked = () => {
     if (!pickedList.length) return toast.error('Selecciona al menos un cobro');
     const nuevos = pickedList.map((s) => ({
-      sale: s._id, invoice: s.invoice || null,
+      sale: s._id, paymentIndex: s.paymentIndex, invoice: s.invoice || null,
       voucherNumber: s.cardVoucher || '', lote: s.cardLote || '',
       cardLast4: '', cardType: form.cardType,
-      grossAmount: round(+s.total || 0), date: s.createdAt,
+      grossAmount: round(+s.cardAmount || 0), date: s.createdAt,
     }));
     setForm((f) => ({ ...f, vouchers: [...f.vouchers, ...nuevos] }));
-    setPickerResults((rs) => rs.filter((s) => !picked[s._id]));
+    setPickerResults((rs) => rs.filter((s) => !picked[s.paymentKey]));
     setPicked({});
     toast.success(`${nuevos.length} cobro(s) cargado(s) · $${fmt(pickedTotal)}`);
   };
@@ -106,21 +108,10 @@ export default function CreditCardBatches() {
     finally { setSaving(false); }
   };
 
-  const liquidate = async (b) => {
-    if (!confirm('¿Liquidar lote? Se registrará en banco con comisión/retención.')) return;
-    try {
-      // El banco y la fecha van EXPLÍCITOS: sin ellos el backend no sabía en qué cuenta
-      // depositar y el movimiento terminaba en una cuenta bancaria cualquiera.
-      await api.post(`/credit-card-batches/${b._id}/liquidate`, {
-        bankAccount: b.bankAccount?._id || b.bankAccount || '',
-        liquidationDate: today(),
-      });
-      toast.success('Liquidado'); load();
-    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
-  };
+  const liquidate = (b) => navigate(`/accounting/card-settlements?batch=${b._id}`);
 
   const statusBadge = (st) => {
-    const map = { ABIERTO: 'bg-amber-100 text-amber-700', LIQUIDADO: 'bg-emerald-100 text-emerald-700', ANULADO: 'bg-rose-100 text-rose-700' };
+    const map = { ABIERTO: 'bg-amber-100 text-amber-700', PARCIAL: 'bg-blue-100 text-blue-700', LIQUIDADO: 'bg-emerald-100 text-emerald-700', SOBRANTE: 'bg-rose-100 text-rose-700', ANULADO: 'bg-rose-100 text-rose-700' };
     return <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${map[st] || 'bg-slate-100 text-slate-600'}`}>{st}</span>;
   };
 
@@ -156,7 +147,7 @@ export default function CreditCardBatches() {
                 <td className="px-3 py-2">
                   <div className="flex items-center justify-end gap-1.5">
                     <button onClick={() => setViewItem(b)} className="text-slate-500 hover:text-slate-700" title="Ver cobros"><HiOutlineEye className="w-5 h-5" /></button>
-                    {b.status === 'ABIERTO' && <button onClick={() => liquidate(b)} className="text-emerald-600" title="Liquidar"><HiOutlineCheckCircle className="w-5 h-5" /></button>}
+                    {['ABIERTO', 'PARCIAL'].includes(b.status) && <button onClick={() => liquidate(b)} className="text-emerald-600" title="Nueva liquidación de este lote"><HiOutlineCheckCircle className="w-5 h-5" /></button>}
                   </div>
                 </td>
               </tr>
@@ -216,15 +207,15 @@ export default function CreditCardBatches() {
                   </tr></thead>
                   <tbody>
                     {pickerResults.map((s) => (
-                      <tr key={s._id} className={`border-t ${picked[s._id] ? 'bg-emerald-50/60' : ''}`}>
-                        <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={!!picked[s._id]} onChange={(e) => setPicked({ ...picked, [s._id]: e.target.checked })} /></td>
+                      <tr key={s.paymentKey} className={`border-t ${picked[s.paymentKey] ? 'bg-emerald-50/60' : ''}`}>
+                        <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={!!picked[s.paymentKey]} onChange={(e) => setPicked({ ...picked, [s.paymentKey]: e.target.checked })} /></td>
                         <td className="px-2 py-1.5 font-mono">{s.saleNumber}</td>
                         <td className="px-2 py-1.5">{fmtDate(s.createdAt)}</td>
                         <td className="px-2 py-1.5">{s.clientName}</td>
-                        <td className="px-2 py-1.5">{s.creditCard?.name || '—'}</td>
+                        <td className="px-2 py-1.5">{s.cardBrand || s.creditCard?.name || '—'}</td>
                         <td className="px-2 py-1.5 font-mono">{s.cardLote || '—'}</td>
                         <td className="px-2 py-1.5 font-mono">{s.cardVoucher || '—'}</td>
-                        <td className="px-2 py-1.5 text-right font-mono">${fmt(s.total)}</td>
+                        <td className="px-2 py-1.5 text-right font-mono">${fmt(s.cardAmount)}{s.cardPaymentCount > 1 && <span className="block text-slate-500">Pago #{s.paymentIndex + 1}</span>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -288,7 +279,7 @@ export default function CreditCardBatches() {
                 <tbody>
                   {(viewItem.vouchers || []).map((v, i) => (
                     <tr key={i} className="border-t">
-                      <td className="px-2 py-1 font-mono">{v.voucherNumber || '—'}</td>
+                      <td className="px-2 py-1 font-mono">{v.voucherNumber || '—'}{v.paymentIndex != null && <span className="block text-slate-500">Pago #{v.paymentIndex + 1}</span>}</td>
                       <td className="px-2 py-1 font-mono">{v.lote || '—'}</td>
                       <td className="px-2 py-1 font-mono">{v.cardLast4 || '—'}</td>
                       <td className="px-2 py-1">{v.date ? fmtDate(v.date) : '—'}</td>

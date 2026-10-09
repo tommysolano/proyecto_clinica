@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const voucherSchema = new mongoose.Schema(
   {
     sale: { type: mongoose.Schema.Types.ObjectId, ref: 'Sale' },
+    paymentIndex: { type: Number, default: null, min: 0 },
     invoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
     voucherNumber: String,
     lote: String,
@@ -32,7 +33,8 @@ const creditCardBatchSchema = new mongoose.Schema(
     retentionRate: { type: Number, default: 0 },
     retentionAmount: { type: Number, default: 0 },
     netAmount: { type: Number, default: 0 },
-    status: { type: String, enum: ['ABIERTO', 'LIQUIDADO', 'ANULADO'], default: 'ABIERTO' },
+    status: { type: String, enum: ['ABIERTO', 'PARCIAL', 'LIQUIDADO', 'SOBRANTE', 'ANULADO'], default: 'ABIERTO' },
+    settledAmount: { type: Number, default: 0 },
     liquidationDate: Date,
     bankAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'BankAccount' },
     journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry' },
@@ -50,6 +52,15 @@ creditCardBatchSchema.index({ clinic: 1, code: 1 }, { unique: true });
 creditCardBatchSchema.index(
   { clinic: 1, idempotencyKey: 1 },
   { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
+);
+// Un mismo renglón de tarjeta solo puede estar en un lote vigente. El filtro
+// excluye vouchers manuales sin venta y libera la clave al anular el lote.
+creditCardBatchSchema.index(
+  { clinic: 1, 'vouchers.sale': 1, 'vouchers.paymentIndex': 1 },
+  { unique: true, partialFilterExpression: {
+    'vouchers.sale': { $type: 'objectId' },
+    status: { $in: ['ABIERTO', 'PARCIAL', 'LIQUIDADO', 'SOBRANTE'] },
+  } }
 );
 
 module.exports = mongoose.model('CreditCardBatch', creditCardBatchSchema);
