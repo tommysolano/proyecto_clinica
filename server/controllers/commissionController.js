@@ -16,6 +16,7 @@ const { normalizePhone } = require('../utils/phoneNormalize');
 const { citasConHistoriaPrevia } = require('../utils/firstVisit');
 const {
   doctoresDeLaCita, filtroCitasConDoctor, enfermerosQueAtienden, filtroCitasConEnfermero,
+  seguimientosDeSueroDelTurno,
 } = require('../utils/appointmentTurns');
 const { createEntry, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
@@ -2095,7 +2096,7 @@ async function agendamientosCallCenter(req, { select, extra = {} }) {
  * no contar dos veces a la misma persona. Todo lo demás es recurrente.
  */
 const CAMPOS_CLASIFICACION = 'patient date status';
-const CAMPOS_CITA_PACIENTE = 'patient date startTime createdAt status isFirstVisit turns.followUp turns.serumFollowUp autoSerumFollowUp';
+const CAMPOS_CITA_PACIENTE = 'patient date startTime createdAt status isFirstVisit turns.followUp turns.serumFollowUp turns.extraSerums.serumFollowUp autoSerumFollowUp';
 const idPaciente = (a) => String(a.patient?._id || a.patient || '');
 /** Orden cronológico de las citas: día, hora y, si empatan, cuál se creó antes. */
 const ordenCitas = (a, b) => (new Date(a.date) - new Date(b.date))
@@ -2136,7 +2137,10 @@ async function clasificarAgendamientos(appts) {
     // no es historia previa: si faltó a la primera, su suero de serie ya está
     // fechado antes de la segunda.
     seguimientosDeSusCitas.set(k, new Set(
-      citas.flatMap((c) => [c.autoSerumFollowUp, ...(c.turns || []).flatMap((t) => [t.followUp, t.serumFollowUp])])
+      citas.flatMap((c) => [
+        c.autoSerumFollowUp,
+        ...(c.turns || []).flatMap((t) => [t.followUp, ...seguimientosDeSueroDelTurno(t)]),
+      ])
         .filter(Boolean)
         .map(String)
     ));

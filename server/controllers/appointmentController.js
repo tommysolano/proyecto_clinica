@@ -23,6 +23,7 @@ const {
   filtroCitasDelDoctor,
   filtroCitasDeEnfermeria,
   filtroCitasConDoctor,
+  seguimientosDeSueroDelTurno,
 sincronizarEspejo,
 turnoVigente,
 turnosTerminados,
@@ -765,6 +766,26 @@ function normalizarPasos(steps) {
         // de abrir una receta nueva (ver el campo en models/Appointment.js).
         serumMergeIntoService: !!(suero && p.serumMergeIntoService),
         /**
+         * SUEROS ADICIONALES (oct-2026): hay pacientes a los que en la misma
+         * cita se les ponen dos sueros. Cada uno se sanea igual que el principal
+         * y lleva su propia receta en la ficha (`serumFollowUp`). Uno sin
+         * ampollas no es un suero: se descarta, y si ya estaba escrito, la
+         * limpieza de huérfanos lo quita de la ficha.
+         */
+        extraSerums: (Array.isArray(p.extraSerums) ? p.extraSerums : [])
+          .map((x) => {
+            const extra = saneaSueroPlano(x?.serum || x);
+            if (!extra) return null;
+            return {
+              base: extra.serumBase,
+              components: extra.serumComponents,
+              serumFollowUp: x?.serumFollowUp ? String(x.serumFollowUp) : null,
+              // Señal de la pantalla, como `serumTocado`: no se guarda.
+              serumTocado: !!(x?.serumFollowUp && x?.serumTocado),
+            };
+          })
+          .filter(Boolean),
+        /**
          * INDICACIONES PARA ENFERMERÍA (sep-2026): lo que mostrador le escribe
          * a la enfermera para este paso. Va con el suero a la barra de atención.
          */
@@ -832,10 +853,102 @@ async function sembrarSuerosDeLosTurnos(apt, req, { tocados = new Set() } = {}) 
   );
   let fundidoEnEstaPasada = false;
 
+  /**
+   * UN PASO CON VARIOS ENFERMEROS ES UN SOLO SUERO.
+   *
+   * `asignarTurnos` hace un turno por cada enfermero nombrado del paso, y todos
+   * llevan una copia del mismo suero. Recorrerlos uno a uno escribía la misma
+   * bolsa una vez por enfermero —dos nombrados, dos recetas iguales en la
+   * ficha—. Se escribe en el PRIMER turno del paso y los demás apuntan a esas
+   * mismas recetas.
+   */
+  const primeroDelPaso = new Map();
   for (const turno of apt.turns || []) {
     if (turno.kind !== 'enfermeria') continue;
+    if (turno.status === 'pendiente') {
+      const primero = primeroDelPaso.get(turno.order);
+      if (primero) {
+        turno.serumFollowUp = primero.serumFollowUp || null;
+        turno.serumMergeIntoService = !!primero.serumMergeIntoService;
+        (turno.extraSerums || []).forEach((x, i) => {
+          x.serumFollowUp = primero.extraSerums?.[i]?.serumFollowUp || null;
+        });
+        continue;
+      }
+      primeroDelPaso.set(turno.order, turno);
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await sembrarElPrincipal(turno);
+    // eslint-disable-next-line no-await-in-loop
+    await sembrarLosAdicionales(turno);
+  }
+  return { sembrados, corregidos, avisos };
+
+  /** Lo que se hace cuando no se pudo corregir porque ya se aplicó. */
+  function avisarAplicado(nombre) {
+    avisos.push(
+      `«${nombre}» ya se le aplicó al paciente, así que no se cambió: ` +
+      'eso movió inventario y es lo que de verdad se le puso. Para corregirlo, ' +
+      'anúlalo desde la ficha del paciente.'
+    );
+  }
+
+  /**
+   * LOS SUEROS ADICIONALES DEL PASO (oct-2026). Cada uno es su propia receta:
+   * no se suman a la bolsa del servicio —esa la continúa el suero principal— y
+   * llevan un nombre propio para que en la ficha no salgan dos sueros llamados
+   * igual que el servicio.
+   */
+  async function sembrarLosAdicionales(turno) {
+    const extras = turno.extraSerums || [];
+    const servicio = turno.serviceName || apt.serviceName || '';
+    for (let i = 0; i < extras.length; i += 1) {
+      const extra = extras[i];
+      const componentes = extra.components || [];
+      if (!componentes.length) continue;
+      const nombre = `Suero adicional${extras.length > 1 ? ` ${i + 1}` : ''}${servicio ? ` (${servicio})` : ''}`;
+      const linea = lineaDeRecetaDeSuero(
+        { serumBase: extra.base, serumComponents: componentes.map((c) => c.toObject?.() || c) },
+        nombre
+      );
+
+      if (extra.serumFollowUp) {
+        if (!tocados.has(String(extra.serumFollowUp))) continue;
+        // Conserva el nombre: puede ser un suero que recetó el doctor y se
+        // escogió de la ficha; corregirle las ampollas no lo vuelve otro.
+        // eslint-disable-next-line no-await-in-loop
+        const r = await reescribirSueroDelSeguimiento({
+          patientId: apt.patient,
+          followUpId: extra.serumFollowUp,
+          linea,
+          conservarNombre: true,
+        });
+        if (r === 'reescrito') { corregidos.push(linea.name); continue; }
+        if (r === 'aplicado') { avisarAplicado(linea.name); continue; }
+        extra.serumFollowUp = null;
+      }
+
+      // eslint-disable-next-line no-await-in-loop
+      const fu = await sembrarSueroEnFicha({
+        clinicId: apt.clinic,
+        patientId: apt.patient,
+        user: req.user,
+        role: req.role,
+        lineas: [linea],
+        motivo: servicio
+          ? `Suero adicional indicado al asignar la atención (${servicio})`
+          : 'Suero adicional indicado al asignar la atención',
+      });
+      if (fu) {
+        extra.serumFollowUp = fu._id;
+        sembrados.push(linea.name);
+      }
+    }
+  }
+
+  async function sembrarElPrincipal(turno) {
     const componentes = turno.serum?.components || [];
-    if (!componentes.length) continue;
+    if (!componentes.length) return;
 
     const linea = lineaDeRecetaDeSuero(
       { serumBase: turno.serum.base, serumComponents: componentes.map((c) => c.toObject?.() || c) },
@@ -850,25 +963,17 @@ async function sembrarSuerosDeLosTurnos(apt, req, { tocados = new Set() } = {}) 
      * otra: dos bolsas en la ficha se leen como dos sueros recetados.
      */
     if (turno.serumFollowUp) {
-      if (!tocados.has(String(turno.serumFollowUp))) continue;
+      if (!tocados.has(String(turno.serumFollowUp))) return;
       // La del SERVICIO conserva su nombre (ver reescribirSueroDelSeguimiento).
       const esLaDelServicio = String(turno.serumFollowUp) === String(apt.autoSerumFollowUp || '');
-      // eslint-disable-next-line no-await-in-loop
       const r = await reescribirSueroDelSeguimiento({
         patientId: apt.patient,
         followUpId: turno.serumFollowUp,
         linea,
         conservarNombre: esLaDelServicio,
       });
-      if (r === 'reescrito') { corregidos.push(linea.name); continue; }
-      if (r === 'aplicado') {
-        avisos.push(
-          `«${linea.name}» ya se le aplicó al paciente, así que no se cambió: ` +
-          'eso movió inventario y es lo que de verdad se le puso. Para corregirlo, ' +
-          'anúlalo desde la ficha del paciente.'
-        );
-        continue;
-      }
+      if (r === 'reescrito') { corregidos.push(linea.name); return; }
+      if (r === 'aplicado') { avisarAplicado(linea.name); return; }
       // 'sin-receta': la borraron de la ficha. Se escribe de nuevo, abajo.
       turno.serumFollowUp = null;
     }
@@ -888,7 +993,6 @@ async function sembrarSuerosDeLosTurnos(apt, req, { tocados = new Set() } = {}) 
       !yaFundidoEnElServicio &&
       !fundidoEnEstaPasada
     ) {
-      // eslint-disable-next-line no-await-in-loop
       const sumado = await sumarSueroAlSeguimiento({
         patientId: apt.patient,
         followUpId: apt.autoSerumFollowUp,
@@ -899,13 +1003,12 @@ async function sembrarSuerosDeLosTurnos(apt, req, { tocados = new Set() } = {}) 
         turno.serumFollowUp = apt.autoSerumFollowUp;
         fundidoEnEstaPasada = true;
         sembrados.push(linea.name);
-        continue;
+        return;
       }
       // Si no se pudo (ya la aplicaron, o la receta ya no está), NO se pierde lo
       // que escogió mostrador: cae al camino normal y se escribe aparte.
     }
 
-    // eslint-disable-next-line no-await-in-loop
     const fu = await sembrarSueroEnFicha({
       clinicId: apt.clinic,
       patientId: apt.patient,
@@ -921,7 +1024,6 @@ async function sembrarSuerosDeLosTurnos(apt, req, { tocados = new Set() } = {}) 
       sembrados.push(linea.name);
     }
   }
-  return { sembrados, corregidos, avisos };
 }
 
 /**
@@ -941,8 +1043,9 @@ async function limpiarSuerosHuerfanos(apt, antes) {
   const avisos = [];
   const vivos = new Set(
     (apt.turns || [])
-      .filter((t) => t.kind === 'enfermeria' && t.serumFollowUp)
-      .map((t) => String(t.serumFollowUp))
+      .filter((t) => t.kind === 'enfermeria')
+      .flatMap(seguimientosDeSueroDelTurno)
+      .map(String)
   );
   for (const id of new Set(antes || [])) {
     if (vivos.has(id)) continue;
@@ -959,7 +1062,19 @@ async function limpiarSuerosHuerfanos(apt, antes) {
   return avisos;
 }
 
-exports.createAppointment = async (req, res) => {
+/**
+ * LAS CITAS DE UN MISMO PACIENTE SE CREAN DE UNA EN UNA (oct-2026): dos envíos
+ * casi simultáneos pasaban los dos la comprobación de cita repetida antes de
+ * que ninguno escribiera. En fila, el segundo ya ve al primero (ver
+ * utils/candadoEnProceso.js). Pacientes distintos siguen en paralelo.
+ */
+exports.createAppointment = (req, res) =>
+  require('../utils/candadoEnProceso').conCandado(
+    `cita-paciente:${String(req.body?.patient || req.user?._id || '')}`,
+    () => crearCita(req, res)
+  );
+
+async function crearCita(req, res) {
   try {
     const { doctor, date, startTime, endTime, patient, services } = req.body;
 
@@ -1435,7 +1550,7 @@ exports.createAppointment = async (req, res) => {
     console.error('[createAppointment] ERROR:', error);
     res.status(500).json({ message: 'Error al crear cita', error: error.message, stack: error.stack });
   }
-};
+}
 
 exports.updateAppointment = async (req, res) => {
   try {
@@ -2127,7 +2242,7 @@ exports.deleteAppointment = async (req, res) => {
      */
     const { quitarSueroDelSeguimiento } = require('../utils/sueroDeCita');
     const sueros = new Set(
-      [appointment.autoSerumFollowUp, ...(appointment.turns || []).map((t) => t.serumFollowUp)]
+      [appointment.autoSerumFollowUp, ...(appointment.turns || []).flatMap(seguimientosDeSueroDelTurno)]
         .filter(Boolean)
         .map(String)
     );
@@ -3548,12 +3663,18 @@ exports.assignDoctor = async (req, res) => {
      * algo pendiente de ponerle.
      */
     const suerosAntes = (apt.turns || [])
-      .filter((t) => t.kind === 'enfermeria' && t.serumFollowUp)
-      .map((t) => String(t.serumFollowUp));
-    /** Los que la pantalla marcó como CORREGIDOS (ver `serumTocado`). */
+      .filter((t) => t.kind === 'enfermeria')
+      .flatMap(seguimientosDeSueroDelTurno)
+      .map(String);
+    /**
+     * Los que la pantalla marcó como CORREGIDOS (ver `serumTocado`): el
+     * principal de cada paso y cada uno de sus adicionales.
+     */
     const suerosTocados = new Set(
       pasos
-        .filter((x) => x.kind === 'enfermeria' && x.serumTocado && x.serumFollowUp)
+        .filter((x) => x.kind === 'enfermeria')
+        .flatMap((x) => [x, ...(x.extraSerums || [])])
+        .filter((x) => x.serumTocado && x.serumFollowUp)
         .map((x) => String(x.serumFollowUp))
     );
 
@@ -3714,7 +3835,9 @@ exports.assignDoctor = async (req, res) => {
       suerosAvisos.push(...r.avisos);
       // Y los que se quedaron sin dueño se van de la ficha.
       suerosAvisos.push(...(await limpiarSuerosHuerfanos(apt, suerosAntes)));
-      if (suerosSembrados.length || r.corregidos.length || suerosAntes.length) {
+      // `isModified`: un turno puede quedar apuntando a la receta del primero de
+      // su paso (varios enfermeros) sin que se haya escrito nada nuevo.
+      if (suerosSembrados.length || r.corregidos.length || suerosAntes.length || apt.isModified()) {
         await apt.save();
         emitToClinic(apt.clinic, 'clinicalRecord:updated', { patient: apt.patient });
       }

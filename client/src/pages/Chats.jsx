@@ -7745,7 +7745,22 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
    * el paciente YA está creado y se dice exactamente eso, en vez de dejar al
    * asesor pensando que no se guardó nada y volver a intentarlo (creando dos).
    */
+  /**
+   * UN SOLO ENVÍO A LA VEZ (oct-2026). El botón se desactiva con `saving`, pero
+   * ese estado tarda un repintado en llegar y, en un PC lento, el segundo clic
+   * entraba antes y mandaba la tanda dos veces. El ref lo corta en el acto.
+   */
+  const enviando = useRef(false);
   const submit = async () => {
+    if (enviando.current) return;
+    enviando.current = true;
+    try {
+      await enviarTanda();
+    } finally {
+      enviando.current = false;
+    }
+  };
+  const enviarTanda = async () => {
     if (necesitaAlta && !isWhatsapp && !datos.phone.trim()) {
       // Nombre y correo NO se exigen (misma regla que el alta desde Clientes):
       // se registra con lo que se sepa y se completa después. El teléfono real

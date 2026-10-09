@@ -489,8 +489,15 @@ function ColaProfesionales({ apt }) {
   const turnos = [...(apt?.turns || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
   if (!turnos.length) return null;
   const vigente = turnos.find((t) => t.status === 'pendiente');
+  // Las indicaciones son del PASO: con varios enfermeros en el mismo paso se
+  // dicen una vez, no una por enfermero.
+  const pasosConIndicaciones = new Set();
   return turnos.map((t) => {
     const esEnf = t.kind === 'enfermeria';
+    const indicaciones = esEnf && !pasosConIndicaciones.has(t.order)
+      ? String(t.nurseInstructions || '').trim()
+      : '';
+    if (indicaciones) pasosConIndicaciones.add(t.order);
     const nombre = t.user?.name || (esEnf ? 'Enfermería (por tomar)' : 'Profesional');
     const cerrado = t.status === 'completado' || t.status === 'omitido';
     const marca = t.status === 'completado' ? '✓ ' : t.status === 'omitido' ? '— ' : t === vigente ? '▸ ' : '';
@@ -515,6 +522,20 @@ function ColaProfesionales({ apt }) {
           <span className="text-cyan-700 font-semibold">
             {' · 💦 Hidroterapia'}
             {t.hidroterapia.realizada ? ' ✓' : ''}
+          </span>
+        )}
+        {/**
+          * INDICACIONES PARA ENFERMERÍA (oct-2026). Solo salían en la barra de
+          * la ficha, y esa barra aparece únicamente cuando el turno ya es de
+          * enfermería y se entra desde la cita: la enfermera trabaja desde la
+          * agenda y nunca las veía. Ahora van en la fila, como la hidroterapia.
+          */}
+        {indicaciones && (
+          <span
+            className="block text-amber-800 font-normal whitespace-pre-line break-words"
+            title={indicaciones}
+          >
+            📝 {indicaciones}
           </span>
         )}
       </div>
@@ -4295,6 +4316,18 @@ export default function Appointments() {
                   {colaProfesionalesTexto(detailModal) ||
                     (detailModal.doctor?.name ? `Dr. ${detailModal.doctor.name}` : '—')}
                 </p>
+                {/* Lo que mostrador le escribió a enfermería al asignar (oct-2026):
+                    antes solo se leía en la barra de la ficha. */}
+                {[...new Set(
+                  (detailModal.turns || [])
+                    .filter((t) => t.kind === 'enfermeria' && t.status === 'pendiente')
+                    .map((t) => String(t.nurseInstructions || '').trim())
+                    .filter(Boolean)
+                )].map((txt) => (
+                  <p key={txt} className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 mt-1.5 whitespace-pre-line break-words">
+                    <b>Indicaciones para enfermería:</b> {txt}
+                  </p>
+                ))}
               </div>
               <div className="bg-emerald-50/50 rounded-xl p-3">
                 <p className="text-xs text-emerald-600 font-medium">Especialidad</p>

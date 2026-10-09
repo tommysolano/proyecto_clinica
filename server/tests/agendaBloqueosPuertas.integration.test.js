@@ -133,3 +133,37 @@ test('CRM: el bloqueo de OTRA sucursal no afecta a esta sede', async () => {
   })));
   assert.equal(await Appointment.countDocuments({}), 1);
 });
+
+/* ── 3. Citas repetidas desde el CRM (oct-2026) ───────────────────────────── */
+
+test('CRM: si la fila 2 cae en un bloqueo, la fila 1 TAMPOCO se crea', async () => {
+  // Antes se validaba dentro del bucle que crea: la 1 quedaba guardada, la
+  // pantalla decía «error», se volvía a guardar y salía repetida.
+  const { clinicId, userId, conv, s1, s2 } = await seed();
+  ok(await H.runController(tb.create, H.mockReq(clinicId, userId, {
+    clinic: String(clinicId), startDate: manana(), endDate: manana(),
+    allDay: true, service: String(s1._id), reason: 'Sin limpiezas',
+  })));
+
+  const r = await H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, {
+    appointments: [
+      { date: manana(), startTime: '09:00', serviceItem: String(s2._id) },
+      { date: manana(), startTime: '10:00', serviceItem: String(s1._id) },
+    ],
+  }));
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /Cita #2/);
+  assert.equal(await Appointment.countDocuments({}), 0, 'o todas o ninguna');
+});
+
+test('CRM: la MISMA tanda enviada dos veces a la vez crea UNA sola cita', async () => {
+  const { clinicId, userId, conv, s1 } = await seed();
+  const cuerpo = () => ({ appointments: [{ date: manana(), startTime: '09:00', serviceItem: String(s1._id) }] });
+  const [a, b] = await Promise.all([
+    H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, cuerpo())),
+    H.runController(chats.createAppointmentFromChat, pedir(clinicId, userId, conv, cuerpo())),
+  ]);
+  const estados = [a.statusCode, b.statusCode].sort();
+  assert.deepEqual(estados, [201, 409], JSON.stringify([a.payload, b.payload]));
+  assert.equal(await Appointment.countDocuments({}), 1, 'el doble clic no duplica');
+});

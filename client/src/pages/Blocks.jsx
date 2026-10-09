@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react';
+﻿import { useEffect, useRef, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
@@ -85,8 +85,20 @@ export default function Blocks() {
     setShowModal(true);
   };
 
+  /**
+   * UN SOLO ENVÍO POR CLIC (oct-2026). El botón seguía activo mientras la
+   * petición viajaba y, con la red lenta de la clínica, el segundo clic (o el
+   * Enter repetido) creaba el MISMO bloqueo dos veces. El ref corta el envío
+   * repetido en el acto, antes de que React repinte el botón desactivado.
+   */
+  const enviando = useRef(false);
+  const [guardando, setGuardando] = useState(false);
+
   const submit = async (e) => {
     e.preventDefault();
+    if (enviando.current) return;
+    enviando.current = true;
+    setGuardando(true);
     try {
       await api.post('/time-blocks', {
         ...form,
@@ -101,6 +113,9 @@ export default function Blocks() {
       load();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error');
+    } finally {
+      enviando.current = false;
+      setGuardando(false);
     }
   };
 
@@ -232,7 +247,12 @@ export default function Blocks() {
             {/* Servicio del catálogo de la agenda: si se escoge uno, el bloqueo
                 SOLO impide agendar ese servicio en la franja; vacío = general. */}
             <div className="mt-1">
+              {/* EL CATÁLOGO DE LA SUCURSAL DEL BLOQUEO (oct-2026): cada empresa
+                  tiene el suyo, y sin `clinic` salía el de la sucursal activa.
+                  Un bloqueo de otra empresa guardaba un servicio que sus citas
+                  no usan, y no bloqueaba nada. */}
               <ServiceItemPicker
+                clinic={form.clinic || sucursalPorDefecto}
                 value={form.service}
                 onChange={(p) => setForm({ ...form, service: p || null })}
               />
@@ -255,7 +275,9 @@ export default function Blocks() {
               <select
                 required
                 value={form.clinic}
-                onChange={(e) => setForm({ ...form, clinic: e.target.value })}
+                // Otra sucursal puede ser de otra empresa, con otro catálogo: el
+                // servicio escogido se vuelve a escoger.
+                onChange={(e) => setForm({ ...form, clinic: e.target.value, service: null })}
                 className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
               >
                 {!sucursalPorDefecto && <option value="">—</option>}
@@ -276,7 +298,9 @@ export default function Blocks() {
           </label>
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 rounded-lg border border-slate-200">Cancelar</button>
-            <button type="submit" className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">Guardar</button>
+            <button type="submit" disabled={guardando} className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed">
+              {guardando ? 'Guardando…' : 'Guardar'}
+            </button>
           </div>
         </form>
       </Modal>

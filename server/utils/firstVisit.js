@@ -139,7 +139,15 @@ async function citasConHistoriaPrevia(citas, { ignorar = new Map() } = {}) {
     if (!pid) continue;
     if (conArchivoFisico.has(pid)) { out.add(String(cita._id)); continue; }
     const propios = new Set([
-      ...[cita.autoSerumFollowUp, ...(cita.turns || []).flatMap((t) => [t.followUp, t.serumFollowUp])]
+      ...[
+        cita.autoSerumFollowUp,
+        ...(cita.turns || []).flatMap((t) => [
+          t.followUp,
+          t.serumFollowUp,
+          // Los sueros adicionales del paso (oct-2026) también son de la cita.
+          ...(t.extraSerums || []).map((x) => x?.serumFollowUp),
+        ]),
+      ]
         .filter(Boolean)
         .map(String),
       ...(ignorar.get(pid) || []),

@@ -276,6 +276,8 @@ async function leFaltaElSueroDeEnfermeria(apt) {
   if (!vigente || vigente.kind !== 'enfermeria') return false;
   if (vigente.serumFollowUp) return false;
   if ((vigente.serum?.components || []).some((c) => String(c?.name || '').trim())) return false;
+  // Con solo sueros ADICIONALES el suero también está decidido.
+  if ((vigente.extraSerums || []).some((x) => x?.serumFollowUp || (x?.components || []).length)) return false;
   // Paso sin suero pero con instrucciones o hidroterapia: no hay nada que
   // decidir de suero — mostrador ya dijo qué se hace en el paso.
   if (String(vigente.nurseInstructions || '').trim()) return false;

@@ -149,16 +149,32 @@ export default function AssignAttentionModal({
   // `key` solo para React: enfermería puede repetirse y los ids no bastan.
   const [cola, setCola] = useState(() => {
     const turnos = apt?.turns || [];
-    const pendientes = turnos.filter((t) => t.status === 'pendiente');
+    const pendientes = [...turnos.filter((t) => t.status === 'pendiente')]
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
     if (turnos.length) {
-      return pendientes.map((t, i) =>
+      /**
+       * UN PASO, VARIOS ENFERMEROS: el servidor guarda un turno por enfermero,
+       * todos con la MISMA posición (`order`). Se vuelven a juntar en un solo
+       * paso. Antes cargaban como filas sueltas y, al guardar, el paso
+       * compartido se convertía en varios pasos uno detrás de otro.
+       */
+      const idUsuario = (t) => (t.user ? String(t.user?._id || t.user) : '');
+      const pasos = [];
+      pendientes.forEach((t) => {
+        const anterior = pasos[pasos.length - 1];
+        if (t.kind === ENFERMERIA && anterior?.kind === ENFERMERIA && anterior.order === t.order) {
+          anterior.nombrados.push(idUsuario(t));
+          return;
+        }
+        pasos.push({ kind: t.kind, order: t.order, turno: t, nombrados: [idUsuario(t)] });
+      });
+      return pasos.map(({ turno: t, nombrados }, i) =>
         t.kind === ENFERMERIA
           ? {
               kind: ENFERMERIA,
-              user: t.user ? String(t.user?._id || t.user) : '',
-              // UN PASO, VARIOS ENFERMEROS (sep-2026): la lista de nombrados del
-              // paso. Los pendientes existentes cargan como filas sueltas.
-              users: t.user ? [String(t.user?._id || t.user)] : [],
+              user: nombrados.filter(Boolean)[0] || '',
+              // UN PASO, VARIOS ENFERMEROS (sep-2026): la lista de nombrados del paso.
+              users: nombrados.filter(Boolean),
               serviceName: t.serviceName || '',
               // Lo que mostrador le escribió a la enfermera para este paso
               // (sep-2026): viaja con el paso para poder corregirlo aquí.
@@ -174,6 +190,17 @@ export default function AssignAttentionModal({
                 : null,
               serumFollowUp: t.serumFollowUp || null,
               serumMergeIntoService: !!t.serumMergeIntoService,
+              // SUEROS ADICIONALES (oct-2026): los demás sueros del paso, cada
+              // uno con la receta donde quedó escrito.
+              extraSerums: (t.extraSerums || []).map((x, j) => ({
+                serum: {
+                  base: { ...(x.base || sueroVacio().base) },
+                  components: (x.components || []).map((c) => ({ ...c })),
+                },
+                serumFollowUp: x.serumFollowUp || null,
+                serumTocado: false,
+                key: `extra-${i}-${j}`,
+              })),
               key: `enf-${i}`,
             }
           : { kind: 'doctor', user: String(t.user?._id || t.user), key: `doc-${t.user?._id || t.user}` }
@@ -228,9 +255,14 @@ export default function AssignAttentionModal({
     components: (sueroDelServicio?.autoSerum?.components || []).map((c) => ({ ...c })),
   });
   const [busy, setBusy] = useState(false);
-  // Índice del paso cuyo catálogo de ampollas está abierto (uno para toda la
-  // cola: solo se escoge en uno a la vez).
+  /**
+   * El suero cuyo catálogo de ampollas está abierto (uno para toda la cola:
+   * solo se escoge en uno a la vez): `{ idx, extra }`, donde `idx` es el paso y
+   * `extra` el índice del suero adicional —null para el principal—.
+   */
   const [catalogoDe, setCatalogoDe] = useState(null);
+  // Paso en el que se está escogiendo un suero ADICIONAL (de la ficha o nuevo).
+  const [eligiendoAdicionalEn, setEligiendoAdicionalEn] = useState(null);
   // Nota de recepción al recibir al paciente. No se queda en la cita: va a la
   // bitácora de Observaciones del paciente, junto a las demás.
   const [observacion, setObservacion] = useState('');
@@ -352,6 +384,46 @@ export default function AssignAttentionModal({
     });
 
   /**
+   * SUEROS ADICIONALES DEL PASO (oct-2026).
+   *
+   * Hay pacientes a los que en la misma cita se les ponen dos sueros. El
+   * primero es el de siempre (`paso.serum`); los demás van en
+   * `paso.extraSerums`, cada uno escogido de la ficha o armado desde cero, y al
+   * guardar cada uno queda como su propia receta en los seguimientos.
+   */
+  const editarAdicional = (idx, j, patch) =>
+    setCola((c) => c.map((p, i) => (
+      i === idx
+        ? { ...p, extraSerums: (p.extraSerums || []).map((x, k) => (k === j ? { ...x, ...patch } : x)) }
+        : p
+    )));
+  const quitarAdicional = (idx, j) =>
+    setCola((c) => c.map((p, i) => (
+      i === idx ? { ...p, extraSerums: (p.extraSerums || []).filter((_, k) => k !== j) } : p
+    )));
+  /** `fu` = suero de la ficha escogido; sin él, uno nuevo desde cero. */
+  const agregarAdicional = (idx, fu = null) => {
+    const nuevo = fu
+      ? { serum: composicionDeFicha(fu) || sueroVacio(), serumFollowUp: String(fu._id), serumTocado: false }
+      : { serum: sueroVacio(), serumFollowUp: null, serumTocado: true };
+    const posicion = (cola[idx]?.extraSerums || []).length;
+    setCola((c) => c.map((p, i) => (
+      i === idx
+        ? { ...p, extraSerums: [...(p.extraSerums || []), { ...nuevo, key: `extra-${(contador.current += 1)}` }] }
+        : p
+    )));
+    setEligiendoAdicionalEn(null);
+    // Uno nuevo abre el catálogo de una vez, igual que el principal.
+    if (!fu) setCatalogoDe({ idx, extra: posicion });
+  };
+  /** Sueros de la ficha que este paso YA usa (no se ofrecen dos veces). */
+  const suerosDeFichaUsados = (paso) => new Set(
+    [paso.serumFollowUp, ...(paso.extraSerums || []).map((x) => x.serumFollowUp)]
+      .filter(Boolean)
+      .map(String)
+  );
+
+  /**
    * El VALOR de la cita lo pone mostrador, en el momento en que recibe al
    * paciente. Al resto (doctores, enfermería) ni se le enseña el campo, y el
    * servidor tampoco se lo aceptaría: es lo que se le va a cobrar, no una
@@ -459,6 +531,15 @@ export default function AssignAttentionModal({
                 // Lo escogido aquí se SUMA a la bolsa que ya escribió el servicio
                 // (no abre una segunda receta con el mismo nombre).
                 serumMergeIntoService: !!p.serumMergeIntoService,
+                // SUEROS ADICIONALES (oct-2026): uno sin ampollas no viaja, y si
+                // ya estaba escrito, el servidor lo quita de la ficha.
+                extraSerums: (p.extraSerums || [])
+                  .filter((x) => x.serum?.components?.some((c) => c.name?.trim()))
+                  .map((x) => ({
+                    serum: x.serum,
+                    serumFollowUp: x.serumFollowUp || null,
+                    serumTocado: !!x.serumTocado,
+                  })),
                 // Indicaciones para la enfermera de este paso: le aparecen en su
                 // barra de atención, junto al suero que va a aplicar.
                 nurseInstructions: (p.nurseInstructions || '').trim(),
@@ -534,16 +615,20 @@ export default function AssignAttentionModal({
    * pantalla completa y solo se escoge en un paso a la vez. Montar uno por fila
    * multiplicaría el trabajo del render por nada.
    */
+  const sueroDelCatalogo = catalogoDe === null
+    ? null
+    : catalogoDe.extra === null
+      ? cola[catalogoDe.idx]?.serum
+      : cola[catalogoDe.idx]?.extraSerums?.[catalogoDe.extra]?.serum;
   const catalogo = catalogoDe !== null && (
     <SelectorComponentesSuero
       isOpen
-      seleccionados={cola[catalogoDe]?.serum?.components || []}
+      seleccionados={sueroDelCatalogo?.components || []}
       onClose={() => setCatalogoDe(null)}
       onConfirm={(components) => {
-        editarPaso(catalogoDe, {
-          serum: { ...(cola[catalogoDe]?.serum || sueroVacio()), components },
-          serumTocado: true,
-        });
+        const patch = { serum: { ...(sueroDelCatalogo || sueroVacio()), components }, serumTocado: true };
+        if (catalogoDe.extra === null) editarPaso(catalogoDe.idx, patch);
+        else editarAdicional(catalogoDe.idx, catalogoDe.extra, patch);
         setCatalogoDe(null);
       }}
     />
@@ -792,6 +877,11 @@ export default function AssignAttentionModal({
                           <div className="grid gap-1.5 max-h-60 overflow-y-auto pr-1">
                             {suerosDeFicha.map((fu) => {
                               const elegido = paso.serumFollowUp === String(fu._id);
+                              // Ya va como suero ADICIONAL de este paso: dos veces
+                              // el mismo sería escribirlo dos veces.
+                              const comoAdicional = (paso.extraSerums || []).some(
+                                (x) => String(x.serumFollowUp || '') === String(fu._id)
+                              );
                               const fecha = fu?.fecha
                                 ? new Date(fu.fecha).toLocaleDateString('es-EC')
                                 : '';
@@ -800,7 +890,9 @@ export default function AssignAttentionModal({
                                   key={fu._id}
                                   type="button"
                                   onClick={() => escogerSueroDeFicha(idx, fu)}
-                                  className={`text-left w-full rounded-lg border px-2.5 py-2 cursor-pointer transition-colors ${
+                                  disabled={comoAdicional}
+                                  title={comoAdicional ? 'Ya está escogido como suero adicional de este paso' : undefined}
+                                  className={`text-left w-full rounded-lg border px-2.5 py-2 cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                                     elegido
                                       ? 'border-violet-500 bg-white ring-2 ring-violet-300'
                                       : 'border-violet-200 bg-white hover:border-violet-400'
@@ -890,7 +982,7 @@ export default function AssignAttentionModal({
                             onChangeComponentes={(components) =>
                               editarPaso(idx, { serum: { ...paso.serum, components }, serumTocado: true })
                             }
-                            onAbrirCatalogo={() => setCatalogoDe(idx)}
+                            onAbrirCatalogo={() => setCatalogoDe({ idx, extra: null })}
                           />
                           <button
                             type="button"
@@ -972,7 +1064,7 @@ export default function AssignAttentionModal({
                                * respuesta inmediata, y si lo cancela se queda
                                * el editor con la preparación a la vista.
                                */
-                              setCatalogoDe(idx);
+                              setCatalogoDe({ idx, extra: null });
                             }}
                             className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-700 bg-transparent border-none cursor-pointer p-0"
                           >
@@ -982,6 +1074,109 @@ export default function AssignAttentionModal({
                               : 'Escoger el suero que se va a aplicar'}
                           </button>
                         </>
+                      )}
+
+                      {/**
+                        * SUEROS ADICIONALES (oct-2026): hay pacientes a los que en
+                        * la misma cita se les ponen dos sueros. Cada uno se
+                        * escoge de la ficha o se arma desde cero, y al guardar
+                        * queda como su propia receta: enfermería aplica cada uno
+                        * con su «Administrar».
+                        */}
+                      {(paso.extraSerums || []).map((extra, j) => (
+                        <div key={extra.key || j} className="rounded-xl border border-violet-200 bg-white p-2.5">
+                          <div className="flex items-center justify-between gap-2 mb-1.5">
+                            <span className="text-[11px] font-semibold text-violet-900">
+                              <HiOutlineBeaker className="inline w-3.5 h-3.5 -mt-px mr-1" />
+                              Suero adicional {(paso.extraSerums || []).length > 1 ? j + 1 : ''}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => quitarAdicional(idx, j)}
+                              className="text-[11px] text-red-500 bg-transparent border-none cursor-pointer p-0 shrink-0"
+                            >
+                              Quitar este suero
+                            </button>
+                          </div>
+                          {extra.serumFollowUp && !extra.serumTocado && (
+                            <p className="m-0 mb-1 text-[11px] text-violet-800 bg-violet-50 border border-violet-100 rounded-lg px-2 py-1.5">
+                              Es un suero que <b>ya está en la ficha</b>. Si cambias sus ampollas, se
+                              reescribe esa receta; si no tocas nada, queda como está.
+                            </p>
+                          )}
+                          <SueroComposicionEditor
+                            base={extra.serum?.base || sueroVacio().base}
+                            componentes={extra.serum?.components || []}
+                            onChangeBase={(base) =>
+                              editarAdicional(idx, j, { serum: { ...(extra.serum || sueroVacio()), base }, serumTocado: true })
+                            }
+                            onChangeComponentes={(components) =>
+                              editarAdicional(idx, j, { serum: { ...(extra.serum || sueroVacio()), components }, serumTocado: true })
+                            }
+                            onAbrirCatalogo={() => setCatalogoDe({ idx, extra: j })}
+                          />
+                        </div>
+                      ))}
+
+                      {/* Solo cuando ya hay un primer suero: «adicional» es eso. */}
+                      {(paso.serum || paso.serumFollowUp) && (
+                        eligiendoAdicionalEn === idx ? (
+                          <div className="rounded-xl border border-dashed border-violet-300 bg-violet-50/60 p-2.5">
+                            <div className="flex items-center justify-between gap-2 mb-1.5">
+                              <span className="text-[11px] font-semibold text-violet-900">
+                                ¿Qué otro suero se le aplica en esta cita?
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setEligiendoAdicionalEn(null)}
+                                className="text-[10px] text-violet-700 underline bg-transparent border-none cursor-pointer shrink-0"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                            <div className="grid gap-1.5 max-h-60 overflow-y-auto pr-1">
+                              {suerosDeFicha
+                                .filter((fu) => !suerosDeFichaUsados(paso).has(String(fu._id)))
+                                .map((fu) => (
+                                  <button
+                                    key={fu._id}
+                                    type="button"
+                                    onClick={() => agregarAdicional(idx, fu)}
+                                    className="text-left w-full rounded-lg border border-violet-200 bg-white hover:border-violet-400 px-2.5 py-2 cursor-pointer"
+                                  >
+                                    <span className="block text-[11px] font-semibold text-violet-900 truncate">
+                                      {fu?.fecha ? `${new Date(fu.fecha).toLocaleDateString('es-EC')} · ` : ''}
+                                      {(pendingSerums(fu)[0]?.name) || 'Suero'}
+                                    </span>
+                                    <span className="block text-[10px] text-violet-800/80 mt-0.5 break-words">
+                                      {textoDelSueroDeFicha(fu)}
+                                    </span>
+                                  </button>
+                                ))}
+                              <button
+                                type="button"
+                                onClick={() => agregarAdicional(idx)}
+                                className="text-left w-full rounded-lg border border-dashed border-violet-300 bg-transparent px-2.5 py-2 text-[11px] font-medium text-violet-800 hover:bg-white cursor-pointer"
+                              >
+                                + Crear un suero nuevo desde cero
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              // Sin sueros de la ficha que ofrecer, directo a uno nuevo.
+                              suerosDeFicha.some((fu) => !suerosDeFichaUsados(paso).has(String(fu._id)))
+                                ? setEligiendoAdicionalEn(idx)
+                                : agregarAdicional(idx)
+                            }
+                            className="inline-flex items-center gap-1.5 text-xs font-medium text-violet-700 bg-transparent border-none cursor-pointer p-0"
+                          >
+                            <HiOutlineBeaker className="w-4 h-4" />
+                            + Añadir otro suero en esta cita
+                          </button>
+                        )
                       )}
                     </div>
                   )}

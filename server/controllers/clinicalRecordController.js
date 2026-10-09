@@ -2911,7 +2911,8 @@ exports.getFollowUpsByAppointment = async (req, res) => {
     );
     const sellados = new Set([
       ...turnosQueCuentan.map((t) => t.followUp),
-      ...turnosQueCuentan.map((t) => t.serumFollowUp),
+      // El suero del paso y sus sueros adicionales (oct-2026).
+      ...turnosQueCuentan.flatMap(require('../utils/appointmentTurns').seguimientosDeSueroDelTurno),
       apt.autoSerumFollowUp,
     ].filter(Boolean).map(String));
     let followUps = todos.filter((f) => sellados.has(String(f._id)));

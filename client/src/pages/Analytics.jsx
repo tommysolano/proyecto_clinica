@@ -1,1218 +1,668 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  Cell,
-  LabelList,
-} from 'recharts';
-import {
   HiOutlinePresentationChartLine,
-  HiOutlineTableCells,
-  HiOutlineChartBar,
+  HiOutlineCog6Tooth,
+  HiOutlinePlus,
+  HiOutlineTrash,
+  HiOutlinePencilSquare,
+  HiOutlineMegaphone,
+  HiOutlineChevronDown,
+  HiOutlineChevronRight,
   HiOutlineArrowTopRightOnSquare,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import Modal from '../components/Modal';
-import { formatPhone } from '../utils/phone';
+import ServiceItemPicker from '../components/ServiceItemPicker';
+import { fmtDate, todayEc } from '../utils/date';
 
 /**
- * ANALÍTICAS DEL EMBUDO.
+ * ANALÍTICAS DEL CRM POR PROGRAMA DE PUBLICIDAD (oct-2026).
  *
- * Todo lo que se ve aquí sale de las OPORTUNIDADES y de sus etapas: la página ya
- * no mira la agenda de citas. "Agendado" es la etapa de la oportunidad, no una
- * cita del calendario — que un paciente tenga cita no significa que la
- * oportunidad se haya movido, y mezclar las dos fuentes daba dos cifras
- * distintas del mismo dato.
- *
- * Las cuentas las hace el servidor (GET /chats/opportunities/analytics). Antes se
- * armaban en el navegador con las listas paginadas de chats (tope 300) y de
- * oportunidades (tope 500): los indicadores no eran del rango, eran "lo que cupo
- * en la última página" — por eso "Chats" salía siempre clavado en 300.
+ * Reemplaza la página anterior del embudo. Dos pestañas, como Comisiones:
+ *   · PROGRAMAS: se definen los programas (los escribe el usuario, no salen del
+ *     inventario), lo que se gasta en publicidad cada mes, los anuncios que los
+ *     promocionan —escogidos en bloque desde las automatizaciones— y los
+ *     servicios del inventario que se agendan para ellos.
+ *   · RESULTADOS: las citas creadas desde el chat por programa, cómo terminaron
+ *     y cuánto dejaron. Las cuentas las hace el servidor (/ad-programs/analytics).
  */
 
-// ── Colores ──────────────────────────────────────────────────────────────────
-// Las etapas de avance son una escala ORDENADA (una sola tinta, de claro a
-// oscuro: cuanto más avanza el embudo, más oscuro). Los dos desenlaces se salen
-// de la escala porque no son "más avanzado", son otra cosa: ganado en verde,
-// perdido en rojo. Cada entidad conserva SU color en todas las gráficas de la
-// página (agendado es el mismo azul en el embudo, en la serie diaria y en la
-// tabla por agente).
-const STAGE_COLOR = {
-  nuevo: '#86b6ef',
-  contactado: '#5598e7',
-  interesado: '#2a78d6',
-  agendado: '#1c5cab',
-  ganado: '#1baf7a',
-  perdido: '#d03b3b',
+const money = (v) => `$${Number(v || 0).toLocaleString('es-EC', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const pct = (v) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(0)}%`);
+const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+const nombreMes = (ym) => {
+  const [y, m] = String(ym || '').split('-');
+  return y && m ? `${MESES[Number(m) - 1] || m} ${y}` : ym;
 };
-const STAGE_KEYS = ['nuevo', 'contactado', 'interesado', 'agendado', 'ganado', 'perdido'];
-const STAGE_LABEL = {
-  nuevo: 'Nuevo',
-  contactado: 'Contactado',
-  interesado: 'Interesado',
-  agendado: 'Agendado',
-  ganado: 'Ganado',
-  perdido: 'Perdido',
+const ESTADO = {
+  efectivas: { label: 'Efectiva', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  canceladas: { label: 'Cancelada', cls: 'bg-rose-50 text-rose-700 border-rose-200' },
+  noAsistio: { label: 'No asistió', cls: 'bg-amber-50 text-amber-800 border-amber-200' },
+  pendientes: { label: 'Pendiente', cls: 'bg-slate-50 text-slate-600 border-slate-200' },
 };
-// "Creadas" / "Total" no es una etapa: color propio, fuera de la escala.
-const C_TOTAL = '#eb6834';
-const C_CHATS = '#2a78d6';
-// Estados de las citas de la sección "Citas agendadas por servicio".
-const C_PENDIENTE = '#94a3b8';
-const C_ASISTIDA = '#34d399';
-const C_COMPLETADA = '#0f766e';
-const C_OTRAS = '#e2e8f0';
-const INK = { text: '#334155', muted: '#94a3b8', grid: '#e2e8f0' };
-
-const nf = new Intl.NumberFormat('es-EC');
-const money = (n) => `$${new Intl.NumberFormat('es-EC', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n) || 0)}`;
-const moneyShort = (n) => `$${new Intl.NumberFormat('es-EC', { maximumFractionDigits: 0 }).format(Number(n) || 0)}`;
-const pct = (x) => `${((Number(x) || 0) * 100).toFixed(1)}%`;
-/** 'YYYY-MM-DD' → 'dd/mm' (sin pasar por Date: `new Date('2026-08-13')` es UTC). */
-const ddmm = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : '');
-/** Fecha local en ISO. `toISOString()` da el día de UTC: en Ecuador, a partir de las 19:00 adelanta un día. */
-const isoLocal = (dt) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
-const daysAgo = (n) => isoLocal(new Date(Date.now() - n * 86400000));
-
-const CANALES = { whatsapp: 'WhatsApp', messenger: 'Messenger', instagram: 'Instagram', tiktok: 'TikTok', sms: 'SMS', web: 'Web' };
-
-// Cuántos anuncios se dibujan de entrada en "Chats por anuncio" (el resto, a un
-// clic). No es un tope del informe: el servidor los manda todos.
-const TOPE_ANUNCIOS = 15;
-
-const EMPTY = {
-  totals: {
-    chats: 0, oportunidades: 0, agendadas: 0, ganadas: 0, perdidas: 0, enCurso: 0, anuncios: 0,
-    valorTotal: 0, valorGanado: 0, valorAgendado: 0, tasaAgendamiento: 0, tasaCierre: 0,
-    valorPagado: 0, valorPagadoAlCrear: 0, valorPagadoMostrador: 0, citasCreadas: 0, citasConPago: 0,
-    // "Pagado por pacientes" REAL: valor ESCRITO en las oportunidades cuya cita
-    // vinculada quedó asistida/completada (el paciente de verdad fue y pagó).
-    valorPagadoOportunidades: 0,
-    oportunidadesPagadas: 0,
-  },
-  embudo: [], serie: [], porOportunidad: [], porAnuncio: [], porCanal: [], porAgente: [], servicios: [], motivosPerdida: [],
-  // De la OPORTUNIDAD a la CONSULTA: cuántos contactos escribieron, agendaron
-  // y de esos cuántos asistieron a su cita (asistida/completada).
-  embudoAsistencia: {
-    escriben: { contactos: 0, oportunidades: 0 },
-    agendan: { contactos: 0, oportunidades: 0 },
-    asisten: { contactos: 0, citas: 0 },
-  },
-  // CITAS AGENDADAS POR SERVICIO (sep-2026): vive aparte del informe del CRM —
-  // viene del catálogo de la agenda, no de las oportunidades.
-  citasPorServicio: [],
-};
-
-/**
- * Etiqueta del eje: los titulares de anuncio son largos y empujarían la gráfica.
- * Si el texto acaba en un desempate (" · …1234", el final del id de un anuncio con
- * titular repetido), se recorta por DELANTE: cortar por el final se llevaba justo
- * lo único que distinguía las dos filas.
- */
-const corta = (s, n = 30) => {
-  const txt = String(s || '');
-  const cola = txt.match(/ · …\S+$/);
-  if (cola) {
-    const cabeza = txt.slice(0, txt.length - cola[0].length);
-    const hueco = Math.max(8, n - cola[0].length);
-    return (cabeza.length > hueco ? `${cabeza.slice(0, hueco - 1)}…` : cabeza) + cola[0];
-  }
-  return txt.length > n ? `${txt.slice(0, n - 1)}…` : txt;
-};
-
-/**
- * Etiqueta de eje de UNA sola línea. Recharts parte los textos largos en varias
- * líneas y, para que no se solapen, recorta las etiquetas VECINAS: con un nombre
- * de campaña largo arriba, "Detox 1" o "Prostata 2" salían como "Deto…" y "Pr…".
- * Con un tick propio el corte lo decidimos nosotros y solo afecta al que sobra.
- */
-function TickNombre({ x, y, payload, max = 28, onPick }) {
-  return (
-    <text
-      x={x}
-      y={y}
-      dy={4}
-      textAnchor="end"
-      fill={INK.text}
-      fontSize={12}
-      // Pinchar el nombre abre la fila ENTERA (todas sus etapas); pinchar una
-      // barra abre solo esa etapa.
-      style={onPick ? { cursor: 'pointer' } : undefined}
-      onClick={onPick ? () => onPick(payload?.value) : undefined}
-    >
-      {corta(payload?.value, max)}
-    </text>
-  );
-}
-
-/**
- * La fila de datos que hay debajo de una barra clicada. Recharts entrega en el
- * onClick de <Bar> la forma dibujada, con la fila original dentro de `payload`;
- * en algunas versiones la manda aplanada. Se aceptan las dos.
- */
-const filaDe = (e) => e?.payload || e || null;
-
-/**
- * Abre el chat de una persona en una pestaña nueva (ver el enlace en Chats.jsx).
- *
- * Va por ID de conversación, no por teléfono: el chat ya existe (por eso está en
- * el informe) y así funciona igual con Messenger o Instagram, donde el "phone"
- * no es un número al que se pueda escribir.
- */
-function abrirChatEnPestaña(item) {
-  if (!item?.conversationId) return;
-  window.open(`/chats?chat=${encodeURIComponent(item.conversationId)}`, '_blank', 'noopener');
-}
 
 export default function Analytics() {
-  const [start, setStart] = useState(daysAgo(30));
-  const [end, setEnd] = useState(isoLocal(new Date()));
-  const [data, setData] = useState(EMPTY);
-  const [loading, setLoading] = useState(false);
-  // Barra abierta: { by, value, stage, titulo, subtitulo }. Las cifras solas no
-  // dejaban llegar a la persona; al pinchar una barra se ve QUIÉNES son y se
-  // entra a su chat.
-  const [drill, setDrill] = useState(null);
-  // "Chats por anuncio" dibuja los primeros y deja el resto a un clic: son
-  // decenas de anuncios y de golpe la gráfica mide varias pantallas.
-  const [todosAnuncios, setTodosAnuncios] = useState(false);
+  const [tab, setTab] = useState('resultados');
+  const [programas, setProgramas] = useState([]);
+  const [cargandoProgramas, setCargandoProgramas] = useState(true);
 
-  const load = async (from = start, to = end) => {
-    setLoading(true);
+  const cargarProgramas = async () => {
+    setCargandoProgramas(true);
     try {
-      /**
-       * DOS INFORMES, UN MISMO RANGO (sep-2026).
-       *
-       * Además del embudo del CRM, la página trae «Citas agendadas por
-       * servicio»: se pide aparte (es de la agenda, no de las oportunidades) y
-       * con el MISMO rango, para que los atajos y las fechas de arriba manden
-       * sobre todas las gráficas por igual. Si ese segundo informe falla, la
-       * página no se cae: la sección nace vacía y el resto sigue.
-       */
-      const [r, citasR] = await Promise.all([
-        api.get('/chats/opportunities/analytics', { params: { from, to } }),
-        api.get('/appointments/analytics/by-service', { params: { from, to } })
-          .catch(() => ({ data: [] })),
-      ]);
-      setData({ ...EMPTY, ...r.data, citasPorServicio: citasR.data || [] });
+      const { data } = await api.get('/ad-programs');
+      setProgramas(data || []);
+      return data || [];
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al cargar analíticas');
+      toast.error(err.response?.data?.message || 'No se pudieron cargar los programas');
+      return [];
     } finally {
-      setLoading(false);
+      setCargandoProgramas(false);
     }
   };
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Sin programas todavía, se empieza por configurarlos: los resultados
+    // saldrían vacíos.
+    cargarProgramas().then((lista) => { if (!lista.length) setTab('programas'); });
   }, []);
 
-  // Los atajos aplican el rango Y recargan: pulsar "30 días" y tener que darle
-  // además a Actualizar era un paso de más.
-  const preset = (from, to) => {
-    setStart(from);
-    setEnd(to);
-    load(from, to);
-  };
-  const hoy = isoLocal(new Date());
-  const inicioMes = hoy.slice(0, 8) + '01';
-
-  const t = data.totals;
-  const embudo = data.embudo || [];
-  const totalOpp = t.oportunidades || 0;
-
-  // El embudo se pinta con la etiqueta ya formada ("124 · 38%"): una sola
-  // etiqueta por barra en vez de dos superpuestas.
-  const embudoRows = useMemo(
-    () => embudo.map((e) => ({
-      ...e,
-      share: totalOpp ? e.count / totalOpp : 0,
-      etiqueta: totalOpp ? `${nf.format(e.count)} · ${Math.round((e.count / totalOpp) * 100)}%` : nf.format(e.count),
-    })),
-    [embudo, totalOpp]
+  const botonTab = (id, Icon, label) => (
+    <button
+      type="button"
+      onClick={() => setTab(id)}
+      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm cursor-pointer border-none ${
+        tab === id ? 'bg-white text-emerald-700 font-semibold shadow-sm' : 'text-slate-500 hover:text-slate-700'
+      }`}
+    >
+      <Icon className="w-4 h-4" /> {label}
+    </button>
   );
-
-  const canales = useMemo(
-    () => (data.porCanal || []).map((c) => ({ ...c, label: CANALES[c.canal] || c.canal })),
-    [data.porCanal]
-  );
-  // Solo se pintan las etapas que TIENEN datos en el rango: con las seis siempre,
-  // cada oportunidad arrastraba tres barras vacías y la gráfica no cabía.
-  const etapasVisibles = useMemo(
-    () => STAGE_KEYS.filter((s) => (data.porOportunidad || []).some((o) => o[s] > 0)),
-    [data.porOportunidad]
-  );
-  const conServicios = (data.servicios || []).length > 0;
-  const conMotivos = (data.motivosPerdida || []).some((m) => m.count > 0);
-
-  const anunciosGrafica = todosAnuncios ? (data.porAnuncio || []) : (data.porAnuncio || []).slice(0, TOPE_ANUNCIOS);
-  /** Quiénes escribieron desde este anuncio (se agrupa por ID, no por titular). */
-  const abrirAnuncio = (fila) => {
-    if (!fila?.adId) return;
-    setDrill({
-      by: 'anuncio',
-      value: fila.adId,
-      titulo: fila.titular || `Anuncio ${fila.adId}`,
-      subtitulo: `Anuncio ${fila.adId}`,
-    });
-  };
-  const conAgentes = (data.porAgente || []).length > 0;
-  const citasPorServicio = data.citasPorServicio || [];
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-            <HiOutlinePresentationChartLine className="text-emerald-600" /> Analíticas
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-xl sm:text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
+            <HiOutlinePresentationChartLine className="text-emerald-600 shrink-0" /> Analíticas
           </h1>
-          <p className="text-sm text-slate-500 mt-0.5">Embudo de oportunidades del call center</p>
+          <p className="text-sm text-slate-500">
+            Lo que se gasta en publicidad por programa y las citas que salen del chat.
+          </p>
         </div>
-        {/* Una sola fila de filtros arriba: manda sobre TODAS las gráficas. */}
-        <div className="flex items-end gap-2 flex-wrap">
-          <div className="flex gap-1 mr-1">
-            <Preset onClick={() => preset(hoy, hoy)} active={start === hoy && end === hoy}>Hoy</Preset>
-            <Preset onClick={() => preset(daysAgo(6), hoy)} active={start === daysAgo(6) && end === hoy}>7 días</Preset>
-            <Preset onClick={() => preset(daysAgo(29), hoy)} active={start === daysAgo(29) && end === hoy}>30 días</Preset>
-            <Preset onClick={() => preset(daysAgo(89), hoy)} active={start === daysAgo(89) && end === hoy}>90 días</Preset>
-            <Preset onClick={() => preset(inicioMes, hoy)} active={start === inicioMes && end === hoy}>Este mes</Preset>
-          </div>
-          <label className="text-sm text-slate-600">Desde
-            <DateInput value={start} onChange={(e) => setStart(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
-          </label>
-          <label className="text-sm text-slate-600">Hasta
-            <DateInput value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
-          </label>
-          <button
-            onClick={() => load()}
-            className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm border-none cursor-pointer hover:bg-emerald-700"
-          >
-            {loading ? 'Cargando...' : 'Actualizar'}
-          </button>
+        <div className="flex gap-1 bg-slate-100 rounded-xl p-1">
+          {botonTab('resultados', HiOutlinePresentationChartLine, 'Resultados')}
+          {botonTab('programas', HiOutlineCog6Tooth, 'Programas')}
         </div>
       </div>
 
-      {/* Al recargar se atenúa lo ya pintado en vez de vaciarlo: sin parpadeo ni salto de la página. */}
-      <div className={`space-y-4 transition-opacity ${loading ? 'opacity-60' : 'opacity-100'}`}>
-        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-          {/* El chat y la oportunidad NO son lo mismo: un chat puede tener varias
-              (cada anuncio en el que hace clic la persona crea la suya) y una
-              oportunidad de hoy puede caer en un chat de hace meses. Por eso la
-              tarjeta dice en cuántos chats están: si no, "452 oportunidades con 226
-              chats nuevos" parece un error y no lo es. */}
-          <Tile
-            label="Oportunidades"
-            value={nf.format(totalOpp)}
-            hint={t.chatsConOportunidad ? `en ${nf.format(t.chatsConOportunidad)} chats` : 'creadas en el rango'}
-            color={C_TOTAL}
-          />
-          <Tile label="Agendadas" value={nf.format(t.agendadas)} hint={`${pct(t.tasaAgendamiento)} llegó a agendarse`} color={STAGE_COLOR.agendado} />
-          <Tile label="Ganadas" value={nf.format(t.ganadas)} hint={`${pct(t.tasaCierre)} de cierre · ${moneyShort(t.valorGanado)}`} color={STAGE_COLOR.ganado} />
-          {/* El valor "en juego" son las AGENDADAS, no todo el embudo: una
-              oportunidad recién nacida de un anuncio no es dinero en camino, y
-              sumándolas el importe salía inflado (hoy: $5.854 de "nuevo" contra
-              $465 de agendado). Lo que de verdad está en juego es lo que ya tiene
-              cita. El desglose completo sigue en "Valor esperado por etapa". */}
-          <Tile
-            label="Valor esperado"
-            value={moneyShort(t.valorAgendado)}
-            hint={`de las ${nf.format(t.agendadas)} agendadas`}
-            color={STAGE_COLOR.agendado}
-          />
-          {/* PAGADO POR PACIENTES (sep-2026): el valor que el agente ESCRIBE en
-              la oportunidad, contado SOLO cuando la cita vinculada (el enlace
-              lo sella el chat al agendar) quedó ASISTIDA o COMPLETADA — esa es
-              la prueba de que el paciente de verdad fue y pagó. */}
-          <Tile
-            label="Pagado por pacientes"
-            value={moneyShort(t.valorPagadoOportunidades)}
-            hint={
-              !t.oportunidadesPagadas
-                ? 'sin citas atendidas en el rango'
-                : `${nf.format(t.oportunidadesPagadas)} oportunidades con cita asistida/completada`
-            }
-            color={STAGE_COLOR.ganado}
-            title={
-              `Valor escrito en las oportunidades cuya cita vinculada está ASISTIDA o COMPLETADA: $${Number(t.valorPagadoOportunidades || 0).toFixed(2)} `
-              + `(${nf.format(t.oportunidadesPagadas)} oportunidades). `
-              + `Referencia de caja: al reservar la cita se anotó $${Number(t.valorPagadoAlCrear || 0).toFixed(2)} y en mostrador (ventas enlazadas) $${Number(t.valorPagadoMostrador || 0).toFixed(2)}.`
-            }
-          />
-          <Tile
-            label="Chats nuevos"
-            value={nf.format(t.chats)}
-            hint={t.chatsDesdeAnuncios ? `${nf.format(t.chatsDesdeAnuncios)} desde anuncios` : 'conversaciones que entraron'}
-            color={C_CHATS}
-          />
+      {tab === 'programas' ? (
+        <PestanaProgramas programas={programas} cargando={cargandoProgramas} onCambio={cargarProgramas} />
+      ) : (
+        <PestanaResultados hayProgramas={programas.length > 0} irAProgramas={() => setTab('programas')} />
+      )}
+    </div>
+  );
+}
+
+// ─── Pestaña PROGRAMAS ──────────────────────────────────────────────────────
+
+function PestanaProgramas({ programas, cargando, onCambio }) {
+  const [editando, setEditando] = useState(null); // programa | {} (nuevo) | null
+  const mesActual = todayEc().slice(0, 7);
+
+  const eliminar = async (p) => {
+    if (!confirm(`¿Eliminar el programa «${p.name}»? Sus citas dejarán de contarse para él.`)) return;
+    try {
+      await api.delete(`/ad-programs/${p._id}`);
+      toast.success('Programa eliminado');
+      onCambio();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo eliminar');
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-slate-500 m-0">
+          Cada programa reúne su <b>gasto en publicidad</b>, sus <b>anuncios</b> y sus <b>servicios</b>.
+        </p>
+        <button
+          type="button"
+          onClick={() => setEditando({})}
+          className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-medium border-none cursor-pointer hover:bg-emerald-700"
+        >
+          <HiOutlinePlus className="w-4 h-4" /> Nuevo programa
+        </button>
+      </div>
+
+      {cargando && <p className="text-sm text-slate-400">Cargando…</p>}
+      {!cargando && !programas.length && (
+        <div className="bg-white border border-dashed border-slate-300 rounded-xl p-6 text-center text-sm text-slate-500">
+          Todavía no hay programas. Crea el primero: escribe su nombre, cuánto gastas en publicidad,
+          escoge sus anuncios desde las automatizaciones y añade sus servicios.
         </div>
+      )}
 
-        <ChartCard
-          title="Embudo por etapa"
-          subtitle="Oportunidades según la etapa en la que están HOY. La suma es el total del rango."
-          columns={[
-            { key: 'label', label: 'Etapa' },
-            { key: 'count', label: 'Oportunidades', num: true },
-            { key: 'share', label: '% del total', num: true, fmt: pct },
-            { key: 'value', label: 'Valor esperado', num: true, fmt: money },
-          ]}
-          rows={embudoRows}
-          empty={!totalOpp}
-        >
-          <ResponsiveContainer width="100%" height={embudoRows.length * 52 + 24}>
-            <BarChart data={embudoRows} layout="vertical" margin={{ top: 8, right: 96, bottom: 8, left: 8 }}>
-              <CartesianGrid horizontal={false} stroke={INK.grid} />
-              <XAxis type="number" hide domain={[0, 'dataMax']} />
-              <YAxis
-                type="category"
-                dataKey="label"
-                width={92}
-                tickLine={false}
-                axisLine={false}
-                tick={{ fill: INK.text, fontSize: 13 }}
-              />
-              <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipEtapa />} />
-              <Bar dataKey="count" barSize={24} radius={[0, 4, 4, 0]} isAnimationActive={false}>
-                {embudoRows.map((e) => <Cell key={e.stage} fill={STAGE_COLOR[e.stage] || C_CHATS} />)}
-                <LabelList dataKey="etiqueta" position="right" fill={INK.text} fontSize={12} />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        <ChartCard
-          title="Qué oportunidades son"
-          subtitle="Cada oportunidad por su nombre, con una barra por etapa. Pincha una barra para ver de quién es y entrar a su chat. Las que nacen solas de un anuncio no llevan nombre: esas se ven en «Chats por anuncio»."
-          onRowClick={(r) => setDrill({
-            by: 'oportunidad',
-            value: r.nombre,
-            titulo: r.nombre,
-            subtitulo: 'Todas las etapas',
-          })}
-          columns={[
-            { key: 'nombre', label: 'Oportunidad' },
-            { key: 'total', label: 'Total', num: true },
-            { key: 'nuevo', label: 'Nuevo', num: true },
-            { key: 'contactado', label: 'Contactado', num: true },
-            { key: 'interesado', label: 'Interesado', num: true },
-            { key: 'agendado', label: 'Agendado', num: true },
-            { key: 'ganado', label: 'Ganado', num: true },
-            { key: 'perdido', label: 'Perdido', num: true },
-            { key: 'value', label: 'Valor esperado', num: true, fmt: money },
-          ]}
-          rows={data.porOportunidad}
-          empty={!data.porOportunidad.length}
-          legend={etapasVisibles.map((s) => ({ label: STAGE_LABEL[s], color: STAGE_COLOR[s] }))}
-        >
-          <ResponsiveContainer
-            width="100%"
-            height={data.porOportunidad.length * Math.max(44, etapasVisibles.length * 14 + 14) + 32}
-          >
-            <BarChart
-              data={data.porOportunidad}
-              layout="vertical"
-              margin={{ top: 8, right: 64, bottom: 8, left: 8 }}
-              barGap={2}
-              barCategoryGap="22%"
-            >
-              <CartesianGrid horizontal={false} stroke={INK.grid} />
-              <XAxis type="number" hide domain={[0, 'dataMax']} />
-              <YAxis
-                type="category"
-                dataKey="nombre"
-                width={210}
-                tickLine={false}
-                axisLine={false}
-                tick={(
-                  <TickNombre
-                    max={28}
-                    onPick={(nombre) => nombre && setDrill({
-                      by: 'oportunidad',
-                      value: nombre,
-                      titulo: nombre,
-                      subtitulo: 'Todas las etapas',
-                    })}
-                  />
-                )}
-              />
-              <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipOportunidad />} />
-              {/* Una BARRA POR ETAPA, no una barra partida: apiladas, un "agendado"
-                  de 2 sobre un "nuevo" de 30 era una raya que no se podía comparar
-                  con la de al lado. Separadas, cada etapa se lee contra su propia
-                  línea de cero. */}
-              {etapasVisibles.map((stage) => (
-                <Bar
-                  key={stage}
-                  dataKey={stage}
-                  name={STAGE_LABEL[stage]}
-                  fill={STAGE_COLOR[stage]}
-                  barSize={11}
-                  radius={[0, 4, 4, 0]}
-                  isAnimationActive={false}
-                  cursor="pointer"
-                  onClick={(e) => {
-                    const fila = filaDe(e);
-                    if (!fila?.nombre || !fila[stage]) return;
-                    setDrill({
-                      by: 'oportunidad',
-                      value: fila.nombre,
-                      stage,
-                      titulo: fila.nombre,
-                      subtitulo: `En etapa «${STAGE_LABEL[stage]}»`,
-                    });
-                  }}
-                >
-                  <LabelList
-                    dataKey={stage}
-                    position="right"
-                    fill={INK.text}
-                    fontSize={11}
-                    formatter={(v) => (v > 0 ? nf.format(v) : '')}
-                  />
-                </Bar>
-              ))}
-            </BarChart>
-          </ResponsiveContainer>
-          {/* Si el rango trae más nombres de los que caben en la respuesta, SE
-              DICE: un recorte callado se lee como "estas son todas". */}
-          {t.nombresDeOportunidad > data.porOportunidad.length && (
-            <p className="mt-1 text-center text-[11px] text-slate-400">
-              En este rango hay {nf.format(t.nombresDeOportunidad)} nombres de oportunidad distintos; se listan los
-              {' '}{nf.format(data.porOportunidad.length)} con más oportunidades. Acota las fechas para verlos todos.
-            </p>
-          )}
-        </ChartCard>
-
-        <ChartCard
-          title="Movimiento del embudo por día"
-          subtitle="Creadas por su fecha de alta; agendadas y ganadas por el día en que entraron en esa etapa."
-          columns={[
-            { key: 'date', label: 'Día', fmt: ddmm },
-            { key: 'creadas', label: 'Creadas', num: true },
-            { key: 'agendadas', label: 'Agendadas', num: true },
-            { key: 'ganadas', label: 'Ganadas', num: true },
-          ]}
-          rows={data.serie}
-          empty={!data.serie.length}
-          legend={[
-            { label: 'Creadas', color: C_TOTAL },
-            { label: 'Agendadas', color: STAGE_COLOR.agendado },
-            { label: 'Ganadas', color: STAGE_COLOR.ganado },
-          ]}
-        >
-          <ResponsiveContainer width="100%" height={340}>
-            <LineChart data={data.serie} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-              <CartesianGrid vertical={false} stroke={INK.grid} />
-              <XAxis
-                dataKey="date"
-                tickFormatter={ddmm}
-                tickLine={false}
-                axisLine={{ stroke: INK.grid }}
-                tick={{ fill: INK.muted, fontSize: 12 }}
-                minTickGap={28}
-              />
-              <YAxis allowDecimals={false} width={40} tickLine={false} axisLine={false} tick={{ fill: INK.muted, fontSize: 12 }} />
-              <Tooltip cursor={{ stroke: '#cbd5e1', strokeWidth: 1 }} content={<TipSerie />} />
-              <Line type="monotone" dataKey="creadas" name="Creadas" stroke={C_TOTAL} strokeWidth={2} dot={dotFor(data.serie, C_TOTAL)} activeDot={{ r: 5, strokeWidth: 2, stroke: '#fff' }} isAnimationActive={false} />
-              <Line type="monotone" dataKey="agendadas" name="Agendadas" stroke={STAGE_COLOR.agendado} strokeWidth={2} dot={dotFor(data.serie, STAGE_COLOR.agendado)} activeDot={{ r: 5, strokeWidth: 2, stroke: '#fff' }} isAnimationActive={false} />
-              <Line type="monotone" dataKey="ganadas" name="Ganadas" stroke={STAGE_COLOR.ganado} strokeWidth={2} dot={dotFor(data.serie, STAGE_COLOR.ganado)} activeDot={{ r: 5, strokeWidth: 2, stroke: '#fff' }} isAnimationActive={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        <ChartCard
-          title="Valor esperado por etapa"
-          subtitle="Cuánto dinero hay parado en cada etapa del embudo."
-          columns={[
-            { key: 'label', label: 'Etapa' },
-            { key: 'value', label: 'Valor esperado', num: true, fmt: money },
-            { key: 'count', label: 'Oportunidades', num: true },
-          ]}
-          rows={embudoRows}
-          empty={!embudoRows.some((e) => e.value > 0)}
-        >
-          <ResponsiveContainer width="100%" height={embudoRows.length * 52 + 24}>
-            <BarChart data={embudoRows} layout="vertical" margin={{ top: 8, right: 110, bottom: 8, left: 8 }}>
-              <CartesianGrid horizontal={false} stroke={INK.grid} />
-              <XAxis type="number" hide domain={[0, 'dataMax']} />
-              <YAxis type="category" dataKey="label" width={92} tickLine={false} axisLine={false} tick={{ fill: INK.text, fontSize: 13 }} />
-              <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipValor />} />
-              <Bar dataKey="value" barSize={24} radius={[0, 4, 4, 0]} isAnimationActive={false}>
-                {embudoRows.map((e) => <Cell key={e.stage} fill={STAGE_COLOR[e.stage] || C_CHATS} />)}
-                <LabelList dataKey="value" position="right" formatter={money} fill={INK.text} fontSize={12} />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        <ChartCard
-          title="Chats nuevos por día"
-          subtitle="Conversaciones que entraron al call center en el rango."
-          columns={[{ key: 'date', label: 'Día', fmt: ddmm }, { key: 'chats', label: 'Chats', num: true }]}
-          rows={data.serie}
-          empty={!t.chats}
-        >
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={data.serie} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-              <CartesianGrid vertical={false} stroke={INK.grid} />
-              <XAxis dataKey="date" tickFormatter={ddmm} tickLine={false} axisLine={{ stroke: INK.grid }} tick={{ fill: INK.muted, fontSize: 12 }} minTickGap={28} />
-              <YAxis allowDecimals={false} width={40} tickLine={false} axisLine={false} tick={{ fill: INK.muted, fontSize: 12 }} />
-              <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipSerie />} />
-              <Bar dataKey="chats" name="Chats" fill={C_CHATS} radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive={false} />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        {/* De qué ANUNCIO viene cada chat. El dato no está en la conversación: lo
-            trae el mensaje entrante (`referral`), que es lo mismo que ya hace que
-            en el chat salga "desde anuncio". La etiqueta es el TITULAR del anuncio
-            —lo único legible que manda Meta—, no el nombre de la campaña. */}
-        <ChartCard
-          title="Chats por anuncio"
-          subtitle="Conversaciones distintas que escribieron desde cada anuncio (click-to-WhatsApp). Se cuenta el chat, no cada mensaje. Pincha un anuncio para ver quiénes escribieron y entrar a su chat."
-          columns={[
-            { key: 'titular', label: 'Titular del anuncio' },
-            { key: 'chats', label: 'Chats', num: true },
-            { key: 'adId', label: 'ID del anuncio' },
-          ]}
-          rows={data.porAnuncio}
-          empty={!data.porAnuncio.length}
-          onRowClick={(r) => abrirAnuncio(r)}
-        >
-          {/* Se dibujan los primeros y el resto se pide con el botón: el usuario
-              decía —con razón— "tengo muchos más anuncios de los que aparecen"
-              (41 anuncios el 21-ago-2026 y la página enseñaba 15). Ahora vienen
-              todos; lo único que se decide aquí es cuántos caben de un vistazo. */}
-          <>
-            <ResponsiveContainer width="100%" height={anunciosGrafica.length * 44 + 32}>
-              <BarChart data={anunciosGrafica} layout="vertical" margin={{ top: 8, right: 64, bottom: 8, left: 8 }}>
-                <CartesianGrid horizontal={false} stroke={INK.grid} />
-                <XAxis type="number" hide domain={[0, 'dataMax']} />
-                <YAxis
-                  type="category"
-                  dataKey="titular"
-                  width={230}
-                  tickLine={false}
-                  axisLine={false}
-                  tick={<TickNombre max={32} onPick={(titular) => abrirAnuncio(data.porAnuncio.find((a) => a.titular === titular))} />}
-                />
-                <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipAnuncio />} />
-                <Bar
-                  dataKey="chats"
-                  name="Chats"
-                  fill={C_CHATS}
-                  barSize={20}
-                  radius={[0, 4, 4, 0]}
-                  isAnimationActive={false}
-                  cursor="pointer"
-                  onClick={(e) => abrirAnuncio(filaDe(e))}
-                >
-                  <LabelList dataKey="chats" position="right" fill={INK.text} fontSize={12} />
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-            {data.porAnuncio.length > TOPE_ANUNCIOS && (
-              <button
-                onClick={() => setTodosAnuncios((v) => !v)}
-                className="mt-1 mx-auto block px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-slate-600 text-xs cursor-pointer hover:bg-slate-50"
-              >
-                {todosAnuncios
-                  ? `Ver solo los ${TOPE_ANUNCIOS} con más chats`
-                  : `Ver los ${nf.format(data.porAnuncio.length)} anuncios`}
-              </button>
-            )}
-            {/* Si el rango trae más de los que caben en la respuesta, se DICE.
-                Un recorte callado se lee como "estos son todos los anuncios". */}
-            {t.anuncios > data.porAnuncio.length && (
-              <p className="mt-1 text-center text-[11px] text-slate-400">
-                En este rango hay {nf.format(t.anuncios)} anuncios; se listan los {nf.format(data.porAnuncio.length)} con
-                más chats. Acota las fechas para verlos todos.
-              </p>
-            )}
-          </>
-        </ChartCard>
-
-        {conAgentes && (
-          <ChartCard
-            title="Citas por agente"
-            subtitle="Citas que agendaron los usuarios de call center y marketing, y cuántos pacientes asistieron a su cita."
-            columns={[
-              { key: 'agente', label: 'Agente' },
-              { key: 'total', label: 'Citas agendadas', num: true },
-              { key: 'asistidas', label: 'Asistidas', num: true },
-              { key: 'completadas', label: 'Completadas', num: true },
-              { key: 'atendidas', label: 'Atendidas', num: true },
-            ]}
-            rows={data.porAgente}
-            empty={false}
-            legend={[
-              { label: 'Citas agendadas', color: C_TOTAL },
-              { label: 'Asistidas', color: C_ASISTIDA },
-              { label: 'Completadas', color: C_COMPLETADA },
-            ]}
-          >
-            <ResponsiveContainer width="100%" height={data.porAgente.length * 72 + 40}>
-              <BarChart data={data.porAgente} layout="vertical" margin={{ top: 8, right: 56, bottom: 8, left: 8 }}>
-                <CartesianGrid horizontal={false} stroke={INK.grid} />
-                <XAxis type="number" hide domain={[0, 'dataMax']} />
-                <YAxis type="category" dataKey="agente" width={150} tickLine={false} axisLine={false} tick={{ fill: INK.text, fontSize: 13 }} />
-                <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipSerie />} />
-                <Bar dataKey="total" name="Citas agendadas" fill={C_TOTAL} barSize={14} radius={[0, 4, 4, 0]} isAnimationActive={false}>
-                  <LabelList dataKey="total" position="right" fill={INK.text} fontSize={11} />
-                </Bar>
-                <Bar dataKey="asistidas" name="Asistidas" fill={C_ASISTIDA} barSize={14} radius={[0, 4, 4, 0]} isAnimationActive={false}>
-                  <LabelList dataKey="asistidas" position="right" fill={INK.text} fontSize={11} />
-                </Bar>
-                <Bar dataKey="completadas" name="Completadas" fill={C_COMPLETADA} barSize={14} radius={[0, 4, 4, 0]} isAnimationActive={false}>
-                  <LabelList dataKey="completadas" position="right" fill={INK.text} fontSize={11} />
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </ChartCard>
-        )}
-
-        {(() => {
-          // DE LA OPORTUNIDAD A LA CONSULTA (sep-2026, a petición de la clínica):
-          // de las oportunidades del rango, cuántos CONTACTOS escribieron,
-          // cuántos agendaron cita y de esos cuántos pacientes asistieron
-          // (cita asistida/completada). Los chats están vinculados al perfil
-          // del paciente, así que el cruce es directo.
-          const fa = data.embudoAsistencia || EMPTY.embudoAsistencia;
-          const filas = [
-            {
-              etapa: 'Escribieron (oportunidad creada)',
-              contactos: fa.escriben?.contactos || 0,
-              total: fa.escriben?.oportunidades || 0,
-              unidad: 'oportunidades',
-              color: C_TOTAL,
-            },
-            {
-              etapa: 'Agendaron cita',
-              contactos: fa.agendan?.contactos || 0,
-              total: fa.agendan?.oportunidades || 0,
-              unidad: 'citas agendadas',
-              color: STAGE_COLOR.agendado,
-            },
-            {
-              etapa: 'Asistieron a la cita',
-              contactos: fa.asisten?.contactos || 0,
-              total: fa.asisten?.citas || 0,
-              unidad: 'citas asistidas/completadas',
-              color: C_ASISTIDA,
-            },
-          ];
-          const hay = filas.some((f) => f.total > 0 || f.contactos > 0);
-          if (!hay) return null;
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {programas.map((p) => {
+          const gastoMes = (p.gastos || []).filter((g) => g.mes === mesActual).reduce((s, g) => s + (g.monto || 0), 0);
           return (
-            <ChartCard
-              title="De la oportunidad a la consulta atendida"
-              subtitle="Cuántos contactos escribieron, cuántos agendaron cita y de esos cuántos pacientes asistieron (asistida/completada)."
-              columns={[
-                { key: 'etapa', label: 'Etapa' },
-                { key: 'contactos', label: 'Contactos', num: true },
-                { key: 'total', label: 'Oportunidades / Citas', num: true },
-              ]}
-              rows={filas}
-              empty={false}
-            >
-              <ResponsiveContainer width="100%" height={filas.length * 52 + 24}>
-                <BarChart data={filas} layout="vertical" margin={{ top: 8, right: 72, bottom: 8, left: 8 }}>
-                  <CartesianGrid horizontal={false} stroke={INK.grid} />
-                  <XAxis type="number" hide domain={[0, 'dataMax']} />
-                  <YAxis type="category" dataKey="etapa" width={210} tickLine={false} axisLine={false} tick={{ fill: INK.text, fontSize: 12 }} />
-                  <Tooltip
-                    cursor={{ fill: '#f8fafc' }}
-                    content={({ active, payload, label }) => {
-                      if (!active || !payload?.length) return null;
-                      const f = payload[0]?.payload || {};
-                      return (
-                        <div className="bg-white border border-slate-200 rounded-lg shadow-lg px-3 py-2 text-xs">
-                          <div className="font-semibold text-slate-800">{label}</div>
-                          <div className="text-slate-600">{nf.format(f.contactos || 0)} contactos</div>
-                          <div className="text-slate-600">{nf.format(f.total || 0)} {f.unidad}</div>
-                        </div>
-                      );
-                    }}
-                  />
-                  <Bar dataKey="total" name="Total" fill={C_TOTAL} barSize={22} radius={[0, 4, 4, 0]} isAnimationActive={false}>
-                    <LabelList dataKey="total" position="right" fill={INK.text} fontSize={12} />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </ChartCard>
+            <div key={p._id} className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col gap-2">
+              <div className="flex items-start justify-between gap-2">
+                <h3 className="m-0 text-base font-semibold text-slate-800 break-words">{p.name}</h3>
+                <div className="flex gap-1 shrink-0">
+                  <button type="button" title="Editar" onClick={() => setEditando(p)}
+                    className="p-1.5 rounded-lg text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 bg-transparent border-none cursor-pointer">
+                    <HiOutlinePencilSquare className="w-4 h-4" />
+                  </button>
+                  <button type="button" title="Eliminar" onClick={() => eliminar(p)}
+                    className="p-1.5 rounded-lg text-slate-500 hover:text-rose-600 hover:bg-rose-50 bg-transparent border-none cursor-pointer">
+                    <HiOutlineTrash className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+              <div className="text-sm text-slate-600">
+                Gasto de {nombreMes(mesActual).toLowerCase()}: <b className="text-slate-800">{money(gastoMes)}</b>
+              </div>
+              <div className="flex flex-wrap gap-1.5 text-[11px]">
+                <span className="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
+                  {(p.anuncios || []).length} anuncio(s)
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-100">
+                  {(p.servicios || []).length} servicio(s)
+                </span>
+                {(p.servicios || []).some((s) => s.generaIngresos === false) && (
+                  <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
+                    {(p.servicios || []).filter((s) => s.generaIngresos === false).length} sin ingresos
+                  </span>
+                )}
+              </div>
+              {(p.servicios || []).length > 0 && (
+                <p className="m-0 text-xs text-slate-500 break-words">
+                  {(p.servicios || []).map((s) => s.name).join(' · ')}
+                </p>
+              )}
+            </div>
           );
-        })()}
-
-        {conServicios && (
-          <ChartCard
-            title="Servicios más pedidos"
-            subtitle="Servicios de interés apuntados en las oportunidades del rango."
-            columns={[{ key: 'servicio', label: 'Servicio' }, { key: 'count', label: 'Oportunidades', num: true }]}
-            rows={data.servicios}
-            empty={false}
-          >
-            <ResponsiveContainer width="100%" height={data.servicios.length * 44 + 24}>
-              <BarChart data={data.servicios} layout="vertical" margin={{ top: 8, right: 56, bottom: 8, left: 8 }}>
-                <CartesianGrid horizontal={false} stroke={INK.grid} />
-                <XAxis type="number" hide domain={[0, 'dataMax']} />
-                <YAxis type="category" dataKey="servicio" width={190} tickLine={false} axisLine={false} tick={{ fill: INK.text, fontSize: 12 }} />
-                <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipSerie />} />
-                <Bar dataKey="count" name="Oportunidades" fill={C_CHATS} barSize={20} radius={[0, 4, 4, 0]} isAnimationActive={false}>
-                  <LabelList dataKey="count" position="right" fill={INK.text} fontSize={12} />
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </ChartCard>
-        )}
-
-        <ChartCard
-          title="Oportunidades por canal"
-          subtitle="Por dónde entró la conversación de la que nació la oportunidad."
-          columns={[{ key: 'label', label: 'Canal' }, { key: 'count', label: 'Oportunidades', num: true }]}
-          rows={canales}
-          empty={!canales.length}
-        >
-          <ResponsiveContainer width="100%" height={Math.max(canales.length, 1) * 44 + 24}>
-            <BarChart data={canales} layout="vertical" margin={{ top: 8, right: 56, bottom: 8, left: 8 }}>
-              <CartesianGrid horizontal={false} stroke={INK.grid} />
-              <XAxis type="number" hide domain={[0, 'dataMax']} />
-              <YAxis type="category" dataKey="label" width={110} tickLine={false} axisLine={false} tick={{ fill: INK.text, fontSize: 13 }} />
-              <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipSerie />} />
-              <Bar dataKey="count" name="Oportunidades" fill={C_CHATS} barSize={20} radius={[0, 4, 4, 0]} isAnimationActive={false}>
-                <LabelList dataKey="count" position="right" fill={INK.text} fontSize={12} />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        {conMotivos && (
-          <ChartCard
-            title="Motivos de pérdida"
-            subtitle="Por qué se perdieron las oportunidades marcadas como perdidas. Pincha una barra para ver quiénes son y entrar a su chat."
-            columns={[{ key: 'motivo', label: 'Motivo' }, { key: 'count', label: 'Oportunidades', num: true }]}
-            rows={data.motivosPerdida}
-            empty={false}
-            onRowClick={(r) => setDrill({
-              by: 'motivo',
-              value: r.motivo,
-              titulo: `Perdidas por «${r.motivo}»`,
-            })}
-          >
-            <ResponsiveContainer width="100%" height={data.motivosPerdida.length * 44 + 24}>
-              <BarChart data={data.motivosPerdida} layout="vertical" margin={{ top: 8, right: 56, bottom: 8, left: 8 }}>
-                <CartesianGrid horizontal={false} stroke={INK.grid} />
-                <XAxis type="number" hide domain={[0, 'dataMax']} />
-                <YAxis type="category" dataKey="motivo" width={190} tickLine={false} axisLine={false} tick={{ fill: INK.text, fontSize: 12 }} />
-                <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipSerie />} />
-                <Bar
-                  dataKey="count"
-                  name="Oportunidades"
-                  fill={STAGE_COLOR.perdido}
-                  barSize={20}
-                  radius={[0, 4, 4, 0]}
-                  isAnimationActive={false}
-                  cursor="pointer"
-                  onClick={(e) => {
-                    const fila = filaDe(e);
-                    if (!fila?.motivo) return;
-                    setDrill({ by: 'motivo', value: fila.motivo, titulo: `Perdidas por «${fila.motivo}»` });
-                  }}
-                >
-                  <LabelList dataKey="count" position="right" fill={INK.text} fontSize={12} />
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </ChartCard>
-        )}
-
-        {/**
-          * CITAS AGENDADAS POR SERVICIO (sep-2026).
-          *
-          * Lo que la agenda real agendó: el total de citas del rango por el
-          * servicio del catálogo de la agenda (el que sale en el selector al
-          * agendar, no el del inventario), y de cada uno cuántas están
-          * pendientes, asistidas y completadas — la fila del dinero que vino y
-          * el que falta por venir. La columna «Otras» junta confirmadas, no
-          * asistió y canceladas, para que el total cuadre siempre.
-          */}
-        <ChartCard
-          title="Citas agendadas por servicio"
-          subtitle="Citas del rango por servicio del catálogo de la agenda, con su estado actual."
-          columns={[
-            { key: 'servicio', label: 'Servicio' },
-            { key: 'total', label: 'Agendadas', num: true },
-            { key: 'pendiente', label: 'Pendientes', num: true },
-            { key: 'asistida', label: 'Asistidas', num: true },
-            { key: 'completada', label: 'Completadas', num: true },
-            { key: 'otras', label: 'Otras', num: true },
-          ]}
-          rows={citasPorServicio}
-          empty={!citasPorServicio.length}
-          legend={[
-            { label: 'Pendientes', color: C_PENDIENTE },
-            { label: 'Asistidas', color: C_ASISTIDA },
-            { label: 'Completadas', color: C_COMPLETADA },
-            { label: 'Otras', color: C_OTRAS },
-          ]}
-        >
-          <ResponsiveContainer width="100%" height={Math.max(citasPorServicio.length, 1) * 40 + 24}>
-            <BarChart data={citasPorServicio} layout="vertical" margin={{ top: 8, right: 24, bottom: 8, left: 8 }}>
-              <CartesianGrid horizontal={false} stroke={INK.grid} />
-              <XAxis type="number" hide domain={[0, 'dataMax']} />
-              <YAxis type="category" dataKey="servicio" width={190} tickLine={false} axisLine={false} tick={{ fill: INK.text, fontSize: 12 }} />
-              <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipSerie />} />
-              {/* Apiladas: la barra entera ES el total agendado, y el color dice
-                  en qué estado está cada trozo. */}
-              <Bar dataKey="pendiente" stackId="cita" name="Pendientes" fill={C_PENDIENTE} barSize={20} isAnimationActive={false} />
-              <Bar dataKey="asistida" stackId="cita" name="Asistidas" fill={C_ASISTIDA} barSize={20} isAnimationActive={false} />
-              <Bar dataKey="completada" stackId="cita" name="Completadas" fill={C_COMPLETADA} barSize={20} radius={[0, 4, 4, 0]} isAnimationActive={false} />
-              <Bar dataKey="otras" stackId="cita" name="Otras" fill={C_OTRAS} barSize={20} radius={[0, 4, 4, 0]} isAnimationActive={false} />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
+        })}
       </div>
 
-      {/* La `key` fuerza a montarlo de nuevo al cambiar de barra: así el detalle
-          arranca siempre limpio en vez de enseñar un instante el de la anterior. */}
-      {drill && (
-        <DetalleBarra
-          key={`${drill.by}|${drill.value}|${drill.stage || ''}`}
-          drill={drill}
-          from={start}
-          to={end}
-          onClose={() => setDrill(null)}
+      {editando && (
+        <EditorPrograma
+          programa={editando}
+          otros={programas.filter((p) => String(p._id) !== String(editando._id || ''))}
+          onClose={() => setEditando(null)}
+          onGuardado={() => { setEditando(null); onCambio(); }}
         />
       )}
     </div>
   );
 }
 
-/**
- * QUIÉNES hay detrás de una barra, con su chat a un clic.
- *
- * El rango que se manda es el MISMO que el de la página, no el que se ve en los
- * cuadros de fecha: si alguien cambia las fechas sin darle a Actualizar, la
- * gráfica sigue siendo la del rango cargado y el detalle tiene que cuadrar con
- * ella. Por eso `from`/`to` llegan desde arriba junto con la barra abierta.
- */
-function DetalleBarra({ drill, from, to, onClose }) {
-  const [items, setItems] = useState(null);
-  const [error, setError] = useState('');
-  const [truncated, setTruncated] = useState(false);
-  // "Chats por anuncio" cuenta CONVERSACIONES; las otras dos, oportunidades.
-  // Llamarlas por su nombre evita que una cifra correcta parezca un error.
-  const [unidad, setUnidad] = useState('oportunidades');
+function EditorPrograma({ programa, otros, onClose, onGuardado }) {
+  const hoy = todayEc();
+  const [name, setName] = useState(programa.name || '');
+  const [gastos, setGastos] = useState((programa.gastos || []).map((g) => ({ ...g })));
+  const [anuncios, setAnuncios] = useState((programa.anuncios || []).map((a) => ({ ...a })));
+  const [servicios, setServicios] = useState((programa.servicios || []).map((s) => ({ ...s })));
+  const [fuentes, setFuentes] = useState(null);
+  const [idManual, setIdManual] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const [nuevoMes, setNuevoMes] = useState(Number(hoy.slice(5, 7)));
+  const [nuevoAnio, setNuevoAnio] = useState(Number(hoy.slice(0, 4)));
+  const [nuevoMonto, setNuevoMonto] = useState('');
 
   useEffect(() => {
-    let vivo = true;
-    api
-      .get('/chats/opportunities/analytics/detail', {
-        params: { from, to, by: drill.by, value: drill.value, stage: drill.stage || undefined },
-      })
-      .then((r) => {
-        if (!vivo) return;
-        setItems(r.data?.items || []);
-        setTruncated(!!r.data?.truncated);
-        setUnidad(r.data?.unidad || 'oportunidades');
-      })
-      .catch((err) => {
-        if (vivo) setError(err.response?.data?.message || 'No se pudo cargar el detalle');
-      });
-    return () => { vivo = false; };
-  }, [drill.by, drill.value, drill.stage, from, to]);
+    api.get('/ad-programs/ad-sources')
+      .then(({ data }) => setFuentes(data || []))
+      .catch(() => setFuentes([]));
+  }, []);
+
+  /** Anuncio → programa que ya lo tiene (no puede estar en dos). */
+  const deOtro = useMemo(() => {
+    const m = new Map();
+    otros.forEach((p) => (p.anuncios || []).forEach((a) => m.set(a.adId, p.name)));
+    return m;
+  }, [otros]);
+  const mios = new Set(anuncios.map((a) => a.adId));
+
+  const anadirIds = (ids, wf = null) => {
+    const libres = ids.filter((id) => id && !mios.has(id) && !deOtro.has(id));
+    const ocupados = ids.filter((id) => deOtro.has(id));
+    if (ocupados.length) {
+      toast(`${ocupados.length} anuncio(s) ya son de otro programa y no se añadieron.`, { icon: '⚠️' });
+    }
+    if (!libres.length) return;
+    setAnuncios((prev) => [
+      ...prev,
+      ...libres.map((adId) => ({ adId, workflow: wf?._id || null, workflowName: wf?.name || '' })),
+    ]);
+  };
+
+  const anadirGasto = () => {
+    const monto = Number(nuevoMonto);
+    if (!Number.isFinite(monto) || monto < 0 || nuevoMonto === '') return toast.error('Escribe el monto del gasto.');
+    const mes = `${nuevoAnio}-${String(nuevoMes).padStart(2, '0')}`;
+    setGastos((prev) => {
+      // Un gasto por mes: si ya estaba, se reemplaza.
+      const resto = prev.filter((g) => g.mes !== mes);
+      return [...resto, { mes, monto, nota: '' }].sort((a, b) => b.mes.localeCompare(a.mes));
+    });
+    setNuevoMonto('');
+  };
+
+  const guardar = async () => {
+    if (!name.trim()) return toast.error('Escribe el nombre del programa.');
+    setGuardando(true);
+    try {
+      const body = { name: name.trim(), gastos, anuncios, servicios };
+      if (programa._id) await api.put(`/ad-programs/${programa._id}`, body);
+      else await api.post('/ad-programs', body);
+      toast.success('Programa guardado');
+      onGuardado();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo guardar');
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const anios = [Number(hoy.slice(0, 4)) - 1, Number(hoy.slice(0, 4)), Number(hoy.slice(0, 4)) + 1];
+  const input = 'w-full border border-slate-200 rounded-xl px-3 py-2 text-sm';
 
   return (
-    <Modal isOpen onClose={onClose} title={drill.titulo} size="2xl">
-      <div className="grid gap-3 min-w-0">
-        <p className="text-xs text-slate-500">
-          {drill.subtitulo ? `${drill.subtitulo} · ` : ''}
-          {ddmm(from)} al {ddmm(to)}
-          {items
-            ? ` · ${nf.format(items.length)} ${unidad === 'chats'
-              ? `chat${items.length === 1 ? '' : 's'}`
-              : `oportunidad${items.length === 1 ? '' : 'es'}`}`
-            : ''}
-        </p>
-        <p className="text-[11px] text-slate-400 -mt-1">
-          Haz clic en una persona para abrir su chat en una pestaña nueva.
-        </p>
+    <Modal isOpen onClose={onClose} title={programa._id ? 'Editar programa' : 'Nuevo programa'} size="lg">
+      <div className="space-y-5">
+        <label className="block">
+          <span className="text-xs font-medium text-slate-600">Nombre del programa</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Detox, Mujer Sana 360…" className={`mt-1 ${input}`} />
+        </label>
 
-        {truncated && (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-            Se muestran las 500 más recientes. Acota el rango de fechas para verlas todas.
-          </div>
-        )}
-
-        {error ? (
-          <p className="py-10 text-center text-sm text-rose-600">{error}</p>
-        ) : !items ? (
-          <p className="py-10 text-center text-sm text-slate-400">Cargando…</p>
-        ) : !items.length ? (
-          <p className="py-10 text-center text-sm text-slate-400">
-            No hay {unidad === 'chats' ? 'chats' : 'oportunidades'} en esta barra.
-          </p>
-        ) : (
-          <div className="border border-slate-200 rounded-xl overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[680px] text-left text-xs">
-                <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500 sticky top-0">
-                  <tr>
-                    <th className="px-3 py-2.5">Contacto</th>
-                    <th className="px-3 py-2.5">Teléfono</th>
-                    <th className="px-3 py-2.5 w-28">Etapa</th>
-                    <th className="px-3 py-2.5">{drill.by === 'oportunidad' ? 'Motivo' : 'Oportunidad'}</th>
-                    <th className="px-3 py-2.5">Asignado a</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {items.map((it, i) => {
-                    const abrible = !!it.conversationId;
-                    return (
-                      <tr
-                        key={`${it.conversationId}-${i}`}
-                        onClick={abrible ? () => abrirChatEnPestaña(it) : undefined}
-                        title={abrible ? 'Abrir el chat en una pestaña nueva' : undefined}
-                        className={abrible ? 'cursor-pointer hover:bg-emerald-50/60' : ''}
-                      >
-                        <td className="px-3 py-2.5">
-                          <div className={`font-semibold flex items-center gap-1.5 ${abrible ? 'text-emerald-700' : 'text-slate-700'}`}>
-                            <span className="break-words">{it.contactName || 'Sin nombre'}</span>
-                            {abrible && <HiOutlineArrowTopRightOnSquare className="w-3.5 h-3.5 shrink-0 text-emerald-500" />}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2.5 text-slate-600">{formatPhone(it.phone) || '—'}</td>
-                        <td className="px-3 py-2.5">
-                          {/* Un chat que vino de un anuncio puede no tener
-                              oportunidad todavía: ahí no hay etapa que pintar. */}
-                          {it.stage ? (
-                            <span
-                              className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold text-white"
-                              style={{ background: STAGE_COLOR[it.stage] || C_CHATS }}
-                            >
-                              {STAGE_LABEL[it.stage] || it.stage}
-                            </span>
-                          ) : (
-                            <span className="text-slate-400">Sin oportunidad</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2.5 text-slate-500 break-words">
-                          {(drill.by === 'oportunidad' ? it.motivo : it.nombre) || '—'}
-                        </td>
-                        <td className="px-3 py-2.5 text-slate-500">{it.assignedToName || 'Sin asignar'}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+        {/* GASTO EN PUBLICIDAD, POR MES */}
+        <section>
+          <h4 className="m-0 mb-1 text-sm font-semibold text-slate-700">Gasto en publicidad</h4>
+          <p className="m-0 mb-2 text-[11px] text-slate-500">Lo que se invierte en anuncios para este programa, mes a mes.</p>
+          <div className="flex flex-wrap items-end gap-2">
+            <select value={nuevoMes} onChange={(e) => setNuevoMes(Number(e.target.value))} className="border border-slate-200 rounded-xl px-2 py-2 text-sm">
+              {MESES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+            </select>
+            <select value={nuevoAnio} onChange={(e) => setNuevoAnio(Number(e.target.value))} className="border border-slate-200 rounded-xl px-2 py-2 text-sm">
+              {anios.map((a) => <option key={a} value={a}>{a}</option>)}
+            </select>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
+              <input
+                type="number" min="0" step="0.01" value={nuevoMonto}
+                onChange={(e) => setNuevoMonto(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); anadirGasto(); } }}
+                placeholder="0.00" className="w-32 border border-slate-200 rounded-xl pl-6 pr-2 py-2 text-sm"
+              />
             </div>
+            <button type="button" onClick={anadirGasto}
+              className="px-3 py-2 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm font-medium cursor-pointer">
+              Añadir
+            </button>
           </div>
-        )}
+          {gastos.length > 0 && (
+            <ul className="mt-2 divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">
+              {gastos.map((g) => (
+                <li key={g.mes} className="flex items-center justify-between gap-2 px-3 py-1.5 text-sm bg-white">
+                  <span className="text-slate-700">{nombreMes(g.mes)}</span>
+                  <span className="flex items-center gap-2">
+                    <b className="text-slate-800">{money(g.monto)}</b>
+                    <button type="button" title="Quitar" onClick={() => setGastos((prev) => prev.filter((x) => x.mes !== g.mes))}
+                      className="p-1 text-slate-400 hover:text-rose-600 bg-transparent border-none cursor-pointer">
+                      <HiOutlineTrash className="w-4 h-4" />
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {/* ANUNCIOS, ESCOGIDOS DESDE LAS AUTOMATIZACIONES */}
+        <section>
+          <h4 className="m-0 mb-1 text-sm font-semibold text-slate-700">Anuncios del programa</h4>
+          <p className="m-0 mb-2 text-[11px] text-slate-500">
+            Son los ids que pusiste en el disparador «Anuncio» de cada automatización. Añade los de una
+            automatización de una vez, o escribe un id suelto.
+          </p>
+          {fuentes === null ? (
+            <p className="text-xs text-slate-400">Cargando automatizaciones…</p>
+          ) : !fuentes.length ? (
+            <p className="text-xs text-slate-400">Ninguna automatización tiene ids de anuncio.</p>
+          ) : (
+            <div className="grid gap-1.5 max-h-56 overflow-y-auto pr-1">
+              {fuentes.map((f) => {
+                const faltan = f.adIds.filter((id) => !mios.has(id) && !deOtro.has(id));
+                const deOtroPrograma = f.adIds.filter((id) => deOtro.has(id));
+                return (
+                  <div key={f._id} className="flex flex-wrap items-center justify-between gap-2 border border-slate-200 rounded-lg px-3 py-2 bg-white">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-slate-800 break-words">
+                        {f.name}{!f.active && <span className="ml-1 text-[10px] text-slate-400">(inactiva)</span>}
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        {f.adIds.length} anuncio(s)
+                        {deOtroPrograma.length > 0 && ` · ${deOtroPrograma.length} ya en otro programa`}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!faltan.length}
+                      onClick={() => anadirIds(f.adIds, f)}
+                      className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-indigo-200 bg-indigo-50 text-indigo-800 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {faltan.length ? `Añadir ${faltan.length}` : 'Ya añadidos'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div className="flex gap-2 mt-2">
+            <input
+              value={idManual}
+              onChange={(e) => setIdManual(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); anadirIds(idManual.split(',').map((s) => s.trim())); setIdManual(''); }
+              }}
+              placeholder="Id de anuncio (o varios separados por coma)"
+              className={input}
+            />
+            <button type="button" onClick={() => { anadirIds(idManual.split(',').map((s) => s.trim())); setIdManual(''); }}
+              className="shrink-0 px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm cursor-pointer">
+              Añadir
+            </button>
+          </div>
+          {anuncios.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {anuncios.map((a) => (
+                <span key={a.adId} title={a.workflowName ? `De «${a.workflowName}»` : 'Escrito a mano'}
+                  className="inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full bg-indigo-50 border border-indigo-100 text-indigo-800 text-xs">
+                  <HiOutlineMegaphone className="w-3 h-3" /> {a.adId}
+                  <button type="button" onClick={() => setAnuncios((prev) => prev.filter((x) => x.adId !== a.adId))}
+                    className="p-0.5 leading-none text-indigo-600 hover:text-rose-600 bg-transparent border-none cursor-pointer">×</button>
+                </span>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* SERVICIOS DEL INVENTARIO */}
+        <section>
+          <h4 className="m-0 mb-1 text-sm font-semibold text-slate-700">Servicios del programa</h4>
+          <p className="m-0 mb-2 text-[11px] text-slate-500">
+            Los servicios del inventario que se agendan para este programa. Desmarca «Genera ingresos» en los que
+            no se cobran (una valoración gratuita, por ejemplo): la cita se cuenta, pero su valor no suma.
+          </p>
+          <ServiceItemPicker
+            value={null}
+            onChange={(s) => {
+              if (!s) return;
+              if (servicios.some((x) => String(x.serviceItem) === String(s._id))) return;
+              setServicios((prev) => [...prev, { serviceItem: s._id, name: s.name, generaIngresos: true }]);
+            }}
+            placeholder="+ Añadir un servicio del inventario…"
+          />
+          {servicios.length > 0 && (
+            <ul className="mt-2 divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">
+              {servicios.map((s) => (
+                <li key={String(s.serviceItem)} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm bg-white">
+                  <span className="text-slate-800 break-words min-w-0">{s.name}</span>
+                  <span className="flex items-center gap-3">
+                    <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={s.generaIngresos !== false}
+                        onChange={(e) => setServicios((prev) => prev.map((x) => (
+                          String(x.serviceItem) === String(s.serviceItem) ? { ...x, generaIngresos: e.target.checked } : x
+                        )))}
+                        className="accent-emerald-600"
+                      />
+                      Genera ingresos
+                    </label>
+                    <button type="button" title="Quitar" onClick={() => setServicios((prev) => prev.filter((x) => String(x.serviceItem) !== String(s.serviceItem)))}
+                      className="p-1 text-slate-400 hover:text-rose-600 bg-transparent border-none cursor-pointer">
+                      <HiOutlineTrash className="w-4 h-4" />
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm cursor-pointer">Cancelar</button>
+          <button type="button" onClick={guardar} disabled={guardando}
+            className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium border-none cursor-pointer disabled:opacity-50">
+            {guardando ? 'Guardando…' : 'Guardar'}
+          </button>
+        </div>
       </div>
     </Modal>
   );
 }
 
-/**
- * Los puntos de la línea se ocultan cuando el rango es largo: con 90 días encima
- * de la línea son ruido, y el valor exacto sigue estando en el tooltip y en la
- * tabla.
- */
-const dotFor = (serie, color) =>
-  (serie || []).length <= 45 ? { r: 4, fill: color, strokeWidth: 0 } : false;
+// ─── Pestaña RESULTADOS ─────────────────────────────────────────────────────
 
-function Preset({ children, onClick, active }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-3 py-1.5 rounded-xl text-xs border cursor-pointer transition-colors ${
-        active
-          ? 'bg-slate-800 text-white border-slate-800'
-          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
+function PestanaResultados({ hayProgramas, irAProgramas }) {
+  const hoy = todayEc();
+  const [desde, setDesde] = useState(`${hoy.slice(0, 7)}-01`);
+  const [hasta, setHasta] = useState(hoy);
+  const [por, setPor] = useState('creacion');
+  // El resultado recuerda de qué consulta es: mientras no llegue el de la
+  // consulta actual, se está calculando.
+  const [resultado, setResultado] = useState({ clave: '', data: null });
+  const [abierto, setAbierto] = useState(null);
+  const clave = `${desde}|${hasta}|${por}`;
+  const cargando = !!desde && !!hasta && resultado.clave !== clave;
+  const data = resultado.data;
 
-function Tile({ label, value, hint, color, title }) {
-  return (
-    <div className="bg-white border border-slate-200 rounded-2xl p-4" title={title}>
-      <div className="flex items-center gap-1.5">
-        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-        <p className="text-[11px] text-slate-500 uppercase font-semibold tracking-wide">{label}</p>
+  useEffect(() => {
+    if (!desde || !hasta) return undefined;
+    let vivo = true;
+    api.get('/ad-programs/analytics', { params: { from: desde, to: hasta, por } })
+      .then(({ data: d }) => { if (vivo) setResultado({ clave: `${desde}|${hasta}|${por}`, data: d }); })
+      .catch((err) => {
+        if (!vivo) return;
+        toast.error(err.response?.data?.message || 'No se pudieron calcular las analíticas');
+        setResultado((r) => ({ ...r, clave: `${desde}|${hasta}|${por}` }));
+      });
+    return () => { vivo = false; };
+  }, [desde, hasta, por]);
+
+  const filas = useMemo(() => data?.programas || [], [data]);
+  const total = useMemo(() => filas.reduce((t, p) => ({
+    gasto: t.gasto + p.gasto,
+    citas: t.citas + p.citas,
+    efectivas: t.efectivas + p.efectivas,
+    ingresos: t.ingresos + p.ingresos,
+  }), { gasto: 0, citas: 0, efectivas: 0, ingresos: 0 }), [filas]);
+  const roiTotal = total.gasto ? (total.ingresos - total.gasto) / total.gasto : null;
+
+  if (!hayProgramas) {
+    return (
+      <div className="bg-white border border-dashed border-slate-300 rounded-xl p-6 text-center text-sm text-slate-500">
+        Primero define tus programas en la pestaña{' '}
+        <button type="button" onClick={irAProgramas} className="text-emerald-700 font-semibold underline bg-transparent border-none cursor-pointer p-0">Programas</button>.
       </div>
-      <p className="text-3xl font-bold text-slate-800 mt-1 leading-tight">{value}</p>
-      <p className="text-xs text-slate-400 mt-0.5">{hint}</p>
+    );
+  }
+
+  const kpi = (label, valor, sub) => (
+    <div className="bg-white border border-slate-200 rounded-xl px-4 py-3">
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className="text-xl font-bold text-slate-800 mt-0.5">{valor}</div>
+      {sub && <div className="text-[11px] text-slate-400 mt-0.5">{sub}</div>}
     </div>
   );
-}
 
-/**
- * Tarjeta de una gráfica. Cada una ocupa TODA la fila (antes iban de dos en dos y
- * las barras salían apretadas) y trae su equivalente en tabla: el valor exacto
- * nunca depende de acertar con el ratón encima de una barra.
- */
-function ChartCard({ title, subtitle, children, columns, rows, empty, legend, onRowClick }) {
-  const [tabla, setTabla] = useState(false);
   return (
-    <div className="bg-white border border-slate-200 rounded-2xl p-4">
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div>
-          <p className="text-base font-semibold text-slate-800">{title}</p>
-          {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border border-slate-200 p-3 flex flex-wrap gap-3 items-end">
+        <label className="text-sm">Desde<DateInput value={desde} onChange={(e) => setDesde(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
+        <label className="text-sm">Hasta<DateInput value={hasta} onChange={(e) => setHasta(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
+        <label className="text-sm">Contar por
+          <select value={por} onChange={(e) => setPor(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm">
+            <option value="creacion">Fecha en que se agendó</option>
+            <option value="cita">Fecha de la cita</option>
+          </select>
+        </label>
+        {cargando && <span className="text-xs text-slate-400 pb-2">Calculando…</span>}
+      </div>
+
+      <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
+        {kpi('Gasto en publicidad', money(total.gasto), 'de los meses del rango')}
+        {kpi('Citas desde chat', total.citas, `${total.efectivas} efectivas`)}
+        {kpi('Ingresos', money(total.ingresos), 'de citas efectivas')}
+        {kpi('Retorno (ROI)', pct(roiTotal), total.gasto ? `costo por efectiva ${total.efectivas ? money(total.gasto / total.efectivas) : '—'}` : 'sin gasto registrado')}
+      </div>
+
+      <div className="tbl-wrap">
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead className="bg-slate-50 text-slate-600">
+              <tr>
+                <th className="text-left px-3 py-2">Programa</th>
+                <th className="text-right px-3 py-2">Gasto</th>
+                <th className="text-right px-3 py-2">Citas</th>
+                <th className="text-right px-3 py-2">Efectivas</th>
+                <th className="text-right px-3 py-2">Canceladas</th>
+                <th className="text-right px-3 py-2">No asistió</th>
+                <th className="text-right px-3 py-2">Pendientes</th>
+                <th className="text-right px-3 py-2">Canjes</th>
+                <th className="text-right px-3 py-2">Ingresos</th>
+                <th className="text-right px-3 py-2">Por agendar</th>
+                <th className="text-right px-3 py-2">Costo / efectiva</th>
+                <th className="text-right px-3 py-2">ROI</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((p) => {
+                const open = abierto === String(p._id);
+                return (
+                  <Fragment key={p._id}>
+                    <tr
+                      className="border-t border-slate-100 cursor-pointer hover:bg-slate-50"
+                      onClick={() => setAbierto(open ? null : String(p._id))}
+                    >
+                      <td className="px-3 py-2 font-medium text-slate-800 whitespace-nowrap">
+                        {open ? <HiOutlineChevronDown className="inline w-4 h-4 mr-1" /> : <HiOutlineChevronRight className="inline w-4 h-4 mr-1" />}
+                        {p.name}
+                      </td>
+                      <td className="px-3 py-2 text-right">{money(p.gasto)}</td>
+                      <td className="px-3 py-2 text-right font-semibold">{p.citas}</td>
+                      <td className="px-3 py-2 text-right text-emerald-700">{p.efectivas}</td>
+                      <td className="px-3 py-2 text-right text-rose-700">{p.canceladas}</td>
+                      <td className="px-3 py-2 text-right text-amber-700">{p.noAsistio}</td>
+                      <td className="px-3 py-2 text-right text-slate-500">{p.pendientes}</td>
+                      <td className="px-3 py-2 text-right">{p.canjes}</td>
+                      <td className="px-3 py-2 text-right font-semibold">{money(p.ingresos)}</td>
+                      <td className="px-3 py-2 text-right text-slate-500" title="Valor de las citas que siguen en pie (pendientes + efectivas)">{money(p.valorAgendado)}</td>
+                      <td className="px-3 py-2 text-right">{p.costoPorEfectiva === null ? '—' : money(p.costoPorEfectiva)}</td>
+                      <td className={`px-3 py-2 text-right font-semibold ${p.roi === null ? '' : p.roi >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{pct(p.roi)}</td>
+                    </tr>
+                    {open && (
+                      <tr className="bg-slate-50/60">
+                        <td colSpan={12} className="px-3 py-3">
+                          <DetalleCitas citas={p.citasDetalle || []} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+              {data?.sinPrograma?.citas > 0 && (
+                <tr className="border-t border-slate-200 text-slate-500">
+                  <td className="px-3 py-2 italic" title="Citas desde chat cuyo anuncio no está en ningún programa (o que no vinieron de un anuncio)">
+                    Sin programa{data.sinPrograma.conAnuncio ? ` (${data.sinPrograma.conAnuncio} con anuncio sin asignar)` : ''}
+                  </td>
+                  <td className="px-3 py-2 text-right">—</td>
+                  <td className="px-3 py-2 text-right">{data.sinPrograma.citas}</td>
+                  <td className="px-3 py-2 text-right">{data.sinPrograma.efectivas}</td>
+                  <td className="px-3 py-2 text-right">{data.sinPrograma.canceladas}</td>
+                  <td className="px-3 py-2 text-right">{data.sinPrograma.noAsistio}</td>
+                  <td className="px-3 py-2 text-right">{data.sinPrograma.pendientes}</td>
+                  <td className="px-3 py-2 text-right">{data.sinPrograma.canjes}</td>
+                  <td className="px-3 py-2 text-right">{money(data.sinPrograma.ingresos)}</td>
+                  <td className="px-3 py-2 text-right">{money(data.sinPrograma.valorAgendado)}</td>
+                  <td className="px-3 py-2 text-right">—</td>
+                  <td className="px-3 py-2 text-right">—</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
-        {/* La leyenda se pinta aquí, y no con <Legend> de recharts, para que las
-            series salgan en el orden del embudo (creadas → agendadas → ganadas)
-            y no reordenadas por la librería. */}
-        {legend?.length > 0 && !tabla && (
-          <div className="flex items-center gap-4 flex-wrap ml-auto mr-1">
-            {legend.map((l) => (
-              <span key={l.label} className="flex items-center gap-1.5 text-xs text-slate-600">
-                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: l.color }} />
-                {l.label}
-              </span>
-            ))}
-          </div>
-        )}
-        <button
-          onClick={() => setTabla((v) => !v)}
-          title={tabla ? 'Ver gráfica' : 'Ver tabla'}
-          className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 text-xs cursor-pointer hover:bg-slate-50"
-        >
-          {tabla ? <HiOutlineChartBar /> : <HiOutlineTableCells />}
-          {tabla ? 'Gráfica' : 'Tabla'}
-        </button>
       </div>
-      {empty ? (
-        <p className="text-sm text-slate-400 py-10 text-center">Sin datos en este rango</p>
-      ) : tabla ? (
-        <TablaDatos columns={columns} rows={rows} onRowClick={onRowClick} />
-      ) : (
-        children
-      )}
+
+      <p className="text-[11px] text-slate-400 m-0">
+        <b>Efectivas</b> = asistidas o completadas. <b>Ingresos</b> = valor asignado a las citas efectivas, sin canjes
+        ni servicios marcados «no genera ingresos». Una cita es del programa por el <b>anuncio</b> del que vino su chat;
+        si el chat no vino de un anuncio de ningún programa, por su <b>servicio</b> (cuando ese servicio es de un solo programa).
+      </p>
     </div>
   );
 }
 
-function TablaDatos({ columns = [], rows = [], onRowClick }) {
+function DetalleCitas({ citas }) {
+  if (!citas.length) return <p className="m-0 text-sm text-slate-400">Sin citas en este rango.</p>;
   return (
-    <div className="overflow-x-auto max-h-96 overflow-y-auto">
-      <table className="w-full text-sm">
-        <thead className="sticky top-0 bg-white">
-          <tr className="text-left text-slate-500 border-b border-slate-200">
-            {columns.map((c) => (
-              <th key={c.key} className={`py-2 px-2 font-medium ${c.num ? 'text-right' : ''}`}>{c.label}</th>
-            ))}
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead className="text-slate-500">
+          <tr>
+            <th className="text-left px-2 py-1">Paciente</th>
+            <th className="text-left px-2 py-1">Agendada</th>
+            <th className="text-left px-2 py-1">Cita</th>
+            <th className="text-left px-2 py-1">Servicio</th>
+            <th className="text-left px-2 py-1">Sucursal</th>
+            <th className="text-left px-2 py-1">Estado</th>
+            <th className="text-right px-2 py-1">Valor</th>
+            <th className="text-left px-2 py-1">Por</th>
+            <th />
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
-            <tr
-              key={i}
-              onClick={onRowClick ? () => onRowClick(r) : undefined}
-              title={onRowClick ? 'Ver quiénes son' : undefined}
-              className={`border-b border-slate-100 last:border-0 ${onRowClick ? 'cursor-pointer hover:bg-emerald-50/60' : ''}`}
-            >
-              {columns.map((c) => (
-                <td key={c.key} className={`py-1.5 px-2 text-slate-700 ${c.num ? 'text-right tabular-nums' : ''}`}>
-                  {c.fmt ? c.fmt(r[c.key]) : (r[c.key] ?? '—')}
-                </td>
-              ))}
+          {citas.map((c) => (
+            <tr key={c._id} className="border-t border-slate-200/70">
+              <td className="px-2 py-1.5 text-slate-800">{c.paciente || c.contacto || '—'}</td>
+              <td className="px-2 py-1.5 whitespace-nowrap">{fmtDate(c.creada)}</td>
+              <td className="px-2 py-1.5 whitespace-nowrap">{fmtDate(c.fecha)} {c.hora}</td>
+              <td className="px-2 py-1.5">
+                {c.servicio || '—'}
+                {!c.generaIngresos && <span className="ml-1 text-[10px] text-amber-700">(sin ingresos)</span>}
+              </td>
+              <td className="px-2 py-1.5">{c.sucursal}</td>
+              <td className="px-2 py-1.5">
+                <span className={`px-1.5 py-0.5 rounded border text-[10px] ${ESTADO[c.grupo]?.cls || ''}`}>
+                  {ESTADO[c.grupo]?.label || c.estado}
+                </span>
+              </td>
+              <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                {c.canje ? <span className="text-violet-700 font-medium">Canje</span>
+                  : c.valor === null || c.valor === undefined ? <span className="text-slate-400">sin valor</span>
+                  : money(c.valor)}
+              </td>
+              <td className="px-2 py-1.5 text-slate-500">{c.atribucion === 'anuncio' ? 'Anuncio' : 'Servicio'}</td>
+              <td className="px-2 py-1.5">
+                {c.conversation && (
+                  <Link to={`/chats?chat=${c.conversation}`} target="_blank" rel="noopener" title="Abrir el chat"
+                    className="text-emerald-700 hover:text-emerald-800">
+                    <HiOutlineArrowTopRightOnSquare className="w-3.5 h-3.5" />
+                  </Link>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
-  );
-}
-
-// ── Tooltips ─────────────────────────────────────────────────────────────────
-
-function TipBox({ title, children }) {
-  return (
-    <div className="bg-white border border-slate-200 rounded-xl shadow-lg px-3 py-2 text-xs">
-      <p className="font-semibold text-slate-700 mb-1">{title}</p>
-      {children}
-    </div>
-  );
-}
-
-function TipFila({ color, label, value }) {
-  return (
-    <p className="flex items-center gap-1.5 text-slate-600">
-      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-      {label}: <span className="font-semibold text-slate-800">{value}</span>
-    </p>
-  );
-}
-
-function TipEtapa({ active, payload }) {
-  if (!active || !payload?.length) return null;
-  const d = payload[0].payload;
-  return (
-    <TipBox title={d.label}>
-      <TipFila color={STAGE_COLOR[d.stage]} label="Oportunidades" value={nf.format(d.count)} />
-      <p className="text-slate-500 mt-0.5">{pct(d.share)} del total · {money(d.value)} esperados</p>
-    </TipBox>
-  );
-}
-
-function TipValor({ active, payload }) {
-  if (!active || !payload?.length) return null;
-  const d = payload[0].payload;
-  return (
-    <TipBox title={d.label}>
-      <TipFila color={STAGE_COLOR[d.stage]} label="Valor esperado" value={money(d.value)} />
-      <p className="text-slate-500 mt-0.5">{nf.format(d.count)} oportunidades</p>
-    </TipBox>
-  );
-}
-
-function TipOportunidad({ active, payload }) {
-  if (!active || !payload?.length) return null;
-  const d = payload[0].payload;
-  const conValor = STAGE_KEYS.filter((s) => d[s] > 0);
-  return (
-    <TipBox title={d.nombre}>
-      <p className="text-slate-600">Total: <span className="font-semibold text-slate-800">{nf.format(d.total)}</span></p>
-      {conValor.map((s) => (
-        <TipFila key={s} color={STAGE_COLOR[s]} label={STAGE_LABEL[s]} value={nf.format(d[s])} />
-      ))}
-      <p className="text-slate-500 mt-0.5">
-        {money(d.value)} esperados{d.desdeAnuncio ? ` · ${nf.format(d.desdeAnuncio)} desde anuncios` : ''}
-      </p>
-    </TipBox>
-  );
-}
-
-function TipAnuncio({ active, payload }) {
-  if (!active || !payload?.length) return null;
-  const d = payload[0].payload;
-  return (
-    <TipBox title={d.titular}>
-      <TipFila color={C_CHATS} label="Chats" value={nf.format(d.chats)} />
-      <p className="text-slate-500 mt-0.5">anuncio {d.adId}</p>
-    </TipBox>
-  );
-}
-
-function TipSerie({ active, payload, label }) {
-  if (!active || !payload?.length) return null;
-  const titulo = typeof label === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(label) ? ddmm(label) : label;
-  return (
-    <TipBox title={titulo}>
-      {payload.map((p) => (
-        <TipFila key={p.dataKey} color={p.color || p.fill} label={p.name} value={nf.format(p.value)} />
-      ))}
-    </TipBox>
   );
 }

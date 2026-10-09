@@ -3160,6 +3160,7 @@ module.exports = {
   keywordMatchesTrigger,
   getTriggers,
   triggersOfNode,
+  getAllChatTriggers,
   matchingFlows,
   triggerMatchesEvent,
   pickRoundRobinAgent,

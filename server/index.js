@@ -160,6 +160,7 @@ app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/reports', require('./routes/reports'));
 app.use('/api/rooms', require('./routes/rooms'));
 app.use('/api/time-blocks', require('./routes/timeBlocks'));
+app.use('/api/ad-programs', require('./routes/adPrograms'));
 app.use('/api/treatments', require('./routes/treatments'));
 app.use('/api/referrals', require('./routes/referrals'));
 app.use('/api/discounts', require('./routes/discounts'));

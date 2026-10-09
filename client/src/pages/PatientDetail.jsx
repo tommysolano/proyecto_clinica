@@ -640,7 +640,7 @@ export default function PatientDetail() {
               {/* Y lo que mostrador le escribió para este paso, en su propia
                   línea para que se lea completa (sep-2026). */}
               {indicacionesEnfermeria && (
-                <span className="block mt-1 text-amber-900">
+                <span className="block mt-1 text-amber-900 whitespace-pre-line break-words">
                   <b>Indicaciones:</b> {indicacionesEnfermeria}
                 </span>
               )}

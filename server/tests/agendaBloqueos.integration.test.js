@@ -150,3 +150,36 @@ test('fuera del rango de fechas del bloqueo no se bloquea nada', async () => {
   }));
   assert.equal(await Appointment.countDocuments({}), 1);
 });
+
+test('el bloqueo por SERVICIO casa con la copia homónima del catálogo de otra empresa', async () => {
+  // Con varias empresas cada una tiene SU catálogo: el bloqueo puede guardar el
+  // «Limpieza» de un catálogo y la cita traer el de la copia. Antes no casaban
+  // por id, el aviso salía en la agenda y la cita se guardaba igual.
+  const { clinicId, userId, patient, s1 } = await seed();
+  const copia = await AppointmentServiceItem.create({
+    clinic: clinicId, name: 'LIMPIEZA ', slug: 'limpieza-copia', color: '#0ea5e9',
+  });
+  ok(await crearBloqueo(clinicId, userId, {
+    startDate: manana(), endDate: manana(), allDay: true,
+    service: s1._id, reason: 'Sin limpiezas el martes',
+  }));
+
+  const r = await agendar(clinicId, userId, {
+    patient: patient._id, date: manana(), startTime: '09:30', serviceItem: copia._id,
+  });
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /Sin limpiezas/);
+});
+
+test('guardar dos veces el MISMO bloqueo no lo duplica', async () => {
+  const { clinicId, userId, s1 } = await seed();
+  const body = {
+    startDate: manana(), endDate: manana(), allDay: false, startTime: '09:00', endTime: '10:00',
+    service: String(s1._id), reason: 'Mantenimiento',
+  };
+  const a = ok(await crearBloqueo(clinicId, userId, { ...body }));
+  const b = ok(await crearBloqueo(clinicId, userId, { ...body }));
+  assert.equal(String(a._id), String(b._id), 'devuelve el que ya existía');
+  const TimeBlock = require('../models/TimeBlock');
+  assert.equal(await TimeBlock.countDocuments({}), 1);
+});

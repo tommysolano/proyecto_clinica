@@ -23,6 +23,22 @@ function turnoVigente(apt) {
   return turnosOrdenados(apt).find((t) => t.status === 'pendiente') || null;
 }
 
+/**
+ * TODAS las recetas de suero que cuelgan de un turno: la del suero principal
+ * (`serumFollowUp`) y las de sus sueros adicionales (`extraSerums[]`, oct-2026).
+ *
+ * Quien pregunte «¿qué sueros escribió esta cita en la ficha?» —qué ve
+ * enfermería, qué se limpia al quitar un paso, qué cuenta para comisiones y para
+ * la primera vez— tiene que contar los dos: preguntar solo por `serumFollowUp`
+ * dejaba al segundo suero fuera de todo eso.
+ */
+function seguimientosDeSueroDelTurno(turno) {
+  return [
+    turno?.serumFollowUp,
+    ...(turno?.extraSerums || []).map((x) => x?.serumFollowUp),
+  ].filter(Boolean);
+}
+
 /** ¿Ya terminaron todos los turnos? (una cita sin turnos NO cuenta como terminada) */
 function turnosTerminados(apt) {
   const turns = apt.turns || [];
@@ -204,6 +220,8 @@ function asignarTurnos(apt, { doctores = [], enfermeria = false, pasos = null, p
         serum: paso?.serum || undefined,
         serumFollowUp: paso?.serumFollowUp || null,
         serumMergeIntoService: !!paso?.serumMergeIntoService,
+        // Los sueros ADICIONALES del paso (oct-2026), cada uno con su receta.
+        extraSerums: Array.isArray(paso?.extraSerums) ? paso.extraSerums : [],
         // Lo que mostrador le escribió a enfermería para este paso (sep-2026):
         // la enfermera lo lee en su barra de atención, junto al suero.
         nurseInstructions: String(paso?.nurseInstructions || '').trim(),
@@ -602,6 +620,7 @@ function filtroCitasConEnfermero(ids = []) {
 
 module.exports = {
   turnosOrdenados,
+  seguimientosDeSueroDelTurno,
   turnoVigente,
   turnosTerminados,
   sincronizarEspejo,

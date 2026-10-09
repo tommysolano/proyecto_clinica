@@ -5812,7 +5812,21 @@ exports.linkPatientToChat = async (req, res) => {
   }
 };
 
-exports.createAppointmentFromChat = async (req, res) => {
+/**
+ * LAS TANDAS DE UN MISMO CHAT, DE UNA EN UNA (oct-2026).
+ *
+ * El doble clic en un PC lento mandaba la misma tanda dos veces casi a la vez:
+ * las dos pasaban la comprobación de cita repetida antes de que ninguna hubiera
+ * escrito, y el paciente salía dos veces en la agenda. En fila, la segunda ya
+ * ve la cita de la primera y se rechaza como repetida.
+ */
+exports.createAppointmentFromChat = (req, res) =>
+  require('../utils/candadoEnProceso').conCandado(
+    `chat-citas:${req.params.id}`,
+    () => crearCitasDesdeChat(req, res)
+  );
+
+async function crearCitasDesdeChat(req, res) {
   try {
     const conv = await Conversation.findOne({
       _id: req.params.id,
@@ -5972,6 +5986,15 @@ exports.createAppointmentFromChat = async (req, res) => {
     for (const id of new Set(filas.map((f) => String(f.patient)))) {
       primerasVisitas.set(id, await esPrimeraVisita(id));
     }
+    /**
+     * DOS PASADAS: PRIMERO SE VALIDA TODA LA TANDA, DESPUÉS SE CREA (oct-2026).
+     *
+     * El servicio, la sucursal y los bloqueos se comprobaban DENTRO del bucle
+     * que crea: si la fila 2 caía en un bloqueo, la 1 ya estaba guardada y la
+     * pantalla decía «error». Quien agenda corregía y volvía a guardar la tanda
+     * entera, y así salían citas repetidas. Ahora o se crean todas, o ninguna.
+     */
+    const preparadas = [];
     for (const a of filas) {
       const patientId = a.patient;
       // ¿ESTA cita es de otra persona? De ahí cuelga el motivo por defecto: quien
@@ -5989,15 +6012,12 @@ exports.createAppointmentFromChat = async (req, res) => {
           };
         });
 
-      // Servicio de agenda del catálogo propio (y suma un uso, que ordena el
-      // buscador por lo más pedido).
+      // Servicio de agenda del catálogo propio. El uso (que ordena el buscador
+      // por lo más pedido) se suma al CREAR, no al validar.
       let servicioAgenda = null;
       if (a.serviceItem) {
-        servicioAgenda = await require('../models/AppointmentServiceItem').findByIdAndUpdate(
-          a.serviceItem,
-          { $inc: { usageCount: 1 } },
-          { new: true }
-        ).catch(() => null);
+        servicioAgenda = await require('../models/AppointmentServiceItem').findById(a.serviceItem)
+          .catch(() => null);
       }
       // El servicio vuelve a ser obligatorio, también desde el CRM.
       if (!servicioAgenda) {
@@ -6082,6 +6102,19 @@ exports.createAppointmentFromChat = async (req, res) => {
           message: `Cita #${filas.indexOf(a) + 1}: ${require('../utils/timeBlockCheck').mensajeBloqueo(rechazo)}`,
         });
       }
+
+      preparadas.push({
+        a, patientId, esParaOtro, localDate, serviceItems, servicioAgenda, extrasDeCita, targetClinic,
+      });
+    }
+
+    // Toda la tanda pasó: ahora sí se escribe.
+    for (const {
+      a, patientId, esParaOtro, localDate, serviceItems, servicioAgenda, extrasDeCita, targetClinic,
+    } of preparadas) {
+      await require('../models/AppointmentServiceItem')
+        .updateOne({ _id: servicioAgenda._id }, { $inc: { usageCount: 1 } })
+        .catch(() => {});
 
       /**
        * VALOR ACORDADO Y PAGO ADELANTADO, por la misma puerta que el resto.
@@ -6177,7 +6210,7 @@ exports.createAppointmentFromChat = async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: 'Error al crear cita desde chat', error: err.message });
   }
-};
+}
 
 /**
  * POST /api/chats/:id/quotation

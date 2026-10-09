@@ -50,13 +50,32 @@ async function bloqueosQueAplican({ clinicId, date, serviceIds = [], serviceName
   const doc = doctor ? String(doctor) : null;
   const sala = room ? String(room) : null;
 
-  // Nombres de los servicios de los bloqueos (una sola consulta para todos).
+  /**
+   * LOS NOMBRES SE RESUELVEN AQUÍ, NO SE ESPERAN DE LA PANTALLA (oct-2026).
+   *
+   * Con varias empresas cada una tiene SU catálogo (copiado de la otra, con ids
+   * nuevos): el bloqueo de «Limpieza» puede guardar el id de un catálogo y la
+   * cita traer el de la copia de la otra empresa. Por id no casan nunca, y el
+   * cruce por nombre dependía de que la pantalla mandara el nombre —la agenda no
+   * lo manda—. Resultado: el aviso del bloqueo salía en la agenda, pero la cita
+   * se guardaba igual. Ahora se buscan los nombres de los dos lados en la base.
+   */
   const idsBloqueo = [...new Set(blocks.filter((b) => b.service).map((b) => String(b.service)))];
   let nombreDeBloqueo = new Map();
-  if (idsBloqueo.length && nombresCita.size) {
+  if (idsBloqueo.length) {
     const AppointmentServiceItem = require('../models/AppointmentServiceItem');
-    const docs = await AppointmentServiceItem.find({ _id: { $in: idsBloqueo } }).select('name').lean();
-    nombreDeBloqueo = new Map(docs.map((d) => [String(d._id), normalizaNombre(d.name)]));
+    const idsValidos = (ids) => ids.filter((id) => /^[0-9a-f]{24}$/i.test(id));
+    const [docsBloqueo, docsCita] = await Promise.all([
+      AppointmentServiceItem.find({ _id: { $in: idsValidos(idsBloqueo) } }).select('name').lean(),
+      servicios.size
+        ? AppointmentServiceItem.find({ _id: { $in: idsValidos([...servicios]) } }).select('name').lean()
+        : [],
+    ]);
+    nombreDeBloqueo = new Map(docsBloqueo.map((d) => [String(d._id), normalizaNombre(d.name)]));
+    docsCita.forEach((d) => {
+      const n = normalizaNombre(d.name);
+      if (n) nombresCita.add(n);
+    });
   }
 
   return blocks.filter((b) => {

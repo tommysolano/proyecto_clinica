@@ -119,7 +119,15 @@ exports.list = async (req, res) => {
   }
 };
 
-exports.create = async (req, res) => {
+// En fila por usuario: dos «Guardar» seguidos no pasan los dos la comprobación
+// de «ya existe» (ver utils/candadoEnProceso.js).
+exports.create = (req, res) =>
+  require('../utils/candadoEnProceso').conCandado(
+    `bloqueo:${String(req.user?._id || '')}`,
+    () => crearBloqueo(req, res)
+  );
+
+async function crearBloqueo(req, res) {
   try {
     const { startDate, endDate, allDay, startTime, endTime } = req.body;
     if (!startDate || !endDate) {
@@ -141,8 +149,7 @@ exports.create = async (req, res) => {
     if (!destino.ok) {
       return res.status(destino.status).json({ message: destino.message });
     }
-    const block = await TimeBlock.create({
-      ...req.body,
+    const datos = {
       clinic: destino.clinicId,
       doctor: req.body.doctor || null,
       room: req.body.room || null,
@@ -152,6 +159,20 @@ exports.create = async (req, res) => {
       allDay: !!allDay,
       startTime: allDay ? null : startTime || null,
       endTime: allDay ? null : endTime || null,
+    };
+    /**
+     * EL MISMO BLOQUEO NO SE CREA DOS VECES (oct-2026).
+     *
+     * La pantalla dejaba pulsar «Guardar» otra vez mientras la petición viajaba
+     * y, con la red lenta, salían dos bloqueos idénticos. Dos iguales no
+     * bloquean más que uno: si ya existe uno con la misma sucursal, fechas,
+     * horario y alcance, se devuelve ese en vez de escribir otro.
+     */
+    const igual = await TimeBlock.findOne(datos).lean();
+    if (igual) return res.status(200).json(igual);
+    const block = await TimeBlock.create({
+      ...req.body,
+      ...datos,
       createdBy: req.user._id,
     });
     notificarCambioBloqueo(block, 'created');
@@ -159,7 +180,7 @@ exports.create = async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: 'Error al crear bloqueo', error: error.message });
   }
-};
+}
 
 exports.update = async (req, res) => {
   try {

@@ -52,6 +52,38 @@ const rescheduleEntrySchema = new mongoose.Schema(
   { _id: false }
 );
 
+/** Una ampolla/molécula del suero de un turno (ver `utils/suero.js`). */
+const serumComponentSchema = new mongoose.Schema(
+  {
+    code: { type: String, trim: true, default: '' },
+    name: { type: String, trim: true, required: true },
+    grupo: { type: String, enum: ['ampolla', 'molecula', 'otro'], default: 'otro' },
+    quantity: { type: Number, default: 1, min: 0 },
+  },
+  { _id: false }
+);
+
+/**
+ * SUERO ADICIONAL de un paso de enfermería (oct-2026).
+ *
+ * Hay pacientes a los que en la MISMA cita se les ponen dos sueros. El primero
+ * sigue viviendo en `serum`/`serumFollowUp` —con todo lo que ya cuelga de ahí:
+ * sumarse a la bolsa del servicio, la retención, las comisiones—; los demás van
+ * aquí, cada uno con su propia receta en la ficha (`serumFollowUp`), que es lo
+ * que enfermería aplica con su «Administrar».
+ */
+const extraSerumSchema = new mongoose.Schema(
+  {
+    base: {
+      name: { type: String, trim: true, default: '' },
+      volumeMl: { type: Number, default: null },
+    },
+    components: { type: [serumComponentSchema], default: [] },
+    serumFollowUp: { type: mongoose.Schema.Types.ObjectId, default: null },
+  },
+  { _id: false }
+);
+
 /**
  * TURNO de atención. Una cita puede pasar por varios profesionales en orden: el
  * paciente entra con el primero y, cuando ese guarda su seguimiento, la cita
@@ -109,20 +141,7 @@ const appointmentTurnSchema = new mongoose.Schema(
         name: { type: String, trim: true, default: '' },
         volumeMl: { type: Number, default: null },
       },
-      components: {
-        type: [
-          new mongoose.Schema(
-            {
-              code: { type: String, trim: true, default: '' },
-              name: { type: String, trim: true, required: true },
-              grupo: { type: String, enum: ['ampolla', 'molecula', 'otro'], default: 'otro' },
-              quantity: { type: Number, default: 1, min: 0 },
-            },
-            { _id: false }
-          ),
-        ],
-        default: [],
-      },
+      components: { type: [serumComponentSchema], default: [] },
     },
     /**
      * Seguimiento donde quedó escrito ese suero. Es lo que hace la siembra
@@ -142,6 +161,8 @@ const appointmentTurnSchema = new mongoose.Schema(
      * verdad) no lleva la marca y sigue teniendo su receta aparte.
      */
     serumMergeIntoService: { type: Boolean, default: false },
+    /** Los sueros que se aplican ADEMÁS del de `serum` en este paso. */
+    extraSerums: { type: [extraSerumSchema], default: [] },
     /**
      * INDICACIONES PARA ENFERMERÍA, escritas por mostrador al asignar el paso.
      *
