@@ -227,7 +227,7 @@ exports.loadForSigning = async (clinicId) => {
    * «FIRMA INVALIDA … RucComprobante / RucCertificado» y el número de factura ya se gastó.
    * Se corta aquí, antes de reservar ningún número, con el motivo claro.
    */
-  const rucs = rucsDelCertificado(loadP12(p12Buffer, password).certificate);
+  const rucs = rucsDelCertificado(loadP12(p12Buffer, password, { ruc: config.ruc }).certificate);
   if (rucs.length && config.ruc && !rucs.includes(String(config.ruc).trim())) {
     throw Object.assign(new Error(
       `El certificado de firma electrónica cargado es del RUC ${rucs.join(', ')}, pero se factura con el RUC ${config.ruc}. `

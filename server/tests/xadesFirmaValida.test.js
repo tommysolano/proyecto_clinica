@@ -158,3 +158,19 @@ test('con un .p12 de cadena completa firma con el certificado que corresponde a 
   v.loadSignature(doc.getElementsByTagNameNS(DS, 'Signature')[0]);
   assert.equal(v.checkSignature(firmado), true);
 });
+
+test('lee el RUC del certificado en la extensión de la entidad (Uanataca, Banco Central…)', () => {
+  const { rucsDelCertificado } = require('../modules/invoicing/ec/xadesSigner');
+  const keys = forge.pki.rsa.generateKeyPair(1024);
+  const ext = (id, valor) => ({ id, value: forge.asn1.toDer(forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.UTF8, false, valor)).getBytes() });
+  const cert = forge.pki.createCertificate();
+  cert.publicKey = keys.publicKey;
+  cert.serialNumber = '01';
+  cert.validity.notBefore = new Date(); cert.validity.notAfter = new Date(Date.now() + 864e5);
+  cert.setSubject([{ name: 'commonName', value: 'REPRESENTANTE' }]);
+  cert.setIssuer([{ name: 'commonName', value: 'ENTIDAD' }]);
+  // Uanataca: .3.1 = cédula del titular, .3.11 = RUC de la empresa que representa.
+  cert.setExtensions([ext('1.3.6.1.4.1.47286.102.3.1', '0911111111'), ext('1.3.6.1.4.1.47286.102.3.11', '0999999999001')]);
+  cert.sign(keys.privateKey, forge.md.sha256.create());
+  assert.deepEqual(rucsDelCertificado(cert), ['0999999999001'], 'el RUC (.3.11), no la cédula (.3.1)');
+});

@@ -29,7 +29,12 @@ const DSIG_NS = 'http://www.w3.org/2000/09/xmldsig#';
  *             issuerName: string, serialNumberDecimal: string,
  *             validFrom: Date, validTo: Date, subject: string }}
  */
-function loadP12(p12Buffer, password) {
+/**
+ * `opciones.ruc`: RUC que emite. Si el .p12 trae VARIOS certificados con clave (p. ej. el
+ * de persona natural y el de representante legal de la empresa, de la misma persona), se
+ * prefiere el que lleva ese RUC: es el único que el SRI acepta para ese emisor.
+ */
+function loadP12(p12Buffer, password, opciones = {}) {
   const p12Asn1 = forge.asn1.fromDer(forge.util.createBuffer(p12Buffer.toString('binary')));
   const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, false, password);
 
@@ -63,6 +68,7 @@ function loadP12(p12Buffer, password) {
     if (ku && (ku.digitalSignature || ku.nonRepudiation)) p += 4;
     if (!bc || !bc.cA) p += 2;
     if (/sign|firma/i.test(nombreBag(k)) || /sign|firma/i.test(nombreBag(c))) p += 1;
+    if (opciones.ruc && rucsDelCertificado(c.cert).includes(String(opciones.ruc).trim())) p += 8;
     return p;
   };
   const pares = [];
@@ -176,7 +182,9 @@ function signXml(xmlEntrada, p12Buffer, p12Password) {
    *  · el digest del comprobante es la C14N del nodo id="comprobante" (sin la firma);
    *  · referencias en el orden del firmador probado: SignedProperties, Certificate, comprobante.
    */
-  const cert = loadP12(p12Buffer, p12Password);
+  // El RUC del comprobante decide qué certificado del .p12 se usa (si trae varios).
+  const rucEmisor = (String(xmlEntrada).match(/<ruc>(\d{13})<\/ruc>/) || [])[1];
+  const cert = loadP12(p12Buffer, p12Password, { ruc: rucEmisor });
   const xml = String(xmlEntrada).trim().replace(/\t|\r/g, '');
 
   const raiz = detectarNodoRaiz(xml);
