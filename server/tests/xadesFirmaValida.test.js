@@ -112,3 +112,49 @@ test('cada digest y la firma RSA cuadran con la C14N inclusiva del documento fin
   verif.update(c14n(signedInfo), 'utf8');
   assert.equal(verif.verify(publicPem, valor, 'base64'), true, 'firma RSA de SignedInfo');
 });
+
+/**
+ * Un .p12 como los reales: la autoridad certificadora primero y SIN basicConstraints, y dos
+ * claves (la de cifrado antes que la de firma). Antes se firmaba con la primera clave y el
+ * primer certificado no-CA: clave y certificado no eran pareja y el SRI respondía
+ * «FIRMA INVALIDA».
+ */
+test('con un .p12 de cadena completa firma con el certificado que corresponde a la clave', () => {
+  const nuevoCert = (keys, cn, emisor, firmaCon, extras = []) => {
+    const c = forge.pki.createCertificate();
+    c.publicKey = keys.publicKey;
+    c.serialNumber = String(Math.floor(Math.random() * 1e6)).padStart(6, '0');
+    c.validity.notBefore = new Date(Date.now() - 86400000);
+    c.validity.notAfter = new Date(Date.now() + 300 * 86400000);
+    c.setSubject([{ name: 'commonName', value: cn }]);
+    c.setIssuer([{ name: 'commonName', value: emisor }]);
+    if (extras.length) c.setExtensions(extras);
+    c.sign(firmaCon, forge.md.sha256.create());
+    return c;
+  };
+  const ca = forge.pki.rsa.generateKeyPair(2048);
+  const firma = forge.pki.rsa.generateKeyPair(2048);
+  const cifrado = forge.pki.rsa.generateKeyPair(2048);
+  const certCa = nuevoCert(ca, 'AUTORIDAD DE PRUEBA', 'AUTORIDAD DE PRUEBA', ca.privateKey);
+  const certFirma = nuevoCert(firma, 'REPRESENTANTE LEGAL', 'AUTORIDAD DE PRUEBA', ca.privateKey,
+    [{ name: 'keyUsage', digitalSignature: true, nonRepudiation: true }]);
+  const certCifrado = nuevoCert(cifrado, 'REPRESENTANTE LEGAL', 'AUTORIDAD DE PRUEBA', ca.privateKey,
+    [{ name: 'keyUsage', keyEncipherment: true }]);
+
+  // La clave de FIRMA con la cadena desordenada: la autoridad (sin basicConstraints) y un
+  // certificado AJENO (el de cifrado) antes del suyo. El firmador anterior tomaba el primer
+  // certificado no-CA —el ajeno— y firmaba con una clave que no era la suya.
+  const asn1 = forge.pkcs12.toPkcs12Asn1(firma.privateKey, [certCa, certCifrado, certFirma], 'clave', { algorithm: '3des', friendlyName: 'Signing Key' });
+  const p12 = Buffer.from(forge.asn1.toDer(asn1).getBytes(), 'binary');
+
+  const { loadP12 } = require('../modules/invoicing/ec/xadesSigner');
+  const info = loadP12(p12, 'clave');
+  assert.ok(info.certificate.publicKey.n.equals(firma.publicKey.n), 'elige el certificado de FIRMA');
+  assert.ok(info.privateKey.n.equals(firma.privateKey.n), 'y su propia clave privada');
+
+  const firmado = signXml(facturaXml(), p12, 'clave');
+  const doc = new DOMParser().parseFromString(firmado, 'text/xml');
+  const v = new SignedXml({ publicCert: forge.pki.certificateToPem(certFirma) });
+  v.loadSignature(doc.getElementsByTagNameNS(DS, 'Signature')[0]);
+  assert.equal(v.checkSignature(firmado), true);
+});

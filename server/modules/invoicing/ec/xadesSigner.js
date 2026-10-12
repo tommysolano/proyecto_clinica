@@ -14,7 +14,7 @@
 
 const forge = require('node-forge');
 const crypto = require('crypto');
-const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
+const { DOMParser } = require('@xmldom/xmldom');
 const xmlCrypto = require('xml-crypto');
 
 const C14N_URL = 'http://www.w3.org/TR/2001/REC-xml-c14n-20010315';
@@ -33,43 +33,62 @@ function loadP12(p12Buffer, password) {
   const p12Asn1 = forge.asn1.fromDer(forge.util.createBuffer(p12Buffer.toString('binary')));
   const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, false, password);
 
-  // Buscar la clave privada y el certificado de firma
-  const keyBags = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag });
-  const keyBag =
-    keyBags[forge.pki.oids.pkcs8ShroudedKeyBag] &&
-    keyBags[forge.pki.oids.pkcs8ShroudedKeyBag][0];
+  /**
+   * LA CLAVE Y SU CERTIFICADO, EMPAREJADOS (oct-2026).
+   *
+   * Antes se tomaba la PRIMERA clave privada y el primer certificado que no fuera de una
+   * autoridad. Los .p12 reales (Banco Central, Security Data…) traen la cadena entera y a
+   * veces varias claves (firma y cifrado): si la clave usada no es la del certificado que va
+   * en <ds:KeyInfo>, el SRI comprueba la firma con OTRA clave pública y responde «FIRMA
+   * INVALIDA». Ahora el par se elige porque la clave pública del certificado ES la de la
+   * clave privada; entre varios pares, el de firma (keyUsage / nombre «Signing Key»).
+   */
+  const keyBagsAll = [
+    ...((p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag })[forge.pki.oids.pkcs8ShroudedKeyBag]) || []),
+    ...((p12.getBags({ bagType: forge.pki.oids.keyBag })[forge.pki.oids.keyBag]) || []),
+  ].filter((b) => b && b.key);
+  const certs = ((p12.getBags({ bagType: forge.pki.oids.certBag })[forge.pki.oids.certBag]) || [])
+    .filter((b) => b && b.cert);
 
-  const certBags = p12.getBags({ bagType: forge.pki.oids.certBag });
-  const certs = certBags[forge.pki.oids.certBag] || [];
-
-  if (!keyBag || certs.length === 0) {
+  if (!keyBagsAll.length || certs.length === 0) {
     throw new Error('El P12 no contiene clave privada y/o certificado');
   }
 
-  // El certificado del firmante es el que tiene Key Usage para firma digital
-  // y cuyo subject coincide con la clave; en la práctica suele ser el primero.
-  let signerCert = certs[0].cert;
-  for (const c of certs) {
+  const nombreBag = (b) => { try { return String(b?.attributes?.friendlyName?.[0] || ''); } catch { return ''; } };
+  const esPareja = (k, c) => !!(k.key.n && c.cert.publicKey?.n && k.key.n.equals(c.cert.publicKey.n));
+  const puntaje = (k, c) => {
+    const ku = c.cert.getExtension('keyUsage');
     const bc = c.cert.getExtension('basicConstraints');
-    if (!bc || !bc.cA) {
-      signerCert = c.cert;
-      break;
-    }
+    let p = 0;
+    if (ku && (ku.digitalSignature || ku.nonRepudiation)) p += 4;
+    if (!bc || !bc.cA) p += 2;
+    if (/sign|firma/i.test(nombreBag(k)) || /sign|firma/i.test(nombreBag(c))) p += 1;
+    return p;
+  };
+  const pares = [];
+  for (const k of keyBagsAll) for (const c of certs) if (esPareja(k, c)) pares.push({ k, c, p: puntaje(k, c) });
+  if (!pares.length) {
+    throw new Error('El .p12 no tiene un certificado que corresponda a su clave privada: no se puede firmar. Vuelva a exportar el certificado de firma.');
   }
+  pares.sort((a, b) => b.p - a.p);
 
-  const certificate = signerCert;
-  const privateKey = keyBag.key;
+  const certificate = pares[0].c.cert;
+  const privateKey = pares[0].k.key;
   const certPem = forge.pki.certificateToPem(certificate);
   const keyPem = forge.pki.privateKeyToPem(privateKey);
 
   // IssuerName: E= → EMAILADDRESS=, en orden inverso, separados por coma+espacio
+  // Mismo formato que valida el SRI (X500Principal RFC 2253, como ec-sri-invoice-signer):
+  // orden inverso, separador «,» SIN espacio, E→EMAILADDRESS y OID para lo que no tiene nombre corto.
   const issuerName = certificate.issuer.attributes
+    .slice()
+    .reverse()
+    .filter((a) => a.shortName || a.type)
     .map((a) => {
-      const name = a.shortName === 'E' ? 'EMAILADDRESS' : a.shortName || a.name;
+      const name = a.shortName === 'E' ? 'EMAILADDRESS' : a.shortName || a.type;
       return `${name}=${a.value}`;
     })
-    .reverse()
-    .join(', ');
+    .join(',');
 
   // Serial en decimal usando node-forge
   const serialNumberDecimal = new forge.jsbn.BigInteger(certificate.serialNumber, 16).toString(10);
@@ -96,6 +115,13 @@ function loadP12(p12Buffer, password) {
     subject,
     subjectAttribs,
   };
+}
+
+/** 'YYYY-MM-DDTHH:mm:ss-05:00' en hora de Ecuador (UTC-5, sin horario de verano). */
+function horaEcuador(fecha) {
+  const ec = new Date(fecha.getTime() - 5 * 3600 * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${ec.getUTCFullYear()}-${p(ec.getUTCMonth() + 1)}-${p(ec.getUTCDate())}T${p(ec.getUTCHours())}:${p(ec.getUTCMinutes())}:${p(ec.getUTCSeconds())}-05:00`;
 }
 
 function sha1Base64(buffer) {
@@ -137,195 +163,158 @@ function canonicalize(xmlOrNode, ancestorNamespaces = []) {
  * @param {string} p12Password - contraseña del P12
  * @returns {string} XML firmado
  */
-function signXml(xml, p12Buffer, p12Password) {
+function signXml(xmlEntrada, p12Buffer, p12Password) {
+  /**
+   * EL MISMO PROCESO QUE EL FIRMADOR QUE EL SRI ACEPTA (oct-2026).
+   *
+   * Rehecho siguiendo paso a paso el de micartaonline (basado en ec-sri-invoice-signer), que
+   * factura en producción contra el SRI. El anterior reparseaba y re-serializaba el documento
+   * entero con xmldom para meter la firma y el SRI la rechazaba con «FIRMA INVALIDA». Ahora:
+   *  · el comprobante NO se toca: la firma se inserta como texto antes del cierre del raíz;
+   *  · los digests de SignedProperties, KeyInfo y SignedInfo se calculan sobre su forma
+   *    canónica, con los dos namespaces que heredan de <ds:Signature> (ds y etsi);
+   *  · el digest del comprobante es la C14N del nodo id="comprobante" (sin la firma);
+   *  · referencias en el orden del firmador probado: SignedProperties, Certificate, comprobante.
+   */
   const cert = loadP12(p12Buffer, p12Password);
+  const xml = String(xmlEntrada).trim().replace(/\t|\r/g, '');
 
-  // Cargar XML
-  const doc = new DOMParser().parseFromString(xml, 'text/xml');
-  const rootEl = doc.documentElement;
-
-  // El nodo a firmar: <factura id="comprobante">
-  if (!rootEl.getAttribute('id')) {
-    rootEl.setAttribute('id', 'comprobante');
+  const raiz = detectarNodoRaiz(xml);
+  if (!raiz) throw new Error('No se pudo determinar el nodo raíz del comprobante para insertar la firma.');
+  const cierre = `</${raiz}>`;
+  if (!xml.includes(cierre)) throw new Error(`El XML no tiene el cierre ${cierre}: no se puede insertar la firma.`);
+  if (!new RegExp(`<${raiz}[^>]*\\sid="comprobante"`).test(xml)) {
+    throw new Error(`El elemento <${raiz}> debe tener id="comprobante".`);
   }
 
-  // IDs únicos
-  const ts = Date.now();
-  const sigId = `Signature${ts}`;
-  const signedInfoId = `${sigId}-SignedInfo`;
-  const signedPropsId = `${sigId}-SignedProperties`;
-  const keyInfoId = `Certificate${ts}`;
-  const objectId = `${sigId}-Object`;
-  const signatureValueId = `${sigId}-SignatureValue`;
-  const refCertId = `Reference-ID-Cert-${ts}`;
-  const refPropsId = `Reference-ID-Props-${ts}`;
-  const refDocId = `Reference-ID-Doc-${ts}`;
+  const numero = () => Math.floor(Math.random() * 900000) + 100000;
+  const sigId = `Signature${numero()}`;
+  const signedPropsId = `${sigId}-SignedProperties${numero()}`;
+  const signedInfoId = `Signature-SignedInfo${numero()}`;
+  const keyInfoId = `Certificate${numero()}`;
+  const refPropsId = `SignedPropertiesID${numero()}`;
+  const refDocId = `Reference-ID${numero()}`;
+  const signatureValueId = `SignatureValue${numero()}`;
+  const objectId = `${sigId}-Object${numero()}`;
 
-  // Certificado en base64 (DER)
-  const certDer = Buffer.from(
-    forge.asn1.toDer(forge.pki.certificateToAsn1(cert.certificate)).getBytes(),
-    'binary'
-  );
+  // Certificado (DER), su digest, y la clave pública como enteros sin signo.
+  const certDer = Buffer.from(forge.asn1.toDer(forge.pki.certificateToAsn1(cert.certificate)).getBytes(), 'binary');
   const certBase64 = certDer.toString('base64');
   const certDigest = sha1Base64(certDer);
+  const sinSigno = (bi) => {
+    const hex = bi.toString(16);
+    return Buffer.from(hex.length % 2 ? `0${hex}` : hex, 'hex').toString('base64');
+  };
+  const modulus = sinSigno(cert.certificate.publicKey.n);
+  const exponent = sinSigno(cert.certificate.publicKey.e);
+  const fechaFirma = horaEcuador(new Date());
 
-  // Modulus + Exponent
-  const modulus = Buffer.from(cert.certificate.publicKey.n.toByteArray()).toString('base64');
-  const exponent = Buffer.from(cert.certificate.publicKey.e.toByteArray()).toString('base64');
+  const NS = `xmlns:ds="${DSIG_NS}" xmlns:etsi="${XADES_NS}"`;
+  // Forma canónica de un fragmento: con los namespaces que hereda de <ds:Signature>.
+  const conNs = (fragmento, etiqueta) => fragmento.replace(`<${etiqueta}`, `<${etiqueta} ${NS}`);
 
-  const fechaFirma = new Date().toISOString();
-
-  // Construcción manual de la firma (xmlbuilder2 es más limpio pero tenemos que
-  // mezclarla en el documento existente). Construimos los fragmentos como string
-  // y los parseamos.
-
-  // 1. SignedProperties — se firma su forma canonicalizada
-  const signedPropertiesXml =
+  const signedProperties =
     `<etsi:SignedProperties Id="${signedPropsId}">` +
-    `<etsi:SignedSignatureProperties>` +
+    '<etsi:SignedSignatureProperties>' +
     `<etsi:SigningTime>${fechaFirma}</etsi:SigningTime>` +
-    `<etsi:SigningCertificate>` +
-    `<etsi:Cert>` +
-    `<etsi:CertDigest>` +
+    '<etsi:SigningCertificate><etsi:Cert><etsi:CertDigest>' +
     `<ds:DigestMethod Algorithm="${SHA1_DIGEST}"></ds:DigestMethod>` +
     `<ds:DigestValue>${certDigest}</ds:DigestValue>` +
-    `</etsi:CertDigest>` +
-    `<etsi:IssuerSerial>` +
-    `<ds:X509IssuerName>${escapeXml(cert.issuerName)}</ds:X509IssuerName>` +
+    '</etsi:CertDigest><etsi:IssuerSerial>' +
+    `<ds:X509IssuerName>${textoCanonico(cert.issuerName)}</ds:X509IssuerName>` +
     `<ds:X509SerialNumber>${cert.serialNumberDecimal}</ds:X509SerialNumber>` +
-    `</etsi:IssuerSerial>` +
-    `</etsi:Cert>` +
-    `</etsi:SigningCertificate>` +
-    `</etsi:SignedSignatureProperties>` +
-    `<etsi:SignedDataObjectProperties>` +
+    '</etsi:IssuerSerial></etsi:Cert></etsi:SigningCertificate>' +
+    '</etsi:SignedSignatureProperties>' +
+    '<etsi:SignedDataObjectProperties>' +
     `<etsi:DataObjectFormat ObjectReference="#${refDocId}">` +
-    `<etsi:Description>contenido comprobante</etsi:Description>` +
-    `<etsi:MimeType>text/xml</etsi:MimeType>` +
-    `</etsi:DataObjectFormat>` +
-    `</etsi:SignedDataObjectProperties>` +
-    `</etsi:SignedProperties>`;
+    '<etsi:Description>contenido comprobante</etsi:Description>' +
+    '<etsi:MimeType>text/xml</etsi:MimeType>' +
+    '</etsi:DataObjectFormat>' +
+    '</etsi:SignedDataObjectProperties>' +
+    '</etsi:SignedProperties>';
+  const digestSignedProps = sha1Base64(Buffer.from(conNs(signedProperties, 'etsi:SignedProperties'), 'utf8'));
 
-  // KeyInfo
-  const keyInfoXml =
+  const keyInfo =
     `<ds:KeyInfo Id="${keyInfoId}">` +
-    `<ds:X509Data>` +
-    `<ds:X509Certificate>${certBase64}</ds:X509Certificate>` +
-    `</ds:X509Data>` +
-    `<ds:KeyValue>` +
-    `<ds:RSAKeyValue>` +
+    `<ds:X509Data><ds:X509Certificate>${certBase64}</ds:X509Certificate></ds:X509Data>` +
+    '<ds:KeyValue><ds:RSAKeyValue>' +
     `<ds:Modulus>${modulus}</ds:Modulus>` +
     `<ds:Exponent>${exponent}</ds:Exponent>` +
-    `</ds:RSAKeyValue>` +
-    `</ds:KeyValue>` +
-    `</ds:KeyInfo>`;
+    '</ds:RSAKeyValue></ds:KeyValue>' +
+    '</ds:KeyInfo>';
+  const digestKeyInfo = sha1Base64(Buffer.from(conNs(keyInfo, 'ds:KeyInfo'), 'utf8'));
 
-  // Para calcular los digests necesitamos los nodos canonicalizados con sus
-  // namespaces correctos. Los envolvemos temporalmente en una raíz con los xmlns
-  // declarados, luego sacamos el nodo interno.
-  const signedPropertiesC14N = canonicalizeFragment(signedPropertiesXml, {
-    'xmlns:etsi': XADES_NS,
-    'xmlns:ds': DSIG_NS,
-  });
-  const digestSignedProps = sha1Base64(Buffer.from(signedPropertiesC14N, 'utf8'));
+  // Digest del comprobante: C14N del nodo id="comprobante" (aún sin firma).
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
+  const digestDoc = sha1Base64(Buffer.from(canonicalize(doc.documentElement), 'utf8'));
 
-  // KeyInfo y SignedInfo también heredan xmlns:etsi de <ds:Signature> en el documento
-  // final: se canonicalizan con los DOS namespaces, como los ve el verificador del SRI.
-  const keyInfoC14N = canonicalizeFragment(keyInfoXml, { 'xmlns:ds': DSIG_NS, 'xmlns:etsi': XADES_NS });
-  const digestKeyInfo = sha1Base64(Buffer.from(keyInfoC14N, 'utf8'));
-
-  // Digest del documento (nodo factura completo, ya está bien declarado)
-  const docC14N = canonicalize(rootEl);
-  const digestDoc = sha1Base64(Buffer.from(docC14N, 'utf8'));
-
-  // SignedInfo
-  const signedInfoXml =
+  const signedInfo =
     `<ds:SignedInfo Id="${signedInfoId}">` +
     `<ds:CanonicalizationMethod Algorithm="${C14N_URL}"></ds:CanonicalizationMethod>` +
     `<ds:SignatureMethod Algorithm="${RSA_SHA1}"></ds:SignatureMethod>` +
-    `<ds:Reference Id="${refCertId}" URI="#${keyInfoId}">` +
-    `<ds:DigestMethod Algorithm="${SHA1_DIGEST}"></ds:DigestMethod>` +
-    `<ds:DigestValue>${digestKeyInfo}</ds:DigestValue>` +
-    `</ds:Reference>` +
     `<ds:Reference Id="${refPropsId}" Type="http://uri.etsi.org/01903#SignedProperties" URI="#${signedPropsId}">` +
     `<ds:DigestMethod Algorithm="${SHA1_DIGEST}"></ds:DigestMethod>` +
     `<ds:DigestValue>${digestSignedProps}</ds:DigestValue>` +
-    `</ds:Reference>` +
+    '</ds:Reference>' +
+    `<ds:Reference URI="#${keyInfoId}">` +
+    `<ds:DigestMethod Algorithm="${SHA1_DIGEST}"></ds:DigestMethod>` +
+    `<ds:DigestValue>${digestKeyInfo}</ds:DigestValue>` +
+    '</ds:Reference>' +
     `<ds:Reference Id="${refDocId}" URI="#comprobante">` +
-    `<ds:Transforms>` +
-    `<ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"></ds:Transform>` +
-    `</ds:Transforms>` +
+    '<ds:Transforms>' +
+    '<ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"></ds:Transform>' +
+    `<ds:Transform Algorithm="${C14N_URL}"></ds:Transform>` +
+    '</ds:Transforms>' +
     `<ds:DigestMethod Algorithm="${SHA1_DIGEST}"></ds:DigestMethod>` +
     `<ds:DigestValue>${digestDoc}</ds:DigestValue>` +
-    `</ds:Reference>` +
-    `</ds:SignedInfo>`;
+    '</ds:Reference>' +
+    '</ds:SignedInfo>';
 
-  // Canonicalizar SignedInfo y firmar con RSA-SHA1
-  const signedInfoC14N = canonicalizeFragment(signedInfoXml, { 'xmlns:ds': DSIG_NS, 'xmlns:etsi': XADES_NS });
+  const signedInfoCanonico = conNs(signedInfo, 'ds:SignedInfo');
   const signer = crypto.createSign('RSA-SHA1');
-  signer.update(signedInfoC14N, 'utf8');
+  signer.update(signedInfoCanonico, 'utf8');
   const signatureValue = signer.sign(cert.keyPem, 'base64');
+  // Nunca se manda al SRI una firma que no se verifica con el certificado que la acompaña.
+  const comprobacion = crypto.createVerify('RSA-SHA1');
+  comprobacion.update(signedInfoCanonico, 'utf8');
+  if (!comprobacion.verify(cert.certPem, signatureValue, 'base64')) {
+    throw new Error('La firma no se puede verificar con el certificado del .p12 (clave y certificado no corresponden).');
+  }
 
-  // Construir el bloque <ds:Signature> completo
-  const signatureXml =
-    `<ds:Signature xmlns:ds="${DSIG_NS}" xmlns:etsi="${XADES_NS}" Id="${sigId}">` +
-    signedInfoXml +
+  const firma =
+    `<ds:Signature ${NS} Id="${sigId}">` +
+    signedInfo +
     `<ds:SignatureValue Id="${signatureValueId}">${signatureValue}</ds:SignatureValue>` +
-    keyInfoXml +
+    keyInfo +
     `<ds:Object Id="${objectId}">` +
     `<etsi:QualifyingProperties Target="#${sigId}">` +
-    signedPropertiesXml +
-    `</etsi:QualifyingProperties>` +
-    `</ds:Object>` +
-    `</ds:Signature>`;
+    signedProperties +
+    '</etsi:QualifyingProperties>' +
+    '</ds:Object>' +
+    '</ds:Signature>';
 
-  // Insertar como último hijo del elemento raíz
-  const sigDoc = new DOMParser().parseFromString(signatureXml, 'text/xml');
-  const sigNode = doc.importNode(sigDoc.documentElement, true);
-  rootEl.appendChild(sigNode);
-
-  return new XMLSerializer().serializeToString(doc);
+  // Insertada como TEXTO antes del cierre del raíz: el resto del comprobante queda intacto.
+  const corte = xml.lastIndexOf(cierre);
+  return xml.slice(0, corte) + firma + xml.slice(corte);
 }
 
-/**
- * Canonicaliza un fragmento XML que aún no tiene declarados sus namespaces,
- * envolviéndolo en una raíz temporal con los xmlns indicados, canonicaliza, y
- * luego extrae solo la sección original.
- */
-function canonicalizeFragment(fragmentXml, namespaces) {
-  const nsAttrs = Object.entries(namespaces)
-    .map(([k, v]) => `${k}="${v}"`)
-    .join(' ');
-  const wrapped = `<wrapper ${nsAttrs}>${fragmentXml}</wrapper>`;
-  const doc = new DOMParser().parseFromString(wrapped, 'text/xml');
-  const inner = doc.documentElement.firstChild;
-  // Los xmlns de la raíz temporal son los que el fragmento HEREDA en el documento final
-  // (los de <ds:Signature>): se pasan como ancestros para que la C14N inclusiva los
-  // escriba igual que el verificador. Antes no se pasaban y el digest de KeyInfo, el de
-  // SignedProperties y la firma de SignedInfo salían distintos de los del SRI (oct-2026).
-  const ancestros = Object.entries(namespaces).map(([k, v]) => ({
-    prefix: k === 'xmlns' ? '' : k.replace(/^xmlns:/, ''),
-    namespaceURI: v,
-  }));
-  return canonicalize(inner, ancestros);
+/** Comprobantes electrónicos del SRI, por su nodo raíz. */
+const NODOS_RAIZ = ['factura', 'notaCredito', 'notaDebito', 'comprobanteRetencion', 'guiaRemision', 'liquidacionCompra'];
+
+function detectarNodoRaiz(xml) {
+  for (const nodo of NODOS_RAIZ) {
+    if (new RegExp(`<${nodo}[\\s>]`).test(xml)) return nodo;
+  }
+  return null;
 }
 
-function escapeXml(s) {
-  return String(s).replace(/[<>&'"]/g, (c) => {
-    switch (c) {
-      case '<':
-        return '&lt;';
-      case '>':
-        return '&gt;';
-      case '&':
-        return '&amp;';
-      case "'":
-        return '&apos;';
-      case '"':
-        return '&quot;';
-      default:
-        return c;
-    }
-  });
+/** Texto en forma canónica C14N: & < > y \r escapados; las comillas no. */
+function textoCanonico(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\r/g, '&#xD;');
 }
 
 module.exports = { signXml, loadP12 };

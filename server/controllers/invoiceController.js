@@ -35,6 +35,155 @@ function tipoIdentificacion(cedula) {
   return '06'; // pasaporte / otros
 }
 
+/** Datos del comprador de una venta (paciente o cliente escrito a mano). */
+function datosComprador(sale) {
+  const compradorIdent =
+    sale.clientCedula || (sale.patient && sale.patient.cedula) || '9999999999999';
+  const compradorNombre =
+    sale.clientName ||
+    (sale.patient && `${sale.patient.firstName} ${sale.patient.lastName}`.trim()) ||
+    'CONSUMIDOR FINAL';
+  const compradorEmail = sale.clientEmail || (sale.patient && sale.patient.email) || '';
+  const compradorTel = sale.clientPhone || (sale.patient && sale.patient.phone) || '';
+  const compradorDir =
+    sale.clientAddress || (sale.patient && sale.patient.address) || '';
+
+  return { compradorIdent, compradorNombre, compradorEmail, compradorTel, compradorDir };
+}
+
+/**
+ * ARMA LA FACTURA (el objeto que se convierte en XML) de una venta. La usan la emisión y
+ * el reintento que vuelve a firmar (oct-2026): los dos tienen que producir el MISMO XML.
+ * `serie`: { estab, ptoEmi, dirEstablecimiento, ambiente }.
+ */
+function armarFactura({ sale, config, clinic, serie, secuencial, claveAcceso, fechaEmision }) {
+  const { compradorIdent, compradorNombre, compradorEmail, compradorTel, compradorDir } = datosComprador(sale);
+  // Mapear ítems
+  const detalles = sale.items.map((it) => {
+    const cantidad = Number(it.quantity);
+    const precioUnitario = +Number(it.unitPriceExcludingTax || it.unitPrice || 0).toFixed(2);
+    const descuento = +Number(it.discountTaxBase ?? it.discount ?? 0).toFixed(2);
+    const precioTotalSin = +Number(it.taxBase ?? (cantidad * precioUnitario - descuento)).toFixed(2);
+    const tarifa = Number(it.taxRate || 0);
+    const valorIva = +Number(it.taxAmount ?? (precioTotalSin * (tarifa / 100))).toFixed(2);
+    // Códigos SRI IVA: 2 = IVA, codigoPorcentaje 0=0%, 2=12%, 3=14%, 4=15%
+    let codigoPorcentaje = it.taxCodeSri || '0';
+    if (!it.taxCodeSri) {
+      if (tarifa === 12) codigoPorcentaje = '2';
+      else if (tarifa === 14) codigoPorcentaje = '3';
+      else if (tarifa === 15) codigoPorcentaje = '4';
+    }
+    return {
+      codigoPrincipal: it.productCode || String(it.product),
+      descripcion: it.productName,
+      cantidad,
+      precioUnitario,
+      descuento,
+      precioTotalSinImpuesto: precioTotalSin,
+      impuestos: [
+        {
+          codigo: '2',
+          codigoPorcentaje,
+          tarifa,
+          baseImponible: precioTotalSin,
+          valor: valorIva,
+        },
+      ],
+    };
+  });
+
+  // Totales por código de IVA (agrupados)
+  const totalImpuestosMap = new Map();
+  for (const d of detalles) {
+    for (const imp of d.impuestos) {
+      const key = `${imp.codigo}-${imp.codigoPorcentaje}`;
+      const cur = totalImpuestosMap.get(key) || {
+        codigo: imp.codigo,
+        codigoPorcentaje: imp.codigoPorcentaje,
+        baseImponible: 0,
+        valor: 0,
+      };
+      cur.baseImponible += imp.baseImponible;
+      cur.valor += imp.valor;
+      totalImpuestosMap.set(key, cur);
+    }
+  }
+  const totalConImpuestos = Array.from(totalImpuestosMap.values()).map((t) => ({
+    ...t,
+    baseImponible: +t.baseImponible.toFixed(2),
+    valor: +t.valor.toFixed(2),
+  }));
+
+  // Forma de pago SRI: 01 sin sistema financiero | 16 débito | 19 crédito | 20 transferencia
+  const FORMA_PAGO = {
+    efectivo: '01',
+    tarjeta: '19',
+    tarjeta_debito: '16',
+    tarjeta_credito: '19',
+    transferencia: '20',
+    credito: '20',
+    // Pagada con el saldo a favor del paciente (anticipo): 15 = compensación de deudas.
+    anticipo: '15',
+  };
+
+  const totalSinImpuestos = +(sale.items || [])
+    .reduce((sum, item) => sum + Number(item.taxBase || item.subtotal || 0), 0)
+    .toFixed(2);
+
+  // Snapshot tributario por tarifa (0% / gravada 15% / exento / no objeto) para
+  // que los reportes SRI separen ventas sin recalcular desde la venta origen.
+  const tb = breakdownFromSale(sale);
+
+  const factura = {
+    infoTributaria: {
+      ambiente: serie.ambiente,
+      tipoEmision: '1',
+      razonSocial: config.razonSocial,
+      nombreComercial: config.nombreComercial,
+      ruc: config.ruc,
+      claveAcceso,
+      codDoc: '01',
+      estab: serie.estab,
+      ptoEmi: serie.ptoEmi,
+      secuencial,
+      dirMatriz: config.direccionMatriz,
+      agenteRetencion: config.agenteRetencion || undefined,
+    },
+    infoFactura: {
+      fechaEmision: fmtFechaEmision(fechaEmision),
+      dirEstablecimiento: serie.dirEstablecimiento,
+      contribuyenteEspecial: config.contribuyenteEspecial || undefined,
+      obligadoContabilidad: config.obligadoContabilidad,
+      tipoIdentificacionComprador: tipoIdentificacion(compradorIdent),
+      razonSocialComprador: compradorNombre,
+      identificacionComprador: compradorIdent,
+      direccionComprador: compradorDir || undefined,
+      totalSinImpuestos,
+      totalDescuento: +Number(sale.discountTotal || 0).toFixed(2),
+      totalConImpuestos,
+      propina: 0,
+      importeTotal: sale.total,
+      moneda: 'DOLAR',
+      pagos: [
+        {
+          formaPago: FORMA_PAGO[sale.paymentMethod] || '01',
+          total: sale.total,
+          plazo: 0,
+          unidadTiempo: 'dias',
+        },
+      ],
+    },
+    detalles,
+    infoAdicional: [
+      compradorEmail ? { nombre: 'Email', valor: compradorEmail } : null,
+      compradorTel ? { nombre: 'Telefono', valor: compradorTel } : null,
+      clinic ? { nombre: 'Establecimiento', valor: clinic.name } : null,
+    ].filter(Boolean),
+  };
+
+  return { factura, totalSinImpuestos, tb };
+}
+
 /**
  * Emite una factura electrónica a partir de una venta.
  * Roles permitidos: admin, cajero, contabilidad
@@ -66,17 +215,7 @@ exports.emitFromSale = async (req, res) => {
     // Reservar secuencial atómicamente
     const secuencial = await reservarSecuencial(serie, 'factura', config);
 
-    // Datos del comprador
-    const compradorIdent =
-      sale.clientCedula || (sale.patient && sale.patient.cedula) || '9999999999999';
-    const compradorNombre =
-      sale.clientName ||
-      (sale.patient && `${sale.patient.firstName} ${sale.patient.lastName}`.trim()) ||
-      'CONSUMIDOR FINAL';
-    const compradorEmail = sale.clientEmail || (sale.patient && sale.patient.email) || '';
-    const compradorTel = sale.clientPhone || (sale.patient && sale.patient.phone) || '';
-    const compradorDir =
-      sale.clientAddress || (sale.patient && sale.patient.address) || '';
+    const { compradorIdent, compradorNombre, compradorEmail, compradorTel, compradorDir } = datosComprador(sale);
 
     // FECHA DE EMISIÓN AUTOMÁTICA, nunca atrasada. Normalmente es el momento de la venta
     // (misma fecha que su asiento); si la venta es de un día anterior, la factura se emite HOY:
@@ -95,128 +234,9 @@ exports.emitFromSale = async (req, res) => {
       secuencial,
     });
 
-    // Mapear ítems
-    const detalles = sale.items.map((it) => {
-      const cantidad = Number(it.quantity);
-      const precioUnitario = +Number(it.unitPriceExcludingTax || it.unitPrice || 0).toFixed(2);
-      const descuento = +Number(it.discountTaxBase ?? it.discount ?? 0).toFixed(2);
-      const precioTotalSin = +Number(it.taxBase ?? (cantidad * precioUnitario - descuento)).toFixed(2);
-      const tarifa = Number(it.taxRate || 0);
-      const valorIva = +Number(it.taxAmount ?? (precioTotalSin * (tarifa / 100))).toFixed(2);
-      // Códigos SRI IVA: 2 = IVA, codigoPorcentaje 0=0%, 2=12%, 3=14%, 4=15%
-      let codigoPorcentaje = it.taxCodeSri || '0';
-      if (!it.taxCodeSri) {
-        if (tarifa === 12) codigoPorcentaje = '2';
-        else if (tarifa === 14) codigoPorcentaje = '3';
-        else if (tarifa === 15) codigoPorcentaje = '4';
-      }
-      return {
-        codigoPrincipal: it.productCode || String(it.product),
-        descripcion: it.productName,
-        cantidad,
-        precioUnitario,
-        descuento,
-        precioTotalSinImpuesto: precioTotalSin,
-        impuestos: [
-          {
-            codigo: '2',
-            codigoPorcentaje,
-            tarifa,
-            baseImponible: precioTotalSin,
-            valor: valorIva,
-          },
-        ],
-      };
+    const { factura, totalSinImpuestos, tb } = armarFactura({
+      sale, config, clinic, serie, secuencial, claveAcceso, fechaEmision,
     });
-
-    // Totales por código de IVA (agrupados)
-    const totalImpuestosMap = new Map();
-    for (const d of detalles) {
-      for (const imp of d.impuestos) {
-        const key = `${imp.codigo}-${imp.codigoPorcentaje}`;
-        const cur = totalImpuestosMap.get(key) || {
-          codigo: imp.codigo,
-          codigoPorcentaje: imp.codigoPorcentaje,
-          baseImponible: 0,
-          valor: 0,
-        };
-        cur.baseImponible += imp.baseImponible;
-        cur.valor += imp.valor;
-        totalImpuestosMap.set(key, cur);
-      }
-    }
-    const totalConImpuestos = Array.from(totalImpuestosMap.values()).map((t) => ({
-      ...t,
-      baseImponible: +t.baseImponible.toFixed(2),
-      valor: +t.valor.toFixed(2),
-    }));
-
-    // Forma de pago SRI: 01 sin sistema financiero | 16 débito | 19 crédito | 20 transferencia
-    const FORMA_PAGO = {
-      efectivo: '01',
-      tarjeta: '19',
-      tarjeta_debito: '16',
-      tarjeta_credito: '19',
-      transferencia: '20',
-      credito: '20',
-      // Pagada con el saldo a favor del paciente (anticipo): 15 = compensación de deudas.
-      anticipo: '15',
-    };
-
-    const totalSinImpuestos = +(sale.items || [])
-      .reduce((sum, item) => sum + Number(item.taxBase || item.subtotal || 0), 0)
-      .toFixed(2);
-
-    // Snapshot tributario por tarifa (0% / gravada 15% / exento / no objeto) para
-    // que los reportes SRI separen ventas sin recalcular desde la venta origen.
-    const tb = breakdownFromSale(sale);
-
-    const factura = {
-      infoTributaria: {
-        ambiente: serie.ambiente,
-        tipoEmision: '1',
-        razonSocial: config.razonSocial,
-        nombreComercial: config.nombreComercial,
-        ruc: config.ruc,
-        claveAcceso,
-        codDoc: '01',
-        estab: serie.estab,
-        ptoEmi: serie.ptoEmi,
-        secuencial,
-        dirMatriz: config.direccionMatriz,
-        agenteRetencion: config.agenteRetencion || undefined,
-      },
-      infoFactura: {
-        fechaEmision: fmtFechaEmision(fechaEmision),
-        dirEstablecimiento: serie.dirEstablecimiento,
-        contribuyenteEspecial: config.contribuyenteEspecial || undefined,
-        obligadoContabilidad: config.obligadoContabilidad,
-        tipoIdentificacionComprador: tipoIdentificacion(compradorIdent),
-        razonSocialComprador: compradorNombre,
-        identificacionComprador: compradorIdent,
-        direccionComprador: compradorDir || undefined,
-        totalSinImpuestos,
-        totalDescuento: +Number(sale.discountTotal || 0).toFixed(2),
-        totalConImpuestos,
-        propina: 0,
-        importeTotal: sale.total,
-        moneda: 'DOLAR',
-        pagos: [
-          {
-            formaPago: FORMA_PAGO[sale.paymentMethod] || '01',
-            total: sale.total,
-            plazo: 0,
-            unidadTiempo: 'dias',
-          },
-        ],
-      },
-      detalles,
-      infoAdicional: [
-        compradorEmail ? { nombre: 'Email', valor: compradorEmail } : null,
-        compradorTel ? { nombre: 'Telefono', valor: compradorTel } : null,
-        clinic ? { nombre: 'Establecimiento', valor: clinic.name } : null,
-      ].filter(Boolean),
-    };
 
     // Construir Invoice en BD primero, en cola
     invoice = await Invoice.create({
@@ -453,6 +473,56 @@ exports.getRidePdf = async (req, res) => {
 };
 
 /**
+ * VOLVER A FIRMAR UNA FACTURA QUE NO LLEGÓ AL SRI (oct-2026).
+ *
+ * El firmador tuvo dos fallos: primero no firmaba (la factura quedaba en ERROR y SIN XML,
+ * y la venta ya no se podía volver a facturar porque tenía esa factura asociada) y después
+ * firmaba mal (el SRI la DEVOLVÍA con «FIRMA INVALIDA» y reenviar el mismo XML no sirve).
+ * Para esas, el reintento rearma el XML desde la venta con LOS MISMOS datos —clave de
+ * acceso, número, serie, fecha y ambiente— y lo firma de nuevo. El SRI no registró la clave
+ * (la devolvió en la recepción), así que puede recibirla otra vez.
+ */
+const ESTADOS_REFIRMABLES = ['EN_COLA', 'ERROR', 'DEVUELTA'];
+// Marca del firmador anterior: su referencia al certificado llevaba este Id.
+const MARCA_FIRMADOR_ANTERIOR = 'Reference-ID-Cert-';
+
+function necesitaRefirmar(invoice) {
+  if (!ESTADOS_REFIRMABLES.includes(invoice.estado)) return false;
+  return !invoice.xmlFirmado || invoice.xmlFirmado.includes(MARCA_FIRMADOR_ANTERIOR);
+}
+
+async function refirmarFactura(invoice) {
+  const sale = await Sale.findOne({ _id: invoice.sale, clinic: invoice.clinic })
+    .populate('patient', 'firstName lastName cedula address phone email');
+  if (!sale) throw Object.assign(new Error('La venta de esta factura ya no existe: no se puede volver a firmar.'), { status: 400 });
+  const { config, p12Buffer, password } = await loadForSigning(invoice.clinic);
+  const clinic = await Clinic.findById(invoice.clinic);
+  const [dd, mm, yyyy] = String(invoice.fechaEmision || '').split('/').map(Number);
+  const fechaEmision = dd && mm && yyyy ? new Date(yyyy, mm - 1, dd, 12) : new Date();
+  const { factura } = armarFactura({
+    sale,
+    config,
+    clinic,
+    serie: {
+      estab: invoice.estab,
+      ptoEmi: invoice.ptoEmi,
+      dirEstablecimiento: invoice.dirEstablecimiento || config.direccionEstablecimiento || config.direccionMatriz || '',
+      ambiente: invoice.ambiente,
+    },
+    secuencial: invoice.secuencial,
+    claveAcceso: invoice.claveAcceso,
+    fechaEmision,
+  });
+  invoice.xmlFirmado = signXml(buildFacturaXml(factura), p12Buffer, password);
+  invoice.estado = 'EN_COLA';
+  invoice.errorUltimo = null;
+  invoice.proximoReintento = null;
+  invoice.mensajesSri = [];
+  await invoice.save();
+  return invoice;
+}
+
+/**
  * Reintenta manualmente UNA factura. A diferencia del job, fuerza el reintento
  * ignorando el backoff, y cubre todo el ciclo: reenvía a recepción si quedó
  * EN_COLA/ERROR (SRI caído) y consulta autorización si ya fue recibida.
@@ -466,6 +536,7 @@ exports.retry = async (req, res) => {
         .status(400)
         .json({ message: `La factura ya está ${invoice.estado.toLowerCase()}` });
     }
+    if (necesitaRefirmar(invoice)) await refirmarFactura(invoice);
     await processInvoice(invoice, { force: true, authAttempts: 2, authDelayMs: 1200 });
     const messages = {
       AUTORIZADO: 'Factura autorizada por el SRI',
@@ -488,6 +559,19 @@ exports.retry = async (req, res) => {
  */
 exports.retryPending = async (req, res) => {
   try {
+    // Las que quedaron sin XML o con la firma del firmador anterior se vuelven a firmar
+    // antes de reenviarlas (si no, el SRI las devolvería otra vez con «FIRMA INVALIDA»).
+    const porRefirmar = await Invoice.find({
+      clinic: req.clinicId, estado: { $in: ESTADOS_REFIRMABLES },
+    }).limit(100);
+    for (const inv of porRefirmar) {
+      if (!necesitaRefirmar(inv)) continue;
+      // eslint-disable-next-line no-await-in-loop
+      await refirmarFactura(inv).catch((e) => {
+        inv.errorUltimo = `No se pudo volver a firmar: ${e.message}`;
+        return inv.save();
+      });
+    }
     const result = await runInvoiceRetryQueue({
       clinicId: req.clinicId,
       force: true,

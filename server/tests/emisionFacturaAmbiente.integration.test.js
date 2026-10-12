@@ -119,3 +119,32 @@ test('punto sin ambiente propio (creado antes): emite con el de la configuració
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   assert.equal(r.payload.ambiente, '2');
 });
+
+test('el reintento vuelve a firmar la factura sin XML o devuelta por la firma anterior', async () => {
+  const { clinicId, userId, vender, emitir } = await preparar('1');
+  const Invoice = require('../models/Invoice');
+  const reintentar = (id) => H.runController(invoices.retry, H.mockReq(clinicId, userId, {}, { params: { id: String(id) } }));
+
+  // 1) Quedó en ERROR y SIN XML (la firma reventó antes de guardarlo).
+  const v1 = await vender(userId);
+  const f1 = (await emitir(userId, v1._id)).payload;
+  await Invoice.updateOne({ _id: f1._id }, { $set: { estado: 'ERROR', xmlFirmado: null } });
+  llamadas.length = 0;
+  const r1 = await reintentar(f1._id);
+  assert.equal(r1.statusCode, 200, JSON.stringify(r1.payload));
+  assert.equal(r1.payload.invoice.estado, 'AUTORIZADO');
+  assert.equal(r1.payload.invoice.claveAcceso, f1.claveAcceso, 'misma clave de acceso');
+  assert.equal(r1.payload.invoice.secuencial, f1.secuencial, 'mismo número');
+  assert.ok(r1.payload.invoice.xmlFirmado.includes('<ds:Signature'));
+
+  // 2) DEVUELTA con «FIRMA INVALIDA», firmada por el firmador anterior.
+  const v2 = await vender(userId);
+  const f2 = (await emitir(userId, v2._id)).payload;
+  await Invoice.updateOne({ _id: f2._id }, {
+    $set: { estado: 'DEVUELTA', errorUltimo: 'FIRMA INVALIDA', xmlFirmado: '<factura id="comprobante"><ds:Reference Id="Reference-ID-Cert-1"/></factura>' },
+  });
+  const r2 = await reintentar(f2._id);
+  assert.equal(r2.payload.invoice.estado, 'AUTORIZADO', JSON.stringify(r2.payload));
+  assert.ok(!r2.payload.invoice.xmlFirmado.includes('Reference-ID-Cert-'), 'firmada con el firmador nuevo');
+  assert.equal(r2.payload.invoice.claveAcceso, f2.claveAcceso);
+});
