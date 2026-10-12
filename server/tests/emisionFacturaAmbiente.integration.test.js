@@ -40,7 +40,8 @@ const { encrypt } = require('../modules/invoicing/ec/crypto');
 const CERTS_DIR = path.join(__dirname, '..', 'storage', 'certs');
 const certificados = [];
 
-function hacerP12(password) {
+// `ruc`: el RUC del titular en la extensión .3.11 de la entidad certificadora (Banco Central).
+function hacerP12(password, ruc = '0999999999001') {
   const keys = forge.pki.rsa.generateKeyPair(2048);
   const cert = forge.pki.createCertificate();
   cert.publicKey = keys.publicKey;
@@ -50,6 +51,10 @@ function hacerP12(password) {
   const attrs = [{ name: 'commonName', value: 'CLINICA PRUEBA' }, { name: 'countryName', value: 'EC' }];
   cert.setSubject(attrs);
   cert.setIssuer(attrs);
+  cert.setExtensions([{
+    id: '1.3.6.1.4.1.37947.3.11',
+    value: forge.asn1.toDer(forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.UTF8, false, ruc)).getBytes(),
+  }]);
   cert.sign(keys.privateKey, forge.md.sha256.create());
   const asn1 = forge.pkcs12.toPkcs12Asn1(keys.privateKey, [cert], password, { algorithm: '3des' });
   return Buffer.from(forge.asn1.toDer(asn1).getBytes(), 'binary');
@@ -62,12 +67,12 @@ test.after(async () => {
 });
 test.beforeEach(async () => { await H.resetDb(); llamadas.length = 0; });
 
-async function preparar(ambienteConfig) {
+async function preparar(ambienteConfig, rucCertificado) {
   const { clinicId, userId } = await H.seedClinic();
   fs.mkdirSync(CERTS_DIR, { recursive: true });
   const nombre = `test-emision-${Date.now()}-${Math.random().toString(36).slice(2)}.p12`;
   const ruta = path.join(CERTS_DIR, nombre);
-  fs.writeFileSync(ruta, hacerP12('secreto'));
+  fs.writeFileSync(ruta, hacerP12('secreto', rucCertificado));
   certificados.push(ruta);
   await InvoicingConfig.create({
     clinic: clinicId, ruc: '0999999999001', razonSocial: 'Clinica Prueba', direccionMatriz: 'Av. Siempre Viva',
@@ -147,4 +152,35 @@ test('el reintento vuelve a firmar la factura sin XML o devuelta por la firma an
   assert.equal(r2.payload.invoice.estado, 'AUTORIZADO', JSON.stringify(r2.payload));
   assert.ok(!r2.payload.invoice.xmlFirmado.includes('Reference-ID-Cert-'), 'firmada con el firmador nuevo');
   assert.equal(r2.payload.invoice.claveAcceso, f2.claveAcceso);
+});
+
+test('certificado de OTRO RUC: no se emite ni se gasta número, con el motivo claro', async () => {
+  const { clinicId, userId, vender, emitir } = await preparar('1', '0952737070001');
+  const Invoice = require('../models/Invoice');
+  const antes = (await InvoicingConfig.findOne({ clinic: clinicId })).secuencial;
+  const venta = await vender(userId);
+  const r = await emitir(userId, venta._id);
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.equal(r.payload.code, 'CERTIFICADO_DE_OTRO_RUC');
+  assert.match(r.payload.message, /0952737070001/);
+  assert.match(r.payload.message, /0999999999001/);
+  assert.equal(await Invoice.countDocuments({ clinic: clinicId }), 0, 'no queda factura a medias');
+  assert.equal((await InvoicingConfig.findOne({ clinic: clinicId })).secuencial, antes, 'no se gastó número');
+  assert.equal(llamadas.length, 0, 'no se llamó al SRI');
+});
+
+test('una venta con factura NO AUTORIZADA se vuelve a facturar con otro número', async () => {
+  const { clinicId, userId, vender, emitir } = await preparar('1');
+  const Invoice = require('../models/Invoice');
+  const venta = await vender(userId);
+  const f1 = (await emitir(userId, venta._id)).payload;
+  await Invoice.updateOne({ _id: f1._id }, { $set: { estado: 'NO_AUTORIZADO', errorUltimo: 'FIRMA INVALIDA' } });
+  const r = await emitir(userId, venta._id);
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  assert.notEqual(r.payload.secuencial, f1.secuencial, 'número nuevo');
+  assert.notEqual(r.payload.claveAcceso, f1.claveAcceso);
+  assert.equal(await Invoice.countDocuments({ clinic: clinicId }), 2, 'la rechazada queda como constancia');
+  // Con una factura vigente (no rechazada) sigue sin dejar facturar dos veces.
+  const otra = await emitir(userId, venta._id);
+  assert.equal(otra.statusCode, 400);
 });

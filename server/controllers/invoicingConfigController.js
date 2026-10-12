@@ -3,7 +3,7 @@ const path = require('path');
 const multer = require('multer');
 const InvoicingConfig = require('../models/InvoicingConfig');
 const { encrypt, decrypt } = require('../modules/invoicing/ec/crypto');
-const { loadP12 } = require('../modules/invoicing/ec/xadesSigner');
+const { loadP12, rucsDelCertificado } = require('../modules/invoicing/ec/xadesSigner');
 
 const CERTS_DIR = path.join(__dirname, '..', 'storage', 'certs');
 if (!fs.existsSync(CERTS_DIR)) fs.mkdirSync(CERTS_DIR, { recursive: true });
@@ -127,6 +127,7 @@ exports.uploadCertificate = async (req, res) => {
             issuer: info.issuerName,
             subject: info.subject,
             serialNumber: info.serialNumberDecimal,
+            ruc: rucsDelCertificado(info.certificate)[0] || '',
           },
         },
         $setOnInsert: { clinic: req.clinicId },
@@ -155,7 +156,13 @@ exports.uploadCertificate = async (req, res) => {
       autoFill.razonSocial = cnName;
     }
 
-    res.json({ config: sanitizeOutput(config), autoFill });
+    // ¿Es del RUC que factura? Se avisa al subirlo, no cuando el SRI ya rechazó la factura.
+    const rucsCert = rucsDelCertificado(info.certificate);
+    const advertencia = rucsCert.length && config.ruc && !rucsCert.includes(String(config.ruc).trim())
+      ? `Atención: este certificado es del RUC ${rucsCert.join(', ')} y la empresa factura con el RUC ${config.ruc}. El SRI rechazará las facturas («FIRMA INVALIDA»). Suba el certificado de la empresa.`
+      : null;
+
+    res.json({ config: sanitizeOutput(config), autoFill, advertencia });
   } catch (error) {
     res
       .status(500)
@@ -214,5 +221,18 @@ exports.loadForSigning = async (clinicId) => {
 
   const p12Buffer = fs.readFileSync(filepath);
   const password = decrypt(config.certificatePassword);
+
+  /**
+   * EL CERTIFICADO TIENE QUE SER DEL RUC QUE EMITE (oct-2026). Si no lo es, el SRI responde
+   * «FIRMA INVALIDA … RucComprobante / RucCertificado» y el número de factura ya se gastó.
+   * Se corta aquí, antes de reservar ningún número, con el motivo claro.
+   */
+  const rucs = rucsDelCertificado(loadP12(p12Buffer, password).certificate);
+  if (rucs.length && config.ruc && !rucs.includes(String(config.ruc).trim())) {
+    throw Object.assign(new Error(
+      `El certificado de firma electrónica cargado es del RUC ${rucs.join(', ')}, pero se factura con el RUC ${config.ruc}. `
+      + 'El SRI lo rechaza («FIRMA INVALIDA»). Suba en Configuración SRI el certificado de la empresa (el de su representante legal).'
+    ), { status: 400, code: 'CERTIFICADO_DE_OTRO_RUC' });
+  }
   return { config, p12Buffer, password };
 };

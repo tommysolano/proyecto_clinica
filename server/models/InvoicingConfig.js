@@ -68,6 +68,8 @@ const invoicingConfigSchema = new mongoose.Schema(
       issuer: String,
       subject: String,
       serialNumber: String,
+      // RUC del titular según el certificado (extensión .3.11 de la entidad certificadora).
+      ruc: String,
     },
     // Email para envío de RIDE/XML
     emailRemitente: { type: String, trim: true },

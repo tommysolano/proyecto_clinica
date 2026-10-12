@@ -198,9 +198,18 @@ exports.emitFromSale = async (req, res) => {
     );
     if (!sale) return res.status(404).json({ message: 'Venta no encontrada' });
     if (sale.invoice) {
-      return res
-        .status(400)
-        .json({ message: 'La venta ya tiene una factura asociada' });
+      /**
+       * Una factura NO AUTORIZADA por el SRI no tiene validez y su número ya no se puede
+       * reenviar (el SRI registró la clave). La venta se vuelve a facturar con un número
+       * nuevo; la rechazada queda en el listado como constancia (oct-2026).
+       */
+      const anterior = await Invoice.findById(sale.invoice).select('estado');
+      if (!anterior || anterior.estado !== 'NO_AUTORIZADO') {
+        return res
+          .status(400)
+          .json({ message: 'La venta ya tiene una factura asociada' });
+      }
+      sale.invoice = null;
     }
     if (sale.status === 'anulada') {
       return res.status(400).json({ message: 'No se puede facturar una venta anulada' });

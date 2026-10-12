@@ -147,6 +147,8 @@ export default function InvoicingConfig() {
       } else {
         toast.success('Certificado cargado correctamente');
       }
+      // Certificado de OTRO RUC: el SRI rechazaría las facturas («FIRMA INVALIDA»).
+      if (res.data.advertencia) toast.error(res.data.advertencia, { duration: 15000 });
     } catch (err) {
       toast.error(errDetail(err, 'Error al cargar certificado'));
     } finally {
@@ -339,6 +341,16 @@ export default function InvoicingConfig() {
               <p className="text-slate-600">
                 <strong>Serie:</strong> {certInfo.serialNumber}
               </p>
+              {/* El RUC del certificado tiene que ser el de la empresa: si no, el SRI
+                  rechaza las facturas con «FIRMA INVALIDA» (oct-2026). */}
+              {certInfo.ruc && (
+                <p className={certInfo.ruc === form.ruc ? 'text-slate-600' : 'text-red-700 font-semibold'}>
+                  <strong>RUC del certificado:</strong> {certInfo.ruc}
+                  {certInfo.ruc !== form.ruc && form.ruc && (
+                    <> — no es el RUC de la empresa ({form.ruc}): el SRI rechazará las facturas. Suba el certificado de la empresa.</>
+                  )}
+                </p>
+              )}
             </div>
             {canEdit && (
               <button

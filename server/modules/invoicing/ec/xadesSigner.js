@@ -317,4 +317,28 @@ function textoCanonico(s) {
     .replace(/\r/g, '&#xD;');
 }
 
-module.exports = { signXml, loadP12 };
+/**
+ * EL RUC DEL CERTIFICADO, tal como lo lee el SRI (oct-2026).
+ *
+ * Las entidades certificadoras de Ecuador (Banco Central, Security Data, ANF…) guardan el
+ * RUC del titular en una extensión propia cuyo OID termina en «.3.11». El SRI lo compara
+ * con el RUC del comprobante y, si no es el mismo, responde «FIRMA INVALIDA … RucComprobante:
+ * X RucCertificado: Y» aunque la firma sea perfecta. Devuelve los RUC encontrados ([] si el
+ * certificado no trae esa extensión: entonces no se puede comprobar aquí).
+ */
+function rucsDelCertificado(certificate) {
+  const rucs = new Set();
+  for (const ext of certificate?.extensions || []) {
+    if (!/\.3\.11$/.test(String(ext.id || ''))) continue;
+    let texto = '';
+    try {
+      const asn1 = forge.asn1.fromDer(ext.value);
+      texto = typeof asn1.value === 'string' ? asn1.value : '';
+    } catch { texto = ''; }
+    if (!texto) texto = String(ext.value || '');
+    for (const m of texto.match(/\d{13}/g) || []) rucs.add(m);
+  }
+  return [...rucs];
+}
+
+module.exports = { signXml, loadP12, rucsDelCertificado };

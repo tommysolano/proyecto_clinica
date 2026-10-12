@@ -973,7 +973,8 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   };
 
   const facturar = async (sale) => {
-    if (sale.invoice) return toast.error('Esta venta ya tiene factura asociada');
+    // Una factura NO AUTORIZADA no vale: la venta se puede facturar de nuevo (otro número).
+    if (sale.invoice && sale.invoice.estado !== 'NO_AUTORIZADO') return toast.error('Esta venta ya tiene factura asociada');
     if (!puedeFacturarAqui) {
       return toast.error('No tienes un punto de emisión asignado en esta sucursal. Pide al administrador que te asigne uno en Configuración SRI.');
     }
@@ -2153,12 +2154,12 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                       >
                         <HiOutlineEye className="w-4 h-4" />
                       </button>
-                      {canInvoice && s.status === 'completada' && !s.invoice && (
+                      {canInvoice && s.status === 'completada' && (!s.invoice || s.invoice.estado === 'NO_AUTORIZADO') && (
                         <button
                           onClick={() => facturar(s)}
                           disabled={invoicingId === s._id}
                           className="p-1.5 rounded-lg hover:bg-blue-50 text-slate-400 hover:text-blue-600 bg-transparent border-none cursor-pointer disabled:opacity-50"
-                          title="Facturar electrónicamente"
+                          title={s.invoice ? 'La factura anterior no fue autorizada: facturar de nuevo' : 'Facturar electrónicamente'}
                         >
                           <HiOutlineDocumentText className="w-4 h-4" />
                         </button>
