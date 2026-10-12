@@ -248,3 +248,29 @@ test('9) el ambiente (pruebas/producción) es del punto de emisión', async () =
   assert.equal(await svc.ambienteDeSerie(clinicId, '001', '001', cfg), '1');
   assert.equal(await svc.ambienteDeSerie(clinicId, '009', '009', cfg), '2', 'serie sin punto: el de la configuración');
 });
+
+test('10) en producción, los números gastados en pruebas no cuentan como emitidos', async () => {
+  const { clinicId } = await seed();
+  const factura = (secuencial, ambiente) => Invoice.create({
+    clinic: clinicId, claveAcceso: `121020260109934041600${ambiente}${secuencial}`.padEnd(49, '7'), secuencial,
+    estab: '003', ptoEmi: '001', ambiente, fechaEmision: '12/10/2026', importeTotal: 10,
+  });
+  await factura('000001388', '2'); // la última de producción (Contífico)
+  await factura('000001389', '1'); // una prueba con el número siguiente
+
+  const r = await crear(clinicId, { establecimiento: '003', codigo: '001', ambiente: '1' });
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  assert.equal(r.payload.secuencialFactura, 1390, 'en pruebas sí cuenta la prueba');
+
+  const enPruebas = await editar(clinicId, r.payload._id, { secuencialFactura: 1389 });
+  assert.equal(enPruebas.statusCode, 400);
+  assert.match(enPruebas.payload.message, /al menos 1390/);
+
+  const prod = await editar(clinicId, r.payload._id, { ambiente: '2', secuencialFactura: 1389 });
+  assert.equal(prod.statusCode, 200, JSON.stringify(prod.payload));
+  assert.equal(prod.payload.secuencialFactura, 1389);
+
+  const debajo = await editar(clinicId, r.payload._id, { secuencialFactura: 1388 });
+  assert.equal(debajo.statusCode, 400);
+  assert.match(debajo.payload.message, /003-001-000001388: el próximo número debe ser al menos 1389/);
+});

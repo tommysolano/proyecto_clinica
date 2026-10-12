@@ -16,17 +16,28 @@ const USUARIO_FIELDS = 'name email';
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 const cod3 = (v) => String(v ?? '').replace(/\D/g, '').slice(-3).padStart(3, '0');
 
-/** Mayor secuencial ya emitido en la sucursal para la serie, por tipo de comprobante. */
-async function maxEmitido(clinicId, estab, ptoEmi) {
+/**
+ * Mayor secuencial ya emitido en la sucursal para la serie, por tipo de comprobante.
+ *
+ * Para un punto en PRODUCCIÓN no cuentan los comprobantes de PRUEBAS: el SRI de producción
+ * nunca los vio, así que esos números siguen libres. Pasó el 12-10-2026: las pruebas
+ * 003-001-1386…1389 impedían poner el 1389, cuando Contífico había emitido hasta la 1388.
+ * Las notas de crédito no guardan el ambiente: se lee de la clave de acceso (posición 24).
+ */
+async function maxEmitido(clinicId, estab, ptoEmi, ambiente) {
   const asNum = { $convert: { input: '$secuencial', to: 'long', onError: 0, onNull: 0 } };
   const clinic = new mongoose.Types.ObjectId(String(clinicId));
+  const soloProduccion = ambiente === '2';
   const [fac, nc] = await Promise.all([
     Invoice.aggregate([
-      { $match: { clinic, estab, ptoEmi } },
+      { $match: { clinic, estab, ptoEmi, ...(soloProduccion ? { ambiente: { $ne: '1' } } : {}) } },
       { $group: { _id: null, max: { $max: asNum } } },
     ]),
     CreditDebitNote.aggregate([
-      { $match: { clinic, kind: 'NC', direction: 'EMITIDA', estab, ptoEmi, secuencial: { $nin: [null, ''] } } },
+      { $match: {
+        clinic, kind: 'NC', direction: 'EMITIDA', estab, ptoEmi, secuencial: { $nin: [null, ''] },
+        ...(soloProduccion ? { claveAcceso: { $not: /^\d{23}1/ } } : {}),
+      } },
       { $group: { _id: null, max: { $max: asNum } } },
     ]),
   ]);
@@ -129,7 +140,8 @@ async function validar(clinicId, body, actual) {
   }
 
   // Secuenciales (próximo número a usar). Nunca por debajo de lo ya emitido con esta serie.
-  const emitido = await maxEmitido(clinicId, estab, codigo);
+  const ambiente = data.ambiente || ambienteDelPunto(actual, config);
+  const emitido = await maxEmitido(clinicId, estab, codigo, ambiente);
   const esParLegacy = estab === cod3(config.establecimiento || '001') && codigo === cod3(config.puntoEmision || '001');
   const minimo = {
     factura: Math.max(emitido.factura + 1, esParLegacy && !actual ? Number(config.secuencial) || 1 : 1),
