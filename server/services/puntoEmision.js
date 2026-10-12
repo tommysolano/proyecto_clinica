@@ -36,8 +36,13 @@ async function puntoRequerido(clinicId, userId) {
   return punto;
 }
 
+/** Ambiente del SRI de un punto: el suyo o, si no lo tiene definido, el de la configuración. */
+function ambienteDelPunto(punto, config) {
+  return punto?.ambiente || config?.ambiente || '1';
+}
+
 /**
- * Serie con la que emite `userId`: { punto, estab, ptoEmi, dirEstablecimiento }.
+ * Serie con la que emite `userId`: { punto, estab, ptoEmi, dirEstablecimiento, ambiente }.
  * `punto` es null en el modo anterior (serie de la configuración).
  */
 async function serieDelEmisor(clinicId, userId, config) {
@@ -49,6 +54,7 @@ async function serieDelEmisor(clinicId, userId, config) {
       estab: config.establecimiento || '001',
       ptoEmi: config.puntoEmision || '001',
       dirEstablecimiento: dirConfig,
+      ambiente: config.ambiente || '1',
     };
   }
   return {
@@ -56,7 +62,18 @@ async function serieDelEmisor(clinicId, userId, config) {
     estab: punto.establecimiento,
     ptoEmi: punto.codigo,
     dirEstablecimiento: punto.direccionEstablecimiento || dirConfig,
+    ambiente: ambienteDelPunto(punto, config),
   };
+}
+
+/**
+ * Ambiente con el que se emite desde la serie `estab-ptoEmi` (retenciones, que eligen la
+ * serie a mano): el del punto de esa serie; sin punto, el de la configuración.
+ */
+async function ambienteDeSerie(clinicId, estab, ptoEmi, config) {
+  const punto = await PuntoEmision.findOne({ clinic: clinicId, establecimiento: estab, codigo: ptoEmi })
+    .select('ambiente').lean();
+  return ambienteDelPunto(punto, config);
 }
 
 const CAMPO = { factura: 'secuencialFactura', notaCredito: 'secuencialNotaCredito' };
@@ -120,6 +137,8 @@ module.exports = {
   puntoDelUsuario,
   puntoRequerido,
   serieDelEmisor,
+  ambienteDelPunto,
+  ambienteDeSerie,
   reservarSecuencial,
   seriesDisponibles,
 };

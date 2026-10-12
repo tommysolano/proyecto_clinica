@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
-import NumericInput from '../components/NumericInput';
 import SriStatus from '../components/SriStatus';
 import PuntosEmisionPanel from '../components/invoicing/PuntosEmisionPanel';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
@@ -28,10 +27,9 @@ const EMPTY = {
   nombreComercial: '',
   direccionMatriz: '',
   direccionEstablecimiento: '',
-  establecimiento: '001',
-  puntoEmision: '001',
-  secuencial: 1,
-  ambiente: '1', // '1' = pruebas, '2' = producción (valores del modelo/SRI)
+  // El establecimiento, el punto de emisión, la numeración y el AMBIENTE (pruebas/producción)
+  // ya no son datos del emisor (oct-2026): se definen en cada punto de venta (ver
+  // PuntosEmisionPanel). No viajan en el guardado, así que lo que había queda intacto.
   obligadoContabilidad: false,
   agenteRetencion: '',
   contribuyenteEspecial: '',
@@ -75,10 +73,6 @@ export default function InvoicingConfig() {
           nombreComercial: res.data.nombreComercial || '',
           direccionMatriz: res.data.direccionMatriz || '',
           direccionEstablecimiento: res.data.direccionEstablecimiento || '',
-          establecimiento: res.data.establecimiento || '001',
-          puntoEmision: res.data.puntoEmision || '001',
-          secuencial: res.data.secuencial || 1,
-          ambiente: res.data.ambiente || '1',
           obligadoContabilidad: res.data.obligadoContabilidad === 'SI',
           agenteRetencion: res.data.agenteRetencion || '',
           contribuyenteEspecial: res.data.contribuyenteEspecial || '',
@@ -235,17 +229,6 @@ export default function InvoicingConfig() {
               className="input"
             />
           </Field>
-          <Field label="Ambiente" required>
-            <select
-              value={form.ambiente}
-              disabled={!canEdit}
-              onChange={(e) => handleChange('ambiente', e.target.value)}
-              className="input"
-            >
-              <option value="1">Pruebas</option>
-              <option value="2">Producción</option>
-            </select>
-          </Field>
           <Field label="Dirección matriz" required>
             <input
               type="text"
@@ -261,39 +244,6 @@ export default function InvoicingConfig() {
               value={form.direccionEstablecimiento}
               disabled={!canEdit}
               onChange={(e) => handleChange('direccionEstablecimiento', e.target.value)}
-              className="input"
-            />
-          </Field>
-          <Field label="Establecimiento (3 dígitos)">
-            <input
-              type="text"
-              maxLength={3}
-              value={form.establecimiento}
-              disabled={!canEdit}
-              onChange={(e) =>
-                handleChange('establecimiento', e.target.value.replace(/\D/g, '').padStart(3, '0'))
-              }
-              className="input"
-            />
-          </Field>
-          <Field label="Punto de emisión (3 dígitos)">
-            <input
-              type="text"
-              maxLength={3}
-              value={form.puntoEmision}
-              disabled={!canEdit}
-              onChange={(e) =>
-                handleChange('puntoEmision', e.target.value.replace(/\D/g, '').padStart(3, '0'))
-              }
-              className="input"
-            />
-          </Field>
-          <Field label="Secuencial inicial (serie única)">
-            <NumericInput
-              min={1}
-              value={form.secuencial}
-              disabled={!canEdit}
-              onChange={(e) => handleChange('secuencial', Number(e.target.value))}
               className="input"
             />
           </Field>
@@ -331,8 +281,8 @@ export default function InvoicingConfig() {
         </div>
 
         <p className="text-xs text-slate-500">
-          Establecimiento, punto de emisión y secuencial de esta sección son la serie única de la sucursal: se usan
-          solo mientras no haya puntos de emisión (cajas) creados abajo.
+          El establecimiento, el punto de emisión, la numeración y el ambiente (pruebas o producción) se definen en
+          cada <b>punto de emisión</b>, más abajo.
         </p>
 
         {canEdit && (

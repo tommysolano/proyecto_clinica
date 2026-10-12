@@ -7,6 +7,20 @@ import NumericInput from '../NumericInput';
 
 const ROLE_LABEL = { admin: 'Administrador', cajero: 'Cajero', contabilidad: 'Contabilidad' };
 const pad9 = (n) => String(n || 1).padStart(9, '0');
+const AMBIENTE_LABEL = { 1: 'Pruebas', 2: 'Producción' };
+
+/** El ambiente del SRI con su color: producción en verde, pruebas en ámbar. */
+function AmbienteBadge({ ambiente, heredado }) {
+  const prod = ambiente === '2';
+  return (
+    <span
+      className={`px-2 py-0.5 rounded-full text-xs font-medium ${prod ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}
+      title={heredado ? 'Este punto aún no tiene ambiente propio: usa el de la configuración. Edítelo para fijarlo.' : undefined}
+    >
+      {AMBIENTE_LABEL[ambiente] || 'Pruebas'}{heredado ? ' *' : ''}
+    </span>
+  );
+}
 const solo3 = (v) => String(v || '').replace(/\D/g, '').slice(0, 3);
 
 const EMPTY = {
@@ -17,6 +31,9 @@ const EMPTY = {
   usuario: '',
   secuencialFactura: '',
   secuencialNotaCredito: '',
+  // Ambiente del SRI del punto ('1' pruebas, '2' producción). Vacío a propósito al crear:
+  // se escoge, nunca se hereda sin que nadie lo decida.
+  ambiente: '',
   activo: true,
 };
 
@@ -73,6 +90,8 @@ export default function PuntosEmisionPanel({ canEdit }) {
       usuario: p.usuario?._id || '',
       secuencialFactura: p.secuencialFactura,
       secuencialNotaCredito: p.secuencialNotaCredito,
+      // Un punto antiguo sin ambiente propio enseña el que usa hoy (el de la configuración).
+      ambiente: p.ambiente || p.ambienteEfectivo || '',
       activo: p.activo,
     });
     setModal({ punto: p });
@@ -83,6 +102,7 @@ export default function PuntosEmisionPanel({ canEdit }) {
     if (!/^\d{3}$/.test(form.establecimiento) || !/^\d{3}$/.test(form.codigo)) {
       return toast.error('Establecimiento y punto de emisión deben tener 3 dígitos (001, 002…)');
     }
+    if (!form.ambiente) return toast.error('Escoja el ambiente del punto: Pruebas o Producción.');
     setSaving(true);
     try {
       const body = {
@@ -142,10 +162,18 @@ export default function PuntosEmisionPanel({ canEdit }) {
 
       {!loading && puntos.length === 0 && (
         <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-800">
-          Aún no hay puntos de emisión: todas las facturas salen con la serie única{' '}
+          Aún no hay puntos de emisión: todas las facturas salen con la serie{' '}
           <strong className="font-mono">{legacy ? `${legacy.establecimiento}-${legacy.puntoEmision}` : '001-001'}</strong>{' '}
-          de arriba. Al crear el primero, <strong>solo podrán facturar y abrir caja los usuarios que tengan un punto asignado</strong>.
+          en ambiente de <strong>{AMBIENTE_LABEL[legacy?.ambiente || '1']}</strong>, la que se usaba hasta ahora.
+          Cree los puntos de emisión para definir la serie y el ambiente de cada caja. Al crear el primero,{' '}
+          <strong>solo podrán facturar y abrir caja los usuarios que tengan un punto asignado</strong>.
         </div>
+      )}
+
+      {puntos.some((p) => p.ambienteHeredado) && (
+        <p className="text-xs text-amber-700">
+          * Puntos sin ambiente propio: usan el de la configuración anterior. Edítelos para fijar si son de Pruebas o de Producción.
+        </p>
       )}
 
       {puntos.length > 0 && (
@@ -156,6 +184,7 @@ export default function PuntosEmisionPanel({ canEdit }) {
                 <th className="text-left px-3 py-2">Serie</th>
                 <th className="text-left px-3 py-2">Caja</th>
                 <th className="text-left px-3 py-2">Usuario</th>
+                <th className="text-left px-3 py-2">Ambiente</th>
                 <th className="text-right px-3 py-2">Próx. factura</th>
                 <th className="text-right px-3 py-2">Próx. N/C</th>
                 <th className="text-left px-3 py-2">Estado</th>
@@ -174,6 +203,7 @@ export default function PuntosEmisionPanel({ canEdit }) {
                     {p.usuario ? p.usuario.name : <span className="text-amber-600">Sin asignar</span>}
                     {' · '}Próx. factura <span className="font-mono">{pad9(p.secuencialFactura)}</span>
                     {' · '}N/C <span className="font-mono">{pad9(p.secuencialNotaCredito)}</span>
+                    {' · '}<AmbienteBadge ambiente={p.ambienteEfectivo || p.ambiente} heredado={p.ambienteHeredado} />
                   </td>
                   <td className="hidden md:table-cell md:px-3 md:py-2.5 text-sm text-slate-700">
                     {p.nombre || '—'}
@@ -181,6 +211,9 @@ export default function PuntosEmisionPanel({ canEdit }) {
                   </td>
                   <td className="hidden md:table-cell md:px-3 md:py-2.5 text-sm">
                     {p.usuario ? <span className="text-slate-800">{p.usuario.name}</span> : <span className="text-amber-600">Sin asignar</span>}
+                  </td>
+                  <td className="hidden md:table-cell md:px-3 md:py-2.5 text-sm">
+                    <AmbienteBadge ambiente={p.ambienteEfectivo || p.ambiente} heredado={p.ambienteHeredado} />
                   </td>
                   <td className="hidden md:table-cell md:px-3 md:py-2.5 text-xs font-mono text-slate-600 text-right">
                     {pad9(p.secuencialFactura)}
@@ -269,6 +302,21 @@ export default function PuntosEmisionPanel({ canEdit }) {
                 })}
               </select>
             </Campo>
+            <div className="sm:col-span-2">
+              <Campo label="Ambiente del SRI" required>
+                <select className="input" value={form.ambiente} onChange={(e) => set('ambiente', e.target.value)}>
+                  <option value="">— Escoger —</option>
+                  <option value="1">Pruebas (los comprobantes no tienen validez tributaria)</option>
+                  <option value="2">Producción</option>
+                </select>
+              </Campo>
+              {modal?.punto?.ambienteHeredado && (
+                <p className="text-xs text-amber-700 mt-1">
+                  Este punto aún usa el ambiente de la configuración ({AMBIENTE_LABEL[modal.punto.ambienteEfectivo]}).
+                  Al guardar queda fijado en el que escoja aquí.
+                </p>
+              )}
+            </div>
             <div className="sm:col-span-2">
               <Campo label="Dirección del establecimiento">
                 <input

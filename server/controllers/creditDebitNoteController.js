@@ -262,7 +262,7 @@ exports.emit = async (req, res) => {
     const secuencial = await reservarSecuencial(serie, 'notaCredito', config);
     const fechaEmision = note.fechaEmision || new Date();
     const claveAcceso = generarClaveAcceso({
-      fechaEmision, tipoComprobante: 'notaCredito', ruc: config.ruc, ambiente: config.ambiente,
+      fechaEmision, tipoComprobante: 'notaCredito', ruc: config.ruc, ambiente: serie.ambiente,
       estab: serie.estab, puntoEmision: serie.ptoEmi, secuencial,
     });
 
@@ -297,7 +297,7 @@ exports.emit = async (req, res) => {
 
     const nota = {
       infoTributaria: {
-        ambiente: config.ambiente, tipoEmision: '1', razonSocial: config.razonSocial,
+        ambiente: serie.ambiente, tipoEmision: '1', razonSocial: config.razonSocial,
         nombreComercial: config.nombreComercial || undefined, ruc: config.ruc, claveAcceso,
         estab: serie.estab, ptoEmi: serie.ptoEmi, secuencial, dirMatriz: config.direccionMatriz,
       },
@@ -336,7 +336,7 @@ exports.emit = async (req, res) => {
     note.xmlFirmado = xmlFirmado;
     await note.save();
 
-    const recepcion = await enviarComprobante(xmlFirmado, config.ambiente);
+    const recepcion = await enviarComprobante(xmlFirmado, serie.ambiente);
     note.estado = recepcion?.estado === 'RECIBIDA' ? 'RECIBIDA' : 'DEVUELTA';
     await note.save();
     if (note.estado !== 'RECIBIDA') {
@@ -345,7 +345,7 @@ exports.emit = async (req, res) => {
 
     for (let i = 0; i < 3; i++) {
       await new Promise((r) => setTimeout(r, 1500));
-      const aut = await autorizarComprobante(claveAcceso, config.ambiente);
+      const aut = await autorizarComprobante(claveAcceso, serie.ambiente);
       const list = aut?.autorizaciones?.autorizacion;
       const item = Array.isArray(list) ? list[0] : list;
       if (item?.estado === 'AUTORIZADO') {

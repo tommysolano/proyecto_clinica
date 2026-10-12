@@ -7,7 +7,7 @@ const CashClosing = require('../models/CashClosing');
 const Sale = require('../models/Sale');
 const User = require('../models/User');
 const Clinic = require('../models/Clinic');
-const { sucursalUsaPuntos, puntoDelUsuario } = require('../services/puntoEmision');
+const { sucursalUsaPuntos, puntoDelUsuario, ambienteDelPunto } = require('../services/puntoEmision');
 
 /** Roles que pueden tener un punto de venta (los que facturan y manejan caja). */
 const ROLES_CON_PUNTO = ['admin', 'cajero', 'contabilidad'];
@@ -80,6 +80,14 @@ async function validar(clinicId, body, actual) {
   if (body.nombre !== undefined) data.nombre = String(body.nombre || '').trim();
   if (body.direccionEstablecimiento !== undefined) data.direccionEstablecimiento = String(body.direccionEstablecimiento || '').trim();
   if (body.activo !== undefined) data.activo = !!body.activo;
+  // Ambiente del SRI del punto: obligatorio al crearlo (pruebas o producción).
+  if (body.ambiente !== undefined && body.ambiente !== null && body.ambiente !== '') {
+    const amb = { pruebas: '1', produccion: '2' }[body.ambiente] || String(body.ambiente);
+    if (!['1', '2'].includes(amb)) throw httpError(400, 'El ambiente debe ser Pruebas o Producción.');
+    data.ambiente = amb;
+  } else if (!actual) {
+    throw httpError(400, 'Indique si el punto de emisión factura en ambiente de Pruebas o de Producción.');
+  }
 
   const cambiaSerie = actual && (actual.establecimiento !== estab || actual.codigo !== codigo);
   if (cambiaSerie) {
@@ -155,13 +163,19 @@ exports.list = async (req, res) => {
     const [puntos, usuarios, config] = await Promise.all([
       populatePunto(PuntoEmision.find({ clinic: req.clinicId }).sort({ establecimiento: 1, codigo: 1 })),
       usuariosElegibles(req.clinicId),
-      InvoicingConfig.findOne({ clinic: req.clinicId }).select('establecimiento puntoEmision secuencial creditNoteSequential direccionEstablecimiento'),
+      InvoicingConfig.findOne({ clinic: req.clinicId }).select('establecimiento puntoEmision secuencial creditNoteSequential direccionEstablecimiento ambiente'),
     ]);
     const abiertas = await CashClosing.find({ clinic: req.clinicId, status: 'ABIERTA', puntoEmision: { $ne: null } })
       .select('puntoEmision openedAt').lean();
     const abiertaPor = new Map(abiertas.map((c) => [String(c.puntoEmision), c.openedAt]));
     res.json({
-      puntos: puntos.map((p) => ({ ...p.toObject(), cajaAbiertaDesde: abiertaPor.get(String(p._id)) || null })),
+      puntos: puntos.map((p) => ({
+        ...p.toObject(),
+        cajaAbiertaDesde: abiertaPor.get(String(p._id)) || null,
+        // El que de verdad usa al emitir (el suyo o, si no lo tiene, el de la configuración).
+        ambienteEfectivo: ambienteDelPunto(p, config),
+        ambienteHeredado: !p.ambiente,
+      })),
       usuarios,
       legacy: config
         ? {
@@ -170,6 +184,7 @@ exports.list = async (req, res) => {
           secuencial: config.secuencial || 1,
           creditNoteSequential: config.creditNoteSequential || 1,
           direccionEstablecimiento: config.direccionEstablecimiento || '',
+          ambiente: config.ambiente || '1',
         }
         : null,
     });

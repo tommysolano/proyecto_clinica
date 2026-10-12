@@ -32,6 +32,13 @@ const puntoEmisionSchema = new mongoose.Schema(
     secuencialFactura: { type: Number, default: 1, min: 1, max: 999999999 },
     secuencialNotaCredito: { type: Number, default: 1, min: 1, max: 999999999 },
     activo: { type: Boolean, default: true },
+    /**
+     * AMBIENTE DEL SRI de este punto (oct-2026): '1' pruebas, '2' producción. Se define aquí y
+     * no en los datos del emisor: cada caja puede estar en pruebas o en producción.
+     * Sin valor (puntos creados antes) = el ambiente de la configuración SRI: así ningún punto
+     * que ya factura en producción pasa a pruebas por la migración. Ver serieDelEmisor.
+     */
+    ambiente: { type: String, enum: ['1', '2'], default: undefined },
   },
   { timestamps: true }
 );

@@ -56,7 +56,8 @@ async function seed() {
   return { clinicId, userId, config, cajeroA, cajeroB, admin };
 }
 
-const crear = (clinicId, body) => H.runController(ctrl.create, H.mockReq(clinicId, null, body));
+// El ambiente es obligatorio al crear (oct-2026); los tests que no hablan de él usan pruebas.
+const crear = (clinicId, body) => H.runController(ctrl.create, H.mockReq(clinicId, null, { ambiente: '1', ...body }));
 const editar = (clinicId, id, body) => H.runController(ctrl.update, H.mockReq(clinicId, null, body, { params: { id: String(id) } }));
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -208,4 +209,42 @@ test('8) caja por punto: cada usuario cuadra solo sus ventas; sin punto no abre 
   const reasignar = await editar(clinicId, pB._id, { usuario: String(admin._id) });
   assert.equal(reasignar.statusCode, 400);
   assert.match(reasignar.payload.message, /caja abierta/);
+});
+
+test('9) el ambiente (pruebas/producción) es del punto de emisión', async () => {
+  const { clinicId, config, cajeroA, cajeroB } = await seed();
+  await InvoicingConfig.updateOne({ _id: config._id }, { $set: { ambiente: '2' } });
+  const cfg = await InvoicingConfig.findById(config._id);
+
+  // Al crear un punto hay que decir el ambiente.
+  const sin = await H.runController(ctrl.create, H.mockReq(clinicId, null, { codigo: '003' }));
+  assert.equal(sin.statusCode, 400);
+  assert.match(sin.payload.message, /Pruebas o de Producción/);
+  const malo = await crear(clinicId, { codigo: '003', ambiente: '7' });
+  assert.equal(malo.statusCode, 400);
+
+  const a = await crear(clinicId, { codigo: '001', usuario: String(cajeroA._id), ambiente: '1' });
+  assert.equal(a.payload.ambiente, '1');
+  const serieA = await svc.serieDelEmisor(clinicId, cajeroA._id, cfg);
+  assert.equal(serieA.ambiente, '1', 'la caja A factura en pruebas aunque la configuración diga producción');
+
+  // Un punto creado antes del cambio (sin ambiente) sigue con el de la configuración:
+  // nadie que facturaba en producción pasa a pruebas sin que lo decidan.
+  const viejo = await PuntoEmision.create({ clinic: clinicId, establecimiento: '001', codigo: '002', usuario: cajeroB._id });
+  assert.equal(viejo.ambiente, undefined);
+  assert.equal((await svc.serieDelEmisor(clinicId, cajeroB._id, cfg)).ambiente, '2');
+  const lista = await H.runController(ctrl.list, H.mockReq(clinicId, null));
+  const fila = lista.payload.puntos.find((p) => p.codigo === '002');
+  assert.equal(fila.ambienteEfectivo, '2');
+  assert.equal(fila.ambienteHeredado, true);
+
+  // Editarlo sin tocar el ambiente no lo cambia; escogerlo lo fija.
+  await editar(clinicId, viejo._id, { nombre: 'Caja vieja' });
+  assert.equal((await PuntoEmision.findById(viejo._id)).ambiente, undefined);
+  await editar(clinicId, viejo._id, { ambiente: '1' });
+  assert.equal((await svc.serieDelEmisor(clinicId, cajeroB._id, cfg)).ambiente, '1');
+
+  // Retenciones: el ambiente de la serie elegida.
+  assert.equal(await svc.ambienteDeSerie(clinicId, '001', '001', cfg), '1');
+  assert.equal(await svc.ambienteDeSerie(clinicId, '009', '009', cfg), '2', 'serie sin punto: el de la configuración');
 });

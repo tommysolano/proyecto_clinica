@@ -18,7 +18,7 @@ const {
   runInvoiceRetryQueue,
 } = require('../utils/invoiceRetry');
 const { isPastDocumentDate } = require('../utils/fiscalDocumentDate');
-const { serieDelEmisor, reservarSecuencial } = require('../services/puntoEmision');
+const { serieDelEmisor, reservarSecuencial, puntoDelUsuario, ambienteDelPunto } = require('../services/puntoEmision');
 
 function fmtFechaEmision(d) {
   const dt = d ? new Date(d) : new Date();
@@ -88,7 +88,8 @@ exports.emitFromSale = async (req, res) => {
       fechaEmision,
       tipoComprobante: 'factura',
       ruc: config.ruc,
-      ambiente: config.ambiente,
+      // El ambiente (pruebas/producción) es el del PUNTO que emite (oct-2026).
+      ambiente: serie.ambiente,
       estab: serie.estab,
       puntoEmision: serie.ptoEmi,
       secuencial,
@@ -172,7 +173,7 @@ exports.emitFromSale = async (req, res) => {
 
     const factura = {
       infoTributaria: {
-        ambiente: config.ambiente,
+        ambiente: serie.ambiente,
         tipoEmision: '1',
         razonSocial: config.razonSocial,
         nombreComercial: config.nombreComercial,
@@ -227,7 +228,7 @@ exports.emitFromSale = async (req, res) => {
       ptoEmi: serie.ptoEmi,
       puntoEmision: serie.punto?._id || null,
       dirEstablecimiento: serie.dirEstablecimiento,
-      ambiente: config.ambiente,
+      ambiente: serie.ambiente,
       fechaEmision: fmtFechaEmision(fechaEmision),
       estado: 'EN_COLA',
       tipoIdentificacionComprador: tipoIdentificacion(compradorIdent),
@@ -512,7 +513,9 @@ exports.retryPending = async (req, res) => {
 exports.sriStatus = async (req, res) => {
   try {
     const config = await InvoicingConfig.findOne({ clinic: req.clinicId });
-    const ambiente = config?.ambiente || '1';
+    // El ambiente de quien mira: el de su punto de emisión (o el de la configuración).
+    const miPunto = await puntoDelUsuario(req.clinicId, req.user?._id).catch(() => null);
+    const ambiente = ambienteDelPunto(miPunto, config);
     const [disponible, pendientes] = await Promise.all([
       checkSriAvailability(ambiente),
       Invoice.countDocuments({

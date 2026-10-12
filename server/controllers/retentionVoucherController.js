@@ -3,7 +3,7 @@ const PurchaseInvoice = require('../models/PurchaseInvoice');
 const Supplier = require('../models/Supplier');
 const Clinic = require('../models/Clinic');
 const { loadForSigning } = require('./invoicingConfigController');
-const { seriesDisponibles, puntoDelUsuario } = require('../services/puntoEmision');
+const { seriesDisponibles, puntoDelUsuario, ambienteDeSerie, ambienteDelPunto } = require('../services/puntoEmision');
 const { generarClaveAcceso } = require('../modules/invoicing/ec/accessKey');
 const { buildRetentionXml } = require('../modules/invoicing/ec/xmlBuilder');
 const { signXml } = require('../modules/invoicing/ec/xadesSigner');
@@ -119,12 +119,14 @@ exports.emitFromPurchase = async (req, res) => {
     const periodo = resolveRetentionPeriodo(periodoBody, inv.fechaEmision, fechaEmision);
     if (periodo.error) return res.status(400).json({ message: periodo.error });
 
+    // Ambiente (pruebas/producción) del punto de esa serie; sin punto, el de la configuración.
+    const ambiente = await ambienteDeSerie(req.clinicId, estab, ptoEmi, config);
     const secuencial = await config.constructor.reserveRetentionSeries(req.clinicId, estab, ptoEmi);
     const claveAcceso = generarClaveAcceso({
       fechaEmision,
       tipoComprobante: 'comprobanteRetencion',
       ruc: config.ruc,
-      ambiente: config.ambiente,
+      ambiente,
       estab,
       puntoEmision: ptoEmi,
       secuencial,
@@ -159,7 +161,7 @@ exports.emitFromPurchase = async (req, res) => {
 
     const voucherXmlInput = {
       infoTributaria: {
-        ambiente: config.ambiente,
+        ambiente,
         tipoEmision: '1',
         razonSocial: config.razonSocial,
         nombreComercial: config.nombreComercial || undefined,
@@ -215,7 +217,7 @@ exports.emitFromPurchase = async (req, res) => {
       secuencial: String(secuencial).padStart(9, '0'),
       serie,
       claveAcceso,
-      ambiente: config.ambiente,
+      ambiente,
       fechaEmision,
       periodoFiscal: periodo.str,
       purchaseSerie: inv.serie || '',
@@ -250,7 +252,7 @@ exports.emitFromPurchase = async (req, res) => {
     voucher.estado = 'FIRMADO';
     await voucher.save();
 
-    const recepcion = await enviarComprobante(xmlFirmado, config.ambiente);
+    const recepcion = await enviarComprobante(xmlFirmado, ambiente);
     voucher.estado = recepcion?.estado === 'RECIBIDA' ? 'RECIBIDA' : 'DEVUELTA';
     voucher.mensajesSri = mapMensajes(recepcion?.comprobantes?.comprobante?.mensajes?.mensaje);
     await voucher.save();
@@ -261,7 +263,7 @@ exports.emitFromPurchase = async (req, res) => {
 
     for (let i = 0; i < 3; i++) {
       await new Promise((r) => setTimeout(r, 1500));
-      const aut = await autorizarComprobante(claveAcceso, config.ambiente);
+      const aut = await autorizarComprobante(claveAcceso, ambiente);
       const list = aut?.autorizaciones?.autorizacion;
       const item = Array.isArray(list) ? list[0] : list;
       if (item) {
@@ -323,7 +325,7 @@ exports.config = async (req, res) => {
       series,
       defaultEstab,
       defaultPtoEmi,
-      ambiente: cfg.ambiente,
+      ambiente: ambienteDelPunto(miPunto, cfg),
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -362,7 +364,8 @@ exports.retry = async (req, res) => {
       return res.status(400).json({ message: `No se puede reintentar en estado ${v.estado}` });
     }
     const { config } = await loadForSigning(req.clinicId);
-    const aut = await autorizarComprobante(v.claveAcceso, config.ambiente);
+    // El ambiente con el que se EMITIÓ (va en la clave de acceso), no el de hoy.
+    const aut = await autorizarComprobante(v.claveAcceso, v.ambiente || config.ambiente);
     const list = aut?.autorizaciones?.autorizacion;
     const item = Array.isArray(list) ? list[0] : list;
     if (item?.estado === 'AUTORIZADO') {
