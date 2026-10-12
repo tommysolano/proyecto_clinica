@@ -104,19 +104,29 @@ function sha1Base64(buffer) {
 
 /**
  * Canonicaliza un nodo o cadena XML usando C14N (xml-c14n-20010315).
+ * `ancestorNamespaces`: los namespaces que el nodo HEREDA de sus ancestros
+ * ([{ prefix, namespaceURI }]). La C14N inclusiva los escribe en el nodo, y el SRI
+ * canonicaliza así: sin pasarlos, el digest no coincide con el suyo.
  */
-function canonicalize(xmlOrNode) {
-  const c14n = new xmlCrypto.SignedXml().getCanonicalizationAlgorithm
-    ? null
-    : null;
-  // xml-crypto expone CanonicalizationAlgorithms como mapa
-  const Algo = xmlCrypto.SignedXml.CanonicalizationAlgorithms[C14N_URL];
+function canonicalize(xmlOrNode, ancestorNamespaces = []) {
+  /**
+   * EL ALGORITMO C14N, según la versión de xml-crypto (oct-2026).
+   *
+   * Hasta la v5 vivía en un mapa ESTÁTICO (`SignedXml.CanonicalizationAlgorithms`). Desde la
+   * v6 —la que fija el package.json— ese mapa es de cada instancia y la clase se exporta
+   * suelta (`C14nCanonicalization`). Leer el estático en la v6 daba
+   * «Cannot read properties of undefined (reading '…xml-c14n-20010315')»: NINGUNA factura
+   * llegaba a firmarse y el cobro terminaba en «Error al emitir factura».
+   */
+  const Algo = xmlCrypto.C14nCanonicalization
+    || xmlCrypto.SignedXml?.CanonicalizationAlgorithms?.[C14N_URL];
+  if (!Algo) throw new Error('No se encontró el algoritmo de canonicalización C14N en xml-crypto');
   const inst = new Algo();
   let node = xmlOrNode;
   if (typeof xmlOrNode === 'string') {
     node = new DOMParser().parseFromString(xmlOrNode, 'text/xml').documentElement;
   }
-  return inst.process(node);
+  return inst.process(node, { ancestorNamespaces });
 }
 
 /**
@@ -218,7 +228,9 @@ function signXml(xml, p12Buffer, p12Password) {
   });
   const digestSignedProps = sha1Base64(Buffer.from(signedPropertiesC14N, 'utf8'));
 
-  const keyInfoC14N = canonicalizeFragment(keyInfoXml, { 'xmlns:ds': DSIG_NS });
+  // KeyInfo y SignedInfo también heredan xmlns:etsi de <ds:Signature> en el documento
+  // final: se canonicalizan con los DOS namespaces, como los ve el verificador del SRI.
+  const keyInfoC14N = canonicalizeFragment(keyInfoXml, { 'xmlns:ds': DSIG_NS, 'xmlns:etsi': XADES_NS });
   const digestKeyInfo = sha1Base64(Buffer.from(keyInfoC14N, 'utf8'));
 
   // Digest del documento (nodo factura completo, ya está bien declarado)
@@ -248,7 +260,7 @@ function signXml(xml, p12Buffer, p12Password) {
     `</ds:SignedInfo>`;
 
   // Canonicalizar SignedInfo y firmar con RSA-SHA1
-  const signedInfoC14N = canonicalizeFragment(signedInfoXml, { 'xmlns:ds': DSIG_NS });
+  const signedInfoC14N = canonicalizeFragment(signedInfoXml, { 'xmlns:ds': DSIG_NS, 'xmlns:etsi': XADES_NS });
   const signer = crypto.createSign('RSA-SHA1');
   signer.update(signedInfoC14N, 'utf8');
   const signatureValue = signer.sign(cert.keyPem, 'base64');
@@ -286,7 +298,15 @@ function canonicalizeFragment(fragmentXml, namespaces) {
   const wrapped = `<wrapper ${nsAttrs}>${fragmentXml}</wrapper>`;
   const doc = new DOMParser().parseFromString(wrapped, 'text/xml');
   const inner = doc.documentElement.firstChild;
-  return canonicalize(inner);
+  // Los xmlns de la raíz temporal son los que el fragmento HEREDA en el documento final
+  // (los de <ds:Signature>): se pasan como ancestros para que la C14N inclusiva los
+  // escriba igual que el verificador. Antes no se pasaban y el digest de KeyInfo, el de
+  // SignedProperties y la firma de SignedInfo salían distintos de los del SRI (oct-2026).
+  const ancestros = Object.entries(namespaces).map(([k, v]) => ({
+    prefix: k === 'xmlns' ? '' : k.replace(/^xmlns:/, ''),
+    namespaceURI: v,
+  }));
+  return canonicalize(inner, ancestros);
 }
 
 function escapeXml(s) {

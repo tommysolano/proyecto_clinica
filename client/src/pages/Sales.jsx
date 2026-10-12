@@ -1003,7 +1003,11 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       }
       fetchSales();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al facturar');
+      // Con el MOTIVO (oct-2026): un «Error al emitir factura» a secas no decía qué
+      // falló (era la firma electrónica); el servidor lo manda en `error`.
+      const d = err.response?.data;
+      const motivo = d?.error && d?.message ? `${d.message}: ${d.error}` : d?.message;
+      toast.error(motivo || 'Error al facturar', { duration: 10000 });
     } finally {
       setInvoicingId(null);
     }
