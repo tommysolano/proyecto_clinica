@@ -573,9 +573,19 @@ exports.list = async (req, res) => {
   if (status) filter.status = status;
   if (docType) filter.docType = docType;
   if (startDate || endDate) {
+    // DÍAS ENTEROS en hora local (oct-2026, filtro «desde / hasta» de Compras):
+    // `new Date('2026-10-05')` es la medianoche UTC —las 19:00 del día anterior en
+    // Ecuador— y el «hasta» dejaba fuera las compras de ese mismo día.
+    const dia = (v, fin) => {
+      const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (!m) return new Date(v);
+      return fin
+        ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 59, 999)
+        : new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0);
+    };
     filter.fechaEmision = {};
-    if (startDate) filter.fechaEmision.$gte = new Date(startDate);
-    if (endDate) filter.fechaEmision.$lte = new Date(endDate);
+    if (startDate) filter.fechaEmision.$gte = dia(startDate, false);
+    if (endDate) filter.fechaEmision.$lte = dia(endDate, true);
   }
   if (q) {
     const rx = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');

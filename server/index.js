@@ -205,6 +205,8 @@ app.use('/api/credit-card-batches', require('./routes/creditCardBatches'));
 app.use('/api/card-settlements', require('./routes/cardSettlements'));
 app.use('/api/sales-reports', require('./routes/salesReports'));
 app.use('/api/cash-closings', require('./routes/cashClosings'));
+// «Caja e ingresos»: cuadre del período, vales, salidas y depósitos (oct-2026).
+app.use('/api/cash-panel', require('./routes/cashPanel'));
 app.use('/api/accounting-config', require('./routes/accountingConfig'));
 app.use('/api/accounting-health', require('./routes/accountingHealth'));
 app.use('/api/deferred-income', require('./routes/deferredIncome'));

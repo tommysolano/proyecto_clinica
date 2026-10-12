@@ -32,6 +32,20 @@ const {
 const round2 = (n) => +Number(n || 0).toFixed(2);
 const escaparRegex = (v) => String(v).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/**
+ * FECHA DEL DEPÓSITO EN HORA LOCAL (oct-2026). `new Date('2026-10-11')` es la medianoche UTC:
+ * las 19:00 del DÍA ANTERIOR en Ecuador, así que el asiento del depósito quedaba fechado un
+ * día antes y el cuadre de caja del día no lo veía. Hoy → la hora real; otro día → mediodía.
+ */
+function fechaOperacion(valor) {
+  if (!valor) return new Date();
+  const m = String(valor).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return new Date(valor);
+  const ahora = new Date();
+  const esHoy = Number(m[1]) === ahora.getFullYear() && Number(m[2]) === ahora.getMonth() + 1 && Number(m[3]) === ahora.getDate();
+  return esHoy ? ahora : new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0, 0);
+}
+
 /** Numeración atómica por clínica y año (misma técnica que liquidaciones y lotes). */
 async function nextDepositNumber(clinicId, session) {
   const year = new Date().getFullYear();
@@ -274,7 +288,7 @@ exports.create = async (req, res) => {
         throw Object.assign(new Error('Un mismo cobro o venta no puede incluirse dos veces en el depósito'), { status: 400, code: 'DUPLICATE_DEPOSIT_ITEM' });
       }
 
-      const txDate = req.body.date ? new Date(req.body.date) : new Date();
+      const txDate = fechaOperacion(req.body.date);
       await assertPeriodOpen(req.clinicId, txDate, { session });
 
       const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
@@ -418,7 +432,7 @@ exports.void = async (req, res) => {
       if (!d) throw Object.assign(new Error('Depósito no encontrado'), { status: 404 });
       if (d.status === 'ANULADO') throw Object.assign(new Error('Ya está anulado'), { status: 400 });
 
-      const reversalDate = req.body?.date ? new Date(req.body.date) : new Date();
+      const reversalDate = fechaOperacion(req.body?.date);
       await assertPeriodOpen(req.clinicId, reversalDate, { session });
 
       if (d.bankTransaction) {

@@ -8,11 +8,15 @@ const mongoose = require('mongoose');
 const cashMovementSchema = new mongoose.Schema(
   {
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, index: true },
-    cashSession: { type: mongoose.Schema.Types.ObjectId, ref: 'CashClosing', required: true, index: true },
+    // La sesión de caja abierta. El VALE (oct-2026, página «Caja e ingresos») se puede
+    // registrar sin caja abierta —el contador apunta después el efectivo que salió—, y
+    // entonces no cuelga de ninguna sesión.
+    cashSession: { type: mongoose.Schema.Types.ObjectId, ref: 'CashClosing', default: null, index: true },
     date: { type: Date, required: true, default: Date.now },
     type: {
       type: String,
-      enum: ['INGRESO', 'EGRESO', 'GASTO', 'RETIRO', 'DEPOSITO'],
+      // VALE: efectivo del cajón usado para una compra o un gasto (taxi, insumos…).
+      enum: ['INGRESO', 'EGRESO', 'GASTO', 'RETIRO', 'DEPOSITO', 'VALE'],
       required: true,
     },
     amount: { type: Number, required: true, min: 0 },

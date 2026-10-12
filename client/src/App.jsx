@@ -142,6 +142,7 @@ const CreditCards = pagina(() => import('./pages/accounting/CreditCards'));
 const CardSettlements = pagina(() => import('./pages/accounting/CardSettlements'));
 const SalesReports = pagina(() => import('./pages/accounting/SalesReports'));
 const CashClosing = pagina(() => import('./pages/accounting/CashClosing'));
+const CashIncome = pagina(() => import('./pages/accounting/CashIncome'));
 const AccountMapping = pagina(() => import('./pages/accounting/AccountMapping'));
 const PeriodBalances = pagina(() => import('./pages/accounting/PeriodBalances'));
 const Budgets = pagina(() => import('./pages/accounting/Budgets'));
@@ -661,6 +662,15 @@ function AppRoutes() {
                   />
                 ))}
 
+                {/* Caja e ingresos (oct-2026): el cuadre de caja, vales y traspasos al banco. */}
+                <Route
+                  path="/cash-income"
+                  element={
+                    <RoleRoute roles={['admin', 'contabilidad', 'cajero']}>
+                      <CashIncome />
+                    </RoleRoute>
+                  }
+                />
                 {/* Caja (apertura/cierre) accesible también al cajero */}
                 <Route
                   path="/cash-register"

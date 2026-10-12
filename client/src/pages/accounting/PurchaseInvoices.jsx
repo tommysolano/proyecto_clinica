@@ -16,6 +16,7 @@ import useDocDeepLink from '../../hooks/useDocDeepLink';
 import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../../utils/idempotency';
 import { vatRateOptions } from '../../constants/vatRates';
 import DateInput from '../../components/DateInput';
+import { todayEc } from '../../utils/date';
 
 const PAGE_SIZE = 100;
 // Cuentas elegibles como destino de una línea de compra: gasto, costo, inventario o activo.
@@ -153,6 +154,12 @@ export default function PurchaseInvoices() {
   const [editId, setEditId] = useState(null); // factura REGISTRADA en edición
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  /**
+   * FILTRO POR FECHA DE EMISIÓN (oct-2026, a pedido del contador): «desde» y
+   * «hasta». Si solo se pone «desde», la lista llega hasta HOY.
+   */
+  const [desde, setDesde] = useState('');
+  const [hasta, setHasta] = useState('');
   const [sort, setSort] = useState('fecha_desc');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -181,7 +188,16 @@ export default function PurchaseInvoices() {
   const load = async () => {
     const reqId = ++reqRef.current;
     try {
-      const r = await api.get('/purchase-invoices', { params: { q: search || undefined, status: statusFilter || undefined, sort, page, limit: PAGE_SIZE } });
+      const r = await api.get('/purchase-invoices', {
+        params: {
+          q: search || undefined,
+          status: statusFilter || undefined,
+          startDate: desde || undefined,
+          // Sin «hasta», hasta la fecha actual.
+          endDate: hasta || (desde ? todayEc() : undefined),
+          sort, page, limit: PAGE_SIZE,
+        },
+      });
       if (reqId !== reqRef.current) return;
       setList(r.data?.items || r.data || []);
       setTotal(r.data?.total ?? (r.data?.items?.length || 0));
@@ -219,9 +235,9 @@ export default function PurchaseInvoices() {
     load();
   }, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setPage(1); }, [search, statusFilter, sort]);
+  useEffect(() => { setPage(1); }, [search, statusFilter, sort, desde, hasta]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); }, [search, statusFilter, sort, page]);
+  useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); }, [search, statusFilter, sort, page, desde, hasta]);
 
   // Cuentas recurrentes del proveedor: sugiere/autocompleta la cuenta de GASTO.
   useEffect(() => {
@@ -944,6 +960,22 @@ export default function PurchaseInvoices() {
           <option value="PAGADA">Pagada</option>
           <option value="ANULADA">Anulada</option>
         </select>
+        <div className="flex items-center gap-2 flex-wrap">
+          <label className="flex items-center gap-1.5 text-xs text-slate-500">
+            Desde
+            <DateInput aria-label="Fecha de emisión desde" value={desde} onChange={(e) => setDesde(e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm w-36" />
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-slate-500">
+            Hasta
+            <DateInput aria-label="Fecha de emisión hasta" value={hasta} onChange={(e) => setHasta(e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5 text-sm w-36" />
+          </label>
+          {desde && !hasta && <span className="text-[11px] text-slate-400">hasta hoy</span>}
+          {(desde || hasta) && (
+            <button type="button" onClick={() => { setDesde(''); setHasta(''); }} className="text-xs text-emerald-700 hover:underline bg-transparent border-none cursor-pointer">
+              Quitar fechas
+            </button>
+          )}
+        </div>
         <select aria-label="Ordenar" value={sort} onChange={(e) => setSort(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" title="Ordenar la lista">
           <optgroup label="Por fecha">
             <option value="fecha_desc">Más recientes primero</option>
@@ -1044,7 +1076,7 @@ export default function PurchaseInvoices() {
             })}
             {!list.length && (
               <tr><td colSpan={11} className="px-3 py-12 text-center text-slate-400 text-sm">
-                {search || statusFilter ? 'Ninguna compra coincide con la búsqueda.' : 'Todavía no hay compras registradas.'}
+                {search || statusFilter || desde || hasta ? 'Ninguna compra coincide con la búsqueda.' : 'Todavía no hay compras registradas.'}
               </td></tr>
             )}
           </tbody>
