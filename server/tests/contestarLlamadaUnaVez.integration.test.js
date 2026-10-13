@@ -28,6 +28,7 @@ installMock('../utils/whatsappGateway', {
   cloudCreds: (a) => ({ phoneNumberId: a.phoneNumberId }),
 });
 installMock('../utils/whatsappCalls', {
+  preAcceptCall: async (creds, callId) => { llamadasAMeta.push({ action: 'pre_accept', callId }); return { ok: true }; },
   // Meta tarda un poco en confirmar: es la ventana en la que entraba el segundo.
   acceptCall: async (creds, callId) => {
     llamadasAMeta.push({ action: 'accept', callId });
@@ -138,4 +139,23 @@ test('el «connect» de Meta sobre una ENTRANTE ya contestada no se trata como a
   }, cuenta);
   assert.equal(emitidos.filter((e) => e.evento === 'call:answered').length, 0);
   assert.equal((await Call.findById(call._id)).status, 'active');
+});
+
+test('si Meta no acepta, la llamada se cuelga también en Meta (nadie queda en una llamada muda)', async () => {
+  const { clinicId, call } = await sonando();
+  const yo = new H.mongoose.Types.ObjectId();
+  const calls = require('../utils/whatsappCalls');
+  const original = calls.acceptCall;
+  calls.acceptCall = async (creds, callId) => {
+    llamadasAMeta.push({ action: 'accept', callId });
+    return { ok: false, timeout: true, error: 'WhatsApp no respondió a tiempo' };
+  };
+  const r = await contestar(clinicId, yo, call.callId);
+  calls.acceptCall = original;
+
+  assert.equal(r.statusCode, 502);
+  assert.deepEqual(llamadasAMeta.map((l) => l.action), ['pre_accept', 'accept', 'terminate']);
+  const final = await Call.findById(call._id);
+  assert.equal(final.status, 'failed');
+  assert.ok(emitidos.some((e) => e.evento === 'call:ended'), 'los paneles se enteran');
 });

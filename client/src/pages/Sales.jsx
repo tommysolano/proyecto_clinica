@@ -224,6 +224,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   // fuente de verdad y se envía como `payments` al backend.
   const [splitMode, setSplitMode] = useState(false);
   const [splitPayments, setSplitPayments] = useState([]);
+  // LO QUE ENTREGA EL PACIENTE con un solo método (oct-2026). Vacío = paga justo
+  // el total. Si entrega más (45 de total y deja 100), se factura solo el total
+  // y el resto queda como SALDO A FAVOR suyo para próximos cobros.
+  const [recibido, setRecibido] = useState('');
   const [patientSearch, setPatientSearch] = useState('');
   // Personas registradas en Personas con el rol CLIENTE. El buscador de la venta solo miraba
   // los PACIENTES: quien registraba un cliente por allí no lo encontraba nunca al facturar,
@@ -374,6 +378,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     setPickedFromList(false);
     setSplitMode(false);
     setSplitPayments([]);
+    setRecibido('');
     setCcMismatch(null);
     setModalOpen(true);
   };
@@ -486,6 +491,11 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   // usarlo antes de su declaración rompía la página completa con ReferenceError)
   const splitPaid = splitPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
   const splitRemaining = +(total - splitPaid).toFixed(2);
+
+  // «Recibido del paciente» (un solo método): solo con dinero que entra.
+  const metodoConRecibido = ['efectivo', 'tarjeta', 'transferencia'].includes(form.paymentMethod);
+  const recibidoNum = !splitMode && metodoConRecibido && String(recibido).trim() !== '' ? Number(recibido) : null;
+  const recibidoDif = recibidoNum !== null && Number.isFinite(recibidoNum) ? +(recibidoNum - total).toFixed(2) : 0;
 
   const enableSplit = () => {
     // Al activar, arranca con lo que haya en el método simple + el restante sugerido.
@@ -736,6 +746,32 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     if (embebido) onCerrar?.();
   };
 
+  /**
+   * La cita NO se cobra: canje (`isCanje`) o cortesía (valor 0). Se guarda en
+   * la cita —con su huella de quién lo decidió— y la agenda sigue a la
+   * asignación sin venta ni factura.
+   */
+  const [sinCobrar, setSinCobrar] = useState(false);
+  const marcarSinCobro = async (canje) => {
+    if (!citaPorCobrar) return;
+    const que = canje ? 'CANJE' : 'CORTESÍA';
+    const abono = citaPorCobrar.advancePayment && Number(citaPorCobrar.advanceAmount) > 0
+      ? `\n\nOJO: tiene un abono de $${Number(citaPorCobrar.advanceAmount).toFixed(2)} registrado al agendar.`
+      : '';
+    if (!confirm(`¿Marcar esta cita como ${que}? No se factura y su valor queda en $0.00.${abono}`)) return;
+    setSinCobrar(true);
+    try {
+      await api.patch(`/appointments/${citaPorCobrar._id}/service-value`, { agreedValue: 0, isCanje: !!canje });
+      toast.success(canje ? 'Cita marcada como canje' : 'Cita marcada como cortesía');
+      setModalOpen(false);
+      onCobrado?.(null);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo marcar la cita');
+    } finally {
+      setSinCobrar(false);
+    }
+  };
+
   /** Suelta el enlace con la cita (el cajero decide registrarla suelta). */
   const soltarCita = () => {
     setForm((f) => ({ ...f, appointment: null }));
@@ -871,7 +907,35 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           setSaving(false);
           return toast.error(`El saldo a favor ($${saldoAFavor.toFixed(2)}) no alcanza: usa «Usar saldo a favor» para completar con otro método.`);
         }
+        if (recibidoNum !== null) {
+          if (!Number.isFinite(recibidoNum) || recibidoDif < -0.01) {
+            setSaving(false);
+            return toast.error(`Lo recibido no cubre el total ($${total.toFixed(2)}). Corrige el monto o usa «Dividir en varios métodos».`);
+          }
+          if (recibidoDif > 0.01 && !pacienteVenta) {
+            setSaving(false);
+            return toast.error(`Sobran $${recibidoDif.toFixed(2)}. Para dejarlo como saldo a favor, elige un paciente.`);
+          }
+        }
         paymentPayload = {
+          // Entregó de más: un solo pago por lo RECIBIDO; el servidor factura el
+          // total y deja el excedente como saldo a favor del paciente.
+          ...(recibidoDif > 0.01
+            ? {
+                payments: [{
+                  method: form.paymentMethod,
+                  amount: +recibidoNum.toFixed(2),
+                  bankAccount: form.paymentMethod === 'transferencia' ? form.bankAccount || null : null,
+                  creditCard: form.paymentMethod === 'tarjeta' ? form.creditCard || null : null,
+                  cardType: form.paymentMethod === 'tarjeta' ? form.cardType || '' : '',
+                  cardPos: form.paymentMethod === 'tarjeta' ? form.cardPos || '' : '',
+                  cardLote: form.paymentMethod === 'tarjeta' ? form.cardLote || '' : '',
+                  cardVoucher: form.paymentMethod === 'tarjeta' ? form.cardVoucher || '' : '',
+                  cardDeferredType: form.paymentMethod === 'tarjeta' && form.cardType === 'CREDITO' ? form.cardDeferredType || 'CORRIENTE' : 'CORRIENTE',
+                  cardDeferredMonths: form.paymentMethod === 'tarjeta' && form.cardType === 'CREDITO' && form.cardDeferredType && form.cardDeferredType !== 'CORRIENTE' ? form.cardDeferredMonths || 0 : 0,
+                }],
+              }
+            : {}),
           bankAccount: form.paymentMethod === 'transferencia' ? form.bankAccount || null : null,
           creditCard: form.paymentMethod === 'tarjeta' ? form.creditCard || null : null,
           cardType: form.paymentMethod === 'tarjeta' ? form.cardType || '' : '',
@@ -1118,6 +1182,27 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                   Quitar
                 </button>
               )}
+            </div>
+          )}
+          {/**
+            * CANJE O CORTESÍA EN EL MISMO COBRO (oct-2026). Con la factura desde
+            * la agenda, la cita que no se cobra en dinero se marca aquí: canje
+            * (`isCanje`, valor 0) o cortesía (valor 0). No se factura nada y se
+            * sigue directo a asignar doctor/enfermero.
+            */}
+          {embebido && !modoReceta && citaPorCobrar && !citaPorCobrar.isCanje && citaPorCobrar.agreedValue !== 0 && (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-violet-200 bg-violet-50 p-3">
+              <p className="m-0 text-xs text-violet-900">
+                ¿Esta cita <b>no se cobra</b>? Márcala como canje o cortesía: no se factura y pasa directo a la asignación.
+              </p>
+              <div className="flex gap-2">
+                <button type="button" disabled={sinCobrar} onClick={() => marcarSinCobro(true)} className="btn-secondary text-xs">
+                  Es canje
+                </button>
+                <button type="button" disabled={sinCobrar} onClick={() => marcarSinCobro(false)} className="btn-secondary text-xs">
+                  Es cortesía
+                </button>
+              </div>
             </div>
           )}
           {/* CANJE o valor cero: no hay dinero que cobrar; se sigue a la asignación. */}
@@ -1617,16 +1702,38 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                       ))}
                     </select>
                     <button type="button" onClick={enableSplit} className="mt-1 text-xs text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0">Dividir en varios métodos</button>
-                    {/* Pagar de más: se divide y se sube el monto; el excedente queda a favor. */}
-                    {pacienteVenta && (
-                      <button
-                        type="button"
-                        onClick={enableSplit}
-                        title="Se factura solo el total; lo que pague de más queda como saldo a favor del paciente"
-                        className="mt-1 block text-xs text-sky-700 hover:underline bg-transparent border-none cursor-pointer p-0"
-                      >
-                        ¿Paga de más? Dejar saldo a favor
-                      </button>
+                  </div>
+                )}
+                {/* RECIBIDO DEL PACIENTE (oct-2026): lo que entrega. Si es más que
+                    el total, se factura el total y el resto queda a su favor. */}
+                {!splitMode && metodoConRecibido && total > 0 && (
+                  <div>
+                    <label className="lbl">Recibido del paciente</label>
+                    <NumericInput
+                      step="0.01"
+                      value={recibido}
+                      onChange={(e) => setRecibido(e.target.value)}
+                      placeholder={`${total.toFixed(2)} (exacto)`}
+                      className="input"
+                    />
+                    {recibidoNum !== null && recibidoDif > 0.01 && (
+                      pacienteVenta ? (
+                        <p className="text-[11px] mt-1 font-semibold text-sky-700">
+                          Quedan ${recibidoDif.toFixed(2)} a favor del paciente para sus próximos cobros.
+                        </p>
+                      ) : (
+                        <p className="text-[11px] mt-1 font-semibold text-rose-600">
+                          Sobran ${recibidoDif.toFixed(2)}: elige un paciente para dejarlo a su favor.
+                        </p>
+                      )
+                    )}
+                    {recibidoNum !== null && recibidoDif < -0.01 && (
+                      <p className="text-[11px] mt-1 font-semibold text-amber-600">
+                        Falta ${(-recibidoDif).toFixed(2)} para cubrir el total.
+                      </p>
+                    )}
+                    {recibidoNum === null && (
+                      <p className="text-[11px] mt-1 text-slate-400">Si deja más del total, el resto queda como saldo a favor.</p>
                     )}
                   </div>
                 )}

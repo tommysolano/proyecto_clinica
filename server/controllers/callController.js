@@ -340,8 +340,20 @@ exports.acceptCall = async (req, res) => {
     const soltarReserva = async () =>
       Call.updateOne({ _id: call._id, acceptingBy: req.user._id }, { $set: { acceptingBy: null, acceptingAt: null } });
 
+    // PRE-ACEPTAR (oct-2026, lo recomienda Meta): el audio se negocia antes de
+    // conectar. Si falla, se sigue con el «aceptar» de siempre.
+    const pre = await calls.preAcceptCall(resolved.creds, call.callId, sdp);
+    if (!pre.ok) console.warn('[calls] pre_accept falló, se acepta igual:', pre.error);
     const r = await calls.acceptCall(resolved.creds, call.callId, sdp);
     if (!r.ok) {
+      /**
+       * SE CUELGA TAMBIÉN EN META (oct-2026). Si el «aceptar» falló (o Meta no
+       * respondió a tiempo), la llamada podía quedar viva del lado del paciente
+       * —sonando, o conectada y muda— sin nadie que la cerrara: el navegador
+       * del agente ya había cerrado su audio. Mejor cortarla: el paciente ve la
+       * llamada terminada y puede volver a llamar.
+       */
+      await calls.terminateCall(resolved.creds, call.callId).catch(() => {});
       // Solo se da por fallida si sigue sonando: si el contacto colgó mientras
       // tanto, el cierre del webhook ya la dejó como corresponde.
       const fallida = await Call.findOneAndUpdate(
@@ -390,14 +402,20 @@ exports.acceptCall = async (req, res) => {
       await calls.terminateCall(resolved.creds, call.callId).catch(() => {});
       return res.status(409).json({ message: 'El contacto colgó antes de que se pudiera contestar.' });
     }
+    // La llamada YA está conectada: nada de lo que sigue puede devolver un error
+    // al navegador (lo leería como «no se contestó» y cerraría su audio).
     if (conv && !conv.assignedTo) {
-      conv.assignedTo = req.user._id;
-      conv.assignedToName = req.user.name;
-      conv.assignedAt = new Date();
-      await conv.save();
-      emitChatAssignment({
-        conversationId: conv._id, assignedTo: req.user._id, assignedToName: req.user.name,
-      });
+      try {
+        conv.assignedTo = req.user._id;
+        conv.assignedToName = req.user.name;
+        conv.assignedAt = new Date();
+        await conv.save();
+        emitChatAssignment({
+          conversationId: conv._id, assignedTo: req.user._id, assignedToName: req.user.name,
+        });
+      } catch (e) {
+        console.warn('[calls] no se pudo asignar el chat al contestar:', e.message);
+      }
     }
     emitToCallCenter('call:status', callPayload(aceptada));
     res.json(callPayload(aceptada));
@@ -461,13 +479,26 @@ exports.requestCallPermission = async (req, res) => {
   }
 };
 
-/** Historial de llamadas del chat (se muestra en el panel lateral). */
+/**
+ * LAS LLAMADAS DE UN CHAT, para pintarlas dentro del hilo como hace WhatsApp
+ * (oct-2026): a qué hora, entrante o saliente, si se contestó y cuánto duró.
+ * El resultado se deduce igual que en el Registro de Llamadas (no del campo status).
+ * Mismo candado que la bandeja: un chat reservado a otro asesor no se lee.
+ */
 exports.listCalls = async (req, res) => {
   try {
+    const conv = await Conversation.findById(req.params.id)
+      .select('_id workflowRestrictedTo workflowRestrictionActive');
+    if (!conv) return res.status(404).json({ message: 'Chat no encontrado' });
+    const { canAccessConversation } = require('./chatController');
+    if (!canAccessConversation(req, conv)) return res.status(403).json({ message: 'Este chat está reservado a otro asesor' });
+    const { resultadoDeLlamada } = require('./callLogController');
     const list = await Call.find({ conversation: req.params.id, clinic: req.clinicId })
-      .sort({ createdAt: -1 })
-      .limit(50);
-    res.json(list.map(callPayload));
+      .sort({ startedAt: -1 })
+      .limit(200)
+      .lean();
+    const ahora = new Date();
+    res.json(list.map((c) => ({ ...callPayload(c), ...resultadoDeLlamada(c, ahora) })));
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
   }

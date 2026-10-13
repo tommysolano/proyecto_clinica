@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
@@ -12,11 +12,13 @@ import {
   HiOutlineChevronDown,
   HiOutlineChevronRight,
   HiOutlineArrowTopRightOnSquare,
+  HiOutlineChatBubbleLeftRight,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import Modal from '../components/Modal';
 import ServiceItemPicker from '../components/ServiceItemPicker';
-import { fmtDate, todayEc } from '../utils/date';
+import { GraficoSerie, GraficoInversion, GraficoEstados, GraficoAnuncios } from '../components/AnaliticasGraficos';
+import { fmtDate, fmtDateTime, todayEc } from '../utils/date';
 
 /**
  * ANALÍTICAS DEL CRM POR PROGRAMA DE PUBLICIDAD (oct-2026).
@@ -385,41 +387,22 @@ function EditorPrograma({ programa, otros, onClose, onGuardado }) {
         <section>
           <h4 className="m-0 mb-1 text-sm font-semibold text-slate-700">Anuncios del programa</h4>
           <p className="m-0 mb-2 text-[11px] text-slate-500">
-            Son los ids que pusiste en el disparador «Anuncio» de cada automatización. Añade los de una
-            automatización de una vez, o escribe un id suelto.
+            Son los ids que pusiste en el disparador «Anuncio» de cada automatización. Marca una automatización
+            para añadir todos sus anuncios, ábrela para escoger uno por uno, y desmárcala para quitarlos. Solo
+            salen los anuncios que no están en otro programa. También puedes escribir un id suelto.
           </p>
           {fuentes === null ? (
             <p className="text-xs text-slate-400">Cargando automatizaciones…</p>
           ) : !fuentes.length ? (
             <p className="text-xs text-slate-400">Ninguna automatización tiene ids de anuncio.</p>
           ) : (
-            <div className="grid gap-1.5 max-h-56 overflow-y-auto pr-1">
-              {fuentes.map((f) => {
-                const faltan = f.adIds.filter((id) => !mios.has(id) && !deOtro.has(id));
-                const deOtroPrograma = f.adIds.filter((id) => deOtro.has(id));
-                return (
-                  <div key={f._id} className="flex flex-wrap items-center justify-between gap-2 border border-slate-200 rounded-lg px-3 py-2 bg-white">
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-slate-800 break-words">
-                        {f.name}{!f.active && <span className="ml-1 text-[10px] text-slate-400">(inactiva)</span>}
-                      </div>
-                      <div className="text-[11px] text-slate-500">
-                        {f.adIds.length} anuncio(s)
-                        {deOtroPrograma.length > 0 && ` · ${deOtroPrograma.length} ya en otro programa`}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={!faltan.length}
-                      onClick={() => anadirIds(f.adIds, f)}
-                      className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-indigo-200 bg-indigo-50 text-indigo-800 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      {faltan.length ? `Añadir ${faltan.length}` : 'Ya añadidos'}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
+            <SelectorAnuncios
+              fuentes={fuentes}
+              deOtro={deOtro}
+              mios={mios}
+              onMarcar={(ids, wf) => anadirIds(ids, wf)}
+              onDesmarcar={(ids) => setAnuncios((prev) => prev.filter((a) => !ids.includes(a.adId)))}
+            />
           )}
           <div className="flex gap-2 mt-2">
             <input
@@ -503,6 +486,109 @@ function EditorPrograma({ programa, otros, onClose, onGuardado }) {
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** Casilla con estado «a medias» (algunos anuncios de la automatización, no todos). */
+function Casilla({ checked, indeterminate = false, onChange, title }) {
+  const ref = useRef(null);
+  useEffect(() => { if (ref.current) ref.current.indeterminate = indeterminate; }, [indeterminate]);
+  return (
+    <input ref={ref} type="checkbox" checked={checked} onChange={onChange} title={title}
+      className="accent-indigo-600 w-4 h-4 cursor-pointer shrink-0" />
+  );
+}
+
+/**
+ * LOS ANUNCIOS DE LAS AUTOMATIZACIONES, PARA MARCAR Y DESMARCAR (oct-2026).
+ *
+ * Antes el botón «Añadir» quedaba en «Ya añadidos» y no había forma de quitar
+ * la selección. Ahora cada automatización es una casilla (marca o desmarca
+ * todos sus anuncios) y se puede abrir para escoger anuncio por anuncio.
+ * Solo salen los anuncios LIBRES: los que ya son de otro programa no se
+ * ofrecen, y la automatización que solo tiene de esos tampoco aparece.
+ */
+function SelectorAnuncios({ fuentes, deOtro, mios, onMarcar, onDesmarcar }) {
+  const [abiertas, setAbiertas] = useState(() => new Set());
+  const [buscar, setBuscar] = useState('');
+  const texto = buscar.trim().toLowerCase();
+  const visibles = fuentes
+    .map((f) => ({ ...f, libres: f.adIds.filter((id) => !deOtro.has(id)) }))
+    .filter((f) => f.libres.length)
+    .filter((f) => !texto
+      || f.name.toLowerCase().includes(texto)
+      || f.libres.some((id) => id.includes(texto) || String(f.titulares?.[id] || '').toLowerCase().includes(texto)));
+  const ocultas = fuentes.filter((f) => f.adIds.every((id) => deOtro.has(id))).length;
+  const alternarAbierta = (id) => setAbiertas((prev) => {
+    const s = new Set(prev);
+    if (s.has(id)) s.delete(id); else s.add(id);
+    return s;
+  });
+
+  return (
+    <div className="space-y-1.5">
+      {fuentes.length > 6 && (
+        <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar automatización, anuncio o titular…"
+          className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-xs" />
+      )}
+      <div className="grid gap-1.5 max-h-64 overflow-y-auto pr-1">
+        {!visibles.length && (
+          <p className="m-0 text-xs text-slate-400 px-1">
+            {texto ? 'Nada coincide con la búsqueda.' : 'Todos los anuncios de las automatizaciones ya están en otros programas.'}
+          </p>
+        )}
+        {visibles.map((f) => {
+          const marcados = f.libres.filter((id) => mios.has(id));
+          const todos = marcados.length === f.libres.length;
+          const abierta = abiertas.has(f._id) || (!!texto && f.libres.length > 1);
+          return (
+            <div key={f._id} className="border border-slate-200 rounded-lg bg-white">
+              <div className="flex items-center gap-2.5 px-3 py-2">
+                <Casilla
+                  checked={todos}
+                  indeterminate={!todos && marcados.length > 0}
+                  title={todos ? 'Quitar todos sus anuncios' : 'Añadir todos sus anuncios'}
+                  onChange={() => (todos ? onDesmarcar(f.libres) : onMarcar(f.libres.filter((id) => !mios.has(id)), f))}
+                />
+                <button type="button" onClick={() => alternarAbierta(f._id)}
+                  className="flex-1 min-w-0 text-left bg-transparent border-none cursor-pointer p-0">
+                  <div className="text-sm font-medium text-slate-800 break-words">
+                    {f.name}{!f.active && <span className="ml-1 text-[10px] text-slate-400">(inactiva)</span>}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {marcados.length ? `${marcados.length} de ${f.libres.length} anuncio(s) en este programa` : `${f.libres.length} anuncio(s)`}
+                  </div>
+                </button>
+                <button type="button" onClick={() => alternarAbierta(f._id)} title={abierta ? 'Cerrar' : 'Escoger anuncio por anuncio'}
+                  className="p-1 text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer shrink-0">
+                  <HiOutlineChevronDown className={`w-4 h-4 transition-transform ${abierta ? 'rotate-180' : ''}`} />
+                </button>
+              </div>
+              {abierta && (
+                <ul className="m-0 px-3 pb-2 pt-0 list-none space-y-1 border-t border-slate-100">
+                  {f.libres.map((id) => (
+                    <li key={id} className="pt-1">
+                      <label className="flex items-start gap-2.5 cursor-pointer">
+                        <Casilla checked={mios.has(id)} onChange={() => (mios.has(id) ? onDesmarcar([id]) : onMarcar([id], f))} />
+                        <span className="min-w-0">
+                          <span className="font-mono text-xs text-slate-700 break-all">{id}</span>
+                          {f.titulares?.[id] && <span className="block text-[11px] text-slate-500 break-words">«{f.titulares[id]}»</span>}
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {ocultas > 0 && (
+        <p className="m-0 text-[11px] text-slate-400">
+          {ocultas} automatización(es) no se muestran: todos sus anuncios ya están en otros programas.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -602,12 +688,18 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
       </div>
 
       {programaId ? (
-        elegido ? <VistaPrograma p={elegido} subGasto={subGasto} /> : <p className="text-sm text-slate-400">Cargando…</p>
+        elegido ? (
+          <VistaPrograma p={elegido} subGasto={subGasto} data={data} desde={desde} hasta={hasta} por={por} />
+        ) : <p className="text-sm text-slate-400">Cargando…</p>
       ) : (
         <>
           <div className="grid gap-3 grid-cols-2 lg:grid-cols-5">
             <Kpi label="Inversión en publicidad" valor={money(total.gasto)} sub={subGasto} />
-            <Kpi label="Chats de anuncios" valor={total.chats} sub="de los anuncios de los programas" />
+            <Kpi
+              label="Chats de anuncios"
+              valor={data?.chatsAnuncios?.total ?? total.chats}
+              sub={`${total.chats} de los programas · ${data?.chatsAnuncios?.conCita ?? 0} agendaron`}
+            />
             <Kpi label="Citas desde chat" valor={total.citas} sub={`${total.efectivas} asistieron`} />
             <Kpi label="Ingresos" valor={money(total.ingresos)} sub="de citas efectivas" />
             <Kpi
@@ -616,6 +708,20 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
               sub={total.gasto && total.efectivas ? `costo por efectiva ${money(total.gasto / total.efectivas)}` : 'sin gasto registrado'}
             />
           </div>
+
+          {data && (
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div className="lg:col-span-2">
+                <GraficoSerie
+                  serie={data.serie}
+                  porMes={data.seriePorMes}
+                  sub={`${data.seriePorMes ? 'Por mes' : 'Por día'} · chats de todos los anuncios; citas ${por === 'cita' ? 'por fecha de la cita' : 'por fecha en que se agendaron'}`}
+                />
+              </div>
+              {filas.length > 0 && <GraficoInversion programas={filas} />}
+              {filas.length > 0 && <GraficoEstados programas={filas} />}
+            </div>
+          )}
 
           <div className="tbl-wrap">
             <div className="tbl-scroll">
@@ -632,7 +738,6 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
                     <th className="text-right px-3 py-2">Pendientes</th>
                     <th className="text-right px-3 py-2">Canjes</th>
                     <th className="text-right px-3 py-2">Ingresos</th>
-                    <th className="text-right px-3 py-2">Por agendar</th>
                     <th className="text-right px-3 py-2">Costo / efectiva</th>
                     <th className="text-right px-3 py-2">ROI</th>
                   </tr>
@@ -666,7 +771,7 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
                       </tr>
                       {abierto === 'sin' && (
                         <tr className="bg-slate-50/60">
-                          <td colSpan={13} className="px-3 py-3">
+                          <td colSpan={12} className="px-3 py-3">
                             <AnunciosSinPrograma
                               anuncios={data.anunciosSinPrograma || []}
                               programas={programas}
@@ -681,6 +786,10 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
               </table>
             </div>
           </div>
+
+          {data?.chatsAnuncios && (
+            <ChatsDeAnuncios key={`${desde}|${hasta}`} datos={data.chatsAnuncios} desde={desde} hasta={hasta} />
+          )}
         </>
       )}
 
@@ -718,7 +827,6 @@ function CeldasNumeros({ r, sinGasto = false }) {
       <td className="px-3 py-2 text-right text-slate-500">{r.pendientes}</td>
       <td className="px-3 py-2 text-right">{r.canjes}</td>
       <td className="px-3 py-2 text-right font-semibold">{money(r.ingresos)}</td>
-      <td className="px-3 py-2 text-right text-slate-500" title="Valor de las citas que siguen en pie (pendientes + efectivas)">{money(r.valorAgendado)}</td>
       {!sinGasto && (
         <>
           <td className="px-3 py-2 text-right">{guion(r.costoPorEfectiva, money)}</td>
@@ -733,8 +841,17 @@ function CeldasNumeros({ r, sinGasto = false }) {
  * TODO UN PROGRAMA: su inversión, chats, citas, asistencias, ingresos y ROI;
  * cuántas citas trajo cada anuncio, y la lista de citas.
  */
-function VistaPrograma({ p, subGasto }) {
+function VistaPrograma({ p, subGasto, data, desde, hasta, por }) {
   const costoPorCita = p.citas ? p.gasto / p.citas : null;
+  // Los chats de SUS anuncios, del mismo cálculo que «Chats de anuncios».
+  const chatsDelPrograma = useMemo(() => {
+    const anuncios = (data?.chatsAnuncios?.anuncios || []).filter((a) => String(a.programaId || '') === String(p._id));
+    return {
+      total: p.chats,
+      conCita: null,
+      anuncios,
+    };
+  }, [data, p._id, p.chats]);
   return (
     <div className="space-y-4">
       <div className="grid gap-3 grid-cols-2 lg:grid-cols-6">
@@ -746,12 +863,22 @@ function VistaPrograma({ p, subGasto }) {
           valor={p.efectivas}
           sub={`${p.citas ? Math.round((p.efectivas / p.citas) * 100) : 0}% · ${p.canceladas} canceladas · ${p.noAsistio} no asistió`}
         />
-        <Kpi label="Ingresos" valor={money(p.ingresos)} sub={`${p.canjes} canje(s) · ${money(p.valorAgendado)} por agendar`} />
+        <Kpi label="Ingresos" valor={money(p.ingresos)} sub={`${p.canjes} canje(s)`} />
         <Kpi
           label="ROI"
           valor={pct(p.roi)}
           sub={p.costoPorEfectiva === null ? 'sin gasto o sin asistencias' : `${money(p.costoPorEfectiva)} por asistencia`}
         />
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        <GraficoSerie
+          serie={p.serie}
+          porMes={data?.seriePorMes}
+          titulo={`${p.name}: chats y citas`}
+          sub={`${data?.seriePorMes ? 'Por mes' : 'Por día'} · citas ${por === 'cita' ? 'por fecha de la cita' : 'por fecha en que se agendaron'}`}
+        />
+        <GraficoAnuncios anuncios={p.anuncios} />
       </div>
 
       <div>
@@ -770,12 +897,11 @@ function VistaPrograma({ p, subGasto }) {
                   <th className="text-right px-3 py-2">Pendientes</th>
                   <th className="text-right px-3 py-2">Canjes</th>
                   <th className="text-right px-3 py-2">Ingresos</th>
-                  <th className="text-right px-3 py-2">Por agendar</th>
                 </tr>
               </thead>
               <tbody>
                 {(p.anuncios || []).length === 0 && (
-                  <tr><td colSpan={10} className="px-3 py-4 text-center text-slate-400">Este programa no tiene anuncios.</td></tr>
+                  <tr><td colSpan={9} className="px-3 py-4 text-center text-slate-400">Este programa no tiene anuncios.</td></tr>
                 )}
                 {[...(p.anuncios || [])]
                   .sort((a, b) => b.citas - a.citas || b.chats - a.chats)
@@ -806,11 +932,214 @@ function VistaPrograma({ p, subGasto }) {
         </div>
       </div>
 
+      {chatsDelPrograma.anuncios.length > 0 && (
+        <ChatsDeAnuncios key={`${desde}|${hasta}`} datos={chatsDelPrograma} desde={desde} hasta={hasta} sinGrafico titulo={`Chats de los anuncios de ${p.name}`} />
+      )}
+
       <div>
         <h3 className="m-0 mb-2 text-sm font-semibold text-slate-700">Citas ({(p.citasDetalle || []).length})</h3>
         <div className="bg-white border border-slate-200 rounded-xl p-3">
           <DetalleCitas citas={p.citasDetalle || []} />
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * CHATS DE ANUNCIOS (oct-2026): cuántos chats llegaron por los anuncios —en
+ * total y anuncio por anuncio, sean o no de un programa— y cuántos agendaron.
+ * Cada anuncio se abre para ver sus chats uno por uno e ir a cualquiera de
+ * ellos; «Ver todos los chats» los lista todos juntos.
+ */
+function ChatsDeAnuncios({ datos, desde, hasta, sinGrafico = false, titulo = 'Chats de anuncios' }) {
+  const [abierto, setAbierto] = useState(null); // adId | '*' (todos) | null
+  const [buscar, setBuscar] = useState('');
+  const anuncios = datos.anuncios || [];
+  const texto = buscar.trim().toLowerCase();
+  const visibles = texto
+    ? anuncios.filter((a) => a.adId.toLowerCase().includes(texto)
+      || String(a.titular || '').toLowerCase().includes(texto)
+      || String(a.programa || '').toLowerCase().includes(texto))
+    : anuncios;
+  const alternar = (id) => setAbierto((v) => (v === id ? null : id));
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h3 className="m-0 text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+            <HiOutlineChatBubbleLeftRight className="w-4 h-4 text-indigo-500" /> {titulo}
+          </h3>
+          <p className="m-0 text-[11px] text-slate-500">
+            <b className="text-slate-700">{datos.total}</b> chat(s) llegaron por {anuncios.length} anuncio(s)
+            {datos.conCita !== null && datos.conCita !== undefined && <> · <b className="text-slate-700">{datos.conCita}</b> agendaron alguna cita</>}.
+            Abre un anuncio para ver sus chats.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {anuncios.length > 8 && (
+            <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar anuncio, titular o programa…"
+              className="border border-slate-200 rounded-xl px-3 py-1.5 text-sm min-w-[220px]" />
+          )}
+          {!sinGrafico && datos.total > 0 && (
+            <button type="button" onClick={() => alternar('*')}
+              className={`px-3 py-1.5 rounded-xl border text-sm cursor-pointer ${abierto === '*' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-200'}`}>
+              {abierto === '*' ? 'Cerrar lista' : 'Ver todos los chats'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {abierto === '*' && (
+        <div className="bg-white border border-slate-200 rounded-xl p-3">
+          <ListaChats desde={desde} hasta={hasta} />
+        </div>
+      )}
+
+      {!sinGrafico && anuncios.length > 0 && (
+        <GraficoAnuncios
+          anuncios={anuncios.map((a) => ({ ...a, citas: a.conCita }))}
+          titulo="Chats por anuncio"
+          nombreCitas="Agendaron"
+        />
+      )}
+
+      <div className="tbl-wrap">
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead className="bg-slate-50 text-slate-600">
+              <tr>
+                <th className="text-left px-3 py-2">Anuncio</th>
+                <th className="text-left px-3 py-2">Programa</th>
+                <th className="text-right px-3 py-2">Chats</th>
+                <th className="text-right px-3 py-2">Agendaron</th>
+                <th className="text-right px-3 py-2">% que agendó</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!visibles.length && (
+                <tr><td colSpan={5} className="px-3 py-4 text-center text-slate-400">
+                  {texto ? 'Nada coincide con la búsqueda.' : 'Ningún chat llegó por un anuncio en estas fechas.'}
+                </td></tr>
+              )}
+              {visibles.map((a) => (
+                <Fragment key={a.adId}>
+                  <tr className="border-t border-slate-100 cursor-pointer hover:bg-slate-50" onClick={() => alternar(a.adId)} title="Ver sus chats">
+                    <td className="px-3 py-2">
+                      <span className="inline-flex items-center gap-1 font-mono text-xs text-slate-800">
+                        {abierto === a.adId ? <HiOutlineChevronDown className="w-3.5 h-3.5" /> : <HiOutlineChevronRight className="w-3.5 h-3.5" />}
+                        <HiOutlineMegaphone className="w-3.5 h-3.5 text-indigo-500" /> {a.adId}
+                      </span>
+                      {a.titular && <div className="text-[11px] text-slate-500 break-words pl-[1.125rem]">«{a.titular}»</div>}
+                    </td>
+                    <td className="px-3 py-2 text-slate-600">{a.programa || <span className="italic text-slate-400">Sin programa</span>}</td>
+                    <td className="px-3 py-2 text-right font-semibold">{a.chats}</td>
+                    <td className="px-3 py-2 text-right text-emerald-700">{a.conCita}</td>
+                    <td className="px-3 py-2 text-right text-slate-600">{a.chats ? `${Math.round((a.conCita / a.chats) * 100)}%` : '—'}</td>
+                  </tr>
+                  {abierto === a.adId && (
+                    <tr className="bg-slate-50/60">
+                      <td colSpan={5} className="px-3 py-3">
+                        <ListaChats desde={desde} hasta={hasta} adId={a.adId} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Los chats de un anuncio (o de todos), con el botón para ir a cada uno. */
+function ListaChats({ desde, hasta, adId = '' }) {
+  // Como los resultados: lo cargado recuerda de qué consulta es.
+  const clave = `${desde}|${hasta}|${adId}`;
+  const [estado, setEstado] = useState({ clave: '', data: null });
+  const [buscar, setBuscar] = useState('');
+
+  useEffect(() => {
+    let vivo = true;
+    const miClave = `${desde}|${hasta}|${adId}`;
+    api.get('/ad-programs/ad-chats', { params: { from: desde, to: hasta, ...(adId ? { adId } : {}) } })
+      .then(({ data }) => { if (vivo) setEstado({ clave: miClave, data }); })
+      .catch((err) => {
+        if (!vivo) return;
+        toast.error(err.response?.data?.message || 'No se pudieron cargar los chats');
+        setEstado({ clave: miClave, data: { total: 0, chats: [] } });
+      });
+    return () => { vivo = false; };
+  }, [desde, hasta, adId]);
+
+  if (estado.clave !== clave) return <p className="m-0 text-sm text-slate-400">Cargando chats…</p>;
+  const chats = estado.data?.chats || [];
+  if (!chats.length) return <p className="m-0 text-sm text-slate-400">Sin chats en estas fechas.</p>;
+  const texto = buscar.trim().toLowerCase();
+  const visibles = texto
+    ? chats.filter((c) => String(c.contacto || '').toLowerCase().includes(texto) || String(c.phone || '').includes(texto))
+    : chats;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="m-0 text-xs text-slate-500">
+          {estado.data.total} chat(s){estado.data.total > chats.length ? ` · se muestran los ${chats.length} más recientes` : ''}
+        </p>
+        {chats.length > 10 && (
+          <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar nombre o teléfono…"
+            className="border border-slate-200 rounded-lg px-2.5 py-1 text-xs bg-white" />
+        )}
+      </div>
+      <div className="overflow-x-auto max-h-96 overflow-y-auto">
+        <table className="w-full text-xs">
+          <thead className="text-slate-500 sticky top-0 bg-slate-50">
+            <tr>
+              <th className="text-left px-2 py-1">Contacto</th>
+              <th className="text-left px-2 py-1">Llegó</th>
+              {!adId && <th className="text-left px-2 py-1">Anuncio</th>}
+              <th className="text-left px-2 py-1">Citas</th>
+              <th className="text-right px-2 py-1">Chat</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibles.map((c) => (
+              <tr key={c._id} className="border-t border-slate-200/70">
+                <td className="px-2 py-1.5">
+                  <div className="text-slate-800">{c.contacto || '—'}</div>
+                  {c.phone && c.phone !== c.contacto && <div className="text-[11px] text-slate-400">{c.phone}</div>}
+                </td>
+                <td className="px-2 py-1.5 whitespace-nowrap">{fmtDateTime(c.llegada)}</td>
+                {!adId && (
+                  <td className="px-2 py-1.5">
+                    {(c.anuncios || []).map((a) => (
+                      <div key={a.adId} className="break-words">
+                        {a.titular ? <span className="text-slate-700">«{a.titular}»</span> : <span className="font-mono text-slate-700">{a.adId}</span>}
+                        {a.programa && <span className="text-[10px] text-slate-400"> · {a.programa}</span>}
+                      </div>
+                    ))}
+                  </td>
+                )}
+                <td className="px-2 py-1.5 whitespace-nowrap">
+                  {c.citas ? (
+                    <span className="px-1.5 py-0.5 rounded border text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">
+                      {c.citas} cita(s){c.ultimaCita ? ` · ${fmtDate(c.ultimaCita.fecha)}` : ''}
+                    </span>
+                  ) : <span className="text-slate-400">Sin cita</span>}
+                </td>
+                <td className="px-2 py-1.5 text-right">
+                  <Link to={`/chats?chat=${c._id}`} target="_blank" rel="noopener" title="Abrir el chat"
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 no-underline whitespace-nowrap">
+                    Ir al chat <HiOutlineArrowTopRightOnSquare className="w-3.5 h-3.5" />
+                  </Link>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

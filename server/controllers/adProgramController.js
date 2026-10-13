@@ -75,10 +75,9 @@ function sanear(body = {}) {
  * UN ANUNCIO ES DE UN SOLO PROGRAMA: si dos lo reclamaran, la misma cita
  * contaría en los dos y el total del CRM saldría inflado.
  */
-async function anunciosRepetidos(clinicId, anuncios, excluirId = null) {
+async function anunciosRepetidos(anuncios, excluirId = null) {
   if (!anuncios.length) return null;
   const otros = await AdProgram.find({
-    clinic: clinicId,
     'anuncios.adId': { $in: anuncios.map((a) => a.adId) },
     ...(excluirId ? { _id: { $ne: excluirId } } : {}),
   }).select('name anuncios.adId').lean();
@@ -90,9 +89,20 @@ async function anunciosRepetidos(clinicId, anuncios, excluirId = null) {
   return `Estos anuncios ya pertenecen a otro programa: ${choques.join(', ')}.`;
 }
 
+/**
+ * LOS PROGRAMAS SON DE TODO EL CRM, NO DE UNA SUCURSAL (oct-2026).
+ *
+ * Se guardaban con la sucursal ACTIVA de quien los creaba y se leían filtrando
+ * por ella: al pasar de Central a Laboratorio la página salía vacía. El CRM es
+ * uno solo (chats, automatizaciones y anuncios son de todas las sedes), así que
+ * los programas se leen y se editan SIN mirar su `clinic`; los nuevos se
+ * guardan en la clínica ancla del CRM (las rutas van con `callCenterScope`).
+ */
+const TODOS_LOS_PROGRAMAS = {};
+
 exports.list = async (req, res) => {
   try {
-    const programas = await AdProgram.find({ clinic: req.clinicId }).sort({ name: 1 }).lean();
+    const programas = await AdProgram.find(TODOS_LOS_PROGRAMAS).sort({ name: 1 }).lean();
     res.json(programas);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener los programas', error: error.message });
@@ -103,7 +113,7 @@ exports.create = async (req, res) => {
   try {
     const datos = sanear(req.body);
     if (!datos.name) return res.status(400).json({ message: 'Escribe el nombre del programa.' });
-    const choque = await anunciosRepetidos(req.clinicId, datos.anuncios);
+    const choque = await anunciosRepetidos(datos.anuncios);
     if (choque) return res.status(400).json({ message: choque });
     const programa = await AdProgram.create({ ...datos, clinic: req.clinicId, createdBy: req.user._id });
     res.status(201).json(programa);
@@ -116,10 +126,10 @@ exports.update = async (req, res) => {
   try {
     const datos = sanear(req.body);
     if (!datos.name) return res.status(400).json({ message: 'Escribe el nombre del programa.' });
-    const choque = await anunciosRepetidos(req.clinicId, datos.anuncios, req.params.id);
+    const choque = await anunciosRepetidos(datos.anuncios, req.params.id);
     if (choque) return res.status(400).json({ message: choque });
     const programa = await AdProgram.findOneAndUpdate(
-      { _id: req.params.id, clinic: req.clinicId },
+      { _id: req.params.id },
       datos,
       { new: true, runValidators: true }
     );
@@ -132,7 +142,7 @@ exports.update = async (req, res) => {
 
 exports.remove = async (req, res) => {
   try {
-    const programa = await AdProgram.findOneAndDelete({ _id: req.params.id, clinic: req.clinicId });
+    const programa = await AdProgram.findOneAndDelete({ _id: req.params.id });
     if (!programa) return res.status(404).json({ message: 'Programa no encontrado' });
     res.json({ message: 'Programa eliminado' });
   } catch (error) {
@@ -173,7 +183,23 @@ exports.adSources = async (req, res) => {
       })
       .filter((f) => f.adIds.length)
       .sort((a, b) => a.name.localeCompare(b.name, 'es'));
-    res.json(fuentes);
+
+    /**
+     * EL TITULAR DE CADA ANUNCIO (oct-2026): un id de 18 cifras no dice nada al
+     * escoger; el titular que Meta manda con el primer mensaje del chat, sí.
+     */
+    const ids = [...new Set(fuentes.flatMap((f) => f.adIds))];
+    const titulares = {};
+    if (ids.length) {
+      const filas = await Conversation.aggregate([
+        { $match: { clinic: new mongoose.Types.ObjectId(String(req.clinicId)), 'attribution.adId': { $in: ids } } },
+        { $match: { 'attribution.campaign': { $nin: [null, ''] } } },
+        { $sort: { createdAt: -1 } },
+        { $group: { _id: '$attribution.adId', titular: { $first: '$attribution.campaign' } } },
+      ]);
+      for (const f of filas) titulares[f._id] = f.titular;
+    }
+    res.json(fuentes.map((f) => ({ ...f, titulares: Object.fromEntries(f.adIds.filter((id) => titulares[id]).map((id) => [id, titulares[id]])) })));
   } catch (error) {
     res.status(500).json({ message: 'Error al leer los anuncios de las automatizaciones', error: error.message });
   }
@@ -258,6 +284,93 @@ const vacio = () => ({
   valorAgendado: 0,
 });
 
+/** Anuncio (y cada alias de Meta) → programa, y → el id tal como se configuró. */
+async function mapaDeAnuncios(programas) {
+  // Alias de Meta: el id del Ads Manager y el de su publicación son el mismo anuncio.
+  const idsConfigurados = [...new Set(programas.flatMap((p) => (p.anuncios || []).map((a) => a.adId)))];
+  let alias = new Map(idsConfigurados.map((id) => [id, new Set([id])]));
+  if (idsConfigurados.length) {
+    try {
+      alias = await require('../utils/metaAds').resolveAdAliases(idsConfigurados);
+    } catch { /* el id exacto sigue valiendo */ }
+  }
+  const programaDeAnuncio = new Map();
+  const anuncioConfigurado = new Map();
+  for (const p of programas) {
+    for (const a of p.anuncios || []) {
+      for (const id of alias.get(a.adId) || [a.adId]) {
+        programaDeAnuncio.set(String(id), String(p._id));
+        anuncioConfigurado.set(String(id), a.adId);
+      }
+    }
+  }
+  return { programaDeAnuncio, anuncioConfigurado };
+}
+
+/**
+ * LOS CHATS QUE LLEGARON POR UN ANUNCIO en el rango —de CUALQUIER anuncio, sea o
+ * no de un programa—: el chat que nació de él, o una oportunidad que se abrió en
+ * el rango por ese anuncio (un chat viejo que vuelve a escribir desde otro
+ * anuncio). Siempre por fecha de llegada.
+ *
+ * @returns {Promise<Array<{ conv: object, arribos: Array<{ adId, titular, fecha }> }>>}
+ */
+async function llegadasDeAnuncios(clinicId, desde, hasta, extraSelect = '') {
+  const enRango = { $gte: desde, $lte: hasta };
+  const conAnuncio = { $nin: [null, ''] };
+  const convs = await Conversation.find({
+    clinic: clinicId,
+    // Quien llegó en el rango escribió en el rango: con esto la consulta usa
+    // el índice {clinic, lastMessageAt} en vez de recorrer todos los chats.
+    lastMessageAt: { $gte: desde },
+    $or: [
+      { 'attribution.adId': conAnuncio, createdAt: enRango },
+      { opportunities: { $elemMatch: { 'attribution.adId': conAnuncio, createdAt: enRango } } },
+    ],
+  })
+    .select(`createdAt attribution.adId attribution.campaign opportunities.attribution.adId opportunities.attribution.campaign opportunities.createdAt ${extraSelect}`)
+    .lean();
+  const dentro = (f) => f && new Date(f) >= desde && new Date(f) <= hasta;
+  return convs.map((conv) => {
+    const porId = new Map();
+    const anotar = (adId, titular, fecha) => {
+      const id = limpiarId(adId);
+      if (!id || !dentro(fecha)) return;
+      const previo = porId.get(id);
+      if (!previo || new Date(fecha) < new Date(previo.fecha)) {
+        porId.set(id, { adId: id, titular: titular || previo?.titular || '', fecha: new Date(fecha) });
+      }
+    };
+    anotar(conv.attribution?.adId, conv.attribution?.campaign, conv.createdAt);
+    for (const o of conv.opportunities || []) anotar(o.attribution?.adId, o.attribution?.campaign, o.createdAt);
+    return { conv, arribos: [...porId.values()] };
+  }).filter((l) => l.arribos.length);
+}
+
+/** Fecha → 'YYYY-MM-DD' en la hora local del servidor (Guayaquil). */
+const ymdLocal = (d) => {
+  const f = new Date(d);
+  return `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, '0')}-${String(f.getDate()).padStart(2, '0')}`;
+};
+
+/**
+ * LOS CUBOS DE LA SERIE DE LOS GRÁFICOS: por día, o por mes cuando el rango
+ * pasa de ~3 meses (cientos de barras no se leen).
+ */
+function cubosDelRango(desde, hasta) {
+  const dias = numeroDeDia(hasta) - numeroDeDia(desde) + 1;
+  const porMes = dias > 92;
+  const claves = [];
+  const d = new Date(desde.getFullYear(), desde.getMonth(), porMes ? 1 : desde.getDate());
+  while (d <= hasta) {
+    const k = ymdLocal(d);
+    claves.push(porMes ? k.slice(0, 7) : k);
+    if (porMes) d.setMonth(d.getMonth() + 1);
+    else d.setDate(d.getDate() + 1);
+  }
+  return { porMes, claves, cubo: (fecha) => (porMes ? ymdLocal(fecha).slice(0, 7) : ymdLocal(fecha)) };
+}
+
 exports.analytics = async (req, res) => {
   try {
     const desde = diaLocal(req.query.from);
@@ -268,7 +381,7 @@ exports.analytics = async (req, res) => {
     // 'creacion' (por defecto): cuándo se agendó desde el chat. 'cita': el día de la cita.
     const por = req.query.por === 'cita' ? 'cita' : 'creacion';
 
-    const programas = await AdProgram.find({ clinic: req.clinicId }).sort({ name: 1 }).lean();
+    const programas = await AdProgram.find(TODOS_LOS_PROGRAMAS).sort({ name: 1 }).lean();
 
     // Citas creadas desde un chat de ESTE CRM (la cita puede ser de cualquier sucursal).
     const citas = await Appointment.find({
@@ -288,61 +401,65 @@ exports.analytics = async (req, res) => {
       : [];
     const convPorId = new Map(convs.map((c) => [String(c._id), c]));
 
-    // Anuncio → programa, con los alias de Meta (id del Ads Manager ↔ id de la publicación).
-    const idsConfigurados = [...new Set(programas.flatMap((p) => (p.anuncios || []).map((a) => a.adId)))];
-    let alias = new Map(idsConfigurados.map((id) => [id, new Set([id])]));
-    if (idsConfigurados.length) {
-      try {
-        alias = await require('../utils/metaAds').resolveAdAliases(idsConfigurados);
-      } catch { /* el id exacto sigue valiendo */ }
-    }
-    // Cualquier alias → el programa, y → el id tal como se configuró.
-    const programaDeAnuncio = new Map();
-    const anuncioConfigurado = new Map();
-    for (const p of programas) {
-      for (const a of p.anuncios || []) {
-        for (const id of alias.get(a.adId) || [a.adId]) {
-          programaDeAnuncio.set(String(id), String(p._id));
-          anuncioConfigurado.set(String(id), a.adId);
-        }
-      }
-    }
+    const { programaDeAnuncio, anuncioConfigurado } = await mapaDeAnuncios(programas);
+    const nombrePrograma = new Map(programas.map((p) => [String(p._id), p.name]));
+    const { porMes, claves: cubos, cubo } = cubosDelRango(desde, hasta);
+    const serieVacia = () => new Map(cubos.map((k) => [k, { chats: 0, citas: 0, efectivas: 0 }]));
+    const serie = serieVacia();
+    const seriePorPrograma = new Map(programas.map((p) => [String(p._id), serieVacia()]));
+    const enSerie = (mapa, fecha, campo) => {
+      const fila = mapa?.get(cubo(fecha));
+      if (fila) fila[campo] += 1;
+    };
 
     /**
-     * LOS CHATS QUE TRAJO CADA ANUNCIO en el rango: el chat que nació de él, o
-     * una oportunidad que se abrió en el rango por ese anuncio (un chat viejo
-     * que vuelve a escribir desde otro anuncio). Siempre por fecha de llegada.
+     * LOS CHATS QUE TRAJO CADA ANUNCIO en el rango, de TODOS los anuncios
+     * (oct-2026): los de los programas cuentan para su programa, y el resto se
+     * ve igual en «Chats de anuncios» para saber qué trae cada uno.
      */
     const chatsPorAnuncio = new Map(); // id configurado → Set(conv)
     const chatsPorPrograma = new Map(); // programa → Set(conv)
-    const todosLosAlias = [...programaDeAnuncio.keys()];
-    if (todosLosAlias.length) {
-      const enRango = { $gte: desde, $lte: hasta };
-      const llegadas = await Conversation.find({
-        clinic: req.clinicId,
-        $or: [
-          { 'attribution.adId': { $in: todosLosAlias }, createdAt: enRango },
-          { opportunities: { $elemMatch: { 'attribution.adId': { $in: todosLosAlias }, createdAt: enRango } } },
-        ],
-      }).select('createdAt attribution.adId opportunities.attribution.adId opportunities.createdAt').lean();
-      const dentro = (f) => f && new Date(f) >= desde && new Date(f) <= hasta;
-      for (const conv of llegadas) {
-        const ids = new Set();
-        if (dentro(conv.createdAt) && conv.attribution?.adId) ids.add(limpiarId(conv.attribution.adId));
-        for (const o of conv.opportunities || []) {
-          if (dentro(o.createdAt) && o.attribution?.adId) ids.add(limpiarId(o.attribution.adId));
+    const anunciosConChats = new Map(); // id (configurado o tal cual llegó) → resumen
+    const llegadas = await llegadasDeAnuncios(req.clinicId, desde, hasta);
+    const idsConChat = llegadas.map((l) => l.conv._id);
+    const conCita = new Set(
+      idsConChat.length
+        ? (await Appointment.distinct('conversation', { conversation: { $in: idsConChat } })).map(String)
+        : []
+    );
+    for (const { conv, arribos } of llegadas) {
+      const cid = String(conv._id);
+      // En la serie general el chat cuenta UNA vez, el día de su primera llegada.
+      enSerie(serie, arribos.reduce((min, a) => (a.fecha < min ? a.fecha : min), arribos[0].fecha), 'chats');
+      const primeraPorPrograma = new Map();
+      for (const a of arribos) {
+        const prog = programaDeAnuncio.get(a.adId) || null;
+        const clave = anuncioConfigurado.get(a.adId) || a.adId;
+        if (!anunciosConChats.has(clave)) {
+          anunciosConChats.set(clave, {
+            adId: clave,
+            titular: '',
+            programaId: prog,
+            programa: prog ? nombrePrograma.get(prog) || '' : '',
+            chats: new Set(),
+            conCita: new Set(),
+          });
         }
-        for (const id of ids) {
-          const prog = programaDeAnuncio.get(id);
-          if (!prog) continue;
-          const conf = anuncioConfigurado.get(id);
-          if (!chatsPorAnuncio.has(conf)) chatsPorAnuncio.set(conf, new Set());
-          chatsPorAnuncio.get(conf).add(String(conv._id));
-          if (!chatsPorPrograma.has(prog)) chatsPorPrograma.set(prog, new Set());
-          chatsPorPrograma.get(prog).add(String(conv._id));
-        }
+        const ac = anunciosConChats.get(clave);
+        ac.chats.add(cid);
+        if (conCita.has(cid)) ac.conCita.add(cid);
+        if (!ac.titular && a.titular) ac.titular = a.titular;
+        if (!prog) continue;
+        if (!chatsPorAnuncio.has(clave)) chatsPorAnuncio.set(clave, new Set());
+        chatsPorAnuncio.get(clave).add(cid);
+        if (!chatsPorPrograma.has(prog)) chatsPorPrograma.set(prog, new Set());
+        chatsPorPrograma.get(prog).add(cid);
+        const previa = primeraPorPrograma.get(prog);
+        if (!previa || a.fecha < previa) primeraPorPrograma.set(prog, a.fecha);
       }
+      for (const [prog, fecha] of primeraPorPrograma) enSerie(seriePorPrograma.get(prog), fecha, 'chats');
     }
+    const titularDe = new Map([...anunciosConChats.values()].map((a) => [a.adId, a.titular]));
 
     // Servicio → programas que lo tienen (por id y por nombre, por las copias de otra empresa).
     const programasDeServicio = new Map();
@@ -431,6 +548,13 @@ exports.analytics = async (req, res) => {
       sumar(pa, datosCita);
       if (!pa.titular && atribucion === 'anuncio' && conv.attribution?.campaign) pa.titular = conv.attribution.campaign;
 
+      // Gráficos: la cita cae en el día por el que se está contando.
+      const fechaSerie = por === 'cita' ? c.date : c.createdAt;
+      for (const mapa of [serie, seriePorPrograma.get(programaId)]) {
+        enSerie(mapa, fechaSerie, 'citas');
+        if (grupo === 'efectivas') enSerie(mapa, fechaSerie, 'efectivas');
+      }
+
       detalle.get(programaId).push({
         _id: c._id,
         paciente: c.patient ? `${c.patient.firstName || ''} ${c.patient.lastName || ''}`.trim() : '',
@@ -467,6 +591,7 @@ exports.analytics = async (req, res) => {
           adId: a.adId,
           workflowName: a.workflowName || '',
           ...pa,
+          titular: pa.titular || titularDe.get(a.adId) || '',
           chats: chatsPorAnuncio.get(a.adId)?.size || 0,
         };
       });
@@ -486,8 +611,13 @@ exports.analytics = async (req, res) => {
         costoPorEfectiva: r.efectivas ? gasto / r.efectivas : null,
         roi: gasto ? (r.ingresos - gasto) / gasto : null,
         citasDetalle: detalle.get(String(p._id)).sort((a, b) => new Date(b.creada) - new Date(a.creada)),
+        serie: [...seriePorPrograma.get(pid)].map(([fecha, v]) => ({ fecha, ...v })),
       };
     });
+
+    const anunciosChats = [...anunciosConChats.values()]
+      .map((a) => ({ ...a, chats: a.chats.size, conCita: a.conCita.size }))
+      .sort((a, b) => b.chats - a.chats || b.conCita - a.conCita);
 
     res.json({
       desde: req.query.from,
@@ -498,9 +628,91 @@ exports.analytics = async (req, res) => {
       sinPrograma,
       // Los que más citas trajeron primero: son los que vale la pena asignar.
       anunciosSinPrograma: [...sueltos.values()].sort((a, b) => b.citas - a.citas),
+      // Gráficos (oct-2026): chats de anuncios y citas de los programas por día (o mes).
+      serie: [...serie].map(([fecha, v]) => ({ fecha, ...v })),
+      seriePorMes: porMes,
+      // Todos los chats que llegaron por un anuncio, en total y anuncio por anuncio.
+      chatsAnuncios: {
+        total: llegadas.length,
+        conCita: llegadas.filter((l) => conCita.has(String(l.conv._id))).length,
+        anuncios: anunciosChats,
+      },
     });
   } catch (error) {
     res.status(500).json({ message: 'Error al calcular las analíticas', error: error.message });
+  }
+};
+
+/**
+ * LOS CHATS QUE LLEGARON POR LOS ANUNCIOS, uno por uno (oct-2026), para ir a
+ * cada chat desde Analíticas. `adId` (opcional) = solo los de ese anuncio, tal
+ * como sale en «Chats de anuncios» (el id configurado en el programa, que
+ * reúne sus alias de Meta). Del más reciente al más antiguo.
+ */
+exports.adChats = async (req, res) => {
+  try {
+    const desde = diaLocal(req.query.from);
+    const hasta = diaLocal(req.query.to, true);
+    if (!desde || !hasta || desde > hasta) {
+      return res.status(400).json({ message: 'Escoge un rango de fechas válido.' });
+    }
+    const filtroAnuncio = limpiarId(req.query.adId);
+    const programas = await AdProgram.find(TODOS_LOS_PROGRAMAS).select('name anuncios.adId').lean();
+    const { programaDeAnuncio, anuncioConfigurado } = await mapaDeAnuncios(programas);
+    const nombrePrograma = new Map(programas.map((p) => [String(p._id), p.name]));
+
+    const llegadas = await llegadasDeAnuncios(req.clinicId, desde, hasta, 'phone contactName patient');
+    const filas = [];
+    for (const { conv, arribos } of llegadas) {
+      const suyos = arribos
+        .map((a) => ({ ...a, clave: anuncioConfigurado.get(a.adId) || a.adId, programaId: programaDeAnuncio.get(a.adId) || null }))
+        .filter((a) => !filtroAnuncio || a.clave === filtroAnuncio)
+        .sort((a, b) => a.fecha - b.fecha);
+      if (!suyos.length) continue;
+      filas.push({
+        _id: conv._id,
+        contacto: conv.contactName || conv.phone || '',
+        phone: conv.phone || '',
+        patient: conv.patient || null,
+        llegada: suyos[0].fecha,
+        anuncios: suyos.map((a) => ({
+          adId: a.clave,
+          titular: a.titular,
+          programa: a.programaId ? nombrePrograma.get(a.programaId) || '' : '',
+        })),
+      });
+    }
+    filas.sort((a, b) => b.llegada - a.llegada);
+    const LIMITE = 1000;
+    const visibles = filas.slice(0, LIMITE);
+
+    // Las citas que salieron de cada chat (cualquier fecha): para ver quién agendó.
+    const citas = visibles.length
+      ? await Appointment.find({ conversation: { $in: visibles.map((f) => f._id) } })
+        .select('conversation status date')
+        .sort({ date: -1 })
+        .lean()
+      : [];
+    const citasDe = new Map();
+    for (const c of citas) {
+      const k = String(c.conversation);
+      if (!citasDe.has(k)) citasDe.set(k, []);
+      citasDe.get(k).push(c);
+    }
+    res.json({
+      total: filas.length,
+      limite: LIMITE,
+      chats: visibles.map((f) => {
+        const suyas = citasDe.get(String(f._id)) || [];
+        return {
+          ...f,
+          citas: suyas.length,
+          ultimaCita: suyas[0] ? { fecha: suyas[0].date, estado: suyas[0].status } : null,
+        };
+      }),
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al listar los chats de anuncios', error: error.message });
   }
 };
 

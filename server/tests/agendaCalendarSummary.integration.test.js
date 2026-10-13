@@ -78,7 +78,8 @@ test('el resumen cuenta por día con el mismo criterio que pintaba el calendario
     query: { startDate: ymd(hoy), endDate: ymd(manana), clinic: 'all' },
   }));
   assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
-  const dias = Object.fromEntries(r.payload.map((d) => [d.date, d]));
+  // Los contadores de siempre (el desglose por estado y sucursal se prueba aparte).
+  const dias = Object.fromEntries(r.payload.map(({ estados, sucursales, ...d }) => [d.date, d]));
   assert.deepEqual(dias[ymd(hoy)], {
     date: ymd(hoy), total: 5, pendiente: 1, asistida: 2, no_asistio: 1,
   });
@@ -141,4 +142,19 @@ test('el buscador de paciente no filtra al paciente por la sede donde se registr
     assert.equal(lista.payload.length, 1, `lista con «${q}»`);
     assert.equal(String(lista.payload[0].patient._id), String(lejano._id));
   }
+});
+
+test('el resumen trae cada estado y el desglose por sucursal (totales de la agenda)', async () => {
+  const { clinicId, userId, hoy, manana } = await seed();
+  const r = await H.runController(appt.getCalendarSummary, H.mockReq(clinicId, userId, {}, {
+    role: 'admin',
+    query: { startDate: ymd(hoy), endDate: ymd(manana), clinic: 'all' },
+  }));
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+  const dia = r.payload.find((d) => d.date === ymd(hoy));
+  assert.deepEqual(dia.estados, { pendiente: 1, confirmada: 0, asistida: 1, completada: 1, no_asistio: 1, cancelada: 1 });
+  const sede = dia.sucursales[String(clinicId)];
+  assert.equal(sede.total, 5);
+  assert.equal(sede.cancelada, 1);
+  assert.ok(sede.nombre, 'lleva el nombre de la sucursal');
 });

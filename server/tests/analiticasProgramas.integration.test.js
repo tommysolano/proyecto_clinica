@@ -151,3 +151,50 @@ test('los anuncios que traen citas y no son de ningún programa se listan para a
   assert.equal(r.anunciosSinPrograma[0].titular, 'Promo octubre');
   assert.equal(r.anunciosSinPrograma[0].ingresos, 30);
 });
+
+test('los programas son de todo el CRM: se ven desde cualquier sucursal', async () => {
+  const { clinicId, userId } = await seed();
+  const Clinic = require('../models/Clinic');
+  const lab = await Clinic.create({ name: 'Laboratorio', slug: `lab-${Date.now()}` });
+  ok(await H.runController(ctrl.create, pedir(clinicId, userId, { name: 'Detox', anuncios: [{ adId: 'AD1' }] })));
+  const lista = ok(await H.runController(ctrl.list, pedir(lab._id, userId)));
+  assert.equal(lista.length, 1, 'el programa guardado en Central se ve desde Laboratorio');
+  const r = await H.runController(ctrl.create, pedir(lab._id, userId, { name: 'Otro', anuncios: [{ adId: 'AD1' }] }));
+  assert.equal(r.statusCode, 400, 'el anuncio sigue siendo de un solo programa');
+});
+
+test('chats de anuncios: en total, por anuncio (con o sin programa) y uno por uno', async () => {
+  const { clinicId, userId, detox, patient } = await seed();
+  ok(await H.runController(ctrl.create, pedir(clinicId, userId, { name: 'Detox', anuncios: [{ adId: 'AD1' }] })));
+  const a = await chat(clinicId, patient, 'AD1');
+  await chat(clinicId, patient, 'AD1');
+  const suelto = await chat(clinicId, patient, 'AD-SUELTO');
+  await Conversation.updateOne({ _id: suelto._id }, { $set: { 'attribution.campaign': 'Promo' } });
+  await chat(clinicId, patient, ''); // sin anuncio: no cuenta
+  await cita(clinicId, patient, a, detox, { status: 'asistida' });
+
+  const r = ok(await H.runController(ctrl.analytics, pedir(clinicId, userId, {}, { query: { from: hoy(), to: hoy() } })));
+  assert.equal(r.chatsAnuncios.total, 3);
+  assert.equal(r.chatsAnuncios.conCita, 1);
+  const ad1 = r.chatsAnuncios.anuncios.find((x) => x.adId === 'AD1');
+  assert.equal(ad1.chats, 2);
+  assert.equal(ad1.conCita, 1);
+  assert.equal(ad1.programa, 'Detox');
+  const s = r.chatsAnuncios.anuncios.find((x) => x.adId === 'AD-SUELTO');
+  assert.equal(s.chats, 1);
+  assert.equal(s.programaId, null);
+  assert.equal(s.titular, 'Promo');
+  // La serie del día: 3 chats y la cita del programa.
+  const dia = r.serie.find((x) => x.fecha === hoy());
+  assert.equal(dia.chats, 3);
+  assert.equal(dia.citas, 1);
+  assert.equal(dia.efectivas, 1);
+
+  const lista = ok(await H.runController(ctrl.adChats, pedir(clinicId, userId, {}, { query: { from: hoy(), to: hoy(), adId: 'AD1' } })));
+  assert.equal(lista.total, 2);
+  const conCita = lista.chats.find((c) => String(c._id) === String(a._id));
+  assert.equal(conCita.citas, 1);
+  assert.equal(conCita.anuncios[0].programa, 'Detox');
+  const todos = ok(await H.runController(ctrl.adChats, pedir(clinicId, userId, {}, { query: { from: hoy(), to: hoy() } })));
+  assert.equal(todos.total, 3);
+});

@@ -61,6 +61,10 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
    */
   const [accepting, setAccepting] = useState(false);
   const acceptingRef = useRef(false);
+  // La llamada vigente, para los callbacks que viven más que un render (la
+  // conexión WebRTC avisa de su fallo mucho después de crearse).
+  const callRef = useRef(null);
+  callRef.current = call;
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
@@ -218,9 +222,18 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
       }
     };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed') {
-        toast.error('No se pudo conectar el audio. Revisa la red o la configuración TURN.');
+      // Solo la conexión vigente: una vieja que muere tarde no cuelga la nueva.
+      if (pc.connectionState === 'failed' && pcRef.current === pc) {
+        /**
+         * EL AUDIO NO CONECTÓ: SE CUELGA DE VERDAD (oct-2026). Antes solo se
+         * cerraba la pantalla de este navegador: la llamada seguía viva en
+         * WhatsApp —el paciente esperando, muda— y el asesor ya no tenía botón
+         * para colgarla. Ahora se avisa al servidor, que la corta en Meta.
+         */
+        const callId = callRef.current?.callId;
+        toast.error('Se perdió el audio de la llamada y se colgó. Revisa la red y vuelve a llamar.');
         endLocally();
+        if (callId) api.post(`/chats/calls/${callId}/terminate`).catch(() => {});
       }
     };
     localStreamRef.current = stream;
@@ -267,26 +280,39 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
     }
     acceptingRef.current = true;
     setAccepting(true);
+    // ¿Llegó el «aceptar» al servidor? Desde ahí, la llamada puede estar ya
+    // conectada en WhatsApp aunque aquí se vea un error.
+    let enviado = false;
     try {
       const pc = await buildPeerConnection();
       await pc.setRemoteDescription({ type: 'offer', sdp: offer });
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await waitForIceGathering(pc);
+      enviado = true;
       await api.post(`/chats/calls/${call.callId}/accept`, { sdp: pc.localDescription.sdp });
       setCall((c) => (c ? { ...c, status: 'active' } : c));
       startTimer();
     } catch (err) {
       const offerToRetry = offer;
+      const { callId } = call;
       cleanup();
-      // Si fue un permiso de microfono o un fallo local, la llamada aun puede
-      // estar sonando: se conserva el panel y el OFFER para que el usuario
-      // habilite el permiso y vuelva a pulsar Contestar. 404/409/502 significan
-      // que la llamada ya termino o el proveedor rechazo la conexion.
-      if ([404, 409, 502].includes(err.response?.status)) {
-        setCall(null);
-      } else {
+      if (!enviado) {
+        // Fallo LOCAL (permiso del micrófono, WebRTC): la llamada sigue sonando.
+        // Se conserva el panel y el OFFER para volver a pulsar Contestar.
         pendingOfferRef.current = offerToRetry;
+      } else {
+        /**
+         * EL «ACEPTAR» FALLÓ YA EN EL SERVIDOR (oct-2026). Antes, con un error
+         * de red o un 500, el panel volvía a «sonando» con el audio de este
+         * navegador ya cerrado: la llamada quedaba conectada en WhatsApp, muda,
+         * y nadie podía colgarla. Ahora se cierra aquí y se cuelga en Meta
+         * (404/409: ya la cerró otro o el contacto; no hace falta).
+         */
+        setCall(null);
+        if (![404, 409].includes(err.response?.status)) {
+          api.post(`/chats/calls/${callId}/terminate`).catch(() => {});
+        }
       }
       toast.error(err.response?.data?.message || err.message || 'No se pudo aceptar la llamada');
     } finally {
@@ -306,8 +332,6 @@ export default function useWhatsappCall({ pendingCallId = '', autoAnswer = false
    * la app vuelve a primer plano se pregunta de nuevo: con la app en segundo
    * plano el socket está dormido y el `call:incoming` se pierde.
    */
-  const callRef = useRef(null);
-  callRef.current = call;
   const recuperarPendiente = useCallback(async (callId, { intentos = 1 } = {}) => {
     for (let i = 0; i < intentos; i += 1) {
       if (callRef.current) return;

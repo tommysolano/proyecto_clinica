@@ -29,12 +29,17 @@ function apiBase(creds) {
   return `https://graph.facebook.com/${creds.apiVersion || DEFAULT_API_VERSION}`;
 }
 
+// Sin respuesta de Meta en este tiempo se da por fallida (oct-2026): un fetch
+// colgado dejaba al agente en «Conectando…» y al paciente esperando.
+const TIMEOUT_MS = 15000;
+
 async function callGraph(creds, path, { method = 'POST', body } = {}) {
   if (!isConfigured(creds)) {
     return { ok: false, errorCode: 'provider_unavailable', error: 'El número de WhatsApp no tiene credenciales de Cloud API' };
   }
   try {
     const res = await fetch(`${apiBase(creds)}/${creds.phoneNumberId}${path}`, {
+      signal: AbortSignal.timeout(TIMEOUT_MS),
       method,
       headers: {
         'Content-Type': 'application/json',
@@ -54,7 +59,8 @@ async function callGraph(creds, path, { method = 'POST', body } = {}) {
     }
     return { ok: true, data };
   } catch (err) {
-    return { ok: false, error: err.message };
+    const timeout = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+    return { ok: false, timeout, error: timeout ? 'WhatsApp no respondió a tiempo' : err.message };
   }
 }
 
@@ -92,6 +98,22 @@ async function connectCall(creds, to, sdpOffer) {
   });
   if (!r.ok) return r;
   return { ok: true, callId: r.data?.calls?.[0]?.id || '', data: r.data };
+}
+
+/**
+ * PRE-ACEPTAR (lo recomienda Meta): manda el SDP answer ANTES de aceptar para
+ * que la conexión de audio se establezca mientras tanto; al aceptar, el audio
+ * ya fluye en los dos sentidos en vez de empezar cortado (o no empezar).
+ */
+async function preAcceptCall(creds, callId, sdpAnswer) {
+  return callGraph(creds, '/calls', {
+    body: {
+      messaging_product: 'whatsapp',
+      call_id: callId,
+      action: 'pre_accept',
+      session: { sdp_type: 'answer', sdp: sdpAnswer },
+    },
+  });
 }
 
 /** Acepta una llamada entrante respondiendo con el SDP answer del navegador. */
@@ -171,6 +193,7 @@ module.exports = {
   getCallingSettings,
   enableCalling,
   connectCall,
+  preAcceptCall,
   acceptCall,
   rejectCall,
   terminateCall,

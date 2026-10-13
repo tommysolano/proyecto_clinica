@@ -536,7 +536,21 @@ exports.getAppointments = async (req, res) => {
 exports.getCalendarSummary = async (req, res) => {
   try {
     const query = await construirQueryAgenda(req, req.query);
-    const filas = await Appointment.find(query).select('date status').lean();
+    const filas = await Appointment.find(query).select('date status clinic').lean();
+
+    /**
+     * EL RESUMEN DEL MES POR ESTADO Y POR SUCURSAL (oct-2026). La agenda
+     * enseña encima del calendario cuántas citas hay pendientes, confirmadas,
+     * asistidas, completadas, canceladas y sin asistir, y ese mismo desglose
+     * por sucursal. Va por día (`estados`, `sucursales`) para que el cliente
+     * sume el mes sin otra petición; los contadores de siempre no cambian.
+     */
+    const idsSede = [...new Set(filas.map((a) => String(a.clinic || '')).filter(Boolean))];
+    const sedes = idsSede.length
+      ? await Clinic.find({ _id: { $in: idsSede } }).select('name nombreComercial').lean()
+      : [];
+    const nombreSede = new Map(sedes.map((c) => [String(c._id), c.nombreComercial || c.name || '']));
+    const estadosVacios = () => ({ pendiente: 0, confirmada: 0, asistida: 0, completada: 0, no_asistio: 0, cancelada: 0 });
 
     // La fecha se guarda al mediodía LOCAL (ver parseLocalDate): contar por
     // año/mes/día del objeto Date en el huso del servidor es exactamente el día
@@ -550,7 +564,7 @@ exports.getCalendarSummary = async (req, res) => {
       if (!key) continue;
       let dia = dias.get(key);
       if (!dia) {
-        dia = { date: key, total: 0, pendiente: 0, asistida: 0, no_asistio: 0 };
+        dia = { date: key, total: 0, pendiente: 0, asistida: 0, no_asistio: 0, estados: estadosVacios(), sucursales: {} };
         dias.set(key, dia);
       }
       dia.total += 1;
@@ -558,6 +572,15 @@ exports.getCalendarSummary = async (req, res) => {
       if (s === 'asistida' || s === 'completada') dia.asistida += 1;
       else if (s === 'no_asistio') dia.no_asistio += 1;
       else if (s !== 'cancelada') dia.pendiente += 1;
+
+      const estado = dia.estados[s] !== undefined ? s : 'pendiente';
+      dia.estados[estado] += 1;
+      const sede = String(a.clinic || '');
+      if (!dia.sucursales[sede]) {
+        dia.sucursales[sede] = { nombre: nombreSede.get(sede) || 'Sin sucursal', total: 0, ...estadosVacios() };
+      }
+      dia.sucursales[sede].total += 1;
+      dia.sucursales[sede][estado] += 1;
     }
     res.json([...dias.values()].sort((x, y) => x.date.localeCompare(y.date)));
   } catch (error) {

@@ -150,7 +150,8 @@ router.delete('/:id/opportunities/:idx', requireRole(...CALL_CENTER_ROLES), ctrl
 // Llamadas de un chat concreto.
 router.get('/:id/calling-status', requireRole(...CALL_ROLES), callCtrl.getCallingStatus);
 router.post('/:id/calling-enable', requireRole('marketing'), callCtrl.enableCalling);
-router.get('/:id/calls', requireRole(...CALL_ROLES), callCtrl.listCalls);
+// Solo lectura (las llamadas dentro del hilo): también el administrador.
+router.get('/:id/calls', requireRole(...CALL_CENTER_ROLES), callCtrl.listCalls);
 router.post('/:id/call', requireRole(...CALL_ROLES), callCtrl.startCall);
 router.post('/:id/call-permission', requireRole(...CALL_ROLES), callCtrl.requestCallPermission);
 

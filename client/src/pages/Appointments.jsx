@@ -62,6 +62,8 @@ import SearchableSelect from '../components/SearchableSelect';
 import QuienAtiende, { CAMPOS_QUIEN_ATIENDE, pasosDeAtencion } from '../components/QuienAtiende';
 import { doctorOptionLabel, roleSatisfies, ROLE_LABELS, ROLES_TODA_LA_ORG, ROLES_TODAS_LAS_EMPRESAS, ROLES_VEN_CORREO } from '../utils/roles';
 import CompanyClinicSelect, { ClinicOptionsByCompany } from '../components/CompanyClinicSelect';
+import ResumenEstadosAgenda from '../components/ResumenEstadosAgenda';
+import { estadosVacios } from '../utils/agendaResumen';
 
 // 6 estados soportados por el backend.
 const statusColors = {
@@ -728,7 +730,9 @@ export default function Appointments() {
    * Reasignar una cita ya cobrada (o ya en atención) no vuelve a cobrar.
    */
   const abrirAsignacion = (apt) => {
-    if (facturaEnAgenda && !apt?.cobro && ['pendiente', 'confirmada', 'no_asistio'].includes(apt?.status)) {
+    // Canje o cortesía (valor 0): no hay nada que facturar, va directo a asignar.
+    const sinCobro = !!apt?.isCanje || apt?.agreedValue === 0;
+    if (facturaEnAgenda && !apt?.cobro && !sinCobro && ['pendiente', 'confirmada', 'no_asistio'].includes(apt?.status)) {
       setCobrarCita({ appointment: apt, luegoAsignar: true });
       return;
     }
@@ -2351,6 +2355,43 @@ export default function Appointments() {
     return map;
   }, [calResumen]);
 
+  /**
+   * TOTALES POR ESTADO Y POR SUCURSAL (oct-2026): el mes en el calendario
+   * (sumando el resumen por día que manda el servidor) y el día en la lista
+   * (con las citas ya cargadas y filtradas, antes de la burbuja abierta).
+   */
+  const resumenAgenda = useMemo(() => {
+    const r = { total: 0, estados: estadosVacios(), sucursales: [] };
+    const sedes = new Map();
+    const sede = (id, nombre) => {
+      const k = String(id || '');
+      if (!sedes.has(k)) sedes.set(k, { id: k, nombre: nombre || 'Sin sucursal', total: 0, ...estadosVacios() });
+      return sedes.get(k);
+    };
+    if (view === 'calendar') {
+      (calResumen || []).forEach((dia) => {
+        r.total += Number(dia.total) || 0;
+        Object.entries(dia.estados || {}).forEach(([k, n]) => { if (k in r.estados) r.estados[k] += n; });
+        Object.entries(dia.sucursales || {}).forEach(([id, s]) => {
+          const acc = sede(id, s.nombre);
+          acc.total += s.total || 0;
+          Object.keys(r.estados).forEach((k) => { acc[k] += s[k] || 0; });
+        });
+      });
+    } else {
+      citasFiltradas.forEach((a) => {
+        const k = a.status in r.estados ? a.status : 'pendiente';
+        r.total += 1;
+        r.estados[k] += 1;
+        const acc = sede(a.clinic?._id || a.clinic, a.clinic?.nombreComercial || a.clinic?.name);
+        acc.total += 1;
+        acc[k] += 1;
+      });
+    }
+    r.sucursales = [...sedes.values()];
+    return r;
+  }, [view, calResumen, citasFiltradas]);
+
   // Celdas del mes (con relleno para alinear a lunes). null = celda vacía.
   const calendarCells = useMemo(() => {
     const year = calMonth.getFullYear();
@@ -2762,6 +2803,18 @@ export default function Appointments() {
         </div>
       )}
 
+      {/* Totales por estado y por sucursal: para quien lleva la agenda (quien
+          atiende ya tiene sus bandejas con su propia cuenta). */}
+      {!usaBandejas && (
+        <ResumenEstadosAgenda
+          resumen={resumenAgenda}
+          cargando={loading}
+          titulo={view === 'calendar'
+            ? `Resumen de ${MONTH_NAMES[calMonth.getMonth()].toLowerCase()} ${calMonth.getFullYear()}`
+            : `Resumen del ${fmtDate(listDay)}`}
+        />
+      )}
+
       {view === 'calendar' && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden mb-6">
           {/* Navegación de mes */}
@@ -3162,7 +3215,7 @@ export default function Appointments() {
                       }
                       opciones.push({
                         id: 'asignar',
-                        label: facturaEnAgenda && !apt.cobro && ['pendiente', 'confirmada', 'no_asistio'].includes(apt.status)
+                        label: facturaEnAgenda && !apt.cobro && !apt.isCanje && apt.agreedValue !== 0 && ['pendiente', 'confirmada', 'no_asistio'].includes(apt.status)
                           ? 'Cobrar y asignar atención'
                           : 'Asignar atención',
                         icon: HiOutlineUserPlus,
@@ -4944,8 +4997,10 @@ export default function Appointments() {
           onClose={() => setAssignModal(null)}
           onDone={fetchAppointments}
           // Con factura desde la agenda el dinero ya entró por la venta: el
-          // valor y el adelanto «operativos» sobran y confundirían.
-          ocultarValor={facturaEnAgenda}
+          // valor y el adelanto «operativos» sobran y confundirían. Tampoco
+          // salen si la cita YA TIENE SU COBRO (oct-2026), la asigne quien la
+          // asigne: al paciente ya se le cobró, no hay valor ni pago que anotar.
+          ocultarValor={facturaEnAgenda || !!assignModal.appointment?.cobro}
         />
       )}
 

@@ -41,6 +41,9 @@ const datosCita = (apt) => ({
   paciente: nombrePaciente(apt.patient),
   servicio: apt.serviceName || '',
   sucursal: nombreSucursal(apt.clinic),
+  // Cuándo recepción recibió al paciente: explica por qué una cita de las 9:00
+  // se atendió a las 10:30 (llegó tarde, o lo pasaron después).
+  llegada: apt.attentionAssignedAt || null,
 });
 
 /**

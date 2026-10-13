@@ -51,6 +51,7 @@ installMock('../utils/whatsappGateway', {
   cloudCreds: (account) => ({ phoneNumberId: account.phoneNumberId }),
 });
 installMock('../utils/whatsappCalls', {
+  preAcceptCall: async () => ({ ok: true }),
   acceptCall: async (creds, callId) => {
     providerInvocation = { action: 'accept', creds, callId };
     return { ok: true };

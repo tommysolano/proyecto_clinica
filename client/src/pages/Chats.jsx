@@ -33,6 +33,9 @@ import {
   HiOutlineArrowUturnLeft,
   HiOutlineMicrophone,
   HiOutlinePhone,
+  HiOutlinePhoneArrowDownLeft,
+  HiOutlinePhoneArrowUpRight,
+  HiOutlinePhoneXMark,
   HiOutlineDevicePhoneMobile,
   HiOutlineArrowLeft,
   HiOutlineInformationCircle,
@@ -65,7 +68,7 @@ import { sameCompany } from '../utils/companies';
 import TagEditor from '../components/TagEditor';
 import SuggestInput from '../components/SuggestInput';
 import WhatsappButtons from '../components/WhatsappButtons';
-import { fmtDate, fmtDateTime, todayEc, nowEcHHMM, formatEc, ecDayKey } from '../utils/date';
+import { fmtDate, fmtDateTime, fmtTimeEc, todayEc, nowEcHHMM, formatEc, ecDayKey } from '../utils/date';
 import { imageFromClipboard, imageFileToDataUrl, pastedImageName } from '../utils/chatMedia';
 import useVoiceRecorder, { formatDuration } from '../hooks/useVoiceRecorder';
 import { useWhatsappCallContext } from '../context/WhatsappCallContext';
@@ -826,14 +829,58 @@ export default function Chats() {
 
   // Dónde va un separador de día. Se calcula cuando cambian los mensajes, no en
   // cada render: escribir en el compositor repinta esta pantalla con cada tecla.
-  const dividerAt = useMemo(() => {
-    const keys = messages.map((m) => ecDateKey(m.createdAt));
-    return keys.map((k, i) => i === 0 || keys[i - 1] !== k);
-  }, [messages]);
-
   // Primer mensaje que se dibuja (ver RENDER_STEP). Con el buscador abierto,
   // todos: las coincidencias tienen que poder verse.
   const firstShown = chatSearchOpen ? 0 : Math.max(0, messages.length - shownCount);
+
+  /**
+   * LAS LLAMADAS DENTRO DEL HILO (oct-2026), como en WhatsApp: a qué hora,
+   * entrante o saliente, si se contestó y cuánto duró. Se piden aparte
+   * (`GET /chats/:id/calls`) y se intercalan con los mensajes por hora. Las
+   * anteriores al primer mensaje cargado esperan a que se carguen los
+   * anteriores, para no saltarse el orden.
+   */
+  const [llamadasChat, setLlamadasChat] = useState({ owner: null, lista: [] });
+  const cargarLlamadasChat = useCallback((id) => {
+    if (!id) return;
+    api.get(`/chats/${id}/calls`)
+      .then(({ data }) => {
+        if (String(activeIdRef.current) === String(id)) setLlamadasChat({ owner: String(id), lista: data || [] });
+      })
+      .catch(() => { /* sin permiso o sin llamadas: el hilo sigue igual */ });
+  }, []);
+  useEffect(() => { cargarLlamadasChat(activeId); }, [activeId, cargarLlamadasChat]);
+  const alCambiarLlamada = (p) => {
+    if (p?.conversationId && String(p.conversationId) === String(activeIdRef.current)) {
+      cargarLlamadasChat(activeIdRef.current);
+    }
+  };
+  useSocketEvent('call:incoming', alCambiarLlamada);
+  useSocketEvent('call:status', alCambiarLlamada);
+  useSocketEvent('call:ended', alCambiarLlamada);
+
+  // El hilo que se dibuja: mensajes y llamadas por hora, con el separador de
+  // día donde cambia la fecha. Se calcula cuando cambian, no en cada tecla.
+  const itemsHilo = useMemo(() => {
+    const visibles = firstShown ? messages.slice(firstShown) : messages;
+    const llamadas = llamadasChat.owner && llamadasChat.owner === String(activeId) ? llamadasChat.lista : [];
+    const desde = (firstShown > 0 || hasOlder) && visibles.length ? new Date(visibles[0].createdAt).getTime() : -Infinity;
+    const items = visibles.map((m) => ({ tipo: 'msg', key: m._id, t: new Date(m.createdAt).getTime(), m }));
+    for (const c of llamadas) {
+      const t = new Date(c.startedAt).getTime();
+      if (!Number.isFinite(t) || t < desde) continue;
+      items.push({ tipo: 'llamada', key: `llamada-${c._id}`, t, c });
+    }
+    // Estable: a igual hora, el mensaje primero (sort de JS conserva el orden).
+    items.sort((a, b) => a.t - b.t);
+    let previo = null;
+    for (const it of items) {
+      const k = ecDateKey(it.tipo === 'msg' ? it.m.createdAt : it.c.startedAt);
+      it.divider = k !== previo;
+      previo = k;
+    }
+    return items;
+  }, [messages, firstShown, hasOlder, llamadasChat, activeId]);
   // Muestra los anteriores que ya están en memoria sin que salte la lectura.
   const showEarlierRendered = () => {
     const box = messagesEndRef.current;
@@ -2191,9 +2238,7 @@ export default function Chats() {
                     </div>
                   )}
                   <ThreadMessages
-                    messages={messages}
-                    firstShown={firstShown}
-                    dividerAt={dividerAt}
+                    items={itemsHilo}
                     highlight={chatSearchOpen ? chatSearch : ''}
                     onReply={setReplyDraft}
                     onJumpTo={scrollToMessage}
@@ -4303,22 +4348,83 @@ const EVENT_ICON = {
  * componente) ya no recorre los mensajes en cada tecla. Todas sus props son
  * estables mientras no cambien los mensajes o el chat.
  */
-const ThreadMessages = memo(function ThreadMessages({ messages, firstShown, dividerAt, highlight, onReply, onJumpTo, onRetry, onRetryMedia, onUseTemplate }) {
-  return (firstShown ? messages.slice(firstShown) : messages).map((m, j) => (
-    <Fragment key={m._id}>
+const ThreadMessages = memo(function ThreadMessages({ items, highlight, onReply, onJumpTo, onRetry, onRetryMedia, onUseTemplate }) {
+  return items.map((it) => (
+    <Fragment key={it.key}>
       {/* Separador de día cuando cambia la fecha (o en el primero). */}
-      {dividerAt[firstShown + j] && <DateDivider date={m.createdAt} />}
-      <MessageBubble
-        highlight={highlight}
-        msg={m}
-        onReply={onReply}
-        onJumpTo={onJumpTo}
-        onRetry={onRetry}
-        onRetryMedia={onRetryMedia}
-        onUseTemplate={onUseTemplate}
-      />
+      {it.divider && <DateDivider date={it.tipo === 'msg' ? it.m.createdAt : it.c.startedAt} />}
+      {it.tipo === 'llamada' ? (
+        <LlamadaEnHilo c={it.c} />
+      ) : (
+        <MessageBubble
+          highlight={highlight}
+          msg={it.m}
+          onReply={onReply}
+          onJumpTo={onJumpTo}
+          onRetry={onRetry}
+          onRetryMedia={onRetryMedia}
+          onUseTemplate={onUseTemplate}
+        />
+      )}
     </Fragment>
   ));
+});
+
+/** 75 → «1:15»; 3725 → «1:02:05» (como WhatsApp). */
+const fmtDuracionLlamada = (seg) => {
+  const s = Math.max(0, Math.round(Number(seg) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${r}` : `${m}:${r}`;
+};
+
+const RESULTADO_LLAMADA = {
+  contestada: { in: 'Llamada de voz entrante', out: 'Llamada de voz saliente', tono: 'text-slate-700', icono: 'text-emerald-600' },
+  perdida: { in: 'Llamada perdida', out: 'Llamada perdida', tono: 'text-rose-700', icono: 'text-rose-600' },
+  rechazada: { in: 'Llamada rechazada', out: 'Llamada rechazada', tono: 'text-rose-700', icono: 'text-rose-600' },
+  no_contesto: { in: 'Llamada sin respuesta', out: 'No contestó', tono: 'text-slate-600', icono: 'text-amber-600' },
+  fallida: { in: 'Llamada fallida', out: 'Llamada fallida', tono: 'text-rose-700', icono: 'text-rose-600' },
+  en_curso: { in: 'Llamada en curso', out: 'Llamada en curso', tono: 'text-emerald-700', icono: 'text-emerald-600' },
+};
+
+/**
+ * UNA LLAMADA EN EL HILO, como la pinta WhatsApp: del lado de quien llamó
+ * (entrante a la izquierda, saliente a la derecha), con la hora, si se
+ * contestó y cuánto duró, y quién la atendió.
+ */
+const LlamadaEnHilo = memo(function LlamadaEnHilo({ c }) {
+  const saliente = c.direction === 'out';
+  const r = RESULTADO_LLAMADA[c.resultado] || RESULTADO_LLAMADA.no_contesto;
+  const titulo = saliente ? r.out : r.in;
+  const Icono = c.resultado === 'contestada' || c.resultado === 'en_curso'
+    ? (saliente ? HiOutlinePhoneArrowUpRight : HiOutlinePhoneArrowDownLeft)
+    : HiOutlinePhoneXMark;
+  const detalle = [
+    c.resultado === 'contestada' && c.duracion != null ? fmtDuracionLlamada(c.duracion) : null,
+    c.resultado === 'contestada' && c.agentName ? `atendió ${c.agentName}` : null,
+    saliente && c.agentName && c.resultado !== 'contestada' ? `llamó ${c.agentName}` : null,
+  ].filter(Boolean).join(' · ');
+  return (
+    <div className={`flex my-1 ${saliente ? 'justify-end' : 'justify-start'}`}>
+      <div
+        className={`inline-flex items-center gap-2.5 rounded-xl px-3 py-2 shadow-sm border max-w-[85%] ${
+          saliente ? 'bg-emerald-50 border-emerald-100' : 'bg-white border-slate-200'
+        }`}
+        title={c.errorMessage || undefined}
+      >
+        <span className={`w-8 h-8 rounded-full bg-white border border-slate-200 flex items-center justify-center shrink-0 ${r.icono}`}>
+          <Icono className="w-4 h-4" />
+        </span>
+        <span className="min-w-0">
+          <span className={`block text-sm font-medium ${r.tono}`}>{titulo}</span>
+          <span className="block text-[11px] text-slate-500">
+            {fmtTimeEc(c.startedAt)}{detalle ? ` · ${detalle}` : ''}
+          </span>
+        </span>
+      </div>
+    </div>
+  );
 });
 
 const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry, onRetryMedia, onUseTemplate }) {
@@ -6995,6 +7101,21 @@ function EditApptModal({ appt, onClose, onSaved }) {
     }
   };
 
+  const cancelarCita = async () => {
+    const cuando = `${toYmd(appt.date).split('-').reverse().join('/')} · ${appt.startTime || ''}`;
+    if (!window.confirm(`¿Cancelar la cita del ${cuando}? Queda como «cancelada» y libera el horario.`)) return;
+    setSaving(true);
+    try {
+      await api.put(`/appointments/${appt._id}`, { status: 'cancelada' });
+      toast.success('Cita cancelada');
+      onSaved();
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'No se pudo cancelar la cita');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <ModalShell title="Editar cita" onClose={onClose} size="lg">
       <div className="p-4 space-y-3">
@@ -7049,9 +7170,22 @@ function EditApptModal({ appt, onClose, onSaved }) {
           />
         </div>
 
-        <div>
-          <label className="text-xs font-medium text-slate-600">Servicio</label>
-          <ServiceItemPicker clinic={clinicId} value={serviceItem} onChange={setServiceItem} />
+        {/* SERVICIO Y OTROS SERVICIOS, JUNTOS (oct-2026): los adicionales iban al
+            final del modal, separados del servicio, y se perdían. */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3 space-y-2">
+          <div>
+            <label className="text-xs font-medium text-slate-600">Servicio</label>
+            <ServiceItemPicker clinic={clinicId} value={serviceItem} onChange={setServiceItem} />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-600 block mb-1">Servicios adicionales (opcional)</label>
+            <OtrosServiciosCita
+              clinic={clinicId}
+              seleccionados={extras || []}
+              principalId={serviceItem?._id}
+              onChange={setExtras}
+            />
+          </div>
         </div>
 
         {puedeFijarValor && (
@@ -7078,24 +7212,24 @@ function EditApptModal({ appt, onClose, onSaved }) {
           compact
         />
 
-        {/* OTROS SERVICIOS de la cita (sep-2026): añadir o quitar aquí */}
-        <div>
-          <label className="text-xs font-medium text-slate-600 block mb-1">Otros servicios (opcional)</label>
-          <OtrosServiciosCita
-            clinic={clinicId}
-            seleccionados={extras || []}
-            principalId={serviceItem?._id}
-            onChange={setExtras}
-          />
-        </div>
-
         {['cancelada', 'no_asistio'].includes(appt.status) && (
           <p className="text-[11px] text-slate-400">
             Esta cita estaba <b>cancelada</b> o <b>no asistió</b>: al guardar vuelve a estado <b>pendiente</b>.
           </p>
         )}
-        <div className="flex justify-end gap-2 pt-1">
-          <button onClick={onClose} className="px-3 py-1.5 rounded-lg text-sm border border-slate-200 bg-white cursor-pointer">Cancelar</button>
+        <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+          {/* CANCELAR LA CITA desde el chat (oct-2026): call center y marketing
+              no tenían cómo; el paciente avisa por el chat que no viene. */}
+          {appt.status !== 'cancelada' && (
+            <button
+              onClick={cancelarCita}
+              disabled={saving}
+              className="mr-auto px-3 py-1.5 rounded-lg text-sm border border-rose-200 bg-rose-50 text-rose-700 cursor-pointer hover:bg-rose-100 disabled:opacity-60"
+            >
+              Cancelar la cita
+            </button>
+          )}
+          <button onClick={onClose} className="px-3 py-1.5 rounded-lg text-sm border border-slate-200 bg-white cursor-pointer">Cerrar</button>
           <button
             onClick={save}
             disabled={saving}

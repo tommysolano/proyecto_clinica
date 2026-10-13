@@ -305,3 +305,30 @@ exports.callLog = async (req, res) => {
 
 // Para pruebas.
 exports._rangoDias = rangoDias;
+
+/**
+ * El MISMO resultado que `camposCalculados`, para una llamada ya leída (oct-2026:
+ * las llamadas dentro del hilo del chat, como en WhatsApp).
+ */
+function resultadoDeLlamada(call, ahora = new Date()) {
+  const conectadaEn = call.connectedAt ? new Date(call.connectedAt) : null;
+  const finEn = call.endedAt ? new Date(call.endedAt) : null;
+  const conectada = !!conectadaEn && (!finEn || finEn >= conectadaEn);
+  const limite = call.status === 'ringing' ? MAX_SONANDO_MS : MAX_ACTIVA_MS;
+  const viva = ['ringing', 'active'].includes(call.status) && !finEn
+    && new Date(call.startedAt).getTime() > ahora.getTime() - limite;
+  let resultado = 'no_contesto';
+  if (viva) resultado = 'en_curso';
+  else if (conectada) resultado = 'contestada';
+  else if (call.status === 'rejected') resultado = 'rechazada';
+  else if (call.status === 'failed') resultado = 'fallida';
+  else if (call.direction === 'in') resultado = 'perdida';
+  let duracion = 0;
+  if (conectada) {
+    duracion = call.durationSec > 0
+      ? call.durationSec
+      : finEn ? Math.round((finEn - conectadaEn) / 1000) : null;
+  }
+  return { resultado, duracion };
+}
+exports.resultadoDeLlamada = resultadoDeLlamada;
