@@ -55,12 +55,13 @@ function aplicarValorDeCita(apt, body, req) {
   if (!puedeFijarValor(req)) return false;
 
   const traeCanje = body.isCanje !== undefined;
+  const traeCortesia = body.isCortesia !== undefined;
   const traeValor = body.agreedValue !== undefined;
   const traeAdelanto =
     body.advancePayment !== undefined
     || body.advanceAmount !== undefined
     || body.advanceMethod !== undefined;
-  if (!traeCanje && !traeValor && !traeAdelanto) return false;
+  if (!traeCanje && !traeCortesia && !traeValor && !traeAdelanto) return false;
 
   /**
    * PAGO POR ADELANTADO. `advancePayment` manda ('' | 'abono' | 'total' |
@@ -94,10 +95,19 @@ function aplicarValorDeCita(apt, body, req) {
     // 'total' se resuelve abajo, cuando ya se sabe el valor final de la cita.
   }
 
+  /**
+   * CANJE Y CORTESÍA (oct-2026) son excluyentes: marcar uno apaga el otro. Si
+   * llegaran los dos marcados, gana el canje. Ninguno de los dos mete dinero:
+   * el valor queda en 0 y no hay adelanto.
+   */
+  if (traeCortesia) apt.isCortesia = !!body.isCortesia;
   if (traeCanje) apt.isCanje = !!body.isCanje;
+  if (traeCanje && apt.isCanje) apt.isCortesia = false;
+  else if (traeCortesia && apt.isCortesia) apt.isCanje = false;
+  const sinDinero = apt.isCanje || apt.isCortesia;
 
-  if (apt.isCanje) {
-    // Canje = no entró dinero. Ver el comentario del modelo.
+  if (sinDinero) {
+    // Canje o cortesía = no entró dinero. Ver el comentario del modelo.
     apt.agreedValue = 0;
   } else if (traeValor) {
     const crudo = body.agreedValue;
@@ -117,7 +127,7 @@ function aplicarValorDeCita(apt, body, req) {
    * que dé igual el orden en que lleguen los campos. Un canje no es un pago:
    * si no entró dinero, no hay adelanto que anotar.
    */
-  if (apt.isCanje) {
+  if (sinDinero) {
     apt.advancePayment = '';
     apt.paidInAdvance = false;
     apt.advanceAmount = 0;

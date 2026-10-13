@@ -1306,7 +1306,7 @@ async function crearCita(req, res) {
      * Se agenda con valor desde el alta del paciente (Pacientes → «Agendar cita
      * para este paciente»), que es mostrador registrando a quien tiene delante.
      */
-    for (const k of ['agreedValue', 'isCanje', 'valueSetAt', 'valueSetBy', 'advancePayment', 'paidInAdvance', 'advanceAmount', 'advanceMethod']) delete cleanBody[k];
+    for (const k of ['agreedValue', 'isCanje', 'isCortesia', 'valueSetAt', 'valueSetBy', 'advancePayment', 'paidInAdvance', 'advanceAmount', 'advanceMethod']) delete cleanBody[k];
     /**
      * Los turnos NO entran a pelo por el cuerpo. `cleanBody` se vuelca entero en
      * el `create`, así que un `turns` en el JSON se guardaría sin pasar por
@@ -1699,7 +1699,7 @@ exports.updateAppointment = async (req, res) => {
      * para editar la cita podía fijar el precio y encima sin dejar rastro.
      */
     const CAMPOS_DEL_VALOR = [
-      'agreedValue', 'isCanje', 'advancePayment', 'paidInAdvance', 'advanceAmount', 'advanceMethod',
+      'agreedValue', 'isCanje', 'isCortesia', 'advancePayment', 'paidInAdvance', 'advanceAmount', 'advanceMethod',
       'valueSetAt', 'valueSetBy',
     ];
     if (!puedeFijarValor(req)) {
@@ -1716,6 +1716,7 @@ exports.updateAppointment = async (req, res) => {
       const valor = {
         agreedValue: existing.agreedValue,
         isCanje: existing.isCanje,
+        isCortesia: existing.isCortesia,
         advancePayment: existing.advancePayment,
         advanceMethod: existing.advanceMethod,
         paidInAdvance: existing.paidInAdvance,

@@ -225,6 +225,7 @@ const emptyForm = {
   // Dato operativo de mostrador: no genera cobro ni factura.
   agreedValue: '',
   isCanje: false,
+  isCortesia: false,
   // Pago por adelantado: '' | 'abono' | 'total' (ver utils/appointmentValue.js).
   advancePayment: '',
   advanceAmount: '',
@@ -731,7 +732,7 @@ export default function Appointments() {
    */
   const abrirAsignacion = (apt) => {
     // Canje o cortesía (valor 0): no hay nada que facturar, va directo a asignar.
-    const sinCobro = !!apt?.isCanje || apt?.agreedValue === 0;
+    const sinCobro = !!apt?.isCanje || !!apt?.isCortesia || apt?.agreedValue === 0;
     if (facturaEnAgenda && !apt?.cobro && !sinCobro && ['pendiente', 'confirmada', 'no_asistio'].includes(apt?.status)) {
       setCobrarCita({ appointment: apt, luegoAsignar: true });
       return;
@@ -1631,6 +1632,7 @@ export default function Appointments() {
       if (!canCharge) {
         delete basePayload.agreedValue;
         delete basePayload.isCanje;
+        delete basePayload.isCortesia;
         delete basePayload.advancePayment;
         delete basePayload.advanceAmount;
         delete basePayload.advanceMethod;
@@ -1662,8 +1664,9 @@ export default function Appointments() {
             additionalServices: [],
             ...(canCharge
               ? {
-                  agreedValue: it.isCanje ? 0 : (it.agreedValue ?? ''),
+                  agreedValue: it.isCanje || it.isCortesia ? 0 : (it.agreedValue ?? ''),
                   isCanje: !!it.isCanje,
+                  isCortesia: !!it.isCortesia,
                 }
               : {}),
           };
@@ -3215,7 +3218,7 @@ export default function Appointments() {
                       }
                       opciones.push({
                         id: 'asignar',
-                        label: facturaEnAgenda && !apt.cobro && !apt.isCanje && apt.agreedValue !== 0 && ['pendiente', 'confirmada', 'no_asistio'].includes(apt.status)
+                        label: facturaEnAgenda && !apt.cobro && !apt.isCanje && !apt.isCortesia && apt.agreedValue !== 0 && ['pendiente', 'confirmada', 'no_asistio'].includes(apt.status)
                           ? 'Cobrar y asignar atención'
                           : 'Asignar atención',
                         icon: HiOutlineUserPlus,
@@ -3545,6 +3548,14 @@ export default function Appointments() {
                             Canje
                           </div>
                         )}
+                        {isDoctor && apt.isCortesia && (
+                          <div
+                            className="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase bg-violet-100 text-violet-800 whitespace-nowrap"
+                            title="Esta cita quedó como CORTESÍA: no se cobra"
+                          >
+                            Cortesía
+                          </div>
+                        )}
                         {atencion && (
                           <div
                             className="text-[11px] font-normal text-emerald-700 mt-0.5 whitespace-nowrap"
@@ -3631,11 +3642,15 @@ export default function Appointments() {
                             quien recibe al paciente tiene que saber sin abrir
                             nada si le cobra el resto, todo, o nada. Solo para
                             quien trabaja con el dinero de la cita. */}
-                        {veTodaLaOrg && (apt.isCanje || apt.agreedValue != null || apt.advancePayment) && (
+                        {veTodaLaOrg && (apt.isCanje || apt.isCortesia || apt.agreedValue != null || apt.advancePayment) && (
                           <div className="mt-0.5 flex flex-wrap items-center gap-1">
                             {apt.isCanje ? (
                               <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
                                 Canje
+                              </span>
+                            ) : apt.isCortesia ? (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800">
+                                Cortesía
                               </span>
                             ) : apt.agreedValue != null ? (
                               <span className="text-[11px] text-slate-600 font-medium">
@@ -4152,6 +4167,8 @@ export default function Appointments() {
               onValueChange={(value) => setForm((f) => ({ ...f, agreedValue: value }))}
               isCanje={form.isCanje}
               onCanjeChange={(isCanje) => setForm((f) => ({ ...f, isCanje }))}
+              isCortesia={!!form.isCortesia}
+              onCortesiaChange={(isCortesia) => setForm((f) => ({ ...f, isCortesia }))}
               advancePayment={form.advancePayment}
               onAdvancePaymentChange={(v) => setForm((f) => ({ ...f, advancePayment: v }))}
               advanceAmount={form.advanceAmount}
@@ -4237,6 +4254,13 @@ export default function Appointments() {
                           i === idx ? { ...x, isCanje } : x
                         )),
                       }))}
+                      isCortesia={!!it.isCortesia}
+                      onCortesiaChange={(isCortesia) => setForm((f) => ({
+                        ...f,
+                        extraAppointments: f.extraAppointments.map((x, i) => (
+                          i === idx ? { ...x, isCortesia } : x
+                        )),
+                      }))}
                     />
                   )}
                 </div>
@@ -4247,7 +4271,7 @@ export default function Appointments() {
                   ...f,
                   extraAppointments: [...(f.extraAppointments || []), {
                     date: '', startTime: '', reason: '', serviceItem: null,
-                    agreedValue: '', isCanje: false,
+                    agreedValue: '', isCanje: false, isCortesia: false,
                   }],
                 }))}
                 className="w-full text-xs py-2 rounded-lg border border-dashed border-emerald-300 text-emerald-700 bg-emerald-50/40 hover:bg-emerald-100 cursor-pointer"
@@ -4528,13 +4552,17 @@ export default function Appointments() {
                 {/* Valor acordado de la cita. Es un dato operativo —lo que se le
                     va a cobrar al paciente—, no el cobro en sí. Solo mostrador lo
                     ve y lo cambia. */}
-                {veTodaLaOrg && (detailModal.isCanje || detailModal.agreedValue != null) && (
+                {veTodaLaOrg && (detailModal.isCanje || detailModal.isCortesia || detailModal.agreedValue != null) && (
                   <>
                     <p className="text-xs text-emerald-600 font-medium pt-1">Valor</p>
                     <p className="text-sm text-slate-800">
                       {detailModal.isCanje ? (
                         <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-xs font-semibold">
                           Canje
+                        </span>
+                      ) : detailModal.isCortesia ? (
+                        <span className="px-2 py-0.5 rounded bg-violet-100 text-violet-800 text-xs font-semibold">
+                          Cortesía
                         </span>
                       ) : (
                         `$${Number(detailModal.agreedValue).toFixed(2)}`

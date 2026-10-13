@@ -710,14 +710,14 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
           </div>
 
           {data && (
-            <div className="grid gap-3 lg:grid-cols-2">
-              <div className="lg:col-span-2">
-                <GraficoSerie
-                  serie={data.serie}
-                  porMes={data.seriePorMes}
-                  sub={`${data.seriePorMes ? 'Por mes' : 'Por día'} · chats de todos los anuncios; citas ${por === 'cita' ? 'por fecha de la cita' : 'por fecha en que se agendaron'}`}
-                />
-              </div>
+            // Cada gráfico a todo el ancho (oct-2026): compartiendo fila, con
+            // muchos programas los nombres no cabían y se pisaban.
+            <div className="grid gap-3">
+              <GraficoSerie
+                serie={data.serie}
+                porMes={data.seriePorMes}
+                sub={`${data.seriePorMes ? 'Por mes' : 'Por día'} · chats de todos los anuncios; citas ${por === 'cita' ? 'por fecha de la cita' : 'por fecha en que se agendaron'}`}
+              />
               {filas.length > 0 && <GraficoInversion programas={filas} />}
               {filas.length > 0 && <GraficoEstados programas={filas} />}
             </div>
@@ -737,6 +737,7 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
                     <th className="text-right px-3 py-2">No asistió</th>
                     <th className="text-right px-3 py-2">Pendientes</th>
                     <th className="text-right px-3 py-2">Canjes</th>
+                    <th className="text-right px-3 py-2">Cortesías</th>
                     <th className="text-right px-3 py-2">Ingresos</th>
                     <th className="text-right px-3 py-2">Costo / efectiva</th>
                     <th className="text-right px-3 py-2">ROI</th>
@@ -771,7 +772,7 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
                       </tr>
                       {abierto === 'sin' && (
                         <tr className="bg-slate-50/60">
-                          <td colSpan={12} className="px-3 py-3">
+                          <td colSpan={13} className="px-3 py-3">
                             <AnunciosSinPrograma
                               anuncios={data.anunciosSinPrograma || []}
                               programas={programas}
@@ -794,7 +795,7 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
       )}
 
       <p className="text-[11px] text-slate-400 m-0">
-        <b>Efectivas</b> = asistidas o completadas. <b>Ingresos</b> = valor asignado a las citas efectivas, sin canjes
+        <b>Efectivas</b> = asistidas o completadas. <b>Ingresos</b> = valor asignado a las citas efectivas, sin canjes, cortesías
         ni servicios marcados «no genera ingresos». La <b>inversión</b> se reparte por día y solo cuentan los días ya
         transcurridos. Una cita es del programa por el <b>anuncio</b> del que vino su chat; si el chat no vino de un
         anuncio de ningún programa, por su <b>servicio</b> (cuando ese servicio es de un solo programa).
@@ -826,6 +827,7 @@ function CeldasNumeros({ r, sinGasto = false }) {
       <td className="px-3 py-2 text-right text-amber-700">{r.noAsistio}</td>
       <td className="px-3 py-2 text-right text-slate-500">{r.pendientes}</td>
       <td className="px-3 py-2 text-right">{r.canjes}</td>
+      <td className="px-3 py-2 text-right">{r.cortesias || 0}</td>
       <td className="px-3 py-2 text-right font-semibold">{money(r.ingresos)}</td>
       {!sinGasto && (
         <>
@@ -863,7 +865,7 @@ function VistaPrograma({ p, subGasto, data, desde, hasta, por }) {
           valor={p.efectivas}
           sub={`${p.citas ? Math.round((p.efectivas / p.citas) * 100) : 0}% · ${p.canceladas} canceladas · ${p.noAsistio} no asistió`}
         />
-        <Kpi label="Ingresos" valor={money(p.ingresos)} sub={`${p.canjes} canje(s)`} />
+        <Kpi label="Ingresos" valor={money(p.ingresos)} sub={`${p.canjes} canje(s) · ${p.cortesias || 0} cortesía(s)`} />
         <Kpi
           label="ROI"
           valor={pct(p.roi)}
@@ -896,12 +898,13 @@ function VistaPrograma({ p, subGasto, data, desde, hasta, por }) {
                   <th className="text-right px-3 py-2">No asistió</th>
                   <th className="text-right px-3 py-2">Pendientes</th>
                   <th className="text-right px-3 py-2">Canjes</th>
+                    <th className="text-right px-3 py-2">Cortesías</th>
                   <th className="text-right px-3 py-2">Ingresos</th>
                 </tr>
               </thead>
               <tbody>
                 {(p.anuncios || []).length === 0 && (
-                  <tr><td colSpan={9} className="px-3 py-4 text-center text-slate-400">Este programa no tiene anuncios.</td></tr>
+                  <tr><td colSpan={10} className="px-3 py-4 text-center text-slate-400">Este programa no tiene anuncios.</td></tr>
                 )}
                 {[...(p.anuncios || [])]
                   .sort((a, b) => b.citas - a.citas || b.chats - a.chats)
@@ -1231,6 +1234,7 @@ function DetalleCitas({ citas }) {
               </td>
               <td className="px-2 py-1.5 text-right whitespace-nowrap">
                 {c.canje ? <span className="text-violet-700 font-medium">Canje</span>
+                  : c.cortesia ? <span className="text-violet-700 font-medium">Cortesía</span>
                   : c.valor === null || c.valor === undefined ? <span className="text-slate-400">sin valor</span>
                   : money(c.valor)}
               </td>

@@ -278,6 +278,7 @@ const vacio = () => ({
   noAsistio: 0,
   pendientes: 0,
   canjes: 0,
+  cortesias: 0,
   sinIngreso: 0,
   sinValor: 0,
   ingresos: 0,
@@ -388,7 +389,7 @@ exports.analytics = async (req, res) => {
       conversation: { $ne: null },
       [por === 'cita' ? 'date' : 'createdAt']: { $gte: desde, $lte: hasta },
     })
-      .select('patient conversation date startTime createdAt status serviceItem serviceName additionalServices agreedValue isCanje clinic')
+      .select('patient conversation date startTime createdAt status serviceItem serviceName additionalServices agreedValue isCanje isCortesia clinic')
       .populate('patient', 'firstName lastName')
       .populate('clinic', 'name nombreComercial')
       .lean();
@@ -489,14 +490,15 @@ exports.analytics = async (req, res) => {
     // Los anuncios que trajeron citas y no son de ningún programa, para asignarlos.
     const sueltos = new Map();
     /** Suma una cita a un acumulado (resumen, anuncio o suelto). */
-    const sumar = (r, { grupo, valor, isCanje, generaIngresos, sinValor }) => {
+    const sumar = (r, { grupo, valor, isCanje, isCortesia, generaIngresos, sinValor }) => {
       r.citas += 1;
       r[grupo] += 1;
       if (isCanje) r.canjes += 1;
+      else if (isCortesia) r.cortesias += 1;
       else if (!generaIngresos) r.sinIngreso += 1;
       else if (sinValor) r.sinValor += 1;
       // Lo que se espera cobrar de lo que sigue en pie; ingreso = solo lo atendido.
-      const cuenta = !isCanje && generaIngresos;
+      const cuenta = !isCanje && !isCortesia && generaIngresos;
       if (cuenta && grupo !== 'canceladas' && grupo !== 'noAsistio') r.valorAgendado += valor;
       if (cuenta && grupo === 'efectivas') r.ingresos += valor;
     };
@@ -527,6 +529,7 @@ exports.analytics = async (req, res) => {
         grupo,
         valor,
         isCanje: !!c.isCanje,
+        isCortesia: !!c.isCortesia,
         generaIngresos,
         sinValor: c.agreedValue === null || c.agreedValue === undefined,
       };
@@ -570,6 +573,7 @@ exports.analytics = async (req, res) => {
         grupo,
         valor: c.agreedValue,
         canje: !!c.isCanje,
+        cortesia: !!c.isCortesia,
         generaIngresos,
         atribucion,
         adId: idConfigurado || adId,

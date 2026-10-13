@@ -372,6 +372,13 @@ const appointmentSchema = new mongoose.Schema(
      * cuánto dinero entró, y un canje con importe se contaría dos veces.
      */
     isCanje: { type: Boolean, default: false },
+    /**
+     * CORTESÍA (oct-2026): la cita no se cobra porque se regala (una revisión,
+     * un control). Se guarda igual que el canje —valor 0, sin adelanto— pero
+     * con su propio campo, para que la agenda la rotule y los reportes la
+     * cuenten aparte. Canje y cortesía son EXCLUYENTES.
+     */
+    isCortesia: { type: Boolean, default: false },
     // Quién y cuándo fijó el valor por última vez. Se puede cambiar incluso con
     // la cita ya atendida, así que sin esto no hay forma de saber quién lo tocó.
     valueSetAt: { type: Date, default: null },

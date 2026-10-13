@@ -83,6 +83,7 @@ export default function AppointmentServiceValueModal({
     apt?.agreedValue === null || apt?.agreedValue === undefined ? '' : String(apt.agreedValue)
   );
   const [canje, setCanje] = useState(!!apt?.isCanje);
+  const [cortesia, setCortesia] = useState(!!apt?.isCortesia);
   // Lo que el paciente dejó pagado (normalmente por teléfono, al agendar). Se
   // corrige aquí junto al valor: al cobrar es cuando se sabe si aquello cubría
   // lo que al final se hizo.
@@ -148,8 +149,9 @@ export default function AppointmentServiceValueModal({
         serviceItem: servicio?._id || null,
         // La lista COMPLETA, no un "añade este": quitar uno es mandarla sin él.
         additionalServices: extras.map((s) => s._id),
-        agreedValue: canje ? 0 : valor === '' ? null : Number(valor),
+        agreedValue: canje || cortesia ? 0 : valor === '' ? null : Number(valor),
         isCanje: canje,
+        isCortesia: cortesia,
         advancePayment: adelanto || '',
         advanceAmount: abonado === '' ? 0 : Number(abonado),
         advanceMethod: formaPago || '',
@@ -254,6 +256,8 @@ export default function AppointmentServiceValueModal({
           onValueChange={setValor}
           isCanje={canje}
           onCanjeChange={setCanje}
+          isCortesia={cortesia}
+          onCortesiaChange={setCortesia}
           advancePayment={adelanto}
           onAdvancePaymentChange={setAdelanto}
           advanceAmount={abonado}

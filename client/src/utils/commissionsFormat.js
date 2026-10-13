@@ -63,6 +63,7 @@ export const fmtAtendientes = (a) =>
 
 export const fmtPago = (a) => {
   if (a.payment?.isCanje) return 'Canje';
+  if (a.payment?.isCortesia) return 'Cortesía';
   const partes = [];
   if (a.payment?.agreedValue != null) partes.push(`$${Number(a.payment.agreedValue).toFixed(2)}`);
   const monto = Number(a.payment?.advanceAmount || 0).toFixed(2);

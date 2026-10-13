@@ -336,7 +336,7 @@ const normalizeServiceName = (value) => String(value || '')
 
 /** Importe monetario representado por la columna Pago de una cita. */
 const appointmentPaymentValue = (appt) => {
-  if (appt?.isCanje) return 0;
+  if (appt?.isCanje || appt?.isCortesia) return 0;
   if (appt?.agreedValue != null) return num(appt.agreedValue);
   // El adelanto solo se usa cuando aún no existe un valor total acordado; de
   // otro modo se contaría dos veces una parte del mismo cobro.
@@ -444,7 +444,8 @@ async function computeCommissions(clinicId, startDate, endDate) {
   for (const appt of appts) {
     // Una cita de CANJE no genera comisión para nadie (sep-2026): el paciente no
     // pagó, se cambió por otra cosa. Ver también calcularComisionesDoctores.
-    if (appt.isCanje) continue;
+    // La CORTESÍA (oct-2026) igual: se regaló, no entró dinero.
+    if (appt.isCanje || appt.isCortesia) continue;
     const isCompleted = appt.status === 'completada';
     const isAttended = appt.status === 'asistida' || isCompleted;
     const legacyServices = appt.services?.length
@@ -1326,7 +1327,7 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
   for (const appt of appts) {
     // Canje: no genera comisión, ni por servicio ni por paciente (un valor fijo
     // la habría pagado igual aunque la cita valga $0).
-    if (!esAtendida(appt) || appt.isCanje) continue;
+    if (!esAtendida(appt) || appt.isCanje || appt.isCortesia) continue;
     const clinicId = idDe(appt.clinic);
     const pagado = appointmentPaymentValue(appt);
     // Cada doctor que atendió la cita cobra con SUS tarifas (no solo el último).
@@ -1368,7 +1369,7 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
 
   for (const cita of derivadas) {
     // Tampoco paga la derivación cuya cita derivada fue de canje.
-    if (cita.isCanje) continue;
+    if (cita.isCanje || cita.isCortesia) continue;
     const doctorId = String(cita.referral.fromDoctor._id);
     const clinicId = idDe(cita.clinic);
     const svcs = serviciosDeCita(cita, catalogo);
@@ -1752,7 +1753,7 @@ exports.doctorAppointments = async (req, res) => {
     const ORDEN = { date: 1, startTime: 1, _id: 1 };
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 0, 0), 1000);
     const todas = await Appointment.find(query)
-      .select('patient doctor attendedByNurse date startTime agreedValue isCanje advancePayment advanceAmount turns.user turns.kind turns.status turns.order')
+      .select('patient doctor attendedByNurse date startTime agreedValue isCanje isCortesia advancePayment advanceAmount turns.user turns.kind turns.status turns.order')
       .sort(ORDEN)
       .lean();
     /**
@@ -1976,6 +1977,7 @@ exports.doctorAppointments = async (req, res) => {
         payment: {
           agreedValue: a.agreedValue,
           isCanje: a.isCanje,
+          isCortesia: !!a.isCortesia,
           advancePayment: a.advancePayment || '',
           advanceAmount: a.advanceAmount,
           advanceMethod: a.advanceMethod || '',

@@ -159,6 +159,7 @@ const COLUMNAS = [
   { header: 'Motivo', key: 'motivo', width: 34, wrap: true },
   { header: 'Valor', key: 'valor', width: 12, numFmt: '"$"#,##0.00', align: 'right' },
   { header: 'Canje', key: 'canje', width: 8, align: 'center' },
+  { header: 'Cortesía', key: 'cortesia', width: 9, align: 'center' },
   { header: 'Abonado', key: 'abonado', width: 12, numFmt: '"$"#,##0.00', align: 'right' },
   { header: 'Adelanto', key: 'adelanto', width: 14 },
   { header: 'Forma de pago', key: 'formaPago', width: 17 },
@@ -290,8 +291,9 @@ function hojaDeCitas(wb, citas, meta, opciones) {
       atiende: quienAtiende(a, opciones),
       estado: estado.texto,
       motivo: a.reason || '',
-      valor: a.isCanje ? 0 : Number(a.agreedValue ?? 0),
+      valor: a.isCanje || a.isCortesia ? 0 : Number(a.agreedValue ?? 0),
       canje: a.isCanje ? 'Sí' : '',
+      cortesia: a.isCortesia ? 'Sí' : '',
       abonado: Number(a.advanceAmount || 0),
       adelanto: ADELANTOS[a.advancePayment] || '',
       formaPago: METODOS[a.advanceMethod] || '',
@@ -340,7 +342,7 @@ function hojaDeCitas(wb, citas, meta, opciones) {
   // Totales. Con borde grueso arriba: cierra la tabla y no se confunde con otra cita.
   const totales = ws.addRow({
     paciente: `${citas.length} ${citas.length === 1 ? 'cita' : 'citas'}`,
-    valor: citas.reduce((s, a) => s + (a.isCanje ? 0 : Number(a.agreedValue ?? 0)), 0),
+    valor: citas.reduce((s, a) => s + (a.isCanje || a.isCortesia ? 0 : Number(a.agreedValue ?? 0)), 0),
     abonado: citas.reduce((s, a) => s + Number(a.advanceAmount || 0), 0),
   });
   totales.eachCell({ includeEmpty: true }, (celda, col) => {
@@ -506,7 +508,7 @@ function hojaDeResumen(wb, citas, meta, opciones) {
     { numFmt: { 2: '0.0%' } }
   );
 
-  const valor = citas.reduce((s, a) => s + (a.isCanje ? 0 : Number(a.agreedValue ?? 0)), 0);
+  const valor = citas.reduce((s, a) => s + (a.isCanje || a.isCortesia ? 0 : Number(a.agreedValue ?? 0)), 0);
   const abonado = citas.reduce((s, a) => s + Number(a.advanceAmount || 0), 0);
   fila = bloque(
     ws, fila, 'Valor de las citas (dato operativo, no contable)', ['', 'Monto', ''],
@@ -515,6 +517,7 @@ function hojaDeResumen(wb, citas, meta, opciones) {
       ['Ya abonado', abonado, ''],
       ['Pendiente de cobrar', Math.max(0, valor - abonado), ''],
       ['Citas por canje', citas.filter((a) => a.isCanje).length, ''],
+      ['Citas de cortesía', citas.filter((a) => a.isCortesia).length, ''],
     ],
     { numFmt: { 1: '"$"#,##0.00' } }
   );

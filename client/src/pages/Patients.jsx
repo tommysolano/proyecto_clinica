@@ -65,6 +65,7 @@ const emptyApt = {
    */
   agreedValue: '',
   isCanje: false,
+  isCortesia: false,
   // Quién atiende, si pasa por enfermería y el suero que se le va a poner. Es el
   // mismo bloque que la agenda (ver components/QuienAtiende): quien registra al
   // paciente en el mostrador ya sabe a qué viene, y hacerle volver a la agenda
@@ -330,7 +331,7 @@ export default function Patients() {
             // servidor lo comprueba otra vez (`puedeFijarValor`). Vacío = «no
             // lo anotaron», que no es lo mismo que cero.
             ...(puedeFijarValor
-              ? { agreedValue: aptForm.isCanje ? 0 : aptForm.agreedValue, isCanje: aptForm.isCanje }
+              ? { agreedValue: aptForm.isCanje || aptForm.isCortesia ? 0 : aptForm.agreedValue, isCanje: aptForm.isCanje, isCortesia: !!aptForm.isCortesia }
               : {}),
           });
           toast.success('Cita agendada');
@@ -814,6 +815,8 @@ export default function Patients() {
                       onValueChange={(v) => setAptForm((f) => ({ ...f, agreedValue: v }))}
                       isCanje={aptForm.isCanje}
                       onCanjeChange={(v) => setAptForm((f) => ({ ...f, isCanje: v }))}
+                      isCortesia={!!aptForm.isCortesia}
+                      onCortesiaChange={(v) => setAptForm((f) => ({ ...f, isCortesia: v }))}
                     />
                   )}
                   {aptForm.date && !aptForm.ahora && (

@@ -436,6 +436,7 @@ export default function AssignAttentionModal({
     apt?.agreedValue === null || apt?.agreedValue === undefined ? '' : String(apt.agreedValue)
   );
   const [canje, setCanje] = useState(!!apt?.isCanje);
+  const [cortesia, setCortesia] = useState(!!apt?.isCortesia);
   // Lo que ya pagó por teléfono. Se precarga igual que el importe: recepción
   // llega a esta pantalla para CONFIRMARLO, no para volver a preguntarlo.
   const [adelanto, setAdelanto] = useState(apt?.advancePayment || '');
@@ -558,8 +559,9 @@ export default function AssignAttentionModal({
         // había anotado.
         ...(puedeFijarValor
           ? {
-              agreedValue: canje ? 0 : valor === '' ? null : Number(valor),
+              agreedValue: canje || cortesia ? 0 : valor === '' ? null : Number(valor),
               isCanje: canje,
+              isCortesia: cortesia,
               advancePayment: adelanto || '',
               advanceAmount: abonado === '' ? 0 : Number(abonado),
               advanceMethod: formaPago || '',
@@ -1263,6 +1265,8 @@ export default function AssignAttentionModal({
             onValueChange={setValor}
             isCanje={canje}
             onCanjeChange={setCanje}
+            isCortesia={cortesia}
+            onCortesiaChange={setCortesia}
             advancePayment={adelanto}
             onAdvancePaymentChange={setAdelanto}
             advanceAmount={abonado}

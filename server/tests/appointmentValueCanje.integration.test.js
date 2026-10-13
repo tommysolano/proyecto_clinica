@@ -437,3 +437,47 @@ test('la cita completada tampoco la borra mostrador', async () => {
   assert.equal(r.statusCode, 403, JSON.stringify(r.payload));
   assert.equal((await Appointment.findById(apt._id)).status, 'completada');
 });
+
+test('la CORTESÍA se guarda como el canje: su propio campo, valor 0 y sin adelanto', async () => {
+  const { clinicId, userId, make } = await seedCase();
+  const apt = await make({ agreedValue: 40, advancePayment: 'abono', advanceAmount: 10, advanceMethod: 'efectivo' });
+
+  await H.runController(
+    appt.updateServiceAndValue,
+    H.mockReq(clinicId, userId, { agreedValue: 0, isCortesia: true }, { role: 'cajero', params: { id: String(apt._id) } })
+  );
+  let enBase = await Appointment.findById(apt._id);
+  assert.equal(enBase.isCortesia, true);
+  assert.equal(enBase.isCanje, false);
+  assert.equal(enBase.agreedValue, 0);
+  assert.equal(enBase.advancePayment, '', 'una cortesía no es un pago');
+  assert.equal(String(enBase.valueSetBy), String(userId), 'queda quién la marcó');
+
+  // Canje y cortesía son excluyentes: marcar canje apaga la cortesía.
+  await H.runController(
+    appt.updateServiceAndValue,
+    H.mockReq(clinicId, userId, { isCanje: true }, { role: 'cajero', params: { id: String(apt._id) } })
+  );
+  enBase = await Appointment.findById(apt._id);
+  assert.equal(enBase.isCanje, true);
+  assert.equal(enBase.isCortesia, false);
+});
+
+test('al crear la cita se puede marcar cortesía', async () => {
+  const { clinicId, userId, consulta } = await seedCase();
+  const r = await H.runController(
+    appt.createAppointment,
+    H.mockReq(clinicId, userId, {
+      patient: String((await Patient.findOne())._id),
+      date: ymd(new Date(Date.now() + 86400000)),
+      startTime: '11:00',
+      serviceItem: String(consulta._id),
+      agreedValue: 50,
+      isCortesia: true,
+    }, { role: 'cajero' })
+  );
+  assert.ok(r.statusCode < 400, JSON.stringify(r.payload));
+  const enBase = await Appointment.findById(r.payload._id);
+  assert.equal(enBase.isCortesia, true);
+  assert.equal(enBase.agreedValue, 0);
+});

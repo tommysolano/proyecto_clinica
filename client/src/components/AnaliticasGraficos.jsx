@@ -108,20 +108,71 @@ export function GraficoSerie({ serie, porMes, titulo = 'Chats y citas en el tiem
   );
 }
 
-/** Inversión e ingresos de cada programa, lado a lado (misma escala: dólares). */
-export function GraficoInversion({ programas }) {
-  const datos = (programas || []).map((p) => ({ name: p.name, inversion: p.gasto || 0, ingresos: p.ingresos || 0 }));
+/** El tooltip de inversión/ingresos: los dos montos, lo que quedó y el ROI. */
+function TooltipInversion({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0].payload;
+  const resultado = d.ingresos - d.inversion;
+  const roi = d.inversion ? resultado / d.inversion : null;
   return (
-    <Tarjeta titulo="Inversión e ingresos por programa" sub="Ingresos = citas efectivas que generan ingresos">
+    <div className="bg-white border border-slate-200 rounded-lg shadow-md px-3 py-2 text-xs min-w-[180px]">
+      <div className="font-semibold text-slate-700 mb-1">{d.name}</div>
+      {[['Inversión', d.inversion, COLOR.inversion], ['Ingresos', d.ingresos, COLOR.ingresos]].map(([label, v, color]) => (
+        <div key={label} className="flex items-center gap-2 text-slate-600">
+          <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: color }} />
+          <span>{label}</span>
+          <b className="ml-auto pl-3 text-slate-800">{money(v)}</b>
+        </div>
+      ))}
+      <div className="flex items-center gap-2 text-slate-600 border-t border-slate-100 mt-1 pt-1">
+        <span>{resultado >= 0 ? 'Ganancia' : 'Pérdida'}</span>
+        <b className="ml-auto pl-3 text-slate-800">{money(Math.abs(resultado))}</b>
+      </div>
+      <div className="flex items-center gap-2 text-slate-600">
+        <span>ROI</span>
+        <b className="ml-auto pl-3 text-slate-800">{roi === null ? '—' : `${Math.round(roi * 100)}%`}</b>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * INVERSIÓN E INGRESOS DE CADA PROGRAMA (rehecho oct-2026). Con muchos
+ * programas, las columnas verticales no dejaban sitio a los nombres y se
+ * pisaban. Ahora son barras HORIZONTALES —el nombre entero a la izquierda, una
+ * fila por programa—, ordenadas por lo que más ingresó, y el alto crece con
+ * la cantidad de programas. El tooltip suma la ganancia y el ROI.
+ */
+export function GraficoInversion({ programas }) {
+  const datos = (programas || [])
+    .map((p) => ({ name: p.name, inversion: p.gasto || 0, ingresos: p.ingresos || 0 }))
+    .sort((a, b) => b.ingresos - a.ingresos || b.inversion - a.inversion);
+  const alto = Math.max(200, datos.length * 46 + 70);
+  const largoNombre = Math.max(...datos.map((d) => String(d.name).length), 8);
+  const anchoNombres = Math.min(200, Math.max(90, largoNombre * 7));
+  return (
+    <Tarjeta
+      titulo="Inversión e ingresos por programa"
+      sub="Ordenado por ingresos · ingresos = citas efectivas que generan ingresos · pasa el cursor para ver la ganancia y el ROI"
+      alto={alto}
+    >
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={datos} margin={{ top: 8, right: 12, left: -4, bottom: 0 }} barGap={2} barCategoryGap="25%">
-          <CartesianGrid vertical={false} stroke={REJILLA} />
-          <XAxis dataKey="name" {...ejes} interval={0} tickFormatter={(v) => (String(v).length > 14 ? `${String(v).slice(0, 13)}…` : v)} />
-          <YAxis {...ejes} axisLine={false} tickFormatter={moneyCorto} width={52} />
-          <Tooltip content={<CajaTooltip formato={money} />} cursor={{ fill: '#f8fafc' }} />
+        <BarChart data={datos} layout="vertical" margin={{ top: 4, right: 16, left: 4, bottom: 0 }} barGap={2} barCategoryGap="22%">
+          <CartesianGrid horizontal={false} stroke={REJILLA} />
+          <XAxis type="number" {...ejes} tickFormatter={moneyCorto} />
+          <YAxis
+            type="category"
+            dataKey="name"
+            {...ejes}
+            axisLine={false}
+            interval={0}
+            width={anchoNombres}
+            tickFormatter={(v) => (String(v).length > 28 ? `${String(v).slice(0, 27)}…` : v)}
+          />
+          <Tooltip content={<TooltipInversion />} cursor={{ fill: '#f8fafc' }} />
           <Legend {...leyenda} />
-          <Bar dataKey="inversion" name="Inversión" fill={COLOR.inversion} radius={[4, 4, 0, 0]} maxBarSize={36} />
-          <Bar dataKey="ingresos" name="Ingresos" fill={COLOR.ingresos} radius={[4, 4, 0, 0]} maxBarSize={36} />
+          <Bar dataKey="inversion" name="Inversión" fill={COLOR.inversion} radius={[0, 4, 4, 0]} maxBarSize={16} />
+          <Bar dataKey="ingresos" name="Ingresos" fill={COLOR.ingresos} radius={[0, 4, 4, 0]} maxBarSize={16} />
         </BarChart>
       </ResponsiveContainer>
     </Tarjeta>
@@ -145,14 +196,16 @@ export function GraficoEstados({ programas }) {
     canceladas: p.canceladas || 0,
   }));
   const alto = Math.max(160, datos.length * 38 + 60);
+  const largoNombre = Math.max(...datos.map((d) => String(d.name).length), 8);
+  const anchoNombres = Math.min(200, Math.max(90, largoNombre * 7));
   return (
     <Tarjeta titulo="Citas por estado" sub="Cómo terminaron las citas de cada programa" alto={alto}>
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={datos} layout="vertical" margin={{ top: 4, right: 12, left: 4, bottom: 0 }} barCategoryGap="28%">
+        <BarChart data={datos} layout="vertical" margin={{ top: 4, right: 16, left: 4, bottom: 0 }} barCategoryGap="28%">
           <CartesianGrid horizontal={false} stroke={REJILLA} />
           <XAxis type="number" allowDecimals={false} {...ejes} />
-          <YAxis type="category" dataKey="name" {...ejes} axisLine={false} width={110}
-            tickFormatter={(v) => (String(v).length > 16 ? `${String(v).slice(0, 15)}…` : v)} />
+          <YAxis type="category" dataKey="name" {...ejes} axisLine={false} interval={0} width={anchoNombres}
+            tickFormatter={(v) => (String(v).length > 28 ? `${String(v).slice(0, 27)}…` : v)} />
           <Tooltip content={<CajaTooltip />} cursor={{ fill: '#f8fafc' }} />
           <Legend {...leyenda} />
           {ESTADOS.map(([k, label], i) => (

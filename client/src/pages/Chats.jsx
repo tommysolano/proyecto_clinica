@@ -7013,8 +7013,9 @@ function EditApptModal({ appt, onClose, onSaved }) {
       .map((s) => ({ _id: String(s.serviceItem?._id || s.serviceItem || ''), name: s.name || s.serviceItem?.name || '' }))
       .filter((s) => s._id)
   );
-  const [agreedValue, setAgreedValue] = useState(appt.isCanje ? '' : (appt.agreedValue ?? ''));
+  const [agreedValue, setAgreedValue] = useState(appt.isCanje || appt.isCortesia ? '' : (appt.agreedValue ?? ''));
   const [isCanje, setIsCanje] = useState(!!appt.isCanje);
+  const [isCortesia, setIsCortesia] = useState(!!appt.isCortesia);
   const [advancePayment, setAdvancePayment] = useState(appt.advancePayment || '');
   const [advanceAmount, setAdvanceAmount] = useState(
     appt.advancePayment === 'abono' ? (appt.advanceAmount ?? '') : ''
@@ -7079,8 +7080,9 @@ function EditApptModal({ appt, onClose, onSaved }) {
         // OTROS SERVICIOS (sep-2026): ids del catálogo de la agenda.
         additionalServices: (extras || []).map((s) => s._id),
         // El servidor decide si este rol puede fijarlos (aplicarValorDeCita).
-        agreedValue: isCanje ? 0 : agreedValue,
+        agreedValue: isCanje || isCortesia ? 0 : agreedValue,
         isCanje,
+        isCortesia,
         advancePayment: advancePayment || '',
         advanceAmount: advanceAmount ?? '',
         advanceMethod: advanceMethod || '',
@@ -7194,6 +7196,8 @@ function EditApptModal({ appt, onClose, onSaved }) {
             onValueChange={setAgreedValue}
             isCanje={isCanje}
             onCanjeChange={setIsCanje}
+            isCortesia={isCortesia}
+            onCortesiaChange={setIsCortesia}
             advancePayment={advancePayment || ''}
             onAdvancePaymentChange={setAdvancePayment}
             advanceAmount={advanceAmount ?? ''}
@@ -7787,6 +7791,7 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
      */
     agreedValue: '',
     isCanje: false,
+    isCortesia: false,
     advancePayment: '',
     advanceAmount: '',
     advanceMethod: '',
@@ -7981,8 +7986,9 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
           // OTROS SERVICIOS (sep-2026): ids del catálogo de la agenda.
           additionalServices: (it.additionalServices || []).map((s) => s._id || s),
           // El servidor decide si este rol puede fijarlos (aplicarValorDeCita).
-          agreedValue: it.isCanje ? 0 : (it.agreedValue ?? ''),
+          agreedValue: it.isCanje || it.isCortesia ? 0 : (it.agreedValue ?? ''),
           isCanje: !!it.isCanje,
+          isCortesia: !!it.isCortesia,
           advancePayment: it.advancePayment || '',
           advanceAmount: it.advanceAmount ?? '',
           advanceMethod: it.advanceMethod || '',
@@ -8235,6 +8241,8 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
                     onValueChange={(v) => updateItem(idx, { agreedValue: v })}
                     isCanje={!!it.isCanje}
                     onCanjeChange={(v) => updateItem(idx, { isCanje: v })}
+                    isCortesia={!!it.isCortesia}
+                    onCortesiaChange={(v) => updateItem(idx, { isCortesia: v })}
                     advancePayment={it.advancePayment || ''}
                     onAdvancePaymentChange={(v) => updateItem(idx, { advancePayment: v })}
                     advanceAmount={it.advanceAmount ?? ''}

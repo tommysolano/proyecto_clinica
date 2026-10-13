@@ -46,6 +46,13 @@ export default function AppointmentValueFields({
   isCanje,
   onCanjeChange,
   /**
+   * CORTESÍA (oct-2026): la cita no se cobra porque se regala (una revisión, un
+   * control). Se guarda como el canje —su propio campo, valor 0— y los dos son
+   * excluyentes. Opcional: sin onCortesiaChange no se enseña.
+   */
+  isCortesia = false,
+  onCortesiaChange,
+  /**
    * PAGO ADELANTADO (opcional). Se enseña solo si quien pinta el formulario lo
    * pasa: el call center cierra la cita por teléfono y cobra en el momento, y
    * mostrador necesita saber al recibir al paciente si le cobra el resto, todo,
@@ -64,6 +71,9 @@ export default function AppointmentValueFields({
   className = '',
 }) {
   const conAdelanto = typeof onAdvancePaymentChange === 'function';
+  const conCortesia = typeof onCortesiaChange === 'function';
+  // Canje o cortesía: no entra dinero, no hay importe ni adelanto.
+  const sinDinero = !!isCanje || !!isCortesia;
   return (
     <div className={className}>
       <label className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -73,10 +83,10 @@ export default function AppointmentValueFields({
         <div className="relative flex-1">
           <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
           <NumericInput
-            value={isCanje ? '' : value}
+            value={sinDinero ? '' : value}
             onChange={(e) => onValueChange(e.target.value)}
-            disabled={!!isCanje}
-            placeholder={isCanje ? 'Canje — sin importe' : '0.00'}
+            disabled={sinDinero}
+            placeholder={isCanje ? 'Canje — sin importe' : isCortesia ? 'Cortesía — sin importe' : '0.00'}
             className="w-full pl-7 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50/50 disabled:bg-slate-100 disabled:text-slate-400"
           />
         </div>
@@ -84,20 +94,37 @@ export default function AppointmentValueFields({
           <input
             type="checkbox"
             checked={!!isCanje}
-            onChange={(e) => onCanjeChange(e.target.checked)}
+            onChange={(e) => {
+              onCanjeChange(e.target.checked);
+              if (e.target.checked && isCortesia) onCortesiaChange?.(false);
+            }}
             className="w-4 h-4 accent-amber-600"
           />
           Fue canje
         </label>
+        {conCortesia && (
+          <label className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-violet-200 bg-violet-50 text-sm font-medium text-violet-900 cursor-pointer shrink-0">
+            <input
+              type="checkbox"
+              checked={!!isCortesia}
+              onChange={(e) => {
+                onCortesiaChange(e.target.checked);
+                if (e.target.checked && isCanje) onCanjeChange(false);
+              }}
+              className="w-4 h-4 accent-violet-600"
+            />
+            Fue cortesía
+          </label>
+        )}
       </div>
       <p className="text-[11px] text-slate-400 mt-1">
         Cuánto paga el paciente por esta visita. Es informativo para la agenda: no genera
-        venta ni cobro. <b>Canje</b> = no pagó con dinero.
+        venta ni cobro. <b>Canje</b> = no pagó con dinero.{conCortesia && <> <b>Cortesía</b> = se regaló, no se cobra.</>}
       </p>
 
       {/* Un canje no es un pago: si no entró dinero, no hay adelanto que anotar
           (el servidor lo borra igual, ver `aplicarValorDeCita`). */}
-      {conAdelanto && !isCanje && (
+      {conAdelanto && !sinDinero && (
         <div className="mt-3">
           <label className="block text-sm font-medium text-slate-700 mb-1.5">
             ¿Pagó por adelantado?

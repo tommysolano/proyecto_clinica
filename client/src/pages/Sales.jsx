@@ -667,7 +667,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       // El valor acordado manda: si es menor que la lista, la diferencia va como
       // descuento (línea por línea, hasta agotarla).
       const bruto = lineas.reduce((s, l) => s + l.unitPrice * l.quantity, 0);
-      const acordado = apt.isCanje ? null : apt.agreedValue;
+      const acordado = apt.isCanje || apt.isCortesia ? null : apt.agreedValue;
       if (acordado != null && lineas.length && Number(acordado) < bruto) {
         let rebaja = +(bruto - Number(acordado)).toFixed(2);
         for (const l of lineas) {
@@ -680,7 +680,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       // Lo ya abonado al agendar entra como un PAGO de esta venta con su forma;
       // lo que falta, en efectivo (el cajero lo cambia si paga de otra forma).
       const neto = lineas.reduce((s, l) => s + l.unitPrice * l.quantity - (Number(l.discount) || 0), 0);
-      if (apt.advancePayment && !apt.isCanje && neto > 0) {
+      if (apt.advancePayment && !apt.isCanje && !apt.isCortesia && neto > 0) {
         const abonado = apt.advancePayment === 'abono'
           ? Math.min(Number(apt.advanceAmount) || 0, neto)
           : neto;
@@ -747,7 +747,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   };
 
   /**
-   * La cita NO se cobra: canje (`isCanje`) o cortesía (valor 0). Se guarda en
+   * La cita NO se cobra: canje (`isCanje`) o cortesía (`isCortesia`), las dos con valor 0. Se guarda en
    * la cita —con su huella de quién lo decidió— y la agenda sigue a la
    * asignación sin venta ni factura.
    */
@@ -761,7 +761,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     if (!confirm(`¿Marcar esta cita como ${que}? No se factura y su valor queda en $0.00.${abono}`)) return;
     setSinCobrar(true);
     try {
-      await api.patch(`/appointments/${citaPorCobrar._id}/service-value`, { agreedValue: 0, isCanje: !!canje });
+      await api.patch(`/appointments/${citaPorCobrar._id}/service-value`, { agreedValue: 0, isCanje: !!canje, isCortesia: !canje });
       toast.success(canje ? 'Cita marcada como canje' : 'Cita marcada como cortesía');
       setModalOpen(false);
       onCobrado?.(null);
@@ -1187,10 +1187,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           {/**
             * CANJE O CORTESÍA EN EL MISMO COBRO (oct-2026). Con la factura desde
             * la agenda, la cita que no se cobra en dinero se marca aquí: canje
-            * (`isCanje`, valor 0) o cortesía (valor 0). No se factura nada y se
+            * (`isCanje`, valor 0) o cortesía (`isCortesia`, valor 0). No se factura nada y se
             * sigue directo a asignar doctor/enfermero.
             */}
-          {embebido && !modoReceta && citaPorCobrar && !citaPorCobrar.isCanje && citaPorCobrar.agreedValue !== 0 && (
+          {embebido && !modoReceta && citaPorCobrar && !citaPorCobrar.isCanje && !citaPorCobrar.isCortesia && citaPorCobrar.agreedValue !== 0 && (
             <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-violet-200 bg-violet-50 p-3">
               <p className="m-0 text-xs text-violet-900">
                 ¿Esta cita <b>no se cobra</b>? Márcala como canje o cortesía: no se factura y pasa directo a la asignación.
@@ -1206,10 +1206,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
             </div>
           )}
           {/* CANJE o valor cero: no hay dinero que cobrar; se sigue a la asignación. */}
-          {embebido && !modoReceta && citaPorCobrar && (citaPorCobrar.isCanje || citaPorCobrar.agreedValue === 0) && (
+          {embebido && !modoReceta && citaPorCobrar && (citaPorCobrar.isCanje || citaPorCobrar.isCortesia || citaPorCobrar.agreedValue === 0) && (
             <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-200 bg-sky-50 p-3">
               <p className="m-0 text-xs text-sky-900">
-                {citaPorCobrar.isCanje ? 'Esta cita es un CANJE: no se cobra en dinero.' : 'Esta cita tiene valor $0.00: no hay nada que cobrar.'}
+                {citaPorCobrar.isCanje ? 'Esta cita es un CANJE: no se cobra en dinero.' : citaPorCobrar.isCortesia ? 'Esta cita es una CORTESÍA: no se cobra.' : 'Esta cita tiene valor $0.00: no hay nada que cobrar.'}
               </p>
               <button
                 type="button"
