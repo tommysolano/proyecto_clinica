@@ -600,7 +600,10 @@ export default function AssignAttentionModal({
       }
       // SESIONES PREPAGADAS: se gastó una de lo que el paciente dejó pagado.
       for (const s of data?.sesionesUsadas || []) {
-        toast.success(`Sesión prepagada usada: ${s.productName} · ${s.n} de ${s.total}`, { icon: '🎟️', duration: 6000 });
+        toast.success(
+          `Prepagado: ${s.productName}. Se aparta una sesión (quedan ${s.quedan} libres de ${s.total}); cuenta cuando el paciente sea atendido.`,
+          { icon: '🎟️', duration: 6000 }
+        );
       }
       onDone?.(data);
       onClose?.();
@@ -653,7 +656,7 @@ export default function AssignAttentionModal({
           <SesionesPrepagadasBadge apt={apt} mostrador={hasRole('admin', 'cajero')} />
           {apt?.prepago?.cubre?.length > 0 && hasRole('admin', 'cajero') && (
             <p className="text-[11px] text-indigo-700 mt-1 mb-0">
-              Al asignar se usa una sesión de lo que el paciente dejó pagado: no se le cobra otra vez.
+              Al asignar se aparta una sesión de lo que el paciente dejó pagado y no se le cobra otra vez. Cuenta como usada cuando sea atendido; si la cita se cancela, la sesión vuelve a quedar libre.
             </p>
           )}
         </div>

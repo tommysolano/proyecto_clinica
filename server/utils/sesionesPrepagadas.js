@@ -1,23 +1,36 @@
 /**
  * SESIONES PREPAGADAS (oct-2026). Ver models/PrepaidService.
  *
- * El ciclo es:
+ * Cada `uses[]` del paquete enlaza una sesión con una CITA. Lo que esa sesión
+ * es se deduce SIEMPRE del estado de la cita, al leer (14-10-2026, pedido de la
+ * clínica: «solo cuentan las citas asistidas/completadas»):
+ *
+ *   · cita ASISTIDA o COMPLETADA     → sesión USADA: cuenta, «Sesión 2 de 5».
+ *   · cita PENDIENTE o CONFIRMADA    → sesión APARTADA: no cuenta como usada,
+ *                                      pero ya no está libre para otra cita.
+ *   · cita CANCELADA, NO ASISTIÓ o
+ *     BORRADA                        → sesión LIBRE: vuelve al paciente.
+ *
+ * Así no hace falta engancharse a cada puerta por la que una cita cambia de
+ * estado (el doctor que la cierra, enfermería, el barrido de no-show, la
+ * papelera…): la sesión cuenta cuando el paciente de verdad se atendió.
+ *
+ * El ciclo:
  *   1. Se COBRA (createSale): una línea de servicio marcada «para citas
- *      futuras» —o un PROGRAMA— deja un paquete con sus sesiones. Si la venta
- *      es de una cita que lleva ese servicio, esa cita gasta la primera.
- *   2. Se ASIGNA LA ATENCIÓN de otra cita (assignDoctor / markAttended): cada
- *      servicio de la cita que no esté pagado por su propia venta gasta una
- *      sesión de un paquete del paciente en la MISMA EMPRESA.
- *   3. Si la cita se cancela, se marca no asistida o se borra, su uso deja de
- *      contar (se calcula al leer: no hace falta engancharse a cada puerta por
- *      la que una cita cambia de estado).
- *   4. Anular la venta anula el paquete, salvo que ya se hayan usado sesiones
- *      en otras citas (como el saldo a favor: lo gastado no se puede devolver).
+ *      futuras» —o un PROGRAMA— deja un paquete. Si la venta es de una cita que
+ *      lleva ese servicio, esa cita aparta la primera sesión.
+ *   2. Se ASIGNA LA ATENCIÓN de otra cita (assignDoctor / markAttended), sea de
+ *      hoy o de otro día: cada servicio de la cita que no esté pagado por su
+ *      propia venta aparta una sesión de un paquete del paciente en la MISMA
+ *      EMPRESA. Cuenta como usada cuando la cita queda asistida/completada.
+ *   3. Anular la venta anula el paquete, salvo que ya se hayan USADO sesiones
+ *      en otras citas (como el saldo a favor: lo gastado no se devuelve).
  */
 const PrepaidService = require('../models/PrepaidService');
 
-const ESTADOS_SIN_USO = new Set(['cancelada', 'no_asistio']);
-// Citas que todavía pasan por «Asignar atención» (que es donde se gasta la sesión).
+const ATENDIDA = new Set(['asistida', 'completada']);
+const APARTA = new Set(['pendiente', 'confirmada']);
+// Citas que todavía pasan por «Asignar atención».
 const POR_RECIBIR = new Set(['pendiente', 'confirmada', 'no_asistio']);
 const idDe = (v) => (v ? String(v._id || v) : null);
 const esServicio = (p) => p && (p.category === 'servicio' || p.unlimited === true);
@@ -64,29 +77,39 @@ async function productosDeCitas(citas) {
 const contar = (ids) => ids.reduce((m, id) => m.set(id, (m.get(id) || 0) + 1), new Map());
 
 /**
- * Usos que CUENTAN de cada paquete: los de citas que existen y no están
- * canceladas ni marcadas como no asistidas, en orden de uso.
- * Devuelve Map(idPaquete → usos[]).
+ * Clasifica los usos de cada paquete por el estado de su cita.
+ * Devuelve Map(idPaquete → { usadas, apartadas }) — cada uso con `cita`
+ * ({ status, date, startTime }). Las usadas, en orden de atención (fecha y hora
+ * de la cita): la primera atendida es la «Sesión 1».
  */
-async function usosVigentes(paquetes, session = null) {
+async function clasificarUsos(paquetes, session = null) {
   const ids = new Set();
   for (const p of paquetes) for (const u of p.uses || []) ids.add(String(u.appointment));
-  const estado = new Map();
+  const citaDe = new Map();
   if (ids.size) {
     const Appointment = require('../models/Appointment');
-    const q = Appointment.find({ _id: { $in: [...ids] } }).select('status').lean();
+    const q = Appointment.find({ _id: { $in: [...ids] } }).select('status date startTime').lean();
     if (session) q.session(session);
-    for (const a of await q) estado.set(String(a._id), a.status);
+    for (const a of await q) citaDe.set(String(a._id), a);
   }
+  const momento = (c) => `${c?.date ? new Date(c.date).toISOString().slice(0, 10) : ''} ${c?.startTime || ''}`;
   const out = new Map();
   for (const p of paquetes) {
-    const vivos = (p.uses || [])
-      .filter((u) => estado.has(String(u.appointment)) && !ESTADOS_SIN_USO.has(estado.get(String(u.appointment))))
-      .sort((a, b) => new Date(a.usedAt) - new Date(b.usedAt));
-    out.set(String(p._id), vivos);
+    const usadas = [];
+    const apartadas = [];
+    for (const u of p.uses || []) {
+      const cita = citaDe.get(String(u.appointment));
+      if (!cita) continue;
+      if (ATENDIDA.has(cita.status)) usadas.push({ ...u, cita });
+      else if (APARTA.has(cita.status)) apartadas.push({ ...u, cita });
+    }
+    usadas.sort((a, b) => momento(a.cita).localeCompare(momento(b.cita)) || new Date(a.usedAt) - new Date(b.usedAt));
+    out.set(String(p._id), { usadas, apartadas });
   }
   return out;
 }
+
+const libresDe = (p, c) => Math.max(0, p.quantity - c.usadas.length - c.apartadas.length);
 
 /**
  * 1. AL COBRAR. `items` son las líneas ya armadas de la venta (con `prepaid`),
@@ -111,7 +134,7 @@ async function crearDesdeVenta({ sale, items, productMap, userId, session }) {
   }
   if (!entradas.length) return [];
 
-  // Lo que la cita de este cobro lleva: esas sesiones se gastan hoy mismo.
+  // Lo que la cita de este cobro lleva: esas sesiones las aparta ella.
   let cita = null;
   let deHoy = new Map();
   if (sale.appointment) {
@@ -136,7 +159,7 @@ async function crearDesdeVenta({ sale, items, productMap, userId, session }) {
   for (const e of entradas) {
     const hoy = Math.min(e.qty, deHoy.get(e.product) || 0);
     if (hoy) deHoy.set(e.product, deHoy.get(e.product) - hoy);
-    // Todo se gasta hoy: no queda nada para después y no hace falta paquete.
+    // Todo es para la cita de hoy: no queda nada para después y no hace falta paquete.
     if (e.qty - hoy <= 0) continue;
     docs.push({
       clinic: sale.clinic,
@@ -160,18 +183,19 @@ async function crearDesdeVenta({ sale, items, productMap, userId, session }) {
 }
 
 /**
- * 2. AL RECIBIR AL PACIENTE (la cita pasa a asistida). Gasta una sesión por cada
- * servicio de la cita que no esté ya pagado (por la venta de la propia cita) ni
- * gastado. Idempotente. Devuelve [{productName, n, total}] de lo que gastó ahora.
+ * 2. AL ASIGNAR LA ATENCIÓN (de hoy o de otro día). Aparta una sesión por cada
+ * servicio de la cita que no esté ya pagado (por la venta de la propia cita)
+ * ni apartado. Idempotente. Devuelve [{productName, total, quedan}] de lo que
+ * apartó ahora.
  */
 async function usarEnCita(apt, userId) {
-  if (!apt || apt.isCanje || apt.isCortesia || !apt.patient) return [];
+  if (!apt || apt.isCanje || apt.isCortesia || !apt.patient || apt.status === 'cancelada') return [];
   const aptId = String(apt._id);
   const productos = (await productosDeCitas([apt])).get(aptId) || [];
   if (!productos.length) return [];
   const necesita = contar(productos);
 
-  // Ya gastadas por esta cita.
+  // Ya apartadas/usadas por esta cita.
   const conUso = await PrepaidService.find({ 'uses.appointment': apt._id, status: 'activo' }).lean();
   for (const p of conUso) {
     const n = (p.uses || []).filter((u) => String(u.appointment) === aptId).length;
@@ -190,19 +214,19 @@ async function usarEnCita(apt, userId) {
   }
 
   const sucursales = await sucursalesDeLaEmpresa(apt.clinic);
-  const gastadas = [];
+  const apartadas = [];
   for (const [product, falta] of necesita) {
     for (let i = 0; i < falta; i += 1) {
-      const r = await gastarUna({ apt, product, sucursales, userId });
+      const r = await apartarUna({ apt, product, sucursales, userId });
       if (!r) break;
-      gastadas.push(r);
+      apartadas.push(r);
     }
   }
-  return gastadas;
+  return apartadas;
 }
 
-/** Gasta UNA sesión del paquete más antiguo con saldo. Reintenta si otro la tocó a la vez. */
-async function gastarUna({ apt, product, sucursales, userId }) {
+/** Aparta UNA sesión del paquete más antiguo con libres. Reintenta si otro lo tocó a la vez. */
+async function apartarUna({ apt, product, sucursales, userId }) {
   for (let intento = 0; intento < 4; intento += 1) {
     const paquetes = await PrepaidService.find({
       patient: idDe(apt.patient),
@@ -211,32 +235,36 @@ async function gastarUna({ apt, product, sucursales, userId }) {
       ...(sucursales ? { clinic: { $in: sucursales } } : {}),
     }).sort({ createdAt: 1 }).lean();
     if (!paquetes.length) return null;
-    const vigentes = await usosVigentes(paquetes);
-    const paquete = paquetes.find((p) => p.quantity - vigentes.get(String(p._id)).length > 0);
+    const clases = await clasificarUsos(paquetes);
+    const paquete = paquetes.find((p) => libresDe(p, clases.get(String(p._id))) > 0);
     if (!paquete) return null;
-    const vivos = vigentes.get(String(paquete._id));
-    // Se guardan solo los usos vigentes: una cita cancelada suelta su sesión aquí.
+    const c = clases.get(String(paquete._id));
+    // Se guardan solo los usos que siguen ocupando sesión: los de citas canceladas,
+    // no asistidas o borradas se sueltan aquí.
+    const vivos = [...c.usadas, ...c.apartadas].map(({ cita, ...u }) => u);
     const uso = { appointment: apt._id, clinic: idDe(apt.clinic), usedAt: new Date(), usedBy: userId };
     const hecho = await PrepaidService.findOneAndUpdate(
       { _id: paquete._id, rev: paquete.rev || 0, status: 'activo' },
       { $set: { uses: [...vivos, uso] }, $inc: { rev: 1 } },
       { new: true }
     );
-    if (hecho) return { productName: paquete.productName, n: vivos.length + 1, total: paquete.quantity };
+    if (hecho) {
+      return { productName: paquete.productName, total: paquete.quantity, quedan: paquete.quantity - vivos.length - 1 };
+    }
   }
   return null;
 }
 
 /**
- * 4. AL ANULAR LA VENTA (dentro de su transacción). Si ya se usaron sesiones
- * en citas que no son la del cobro, no se deja: esas atenciones ya se dieron.
+ * 3. AL ANULAR LA VENTA (dentro de su transacción). Si ya se USARON sesiones en
+ * citas que no son la del cobro, no se deja: esas atenciones ya se dieron.
  */
 async function anularDeVenta({ saleId, session }) {
   const paquetes = await PrepaidService.find({ sale: saleId, status: 'activo' }).session(session).lean();
   if (!paquetes.length) return;
-  const vigentes = await usosVigentes(paquetes, session);
+  const clases = await clasificarUsos(paquetes, session);
   for (const p of paquetes) {
-    const otras = vigentes.get(String(p._id)).filter((u) => String(u.appointment) !== String(p.appointment || ''));
+    const otras = clases.get(String(p._id)).usadas.filter((u) => String(u.appointment) !== String(p.appointment || ''));
     if (otras.length) {
       throw Object.assign(
         new Error(`No se puede anular: ya se usaron ${otras.length} de las ${p.quantity} sesiones prepagadas de «${p.productName}» en otras citas.`),
@@ -253,12 +281,14 @@ async function anularDeVenta({ saleId, session }) {
 
 /**
  * PARA LA AGENDA. A cada cita (objeto plano) le añade:
- *   `sesiones`: [{product, productName, n, total}] — las sesiones prepagadas que
- *               usa («Sesión 2 de 5»). Para todos: no lleva importes.
- *   `prepago` (solo con `disponibles`): lo que el paciente tiene prepagado para
- *             los servicios de esta cita que aún no gastó —
- *             { cubre: [{product, productName, quedan, total}], todo: bool }.
- *             `todo` = no hace falta cobrar nada para asignar la atención.
+ *   `sesiones`: [{product, productName, total, n?, apartada?}] — lo prepagado que
+ *               cubre esta cita. Atendida: «Sesión 2 de 5» (`n`). Pendiente:
+ *               `apartada` (se descuenta cuando el paciente se atienda). Para
+ *               todos: no lleva importes.
+ *   `prepago` (solo con `disponibles`, citas por recibir): { cubre, todo } —
+ *             `cubre` = lo que el paciente tiene libre para los servicios de
+ *             esta cita que aún no están cubiertos; `todo` = no hace falta
+ *             cobrar nada para asignar la atención.
  */
 async function enriquecerCitas(citas, { disponibles = false } = {}) {
   if (!citas.length) return citas;
@@ -274,15 +304,15 @@ async function enriquecerCitas(citas, { disponibles = false } = {}) {
   }
   const todos = new Map();
   for (const p of [...conUso, ...paquetesDelPaciente]) todos.set(String(p._id), p);
-  const vigentes = await usosVigentes([...todos.values()]);
+  const clases = await clasificarUsos([...todos.values()]);
 
   const usosPorCita = new Map();
+  const anotar = (k, v) => { if (!usosPorCita.has(k)) usosPorCita.set(k, []); usosPorCita.get(k).push(v); };
   for (const p of todos.values()) {
-    vigentes.get(String(p._id)).forEach((u, i) => {
-      const k = String(u.appointment);
-      if (!usosPorCita.has(k)) usosPorCita.set(k, []);
-      usosPorCita.get(k).push({ product: String(p.product), productName: p.productName, n: i + 1, total: p.quantity });
-    });
+    const c = clases.get(String(p._id));
+    const base = { product: String(p.product), productName: p.productName, total: p.quantity };
+    c.usadas.forEach((u, i) => anotar(String(u.appointment), { ...base, n: i + 1 }));
+    c.apartadas.forEach((u) => anotar(String(u.appointment), { ...base, apartada: true }));
   }
 
   const productos = disponibles ? await productosDeCitas(citas) : new Map();
@@ -291,23 +321,26 @@ async function enriquecerCitas(citas, { disponibles = false } = {}) {
     const id = idDe(c._id);
     const sesiones = usosPorCita.get(id) || [];
     if (sesiones.length) c.sesiones = sesiones;
-    if (!disponibles || !paquetesDelPaciente.length) continue;
-    // Solo las que aún se van a recibir: una cita ya atendida no gasta sesiones.
-    if (!POR_RECIBIR.has(c.status)) continue;
-    const clinicId = idDe(c.clinic);
-    if (!empresaDe.has(clinicId)) empresaDe.set(clinicId, await sucursalesDeLaEmpresa(clinicId));
-    const sucursales = empresaDe.get(clinicId);
+    if (!disponibles || !POR_RECIBIR.has(c.status)) continue;
     const falta = contar(productos.get(id) || []);
     for (const s of sesiones) if (falta.has(s.product)) falta.set(s.product, falta.get(s.product) - 1);
     const pendientes = [...falta].filter(([, n]) => n > 0);
-    if (!pendientes.length) continue;
+    // Todo lo de la cita ya está apartado de sus sesiones: no hay nada que cobrar.
+    if (!pendientes.length) {
+      if (sesiones.length) c.prepago = { cubre: [], todo: true };
+      continue;
+    }
+    if (!paquetesDelPaciente.length) continue;
+    const clinicId = idDe(c.clinic);
+    if (!empresaDe.has(clinicId)) empresaDe.set(clinicId, await sucursalesDeLaEmpresa(clinicId));
+    const sucursales = empresaDe.get(clinicId);
     const cubre = [];
     let todo = true;
     for (const [product, n] of pendientes) {
       const suyos = paquetesDelPaciente.filter((p) =>
         String(p.patient) === idDe(c.patient) && String(p.product) === product &&
         (!sucursales || sucursales.includes(String(p.clinic))));
-      const quedan = suyos.reduce((s, p) => s + Math.max(0, p.quantity - vigentes.get(String(p._id)).length), 0);
+      const quedan = suyos.reduce((s, p) => s + libresDe(p, clases.get(String(p._id))), 0);
       if (quedan > 0) {
         const total = suyos.reduce((s, p) => s + p.quantity, 0);
         cubre.push({ product, productName: suyos[0].productName, quedan, total });
@@ -319,21 +352,25 @@ async function enriquecerCitas(citas, { disponibles = false } = {}) {
   return citas;
 }
 
-/** Paquetes de un paciente (perfil): con sus usos vigentes y la cita de cada uno. */
+/** Paquetes de un paciente (perfil): usadas (con su cita), apartadas y libres. */
 async function paquetesDelPaciente(patientId, sucursales) {
   const paquetes = await PrepaidService.find({
     patient: patientId,
     ...(sucursales ? { clinic: { $in: sucursales } } : {}),
   }).sort({ createdAt: -1 }).populate('clinic', 'name').lean();
-  const vigentes = await usosVigentes(paquetes);
+  const clases = await clasificarUsos(paquetes);
   const Appointment = require('../models/Appointment');
-  const citaIds = [...new Set([...vigentes.values()].flat().map((u) => String(u.appointment)))];
+  const citaIds = [...new Set([...clases.values()].flatMap((c) => [...c.usadas, ...c.apartadas]).map((u) => String(u.appointment)))];
   const citas = citaIds.length
-    ? await Appointment.find({ _id: { $in: citaIds } }).select('date startTime clinic').populate('clinic', 'name').lean()
+    ? await Appointment.find({ _id: { $in: citaIds } }).select('clinic').populate('clinic', 'name').lean()
     : [];
-  const citaDe = new Map(citas.map((c) => [String(c._id), c]));
+  const sedeDe = new Map(citas.map((c) => [String(c._id), c.clinic?.name || '']));
+  const fila = (u, extra) => ({
+    appointment: u.appointment, date: u.cita.date, startTime: u.cita.startTime || '',
+    clinic: sedeDe.get(String(u.appointment)) || '', ...extra,
+  });
   return paquetes.map((p) => {
-    const usos = vigentes.get(String(p._id));
+    const c = clases.get(String(p._id));
     return {
       _id: p._id,
       productName: p.productName,
@@ -344,12 +381,13 @@ async function paquetesDelPaciente(patientId, sucursales) {
       createdAt: p.createdAt,
       status: p.status,
       quantity: p.quantity,
-      usadas: usos.length,
-      quedan: p.status === 'activo' ? Math.max(0, p.quantity - usos.length) : 0,
-      usos: usos.map((u, i) => {
-        const c = citaDe.get(String(u.appointment));
-        return { n: i + 1, appointment: u.appointment, date: c?.date || u.usedAt, startTime: c?.startTime || '', clinic: c?.clinic?.name || '' };
-      }),
+      usadas: c.usadas.length,
+      apartadas: c.apartadas.length,
+      quedan: p.status === 'activo' ? libresDe(p, c) : 0,
+      usos: [
+        ...c.usadas.map((u, i) => fila(u, { n: i + 1 })),
+        ...c.apartadas.map((u) => fila(u, { apartada: true })),
+      ],
     };
   });
 }

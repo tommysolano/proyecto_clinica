@@ -125,16 +125,17 @@ const POPULATE_CREATOR = 'name email';
 const POPULATE_SERVICE_ITEM = 'name color nursingService autoSerum product';
 
 /**
- * SESIONES PREPAGADAS (oct-2026): la cita que queda recibida gasta una sesión
- * de lo que el paciente dejó pagado (ver utils/sesionesPrepagadas). Nunca tumba
- * la asignación: el paciente está esperando en el mostrador.
+ * SESIONES PREPAGADAS (oct-2026): al asignar la atención —de hoy o de otro día—
+ * la cita APARTA una sesión de lo que el paciente dejó pagado; cuenta como usada
+ * cuando la cita queda asistida/completada, y si se cancela vuelve a estar libre
+ * (ver utils/sesionesPrepagadas). Nunca tumba la asignación.
  *
- * Solo en el PASO a asistida (quien llama lo comprueba): reabrir la asignación
- * de una cita ya recibida —para sumar a enfermería— no puede gastar una sesión
- * que el paciente compró DESPUÉS para otro día.
+ * Solo si la cita no estaba ya recibida (quien llama lo comprueba): reabrir la
+ * asignación de una cita atendida —para sumar a enfermería— no puede tomar una
+ * sesión que el paciente compró DESPUÉS para otro día.
  */
 async function usarSesionesPrepagadas(apt, userId) {
-  if (!['asistida', 'completada'].includes(apt.status)) return [];
+  if (apt.status === 'cancelada') return [];
   try {
     return await require('../utils/sesionesPrepagadas').usarEnCita(apt, userId);
   } catch (e) {
@@ -2923,7 +2924,7 @@ exports.markAttended = async (req, res) => {
     // utils/appointmentArrival.js.
     registrarLlegada(apt);
     await apt.save();
-    // Solo al RECIBIR al paciente (no al re-marcar): ver usarSesionesPrepagadas.
+    // Solo si no estaba ya recibida (no al re-marcar): ver usarSesionesPrepagadas.
     if (!wasAttended) await usarSesionesPrepagadas(apt, req.user._id);
     if (apt.referral) {
       try {
@@ -3822,8 +3823,8 @@ exports.assignDoctor = async (req, res) => {
      */
     if (pasos.length && !apt.attentionAssignedAt) apt.attentionAssignedAt = new Date();
     await apt.save();
-    // El paciente está delante y recibe su atención: si la tiene PREPAGADA, se gasta
-    // aquí una sesión (y la cita muestra «Sesión 2 de 5»).
+    // Si la atención está PREPAGADA, la cita aparta aquí su sesión (también si es de
+    // otro día); cuenta como usada —«Sesión 2 de 5»— cuando la cita quede atendida.
     const sesionesUsadas = wasAttended ? [] : await usarSesionesPrepagadas(apt, req.user._id);
 
     /**

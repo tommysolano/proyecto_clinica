@@ -770,7 +770,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         const iu = usadas.findIndex((s) => String(s.product) === String(productId));
         if (iu >= 0) {
           const [s] = usadas.splice(iu, 1);
-          cubiertos.push(`${s.productName || nombre} (sesión ${s.n} de ${s.total})`);
+          cubiertos.push(`${s.productName || nombre} (${s.apartada ? 'sesión apartada' : `sesión ${s.n} de ${s.total}`})`);
           return;
         }
         const c = quedan.get(String(productId));
@@ -1749,7 +1749,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                                 Para citas futuras
                                 {item.prepaid && (citaPorCobrar && !modoReceta
                                   ? (sesionesFuturas(item) > 0
-                                    ? ` · ${usoEnCita.get(String(item.product)) ? `hoy 1 de ${item.quantity}, ` : ''}quedan ${sesionesFuturas(item)} a su favor`
+                                    ? ` · ${usoEnCita.get(String(item.product)) ? `esta cita es 1 de ${item.quantity}, ` : ''}quedan ${sesionesFuturas(item)} a su favor`
                                     : ' · sube la cantidad: hoy se usa la que hay')
                                   : ` · quedan ${item.quantity} a su favor`)}
                               </span>

@@ -63,7 +63,12 @@ const cobrar = (s, cita, items) => H.runController(sales.createSale, comoCajero(
 const asistio = (s, cita) => H.runController(appt.markAttended, comoCajero(s.clinicId, s.cajero, {}, { params: { id: String(cita._id) } }));
 const leerCita = (s, cita) => H.runController(appt.getAppointment, comoCajero(s.clinicId, s.cajero, {}, { params: { id: String(cita._id) } }));
 
-test('se paga 5 en la primera cita: esa es «1 de 5» y la siguiente no se cobra, usa «2 de 5»', async () => {
+const usos = (r) => (r.payload.sesiones || []).map((x) => (x.apartada ? 'apartada' : `${x.n} de ${x.total}`));
+const manana = () => { const d = new Date(Date.now() + 86400000); d.setHours(12, 0, 0, 0); return d; };
+const asignarEnfermeria = (s, cita) => H.runController(appt.assignDoctor, comoCajero(s.clinicId, s.cajero,
+  { steps: [{ kind: 'enfermeria' }] }, { params: { id: String(cita._id) } }));
+
+test('se paga 5 en la primera cita: cuenta «1 de 5» cuando se atiende, y la siguiente no se cobra: «2 de 5»', async () => {
   const s = await seed();
   const c1 = await s.nuevaCita();
   const v = await cobrar(s, c1, [{ product: String(s.suero._id), quantity: 5, prepaid: true }]);
@@ -74,10 +79,11 @@ test('se paga 5 en la primera cita: esa es «1 de 5» y la siguiente no se cobra
   assert.ok(paquete, 'debe quedar el paquete de sesiones');
   assert.equal(paquete.quantity, 5);
   assert.equal(paquete.uses.length, 1);
-  assert.equal(String(paquete.uses[0].appointment), String(c1._id));
 
-  const r1 = await leerCita(s, c1);
-  assert.deepEqual(r1.payload.sesiones.map((x) => [x.n, x.total]), [[1, 5]]);
+  // Cobrada pero sin atender: la sesión está APARTADA, todavía no cuenta.
+  assert.deepEqual(usos(await leerCita(s, c1)), ['apartada']);
+  await asistio(s, c1);
+  assert.deepEqual(usos(await leerCita(s, c1)), ['1 de 5']);
 
   // La segunda cita: mostrador ve que está prepagada entera, no hay que cobrar.
   const c2 = await s.nuevaCita({ startTime: '11:00' });
@@ -87,31 +93,62 @@ test('se paga 5 en la primera cita: esa es «1 de 5» y la siguiente no se cobra
 
   const a = await asistio(s, c2);
   assert.equal(a.statusCode, 200, JSON.stringify(a.payload));
-  const despues = await leerCita(s, c2);
-  assert.deepEqual(despues.payload.sesiones.map((x) => [x.n, x.total]), [[2, 5]]);
-  assert.equal(despues.payload.prepago, undefined, 'ya no queda nada por cubrir en esta cita');
+  assert.deepEqual(usos(await leerCita(s, c2)), ['2 de 5']);
 
-  // Reabrir / volver a marcar NO gasta otra sesión.
+  // Volver a marcar NO toma otra sesión.
   await asistio(s, c2);
   assert.equal((await PrepaidService.findById(paquete._id)).uses.length, 2);
   assert.equal(await Sale.countDocuments({}), 1, 'no se cobró otra vez');
 });
 
-test('una cita cancelada devuelve su sesión al paciente', async () => {
+test('cita FUTURA asignada por adelantado: no se cobra, aparta la sesión y no cuenta hasta que se atienda', async () => {
+  const s = await seed();
+  await cobrar(s, null, [{ product: String(s.suero._id), quantity: 2, prepaid: true }]);
+  const futura = await s.nuevaCita({ date: manana(), startTime: '10:00' });
+
+  const r0 = await leerCita(s, futura);
+  assert.equal(r0.payload.prepago.todo, true, 'aparece directo para asignar, sin cobro');
+
+  const a = await asignarEnfermeria(s, futura);
+  assert.equal(a.statusCode, 200, JSON.stringify(a.payload));
+  assert.equal((await Appointment.findById(futura._id)).status, 'pendiente', 'una cita de mañana no se da por asistida');
+  const r1 = await leerCita(s, futura);
+  assert.deepEqual(usos(r1), ['apartada']);
+  assert.equal(r1.payload.prepago.todo, true, 'sigue sin pedir cobro');
+
+  // Perfil: 0 usadas (no se atendió), 1 apartada, 1 libre.
+  const perfil = await H.runController(patients.getPatientPrepaid, comoCajero(s.clinicId, s.cajero, {}, { params: { id: String(s.patient._id) } }));
+  assert.deepEqual([perfil.payload[0].usadas, perfil.payload[0].apartadas, perfil.payload[0].quedan], [0, 1, 1]);
+
+  // El doctor la cierra mañana (completada) sin pasar por mostrador: cuenta.
+  await Appointment.updateOne({ _id: futura._id }, { $set: { status: 'completada' } });
+  assert.deepEqual(usos(await leerCita(s, futura)), ['1 de 2']);
+});
+
+test('una cita CANCELADA no cuenta: su sesión vuelve al paciente', async () => {
   const s = await seed();
   const c1 = await s.nuevaCita();
   await cobrar(s, c1, [{ product: String(s.suero._id), quantity: 2, prepaid: true }]);
-  const c2 = await s.nuevaCita({ startTime: '11:00' });
-  await asistio(s, c2);
-  let c3 = await s.nuevaCita({ startTime: '12:00' });
-  assert.equal((await leerCita(s, c3)).payload.prepago, undefined, 'las 2 ya están usadas');
+  await asistio(s, c1);
+  const c2 = await s.nuevaCita({ date: manana(), startTime: '11:00' });
+  await asignarEnfermeria(s, c2);
+  let c3 = await s.nuevaCita({ date: manana(), startTime: '12:00' });
+  assert.equal((await leerCita(s, c3)).payload.prepago, undefined, 'las 2 están tomadas (1 usada, 1 apartada)');
 
+  // El paciente cancela la cita 2: no recibió la atención, no cuenta.
   await Appointment.updateOne({ _id: c2._id }, { $set: { status: 'cancelada' } });
+  assert.deepEqual(usos(await leerCita(s, c2)), []);
   c3 = await Appointment.findById(c3._id);
   const r = await leerCita(s, c3);
   assert.equal(r.payload.prepago.cubre[0].quedan, 1);
-  await asistio(s, c3);
-  assert.deepEqual((await leerCita(s, c3)).payload.sesiones.map((x) => [x.n, x.total]), [[2, 2]]);
+  await asignarEnfermeria(s, c3);
+  await Appointment.updateOne({ _id: c3._id }, { $set: { status: 'asistida' } });
+  assert.deepEqual(usos(await leerCita(s, c3)), ['2 de 2']);
+
+  // Y una cita NO ASISTIDA tampoco cuenta.
+  await Appointment.updateOne({ _id: c3._id }, { $set: { status: 'no_asistio' } });
+  const perfil = await H.runController(patients.getPatientPrepaid, comoCajero(s.clinicId, s.cajero, {}, { params: { id: String(s.patient._id) } }));
+  assert.deepEqual([perfil.payload[0].usadas, perfil.payload[0].quedan], [1, 1]);
 });
 
 test('sin marcar «para citas futuras», cobrar 2 no deja paquete', async () => {
@@ -131,7 +168,7 @@ test('vendido desde Ventas (sin cita): las sesiones quedan todas para después',
   assert.equal(p.uses.length, 0);
   const c = await s.nuevaCita();
   await asistio(s, c);
-  assert.deepEqual((await leerCita(s, c)).payload.sesiones.map((x) => [x.n, x.total]), [[1, 3]]);
+  assert.deepEqual(usos(await leerCita(s, c)), ['1 de 3']);
 });
 
 test('anular la venta: no se deja si ya se usaron sesiones en otras citas', async () => {
