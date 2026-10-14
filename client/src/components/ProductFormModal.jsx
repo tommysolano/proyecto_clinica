@@ -18,6 +18,9 @@ const emptyProduct = {
   excludeFromFirstVisit: false,
   nursingService: false,
   deferredIncome: false,
+  variablePrice: false,
+  discountType: '',
+  discountValue: '',
   sessionsIncluded: '',
   programServices: [],
   serviceItems: [],
@@ -45,6 +48,9 @@ function mapProductToForm(p) {
     excludeFromFirstVisit: !!p.excludeFromFirstVisit,
     nursingService: !!p.nursingService,
     deferredIncome: !!p.deferredIncome,
+    variablePrice: !!p.variablePrice,
+    discountType: p.discountType || '',
+    discountValue: p.discountValue ? String(p.discountValue) : '',
     sessionsIncluded: p.sessionsIncluded ? String(p.sessionsIncluded) : '',
     programServices: (p.programServices || []).map((s) => ({
       product: s.product?._id || s.product || '',
@@ -197,6 +203,10 @@ export default function ProductFormModal({
         toast.error('Ingresa al menos un precio de venta.');
         return; // el finally restablece saving
       }
+      if (productForm.discountType === 'percentage' && Number(productForm.discountValue) > 100) {
+        toast.error('El descuento no puede pasar de 100%.');
+        return;
+      }
       if (!salePrices.some((s) => s.active)) salePrices[0].active = true;
       const activo = salePrices.find((s) => s.active);
       const data = {
@@ -220,6 +230,10 @@ export default function ProductFormModal({
         maxAppointmentsPerDay: parseInt(productForm.maxAppointmentsPerDay) || 0,
         excludeFromFirstVisit: !!productForm.excludeFromFirstVisit,
         nursingService: !!productForm.nursingService,
+        variablePrice: !!productForm.variablePrice,
+        // Descuento del producto: lo aplica el servidor solo al cobrar y sale en la factura.
+        discountType: Number(productForm.discountValue) > 0 ? (productForm.discountType || '') : '',
+        discountValue: productForm.discountType ? Math.max(0, parseFloat(productForm.discountValue) || 0) : 0,
         deferredIncome: productForm.category === 'programa' ? !!productForm.deferredIncome : false,
         sessionsIncluded: productForm.category === 'programa' ? (parseInt(productForm.sessionsIncluded) || 0) : 0,
         programServices: (productForm.programServices || [])
@@ -398,6 +412,49 @@ export default function ProductFormModal({
               rows={productForm.salePrices}
               onChange={(rows) => setProductForm({ ...productForm, salePrices: rows })}
             />
+            {/* Precio variable: el cobro trae el precio de arriba pero deja teclear otro. */}
+            <label className="mt-2 flex items-start gap-2 text-sm text-slate-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!productForm.variablePrice}
+                onChange={(e) => setProductForm({ ...productForm, variablePrice: e.target.checked })}
+                className="w-4 h-4 mt-0.5 accent-emerald-600 cursor-pointer"
+              />
+              <span>
+                <strong>Precio variable</strong>
+                <span className="block text-xs text-slate-500">Al cobrar se muestra el precio registrado, pero se puede escribir otro importe.</span>
+              </span>
+            </label>
+            {/* DESCUENTO DEL PRODUCTO: al cobrar ya no se teclean descuentos. El de aquí se
+                aplica solo en cada venta y aparece en la factura. */}
+            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+              <p className="text-sm font-semibold text-slate-700 m-0">Descuento</p>
+              <p className="text-xs text-slate-500 mt-0.5 mb-2">
+                Se aplica automáticamente al cobrar y aparece en la factura. Déjalo en «Sin descuento» si no tiene.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={productForm.discountType || ''}
+                  onChange={(e) => setProductForm({ ...productForm, discountType: e.target.value, discountValue: e.target.value ? productForm.discountValue : '' })}
+                  className="input w-auto"
+                >
+                  <option value="">Sin descuento</option>
+                  <option value="percentage">Porcentaje (%)</option>
+                  <option value="amount">Valor fijo por unidad ($)</option>
+                </select>
+                {productForm.discountType && (
+                  <NumericInput
+                    value={productForm.discountValue}
+                    onChange={(e) => setProductForm({ ...productForm, discountValue: e.target.value })}
+                    placeholder={productForm.discountType === 'percentage' ? 'Ej. 10' : 'Ej. 5.00'}
+                    className="input w-32 text-right"
+                  />
+                )}
+                {productForm.discountType === 'percentage' && Number(productForm.discountValue) > 100 && (
+                  <span className="text-xs text-rose-600">No puede pasar de 100%.</span>
+                )}
+              </div>
+            </div>
           </div>
           {editingId && productForm.category !== 'servicio' && (
             <div className="sm:col-span-2 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
@@ -722,7 +779,7 @@ function SalePriceList({ rows, onChange }) {
       <div className="flex items-center justify-between">
         <div>
           <p className="text-sm font-semibold text-slate-800">Precios de venta *</p>
-          <p className="text-[11px] text-slate-500">Marca con el check cuál es el precio activo (el que se cobra por defecto). Al vender se puede escoger otro de esta lista.</p>
+          <p className="text-[11px] text-slate-500">Precio final al paciente, <strong>con IVA incluido</strong>. Marca con el check cuál es el precio activo (el que se cobra por defecto). Al vender se puede escoger otro de esta lista.</p>
         </div>
         <button type="button" onClick={add} className="text-xs px-2.5 py-1.5 bg-emerald-600 text-white rounded-lg border-none cursor-pointer shrink-0">+ Agregar precio</button>
       </div>

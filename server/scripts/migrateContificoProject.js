@@ -27,6 +27,7 @@ const Receivable = require('../models/Receivable');
 const Payable = require('../models/Payable');
 const { parseDate, fmt } = require('./migrateContifico');
 const { decodeCompressedJson } = require('../utils/compressedJson');
+const { pvpConIva } = require('../utils/contificoPrice');
 
 const num = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 const fakeId = () => new mongoose.Types.ObjectId();
@@ -494,7 +495,7 @@ class Projector {
     const categoryRecords = await this.records('category'); const categoryNames = new Map(categoryRecords.map((record) => [record.externalId, String(record.payload.nombre || '')]));
     const categorySource = new Map(categoryRecords.map((record) => [record.externalId, record.payload]));
     const unitRecords = await this.records('unit'); const unitNames = new Map(unitRecords.map((record) => [record.externalId, String(record.payload.nombre || 'unidad')]));
-    const fields = (record) => { const row = record.payload, physical = String(row.tipo).toUpperCase() === 'PRO', rawStock = num(row.cantidad_stock), salePrice = Math.max(0, num(row.pvp1)), sourceCategory = categorySource.get(String(row.categoria_id || '')) || {}; return {
+    const fields = (record) => { const row = record.payload, physical = String(row.tipo).toUpperCase() === 'PRO', rawStock = num(row.cantidad_stock), salePrice = pvpConIva(row.pvp1, row.porcentaje_iva), sourceCategory = categorySource.get(String(row.categoria_id || '')) || {}; return {
       clinic: this.clinic._id, code: String(row.codigo), barcode: String(row.codigo_barra || row.codigo_auxiliar || ''), name: String(row.nombre || row.codigo), description: String(row.descripcion || ''), category: physical ? 'insumo' : 'servicio', categoria: categoryNames.get(String(row.categoria_id)) || '', isComposite: String(row.tipo_producto).toUpperCase() === 'COP',
       stock: rawStock, stockByClinic: [{ clinic: this.clinic._id, stock: rawStock }], availableInClinics: [], purchasePrice: Math.max(0, num(row.costo_maximo)), averageCost: Math.max(0, num(row.costo_maximo)), salePrice, salePrices: [{ name: 'General', price: salePrice, active: true }], minStock: Math.max(0, num(row.minimo)),
       inventoryAccount: this.maps.accounts.get(String(sourceCategory.cuenta_inventario_id || sourceCategory.cuenta_inventario || '')) || null,

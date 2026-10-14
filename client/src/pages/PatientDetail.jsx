@@ -7459,71 +7459,188 @@ function CitasTab({ patientId }) {
 }
 
 // ─────────────────── Facturas ───────────────────
+/**
+ * FACTURAS DEL PACIENTE (oct-2026). Sus ventas de TODAS las sucursales de la empresa
+ * (`GET /patients/:id/facturas`), cada una con su factura electrónica y su PDF; las que
+ * no se facturaron también salen («Sin factura»). Arriba, las SESIONES PREPAGADAS: lo
+ * que dejó pagado para citas futuras y en qué cita se usó cada sesión.
+ */
 function FacturasTab({ patientId }) {
-  const [invoices, setInvoices] = useState([]);
+  const [ventas, setVentas] = useState([]);
+  const [paquetes, setPaquetes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [abierto, setAbierto] = useState(null); // paquete con sus usos desplegados
 
   useEffect(() => {
+    let vivo = true;
     (async () => {
       try {
-        const res = await api.get('/invoices', { params: { patient: patientId, limit: 100 } });
-        setInvoices(res.data.invoices || []);
+        const [f, p] = await Promise.all([
+          api.get(`/patients/${patientId}/facturas`),
+          api.get(`/patients/${patientId}/prepaid`).catch(() => ({ data: [] })),
+        ]);
+        if (!vivo) return;
+        setVentas(Array.isArray(f.data) ? f.data : []);
+        setPaquetes(Array.isArray(p.data) ? p.data : []);
       } catch (err) {
         toast.error(err.response?.data?.message || 'Error al cargar facturas');
       } finally {
-        setLoading(false);
+        if (vivo) setLoading(false);
       }
     })();
+    return () => { vivo = false; };
   }, [patientId]);
+
+  const verPdf = async (invoiceId) => {
+    try {
+      const res = await api.get(`/invoices/${invoiceId}/pdf`, { responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      window.open(url, '_blank');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo abrir el PDF de la factura');
+    }
+  };
 
   if (loading) return <div className="text-slate-500 text-sm">Cargando...</div>;
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
-      <table className="tbl">
-        <thead className="bg-slate-50 text-slate-600">
-          <tr>
-            <th className="text-left px-4 py-2.5 font-semibold">N° Factura</th>
-            <th className="text-left px-4 py-2.5 font-semibold">Fecha</th>
-            <th className="text-right px-4 py-2.5 font-semibold">Total</th>
-            <th className="text-left px-4 py-2.5 font-semibold">Estado</th>
-            <th className="px-4 py-2.5"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {invoices.length === 0 && (
+    <div className="space-y-5">
+      {paquetes.length > 0 && (
+        <section className="bg-white rounded-xl border border-indigo-200 overflow-hidden">
+          <header className="px-4 py-2.5 bg-indigo-50 border-b border-indigo-100">
+            <h3 className="text-sm font-semibold text-indigo-900 m-0">Sesiones prepagadas</h3>
+            <p className="text-[11px] text-indigo-700 m-0">
+              Servicios que dejó pagados. Al asignar la atención de una cita se usa una sesión y no se cobra otra vez.
+            </p>
+          </header>
+          <table className="tbl tbl-cards">
+            <thead className="bg-slate-50 text-slate-600">
+              <tr>
+                <th className="text-left md:px-4 py-2.5 font-semibold">Servicio</th>
+                <th className="text-left md:px-4 py-2.5 font-semibold">Venta</th>
+                <th className="text-center md:px-4 py-2.5 font-semibold">Usadas</th>
+                <th className="text-center md:px-4 py-2.5 font-semibold">Quedan</th>
+                <th className="md:px-4 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {paquetes.map((p) => (
+                <Fragment key={p._id}>
+                  <tr className="md:border-t border-slate-100">
+                    <td data-cell="principal" className="md:px-4 py-2.5 text-slate-800">
+                      <span className="font-medium">{p.productName}</span>
+                      {p.programName && <span className="block text-[11px] text-slate-500">Programa: {p.programName}</span>}
+                      {p.status === 'anulado' && <span className="ml-2 text-[10px] font-bold uppercase text-slate-500">Anulado</span>}
+                    </td>
+                    <td data-cell="detalle" className="md:px-4 py-2.5 text-xs text-slate-600">
+                      {p.saleNumber || 'Venta'} · {fmtDate(p.createdAt)}{p.clinic ? ` · ${p.clinic}` : ''}
+                    </td>
+                    <td data-cell="detalle" className="md:px-4 py-2.5 text-center text-slate-700">{p.usadas} de {p.quantity}</td>
+                    <td data-cell="estado" className="md:px-4 py-2.5 text-center">
+                      <span className={`px-2 py-0.5 rounded text-xs font-semibold ${p.quedan > 0 ? 'bg-indigo-100 text-indigo-800' : 'bg-slate-100 text-slate-500'}`}>
+                        {p.status === 'anulado' ? '—' : p.quedan > 0 ? `${p.quedan} a su favor` : 'Completado'}
+                      </span>
+                    </td>
+                    <td data-cell="acciones" className="md:px-4 py-2.5 text-right">
+                      {p.usos.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setAbierto(abierto === p._id ? null : p._id)}
+                          className="text-xs text-indigo-600 hover:underline bg-transparent border-none cursor-pointer"
+                        >
+                          {abierto === p._id ? 'Ocultar' : 'Ver citas'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  {abierto === p._id && (
+                    <tr>
+                      <td colSpan={5} className="md:px-4 py-2 bg-slate-50/60">
+                        <ul className="m-0 pl-4 text-xs text-slate-600 space-y-0.5">
+                          {p.usos.map((u) => (
+                            <li key={`${u.appointment}-${u.n}`}>
+                              Sesión {u.n} de {p.quantity} · {fmtDate(u.date)}{u.startTime ? ` ${u.startTime}` : ''}{u.clinic ? ` · ${u.clinic}` : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table className="tbl tbl-cards">
+          <thead className="bg-slate-50 text-slate-600">
             <tr>
-              <td colSpan={5} className="text-center py-6 text-slate-400">
-                Sin facturas.
-              </td>
+              <th className="text-left md:px-4 py-2.5 font-semibold">Fecha</th>
+              <th className="text-left md:px-4 py-2.5 font-semibold">Factura</th>
+              <th className="text-left md:px-4 py-2.5 font-semibold">Detalle</th>
+              <th className="text-right md:px-4 py-2.5 font-semibold">Total</th>
+              <th className="text-left md:px-4 py-2.5 font-semibold">Estado</th>
+              <th className="md:px-4 py-2.5"></th>
             </tr>
-          )}
-          {invoices.map((inv) => (
-            <tr key={inv._id} className="border-t border-slate-100">
-              <td className="px-4 py-2.5 text-slate-700 font-mono text-xs">
-                {inv.estab}-{inv.ptoEmi}-{String(inv.secuencial).padStart(9, '0')}
-              </td>
-              <td className="px-4 py-2.5 text-slate-600">
-                {fmtDate(inv.createdAt)}
-              </td>
-              <td className="px-4 py-2.5 text-right text-slate-700">
-                ${Number(inv.importeTotal || 0).toFixed(2)}
-              </td>
-              <td className="px-4 py-2.5">
-                <EstadoBadge estado={inv.estado} />
-              </td>
-              <td className="px-4 py-2.5 text-right">
-                <Link
-                  to={`/invoices`}
-                  className="text-emerald-600 text-xs hover:underline"
-                >
-                  Ver →
-                </Link>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {ventas.length === 0 && (
+              <tr>
+                <td colSpan={6} className="text-center py-6 text-slate-400">
+                  Sin facturas.
+                </td>
+              </tr>
+            )}
+            {ventas.map((v) => (
+              <tr key={v._id} className={`md:border-t border-slate-100 ${v.status === 'anulada' ? 'opacity-60' : ''}`}>
+                <td data-cell="hora" className="md:px-4 py-2.5 text-slate-600 whitespace-nowrap">
+                  {fmtDate(v.date)}
+                  {v.clinic && <span className="block text-[11px] text-slate-400">{v.clinic}</span>}
+                </td>
+                <td data-cell="principal" className="md:px-4 py-2.5 text-slate-700">
+                  {v.invoice
+                    ? <span className="font-mono text-xs">{v.invoice.numero}</span>
+                    : <span className="text-xs text-slate-400">Sin factura</span>}
+                  <span className="block text-[11px] text-slate-400">{v.saleNumber}</span>
+                </td>
+                <td data-cell="detalle" className="md:px-4 py-2.5 text-xs text-slate-600">
+                  {v.items.map((i, k) => (
+                    <span key={k} className="block">
+                      {i.name} × {i.quantity}
+                      {i.discount > 0 && <span className="text-rose-600"> · desc. -${Number(i.discount).toFixed(2)}</span>}
+                      {i.prepaid && <span className="text-indigo-600"> · para citas futuras</span>}
+                    </span>
+                  ))}
+                </td>
+                <td data-cell="detalle" className="md:px-4 py-2.5 text-right text-slate-700 whitespace-nowrap">
+                  ${Number(v.total || 0).toFixed(2)}
+                  {v.discountTotal > 0 && (
+                    <span className="block text-[11px] text-rose-600">Descuento -${Number(v.discountTotal).toFixed(2)}</span>
+                  )}
+                </td>
+                <td data-cell="estado" className="md:px-4 py-2.5">
+                  {v.status === 'anulada'
+                    ? <EstadoBadge estado="ANULADA" />
+                    : v.invoice ? <EstadoBadge estado={v.invoice.estado} /> : <span className="text-xs text-slate-400">—</span>}
+                </td>
+                <td data-cell="acciones" className="md:px-4 py-2.5 text-right">
+                  {v.invoice && (
+                    <button
+                      type="button"
+                      onClick={() => verPdf(v.invoice._id)}
+                      className="text-emerald-600 text-xs hover:underline bg-transparent border-none cursor-pointer"
+                    >
+                      Ver PDF
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

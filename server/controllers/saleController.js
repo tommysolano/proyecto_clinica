@@ -11,6 +11,7 @@ const { openReceivable, applyToReceivable, voidReceivable } = require('../utils/
 const kardex = require('../utils/kardex');
 const { createResolver, auditarDiferencias } = require('../services/costCenterPolicy');
 const { calculateSaleLine, summarizeSaleTaxes } = require('../utils/tax');
+const { descuentoDeLinea } = require('../utils/productDiscount');
 const { assertNotPastDocumentDate } = require('../utils/fiscalDocumentDate');
 const { invoiceDate } = require('../utils/dates');
 const { emitToClinic } = require('../realtime');
@@ -31,6 +32,16 @@ const { puntoDelUsuario } = require('../services/puntoEmision');
  * válido es `salePrice`.
  */
 function resolveUnitPrice(product, item) {
+  // 0) PRECIO VARIABLE: el producto lo marca así en el inventario y el importe lo pone quien
+  // cobra. Es la única excepción a la lista, y la decide el producto, no el navegador.
+  if (product.variablePrice && item.unitPrice !== undefined && item.unitPrice !== null && item.unitPrice !== '') {
+    const pedido = +Number(item.unitPrice).toFixed(2);
+    if (!Number.isFinite(pedido) || pedido < 0) {
+      throw Object.assign(new Error(`Precio inválido para "${product.name}"`), { status: 400 });
+    }
+    return pedido;
+  }
+
   const lista = Array.isArray(product.salePrices) && product.salePrices.length
     ? product.salePrices
     : [{ name: 'General', price: Number(product.salePrice) || 0, active: true }];
@@ -310,11 +321,13 @@ exports.createSale = async (req, res) => {
           // aceptar cualquier `unitPrice` del cliente permitiría facturar a un precio inventado
           // desde el navegador. Un precio que no está en la lista se rechaza.
           const unitPrice = resolveUnitPrice(product, item);
+          // DESCUENTO: el del PRODUCTO, configurado en el inventario (oct-2026). Lo que
+          // mande el navegador se ignora: al cobrar ya no se teclean descuentos.
           const tax = calculateSaleLine({
             product,
             quantity: item.quantity,
             unitPrice,
-            discount: item.discount || 0,
+            discount: descuentoDeLinea(product, unitPrice, item.quantity),
             priceIncludesVat: item.priceIncludesVat,
           });
           return {
@@ -335,8 +348,9 @@ exports.createSale = async (req, res) => {
             priceIncludesVat: tax.priceIncludesVat,
             discount: tax.discount,
             discountTaxBase: tax.discountTaxBase,
-            discountRef: item.discountRef || undefined,
             treatment: item.treatment || undefined,
+            // Para citas futuras: solo un servicio (lo que tiene stock no se «guarda»).
+            prepaid: item.prepaid === true && txIsUnlimited(product),
             // Bodega de la que sale el ítem. Antes NO se copiaba: `issueStock` leía un
             // `it.warehouse` que nunca existía, así que toda venta consumía capas FIFO de
             // CUALQUIER bodega y su movimiento quedaba sin bodega (invisible en el kardex).
@@ -552,6 +566,11 @@ exports.createSale = async (req, res) => {
           createdAt: saleDate,
           createdBy: req.user._id,
         }], { session });
+
+        // SESIONES PREPAGADAS: lo pagado para citas futuras queda como saldo de sesiones.
+        await require('../utils/sesionesPrepagadas').crearDesdeVenta({
+          sale: txSale, items: txSaleItems, productMap: txProductMap, userId: req.user._id, session,
+        });
 
         for (const it of txSaleItems) {
           if (!it.treatment) continue;
@@ -1029,6 +1048,8 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
   await require('../utils/saldoAFavor').revertirDe({
     clinicId, filtro: { sale: sale._id }, userId, date: reversalDate, session,
   });
+  // SESIONES PREPAGADAS: se anulan con la venta, salvo que ya se usaran en otras citas.
+  await require('../utils/sesionesPrepagadas').anularDeVenta({ saleId: sale._id, session });
 
   // Kardex: devuelve a sus capas originales lo consumido por las salidas de esta venta.
   const salidas = await InventoryMovement.find({

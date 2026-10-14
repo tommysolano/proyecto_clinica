@@ -52,6 +52,17 @@ function datosComprador(sale) {
 }
 
 /**
+ * TOTAL DE DESCUENTO del comprobante = la suma del `descuento` de cada detalle, que va
+ * SIN impuestos. Antes se mandaba `sale.discountTotal` (con el IVA dentro cuando el
+ * precio lo incluye) y no cuadraba con la suma de las líneas.
+ */
+function totalDescuentoDe(sale) {
+  return +(sale.items || [])
+    .reduce((s, it) => s + +Number(it.discountTaxBase ?? it.discount ?? 0).toFixed(2), 0)
+    .toFixed(2);
+}
+
+/**
  * ARMA LA FACTURA (el objeto que se convierte en XML) de una venta. La usan la emisión y
  * el reintento que vuelve a firmar (oct-2026): los dos tienen que producir el MISMO XML.
  * `serie`: { estab, ptoEmi, dirEstablecimiento, ambiente }.
@@ -159,7 +170,7 @@ function armarFactura({ sale, config, clinic, serie, secuencial, claveAcceso, fe
       identificacionComprador: compradorIdent,
       direccionComprador: compradorDir || undefined,
       totalSinImpuestos,
-      totalDescuento: +Number(sale.discountTotal || 0).toFixed(2),
+      totalDescuento: totalDescuentoDe(sale),
       totalConImpuestos,
       propina: 0,
       importeTotal: sale.total,
@@ -267,7 +278,7 @@ exports.emitFromSale = async (req, res) => {
       emailComprador: compradorEmail,
       telefonoComprador: compradorTel,
       totalSinImpuestos,
-      totalDescuento: +Number(sale.discountTotal || 0).toFixed(2),
+      totalDescuento: totalDescuentoDe(sale),
       totalImpuesto: sale.taxAmount,
       importeTotal: sale.total,
       taxBreakdown: {
@@ -451,14 +462,19 @@ exports.get = async (req, res) => {
 
 exports.getRidePdf = async (req, res) => {
   try {
-    const invoice = await Invoice.findOne({
-      _id: req.params.id,
-      clinic: req.clinicId,
-    }).populate('sale');
-    if (!invoice) return res.status(404).json({ message: 'Factura no encontrada' });
+    /**
+     * La factura puede ser de OTRA sucursal que la persona alcanza (oct-2026): el perfil
+     * del paciente lista sus facturas de toda la empresa y cada una se tiene que poder
+     * abrir. El emisor (configuración y sucursal) es el de la factura, no el activo.
+     */
+    const { alcanzaSucursal } = require('../utils/clinicScope');
+    const invoice = await Invoice.findOne({ _id: req.params.id }).populate('sale');
+    if (!invoice || (String(invoice.clinic) !== String(req.clinicId) && !alcanzaSucursal(req, invoice.clinic))) {
+      return res.status(404).json({ message: 'Factura no encontrada' });
+    }
 
-    const config = await InvoicingConfig.findOne({ clinic: req.clinicId });
-    const clinic = await Clinic.findById(req.clinicId);
+    const config = await InvoicingConfig.findOne({ clinic: invoice.clinic });
+    const clinic = await Clinic.findById(invoice.clinic);
 
     const pdf = await buildRidePdf({
       invoice,

@@ -655,3 +655,74 @@ exports.getSaldoAFavor = async (req, res) => {
     res.status(500).json({ message: 'Error al obtener el saldo a favor', error: error.message });
   }
 };
+
+/**
+ * Sucursales de la EMPRESA activa que la persona alcanza (ids en texto), o `null` = sin
+ * filtro. Las facturas y las sesiones prepagadas del paciente son de la empresa, no de
+ * una sola sede: el paciente paga en una y se atiende en otra.
+ */
+async function sucursalesDeEmpresaVisibles(req) {
+  const { sucursalesVisibles } = require('../utils/clinicScope');
+  const { sucursalesDeLaEmpresa } = require('../utils/sesionesPrepagadas');
+  const empresa = await sucursalesDeLaEmpresa(req.clinicId);
+  const visibles = sucursalesVisibles(req);
+  if (!empresa) return visibles ? visibles.map(String) : null;
+  if (!visibles) return empresa;
+  const alcance = new Set(visibles.map(String));
+  return empresa.filter((id) => alcance.has(id));
+}
+
+/**
+ * FACTURAS DEL PACIENTE (pestaña Facturas del perfil, oct-2026): sus ventas de TODAS las
+ * sucursales de la empresa, cada una con su factura electrónica si la tiene. Antes solo
+ * salían las de la sucursal activa y las ventas sin factura no aparecían.
+ */
+exports.getPatientInvoices = async (req, res) => {
+  try {
+    const Sale = require('../models/Sale');
+    const sucursales = await sucursalesDeEmpresaVisibles(req);
+    const ventas = await Sale.find({
+      patient: req.params.id,
+      ...(sucursales ? { clinic: { $in: sucursales } } : {}),
+    })
+      .select('saleNumber createdAt total discountTotal status clinic items.productName items.quantity items.discount items.prepaid invoice clientName clientCedula')
+      .populate('clinic', 'name')
+      .populate('invoice', 'estab ptoEmi secuencial estado importeTotal fechaEmision claveAcceso')
+      .sort({ createdAt: -1 })
+      .limit(300)
+      .lean();
+    res.json(ventas.map((v) => ({
+      _id: v._id,
+      saleNumber: v.saleNumber,
+      date: v.createdAt,
+      total: v.total,
+      discountTotal: v.discountTotal || 0,
+      status: v.status,
+      clinic: v.clinic?.name || '',
+      clientName: v.clientName,
+      clientCedula: v.clientCedula,
+      items: (v.items || []).map((i) => ({ name: i.productName, quantity: i.quantity, discount: i.discount || 0, prepaid: !!i.prepaid })),
+      invoice: v.invoice
+        ? {
+            _id: v.invoice._id,
+            numero: `${v.invoice.estab}-${v.invoice.ptoEmi}-${String(v.invoice.secuencial).padStart(9, '0')}`,
+            estado: v.invoice.estado,
+            fechaEmision: v.invoice.fechaEmision,
+          }
+        : null,
+    })));
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener las facturas del paciente', error: error.message });
+  }
+};
+
+/** SESIONES PREPAGADAS del paciente (perfil): paquetes, usadas, quedan y en qué cita. */
+exports.getPatientPrepaid = async (req, res) => {
+  try {
+    const { paquetesDelPaciente } = require('../utils/sesionesPrepagadas');
+    const sucursales = await sucursalesDeEmpresaVisibles(req);
+    res.json(await paquetesDelPaciente(req.params.id, sucursales));
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener las sesiones prepagadas', error: error.message });
+  }
+};

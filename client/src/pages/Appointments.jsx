@@ -63,6 +63,7 @@ import QuienAtiende, { CAMPOS_QUIEN_ATIENDE, pasosDeAtencion } from '../componen
 import { doctorOptionLabel, roleSatisfies, ROLE_LABELS, ROLES_TODA_LA_ORG, ROLES_TODAS_LAS_EMPRESAS, ROLES_VEN_CORREO } from '../utils/roles';
 import CompanyClinicSelect, { ClinicOptionsByCompany } from '../components/CompanyClinicSelect';
 import ResumenEstadosAgenda from '../components/ResumenEstadosAgenda';
+import SesionesPrepagadasBadge from '../components/SesionesPrepagadasBadge';
 import { estadosVacios } from '../utils/agendaResumen';
 
 // 6 estados soportados por el backend.
@@ -732,7 +733,9 @@ export default function Appointments() {
    */
   const abrirAsignacion = (apt) => {
     // Canje o cortesía (valor 0): no hay nada que facturar, va directo a asignar.
-    const sinCobro = !!apt?.isCanje || !!apt?.isCortesia || apt?.agreedValue === 0;
+    // Tampoco si TODO lo de la cita ya está pagado por adelantado (sesiones
+    // prepagadas): al asignar se gasta una sesión y no se cobra otra vez.
+    const sinCobro = !!apt?.isCanje || !!apt?.isCortesia || apt?.agreedValue === 0 || !!apt?.prepago?.todo;
     if (facturaEnAgenda && !apt?.cobro && !sinCobro && ['pendiente', 'confirmada', 'no_asistio'].includes(apt?.status)) {
       setCobrarCita({ appointment: apt, luegoAsignar: true });
       return;
@@ -3218,7 +3221,7 @@ export default function Appointments() {
                       }
                       opciones.push({
                         id: 'asignar',
-                        label: facturaEnAgenda && !apt.cobro && !apt.isCanje && !apt.isCortesia && apt.agreedValue !== 0 && ['pendiente', 'confirmada', 'no_asistio'].includes(apt.status)
+                        label: facturaEnAgenda && !apt.cobro && !apt.isCanje && !apt.isCortesia && apt.agreedValue !== 0 && !apt.prepago?.todo && ['pendiente', 'confirmada', 'no_asistio'].includes(apt.status)
                           ? 'Cobrar y asignar atención'
                           : 'Asignar atención',
                         icon: HiOutlineUserPlus,
@@ -3706,6 +3709,9 @@ export default function Appointments() {
                             </span>
                           </div>
                         )}
+                        {/* SESIONES PREPAGADAS: «Sesión 2 de 5» (todos) y lo prepagado aún sin usar (mostrador). */}
+                        <SesionesPrepagadasBadge apt={apt} mostrador={canCharge} />
+
                         {/**
                           * LA COLA COMPLETA, no solo el espejo. Con «Rosi → Ester»
                           * la tarjeta decía solo «Dr. Rosi» —el espejo apunta al
@@ -4576,6 +4582,13 @@ export default function Appointments() {
                   <>
                     <p className="text-xs text-emerald-600 font-medium pt-1">Pago adelantado</p>
                     <p className="text-sm text-slate-800">{textoAdelanto(detailModal)}</p>
+                  </>
+                )}
+                {/* SESIONES PREPAGADAS: la que usa esta cita y lo que le queda pagado. */}
+                {(detailModal.sesiones?.length > 0 || (canCharge && detailModal.prepago?.cubre?.length > 0)) && (
+                  <>
+                    <p className="text-xs text-emerald-600 font-medium pt-1">Prepagado</p>
+                    <SesionesPrepagadasBadge apt={detailModal} mostrador={canCharge} className="" />
                   </>
                 )}
                 {/**

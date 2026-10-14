@@ -31,7 +31,8 @@ function buildRideHtml({ invoice, sale, config, clinic, autorizacion }) {
         <td>${escape(it.productCode || '')}</td>
         <td>${escape(it.productName)}</td>
         <td class="r">${n2(it.quantity)}</td>
-        <td class="r">${n2(it.unitPrice)}</td>
+        <td class="r">${n2(it.unitPriceExcludingTax || it.unitPrice)}</td>
+        <td class="r">${n2(it.discountTaxBase ?? it.discount)}</td>
         <td class="r">${n2(it.subtotal)}</td>
       </tr>`
     )
@@ -90,12 +91,15 @@ function buildRideHtml({ invoice, sale, config, clinic, autorizacion }) {
 
   <table>
     <thead>
-      <tr><th>Código</th><th>Descripción</th><th>Cant.</th><th>P. Unit.</th><th>Total</th></tr>
+      <tr><th>Código</th><th>Descripción</th><th>Cant.</th><th>P. Unit.</th><th>Descuento</th><th>Total</th></tr>
     </thead>
     <tbody>${items}</tbody>
   </table>
 
   <table class="totales">
+    ${Number(invoice.totalDescuento) > 0
+      ? `<tr><td class="label">Descuento</td><td class="r">${n2(invoice.totalDescuento)}</td></tr>`
+      : ''}
     <tr><td class="label">Subtotal sin imp.</td><td class="r">${n2(invoice.totalSinImpuestos)}</td></tr>
     <tr><td class="label">IVA</td><td class="r">${n2(invoice.totalImpuesto)}</td></tr>
     <tr><td class="label"><b>Total</b></td><td class="r"><b>${n2(invoice.importeTotal)}</b></td></tr>

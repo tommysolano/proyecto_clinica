@@ -109,6 +109,19 @@ const productSchema = new mongoose.Schema(
       required: [true, 'El precio de venta es requerido'],
       min: 0,
     },
+    /**
+     * PRECIO VARIABLE (oct-2026). Hay servicios cuyo importe cambia en cada atención. Con esto
+     * activo el cobro trae el precio registrado pero el cajero puede teclear otro, y el backend
+     * lo acepta sin exigir que esté en `salePrices`. Sin la marca, la lista sigue mandando.
+     */
+    variablePrice: { type: Boolean, default: false },
+    /**
+     * DESCUENTO DEL PRODUCTO (oct-2026). Al cobrar ya no se teclea: el servidor lo aplica
+     * solo en cada venta y sale en la factura (ver utils/productDiscount).
+     * 'percentage' = % de la línea; 'amount' = $ por unidad. '' = sin descuento.
+     */
+    discountType: { type: String, enum: ['', 'percentage', 'amount'], default: '' },
+    discountValue: { type: Number, default: 0, min: 0 },
     stock: { type: Number, default: 0 },
     minStock: { type: Number, default: 5, min: 0 },
     // Costo unitario promedio ponderado (cache derivado de las capas de kardex vivas).

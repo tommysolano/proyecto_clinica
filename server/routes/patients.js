@@ -8,6 +8,8 @@ const {
   searchReferralCandidates,
   getPatientPurchases,
   getSaldoAFavor,
+  getPatientInvoices,
+  getPatientPrepaid,
   bulkTag,
   mergePatient,
 } = require('../controllers/patientController');
@@ -53,6 +55,9 @@ router.get('/:id', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfe
 router.get('/:id/purchases', requireRole('admin', 'contabilidad'), getPatientPurchases);
 // Saldo a favor del paciente (anticipos): lo ve quien cobra y contabilidad.
 router.get('/:id/saldo-a-favor', requireRole('admin', 'cajero', 'contabilidad'), getSaldoAFavor);
+// Facturas y sesiones prepagadas del paciente en toda la empresa (pestaña Facturas).
+router.get('/:id/facturas', requireRole('admin', 'cajero', 'contabilidad'), getPatientInvoices);
+router.get('/:id/prepaid', requireRole('admin', 'cajero', 'contabilidad'), getPatientPrepaid);
 // Crear / editar: incluye doctor (con restricción de campos sensibles en el controller)
 // 'doctor' EXPANDE a las especialidades (óptica incluida): en óptica el paciente
 // llega sin cita previa y quien lo registra es el propio optómetra.

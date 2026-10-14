@@ -157,6 +157,34 @@ test('un producto ANTIGUO (sin lista) solo admite su salePrice', async () => {
   assert.equal(malo.statusCode, 400);
 });
 
+test('un producto de PRECIO VARIABLE se cobra al importe que escribe el cajero (y sin él, al registrado)', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const p = await H.runController(products.createProduct, H.mockReq(clinicId, userId, nuevoProducto({
+    salePrices: [{ name: 'General', price: 100, active: true }], variablePrice: true,
+  })));
+  assert.equal(p.payload.variablePrice, true);
+
+  // Lo manda la UI: el nombre del precio de la lista Y el importe tecleado. Manda el importe.
+  const tecleado = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
+    items: [{ product: p.payload._id, quantity: 2, priceName: 'General', unitPrice: 137.5 }],
+    paymentMethod: 'efectivo', date: H.docDate(0),
+  }));
+  assert.equal(tecleado.statusCode, 201, JSON.stringify(tecleado.payload));
+  assert.equal(tecleado.payload.items[0].unitPrice, 137.5);
+  assert.equal(tecleado.payload.total, 275);
+
+  const sinImporte = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
+    items: [{ product: p.payload._id, quantity: 1 }], paymentMethod: 'efectivo', date: H.docDate(0),
+  }));
+  assert.equal(sinImporte.statusCode, 201, JSON.stringify(sinImporte.payload));
+  assert.equal(sinImporte.payload.total, 100);
+
+  const negativo = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
+    items: [{ product: p.payload._id, quantity: 1, unitPrice: -5 }], paymentMethod: 'efectivo', date: H.docDate(0),
+  }));
+  assert.equal(negativo.statusCode, 400);
+});
+
 // ───────────────────────── Tipo de tarjeta: débito / crédito ─────────────────
 test('el tipo de tarjeta que elige el cajero manda sobre la configuración de la tarjeta', async () => {
   const { clinicId, userId } = await H.seedClinic();

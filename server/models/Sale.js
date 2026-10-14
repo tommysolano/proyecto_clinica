@@ -32,6 +32,9 @@ const saleItemSchema = new mongoose.Schema({
   discountRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Discount' },
   // Tratamiento al que aporta este ítem (avance automático).
   treatment: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment' },
+  // SESIONES PREPAGADAS (oct-2026): este servicio se pagó para citas futuras y dejó
+  // un paquete de sesiones del paciente (ver models/PrepaidService).
+  prepaid: { type: Boolean, default: false },
   // Bodega de la que SALIÓ este ítem (copiada de la cabecera de la venta al registrarla).
   // Es la que consume las capas FIFO y la que ve el kardex por bodega. Vacía = stock general
   // (ventas anteriores a las bodegas: no se les inventa una).

@@ -11,6 +11,7 @@ import { SUERO_CLORURO_NOMBRE } from '../constants/sueroterapia';
 import { useAuth } from '../context/AuthContext';
 import { doctorOptionLabel, doctorTypeLabel, nombreConTratamiento, roleSatisfies } from '../utils/roles';
 import { pendingSerums, serumProgress } from '../utils/serumProgress';
+import SesionesPrepagadasBadge from './SesionesPrepagadasBadge';
 import {
   HiOutlineBeaker,
   HiOutlineHeart,
@@ -597,6 +598,10 @@ export default function AssignAttentionModal({
           { icon: '💧', duration: 5000 }
         );
       }
+      // SESIONES PREPAGADAS: se gastó una de lo que el paciente dejó pagado.
+      for (const s of data?.sesionesUsadas || []) {
+        toast.success(`Sesión prepagada usada: ${s.productName} · ${s.n} de ${s.total}`, { icon: '🎟️', duration: 6000 });
+      }
       onDone?.(data);
       onClose?.();
     } catch (err) {
@@ -645,6 +650,12 @@ export default function AssignAttentionModal({
           <p className="text-sm text-slate-500">
             {apt?.startTime}{nombreServicio ? ` · ${nombreServicio}` : ''}
           </p>
+          <SesionesPrepagadasBadge apt={apt} mostrador={hasRole('admin', 'cajero')} />
+          {apt?.prepago?.cubre?.length > 0 && hasRole('admin', 'cajero') && (
+            <p className="text-[11px] text-indigo-700 mt-1 mb-0">
+              Al asignar se usa una sesión de lo que el paciente dejó pagado: no se le cobra otra vez.
+            </p>
+          )}
         </div>
 
         {/* La cita es de otra sucursal: se dice, porque el personal que sale en

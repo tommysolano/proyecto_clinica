@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import api from '../api/axios';
 import Modal from '../components/Modal';
@@ -115,6 +115,44 @@ const priceListOf = (product) => (
     ? product.salePrices.map((p) => ({ name: p.name || 'General', price: Number(p.price) || 0, active: !!p.active }))
     : [{ name: 'General', price: Number(product?.salePrice) || 0, active: true }]
 );
+/**
+ * IVA de una línea, espejo de `calculateSaleLine` (server/utils/tax.js): el backend es quien
+ * factura, esto solo lo muestra. Con `priceIncludesVat` (lo normal) el precio YA lleva el IVA
+ * y se desglosa por dentro; sin él, el IVA se suma encima.
+ */
+const r2 = (n) => +Number(n || 0).toFixed(2);
+/**
+ * DESCUENTO DE LA LÍNEA = el del PRODUCTO, configurado en el inventario (oct-2026). Al cobrar
+ * ya no se teclea. Espejo de server/utils/productDiscount.js: el servidor es quien lo aplica
+ * (lo que mande la pantalla se ignora); esto solo lo muestra.
+ */
+const descuentoDeLinea = (item) => {
+  const valor = Number(item?.discountValue) || 0;
+  if (!item?.discountType || valor <= 0) return 0;
+  const bruto = r2(Number(item.unitPrice || 0) * Number(item.quantity || 0));
+  if (bruto <= 0) return 0;
+  const d = item.discountType === 'percentage'
+    ? r2(bruto * Math.min(valor, 100) / 100)
+    : item.discountType === 'amount' ? r2(valor * Number(item.quantity || 0)) : 0;
+  return Math.min(d, bruto);
+};
+const esServicioLinea = (item) => item?.category === 'servicio' || item?.unlimited === true;
+const ivaDeLinea = (item) => {
+  const cat = item.taxCategory || 'IVA_15';
+  const norm = (n) => (Number(n) > 0 ? (Number(n) <= 1 ? Number(n) * 100 : Number(n)) : 0);
+  const rate = ['IVA_0', 'EXENTO', 'NO_OBJETO'].includes(cat) ? 0
+    : cat === 'IVA_5' ? 5
+      : cat === 'IVA_12' ? 12
+        : cat === 'IVA_15' ? (norm(item.taxRate) || 15)
+          : norm(item.taxRate);
+  const neto = r2(r2(item.unitPrice * item.quantity) - descuentoDeLinea(item));
+  if (item.priceIncludesVat !== false && rate > 0) {
+    const base = r2(neto / (1 + rate / 100));
+    return { rate, base, iva: r2(neto - base), total: neto };
+  }
+  const iva = r2(neto * (rate / 100));
+  return { rate, base: neto, iva, total: r2(neto + iva) };
+};
 const activePriceOf = (product) => {
   const list = priceListOf(product);
   return list.find((p) => p.active) || list[0];
@@ -455,10 +493,17 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           unitPrice: elegido.price,
           priceName: elegido.name,
           priceList: lista,
+          variablePrice: product.variablePrice === true,
+          discountType: product.discountType || '',
+          discountValue: Number(product.discountValue) || 0,
           taxRate: product.taxRate,
+          taxCategory: product.taxCategory,
+          priceIncludesVat: product.priceIncludesVat,
           stock: product.stock,
-          discount: 0,
           treatment: '',
+          // Un servicio que se agrega al cobrar una cita y que la cita no lleva es, casi
+          // siempre, algo que se deja pagado para después. Se puede desmarcar.
+          prepaid: isService && prepagoPorDefecto(product._id, qty),
         },
       ],
     }));
@@ -479,13 +524,21 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       return;
     }
     items[idx].quantity = newQty;
+    // Al subir la cantidad de un servicio de la cita, lo que pasa de lo de hoy queda
+    // para citas futuras (sigue pudiéndose desmarcar).
+    if (isService && citaPorCobrar && !modoReceta) items[idx].prepaid = prepagoPorDefecto(it.product, newQty);
     setForm({ ...form, items });
   };
 
   const subtotal = form.items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
-  const discountTotal = form.items.reduce((s, i) => s + (Number(i.discount) || 0), 0);
-  // El IVA lo calcula el backend por línea (`utils/tax`): aquí solo se muestra el total.
-  const total = subtotal - discountTotal;
+  const discountTotal = form.items.reduce((s, i) => s + descuentoDeLinea(i), 0);
+  const hayDescuento = form.items.some((i) => descuentoDeLinea(i) > 0);
+  // El IVA lo calcula el backend por línea (`utils/tax`); `ivaDeLinea` lo replica para mostrar
+  // el desglose y para que el total coincida con lo que se va a facturar.
+  const lineasIva = form.items.map(ivaDeLinea);
+  const ivaTotal = r2(lineasIva.reduce((s, l) => s + l.iva, 0));
+  const baseGravada = r2(lineasIva.reduce((s, l) => s + (l.rate > 0 ? l.base : 0), 0));
+  const total = r2(lineasIva.reduce((s, l) => s + l.total, 0));
 
   // ── Pago dividido ── (debe ir DESPUÉS de `total`: se evalúa en cada render y
   // usarlo antes de su declaración rompía la página completa con ReferenceError)
@@ -541,6 +594,28 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const citaObjetivo = embebido ? citaId : citaParam;
   const modoReceta = Array.isArray(itemsIniciales);
   /**
+   * SESIONES PREPAGADAS (oct-2026). Cuántas veces lleva la cita cada servicio (por su
+   * producto): eso se hace hoy. Lo que se cobre de más de un servicio queda pagado para
+   * citas futuras y la cita lo muestra como «Sesión 1 de N».
+   */
+  const usoEnCita = useMemo(() => {
+    const m = new Map();
+    if (!citaPorCobrar || modoReceta) return m;
+    const sumar = (si) => {
+      const id = si?.product?._id || si?.product;
+      if (id) m.set(String(id), (m.get(String(id)) || 0) + 1);
+    };
+    sumar(citaPorCobrar.serviceItem);
+    for (const extra of citaPorCobrar.additionalServices || []) sumar(extra.serviceItem);
+    return m;
+  }, [citaPorCobrar, modoReceta]);
+  const prepagoPorDefecto = (productId, qty) => {
+    if (!citaPorCobrar || modoReceta) return false;
+    return Number(qty) > (usoEnCita.get(String(productId)) || 0);
+  };
+  // Para citas futuras: lo que sobra de lo de hoy (o la línea entera sin cita).
+  const sesionesFuturas = (item) => Math.max(0, Number(item.quantity || 0) - (usoEnCita.get(String(item.product)) || 0));
+  /**
    * A NOMBRE DE QUIÉN SE FACTURA (oct-2026): consumidor final, el paciente de la
    * cita (sus datos se llenan solos) u otra persona (se busca o se escribe). En
    * los tres casos la venta queda enlazada al PACIENTE de la cita: a quién se le
@@ -570,6 +645,8 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   };
   // Lo que no se pudo precargar porque no está en el inventario (se avisa).
   const [noPrecargados, setNoPrecargados] = useState([]);
+  // Servicios de la cita que ya están pagados por adelantado (no se cobran ahora).
+  const [yaPrepagados, setYaPrepagados] = useState([]);
   // Clave de idempotencia de ESTE cobro: un doble clic no registra dos ventas.
   const claveCobroRef = useRef('');
 
@@ -643,43 +720,68 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         unitPrice: elegido.price,
         priceName: elegido.name,
         priceList: lista,
+        variablePrice: product.variablePrice === true,
+        discountType: product.discountType || '',
+        discountValue: Number(product.discountValue) || 0,
         taxRate: product.taxRate,
+        taxCategory: product.taxCategory,
+        priceIncludesVat: product.priceIncludesVat,
         stock: product.stock,
-        discount: 0,
         treatment: '',
+        prepaid: false,
       });
     };
     const apt = citaPorCobrar;
+    const cubiertos = [];
     if (modoReceta) {
       for (const it of itemsIniciales) {
         if (it.product) agregar(it.product, Number(it.quantity) > 0 ? Number(it.quantity) : 1, it.name);
         else if (it.name) faltan.push(it.name);
       }
     } else {
+      /**
+       * Lo que el paciente ya dejó PAGADO por adelantado no se vuelve a cobrar: al
+       * asignar la atención se gasta una de sus sesiones (`apt.prepago`, del servidor).
+       */
+      const quedan = new Map((apt.prepago?.cubre || []).map((c) => [String(c.product), { ...c }]));
+      // Y lo que esta cita YA pagó con una sesión («Sesión 2 de 5»): tampoco se cobra.
+      const usadas = [...(apt.sesiones || [])];
+      const servicio = (productId, nombre) => {
+        const iu = usadas.findIndex((s) => String(s.product) === String(productId));
+        if (iu >= 0) {
+          const [s] = usadas.splice(iu, 1);
+          cubiertos.push(`${s.productName || nombre} (sesión ${s.n} de ${s.total})`);
+          return;
+        }
+        const c = quedan.get(String(productId));
+        if (c && c.quedan > 0) {
+          c.quedan -= 1;
+          cubiertos.push(`${c.productName || nombre} (le quedan ${c.quedan + 1} de ${c.total})`);
+          return;
+        }
+        agregar(productId, 1, nombre);
+      };
       const svc = apt.serviceItem;
-      if (svc?.product) agregar(svc.product, 1, svc.name || apt.serviceName);
+      if (svc?.product) servicio(svc.product, svc.name || apt.serviceName);
       else if (svc?.name || apt.serviceName) faltan.push(svc?.name || apt.serviceName);
       for (const extra of apt.additionalServices || []) {
         const si = extra.serviceItem;
-        if (si?.product) agregar(si.product, 1, si.name || extra.name);
+        if (si?.product) servicio(si.product, si.name || extra.name);
         else if (extra.name || si?.name) faltan.push(extra.name || si?.name);
       }
-      // El valor acordado manda: si es menor que la lista, la diferencia va como
-      // descuento (línea por línea, hasta agotarla).
-      const bruto = lineas.reduce((s, l) => s + l.unitPrice * l.quantity, 0);
+      /**
+       * EL VALOR ACORDADO YA NO ES UN DESCUENTO (oct-2026): al cobrar no hay descuentos
+       * (los pone el inventario). El cajero ESCOGE el precio de la lista del producto;
+       * si alguno coincide con lo acordado, viene ya escogido.
+       */
       const acordado = apt.isCanje || apt.isCortesia ? null : apt.agreedValue;
-      if (acordado != null && lineas.length && Number(acordado) < bruto) {
-        let rebaja = +(bruto - Number(acordado)).toFixed(2);
-        for (const l of lineas) {
-          const d = Math.min(rebaja, +(l.unitPrice * l.quantity).toFixed(2));
-          l.discount = +d.toFixed(2);
-          rebaja = +(rebaja - d).toFixed(2);
-          if (rebaja <= 0) break;
-        }
+      if (acordado != null && lineas.length === 1 && lineas[0].quantity === 1) {
+        const igual = (lineas[0].priceList || []).find((p) => Math.abs(Number(p.price) - Number(acordado)) < 0.005);
+        if (igual) { lineas[0].unitPrice = igual.price; lineas[0].priceName = igual.name; }
       }
       // Lo ya abonado al agendar entra como un PAGO de esta venta con su forma;
       // lo que falta, en efectivo (el cajero lo cambia si paga de otra forma).
-      const neto = lineas.reduce((s, l) => s + l.unitPrice * l.quantity - (Number(l.discount) || 0), 0);
+      const neto = lineas.reduce((s, l) => s + l.unitPrice * l.quantity - descuentoDeLinea(l), 0);
       if (apt.advancePayment && !apt.isCanje && !apt.isCortesia && neto > 0) {
         const abonado = apt.advancePayment === 'abono'
           ? Math.min(Number(apt.advanceAmount) || 0, neto)
@@ -706,6 +808,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     }
     setForm((f) => ({ ...f, items: lineas }));
     setNoPrecargados(faltan);
+    setYaPrepagados(cubiertos);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [citaPorCobrar, products]);
 
@@ -840,6 +943,8 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (form.items.length === 0) return toast.error('Agrega al menos un producto');
+    const sinPrecio = form.items.find((i) => i.variablePrice && !(Number(i.unitPrice) > 0));
+    if (sinPrecio) return toast.error(`Escribe el precio de «${sinPrecio.productName}»`);
     // Sin identificación no hay venta: la factura y el ATS la exigen. Consumidor Final vale.
     if (!String(form.clientCedula || '').trim()) {
       return toast.error('Falta la cédula / RUC / pasaporte del cliente. Si no lo identificas, usa Consumidor Final (9999999999999).');
@@ -973,8 +1078,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           // (`priceName` manda; el importe es solo respaldo para clientes antiguos).
           priceName: i.priceName || undefined,
           unitPrice: i.unitPrice,
-          discount: Number(i.discount) || 0,
+          // Sin descuento: lo pone el servidor desde el producto (inventario).
           treatment: i.treatment || null,
+          prepaid: !!i.prepaid && esServicioLinea(i),
         })),
         ...extra,
         // Cobrando una cita: la venta es SIEMPRE de su paciente (aunque se le
@@ -1224,6 +1330,23 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
             <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 m-0">
               No están en el inventario y no se precargaron: <b>{noPrecargados.join(', ')}</b>. Si se cobran, agrégalos abajo con su producto.
             </p>
+          )}
+          {/* SESIONES PREPAGADAS: lo que el paciente ya pagó por adelantado no se cobra otra vez. */}
+          {yaPrepagados.length > 0 && (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-indigo-200 bg-indigo-50 p-3">
+              <p className="m-0 text-xs text-indigo-900">
+                Ya pagado por adelantado: <b>{yaPrepagados.join(', ')}</b>. No se cobra otra vez: se paga con sus sesiones prepagadas.
+              </p>
+              {embebido && form.items.length === 0 && (
+                <button
+                  type="button"
+                  onClick={() => { setModalOpen(false); onCobrado?.(null); }}
+                  className="btn-secondary text-xs"
+                >
+                  Continuar a la asignación
+                </button>
+              )}
+            </div>
           )}
           <form onSubmit={handleSubmit} className="space-y-4">
             <ConsumidorFinalAlert cedula={form.clientCedula} />
@@ -1569,7 +1692,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                       <th className="text-left py-2">Producto</th>
                       <th className="text-right py-2">Precio</th>
                       <th className="text-center py-2">Cant.</th>
-                      <th className="text-right py-2">Desc. $</th>
+                      {hayDescuento && <th className="text-right py-2">Descuento</th>}
                       {form.patient && treatments.length > 0 && (
                         <th className="text-left py-2 pl-2">Tratamiento</th>
                       )}
@@ -1580,12 +1703,55 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                   <tbody>
                     {form.items.map((item, idx) => (
                       <tr key={idx} className="border-b border-slate-100">
-                        <td className="py-2 text-slate-800">{item.productName}</td>
+                        <td className="py-2 text-slate-800">
+                          {item.productName}
+                          {/* PARA CITAS FUTURAS (oct-2026): un servicio que el paciente deja
+                              pagado queda como sesiones a su favor; al asignar la atención de
+                              la próxima cita se gasta una («Sesión 2 de 5») y no se cobra otra vez. */}
+                          {esServicioLinea(item) && form.patient && (!citaPorCobrar || !modoReceta) && (
+                            <label className="mt-1 flex items-start gap-1.5 text-[11px] text-indigo-700 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={!!item.prepaid}
+                                onChange={(e) => {
+                                  const items = [...form.items];
+                                  items[idx] = { ...items[idx], prepaid: e.target.checked };
+                                  setForm({ ...form, items });
+                                }}
+                                className="w-3.5 h-3.5 mt-px accent-indigo-600 cursor-pointer"
+                              />
+                              <span>
+                                Para citas futuras
+                                {item.prepaid && (citaPorCobrar && !modoReceta
+                                  ? (sesionesFuturas(item) > 0
+                                    ? ` · ${usoEnCita.get(String(item.product)) ? `hoy 1 de ${item.quantity}, ` : ''}quedan ${sesionesFuturas(item)} a su favor`
+                                    : ' · sube la cantidad: hoy se usa la que hay')
+                                  : ` · quedan ${item.quantity} a su favor`)}
+                              </span>
+                            </label>
+                          )}
+                        </td>
                         {/* El precio también se puede cambiar DESPUÉS de agregar la línea: es
                             habitual darse cuenta al final de que va a precio corporativo. Solo
                             se ofrecen los precios de la lista del producto (el backend los valida). */}
                         <td className="py-2 text-right">
-                          {(item.priceList || []).length > 1 ? (
+                          {/* PRECIO VARIABLE (marcado en el inventario): viene el registrado y se
+                              teclea el real. Texto que solo admite números; el backend lo acepta
+                              solo porque el producto lo permite. */}
+                          {item.variablePrice ? (
+                            <NumericInput
+                              value={item.unitPrice}
+                              onChange={(e) => {
+                                const unitPrice = parseFloat(e.target.value) || 0;
+                                const items = [...form.items];
+                                items[idx] = { ...items[idx], unitPrice };
+                                setForm({ ...form, items });
+                              }}
+                              title="Precio variable: escribe el importe a cobrar"
+                              placeholder="0.00"
+                              className="w-24 px-2 py-1 border border-amber-300 bg-amber-50 rounded text-right text-sm outline-none focus:ring-2 focus:ring-amber-400"
+                            />
+                          ) : (item.priceList || []).length > 1 ? (
                             <select
                               value={item.priceName || ''}
                               onChange={(e) => {
@@ -1614,19 +1780,19 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                             className="w-16 px-2 py-1 border border-slate-300 rounded text-center text-sm outline-none"
                           />
                         </td>
-                        <td className="py-2 text-right">
-                          <NumericInput
-                            min="0"
-                            step="0.01"
-                            value={item.discount ?? 0}
-                            onChange={(e) => {
-                              const items = [...form.items];
-                              items[idx].discount = parseFloat(e.target.value) || 0;
-                              setForm({ ...form, items });
-                            }}
-                            className="w-20 px-2 py-1 border border-slate-300 rounded text-right text-sm outline-none"
-                          />
-                        </td>
+                        {/* El descuento lo pone el INVENTARIO (producto); aquí solo se ve. */}
+                        {hayDescuento && (
+                          <td className="py-2 text-right text-rose-600 whitespace-nowrap">
+                            {descuentoDeLinea(item) > 0 ? (
+                              <>
+                                -${descuentoDeLinea(item).toFixed(2)}
+                                {item.discountType === 'percentage' && (
+                                  <span className="block text-[10px] text-slate-400">{Number(item.discountValue)}%</span>
+                                )}
+                              </>
+                            ) : '—'}
+                          </td>
+                        )}
                         {form.patient && treatments.length > 0 && (
                           <td className="py-2 pl-2">
                             <select
@@ -1648,7 +1814,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                           </td>
                         )}
                         <td className="py-2 text-right font-medium">
-                          ${(item.unitPrice * item.quantity - (Number(item.discount) || 0)).toFixed(2)}
+                          ${(item.unitPrice * item.quantity - descuentoDeLinea(item)).toFixed(2)}
                         </td>
                         <td className="py-2 text-right">
                           <button
@@ -1676,6 +1842,12 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                   <div className="flex justify-between text-sm">
                     <span className="text-slate-500">Descuento:</span>
                     <span className="font-medium text-rose-600">-${discountTotal.toFixed(2)}</span>
+                  </div>
+                )}
+                {ivaTotal > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500">IVA (base gravada ${baseGravada.toFixed(2)}):</span>
+                    <span className="font-medium">${ivaTotal.toFixed(2)}</span>
                   </div>
                 )}
                 <div className="flex justify-between text-base font-bold border-t border-emerald-200 pt-2">

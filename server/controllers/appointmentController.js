@@ -124,6 +124,36 @@ const POPULATE_CREATOR = 'name email';
  */
 const POPULATE_SERVICE_ITEM = 'name color nursingService autoSerum product';
 
+/**
+ * SESIONES PREPAGADAS (oct-2026): la cita que queda recibida gasta una sesión
+ * de lo que el paciente dejó pagado (ver utils/sesionesPrepagadas). Nunca tumba
+ * la asignación: el paciente está esperando en el mostrador.
+ *
+ * Solo en el PASO a asistida (quien llama lo comprueba): reabrir la asignación
+ * de una cita ya recibida —para sumar a enfermería— no puede gastar una sesión
+ * que el paciente compró DESPUÉS para otro día.
+ */
+async function usarSesionesPrepagadas(apt, userId) {
+  if (!['asistida', 'completada'].includes(apt.status)) return [];
+  try {
+    return await require('../utils/sesionesPrepagadas').usarEnCita(apt, userId);
+  } catch (e) {
+    console.warn('[citas] no se pudo usar la sesión prepagada:', e.message);
+    return [];
+  }
+}
+
+/** Añade «Sesión n de N» (todos) y lo prepagado disponible (mostrador) a citas planas. */
+async function conSesionesPrepagadas(req, citas) {
+  try {
+    const disponibles = !!req.user?.isSuperAdmin || ['admin', 'cajero'].includes(req.role);
+    await require('../utils/sesionesPrepagadas').enriquecerCitas(citas, { disponibles });
+  } catch (e) {
+    console.warn('[citas] no se pudieron leer las sesiones prepagadas:', e.message);
+  }
+  return citas;
+}
+
 // Convierte 'YYYY-MM-DD' (o ISO) a Date en zona local, fijando 12:00 para evitar
 // que el cambio de zona horaria mueva el día al guardar/leer.
 const parseLocalDate = (value) => {
@@ -475,7 +505,7 @@ exports.getAppointments = async (req, res) => {
         o.turnoOdontologiaCompartido = await turnoVigenteEsDeOdontologia(a, ids);
         marcadas.push(o);
       }
-      return res.json(marcadas);
+      return res.json(await conSesionesPrepagadas(req, marcadas));
     }
 
     /**
@@ -498,7 +528,7 @@ exports.getAppointments = async (req, res) => {
           if (!porCita.has(k)) porCita.set(k, []);
           porCita.get(k).push({ _id: v._id, saleNumber: v.saleNumber, total: v.total });
         }
-        return res.json(appointments.map((a) => {
+        return res.json(await conSesionesPrepagadas(req, appointments.map((a) => {
           const o = a.toJSON();
           const lista = porCita.get(String(a._id));
           if (lista) {
@@ -508,11 +538,11 @@ exports.getAppointments = async (req, res) => {
             };
           }
           return o;
-        }));
+        })));
       }
     }
 
-    res.json(appointments);
+    res.json(await conSesionesPrepagadas(req, appointments.map((a) => a.toJSON())));
   } catch (error) {
     console.error('[getAppointments] ERROR:', error);
     res.status(500).json({ message: 'Error al obtener citas', error: error.message, stack: error.stack });
@@ -626,7 +656,9 @@ exports.getAppointment = async (req, res) => {
     const visibles = sucursalesVisibles(req);
     let canAccess = visibles === null || visibles.some((c) => String(c) === apptClinicId);
     if (!canAccess) return res.status(404).json({ message: 'Cita no encontrada' });
-    res.json(appointment);
+    // Con sus sesiones prepagadas: el cobro no precarga lo que ya está pagado.
+    const [conSesiones] = await conSesionesPrepagadas(req, [appointment.toJSON()]);
+    res.json(conSesiones);
   } catch (error) {
     // Con el motivo: el resto del archivo lo devuelve y aquí no, así que un fallo
     // de esta ruta llegaba como un 500 mudo imposible de diagnosticar.
@@ -2891,6 +2923,8 @@ exports.markAttended = async (req, res) => {
     // utils/appointmentArrival.js.
     registrarLlegada(apt);
     await apt.save();
+    // Solo al RECIBIR al paciente (no al re-marcar): ver usarSesionesPrepagadas.
+    if (!wasAttended) await usarSesionesPrepagadas(apt, req.user._id);
     if (apt.referral) {
       try {
         const Referral = require('../models/Referral');
@@ -3788,6 +3822,9 @@ exports.assignDoctor = async (req, res) => {
      */
     if (pasos.length && !apt.attentionAssignedAt) apt.attentionAssignedAt = new Date();
     await apt.save();
+    // El paciente está delante y recibe su atención: si la tiene PREPAGADA, se gasta
+    // aquí una sesión (y la cita muestra «Sesión 2 de 5»).
+    const sesionesUsadas = wasAttended ? [] : await usarSesionesPrepagadas(apt, req.user._id);
 
     /**
      * EL AVISO DE QUIEN YA NO LE TOCA, SE APAGA (sep-2026).
@@ -3920,8 +3957,14 @@ exports.assignDoctor = async (req, res) => {
     // `autoSerum` lo lee la pantalla para decir que el suero ya quedó escrito en
     // los seguimientos. Va aparte del documento: no es un campo de la cita.
     res.json(
-      suerosSembrados.length || suerosAvisos.length
-        ? { ...populated.toObject(), autoSerum: { items: suerosSembrados, avisos: suerosAvisos } }
+      suerosSembrados.length || suerosAvisos.length || sesionesUsadas.length
+        ? {
+            ...populated.toObject(),
+            ...(suerosSembrados.length || suerosAvisos.length
+              ? { autoSerum: { items: suerosSembrados, avisos: suerosAvisos } }
+              : {}),
+            ...(sesionesUsadas.length ? { sesionesUsadas } : {}),
+          }
         : populated
     );
   } catch (error) {

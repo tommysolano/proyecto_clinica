@@ -28,6 +28,7 @@ const { Extractor, checksum, fmt, parseDate } = require('../scripts/migrateConti
 const { monthRange, ecToday } = require('./contificoFinancialSync');
 const { tax } = require('../scripts/migrateContificoProject');
 const { decodeCompressedJson } = require('../utils/compressedJson');
+const { pvpConIva } = require('../utils/contificoPrice');
 
 let running = false;
 const LEASE_NAME = 'contifico-inventory-sync';
@@ -212,7 +213,8 @@ async function importNewProducts({ clinic, api, rows, maps, commit = true }) {
     const physical = String(row.tipo).toUpperCase() === 'PRO';
     const category = catalog.categories.get(String(row.categoria_id || '')) || {};
     const stock = physical ? num(row.cantidad_stock) : 0;
-    const salePrice = Math.max(0, num(row.pvp1));
+    // pvp1 es la base sin IVA; aquí el precio de venta lo incluye (ver utils/contificoPrice).
+    const salePrice = pvpConIva(row.pvp1, row.porcentaje_iva);
     const _id = new mongoose.Types.ObjectId();
     links.set(String(row.id), _id);
     docs.push({
