@@ -40,17 +40,33 @@ async function applyInventoryCategory(clinicId, body, { enforce, existing = null
   const effUnlimited = body.unlimited !== undefined ? body.unlimited : existing?.unlimited;
   const physical = isPhysicalProduct(effCategory, effUnlimited);
 
+  /**
+   * CLASE DE CATEGORÍA SEGÚN EL PRODUCTO (oct-2026). Un insumo solo puede ir a una
+   * categoría INVENTARIO. Un SERVICIO va a una categoría SERVICIO (de ahí sale la
+   * cuenta de ingreso de la venta, ver saleController) o, en los antiguos, a una
+   * INVENTARIO. Antes se exigía INVENTARIO a todos y cualquier servicio con su
+   * categoría SERVICIO ya no se podía guardar («EXAMENES DE LABORATORIO no es de
+   * tipo INVENTARIO» al marcarle precio variable).
+   */
+  const clasesValidas = physical ? ['INVENTARIO'] : ['SERVICIO', 'INVENTARIO'];
+
   let category = null;
   const provided = body.inventoryCategory != null && body.inventoryCategory !== '';
   if (provided) {
     category = await InventoryCategory.findOne({ _id: body.inventoryCategory, clinic: clinicId });
     if (!category) throw Object.assign(new Error('La categoría de inventario no existe o no pertenece a la clínica'), { status: 400 });
     if (category.active === false) throw Object.assign(new Error(`La categoría de inventario "${category.name}" está inactiva`), { status: 400 });
-    if (category.kind !== 'INVENTARIO') throw Object.assign(new Error(`La categoría "${category.name}" no es de tipo INVENTARIO`), { status: 400 });
+    if (!clasesValidas.includes(category.kind)) {
+      throw Object.assign(new Error(
+        physical
+          ? `La categoría "${category.name}" no es de tipo INVENTARIO: un insumo necesita una categoría de inventario.`
+          : `La categoría "${category.name}" es de tipo ${category.kind}: un servicio necesita una categoría de tipo SERVICIO.`
+      ), { status: 400 });
+    }
   } else if (body.categoria) {
     // Compatibilidad legacy: resolver por nombre normalizado dentro de la clínica.
     const target = normName(body.categoria);
-    const candidates = await InventoryCategory.find({ clinic: clinicId, kind: 'INVENTARIO', active: true });
+    const candidates = await InventoryCategory.find({ clinic: clinicId, kind: { $in: clasesValidas }, active: true });
     category = candidates.find((c) => normName(c.name) === target) || null;
     if (category) body.inventoryCategory = category._id;
     else if (physical && enforce) {
