@@ -6,6 +6,9 @@ import { HiOutlineMagnifyingGlass, HiOutlineXMark } from 'react-icons/hi2';
  * - products: lista completa de productos disponibles
  * - value: id del producto seleccionado
  * - onSelect: callback(product) cuando el usuario selecciona uno
+ * - onEnter: opcional, callback(product) al escoger con ENTER: la pantalla lo agrega
+ *   directo (sin botón «Agregar») y el buscador queda listo para el siguiente
+ * - Teclado: ↓/↑ recorren las opciones, Enter escoge, Esc cierra
  * - placeholder: texto del input
  * - filter: función opcional para filtrar productos visibles
  * - disabled
@@ -14,6 +17,7 @@ export default function ProductAutocomplete({
   products = [],
   value = '',
   onSelect,
+  onEnter,
   placeholder = 'Buscar producto/servicio...',
   filter,
   disabled = false,
@@ -28,14 +32,29 @@ export default function ProductAutocomplete({
     return (products || []).filter((p) => (filter ? filter(p) : true));
   }, [products, filter]);
 
-  // Cuando cambia value externo, sincronizamos texto del input.
+  /**
+   * El texto sigue al `value` de afuera SOLO cuando ese valor cambia (oct-2026).
+   *
+   * Antes se reescribía en cada render en que cambiaba `list`, y `list` cambia
+   * siempre que el padre pasa un `filter` en línea (una función nueva por render):
+   * con `value` vacío —nada escogido todavía— cada redibujo del padre ponía el
+   * texto en blanco. En «Cobrar la cita» el padre se redibuja a cada rato, así que
+   * lo que se escribía se borraba y no se alcanzaba a escoger nada.
+   */
+  const sincronizadoRef = useRef(null); // id cuyo nombre está escrito, o null
   useEffect(() => {
     if (!value) {
-      setQuery('');
+      // Solo se limpia si se había escrito el nombre de uno que ya no está escogido.
+      if (sincronizadoRef.current) setQuery('');
+      sincronizadoRef.current = null;
       return;
     }
+    if (sincronizadoRef.current === value) return;
     const p = list.find((x) => x._id === value);
-    if (p) setQuery(p.name || '');
+    if (p) {
+      setQuery(p.name || '');
+      sincronizadoRef.current = value;
+    }
   }, [value, list]);
 
   // Cerrar al hacer click fuera
@@ -65,9 +84,25 @@ export default function ProductAutocomplete({
   }, [list, query]);
 
   const choose = (p) => {
-    setQuery(p.name || '');
+    // Quien no guarda lo escogido (`value` vacío: pantallas que van sumando a una
+    // lista) recibe el buscador en blanco para el siguiente; quien sí lo guarda
+    // verá el nombre cuando su `value` llegue.
+    setQuery(value ? p.name || '' : '');
     setOpen(false);
     onSelect?.(p);
+  };
+
+  /**
+   * ENTER = ESCOGER Y AGREGAR (oct-2026), si la pantalla pasa `onEnter`: el
+   * buscador queda en blanco y con el foco para buscar el siguiente, sin pasar
+   * por el botón «Agregar».
+   */
+  const agregarConEnter = (p) => {
+    setQuery('');
+    setOpen(false);
+    setHighlight(0);
+    sincronizadoRef.current = null;
+    onEnter(p);
   };
 
   const clear = () => {
@@ -76,18 +111,35 @@ export default function ProductAutocomplete({
     onSelect?.(null);
   };
 
+  // La opción resaltada con las flechas siempre a la vista dentro de la lista.
+  const listaRef = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    listaRef.current?.children?.[highlight]?.scrollIntoView?.({ block: 'nearest' });
+  }, [highlight, open]);
+
   const onKeyDown = (e) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setOpen(true);
+      if (!open) {
+        setOpen(true);
+        setHighlight(0);
+        return;
+      }
       setHighlight((h) => Math.min(h + 1, filtered.length - 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       setHighlight((h) => Math.max(h - 1, 0));
     } else if (e.key === 'Enter') {
+      // Enter nunca envía el formulario que contiene al buscador.
+      e.preventDefault();
       if (open && filtered[highlight]) {
-        e.preventDefault();
-        choose(filtered[highlight]);
+        if (onEnter) agregarConEnter(filtered[highlight]);
+        else choose(filtered[highlight]);
+      } else if (!open && value && onEnter) {
+        // Ya escogido con el ratón: Enter lo agrega.
+        const p = list.find((x) => x._id === value);
+        if (p) agregarConEnter(p);
       }
     } else if (e.key === 'Escape') {
       setOpen(false);
@@ -124,7 +176,7 @@ export default function ProductAutocomplete({
         )}
       </div>
       {open && filtered.length > 0 && (
-        <ul className="absolute z-30 mt-1 w-full min-w-[280px] bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-y-auto text-sm">
+        <ul ref={listaRef} className="absolute z-30 mt-1 w-full min-w-[280px] bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-y-auto text-sm">
           {filtered.map((p, idx) => (
             <li
               key={p._id}

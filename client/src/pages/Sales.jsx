@@ -137,6 +137,21 @@ const descuentoDeLinea = (item) => {
   return Math.min(d, bruto);
 };
 const esServicioLinea = (item) => item?.category === 'servicio' || item?.unlimited === true;
+// Filtro del buscador de productos. Fuera del componente: una función nueva en cada
+// render obliga al buscador a recalcular su lista a cada rato.
+const soloActivos = (p) => p.active !== false;
+/**
+ * ENTER NO COBRA (oct-2026). En la ventana de cobro, Enter en cualquier campo enviaba el
+ * formulario y registraba la venta sin querer. Ahora cobrar es SOLO con el clic en el
+ * botón. Enter sigue sirviendo en los textos largos y en los botones de acción normales.
+ */
+const enterNoEnvia = (e) => {
+  if (e.key !== 'Enter') return;
+  const t = e.target;
+  if (t.tagName === 'TEXTAREA') return;
+  if (t.tagName === 'BUTTON' && t.type !== 'submit') return;
+  e.preventDefault();
+};
 const ivaDeLinea = (item) => {
   const cat = item.taxCategory || 'IVA_15';
   const norm = (n) => (Number(n) > 0 ? (Number(n) <= 1 ? Number(n) * 100 : Number(n)) : 0);
@@ -457,16 +472,19 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const centroDistinto = !!(form.warehouse && centroEsperado && form.costCenter
     && String(centroEsperado) !== String(form.costCenter));
 
-  const addItem = () => {
-    if (!currentItem.product) return toast.error('Selecciona un producto');
-    const product = products.find((p) => p._id === currentItem.product);
+  // `elegido`: el producto escogido con ENTER en el buscador (se agrega directo, sin
+  // esperar a que `currentItem` se actualice). Desde el botón llega el evento: se ignora.
+  const addItem = (elegidoConEnter) => {
+    const directo = elegidoConEnter && elegidoConEnter._id ? elegidoConEnter : null;
+    if (!directo && !currentItem.product) return toast.error('Selecciona un producto');
+    const product = directo || products.find((p) => p._id === currentItem.product);
     if (!product) return;
 
     const isService = product.category === 'servicio' || product.unlimited === true;
     if (!isService && product.stock <= 0) {
       return toast.error(`${product.name} sin stock disponible`);
     }
-    if (form.items.find((i) => i.product === currentItem.product)) {
+    if (form.items.find((i) => String(i.product) === String(product._id))) {
       return toast.error('El producto ya está en la lista');
     }
     const qty = parseInt(currentItem.quantity) || 1;
@@ -478,7 +496,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     // ese. Se guarda el NOMBRE del precio además del importe: es lo que valida el backend
     // (dos precios pueden coincidir en importe y el nombre no depende de redondeos).
     const lista = priceListOf(product);
-    const elegido = lista.find((p) => p.name === currentItem.priceName) || activePriceOf(product);
+    // (El precio escogido en el buscador es del producto de `currentItem`, no de otro.)
+    const precioPedido = String(currentItem.product) === String(product._id) ? currentItem.priceName : '';
+    const elegido = lista.find((p) => p.name === precioPedido) || activePriceOf(product);
 
     setForm((f) => ({
       ...f,
@@ -1348,7 +1368,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
               )}
             </div>
           )}
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} onKeyDown={enterNoEnvia} className="space-y-4">
             <ConsumidorFinalAlert cedula={form.clientCedula} />
 
             {/* A NOMBRE DE QUIÉN SE FACTURA (cobro de una cita). */}
@@ -1635,8 +1655,11 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                       // Al cambiar de producto se descarta el precio elegido: pertenecía al anterior.
                       setCurrentItem({ ...currentItem, product: p?._id || '', priceName: '' })
                     }
-                    placeholder="Buscar producto o servicio..."
-                    filter={(p) => p.active !== false}
+                    // ENTER escoge y agrega directo (sin el botón «Agregar»); las flechas
+                    // recorren las opciones.
+                    onEnter={(p) => addItem(p)}
+                    placeholder="Buscar producto o servicio... (↓ ↑ y Enter para agregar)"
+                    filter={soloActivos}
                   />
                 </div>
                 {/* Lista de precios del producto elegido. Solo aparece si tiene más de uno: con un
@@ -1671,6 +1694,8 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                     onChange={(e) =>
                       setCurrentItem({ ...currentItem, quantity: e.target.value })
                     }
+                    // Enter en la cantidad agrega el producto escogido.
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addItem(); } }}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white text-center outline-none"
                   />
                 </div>
@@ -2196,6 +2221,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
               </button>
               <button
                 type="submit"
+                // Solo con CLIC: un clic de ratón trae `detail` ≥ 1; Enter/espacio sobre el
+                // botón (o el envío implícito del formulario) llegan con 0 y no cobran.
+                onClick={(e) => { if (e.detail === 0) e.preventDefault(); }}
                 disabled={saving || form.items.length === 0}
                 className="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-sm font-medium disabled:opacity-50 cursor-pointer border-none shadow-lg shadow-emerald-200/50"
               >
