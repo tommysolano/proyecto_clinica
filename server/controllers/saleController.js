@@ -236,6 +236,7 @@ exports.createSale = async (req, res) => {
       // Caja (punto de venta) de quien registra: su cierre de caja cuenta esta venta.
       const puntoVenta = await puntoDelUsuario(req.clinicId, req.user._id);
       const txSaleId = await runInTransaction(async (session) => {
+        saleWarnings.length = 0; // idempotente ante reintentos de la transacción
         const saleDate = req.body.date ? new Date(req.body.date) : new Date();
         // Una VENTA no se registra con fecha pasada: el comprobante lo emitimos nosotros y su
         // factura electrónica se emite hoy (el SRI rechaza una emisión atrasada). Registrar la
@@ -303,8 +304,12 @@ exports.createSale = async (req, res) => {
           const product = txProductMap.get(String(item.product));
           const qty = Number(item.quantity);
           if (txIsUnlimited(product)) continue;
+          // CATÁLOGO COMPARTIDO: el producto se busca por su _id, NO por la sucursal activa.
+          // Todo el catálogo se creó bajo una sola sucursal; filtrar por `req.clinicId` hacía
+          // que, cobrando desde otra, el descuento no encontrara el producto y la venta
+          // fallara con «Stock insuficiente (cambio durante la operación)» teniendo stock.
           const updated = await Product.findOneAndUpdate(
-            { _id: product._id, clinic: req.clinicId, stock: { $gte: qty } },
+            { _id: product._id, stock: { $gte: qty } },
             { $inc: { stock: -qty } },
             { new: true, session }
           );
@@ -646,6 +651,28 @@ exports.createSale = async (req, res) => {
         const txLines = [];
         let clientesAcc = null; // cuenta de CxC (para abrir el documento de cartera)
         const ChartOfAccount = require('../models/ChartOfAccount');
+        /**
+         * CUENTA DE LA CATEGORÍA EN EL PLAN DE ESTA SUCURSAL (oct-2026). El catálogo es
+         * compartido: el producto —y su categoría contable— se crearon bajo UNA sucursal,
+         * y sus cuentas son de ESE plan. Cada sucursal lleva su propio plan con los mismos
+         * códigos, y el asiento se valida contra el de la sucursal que vende: usar la cuenta
+         * ajena daba «Cuenta no encontrada». Se usa la cuenta del MISMO CÓDIGO de esta
+         * sucursal; si no existe, se deja la original (y el asiento lo dirá).
+         */
+        const cuentasLocales = new Map();
+        const cuentaLocal = async (accountId) => {
+          if (!accountId) return accountId;
+          const k = String(accountId._id || accountId);
+          if (cuentasLocales.has(k)) return cuentasLocales.get(k);
+          let out = accountId;
+          const acc = await ChartOfAccount.findById(k).select('clinic code').session(session).lean();
+          if (acc && String(acc.clinic) !== String(req.clinicId)) {
+            const local = await ChartOfAccount.findOne({ clinic: req.clinicId, code: acc.code }).select('_id').session(session).lean();
+            if (local) out = local._id;
+          }
+          cuentasLocales.set(k, out);
+          return out;
+        };
         for (const p of txPayments) {
           let acc = null;
           if (p.method === 'transferencia' && p.bankAccount) {
@@ -692,7 +719,7 @@ exports.createSale = async (req, res) => {
             const base = Number(i.taxBase || 0) + Number(i.discountTaxBase || 0);
             if (base <= 0) continue;
             const prod = txProductMap.get(String(i.product));
-            let acc = prod?.inventoryCategory?.incomeAccount || prod?.incomeAccount || null;
+            let acc = await cuentaLocal(prod?.inventoryCategory?.incomeAccount || prod?.incomeAccount || null);
             if (!acc) {
               if (!accProdDefault) accProdDefault = await getAccount(req.clinicId, 'ingresoProductos');
               acc = accProdDefault._id;
@@ -717,7 +744,7 @@ exports.createSale = async (req, res) => {
             const base = Number(i.taxBase || 0) + Number(i.discountTaxBase || 0);
             if (base <= 0) continue;
             const prod = txProductMap.get(String(i.product));
-            let acc = prod?.inventoryCategory?.incomeAccount || null;
+            let acc = await cuentaLocal(prod?.inventoryCategory?.incomeAccount || null);
             if (!acc) {
               if (!accServDefault) accServDefault = await getAccount(req.clinicId, 'ingresoServicios');
               acc = accServDefault._id;
@@ -783,8 +810,8 @@ exports.createSale = async (req, res) => {
               + 'Configúrela en Inventario → Categorías antes de vender este producto.'
             ), { status: 400 });
           }
-          costLines.push({ account: cat.expenseAccount, debit: totalCost, credit: 0, description: `Costo venta ${it.productName}` });
-          costLines.push({ account: cat.assetAccount, debit: 0, credit: totalCost, description: `Salida inventario ${it.productName}` });
+          costLines.push({ account: await cuentaLocal(cat.expenseAccount), debit: totalCost, credit: 0, description: `Costo venta ${it.productName}` });
+          costLines.push({ account: await cuentaLocal(cat.assetAccount), debit: 0, credit: totalCost, description: `Salida inventario ${it.productName}` });
         }
 
         // Centro de costo de la venta: el resuelto contra la bodega (no el crudo del body).
@@ -909,7 +936,7 @@ exports.createSale = async (req, res) => {
               partyName: txSale.clientName || '',
               treatment: it.treatment || null,
               deferredAccount: accDeferred._id,
-              incomeAccount: prod?.inventoryCategory?.incomeAccount || (prod && prod.incomeAccount) || accDeferredIncomeTarget._id,
+              incomeAccount: (await cuentaLocal(prod?.inventoryCategory?.incomeAccount || (prod && prod.incomeAccount))) || accDeferredIncomeTarget._id,
               total: base,
               sessionsTotal: (prod && prod.sessionsIncluded) || 0,
               issueDate: saleDate,
@@ -939,7 +966,6 @@ exports.createSale = async (req, res) => {
         // Aviso (no bloqueante) por servicios sin categoría: su ingreso fue al rol genérico
         // 'ingresoServicios'. Conviene categorizarlos para que el ingreso vaya a la cuenta de
         // su categoría (a diferencia del costo, aquí no se bloquea: el genérico es válido).
-        saleWarnings.length = 0; // idempotente ante reintentos de la transacción
         if (uncategorizedServices.size) {
           saleWarnings.push(
             `Servicios sin categoría de inventario (su ingreso fue a la cuenta genérica): ${[...uncategorizedServices].join(', ')}. `
@@ -1064,15 +1090,19 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
 
   for (const item of sale.items) {
     if (item.category === 'servicio') continue;
-    const prod = await Product.findOne({ _id: item.product, clinic: clinicId })
+    // Catálogo compartido: el producto por su _id, no por la sucursal de la venta (si no,
+    // anular desde otra sucursal no devolvía el stock; ver createSale).
+    const prod = await Product.findOne({ _id: item.product })
       .select('unlimited category stock averageCost purchasePrice')
       .session(session);
     if (prod && (prod.unlimited || prod.category === 'servicio')) continue;
     await Product.updateOne(
-      { _id: item.product, clinic: clinicId },
+      { _id: item.product },
       { $inc: { stock: item.quantity } },
       { session }
     );
+    // El costo promedio sale de las capas de ESTA sucursal: solo se recalcula en el
+    // producto de esta sucursal (como antes), para no pisarlo con el de otra sede.
     const cur = await kardex.currentStock({ clinicId, product: item.product }, session);
     await Product.updateOne(
       { _id: item.product, clinic: clinicId },
