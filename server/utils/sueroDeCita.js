@@ -100,6 +100,21 @@ function faltaElSueroDelServicio(apt, serviceItem) {
 }
 
 /**
+ * ¿LO ESCRIBIÓ UNA CITA? (oct-2026)
+ *
+ * Los seguimientos que siembra `sembrarSueroEnFicha` llevan como motivo de
+ * dónde salieron: el servicio, el formulario de la cita o el paso de
+ * enfermería. Todo lo demás —la receta del doctor en su consulta, lo que
+ * mostrador escribió a mano en la ficha— lo escribió una PERSONA, y la cita que
+ * solo lo ESCOGIÓ para enfermería no es su dueña: puede corregirlo, pero no
+ * borrarlo ni renombrarlo.
+ */
+const MOTIVO_DE_CITA = /^Suero (adicional )?indicado al (asignar la atención|agendar)|^Suero del servicio \(/;
+function sembradoPorUnaCita(fu) {
+  return MOTIVO_DE_CITA.test(String(fu?.descripcion || fu?.motivoConsulta || ''));
+}
+
+/**
  * REESCRIBE EL SUERO QUE YA ESTABA ESCRITO EN LA FICHA.
  *
  * Es la vuelta atrás que faltaba. Quien agenda escoge las ampollas y al guardar
@@ -112,6 +127,18 @@ function faltaElSueroDelServicio(apt, serviceItem) {
  * inventario y es lo que de verdad le entró al paciente por la vena: reescribirlo
  * sería falsear la historia clínica. Se dice que no y se explica por qué.
  *
+ * LA LÍNEA QUE SE CORRIGE ES LA PENDIENTE (oct-2026). La pantalla enseña y edita
+ * la primera línea de suero que aún tiene dosis por poner (`pendingSerums(fu)[0]`
+ * en el cliente); aquí se tomaba la primera línea de suero A SECAS y, si tenía
+ * alguna dosis, se negaba entera. Con las recetas del doctor —de varias sesiones
+ * («×5») o con más de un suero— en cuanto se ponía la primera, ninguna corrección
+ * de caja llegaba ya a enfermería: le seguía saliendo lo que recetó el doctor.
+ *
+ * Y SI YA LLEVA SESIONES PUESTAS, SE PARTE: las puestas se quedan como se
+ * pusieron —la línea original se cierra con esa cantidad, sus aplicaciones y su
+ * inventario intactos— y las que faltan pasan a una línea nueva, justo debajo,
+ * con la composición corregida. La suma de sesiones no cambia.
+ *
  * @returns {'reescrito'|'aplicado'|'sin-receta'}
  */
 async function reescribirSueroDelSeguimiento({ patientId, followUpId, linea, conservarNombre = false }) {
@@ -120,16 +147,42 @@ async function reescribirSueroDelSeguimiento({ patientId, followUpId, linea, con
   const fu = record?.followUps?.id(followUpId);
   if (!fu) return 'sin-receta';
 
-  const item = (fu.recetaItems || []).find((i) => i.isSerum);
-  if (!item) return 'sin-receta';
-  if ((item.administrations || []).length) return 'aplicado';
+  const sueros = (fu.recetaItems || []).filter((i) => i.isSerum);
+  if (!sueros.length) return 'sin-receta';
+  const puestas = (i) => (i.administrations || []).length;
+  const item =
+    sueros.find((i) => puestas(i) < (Number(i.quantity) || 0)) ||
+    // Una línea «de 0» sin nada puesto (receta vieja): se corrige como antes.
+    sueros.find((i) => !puestas(i));
+  if (!item) return 'aplicado';
 
-  item.serumBase = linea.serumBase;
-  item.serumComponents = linea.serumComponents;
-  // El nombre SÍ cambia cuando el suero es del paso (lo puede haber renombrado
-  // el rótulo). El de la bolsa del SERVICIO no: sigue siendo su suero, y es como
-  // lo reconocen la ficha, los PDF y la hoja del MSP.
-  if (!conservarNombre && linea.name) item.name = linea.name;
+  /**
+   * El nombre SÍ cambia cuando el suero lo escribió el PASO de la cita (lo puede
+   * haber renombrado el rótulo). El de la bolsa del SERVICIO no, y tampoco el
+   * que recetó el doctor: corregirle una ampolla no lo vuelve otro suero, y es
+   * como lo reconocen la ficha, los PDF y la hoja del MSP.
+   */
+  const nombre = !conservarNombre && sembradoPorUnaCita(fu) && linea.name ? linea.name : item.name;
+
+  const yaPuestas = puestas(item);
+  if (!yaPuestas) {
+    item.serumBase = linea.serumBase;
+    item.serumComponents = linea.serumComponents;
+    item.name = nombre;
+  } else {
+    const faltan = Math.max(1, (Number(item.quantity) || 0) - yaPuestas);
+    const { _id, ...resto } = item.toObject();
+    item.quantity = yaPuestas;
+    const idx = fu.recetaItems.indexOf(item);
+    fu.recetaItems.splice(idx + 1, 0, {
+      ...resto,
+      name: nombre,
+      quantity: faltan,
+      serumBase: linea.serumBase,
+      serumComponents: linea.serumComponents,
+      administrations: [],
+    });
+  }
   await record.save();
   return 'reescrito';
 }
@@ -197,13 +250,22 @@ function soloTraiaElSuero(fu) {
  * después, se quita únicamente la línea del suero y el seguimiento se queda.
  * Y lo ya aplicado no se toca, por lo mismo de siempre.
  *
- * @returns {'quitado'|'aplicado'|'sin-receta'}
+ * SOLO LO QUE ESCRIBIÓ UNA CITA (oct-2026). Mostrador puede escoger para
+ * enfermería el suero que recetó el doctor; si después lo quita del paso —o
+ * quita el paso, o borra la cita— eso quiere decir «hoy no se le pone», no
+ * «bórrale la receta al doctor». Antes se le borraba la línea de su receta.
+ * Ese suero se queda en la ficha, pendiente para otra visita.
+ * `propio`: quien llama SABE que lo escribió la cita (la bolsa del servicio,
+ * `autoSerumFollowUp`), y entonces no hace falta deducirlo del motivo.
+ *
+ * @returns {'quitado'|'aplicado'|'ajeno'|'sin-receta'}
  */
-async function quitarSueroDelSeguimiento({ patientId, followUpId }) {
+async function quitarSueroDelSeguimiento({ patientId, followUpId, propio = false }) {
   if (!patientId || !followUpId) return 'sin-receta';
   const record = await ClinicalRecord.findOne({ patient: patientId });
   const fu = record?.followUps?.id(followUpId);
   if (!fu) return 'sin-receta';
+  if (!propio && !sembradoPorUnaCita(fu)) return 'ajeno';
 
   const item = (fu.recetaItems || []).find((i) => i.isSerum);
   if (!item) return 'sin-receta';
@@ -292,6 +354,7 @@ module.exports = {
   sumarSueroAlSeguimiento,
   reescribirSueroDelSeguimiento,
   quitarSueroDelSeguimiento,
+  sembradoPorUnaCita,
   fichaTieneSueroPendiente,
   leFaltaElSueroDeEnfermeria,
 };

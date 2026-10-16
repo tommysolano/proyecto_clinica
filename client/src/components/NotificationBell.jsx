@@ -212,7 +212,14 @@ export default function NotificationBell() {
     await markRead(n);
     // `meta.url` primero: los avisos de cita traen a dónde ir (la ficha del
     // paciente, la agenda). Sin esto, tocar «Cita asignada» no hacía nada.
-    const to = n.meta?.url || TYPE_LINK[n.type];
+    let to = n.meta?.url || TYPE_LINK[n.type];
+    // ENFERMERÍA VA A LA AGENDA (oct-2026): ve la cita nueva y la reclama desde
+    // su bandeja, en vez de caer en la ficha del paciente. El servidor ya manda
+    // ese destino; esto cubre los avisos guardados antes del cambio.
+    const aid = n.meta?.appointment;
+    if (role === 'enfermero' && aid && String(to || '').startsWith('/patients/')) {
+      to = `/appointments?cita=${aid}`;
+    }
     setOpen(false);
     if (to) navigate(to);
   };

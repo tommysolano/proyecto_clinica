@@ -18,6 +18,7 @@ import { useAuth } from '../context/AuthContext';
 import {
   STATUS_COLORS, STATUS_OPTIONS, money, doctorRolesLabel, doctorSearchOption, statusLabel,
 } from '../utils/commissionsFormat';
+import { soloActivos } from '../utils/activeUsers';
 
 const today = () => todayEc();
 const monthAgo = () => {
@@ -580,7 +581,7 @@ export default function Commissions() {
                     «general») y el resultado se añade como chip. Debajo de cada
                     nombre va su rol, general o especialidad. */}
                 <ProductAutocomplete
-                  products={doctors
+                  products={soloActivos(doctors)
                     .filter((d) => !doctorFilter.some((x) => String(x) === String(d._id)))
                     .map(doctorSearchOption)}
                   value=""

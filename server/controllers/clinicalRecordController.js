@@ -1484,7 +1484,7 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
    * agenda la obligaba a buscar la cita otra vez.
    */
   let siguienteTurno = null;
-  const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion, laCitaMereceAviso } =
+  const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion, urlDeAgenda, laCitaMereceAviso } =
     require('../utils/appointmentNotice');
   const paciente = siguiente ? await pacienteDeCita(apt) : '';
 
@@ -1525,7 +1525,8 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
           hora: apt.startTime,
           motivo: 'El profesional anterior terminó su parte.',
         }),
-        url: urlDeAtencion(patientId, apt._id),
+        // Enfermería va a la agenda, con la cita abierta (ver urlDeAgenda).
+        url: siguiente.kind === 'enfermeria' ? urlDeAgenda(apt._id) : urlDeAtencion(patientId, apt._id),
         // El sello de la cita: apaga el aviso en cuanto quien lo recibe atiende
         // (ver filtroDeAvisosVivos en notificationController).
         meta: { appointment: apt._id },
@@ -1551,7 +1552,7 @@ const avanzarTurnoDeCita = async ({ req, appointmentId, patientId, followUpId })
           hora: apt.startTime,
           motivo: 'El doctor terminó su parte.',
         }),
-        url: urlDeAtencion(patientId, apt._id),
+        url: urlDeAgenda(apt._id),
         // La cita va en el aviso: al reclamarla, nurseClaim lo apaga.
         meta: { appointment: apt._id },
       }).catch(() => {});
@@ -1639,7 +1640,7 @@ async function dejarSueroEnColaEnfermeria({ clinicId, patientId, sueros, user, r
   // camino que cuando el doctor termina y les pasa el paciente.
   emitToRole(clinicId, 'enfermero', 'appointment:assigned', apt);
   const { notificarRol } = require('../utils/pushNotifications');
-  const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion } = require('../utils/appointmentNotice');
+  const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAgenda } = require('../utils/appointmentNotice');
   await notificarRol(clinicId, 'enfermero', {
     type: 'appointment_nursing',
     title: 'Suero por aplicar',
@@ -1652,7 +1653,8 @@ async function dejarSueroEnColaEnfermeria({ clinicId, patientId, sueros, user, r
       hora: apt.startTime,
       motivo: 'El paciente está esperando.',
     }),
-    url: urlDeAtencion(patientId, apt._id),
+    // A la agenda, con la cita abierta (ver urlDeAgenda).
+    url: urlDeAgenda(apt._id),
     // La cita va en el aviso: al reclamarla, nurseClaim lo apaga.
     meta: { appointment: apt._id },
   }).catch(() => {});

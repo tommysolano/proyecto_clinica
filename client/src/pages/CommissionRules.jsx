@@ -8,6 +8,7 @@ import ProductAutocomplete from '../components/ProductAutocomplete';
 import AccountSelect from '../components/AccountSelect';
 import DateInput from '../components/DateInput';
 import { DOCTOR_SPECIALTY_ROLES } from '../utils/roles';
+import { soloActivos } from '../utils/activeUsers';
 
 const ROLES = [
   { value: 'admin', label: 'Administrador' },
@@ -482,7 +483,7 @@ export default function CommissionRules() {
               <label className="text-sm">Usuario
                 <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm">
                   <option value="">— Seleccionar —</option>
-                  {users.map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
+                  {soloActivos(users, userFilter).map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
                 </select>
               </label>
             )}
@@ -610,7 +611,7 @@ export default function CommissionRules() {
                   className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
                 >
                   <option value="">— Agregar persona —</option>
-                  {users.filter((u) => !form.users.includes(u._id)).map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
+                  {soloActivos(users).filter((u) => !form.users.includes(u._id)).map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
                 </select>
                 <Chips
                   items={form.users.map((id) => ({ id, label: users.find((u) => u._id === id)?.name || 'Usuario' }))}

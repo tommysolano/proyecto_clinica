@@ -263,12 +263,25 @@ exports.testConnection = async (req, res) => {
       if (!c.pageAccessToken || !c.pageId) {
         return res.status(400).json({ message: 'Falta pageAccessToken o pageId' });
       }
-      const r = await fetch(`https://graph.facebook.com/v20.0/${c.pageId}?fields=name`, {
+      if (channel === 'instagram' && !c.igBusinessAccountId) {
+        return res.status(400).json({ message: 'Falta Instagram Business Account ID' });
+      }
+      const fields = channel === 'instagram' ? 'name,instagram_business_account' : 'name';
+      const r = await fetch(`https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION || 'v23.0'}/${encodeURIComponent(c.pageId)}?fields=${fields}`, {
         headers: { Authorization: `Bearer ${decryptSecret(c.pageAccessToken)}` },
       });
       const data = await r.json();
       if (!r.ok) return res.status(400).json({ message: 'Token inválido', detail: data });
-      return res.json({ ok: true, info: data });
+      if (channel === 'instagram' && String(data.instagram_business_account?.id || '') !== String(c.igBusinessAccountId)) {
+        return res.status(400).json({ message: 'La cuenta de Instagram no está vinculada a esa página o su ID no coincide', info: data });
+      }
+      return res.json({
+        ok: true,
+        info: data,
+        message: channel === 'instagram'
+          ? 'Token válido e Instagram vinculado. Comprueba el webhook con un mensaje real.'
+          : 'Token de página válido. Comprueba el webhook con un mensaje real.',
+      });
     }
     if (channel === 'tiktok') {
       if (!c.accessToken) {

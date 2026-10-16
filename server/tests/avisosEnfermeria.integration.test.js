@@ -8,7 +8,9 @@
  *
  * Lo que estos tests fijan:
  *  1. El nombre del paciente encabeza SIEMPRE el cuerpo del aviso.
- *  2. El enlace apunta a los seguimientos DE ESE paciente, con su cita.
+ *  2. El enlace lleva a la AGENDA con esa cita abierta (oct-2026, a pedido de
+ *     la clínica: antes iba a los seguimientos del paciente, y el enfermero no
+ *     veía la cita nueva en su agenda ni la reclamaba desde su bandeja).
  *  3. Vale para los tres caminos por los que llega trabajo a enfermería:
  *     recepción asigna, el doctor termina su turno, y mostrador receta un suero.
  */
@@ -55,17 +57,17 @@ const avisoEnfermeria = () =>
   Notification.findOne({ type: 'appointment_nursing' }).sort({ createdAt: -1 }).lean();
 
 /** Las dos cosas que un aviso tiene que traer, en un solo sitio. */
-function assertAvisoUtil(aviso, { cita, patientId }) {
+function assertAvisoUtil(aviso, { cita }) {
   assert.ok(aviso, 'el aviso llegó a la campana');
   assert.match(aviso.body, /^Jorge Avilés Villón/i, `el paciente encabeza el aviso: "${aviso.body}"`);
   assert.equal(
     aviso.meta?.url,
-    `/patients/${patientId}?tab=seguimientos&appointment=${cita}`,
-    'lleva a los seguimientos del paciente, no a la agenda'
+    `/appointments?cita=${cita}`,
+    'lleva a la agenda con la cita abierta, no a la ficha del paciente'
   );
 }
 
-test('recepción manda la cita a enfermería: el aviso trae el paciente y su ficha', async () => {
+test('recepción manda la cita a enfermería: el aviso trae el paciente y abre la cita en la agenda', async () => {
   const { clinicId, patient, cajero, enfermera } = await seed();
 
   const cita = await Appointment.create({
@@ -118,7 +120,7 @@ test('el doctor termina y pasa a enfermería: el aviso dice a quién hay que ate
   assert.equal(String(aviso.user), String(enfermera._id));
 });
 
-test('mostrador receta un suero: el aviso trae paciente y suero, y abre su ficha', async () => {
+test('mostrador receta un suero: el aviso trae paciente y suero, y abre la cita en la agenda', async () => {
   const { clinicId, patient, cajero } = await seed();
 
   const r = await H.runController(

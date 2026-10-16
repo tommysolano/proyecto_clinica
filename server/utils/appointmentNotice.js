@@ -12,6 +12,7 @@
  * 2. EL AVISO LLEVA A DONDE SE ATIENDE, que son los seguimientos del paciente y
  *    no la agenda. Mandar a /appointments obligaba a buscar otra vez, en una
  *    lista de decenas de citas, justo la que el aviso ya identificaba.
+ *    SALVO A ENFERMERÍA (oct-2026, a pedido de la clínica): ver `urlDeAgenda`.
  *
  * Todo lo de aquí es a prueba de fallos: un aviso sin nombre es peor que uno con
  * nombre, pero perder el aviso —o tumbar la atención que lo dispara— por no
@@ -79,6 +80,20 @@ function urlDeAtencion(patient, appointment, tab = 'seguimientos') {
   const aid = idDe(appointment);
   if (!pid) return '/appointments';
   return `/patients/${pid}?tab=${tab}${aid ? `&appointment=${aid}` : ''}`;
+}
+
+/**
+ * A dónde lleva el aviso a ENFERMERÍA: a la agenda, con la cita abierta.
+ *
+ * Oct-2026, a pedido de la clínica: el enfermero que tocaba «Cita para
+ * enfermería» caía directo en la ficha del paciente, sin ver la cita nueva en
+ * su agenda —ni reclamarla desde su bandeja, que es por donde se reparte el
+ * trabajo entre enfermeros—. `?cita=<id>` abre la agenda con el detalle de esa
+ * cita encima (ver Appointments.jsx), también si es de otro día.
+ */
+function urlDeAgenda(appointment) {
+  const aid = idDe(appointment);
+  return aid ? `/appointments?cita=${aid}` : '/appointments';
 }
 
 /**
@@ -168,6 +183,7 @@ module.exports = {
   servicioDeCita,
   cuerpoDeAviso,
   urlDeAtencion,
+  urlDeAgenda,
   apagarAvisosDeCita,
   apagarAvisoDeCitaPara,
   laCitaMereceAviso,

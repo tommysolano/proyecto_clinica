@@ -2305,7 +2305,12 @@ exports.deleteAppointment = async (req, res) => {
     );
     for (const followUpId of sueros) {
       // eslint-disable-next-line no-await-in-loop
-      await quitarSueroDelSeguimiento({ patientId: appointment.patient, followUpId }).catch(
+      await quitarSueroDelSeguimiento({
+        patientId: appointment.patient,
+        followUpId,
+        // La bolsa del servicio la escribió esta cita, siempre.
+        propio: followUpId === String(appointment.autoSerumFollowUp || ''),
+      }).catch(
         (e) => console.warn('No se pudo quitar el suero de la cita borrada:', e.message)
       );
     }
@@ -2516,7 +2521,7 @@ exports.endConsultation = async (req, res) => {
      * en la agenda y la enfermera no se enteraba nunca de que era su turno.
      */
     if (siguiente && !retenidaPorSuero) {
-      const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion, laCitaMereceAviso } =
+      const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion, urlDeAgenda, laCitaMereceAviso } =
         require('../utils/appointmentNotice');
       const paciente = await pacienteDeCita(appointment);
       if (siguiente.user) {
@@ -2536,11 +2541,10 @@ exports.endConsultation = async (req, res) => {
             hora: appointment.startTime,
             motivo: 'El profesional anterior terminó su parte.',
           }),
-          url: urlDeAtencion(
-            appointment.patient,
-            appointment._id,
-            siguiente.kind === 'enfermeria' ? 'seguimientos' : 'ficha'
-          ),
+          // Enfermería va a la agenda, con la cita abierta (ver urlDeAgenda).
+          url: siguiente.kind === 'enfermeria'
+            ? urlDeAgenda(appointment._id)
+            : urlDeAtencion(appointment.patient, appointment._id, 'ficha'),
           // El sello de la cita: apaga el aviso en cuanto quien lo recibe
           // atiende (ver filtroDeAvisosVivos en notificationController).
           meta: { appointment: appointment._id },
@@ -2558,7 +2562,7 @@ exports.endConsultation = async (req, res) => {
               hora: appointment.startTime,
               motivo: 'El doctor terminó su parte.',
             }),
-            url: urlDeAtencion(appointment.patient, appointment._id),
+            url: urlDeAgenda(appointment._id),
             meta: { appointment: appointment._id },
           }).catch(() => {});
         }
@@ -3992,7 +3996,7 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
    * equivocada, y en la que de verdad atiende no se enteraba nadie.
    */
   const clinicId = apt.clinic;
-  const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion } = require('../utils/appointmentNotice');
+  const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion, urlDeAgenda } = require('../utils/appointmentNotice');
   const paciente = await pacienteDeCita(apt);
   const cuerpo = cuerpoDeAviso({
     paciente,
@@ -4076,9 +4080,9 @@ async function notificarAsignacion(req, apt, { doctores, enfermeria, anteriores 
           type: 'appointment_nursing',
           title: 'Cita para enfermería',
           body: cuerpo,
-          // A los seguimientos del paciente, no a la agenda: el aviso ya sabe a
-          // quién hay que atender y dejarlo dicho a medias obligaba a buscarlo.
-          url: urlDeAtencion(apt.patient, apt._id),
+          // A la agenda, con la cita abierta: el enfermero ve la cita nueva y
+          // la reclama desde su bandeja (oct-2026, ver urlDeAgenda).
+          url: urlDeAgenda(apt._id),
           /**
            * DE QUÉ CITA HABLA el aviso: es lo que permite apagarlo en el momento
            * en que un enfermero la reclama (ver nurseClaim), para que la campana
@@ -4461,7 +4465,7 @@ exports.nurseComplete = async (req, res) => {
      *  · no hay siguiente → no se avisa a nadie, la cita terminó.
      */
     if (siguiente) {
-      const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion, laCitaMereceAviso } = require('../utils/appointmentNotice');
+      const { pacienteDeCita, servicioDeCita, cuerpoDeAviso, urlDeAtencion, urlDeAgenda, laCitaMereceAviso } = require('../utils/appointmentNotice');
       // El nombre del paciente encabeza el aviso: «Enfermería terminó su parte»
       // a secas no dice a por quién hay que ir (ver utils/appointmentNotice).
       const paciente = await pacienteDeCita(apt);
@@ -4485,8 +4489,10 @@ exports.nurseComplete = async (req, res) => {
           title: 'Te toca atender',
           body: cuerpo,
           // El doctor abre por la ficha (antecedentes antes de explorar);
-          // enfermería, directa a los seguimientos, que es donde trabaja.
-          url: urlDeAtencion(apt.patient, apt._id, siguiente.kind === 'enfermeria' ? 'seguimientos' : 'ficha'),
+          // enfermería, en la agenda con la cita abierta (ver urlDeAgenda).
+          url: siguiente.kind === 'enfermeria'
+            ? urlDeAgenda(apt._id)
+            : urlDeAtencion(apt.patient, apt._id, 'ficha'),
           // El sello de la cita: apaga el aviso en cuanto quien lo recibe
           // atiende (ver filtroDeAvisosVivos en notificationController).
           meta: { appointment: apt._id },
@@ -4502,7 +4508,7 @@ exports.nurseComplete = async (req, res) => {
             type: 'appointment_nursing',
             title: 'Cita para enfermería',
             body: cuerpo,
-            url: urlDeAtencion(apt.patient, apt._id),
+            url: urlDeAgenda(apt._id),
             meta: { appointment: apt._id },
           }).catch(() => {});
         }

@@ -6,6 +6,7 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const ALLOWED = ['admin', 'marketing'];
 
 router.use(auth, requireClinic, requireRole(...ALLOWED));
+router.use(require('../middleware/callCenterScope'));
 
 router.get('/', ctrl.get);
 router.get('/webhook-urls', ctrl.getWebhookUrls);

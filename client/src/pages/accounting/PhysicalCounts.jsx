@@ -11,6 +11,7 @@ import {
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import DateInput from '../../components/DateInput';
+import { soloActivos } from '../../utils/activeUsers';
 
 /**
  * TOMA FÍSICA de UNA bodega.
@@ -321,7 +322,7 @@ export default function PhysicalCounts() {
               <select value={form.responsible} onChange={(e) => setForm({ ...form, responsible: e.target.value })}
                 className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
                 <option value="">— sin responsable —</option>
-                {users.map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
+                {soloActivos(users, form.responsible).map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
               </select>
             </Field>
             <Field label="Descripción" className="col-span-2">

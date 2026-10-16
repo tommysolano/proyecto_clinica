@@ -11,6 +11,7 @@ import {
   HiOutlineNoSymbol,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
+import { soloActivos } from '../utils/activeUsers';
 
 const WEEKDAYS = [
   { v: 1, l: 'Lun' },
@@ -332,8 +333,8 @@ export default function AccessBlocks() {
               Usuarios exceptuados (no se les bloquea)
             </span>
             <div className="max-h-40 overflow-y-auto border border-slate-200 rounded-xl divide-y divide-slate-100">
-              {users.length === 0 && <p className="text-xs text-slate-400 p-3">No hay usuarios.</p>}
-              {users.map((u) => (
+              {soloActivos(users, form.exceptUsers).length === 0 && <p className="text-xs text-slate-400 p-3">No hay usuarios.</p>}
+              {soloActivos(users, form.exceptUsers).map((u) => (
                 <label key={u._id} className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-slate-50">
                   <input type="checkbox" checked={form.exceptUsers.includes(u._id)} onChange={() => toggleExcept(u._id)} />
                   <span className="text-slate-700">{u.name}</span>

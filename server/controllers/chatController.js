@@ -4011,6 +4011,7 @@ const getChannelConfig = async (clinicId, channel) => {
 
 async function validateMetaWebhookRequest(req, clinicId, channel) {
   const cfg = await getChannelConfig(clinicId, channel);
+  if (!cfg?.appSecret) return { ok: false, reason: 'app_secret_not_configured' };
   const { decryptSecret } = require('../utils/secretCrypto');
   return verifyMetaSignature({
     rawBody: req.rawBody || req.body,
@@ -4918,6 +4919,7 @@ exports.webhookMessengerReceive = async (req, res) => {
     let processed = 0;
     for (const entry of entries) {
       for (const event of entry.messaging || []) {
+        if (event.message?.is_echo || String(event.sender?.id || '') === String(entry.id || '')) continue;
         const senderId = event.sender?.id;
         if (!senderId) continue;
         if (event.message?.text) {
@@ -4953,6 +4955,7 @@ exports.webhookInstagramReceive = async (req, res) => {
     let processed = 0;
     for (const entry of entries) {
       for (const event of entry.messaging || []) {
+        if (event.message?.is_echo || String(event.sender?.id || '') === String(entry.id || '')) continue;
         const senderId = event.sender?.id;
         if (!senderId) continue;
         if (event.message?.text) {

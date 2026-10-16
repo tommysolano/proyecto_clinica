@@ -2734,18 +2734,21 @@ export default function Appointments() {
               </div>
             )}
             {(!isDoctor || esOdontologia) && (
-              <select
+              /* FILTRO POR DOCTOR (sep-2026). `doctors` es el listado que ya
+                 carga la agenda para la asignación de turnos (solo activos).
+                 CON BUSCADOR (oct-2026): con treinta doctores se tarda menos
+                 escribiendo el apellido que bajando la lista. */
+              <SearchableSelect
+                options={doctors}
                 value={filter.doctor}
-                onChange={(e) => setFilter({ ...filter, doctor: e.target.value })}
-                className="px-3 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
-              >
-                {/* FILTRO POR DOCTOR (sep-2026). `doctors` es el listado que ya
-                    carga la agenda para la asignación de turnos. */}
-                <option value="">Todos los doctores</option>
-                {doctors.map((d) => (
-                  <option key={d._id} value={d._id}>{doctorOptionLabel(d)}</option>
-                ))}
-              </select>
+                onChange={(v) => setFilter({ ...filter, doctor: v })}
+                getLabel={doctorOptionLabel}
+                getSearchText={(d) => `${d.name || ''} ${d.specialty || ''} ${doctorOptionLabel(d)}`}
+                placeholder="Todos los doctores"
+                searchPlaceholder="Buscar doctor por nombre…"
+                allowClear
+                className="!py-2 !bg-slate-50/50"
+              />
             )}
             {(!isDoctor || esOdontologia) && sucursalesDelFiltro.length > 1 && (
               <select

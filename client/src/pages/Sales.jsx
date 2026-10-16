@@ -32,6 +32,7 @@ import JournalEntryViewModal from '../components/JournalEntryViewModal';
 import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../utils/idempotency';
 import DateInput from '../components/DateInput';
 import { nameMatches } from '../utils/nameSearch';
+import { soloActivos as soloUsuariosActivos } from '../utils/activeUsers';
 
 const paymentMethods = {
   efectivo: 'Efectivo',
@@ -1589,7 +1590,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                   className="input"
                 >
                   <option value="">— Nadie / No aplica —</option>
-                  {staff.map((u) => (
+                  {soloUsuariosActivos(staff, form.recommendedBy).map((u) => (
                     <option key={u._id} value={u._id}>{u.name}</option>
                   ))}
                 </select>

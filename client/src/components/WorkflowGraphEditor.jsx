@@ -2777,7 +2777,17 @@ function MessageBubblePreview({ body = '', mediaUrl = '', mediaType = '', button
       <div className="ml-auto max-w-[85%] rounded-lg rounded-tr-none shadow-sm overflow-hidden" style={{ background: '#d9fdd3' }}>
         {mediaUrl && (
           mediaType === 'video' ? (
-            <div className="h-28 bg-slate-800 flex items-center justify-center text-3xl">🎬</div>
+            // Se REPRODUCE aquí mismo (oct-2026, a pedido de la clínica): antes
+            // era un recuadro con 🎬 y no había forma de ver cómo le llegaría
+            // al contacto. `preload="metadata"` trae solo la duración y el
+            // primer fotograma, no el video entero, hasta que se le da play.
+            <video
+              controls
+              playsInline
+              preload="metadata"
+              src={mediaUrl}
+              className="block w-full max-h-72 bg-black"
+            />
           ) : mediaType === 'audio' ? (
             <div className="px-2.5 pt-2">
               <audio controls src={mediaUrl} className="w-full h-9" />

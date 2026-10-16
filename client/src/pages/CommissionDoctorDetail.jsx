@@ -18,6 +18,7 @@ import {
   statusLabel,
   doctorSearchOption,
 } from '../utils/commissionsFormat';
+import { soloActivos } from '../utils/activeUsers';
 
 const lista = (v) => String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -182,7 +183,7 @@ export default function CommissionDoctorDetail() {
                 {/* Se escribe el nombre o la especialidad; debajo de cada
                     doctor sale su rol (general o especialidad). */}
                 <ProductAutocomplete
-                  products={doctors
+                  products={soloActivos(doctors)
                     .filter((d) => !doctorFilter.includes(String(d._id)))
                     .map(doctorSearchOption)}
                   value=""

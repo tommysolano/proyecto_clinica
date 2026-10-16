@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { HiOutlinePlus, HiOutlineArrowsRightLeft, HiOutlineTrash } from 'react-icons/hi2';
 import PageHeader from '../components/PageHeader';
 import { fmtDate } from '../utils/date';
+import { soloActivos } from '../utils/activeUsers';
 
 const STATUSES = [
   { value: 'pendiente', label: 'Pendiente', color: 'bg-amber-100 text-amber-800' },
@@ -156,7 +157,7 @@ export default function Referrals() {
           className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
         >
           <option value="">Todos los doctores destino</option>
-          {doctors.map((d) => (
+          {soloActivos(doctors, toDoctorFilter).map((d) => (
             <option key={d._id} value={d._id}>{d.name}</option>
           ))}
         </select>
@@ -270,7 +271,7 @@ export default function Referrals() {
                 className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
               >
                 <option value="">—</option>
-                {doctors.map((d) => (
+                {soloActivos(doctors, form.toDoctor).map((d) => (
                   <option key={d._id} value={d._id}>
                     {d.name}
                   </option>

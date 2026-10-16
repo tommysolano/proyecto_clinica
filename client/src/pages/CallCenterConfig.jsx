@@ -246,8 +246,8 @@ function SystemIntegrations() {
   const testConnection = async () => {
     setTesting(true);
     try {
-      await api.post(`/call-center-config/${tab}/test`);
-      toast.success('Conexión exitosa');
+      const r = await api.post(`/call-center-config/${tab}/test`);
+      toast.success(r.data?.message || 'Conexión exitosa');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error de conexión');
     } finally {

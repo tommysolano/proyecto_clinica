@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineBuildingStorefront } from 'react-icons/hi2';
 import PageHeader, { EmptyState } from '../components/PageHeader';
+import { soloActivos } from '../utils/activeUsers';
 
 const EMPTY = { name: '', code: '', description: '', manager: '', active: true };
 
@@ -124,7 +125,7 @@ export default function Rooms() {
             <span className="text-xs font-medium text-slate-600">Encargado</span>
             <select value={form.manager} onChange={(e) => setForm({ ...form, manager: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
               <option value="">— Sin encargado —</option>
-              {users.map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
+              {soloActivos(users, form.manager).map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
             </select>
           </label>
           <label className="block">
