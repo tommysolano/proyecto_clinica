@@ -226,6 +226,11 @@ export default function Login() {
           <p className="text-center text-xs text-slate-400 mt-6">
             © 2026 Vikingo · Todos los derechos reservados
           </p>
+          <p className="text-center text-xs mt-2">
+            <a href="/politica-de-privacidad.html" className="text-emerald-700 hover:underline">
+              Política de privacidad
+            </a>
+          </p>
         </div>
       </div>
     </div>

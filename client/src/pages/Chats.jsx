@@ -174,6 +174,29 @@ const MEDIA_CHANNELS = ['whatsapp', 'messenger', 'instagram'];
 // server/utils/messaging.js#sendToProvider). TikTok no es de Meta: sin envío.
 const TEMPLATE_CHANNELS = ['whatsapp', 'messenger', 'instagram'];
 const CHANNEL_TAB_LABELS = { whatsapp: 'WhatsApp', messenger: 'Messenger', instagram: 'Instagram', tiktok: 'TikTok', sms: 'SMS', web: 'Web' };
+const CHANNEL_BADGE_COLORS = {
+  whatsapp: 'bg-emerald-50 text-emerald-700',
+  messenger: 'bg-blue-50 text-blue-700',
+  instagram: 'bg-pink-50 text-pink-700',
+  tiktok: 'bg-slate-100 text-slate-700',
+  sms: 'bg-violet-50 text-violet-700',
+  web: 'bg-sky-50 text-sky-700',
+};
+function channelLabel(conv) {
+  return CHANNEL_TAB_LABELS[conv?.channel] || conv?.channel || 'WhatsApp';
+}
+function contactDisplayName(conv) {
+  if (String(conv?.contactName || '').trim()) return conv.contactName.trim();
+  if (conv?.channel && conv.channel !== 'whatsapp') return `Contacto de ${channelLabel(conv)}`;
+  return conv?.phone || 'Sin nombre';
+}
+function ChannelBadge({ conv }) {
+  return (
+    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${CHANNEL_BADGE_COLORS[conv?.channel] || 'bg-slate-100 text-slate-700'}`}>
+      {channelLabel(conv)}
+    </span>
+  );
+}
 function channelSendsMedia(conv) {
   return MEDIA_CHANNELS.includes(conv?.channel || 'whatsapp');
 }
@@ -1207,7 +1230,16 @@ export default function Chats() {
       .then(({ data }) => {
         // Solo pinta si el agente sigue en ese chat: si ya se movió, esta
         // respuesta tardía llenaría el panel con los datos del contacto anterior.
-        if (String(data?._id) === String(activeIdRef.current)) setActiveDetail(data);
+        if (String(data?._id) === String(activeIdRef.current)) {
+          setActiveDetail(data);
+          if (data.contactName) {
+            setConversations((prev) => prev.map((conv) =>
+              String(conv._id) === String(data._id) && conv.contactName !== data.contactName
+                ? { ...conv, contactName: data.contactName, contactNameSource: data.contactNameSource }
+                : conv
+            ));
+          }
+        }
       })
       .catch(() => {});
   };
@@ -1230,6 +1262,8 @@ export default function Chats() {
     if (!base) return detail;
     return {
       ...base,
+      contactName: detail.contactName || base.contactName,
+      contactNameSource: detail.contactNameSource || base.contactNameSource,
       patient: detail.patient,
       opportunity: detail.opportunity,
       opportunities: detail.opportunities,
@@ -1651,7 +1685,7 @@ export default function Chats() {
   const canCall = !!voiceCall;
   const [calling, setCalling] = useState(null);
   useEffect(() => {
-    if (!activeId || !canCall) return setCalling(null);
+    if (!activeId || !canCall || activeConv?.channel !== 'whatsapp') return setCalling(null);
     setCalling(null);
     let cancelled = false;
     api
@@ -1659,7 +1693,7 @@ export default function Chats() {
       .then(({ data }) => { if (!cancelled) setCalling(data); })
       .catch(() => { if (!cancelled) setCalling({ enabled: false, reason: 'No se pudo comprobar si este número puede llamar.' }); });
     return () => { cancelled = true; };
-  }, [activeId, canCall]);
+  }, [activeId, canCall, activeConv?.channel]);
 
   // Inserta un mensaje guardado: reemplaza el token "/atajo" (o añade al final),
   // rellena variables con el contacto y prepara el adjunto si lo tiene.
@@ -2151,7 +2185,7 @@ export default function Chats() {
                   isAdmin={isAdmin}
                   meId={user?._id}
                   calling={calling}
-                  onCall={canCall ? () => voiceCall.startCall(activeConv) : null}
+                  onCall={canCall && activeConv.channel === 'whatsapp' ? () => voiceCall.startCall(activeConv) : null}
                   onBack={() => setActiveId(null)}
                   onToggleInfo={() => setInfoOpen(true)}
                   onToggleSearch={() => setChatSearchOpen((v) => !v)}
@@ -3332,12 +3366,12 @@ const ConversationRow = memo(function ConversationRow({ conv, active, onSelect, 
     >
       <div className="flex items-start gap-2">
         <div className="w-9 h-9 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm flex-shrink-0">
-          {(conv.contactName || conv.phone || '?').slice(0, 2).toUpperCase()}
+          {contactDisplayName(conv).slice(0, 2).toUpperCase()}
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between">
             <span className="font-semibold text-sm text-slate-800 truncate">
-              {conv.contactName || conv.phone}
+              {contactDisplayName(conv)}
             </span>
             <span className="text-[10px] text-slate-400 flex-shrink-0 ml-1">
               {timeAgo(conv.lastMessageAt)}
@@ -3376,6 +3410,7 @@ const ConversationRow = memo(function ConversationRow({ conv, active, onSelect, 
             </button>
           </div>
           <div className="flex items-center gap-1 mt-1 flex-wrap">
+            <ChannelBadge conv={conv} />
             <NumeroEntradaBadge conv={conv} varios={variosNumeros} />
             {meta && (
               <span className={`text-[10px] px-1.5 py-0.5 rounded ${meta.color}`}>
@@ -3498,11 +3533,12 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onTransfer, onOpenOpportun
         </button>
       )}
       <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold shrink-0">
-        {(conv.contactName || conv.phone || '?').slice(0, 2).toUpperCase()}
+        {contactDisplayName(conv).slice(0, 2).toUpperCase()}
       </div>
       <div className="flex-1 min-w-0">
         <div className="font-semibold text-slate-800 flex items-center gap-2">
-          <span className="truncate">{conv.contactName || conv.phone}</span>
+          <span className="truncate">{contactDisplayName(conv)}</span>
+          <ChannelBadge conv={conv} />
           {waitingReply && (
             <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 shrink-0 hidden @xl:inline" title="El paciente espera respuesta">
               Esperando respuesta
@@ -3515,7 +3551,9 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onTransfer, onOpenOpportun
           )}
         </div>
         <div className="text-xs text-slate-500 truncate">
-          {isHiddenNumber(conv) ? (
+          {conv.channel && conv.channel !== 'whatsapp' ? (
+            <span>Mensaje de {channelLabel(conv)}</span>
+          ) : isHiddenNumber(conv) ? (
             <span
               className="italic"
               title="WhatsApp aún no comparte el teléfono de este contacto (número oculto). Se mostrará en cuanto lo entregue."
@@ -5379,10 +5417,12 @@ const SidePanel = memo(function SidePanel({ conv, agents = [], meId, onUpdated, 
         <div className="text-xs font-semibold text-slate-500 mb-1">Contacto</div>
         <div className="text-sm text-slate-800 flex items-center gap-2">
           <HiOutlineUserCircle className="w-4 h-4 text-slate-400" />
-          {conv.contactName || 'Sin nombre'}
+          {contactDisplayName(conv)}
         </div>
         <div className="text-xs text-slate-500 mt-0.5">
-          {isHiddenNumber(conv) ? (
+          {conv.channel && conv.channel !== 'whatsapp' ? (
+            <span>Contacto de {channelLabel(conv)}</span>
+          ) : isHiddenNumber(conv) ? (
             <span className="italic" title="WhatsApp aún no comparte el teléfono de este contacto (número oculto).">
               Número oculto
             </span>
@@ -5689,7 +5729,7 @@ const SidePanel = memo(function SidePanel({ conv, agents = [], meId, onUpdated, 
       <div>
         <div className="text-xs font-semibold text-slate-500 mb-1">Detalles</div>
         <div className="text-xs text-slate-600 space-y-0.5">
-          <div>Canal: <span className="text-slate-800">{conv.channel}</span></div>
+          <div>Canal: <span className="text-slate-800">{channelLabel(conv)}</span></div>
           {conv.channel === 'whatsapp' && conv.inboundAccount?.label && (
             <div>
               Escribió a:{' '}

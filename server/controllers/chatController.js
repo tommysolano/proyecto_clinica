@@ -14,6 +14,7 @@ const chatMedia = require('../utils/chatMedia');
 // espejo legacy). Ver utils/opportunities.js.
 const opportunities = require('../utils/opportunities');
 const { verifyMetaSignature } = require('../utils/metaWebhook');
+const { fetchMessengerProfileName } = require('../utils/messengerProfile');
 const { phoneSearchRegex } = require('../utils/phoneNormalize');
 const {
   workingMsBetween,
@@ -659,6 +660,15 @@ exports.getConversation = async (req, res) => {
     if (!conv) {
       accountsPromise.catch(() => {});
       return res.status(404).json({ message: 'Conversación no encontrada' });
+    }
+    // Recupera el nombre de chats de Messenger recibidos antes de esta mejora.
+    if (conv.channel === 'messenger' && !conv.contactName && !conv.contactNameEditedAt && conv.externalUserId) {
+      const cfg = await getChannelConfig(req.clinicId, 'messenger');
+      const profileName = await fetchMessengerProfileName({
+        senderId: conv.externalUserId,
+        encryptedPageAccessToken: cfg?.pageAccessToken,
+      });
+      if (messaging.applyContactName(conv, profileName, { source: 'profile' })) await conv.save();
     }
     const out = decorateConversation(conv.toObject(), await accountsPromise);
     // Otros chats (whatsapp/messenger/instagram) del MISMO contacto: alimenta la
@@ -4444,6 +4454,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   } else if (!conv.patient && patient) {
     conv.patient = patient._id;
   }
+  if (contactName) messaging.applyContactName(conv, contactName, { source: 'profile' });
   // Mantener el identificador externo al día: para números QR ahora llega el JID
   // completo de WhatsApp (…@c.us / …@lid), necesario para poder responder a
   // contactos con número oculto. Cura conversaciones creadas solo con dígitos.
@@ -4924,11 +4935,22 @@ exports.webhookMessengerReceive = async (req, res) => {
         if (!senderId) continue;
         if (event.message?.text) {
           processed++;
+          const existing = await Conversation.findOne({ clinic: clinicId, channel: 'messenger', externalUserId: senderId })
+            .select('contactName contactNameEditedAt');
+          let contactName = '';
+          if (!existing?.contactName && !existing?.contactNameEditedAt) {
+            const cfg = await getChannelConfig(clinicId, 'messenger');
+            contactName = await fetchMessengerProfileName({
+              senderId,
+              encryptedPageAccessToken: cfg?.pageAccessToken,
+            });
+          }
           // eslint-disable-next-line no-await-in-loop
           await ingestExternalMessage({
             clinicId,
             channel: 'messenger',
             externalUserId: senderId,
+            contactName,
             body: event.message.text,
             externalId: event.message.mid,
           });
