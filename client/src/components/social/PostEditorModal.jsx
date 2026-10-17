@@ -20,6 +20,7 @@ import DateTimeInput from '../DateTimeInput';
 import TagEditor from '../TagEditor';
 import NetworkIcon from './NetworkIcon';
 import PostPreview from './PostPreview';
+import MusicSection from './MusicSection';
 import { fmtDateTime, todayEc } from '../../utils/date';
 import { uploadSocialMedia } from '../../utils/socialMedia';
 import {
@@ -67,8 +68,10 @@ function blankForm(initialDate) {
     firstComment: '',
     media: [],
     cover: null,
+    music: { mode: '', name: '' },
     targets: [],
-    scheduledAt: initialDate ? `${initialDate}T10:00` : '',
+    // `initialDate` puede traer ya la hora (vista Día del calendario).
+    scheduledAt: initialDate ? (initialDate.includes('T') ? initialDate : `${initialDate}T10:00:00`) : '',
   };
 }
 
@@ -83,6 +86,7 @@ function formFromPost(p) {
     firstComment: p.firstComment || '',
     media: p.media || [],
     cover: p.cover || null,
+    music: { mode: p.music?.mode || '', name: p.music?.name || '' },
     targets: (p.targets || []).map((t) => ({ ...t, key: t._id, options: t.options || {} })),
     scheduledAt: toEcInput(p.scheduledAt),
   };
@@ -208,6 +212,7 @@ export default function PostEditorModal({ isOpen, postId, initialDate, accounts,
     firstComment: form.firstComment,
     media: form.media,
     cover: form.cover,
+    music: form.music,
     // `key` es solo del editor (identifica destinos aún sin _id): no viaja.
     targets: form.targets.map((t) => {
       const out = { ...t, _id: post && t._id ? t._id : undefined };
@@ -405,7 +410,7 @@ export default function PostEditorModal({ isOpen, postId, initialDate, accounts,
                           <img src={m.url} alt="" className="w-full h-full object-cover" />
                         )}
                         <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] px-1.5 rounded">
-                          {i + 1}{isVideo(m) && m.duration ? ` · ${m.duration}s` : ''}
+                          {i + 1}{isVideo(m) && m.duration ? ` · ${m.duration}s` : ''}{m.original ? ' · ♪' : ''}
                         </span>
                         {editable && (
                           <div className="absolute inset-x-0 bottom-0 flex justify-between bg-black/50 p-0.5">
@@ -430,7 +435,9 @@ export default function PostEditorModal({ isOpen, postId, initialDate, accounts,
                     )}
                   </div>
                   <input ref={fileRef} type="file" accept={ACCEPT} multiple hidden onChange={(e) => { uploadFiles([...e.target.files]); e.target.value = ''; }} />
-                  <p className="text-[11px] text-slate-400 mt-2">JPG, PNG, WEBP, MP4 o MOV. Las imágenes se convierten a JPG (Instagram no acepta otro formato).</p>
+                  <p className="text-[11px] text-slate-400 mt-2">
+                    JPG, PNG, WEBP, MP4 o MOV, hasta 100 MB por archivo. Las imágenes se convierten a JPG (Instagram no acepta otro formato).
+                  </p>
                 </div>
                 <div className="flex items-center gap-2 mt-2 text-xs">
                   <span className="text-slate-500">Portada (reel de Instagram, miniatura de YouTube):</span>
@@ -445,6 +452,8 @@ export default function PostEditorModal({ isOpen, postId, initialDate, accounts,
                   <input ref={coverRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={(e) => { uploadFiles([...e.target.files].slice(0, 1), { asCover: true }); e.target.value = ''; }} />
                 </div>
               </section>
+
+              <MusicSection form={form} set={set} editable={editable} />
 
               {/* ── Texto ── */}
               <section className="space-y-3">
@@ -507,10 +516,13 @@ export default function PostEditorModal({ isOpen, postId, initialDate, accounts,
 
               {/* ── Cuándo ── */}
               <section>
-                <span className={lbl}>Fecha y hora de publicación (hora de Ecuador)</span>
+                <span className={lbl}>Fecha y hora de publicación (hora de Ecuador: hora, minuto y segundo)</span>
                 <div className="max-w-sm">
-                  <DateTimeInput value={form.scheduledAt} min={todayEc()} onChange={(e) => set({ scheduledAt: e.target.value })} className="input" />
+                  <DateTimeInput value={form.scheduledAt} min={todayEc()} step={1} onChange={(e) => set({ scheduledAt: e.target.value })} className="input" />
                 </div>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Sale en los segundos siguientes a esa hora. Un video puede tardar unos minutos más en verse, mientras la red lo procesa.
+                </p>
               </section>
             </fieldset>
 
@@ -671,6 +683,9 @@ function ManualHelp({ post, t }) {
   };
   return (
     <div className="mt-2 rounded-lg bg-slate-50 p-2 text-xs">
+      {post.music?.mode === 'app' && post.music?.name && (
+        <p className="mb-1 text-amber-800">♪ Música para elegir en la app: <b>{post.music.name}</b></p>
+      )}
       {text && (
         <>
           <p className="whitespace-pre-wrap text-slate-600 max-h-32 overflow-y-auto">{text}</p>

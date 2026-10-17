@@ -412,6 +412,11 @@ export default function Chats() {
   // Adjunto (imagen/video/audio) preparado desde un mensaje guardado, pegado del
   // portapapeles o grabado como nota de voz; se envía junto con el texto.
   const [attachmentDraft, setAttachmentDraft] = useState(null);
+  // VARIOS ARCHIVOS a la vez (oct-2026): el primero va en `attachmentDraft` (con
+  // el texto como pie, igual que siempre) y el resto aquí. WhatsApp admite UN
+  // adjunto por mensaje, así que cada uno de estos sale como mensaje propio,
+  // justo después del primero y en el mismo orden.
+  const [extraAttachments, setExtraAttachments] = useState([]);
   const [attachingMedia, setAttachingMedia] = useState(false);
   // Mensaje al que se está respondiendo (cita estilo WhatsApp).
   const [replyDraft, setReplyDraft] = useState(null);
@@ -847,6 +852,7 @@ export default function Chats() {
     if (activeId) loadMessages(activeId, { silent: !!cached });
     setTemplateDraft({ name: '', language: 'es', vars: '' });
     setAttachmentDraft(null);
+    setExtraAttachments([]);
     setReplyDraft(null);
   }, [activeId]);
 
@@ -1439,6 +1445,8 @@ export default function Chats() {
     // Llave de idempotencia de ESTE envío: si la petición se repite (doble clic,
     // reintento del navegador), el servidor devuelve el mensaje ya creado.
     const clientId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    // Los archivos de más (selección múltiple) salen después, uno por mensaje.
+    const extras = useTemplate ? [] : extraAttachments;
 
     setSending(true);
     try {
@@ -1501,6 +1509,39 @@ export default function Chats() {
       else {
         setAttachmentDraft(null);
         setReplyDraft(null);
+      }
+      // Los demás archivos, EN ORDEN y de a uno (el orden en el chat del
+      // paciente es el de la selección). Si alguno falla se queda preparado
+      // para reintentarlo, en vez de perderse en silencio.
+      if (extras.length) {
+        const fallidos = [];
+        for (const [i, d] of extras.entries()) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            const rx = await api.post(`/chats/${convId}/messages`, {
+              clientId: `${clientId}-${i + 1}`,
+              body: '',
+              mediaUrl: d.url,
+              mediaType: d.type || 'image',
+              mediaName: d.name || '',
+              mediaSize: d.size || 0,
+              ...(d.type === 'audio' && d.duration != null ? { mediaDuration: d.duration } : {}),
+            });
+            setMessages((prev) => {
+              if (String(convId) !== String(activeIdRef.current)) return prev;
+              if (prev.some((m) => String(m._id) === String(rx.data._id))) return prev;
+              return [...prev, rx.data];
+            });
+          } catch (errExtra) {
+            fallidos.push(d);
+            toast.error(`${d.name || 'Un archivo'}: ${errExtra.response?.data?.message || 'no se pudo enviar'}`);
+          }
+        }
+        if (String(convId) === String(activeIdRef.current)) {
+          // El primero que falló pasa a ser el adjunto principal: «Enviar» lo reintenta.
+          setAttachmentDraft(fallidos[0] || null);
+          setExtraAttachments(fallidos.slice(1));
+        }
       }
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al enviar');
@@ -1566,22 +1607,27 @@ export default function Chats() {
   //     voz es la diferencia entre «se cuelga» y «se sube».
   //   - `dataUrl` → JSON como siempre (imágenes: ya vienen recomprimidas por
   //     `imageFileToDataUrl`, que necesita mirarlas antes de mandarlas).
-  const attachMedia = async ({ file, dataUrl, name, type, size = 0 }) => {
+  /** Sube UN archivo y devuelve el adjunto listo (sin tocar el compositor). */
+  const subirAdjunto = async ({ file, dataUrl, name, type, size = 0 }) => {
+    let data;
+    if (file) {
+      const fd = new FormData();
+      fd.append('file', file, name);
+      if (name) fd.append('name', name);
+      ({ data } = await api.post('/chats/saved-replies/upload', fd));
+    } else {
+      ({ data } = await api.post('/chats/saved-replies/upload', { name, dataUrl }));
+    }
+    // DURACIÓN REAL del audio: la midió el SERVIDOR con ffmpeg al convertirlo.
+    // La burbuja la muestra tal cual — el estimo del navegador para los
+    // contenedores de MediaRecorder es absurdo ("4 minutos" por 5 segundos).
+    return { url: data.url, type: data.type || type, name: data.name || name, size, duration: data.duration ?? null };
+  };
+
+  const attachMedia = async (args) => {
     setAttachingMedia(true);
     try {
-      let data;
-      if (file) {
-        const fd = new FormData();
-        fd.append('file', file, name);
-        if (name) fd.append('name', name);
-        ({ data } = await api.post('/chats/saved-replies/upload', fd));
-      } else {
-        ({ data } = await api.post('/chats/saved-replies/upload', { name, dataUrl }));
-      }
-      // DURACIÓN REAL del audio: la midió el SERVIDOR con ffmpeg al convertirlo.
-      // La burbuja la muestra tal cual — el estimo del navegador para los
-      // contenedores de MediaRecorder es absurdo ("4 minutos" por 5 segundos).
-      setAttachmentDraft({ url: data.url, type: data.type || type, name: data.name || name, size, duration: data.duration ?? null });
+      setAttachmentDraft(await subirAdjunto(args));
       return true;
     } catch (err) {
       toast.error(err.response?.data?.message || err.message || 'No se pudo adjuntar');
@@ -1595,28 +1641,51 @@ export default function Chats() {
   // el explorador. El tipo lo decide el MIME real; lo que no sea imagen/video/audio
   // viaja como DOCUMENTO (con su nombre e icono, como en WhatsApp).
   const filePickRef = useRef(null);
+  // Tope de archivos por envío: más que eso es una carpeta, no una respuesta.
+  const MAX_ADJUNTOS = 10;
   const handleFilePick = async (e) => {
-    const file = e.target.files?.[0];
+    const elegidos = [...(e.target.files || [])];
     e.target.value = ''; // permite volver a elegir el mismo archivo
-    if (!file || attachingMedia) return;
-    const m = (file.type || '').toLowerCase();
-    const type = m.startsWith('image/') ? 'image' : m.startsWith('video/') ? 'video' : m.startsWith('audio/') ? 'audio' : 'document';
-    try {
-      if (type === 'image') {
-        // Las imágenes sí se leen antes: si pesan demasiado se recomprimen aquí
-        // (canvas) en vez de que las rechace el backend.
-        let dataUrl = await imageFileToDataUrl(file);
-        // Archivos sin tipo MIME: se marcan como binario para que el backend los
-        // acepte como documento en vez de rechazarlos por "data URL inválido".
-        if (/^data:;base64,/i.test(dataUrl)) dataUrl = dataUrl.replace(/^data:;base64,/i, 'data:application/octet-stream;base64,');
-        await attachMedia({ dataUrl, name: file.name, type, size: file.size });
-      } else {
-        // Video/documento/audio: EN CRUDO por multipart (sin base64 gigante).
-        // La normalización (video→H.264, audio→ogg) la hace el servidor igual.
-        await attachMedia({ file, name: file.name, type, size: file.size });
+    if (!elegidos.length || attachingMedia) return;
+    const yaHay = (attachmentDraft ? 1 : 0) + extraAttachments.length;
+    const files = elegidos.slice(0, Math.max(0, MAX_ADJUNTOS - yaHay));
+    if (files.length < elegidos.length) toast.error(`Máximo ${MAX_ADJUNTOS} archivos por envío`);
+    if (!files.length) return;
+
+    setAttachingMedia(true);
+    const listos = [];
+    // De a uno y en orden: es el orden en que le llegarán al paciente.
+    for (const file of files) {
+      const m = (file.type || '').toLowerCase();
+      const type = m.startsWith('image/') ? 'image' : m.startsWith('video/') ? 'video' : m.startsWith('audio/') ? 'audio' : 'document';
+      try {
+        if (type === 'image') {
+          // Las imágenes sí se leen antes: si pesan demasiado se recomprimen aquí
+          // (canvas) en vez de que las rechace el backend.
+          let dataUrl = await imageFileToDataUrl(file);
+          // Archivos sin tipo MIME: se marcan como binario para que el backend los
+          // acepte como documento en vez de rechazarlos por "data URL inválido".
+          if (/^data:;base64,/i.test(dataUrl)) dataUrl = dataUrl.replace(/^data:;base64,/i, 'data:application/octet-stream;base64,');
+          // eslint-disable-next-line no-await-in-loop
+          listos.push(await subirAdjunto({ dataUrl, name: file.name, type, size: file.size }));
+        } else {
+          // Video/documento/audio: EN CRUDO por multipart (sin base64 gigante).
+          // La normalización (video→H.264, audio→ogg) la hace el servidor igual.
+          // eslint-disable-next-line no-await-in-loop
+          listos.push(await subirAdjunto({ file, name: file.name, type, size: file.size }));
+        }
+      } catch (err) {
+        toast.error(`${file.name}: ${err.response?.data?.message || err.message || 'no se pudo adjuntar'}`);
       }
-    } catch (err) {
-      toast.error(err.message || 'No se pudo adjuntar el archivo');
+    }
+    setAttachingMedia(false);
+    if (!listos.length) return;
+    // El primero va como adjunto principal (con el texto de pie) si no había uno.
+    if (!attachmentDraft) {
+      setAttachmentDraft(listos[0]);
+      setExtraAttachments((prev) => [...prev, ...listos.slice(1)]);
+    } else {
+      setExtraAttachments((prev) => [...prev, ...listos]);
     }
   };
 
@@ -1670,6 +1739,7 @@ export default function Chats() {
   const clearComposer = () => {
     setDraft('');
     setAttachmentDraft(null);
+    setExtraAttachments([]);
     setTemplateDraft({ name: '', language: 'es', vars: '' });
     setSlashOpen(false);
     setSlashQuery('');
@@ -2422,16 +2492,45 @@ export default function Chats() {
                         </>
                       ) : (
                         <span className="text-xs text-emerald-800 truncate flex-1">
-                          Se enviará con adjunto: {attachmentDraft.name}
+                          {extraAttachments.length ? '1. ' : 'Se enviará con adjunto: '}{attachmentDraft.name}
                         </span>
                       )}
                       <button
                         type="button"
-                        onClick={() => setAttachmentDraft(null)}
+                        onClick={() => {
+                          // Si hay más, el siguiente pasa a ser el principal.
+                          setAttachmentDraft(extraAttachments[0] || null);
+                          setExtraAttachments((prev) => prev.slice(1));
+                        }}
                         className="text-xs text-slate-500 hover:text-rose-600 bg-transparent border-none cursor-pointer flex items-center gap-0.5"
                       >
                         <HiOutlineXMark className="w-3.5 h-3.5" /> Quitar
                       </button>
+                    </div>
+                  )}
+                  {/* Los demás archivos elegidos: cada uno sale como mensaje propio. */}
+                  {extraAttachments.length > 0 && (
+                    <div className="mb-2 -mt-1 border border-emerald-200 bg-emerald-50/40 rounded-lg px-2.5 py-1.5 space-y-1">
+                      <p className="text-[11px] text-emerald-800">
+                        Se enviarán {extraAttachments.length + 1} archivos, uno por mensaje (el texto va con el primero).
+                      </p>
+                      {extraAttachments.map((a, i) => (
+                        <div key={`${a.url}-${i}`} className="flex items-center gap-2">
+                          {a.type === 'image' ? (
+                            <img src={a.url} alt="" className="w-7 h-7 rounded object-cover" />
+                          ) : (
+                            <span className="text-base">{a.type === 'video' ? '🎬' : a.type === 'audio' ? '🎤' : '📎'}</span>
+                          )}
+                          <span className="text-xs text-emerald-800 truncate flex-1">{i + 2}. {a.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => setExtraAttachments((prev) => prev.filter((_, k) => k !== i))}
+                            className="text-xs text-slate-500 hover:text-rose-600 bg-transparent border-none cursor-pointer flex items-center gap-0.5"
+                          >
+                            <HiOutlineXMark className="w-3.5 h-3.5" /> Quitar
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   )}
                   {!recorder.recording && (
@@ -2779,6 +2878,7 @@ export default function Chats() {
                           <input
                             ref={filePickRef}
                             type="file"
+                            multiple
                             className="hidden"
                             onChange={handleFilePick}
                             accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,.zip,.rar,image/*,video/*,audio/*"
@@ -2787,11 +2887,14 @@ export default function Chats() {
                             <button
                               type="button"
                               onClick={() => filePickRef.current?.click()}
+                              // Se pueden sumar archivos a los ya preparados (hasta
+                              // MAX_ADJUNTOS); no a una nota de voz, que viaja sola.
                               disabled={
                                 !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
-                                !!templateDraft.name || attachingMedia || !!attachmentDraft
+                                !!templateDraft.name || attachingMedia || voiceNoteAttached ||
+                                (attachmentDraft ? 1 : 0) + extraAttachments.length >= MAX_ADJUNTOS
                               }
-                              title="Adjuntar archivo (PDF, Word, Excel, imagen…)"
+                              title="Adjuntar archivos (puedes elegir varios: PDF, Word, Excel, imágenes, videos…)"
                               className="p-2 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 hover:border-emerald-300 disabled:opacity-50 cursor-pointer flex items-center"
                             >
                               <HiOutlinePaperClip className="w-5 h-5" />

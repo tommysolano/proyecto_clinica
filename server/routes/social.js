@@ -28,6 +28,7 @@ router.post('/posts/:id/targets/:targetId/retry', team, ctrl.retryTarget);
 router.post('/posts/:id/targets/:targetId/manual', team, ctrl.markTargetManual);
 
 router.post('/media', team, ctrl.mediaUploadMiddleware, ctrl.uploadMedia);
+router.post('/media/music', team, ctrl.mixMusic);
 router.get('/team', team, ctrl.listTeam);
 
 router.get('/accounts', team, ctrl.listAccounts);

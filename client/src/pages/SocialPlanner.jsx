@@ -11,7 +11,7 @@ import SocialSettingsPanel from '../components/social/SocialSettingsPanel';
 import PostEditorModal from '../components/social/PostEditorModal';
 import NetworkIcon from '../components/social/NetworkIcon';
 import { fmtDateTime, todayEc } from '../utils/date';
-import { NETWORKS, NETWORK_LABELS, FORMAT_LABELS, STATUS_META } from '../utils/socialRules';
+import { NETWORKS, NETWORK_LABELS, FORMAT_LABELS, STATUS_META, CONTENT_TYPES, pasaFiltros } from '../utils/socialRules';
 
 /**
  * Fénix → Redes sociales. Planificador de publicaciones para Facebook,
@@ -46,11 +46,14 @@ export default function SocialPlanner() {
   const [undated, setUndated] = useState([]);
   const [listPosts, setListPosts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [ym, setYm] = useState(() => {
-    const [y, m] = todayEc().split('-').map(Number);
-    return { year: y, month: m - 1 };
-  });
-  const [filters, setFilters] = useState({ status: '', network: '', search: '' });
+  // Calendario: vista (mes/semana/día) y el día de referencia ('YYYY-MM-DD').
+  const [calView, setCalView] = useState('month');
+  const [day, setDay] = useState(() => todayEc());
+  const ym = useMemo(() => ({ year: Number(day.slice(0, 4)), month: Number(day.slice(5, 7)) - 1 }), [day]);
+  // Filtros por red y tipo de contenido: valen para el calendario y la lista.
+  const [verRedes, setVerRedes] = useState([]);
+  const [verTipos, setVerTipos] = useState([]);
+  const [filters, setFilters] = useState({ status: '', search: '' });
   const [editor, setEditor] = useState(null); // { postId?, initialDate? }
 
   const loadMeta = useCallback(async () => {
@@ -74,13 +77,13 @@ export default function SocialPlanner() {
     } finally {
       setLoading(false);
     }
-  }, [ym]);
+    // Solo cambia de rango al cambiar de MES (semana y día caen dentro, con margen).
+  }, [ym.year, ym.month]);
 
   const loadList = useCallback(async () => {
     try {
       const params = {};
       if (filters.status) params.status = filters.status;
-      if (filters.network) params.network = filters.network;
       if (filters.search.trim()) params.search = filters.search.trim();
       const { data } = await api.get('/social/posts', { params });
       setListPosts(data.items || []);
@@ -122,6 +125,24 @@ export default function SocialPlanner() {
 
   const pendingReview = useMemo(() => [...posts, ...undated].filter((p) => p.status === 'in_review'), [posts, undated]);
   const needsAction = useMemo(() => posts.filter((p) => ['needs_action', 'failed', 'partial'].includes(p.status)), [posts]);
+  const filtro = { networks: verRedes, types: verTipos };
+  const postsVisibles = posts.filter((p) => pasaFiltros(p, filtro));
+  const listaVisible = listPosts.filter((p) => pasaFiltros(p, filtro));
+
+  const eliminar = async (p) => {
+    if (!window.confirm(`¿Eliminar «${p.title}»? Podrás restaurarla desde la papelera de reciclaje.`)) return;
+    try {
+      await api.delete(`/social/posts/${p._id}`);
+      toast.success('Publicación movida a la papelera');
+      refreshAll();
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'No se pudo eliminar');
+    }
+  };
+
+  const filtrosBar = (
+    <FiltrosRedTipo redes={verRedes} setRedes={setVerRedes} tipos={verTipos} setTipos={setVerTipos} />
+  );
 
   return (
     <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-5 page-enter">
@@ -155,16 +176,19 @@ export default function SocialPlanner() {
               )}
             </div>
           )}
+          {filtrosBar}
           {loading ? (
             <p className="text-center text-slate-400 py-16">Cargando…</p>
           ) : (
             <SocialCalendar
-              year={ym.year}
-              month={ym.month}
-              posts={posts}
-              onMonthChange={(year, month) => setYm({ year, month })}
+              view={calView}
+              onViewChange={setCalView}
+              day={day}
+              onDayChange={setDay}
+              posts={postsVisibles}
               onOpen={(p) => setEditor({ postId: p._id })}
-              onNew={(day) => setEditor({ initialDate: day })}
+              onNew={(d) => setEditor({ initialDate: d })}
+              onDelete={eliminar}
             />
           )}
           {undated.filter((p) => p.status === 'draft').length > 0 && (
@@ -195,11 +219,8 @@ export default function SocialPlanner() {
               <option value="">Todos los estados</option>
               {Object.entries(STATUS_META).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
             </select>
-            <select className="input !w-auto" value={filters.network} onChange={(e) => setFilters({ ...filters, network: e.target.value })}>
-              <option value="">Todas las redes</option>
-              {NETWORKS.map((n) => <option key={n} value={n}>{NETWORK_LABELS[n]}</option>)}
-            </select>
           </div>
+          {filtrosBar}
           <div className="tbl-wrap">
             <table className="tbl tbl-cards">
               <thead>
@@ -211,10 +232,10 @@ export default function SocialPlanner() {
                 </tr>
               </thead>
               <tbody>
-                {listPosts.length === 0 && (
+                {listaVisible.length === 0 && (
                   <tr><td colSpan={4} className="text-center text-slate-400 py-10">No hay publicaciones con estos filtros.</td></tr>
                 )}
-                {listPosts.map((p) => (
+                {listaVisible.map((p) => (
                   <tr key={p._id} onClick={() => setEditor({ postId: p._id })} className="cursor-pointer">
                     <td data-cell="hora" className="whitespace-nowrap">{p.scheduledAt ? fmtDateTime(p.scheduledAt) : 'Sin fecha'}</td>
                     <td data-cell="principal">
@@ -273,6 +294,36 @@ function AttentionBox({ title, posts, onOpen, tone }) {
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** Filtros por red social y por tipo de contenido (chips; sin ninguno = todo). */
+function FiltrosRedTipo({ redes, setRedes, tipos, setTipos }) {
+  const toggle = (list, set, v) => set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
+  const chip = (on) =>
+    `inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs border cursor-pointer ${on ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`;
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] font-semibold text-slate-500 mr-1">Red:</span>
+        {NETWORKS.map((n) => (
+          <button key={n} type="button" onClick={() => toggle(redes, setRedes, n)} className={chip(redes.includes(n))}>
+            <NetworkIcon network={n} className="w-3 h-3" colored={!redes.includes(n)} /> {NETWORK_LABELS[n]}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] font-semibold text-slate-500 mr-1">Contenido:</span>
+        {CONTENT_TYPES.map((c) => (
+          <button key={c.key} type="button" onClick={() => toggle(tipos, setTipos, c.key)} className={chip(tipos.includes(c.key))}>
+            {c.label}
+          </button>
+        ))}
+      </div>
+      {(redes.length > 0 || tipos.length > 0) && (
+        <button type="button" onClick={() => { setRedes([]); setTipos([]); }} className="btn-ghost !px-2 !py-1 !text-xs">Quitar filtros</button>
+      )}
     </div>
   );
 }

@@ -313,10 +313,11 @@ connectDB().then(() => {
     const { processDueDrips } = require('./utils/dripRunner');
     setInterval(only(() => { processDueDrips().catch(() => {}); }), 60 * 1000);
     // Job: publicaciones programadas en redes sociales (Fénix → Redes sociales).
-    // Cada 60s toma las vencidas con reclamo atómico y sigue las que la red aún
-    // procesa (videos de Instagram, TikTok…).
+    // Cada 15 s (la hora se programa con segundos) toma las vencidas con reclamo
+    // atómico y sigue las que la red aún procesa (videos de Instagram, TikTok…).
+    // La consulta va por índice {status, scheduledAt}: mirar tan seguido no pesa.
     const { processDueSocialPosts } = require('./utils/social/publisher');
-    setInterval(only(() => { processDueSocialPosts().catch((err) => console.error('[social] job:', err.message)); }), 60 * 1000);
+    setInterval(only(() => { processDueSocialPosts().catch((err) => console.error('[social] job:', err.message)); }), 15 * 1000);
     // Motor de workflows: suscribe a eventos de dominio + reanuda esperas vencidas.
     const workflowEngine = require('./utils/workflowEngine');
     workflowEngine.subscribeDomainEvents();

@@ -89,6 +89,12 @@ function validateTarget(post, target, account) {
   }
   if (target.mode === 'manual') return errs;
 
+  // Canción de la biblioteca de la red: ninguna API oficial deja elegirla. Solo
+  // se puede publicando a mano o mandando el video a borradores de TikTok.
+  if (post.music?.mode === 'app' && !(net === 'tiktok' && target.options?.postMode === 'inbox')) {
+    add('la música de la app solo se elige publicando a mano (o en borradores de TikTok); pásalo a «publicar a mano» o sube tu propio audio');
+  }
+
   if (!account) add('elige la cuenta donde se publica (o pásalo a «publicar a mano»)');
   else if (account.network !== net) add('la cuenta elegida es de otra red');
 

@@ -276,7 +276,11 @@ async function runPost(post) {
       post,
       'social_post_manual',
       `Toca publicar a mano: ${post.title}`,
-      manual.map((e) => targetLabel(e.t)).join(', ')
+      [
+        manual.map((e) => targetLabel(e.t)).join(', '),
+        // La canción de la biblioteca de la red se elige en la app: que se sepa cuál.
+        post.music?.mode === 'app' && post.music?.name ? `Música: ${post.music.name}` : '',
+      ].filter(Boolean).join(' · ')
     );
   }
   const failed = events.filter((e) => e.ev === 'failed');

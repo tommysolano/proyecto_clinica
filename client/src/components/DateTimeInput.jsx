@@ -13,6 +13,8 @@ export default function DateTimeInput({
   min,
   className = '',
   disabled = false,
+  // `step` del campo de hora: 1 = con segundos ('HH:mm:ss'). Sin él, 'HH:mm'.
+  step,
   ...rest
 }) {
   const [datePart = '', timePart = ''] = String(value || '').split('T');
@@ -40,6 +42,7 @@ export default function DateTimeInput({
       <input
         type="time"
         value={timePart}
+        step={step}
         disabled={disabled}
         onChange={(e) => emit(datePart, e.target.value)}
         className={className}

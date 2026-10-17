@@ -42,6 +42,29 @@ const mediaSchema = new mongoose.Schema(
     height: { type: Number, default: 0 },
     // Segundos (solo video).
     duration: { type: Number, default: 0 },
+    // Si el video se armó con música (utils/social/musicMix): el medio original
+    // y el audio, para poder quitarla y volver al original.
+    original: { type: mongoose.Schema.Types.ObjectId, ref: 'ChatGalleryImage', default: null },
+    originalUrl: { type: String, default: '' },
+    originalMimeType: { type: String, default: '' },
+    music: { type: mongoose.Schema.Types.ObjectId, ref: 'ChatGalleryImage', default: null },
+    musicName: { type: String, default: '' },
+  },
+  { _id: false }
+);
+
+/**
+ * MÚSICA de la publicación:
+ *   ''     sin música
+ *   'file' audio propio ya montado en el video (ver mediaSchema.music)
+ *   'app'  canción de la biblioteca de la red: las APIs no la permiten, así que
+ *          solo vale para destinos A MANO (o borrador de TikTok); `name` es la
+ *          canción que la persona elegirá en la app.
+ */
+const musicSchema = new mongoose.Schema(
+  {
+    mode: { type: String, enum: ['', 'file', 'app'], default: '' },
+    name: { type: String, trim: true, default: '' },
   },
   { _id: false }
 );
@@ -120,6 +143,7 @@ const socialPostSchema = new mongoose.Schema(
     media: { type: [mediaSchema], default: [] },
     // Portada opcional (reel de Instagram, miniatura de YouTube).
     cover: { type: mediaSchema, default: null },
+    music: { type: musicSchema, default: () => ({}) },
     targets: { type: [targetSchema], default: [] },
     scheduledAt: { type: Date, default: null },
     status: { type: String, enum: STATUSES, default: 'draft', index: true },

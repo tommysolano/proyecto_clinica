@@ -5,7 +5,7 @@
  * vez al programar y antes de publicar. Esta copia solo sirve para avisar
  * mientras se escribe; si se cambia una regla, cambiarla en los dos sitios.
  */
-import { ecDayKey, fmtTimeEc } from './date';
+import { ecDayKey, ecFormatter } from './date';
 
 export const NETWORKS = ['instagram', 'facebook', 'tiktok', 'youtube'];
 
@@ -113,6 +113,9 @@ export function defaultFormat(network, media = []) {
 export function targetWarnings(post, t, account, tiktokInfo) {
   const w = [];
   if (t.mode === 'manual') return w;
+  if (post.music?.mode === 'app' && !(t.network === 'tiktok' && t.options?.postMode === 'inbox')) {
+    w.push('La música de la app solo se elige publicando a mano: pásalo a «Avisarme para publicar a mano» o sube tu propio audio');
+  }
   const media = post.media || [];
   const videos = media.filter(isVideo);
   const images = media.filter(isImage);
@@ -175,15 +178,43 @@ export function targetWarnings(post, t, account, tiktokInfo) {
   return w;
 }
 
-/** 'YYYY-MM-DDTHH:mm' en hora de Ecuador para el DateTimeInput. */
+/** 'HH:mm:ss' en hora de Ecuador. */
+export function fmtTimeSecEc(iso) {
+  const p = ecFormatter('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    .formatToParts(new Date(iso))
+    .reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
+  return `${p.hour === '24' ? '00' : p.hour}:${p.minute}:${p.second}`;
+}
+
+/** 'YYYY-MM-DDTHH:mm:ss' en hora de Ecuador para el DateTimeInput (con segundos). */
 export function toEcInput(iso) {
   if (!iso) return '';
-  return `${ecDayKey(iso)}T${fmtTimeEc(iso)}`;
+  return `${ecDayKey(iso)}T${fmtTimeSecEc(iso)}`;
 }
 
 /** Inversa: el valor del DateTimeInput (hora de Ecuador, UTC-5 sin horario de verano) a ISO. */
 export function fromEcInput(value) {
-  if (!value || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return null;
-  const d = new Date(`${value}:00-05:00`);
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::(\d{2}))?$/.exec(String(value || ''));
+  if (!m) return null;
+  const d = new Date(`${m[1]}T${m[2]}:${m[3] || '00'}-05:00`);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
+
+/** Tipos de contenido para los filtros del calendario (agrupa formatos parecidos). */
+export const CONTENT_TYPES = [
+  { key: 'post', label: 'Publicación', formats: ['post'] },
+  { key: 'carousel', label: 'Carrusel', formats: ['carousel', 'photo'] },
+  { key: 'reel', label: 'Reel / Short', formats: ['reel', 'short'] },
+  { key: 'story', label: 'Historia', formats: ['story'] },
+  { key: 'video', label: 'Video', formats: ['video'] },
+];
+
+/** ¿La publicación pasa los filtros de red y tipo de contenido? */
+export function pasaFiltros(post, { networks = [], types = [] } = {}) {
+  const ts = post.targets || [];
+  const formats = types.length ? CONTENT_TYPES.filter((c) => types.includes(c.key)).flatMap((c) => c.formats) : null;
+  return ts.some((t) => (!networks.length || networks.includes(t.network)) && (!formats || formats.includes(t.format)))
+    || (!ts.length && !networks.length && !types.length);
+}
+
+export const MAX_UPLOAD_MB = 100;

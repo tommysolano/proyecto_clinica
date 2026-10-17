@@ -76,8 +76,31 @@ export async function prepareFile(file) {
   throw new Error('Formato no admitido: sube imágenes o videos');
 }
 
+// Tope por archivo que pidió la clínica (el servidor corta en lo mismo).
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
+function revisarTamano(file) {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    throw new Error(`${file.name}: pesa ${(file.size / 1024 / 1024).toFixed(0)} MB y el máximo es 100 MB`);
+  }
+}
+
+/** Sube un AUDIO (música para montar en un video). */
+export async function uploadSocialAudio(file, onProgress) {
+  revisarTamano(file);
+  if (!String(file.type || '').startsWith('audio/')) throw new Error('Elige un archivo de audio (MP3 o M4A)');
+  const fd = new FormData();
+  fd.append('file', file);
+  const { data } = await api.post('/social/media', fd, {
+    onUploadProgress: (e) => { if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100)); },
+    timeout: 0,
+  });
+  return data;
+}
+
 /** Sube un archivo y devuelve el medio listo para guardar en la publicación. */
 export async function uploadSocialMedia(rawFile, onProgress) {
+  revisarTamano(rawFile);
   const prepared = await prepareFile(rawFile);
   const fd = new FormData();
   fd.append('file', prepared.file);

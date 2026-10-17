@@ -63,6 +63,11 @@ function cleanMedia(m) {
     width: Number(m.width) || 0,
     height: Number(m.height) || 0,
     duration: Number(m.duration) || 0,
+    original: isId(m.original) ? m.original : null,
+    originalUrl: isId(m.original) ? mediaUrlForId(m.original) : '',
+    originalMimeType: isId(m.original) ? String(m.originalMimeType || '') : '',
+    music: isId(m.music) ? m.music : null,
+    musicName: String(m.musicName || '').slice(0, 200),
   };
 }
 
@@ -77,6 +82,10 @@ async function buildPostFields(req, body) {
   if (body.hashtags !== undefined) out.hashtags = (Array.isArray(body.hashtags) ? body.hashtags : []).map((h) => String(h).trim()).filter(Boolean).slice(0, 60);
   if (body.link !== undefined) out.link = String(body.link || '').trim().slice(0, 1000);
   if (body.firstComment !== undefined) out.firstComment = String(body.firstComment || '').slice(0, 2200);
+  if (body.music !== undefined) {
+    const mode = ['file', 'app'].includes(body.music?.mode) ? body.music.mode : '';
+    out.music = { mode, name: mode ? String(body.music?.name || '').trim().slice(0, 200) : '' };
+  }
   if (body.campaign !== undefined) out.campaign = String(body.campaign || '').trim().slice(0, 120);
   if (body.assignedTo !== undefined) out.assignedTo = isId(body.assignedTo) ? body.assignedTo : null;
   if (body.scheduledAt !== undefined) {
@@ -491,28 +500,91 @@ exports.removePost = async (req, res) => {
 
 // ───────────────────────────── Medios ─────────────────────────────
 
-const ALLOWED_MIME = /^(image\/(jpeg|png|webp)|video\/(mp4|quicktime))$/i;
+// Imágenes, videos y AUDIOS (la música que se monta en un video, ver musicMix).
+const ALLOWED_MIME = /^(image\/(jpeg|png|webp)|video\/(mp4|quicktime)|audio\/(mpeg|mp3|mp4|x-m4a|m4a|aac|wav|x-wav|ogg))$/i;
+// Tope por archivo pedido por la clínica (oct-2026). Coincide con el máximo de
+// un video de historia en Instagram; los reels y videos más largos caben igual.
+const MAX_UPLOAD_MB = 100;
 
 exports.mediaUploadMiddleware = (req, res, next) => {
   const multer = require('multer');
   const tmpDir = path.join(mediaStore.rootDir(), 'tmp-social');
   fs.mkdirSync(tmpDir, { recursive: true });
-  // A DISCO (no a memoria): un video de cientos de MB en memoria por cada
-  // subida tumbaría el proceso.
+  // A DISCO (no a memoria): un video de 100 MB en memoria por cada subida
+  // tumbaría el proceso.
   const upload = multer({
     storage: multer.diskStorage({ destination: tmpDir }),
-    limits: { fileSize: 1024 * 1024 * 1024, files: 1 },
+    limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
     fileFilter: (_req, file, cb) => {
       const mime = String(file.mimetype || '').split(';')[0].trim();
-      if (!ALLOWED_MIME.test(mime)) return cb(new Error('Formato no admitido: sube JPG, PNG, WEBP, MP4 o MOV'));
+      if (!ALLOWED_MIME.test(mime)) return cb(new Error('Formato no admitido: sube JPG, PNG, WEBP, MP4, MOV o un audio MP3/M4A'));
       return cb(null, true);
     },
   }).single('file');
   upload(req, res, (err) => {
     if (!err) return next();
-    const msg = err.code === 'LIMIT_FILE_SIZE' ? 'El archivo supera 1 GB' : err.message || 'No se pudo recibir el archivo';
+    const msg = err.code === 'LIMIT_FILE_SIZE' ? `El archivo supera ${MAX_UPLOAD_MB} MB` : err.message || 'No se pudo recibir el archivo';
     return res.status(400).json({ message: msg });
   });
+};
+
+/**
+ * POST /social/media/music — monta un audio en un video (o arma un video desde
+ * una imagen) y devuelve el medio NUEVO, que lleva el original para poder
+ * quitar la música. Ver utils/social/musicMix.
+ */
+exports.mixMusic = async (req, res) => {
+  const { base, audio, mode = 'replace', volume = 1, seconds = 15, format = 'vertical' } = req.body || {};
+  if (!isId(base) || !isId(audio)) return res.status(400).json({ message: 'Falta el video/imagen o el audio' });
+  let tmp = null;
+  try {
+    const [b, a] = await Promise.all([
+      ChatGalleryImage.findOne({ _id: base, clinic: req.clinicId }).lean(),
+      ChatGalleryImage.findOne({ _id: audio, clinic: req.clinicId }).lean(),
+    ]);
+    if (!b || !a) return res.status(404).json({ message: 'No se encontró el medio o el audio' });
+    if (!/^(video|image)\//.test(b.mimeType)) return res.status(400).json({ message: 'La música se pone sobre un video o una imagen' });
+    if (!/^audio\//.test(a.mimeType)) return res.status(400).json({ message: 'El archivo de música debe ser un audio' });
+    if (!b.storageKey || !a.storageKey) return res.status(400).json({ message: 'Falta el archivo en el servidor' });
+
+    const _id = new mongoose.Types.ObjectId();
+    const storageKey = mediaStore.buildKey(_id, 'video/mp4');
+    const abs = mediaStore.absolutePath(storageKey);
+    await fsp.mkdir(path.dirname(abs), { recursive: true });
+    tmp = `${abs}.tmp-${process.pid}.mp4`;
+    const info = await require('../utils/social/musicMix').mezclarMusica({
+      base: { path: mediaStore.absolutePath(b.storageKey), mimeType: b.mimeType },
+      audio: { path: mediaStore.absolutePath(a.storageKey) },
+      outPath: tmp,
+      modo: mode === 'mix' ? 'mix' : 'replace',
+      volumen: volume,
+      segundos: seconds,
+      formato: format,
+    });
+    await fsp.rename(tmp, abs);
+    tmp = null;
+    const size = (await fsp.stat(abs)).size;
+    const name = `${String(b.name || 'video').replace(/\.[^.]+$/, '')} (con música).mp4`.slice(0, 200);
+    await ChatGalleryImage.create({ _id, clinic: req.clinicId, name, storageKey, mimeType: 'video/mp4', size, kind: 'social', createdBy: req.user._id });
+    return res.status(201).json({
+      media: _id,
+      url: mediaUrlForId(_id),
+      mimeType: 'video/mp4',
+      name,
+      size,
+      width: info.width,
+      height: info.height,
+      duration: info.duration,
+      original: b._id,
+      originalUrl: mediaUrlForId(b._id),
+      originalMimeType: b.mimeType,
+      music: a._id,
+      musicName: a.name,
+    });
+  } catch (err) {
+    if (tmp) await fsp.unlink(tmp).catch(() => {});
+    return fail(res, err, 'No se pudo poner la música');
+  }
 };
 
 exports.uploadMedia = async (req, res) => {
