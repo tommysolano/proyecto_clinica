@@ -158,7 +158,9 @@ export default function SocialSettingsPanel({ config, onChanged }) {
         >
           <Help>
             Permisos a pedir en la revisión de la app: <code>pages_show_list</code>, <code>pages_read_engagement</code>, <code>pages_manage_posts</code>,{' '}
-            <code>instagram_basic</code>, <code>instagram_content_publish</code> y <code>business_management</code>. Puede ser la misma app de WhatsApp.
+            <code>instagram_basic</code>, <code>instagram_content_publish</code>, <code>business_management</code> y <code>ads_read</code> (Instagram lo
+            exige si la Página está en Business Manager). Para el primer comentario: <code>pages_manage_engagement</code> e{' '}
+            <code>instagram_manage_comments</code>. Puede ser la misma app de WhatsApp.
           </Help>
         </CredentialsCard>
         <CredentialsCard
@@ -192,7 +194,8 @@ export default function SocialSettingsPanel({ config, onChanged }) {
         >
           <Help>
             Habilita <b>YouTube Data API v3</b>. Scopes: <code>youtube.upload</code> y <code>youtube.readonly</code>. Sin la auditoría de la API de YouTube los
-            videos quedan <b>privados</b>; mientras la pantalla de consentimiento esté «en pruebas», agrega el correo del canal como usuario de prueba.
+            videos quedan <b>privados</b>. Mientras la pantalla de consentimiento esté «en pruebas», agrega el correo del canal como usuario de prueba y
+            ten en cuenta que Google <b>corta la conexión cada 7 días</b>: publícala («En producción») para que dure.
           </Help>
         </CredentialsCard>
       </div>

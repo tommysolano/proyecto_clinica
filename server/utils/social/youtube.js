@@ -10,7 +10,10 @@
  * El video se sube en el momento de publicar (subida reanudable, por stream
  * desde el disco) y queda publicado al terminar.
  */
-const { request, uploadFileRange, SocialApiError } = require('./http');
+// `http.uploadFileRange` (y no una copia) para que las pruebas puedan interceptar la subida.
+const http = require('./http');
+
+const { request, SocialApiError } = http;
 const { composeText, normalizeHashtags, youtubeSafe, youtubeTitle, isVideo, LIMITS } = require('./rules');
 const { mediaFile } = require('./media');
 
@@ -83,7 +86,28 @@ function youtubeTags(hashtags) {
   return out;
 }
 
-async function start({ post, target, token }) {
+// Los errores de YouTube que el equipo va a ver de verdad, dichos en claro.
+const ERRORES = {
+  quotaExceeded: 'Se agotó la cuota diaria de la API de YouTube del proyecto de Google; se libera a medianoche (hora del Pacífico).',
+  uploadLimitExceeded: 'El canal alcanzó su límite de subidas por ahora; prueba más tarde.',
+  youtubeSignupRequired: 'La cuenta de Google conectada no tiene canal de YouTube.',
+  forbidden: 'YouTube no permite subir con esta cuenta (revisa que el canal esté verificado y sin restricciones).',
+};
+
+async function start(ctx) {
+  try {
+    return await startRaw(ctx);
+  } catch (err) {
+    const msg = ERRORES[err?.code];
+    if (msg) {
+      err.message = msg;
+      err.retryable = false;
+    }
+    throw err;
+  }
+}
+
+async function startRaw({ post, target, token }) {
   const video = (post.media || []).find(isVideo);
   if (!video) throw new SocialApiError('Falta el video');
   const file = await mediaFile(video.media);
@@ -111,7 +135,7 @@ async function start({ post, target, token }) {
   });
   const location = init.headers.get('location');
   if (!location) throw new SocialApiError('YouTube no devolvió la dirección de subida', { retryable: true });
-  const up = await uploadFileRange(location, {
+  const up = await http.uploadFileRange(location, {
     method: 'PUT',
     headers: { ...auth(token), 'Content-Type': file.mimeType || 'video/*' },
     filePath: file.path,
@@ -127,7 +151,7 @@ async function start({ post, target, token }) {
   if (post.cover?.media) {
     try {
       const cover = await mediaFile(post.cover.media);
-      await uploadFileRange(`https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${videoId}`, {
+      await http.uploadFileRange(`https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${videoId}`, {
         method: 'POST',
         headers: { ...auth(token), 'Content-Type': cover.mimeType || 'image/jpeg' },
         filePath: cover.path,

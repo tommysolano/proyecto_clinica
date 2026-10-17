@@ -1,0 +1,5 @@
+# Meta (facebookexternalhit) descarga desde /api/public/media los medios que se
+# publican en Facebook e Instagram, y exige que robots.txt lo permita. Sin este
+# archivo nginx devolvía la página de la app en su lugar.
+User-agent: *
+Allow: /

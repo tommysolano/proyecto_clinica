@@ -5,7 +5,11 @@
  * Permisos que la app debe tener aprobados en la revisión de Meta:
  *   pages_show_list, pages_read_engagement, pages_manage_posts,
  *   instagram_basic, instagram_content_publish (+ business_management si las
- *   Páginas están en un portafolio comercial).
+ *   Páginas están en un portafolio comercial, y ads_read si la persona tiene la
+ *   Página por Business Manager: Meta lo exige para publicar en Instagram).
+ *   El PRIMER COMENTARIO pide además pages_manage_engagement (Facebook) e
+ *   instagram_manage_comments (Instagram); sin ellos la publicación sale igual
+ *   y solo el comentario queda marcado como fallido.
  *
  * Meta DESCARGA los medios de nuestra URL pública (/api/public/media/:id); por
  * eso el servidor necesita PUBLIC_API_URL y ser accesible desde internet.
@@ -19,16 +23,25 @@ const { request, SocialApiError } = require('./http');
 const { composeText, isImage, isVideo } = require('./rules');
 const { publicMediaUrl } = require('./media');
 
-const VERSION = () => process.env.SOCIAL_META_GRAPH_VERSION || 'v23.0';
+const VERSION = () => process.env.SOCIAL_META_GRAPH_VERSION || 'v25.0';
 
 const OAUTH_SCOPES = [
   'pages_show_list',
   'pages_read_engagement',
   'pages_manage_posts',
+  'pages_manage_engagement',
   'instagram_basic',
   'instagram_content_publish',
+  'instagram_manage_comments',
   'business_management',
+  'ads_read',
 ];
+
+// Límites de espera mientras la red procesa un video.
+const FB_MAX_WAIT_MS = 2 * 60 * 60 * 1000;
+// Instagram pide consultar el contenedor durante pocos minutos; un reel largo
+// tarda más, pero media hora sin terminar ya es un fallo (el contenedor caduca).
+const IG_MAX_WAIT_MS = 30 * 60 * 1000;
 
 async function graph(path, { method = 'GET', token, params = {}, host = 'graph.facebook.com' } = {}) {
   const url = new URL(`https://${host}/${VERSION()}/${String(path).replace(/^\/+/, '')}`);
@@ -82,10 +95,11 @@ async function startFacebook({ post, target, account, token }) {
         host: 'graph-video.facebook.com',
         params: { file_url: publicMediaUrl(videos[0].media), description: message },
       });
-      return processing({ kind: 'fb_video', videoId: r.id, since: Date.now() }, 60 * 1000);
+      return processing({ kind: 'fb_video', videoId: r.id || r.video_id, since: Date.now() }, 60 * 1000);
     }
     if (images.length === 1) {
-      const r = await graph(`${pageId}/photos`, { method: 'POST', token, params: { url: publicMediaUrl(images[0].media), message } });
+      // `caption` (en /photos, `message` está obsoleto).
+      const r = await graph(`${pageId}/photos`, { method: 'POST', token, params: { url: publicMediaUrl(images[0].media), caption: message } });
       const id = r.post_id || r.id;
       return done(id, await permalinkOf(id, token));
     }
@@ -136,14 +150,18 @@ async function checkFacebook({ target, token }) {
   const d = await graph(st.videoId, { token, params: { fields: 'status,permalink_url' } });
   const s = d.status || {};
   const videoStatus = s.video_status || '';
-  if (videoStatus === 'error' || s.processing_phase?.status === 'error' || s.publishing_phase?.status === 'error') {
-    const why = s.processing_phase?.errors?.[0]?.message || s.publishing_phase?.errors?.[0]?.message || 'Facebook no pudo procesar el video';
+  const phaseError = ['uploading_phase', 'processing_phase', 'publishing_phase'].find((p) => s[p]?.status === 'error');
+  if (['error', 'expired', 'upload_failed'].includes(videoStatus) || phaseError) {
+    const ph = phaseError ? s[phaseError] : {};
+    const why = ph.errors?.[0]?.message || ph.error?.message || `Facebook no pudo procesar el video (${videoStatus || phaseError})`;
     throw new SocialApiError(why);
   }
-  if (videoStatus === 'ready' || s.publishing_phase?.status === 'complete') {
+  // La documentación usa las dos grafías («complete» y «completed»).
+  const published = ['complete', 'completed'].includes(s.publishing_phase?.status) || s.publishing_phase?.publish_status === 'published';
+  if (videoStatus === 'ready' || published) {
     return done(st.videoId, absoluteFbUrl(d.permalink_url || ''));
   }
-  if (Date.now() - (st.since || 0) > 2 * 60 * 60 * 1000) {
+  if (Date.now() - (st.since || 0) > FB_MAX_WAIT_MS) {
     throw new SocialApiError('Facebook lleva más de 2 horas procesando el video');
   }
   return processing(st, 60 * 1000);
@@ -186,7 +204,7 @@ async function advanceContainer(igId, token, st) {
   if (code === 'ERROR' || code === 'EXPIRED') {
     throw new SocialApiError(`Instagram rechazó el medio${detail ? `: ${detail}` : ''} (revisa formato, proporción y duración)`);
   }
-  if (Date.now() - (st.since || 0) > 2 * 60 * 60 * 1000) throw new SocialApiError('Instagram lleva más de 2 horas procesando el medio');
+  if (Date.now() - (st.since || 0) > IG_MAX_WAIT_MS) throw new SocialApiError('Instagram lleva más de 30 minutos procesando el medio');
   return processing(st, 20 * 1000);
 }
 
@@ -221,7 +239,7 @@ async function checkInstagram({ post, target, account, token, stateOverride }) {
         const { code, detail } = await containerStatus(id, token);
         if (code === 'ERROR' || code === 'EXPIRED') throw new SocialApiError(`Instagram rechazó un elemento del carrusel${detail ? `: ${detail}` : ''}`);
         if (code !== 'FINISHED') {
-          if (Date.now() - (st.since || 0) > 2 * 60 * 60 * 1000) throw new SocialApiError('Instagram lleva más de 2 horas procesando el carrusel');
+          if (Date.now() - (st.since || 0) > IG_MAX_WAIT_MS) throw new SocialApiError('Instagram lleva más de 30 minutos procesando el carrusel');
           return processing(st, 20 * 1000);
         }
       }
@@ -240,8 +258,18 @@ async function checkInstagram({ post, target, account, token, stateOverride }) {
 // ───────────────────────────── Comunes ─────────────────────────────
 
 async function comment({ target, token, message }) {
-  // Facebook e Instagram usan el mismo borde /{objeto}/comments.
-  await graph(`${target.externalId}/comments`, { method: 'POST', token, params: { message } });
+  // Facebook e Instagram usan el mismo borde /{objeto}/comments. Permisos:
+  // pages_manage_engagement / instagram_manage_comments (ver cabecera).
+  try {
+    await graph(`${target.externalId}/comments`, { method: 'POST', token, params: { message } });
+  } catch (err) {
+    if (['10', '200'].includes(String(err.code))) {
+      throw new SocialApiError(
+        `Falta el permiso ${target.network === 'instagram' ? 'instagram_manage_comments' : 'pages_manage_engagement'}: vuelve a conectar la cuenta (${err.message})`
+      );
+    }
+    throw err;
+  }
 }
 
 function oauthUrl({ appId, redirectUri, state }) {

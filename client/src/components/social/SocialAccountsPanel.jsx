@@ -260,7 +260,9 @@ function MetaTokenModal({ isOpen, onClose, onDone }) {
         <p className="text-xs text-slate-500">
           Business Manager → Configuración del negocio → Usuarios del sistema → Generar token (caducidad «Nunca») con los permisos
           <code className="mx-1">pages_show_list</code>, <code>pages_read_engagement</code>, <code>pages_manage_posts</code>,
-          <code className="mx-1">instagram_basic</code> e <code>instagram_content_publish</code>. El usuario del sistema debe tener asignadas las Páginas.
+          <code className="mx-1">instagram_basic</code>, <code>instagram_content_publish</code>, <code>business_management</code> y <code>ads_read</code>
+          (y para el primer comentario <code>pages_manage_engagement</code> e <code>instagram_manage_comments</code>). El usuario del sistema debe tener
+          asignadas las Páginas y las cuentas de Instagram.
         </p>
         <textarea className="input min-h-[90px] font-mono text-xs" value={token} onChange={(e) => setToken(e.target.value)} placeholder="EAAG…" />
         <div className="flex justify-end gap-2">

@@ -20,7 +20,7 @@
 const SocialPost = require('../../models/SocialPost');
 const SocialAccount = require('../../models/SocialAccount');
 const SocialPublishingConfig = require('../../models/SocialPublishingConfig');
-const { encryptSecret, decryptSecret } = require('../secretCrypto');
+const { encryptSecret, decryptSecret, isEncrypted } = require('../secretCrypto');
 const { validateTarget, NETWORK_LABELS, FORMAT_LABELS } = require('./rules');
 const { SocialApiError } = require('./http');
 const meta = require('./meta');
@@ -46,28 +46,42 @@ const targetLabel = (t) => `${NETWORK_LABELS[t.network] || t.network} · ${FORMA
  * Token vigente de la cuenta. TikTok (24 h) y YouTube (1 h) caducan: si le
  * quedan menos de 5 minutos se renueva con el refresh token y se guarda.
  */
+/**
+ * Descifra un secreto o falla SIN culpar a la cuenta. Un servidor sin la
+ * SECRETS_KEY de producción (el `npm run dev` local apunta a la base real)
+ * recibe el texto cifrado tal cual: mandarlo a la red daba «token inválido» y
+ * marcaba la cuenta como rota para todos. Es un problema de ESTE servidor.
+ */
+function descifrar(valor) {
+  const t = decryptSecret(valor);
+  if (t && isEncrypted(t)) {
+    throw new SocialApiError('Este servidor no puede descifrar los tokens (falta o cambió SECRETS_KEY)', { retryable: true });
+  }
+  return t;
+}
+
 async function getToken(account, cfg) {
   if (account.network === 'facebook' || account.network === 'instagram') {
-    const t = decryptSecret(account.accessToken);
+    const t = descifrar(account.accessToken);
     if (!t) throw new SocialApiError('La cuenta no tiene token: vuelve a conectarla', { tokenInvalid: true });
     return t;
   }
   const expiring = !account.tokenExpiresAt || account.tokenExpiresAt.getTime() - Date.now() < 5 * 60 * 1000;
   if (expiring) {
-    const refreshToken = decryptSecret(account.refreshToken);
+    const refreshToken = descifrar(account.refreshToken);
     if (!refreshToken) throw new SocialApiError('La conexión caducó: vuelve a conectar la cuenta', { tokenInvalid: true });
     let r;
     if (account.network === 'tiktok') {
       r = await tiktok.refresh({
         clientKey: cfg.tiktok?.clientKey,
-        clientSecret: decryptSecret(cfg.tiktok?.clientSecret),
+        clientSecret: descifrar(cfg.tiktok?.clientSecret),
         refreshToken,
       });
       account.refreshExpiresAt = r.refreshExpiresAt || account.refreshExpiresAt;
     } else {
       r = await youtube.refresh({
         clientId: cfg.google?.clientId,
-        clientSecret: decryptSecret(cfg.google?.clientSecret),
+        clientSecret: descifrar(cfg.google?.clientSecret),
         refreshToken,
       });
     }
@@ -77,7 +91,7 @@ async function getToken(account, cfg) {
     await account.save();
     return r.accessToken;
   }
-  return decryptSecret(account.accessToken);
+  return descifrar(account.accessToken);
 }
 
 /** Estado de la publicación a partir de sus destinos (una vez arrancada). */
@@ -310,6 +324,9 @@ async function processDueSocialPosts() {
  * plano en el mismo proceso. El reclamo atómico evita que choque con el job.
  */
 function kick() {
+  // Un servidor con los jobs apagados (dev local contra la base real) no
+  // publica: lo hará el líder en su próximo tick.
+  if (process.env.JOBS_DISABLED === '1') return;
   setImmediate(() => {
     processDueSocialPosts().catch((err) => console.error('[social] kick:', err.message));
   });

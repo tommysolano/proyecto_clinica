@@ -96,9 +96,15 @@ function validateTarget(post, target, account) {
   const videos = media.filter(isVideo);
   const images = media.filter(isImage);
   const text = composeText(post, target, { includeLink: !(net === 'facebook' && target.format === 'post' && !media.length) });
+  const MB = 1024 * 1024;
+  const pesaMas = (list, mb) => list.some((m) => (m.size || 0) > mb * MB);
 
   if (net === 'instagram') {
     if (images.some((m) => !/^image\/jpe?g$/i.test(m.mimeType))) add('Instagram solo acepta imágenes JPG');
+    if (pesaMas(images, 8)) add('cada imagen pesa como máximo 8 MB');
+    if (target.format === 'story' ? pesaMas(videos, 100) : pesaMas(videos, 300)) {
+      add(target.format === 'story' ? 'el video de la historia pesa como máximo 100 MB' : 'el video pesa como máximo 300 MB');
+    }
     if (target.format === 'post' && media.length !== 1) add('lleva exactamente 1 imagen o 1 video (para varias usa Carrusel)');
     if (target.format === 'carousel' && (media.length < 2 || media.length > 10)) add('el carrusel lleva de 2 a 10 imágenes o videos');
     if (target.format === 'reel' && (media.length !== 1 || !videos.length)) add('el reel lleva exactamente 1 video');
@@ -110,6 +116,7 @@ function validateTarget(post, target, account) {
   }
 
   if (net === 'facebook') {
+    if (pesaMas(images, 4)) add('Facebook acepta fotos de hasta 4 MB');
     if (target.format === 'post') {
       if (videos.length && media.length > 1) add('un video va solo (no se mezcla con fotos)');
       if (images.length > 10) add('máximo 10 fotos');

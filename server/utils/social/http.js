@@ -30,6 +30,18 @@ const META_RETRYABLE = new Set([1, 2, 4, 17, 32, 341, 613, 80001, 80002]);
 
 function errorFromBody(status, body) {
   const e = body && typeof body === 'object' ? body.error : null;
+  // Google (YouTube / OAuth) va PRIMERO: también usa `code` numérico, y leído
+  // como Meta un token caducado no pedía reconectar ni un 503 se reintentaba.
+  if (e && typeof e === 'object' && (Array.isArray(e.errors) || typeof e.status === 'string')) {
+    const reason = e.errors?.[0]?.reason || e.status || '';
+    return new SocialApiError(e.message || reason || `Error ${status}`, {
+      status,
+      code: String(reason),
+      retryable: status >= 500 || ['rateLimitExceeded', 'backendError', 'UNAVAILABLE'].includes(reason),
+      tokenInvalid: status === 401 || reason === 'authError' || reason === 'UNAUTHENTICATED',
+      raw: body,
+    });
+  }
   // Meta (Graph API)
   if (e && (e.fbtrace_id || e.type === 'OAuthException' || typeof e.code === 'number')) {
     const msg = e.error_user_msg || e.error_user_title || e.message || `Error ${status}`;
@@ -51,14 +63,12 @@ function errorFromBody(status, body) {
       raw: body,
     });
   }
-  // Google (YouTube / OAuth)
+  // Cualquier otro objeto de error.
   if (e && typeof e === 'object') {
-    const reason = e.errors?.[0]?.reason || e.status || '';
-    return new SocialApiError(e.message || reason || `Error ${status}`, {
+    return new SocialApiError(e.message || `Error ${status}`, {
       status,
-      code: String(reason),
-      retryable: status >= 500 || reason === 'rateLimitExceeded' || reason === 'backendError',
-      tokenInvalid: status === 401 || reason === 'authError',
+      retryable: status >= 500 || status === 429,
+      tokenInvalid: status === 401,
       raw: body,
     });
   }

@@ -120,7 +120,11 @@ export function targetWarnings(post, t, account, tiktokInfo) {
   if (!account) w.push('Elige la cuenta (o pásalo a «publicar a mano»)');
   if (account?.status === 'error') w.push('La conexión de esta cuenta falló: vuelve a conectarla');
 
+  const MB = 1024 * 1024;
+  const pesaMas = (list, mb) => list.some((m) => (m.size || 0) > mb * MB);
   if (t.network === 'instagram') {
+    if (pesaMas(images, 8)) w.push('Cada imagen pesa como máximo 8 MB');
+    if (t.format === 'story' ? pesaMas(videos, 100) : pesaMas(videos, 300)) w.push(t.format === 'story' ? 'El video de la historia pesa como máximo 100 MB' : 'El video pesa como máximo 300 MB');
     if (t.format === 'post' && media.length !== 1) w.push('Lleva exactamente 1 imagen o 1 video (para varias usa Carrusel)');
     if (t.format === 'carousel' && (media.length < 2 || media.length > 10)) w.push('El carrusel lleva de 2 a 10 elementos');
     if (t.format === 'reel' && (media.length !== 1 || !videos.length)) w.push('El reel lleva exactamente 1 video');
@@ -136,6 +140,7 @@ export function targetWarnings(post, t, account, tiktokInfo) {
     if (t.format === 'story' && post.link) w.push('Las historias por API no llevan sticker de enlace: si lo necesitas, usa «publicar a mano»');
   }
   if (t.network === 'facebook') {
+    if (pesaMas(images, 4)) w.push('Facebook acepta fotos de hasta 4 MB');
     if (t.format === 'post' && videos.length && media.length > 1) w.push('Un video va solo (no se mezcla con fotos)');
     if (t.format === 'post' && images.length > 10) w.push('Máximo 10 fotos');
     if (t.format === 'post' && !media.length && !text.trim() && !post.link) w.push('Escribe un texto o agrega un enlace o un medio');

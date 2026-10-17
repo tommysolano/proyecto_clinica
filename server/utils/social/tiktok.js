@@ -16,7 +16,10 @@
  * verificar el dominio. Fotos: TikTok solo admite PULL_FROM_URL, que exige
  * verificar el dominio de la API en el portal de desarrolladores de TikTok.
  */
-const { request, uploadFileRange, SocialApiError } = require('./http');
+// `http.uploadFileRange` (y no una copia) para que las pruebas puedan interceptar la subida.
+const http = require('./http');
+
+const { request, SocialApiError } = http;
 const { composeText, isImage, isVideo, LIMITS } = require('./rules');
 const { mediaFile, publicMediaUrl } = require('./media');
 
@@ -63,16 +66,47 @@ async function refresh({ clientKey, clientSecret, refreshToken }) {
   return tokenResult(data);
 }
 
+/**
+ * Perfil del creador. Solo campos de `user.info.basic`: `username` es de
+ * `user.info.profile`, un permiso que no pedimos (pedirlo sin tenerlo hace
+ * fallar la conexión). El @usuario sale de creator_info, que va con video.publish.
+ */
 async function userInfo(token) {
-  const { data } = await request(`${API}/user/info/?fields=open_id,avatar_url,display_name,username`, { headers: auth(token) });
+  const { data } = await request(`${API}/user/info/?fields=open_id,avatar_url,display_name`, { headers: auth(token) });
   const u = data?.data?.user || {};
-  return { openId: u.open_id, name: u.display_name || '', username: u.username || '', avatarUrl: u.avatar_url || '' };
+  let username = '';
+  try {
+    username = (await creatorInfo(token)).creator_username || '';
+  } catch {
+    /* sin @usuario la cuenta funciona igual; solo falta el enlace público */
+  }
+  return { openId: u.open_id, name: u.display_name || '', username, avatarUrl: u.avatar_url || '' };
 }
 
 /** Lo que el creador permite AHORA (privacidades, interacciones, duración máxima). */
 async function creatorInfo(token) {
   const { data } = await request(`${API}/post/publish/creator_info/query/`, { method: 'POST', headers: auth(token), json: {} });
   return data?.data || {};
+}
+
+// Los errores de TikTok que el equipo va a ver de verdad, dichos en claro.
+const ERRORES = {
+  unaudited_client_can_only_post_to_private_accounts:
+    'TikTok todavía no auditó la app: solo se puede publicar con la cuenta en privado y con «Solo yo». Usa «Enviar como borrador» mientras tanto.',
+  url_ownership_unverified: 'Para publicar fotos hay que verificar el dominio de la API en el portal de desarrolladores de TikTok.',
+  privacy_level_option_mismatch: 'La privacidad elegida ya no está disponible en esta cuenta: vuelve a elegirla.',
+  spam_risk_too_many_posts: 'La cuenta llegó al límite diario de publicaciones de TikTok.',
+  spam_risk_user_banned_from_posting: 'TikTok tiene bloqueada la publicación en esta cuenta.',
+  reached_active_user_cap: 'La app alcanzó el cupo diario de cuentas que pueden publicar (app sin auditar: 5 al día).',
+};
+
+function traducir(err) {
+  const msg = ERRORES[err?.code];
+  if (msg) {
+    err.message = msg;
+    err.retryable = false;
+  }
+  return err;
 }
 
 /**
@@ -107,7 +141,15 @@ function postInfo(post, target, { photo = false } = {}) {
   return info;
 }
 
-async function start({ post, target, token }) {
+async function start(ctx) {
+  try {
+    return await startRaw(ctx);
+  } catch (err) {
+    throw traducir(err);
+  }
+}
+
+async function startRaw({ post, target, token }) {
   const media = post.media || [];
   const o = target.options || {};
 
@@ -141,7 +183,7 @@ async function start({ post, target, token }) {
   for (let i = 0; i < count; i += 1) {
     const from = i * chunkSize;
     const to = i === count - 1 ? file.size - 1 : from + chunkSize - 1;
-    await uploadFileRange(uploadUrl, {
+    await http.uploadFileRange(uploadUrl, {
       method: 'PUT',
       headers: { 'Content-Type': file.mimeType || 'video/mp4', 'Content-Range': `bytes ${from}-${to}/${file.size}` },
       filePath: file.path,
