@@ -78,6 +78,7 @@ const WhatsappSpend = pagina(() => import('./pages/WhatsappSpend'));
 const SavedReplies = pagina(() => import('./pages/SavedReplies'));
 const Contacts = pagina(() => import('./pages/Contacts'));
 const Segments = pagina(() => import('./pages/Segments'));
+const SocialPlanner = pagina(() => import('./pages/SocialPlanner'));
 const Campaigns = pagina(() => import('./pages/Campaigns'));
 const Workflows = pagina(() => import('./pages/Workflows'));
 const WorkflowEditor = pagina(() => import('./pages/WorkflowEditor'));
@@ -444,6 +445,14 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'marketing']}>
                       <Segments />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/social"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing']}>
+                      <SocialPlanner />
                     </RoleRoute>
                   }
                 />

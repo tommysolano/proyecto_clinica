@@ -28,9 +28,11 @@ const chatGalleryImageSchema = new mongoose.Schema(
     // voz, videos): se almacena aquí para no engordar el mensaje, pero NO debe
     // salir en la galería que el agente elige a mano. Los documentos antiguos no
     // tienen el campo y siguen comportándose como galería, como hasta ahora.
+    // 'social' son los medios del planificador de redes (SocialPost): comparten
+    // almacén y URL pública (Meta los descarga de ahí), pero tampoco son galería.
     kind: {
       type: String,
-      enum: ['gallery', 'attachment', 'inbound'],
+      enum: ['gallery', 'attachment', 'inbound', 'social'],
       default: 'gallery',
       index: true,
     },

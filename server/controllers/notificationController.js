@@ -30,6 +30,11 @@ const TYPE_ROLES = {
   // ahora solo se notaba al entrar a mirar. Va a la campana para enterarse en el
   // momento, y apunta a la pantalla donde se reconecta.
   whatsapp_qr_disconnected: MARKETING_ROLES,
+  // Planificador de redes sociales: toca publicar a mano, falló un destino o
+  // hay una publicación esperando aprobación. Van dirigidas a personas concretas.
+  social_post_manual: MARKETING_ROLES,
+  social_post_failed: MARKETING_ROLES,
+  social_post_review: MARKETING_ROLES,
   // Atención de citas. Van dirigidas a UNA persona (ver el campo `user`), así
   // que aquí solo se declara qué roles pueden verlas en su campana.
   // Sale de DOCTOR_LIKE_ROLES: una especialidad nueva la hereda sin tocar esta

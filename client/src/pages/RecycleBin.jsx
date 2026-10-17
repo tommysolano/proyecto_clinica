@@ -16,6 +16,7 @@ const TABS = [
   { value: 'SavedReply', label: 'Mensajes guardados' },
   { value: 'Segment', label: 'Segmentos' },
   { value: 'Contact', label: 'Contactos' },
+  { value: 'SocialPost', label: 'Publicaciones en redes' },
 ];
 
 function daysLeft(purgeAt) {

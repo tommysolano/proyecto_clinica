@@ -170,6 +170,7 @@ app.use('/api/message-templates', require('./routes/messageTemplates'));
 app.use('/api/segments', require('./routes/segments'));
 app.use('/api/campaigns', require('./routes/campaigns'));
 app.use('/api/workflows', require('./routes/workflows'));
+app.use('/api/social', require('./routes/social'));
 app.use('/api/trash', require('./routes/trash'));
 app.use('/api/agent-tasks', require('./routes/agentTasks'));
 app.use('/api/reviews', require('./routes/reviews'));
@@ -311,6 +312,11 @@ connectDB().then(() => {
     // que una ráfaga tumbe el número (por QR) o rebote contra el límite de Meta.
     const { processDueDrips } = require('./utils/dripRunner');
     setInterval(only(() => { processDueDrips().catch(() => {}); }), 60 * 1000);
+    // Job: publicaciones programadas en redes sociales (Fénix → Redes sociales).
+    // Cada 60s toma las vencidas con reclamo atómico y sigue las que la red aún
+    // procesa (videos de Instagram, TikTok…).
+    const { processDueSocialPosts } = require('./utils/social/publisher');
+    setInterval(only(() => { processDueSocialPosts().catch((err) => console.error('[social] job:', err.message)); }), 60 * 1000);
     // Motor de workflows: suscribe a eventos de dominio + reanuda esperas vencidas.
     const workflowEngine = require('./utils/workflowEngine');
     workflowEngine.subscribeDomainEvents();

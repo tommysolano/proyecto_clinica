@@ -206,6 +206,7 @@ const MENU_GROUPS = [
       { path: '/call-log', label: 'Registro de Llamadas', roles: ['admin', 'call_center', 'marketing'] },
       { path: '/contacts', label: 'Contactos', roles: ['admin', 'call_center', 'marketing'] },
       { path: '/opportunities', label: 'Oportunidades', roles: ['admin', 'call_center', 'marketing'] },
+      { path: '/social', label: 'Redes Sociales', roles: ['admin', 'marketing'] },
       { path: '/campaigns', label: 'Campañas', roles: ['admin', 'marketing'] },
       { path: '/segments', label: 'Segmentos', roles: ['admin', 'marketing'] },
       { path: '/message-templates', label: 'Plantillas de Mensaje', roles: ['admin', 'marketing', 'call_center'] },

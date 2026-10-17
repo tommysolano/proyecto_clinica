@@ -15,7 +15,7 @@ const trashSchema = new mongoose.Schema(
     entityType: {
       type: String,
       required: true,
-      enum: ['Workflow', 'MessageTemplate', 'SavedReply', 'Segment', 'Contact'],
+      enum: ['Workflow', 'MessageTemplate', 'SavedReply', 'Segment', 'Contact', 'SocialPost'],
       index: true,
     },
     originalId: { type: mongoose.Schema.Types.ObjectId, required: true },

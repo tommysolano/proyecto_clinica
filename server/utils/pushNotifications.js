@@ -209,7 +209,37 @@ async function notificarUsuarios(userIds, { clinicId, type, title, body, url, me
   }
 
   const subs = await PushSubscription.find({ user: { $in: ids } }).lean();
-  await Promise.all(subs.map((s) => enviarASuscripcion(s, { title, body, url, type })));
+  const { payload, options } = entregaDelAviso({ type, title, body, url, meta });
+  await Promise.all(subs.map((s) => enviarASuscripcion(s, payload, options)));
+}
+
+/**
+ * CÓMO VIAJA EL PUSH DE UN AVISO (oct-2026).
+ *
+ * Las enfermeras con iPhone o con Chrome sin instalar decían que los avisos «no
+ * les aparecían», y el servidor los entregaba bien a Apple y a Google. Eran dos
+ * cosas del viaje, no del envío:
+ *
+ * 1. PRIORIDAD. Sin `urgency`, el push va como «normal», y Android en reposo
+ *    (Doze, ahorro de batería) o el iPhone lo guardan hasta que se desbloquea el
+ *    teléfono: llegaba cuando la enfermera ya había visto la cita en la agenda.
+ *    Un aviso de atención es un paciente esperando: va con prioridad ALTA, como
+ *    el timbre de las llamadas. Con TTL de una hora: si el teléfono estuvo
+ *    apagado, un «te toca atender» de hace tres horas ya no ayuda a nadie.
+ *
+ * 2. ETIQUETA. El service worker agrupa por `tag` y, sin una propia, usaba el
+ *    TIPO: todos los «Cita para enfermería» compartían etiqueta y cada uno
+ *    BORRABA al anterior de la bandeja del teléfono (en iPhone, además, sin
+ *    sonar). Ahora la etiqueta es la CITA: dos pacientes son dos avisos, y solo
+ *    se reemplaza el de la misma cita («Cita asignada» → «Te toca atender»).
+ */
+const TIPOS_DE_ATENCION = new Set(['appointment_assigned', 'appointment_nursing']);
+
+function entregaDelAviso({ type, title, body, url, meta = {} }) {
+  const cita = meta?.appointment ? String(meta.appointment._id || meta.appointment) : '';
+  const payload = { title, body, url, type, timestamp: Date.now(), ...(cita ? { tag: `cita-${cita}` } : {}) };
+  const options = TIPOS_DE_ATENCION.has(type) ? { urgency: 'high', TTL: 60 * 60 } : {};
+  return { payload, options };
 }
 
 /** Igual, pero a todos los usuarios con un rol en esa sucursal (enfermería). */

@@ -16,6 +16,7 @@ const MODEL_LOADERS = {
   SavedReply: () => require('../models/SavedReply'),
   Segment: () => require('../models/Segment'),
   Contact: () => require('../models/Contact'),
+  SocialPost: () => require('../models/SocialPost'),
 };
 
 // Etiqueta legible por tipo, para mostrar en la lista de la papelera.
@@ -25,6 +26,7 @@ const LABELERS = {
   SavedReply: (d) => d.title || d.shortcut || '',
   Segment: (d) => d.name || '',
   Contact: (d) => [d.firstName, d.lastName].filter(Boolean).join(' ') || d.displayName || d.phone || '',
+  SocialPost: (d) => d.title || '',
 };
 
 /**

@@ -2322,7 +2322,8 @@ exports.listGallery = async (req, res) => {
     // No se trae el dataUrl (pesa MBs): el <img> carga la miniatura por `url`.
     // Se excluye lo que MANDA el contacto ('inbound'): comparte colección para no
     // duplicar el almacén, pero la galería es lo que el equipo elige para enviar.
-    const list = await ChatGalleryImage.find({ clinic: req.clinicId, kind: { $ne: 'inbound' } })
+    // Tampoco los medios del planificador de redes ('social').
+    const list = await ChatGalleryImage.find({ clinic: req.clinicId, kind: { $nin: ['inbound', 'social'] } })
       .select('name mimeType size createdAt')
       .sort({ createdAt: -1 })
       .lean();
