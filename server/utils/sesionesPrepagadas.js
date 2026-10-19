@@ -51,7 +51,12 @@ async function sucursalesDeLaEmpresa(clinicId) {
  */
 async function productosDeCitas(citas) {
   const faltan = new Set();
-  const refs = (apt) => [apt.serviceItem, ...(apt.additionalServices || []).map((x) => x.serviceItem)].filter(Boolean);
+  // El servicio que va como canje/cortesía por su cuenta (oct-2026) no gasta
+  // sesión ni se cobra: no entra en la cuenta.
+  const { tipoSinCobroDelServicio } = require('./appointmentValue');
+  const refs = (apt) => [apt.serviceItem, ...(apt.additionalServices || []).map((x) => x.serviceItem)]
+    .filter(Boolean)
+    .filter((si) => !tipoSinCobroDelServicio(apt, si));
   for (const apt of citas) {
     for (const si of refs(apt)) if (!(si && typeof si === 'object' && 'product' in si)) faltan.add(idDe(si));
   }
@@ -140,7 +145,7 @@ async function crearDesdeVenta({ sale, items, productMap, userId, session }) {
   if (sale.appointment) {
     const Appointment = require('../models/Appointment');
     cita = await Appointment.findById(sale.appointment)
-      .select('clinic serviceItem additionalServices isCanje isCortesia')
+      .select('clinic serviceItem additionalServices isCanje isCortesia noChargeServices')
       .session(session)
       .lean();
     if (cita && !cita.isCanje && !cita.isCortesia) {

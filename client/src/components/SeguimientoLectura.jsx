@@ -165,7 +165,7 @@ export function Seguimiento({ fu, conFecha = false }) {
         {/* Lo que enfermería ya puso: la cuenta abierta del doctor, cerrada. */}
         {(fu.aplicaciones || []).length > 0 && (
           <p className="text-xs text-sky-700">
-            Se le aplicó: {fu.aplicaciones.map((a) => a.itemName).filter(Boolean).join(' · ')}
+            Enfermería: {fu.aplicaciones.map((a) => (a.estado === 'no_aplicado' ? `${a.itemName} (no se pudo aplicar${a.reason ? `: ${a.reason}` : ''})` : a.via === 'directa' ? `${a.itemName} (inyectado directo)` : a.itemName)).filter(Boolean).join(' · ')}
           </p>
         )}
 

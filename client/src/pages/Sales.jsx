@@ -31,6 +31,8 @@ import {
 import JournalEntryViewModal from '../components/JournalEntryViewModal';
 import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../utils/idempotency';
 import DateInput from '../components/DateInput';
+import ServiciosSinCobro from '../components/ServiciosSinCobro';
+import { serviciosDeLaCita, listaSinCobro, tipoSinCobro } from '../utils/serviciosSinCobro';
 import { nameMatches } from '../utils/nameSearch';
 import { soloActivos as soloUsuariosActivos } from '../utils/activeUsers';
 
@@ -626,8 +628,11 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       const id = si?.product?._id || si?.product;
       if (id) m.set(String(id), (m.get(String(id)) || 0) + 1);
     };
-    sumar(citaPorCobrar.serviceItem);
-    for (const extra of citaPorCobrar.additionalServices || []) sumar(extra.serviceItem);
+    // El servicio que va como canje/cortesía (oct-2026) no se cobra ni gasta sesión.
+    if (!tipoSinCobro(citaPorCobrar, citaPorCobrar.serviceItem)) sumar(citaPorCobrar.serviceItem);
+    for (const extra of citaPorCobrar.additionalServices || []) {
+      if (!tipoSinCobro(citaPorCobrar, extra.serviceItem)) sumar(extra.serviceItem);
+    }
     return m;
   }, [citaPorCobrar, modoReceta]);
   const prepagoPorDefecto = (productId, qty) => {
@@ -782,11 +787,14 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         }
         agregar(productId, 1, nombre);
       };
+      // Lo que va como canje/cortesía por su cuenta (oct-2026) no entra al cobro.
       const svc = apt.serviceItem;
-      if (svc?.product) servicio(svc.product, svc.name || apt.serviceName);
+      if (tipoSinCobro(apt, svc)) { /* no se cobra */ }
+      else if (svc?.product) servicio(svc.product, svc.name || apt.serviceName);
       else if (svc?.name || apt.serviceName) faltan.push(svc?.name || apt.serviceName);
       for (const extra of apt.additionalServices || []) {
         const si = extra.serviceItem;
+        if (tipoSinCobro(apt, si)) continue;
         if (si?.product) servicio(si.product, si.name || extra.name);
         else if (extra.name || si?.name) faltan.push(extra.name || si?.name);
       }
@@ -893,6 +901,28 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       toast.error(err.response?.data?.message || 'No se pudo marcar la cita');
     } finally {
       setSinCobrar(false);
+    }
+  };
+
+  /**
+   * UN SERVICIO SIN COBRO (oct-2026): en una visita con varios servicios, el
+   * cajero marca aquí cuál es canje o cortesía. Se guarda en la cita y el cobro
+   * se vuelve a armar solo con los que se pagan. Si al final ninguno se cobra,
+   * la cita entera queda como canje/cortesía (lo decide el servidor).
+   */
+  const [guardandoSinCobro, setGuardandoSinCobro] = useState(false);
+  const cambiarSinCobro = async (lista) => {
+    if (!citaPorCobrar) return;
+    setGuardandoSinCobro(true);
+    try {
+      await api.patch(`/appointments/${citaPorCobrar._id}/service-value`, { noChargeServices: lista });
+      const { data: fresca } = await api.get(`/appointments/${citaPorCobrar._id}`);
+      precargaRef.current = false;
+      setCitaPorCobrar(fresca);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo guardar qué servicio se cobra');
+    } finally {
+      setGuardandoSinCobro(false);
     }
   };
 
@@ -1330,6 +1360,16 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                   Es cortesía
                 </button>
               </div>
+              {/* Con varios servicios: canje/cortesía de UNO solo y se cobra el resto. */}
+              {serviciosDeLaCita(citaPorCobrar).length > 1 && (
+                <ServiciosSinCobro
+                  className="w-full mt-1"
+                  servicios={serviciosDeLaCita(citaPorCobrar)}
+                  value={listaSinCobro(citaPorCobrar)}
+                  onChange={cambiarSinCobro}
+                  disabled={guardandoSinCobro || sinCobrar}
+                />
+              )}
             </div>
           )}
           {/* CANJE o valor cero: no hay dinero que cobrar; se sigue a la asignación. */}

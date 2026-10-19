@@ -51,17 +51,64 @@ const puedeFijarValor = (req) =>
  * lo que permite que recepción reciba al paciente sin saber todavía el importe
  * y lo anote más tarde, sin que el flujo se lo exija.
  */
-function aplicarValorDeCita(apt, body, req) {
+function aplicarValorDeCita(apt, body, req, serviciosDeLaCita) {
   if (!puedeFijarValor(req)) return false;
 
-  const traeCanje = body.isCanje !== undefined;
-  const traeCortesia = body.isCortesia !== undefined;
+  let traeCanje = body.isCanje !== undefined;
+  let traeCortesia = body.isCortesia !== undefined;
   const traeValor = body.agreedValue !== undefined;
   const traeAdelanto =
     body.advancePayment !== undefined
     || body.advanceAmount !== undefined
     || body.advanceMethod !== undefined;
-  if (!traeCanje && !traeCortesia && !traeValor && !traeAdelanto) return false;
+  const traeSinCobro = Array.isArray(body.noChargeServices);
+  if (!traeCanje && !traeCortesia && !traeValor && !traeAdelanto && !traeSinCobro) return false;
+
+  /**
+   * CANJE / CORTESÍA POR SERVICIO (oct-2026). Con varios servicios en la visita,
+   * cada uno puede ir sin cobro por su lado, y de ahí sale la marca de la
+   * visita: todos sin cobro → la visita es canje (o cortesía si todos lo son);
+   * alguno se cobra → la visita se cobra. Con UN solo servicio la lista sobra:
+   * lo dice la marca de la visita de siempre.
+   *
+   * `serviciosDeLaCita` (ids) lo pasa quien llama cuando `apt` es un objeto
+   * suelto (crear, editar); con una cita de verdad se leen de ella.
+   */
+  let marcaDerivada = null; // null = no decide; '' | 'canje' | 'cortesia'
+  if (traeSinCobro) {
+    const servicios = serviciosDeLaCita
+      ? [...new Set(serviciosDeLaCita.map((s) => String(s?._id || s || '')).filter(Boolean))]
+      : serviciosDeLaVisita(apt);
+    const vistos = new Set();
+    const lista = [];
+    for (const e of body.noChargeServices) {
+      const id = String(e?.serviceItem?._id || e?.serviceItem || '');
+      const kind = e?.kind === 'cortesia' ? 'cortesia' : e?.kind === 'canje' ? 'canje' : '';
+      if (!id || !kind || vistos.has(id) || !servicios.includes(id)) continue;
+      vistos.add(id);
+      lista.push({ serviceItem: id, kind });
+    }
+    if (servicios.length > 1) {
+      apt.noChargeServices = lista;
+      if (lista.length === servicios.length) {
+        marcaDerivada = lista.every((e) => e.kind === 'cortesia') ? 'cortesia' : 'canje';
+      } else {
+        marcaDerivada = '';
+      }
+    } else {
+      apt.noChargeServices = [];
+      if (lista.length === 1) marcaDerivada = lista[0].kind;
+    }
+  }
+  if (marcaDerivada !== null) {
+    body = { ...body, isCanje: marcaDerivada === 'canje', isCortesia: marcaDerivada === 'cortesia' };
+    traeCanje = true;
+    traeCortesia = true;
+  } else if (body.isCanje === true || body.isCortesia === true) {
+    // La visita ENTERA sin cobro (pantallas sin selector por servicio): la
+    // marca de la visita ya lo dice de todos, la lista sobra.
+    apt.noChargeServices = [];
+  }
 
   /**
    * PAGO POR ADELANTADO. `advancePayment` manda ('' | 'abono' | 'total' |
@@ -162,4 +209,62 @@ function aplicarValorDeCita(apt, body, req) {
   return true;
 }
 
-module.exports = { puedeFijarValor, aplicarValorDeCita, FORMAS_DE_PAGO };
+const idDe = (v) => String(v?._id || v || '');
+
+/** Ids (texto) de los servicios de la visita: el principal y los adicionales. */
+function serviciosDeLaVisita(apt) {
+  const ids = [apt?.serviceItem, ...(apt?.additionalServices || []).map((s) => s?.serviceItem)]
+    .map(idDe)
+    .filter(Boolean);
+  return [...new Set(ids)];
+}
+
+/**
+ * ¿Este servicio de la cita va sin cobro? '' (se cobra) | 'canje' | 'cortesia'.
+ * La marca de la visita manda sobre todos; si no, la lista por servicio. Una
+ * entrada de un servicio que ya no está en la cita no cuenta.
+ */
+function tipoSinCobroDelServicio(apt, serviceItem) {
+  if (apt?.isCanje) return 'canje';
+  if (apt?.isCortesia) return 'cortesia';
+  const id = idDe(serviceItem);
+  if (!id || !serviciosDeLaVisita(apt).includes(id)) return '';
+  const e = (apt?.noChargeServices || []).find((x) => idDe(x.serviceItem) === id);
+  return e?.kind || '';
+}
+
+/**
+ * Quita de la lista los servicios que ya no están en la cita y, si con eso la
+ * marca de la visita deja de cuadrar, la recalcula. Para cuando se cambian los
+ * servicios sin tocar el valor (la lista se quedaría colgando de uno que ya no
+ * existe).
+ */
+function podarSinCobro(apt) {
+  const servicios = serviciosDeLaVisita(apt);
+  const antes = apt.noChargeServices || [];
+  const quedan = antes.filter((e) => servicios.includes(idDe(e.serviceItem)));
+  const lista = servicios.length > 1 ? quedan : [];
+  if (lista.length === antes.length) return false;
+  apt.noChargeServices = lista;
+  // Si los que quedan son todos sin cobro (o el único que queda lo era), la
+  // visita entera pasa a serlo.
+  if (quedan.length && quedan.length === servicios.length) {
+    apt.isCortesia = quedan.every((e) => e.kind === 'cortesia');
+    apt.isCanje = !apt.isCortesia;
+    apt.agreedValue = 0;
+    apt.advancePayment = '';
+    apt.paidInAdvance = false;
+    apt.advanceAmount = 0;
+    apt.advanceMethod = '';
+  }
+  return true;
+}
+
+module.exports = {
+  puedeFijarValor,
+  aplicarValorDeCita,
+  serviciosDeLaVisita,
+  tipoSinCobroDelServicio,
+  podarSinCobro,
+  FORMAS_DE_PAGO,
+};

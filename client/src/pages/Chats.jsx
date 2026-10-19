@@ -9,6 +9,12 @@ import AgendadoPorSelect from '../components/AgendadoPorSelect';
 import { partirNombreCompleto } from '../utils/fullName';
 import { nombreConTratamiento } from '../utils/roles';
 import {
+  listaSinCobroParaEditar,
+  todosSinCobro,
+  serviciosDeFormulario,
+  camposDeValorConServicios,
+} from '../utils/serviciosSinCobro';
+import {
   HiOutlineStar,
   HiStar,
   HiOutlinePaperAirplane,
@@ -5269,8 +5275,8 @@ function SeguimientosPacienteModal({ patientId, nombre, onClose }) {
                   )}
                   {(fu.aplicaciones || []).length > 0 && (
                     <div className="text-sky-700">
-                      <span className="text-slate-400">Aplicado: </span>
-                      {fu.aplicaciones.map((a) => a.itemName).filter(Boolean).join(' · ')}
+                      <span className="text-slate-400">Enfermería: </span>
+                      {fu.aplicaciones.map((a) => (a.estado === 'no_aplicado' ? `${a.itemName} (no se pudo aplicar${a.reason ? `: ${a.reason}` : ''})` : a.via === 'directa' ? `${a.itemName} (inyectado directo)` : a.itemName)).filter(Boolean).join(' · ')}
                     </div>
                   )}
                   {fu.indicaciones && (
@@ -7158,6 +7164,8 @@ function EditApptModal({ appt, onClose, onSaved }) {
   );
   const [agreedValue, setAgreedValue] = useState(appt.isCanje || appt.isCortesia ? '' : (appt.agreedValue ?? ''));
   const [isCanje, setIsCanje] = useState(!!appt.isCanje);
+  // Canje/cortesía de UN servicio cuando la visita lleva varios (oct-2026).
+  const [sinCobro, setSinCobro] = useState(() => listaSinCobroParaEditar(appt));
   const [isCortesia, setIsCortesia] = useState(!!appt.isCortesia);
   const [advancePayment, setAdvancePayment] = useState(appt.advancePayment || '');
   const [advanceAmount, setAdvanceAmount] = useState(
@@ -7223,9 +7231,12 @@ function EditApptModal({ appt, onClose, onSaved }) {
         // OTROS SERVICIOS (sep-2026): ids del catálogo de la agenda.
         additionalServices: (extras || []).map((s) => s._id),
         // El servidor decide si este rol puede fijarlos (aplicarValorDeCita).
-        agreedValue: isCanje || isCortesia ? 0 : agreedValue,
-        isCanje,
-        isCortesia,
+        ...(() => {
+          const servs = [serviceItem, ...(extras || [])].filter((s) => s?._id).map((s) => ({ id: String(s._id), name: s.name }));
+          if (servs.length < 2) return { agreedValue: isCanje || isCortesia ? 0 : agreedValue, isCanje, isCortesia };
+          const lista = sinCobro.filter((e) => servs.some((s) => s.id === String(e.serviceItem)));
+          return { agreedValue: todosSinCobro(servs, lista) ? 0 : agreedValue, noChargeServices: lista };
+        })(),
         advancePayment: advancePayment || '',
         advanceAmount: advanceAmount ?? '',
         advanceMethod: advanceMethod || '',
@@ -7347,6 +7358,9 @@ function EditApptModal({ appt, onClose, onSaved }) {
             onAdvanceAmountChange={setAdvanceAmount}
             advanceMethod={advanceMethod || ''}
             onAdvanceMethodChange={setAdvanceMethod}
+            servicios={[serviceItem, ...(extras || [])].filter((s) => s?._id).map((s) => ({ id: String(s._id), name: s.name || 'Servicio' }))}
+            sinCobro={sinCobro}
+            onSinCobroChange={setSinCobro}
           />
         )}
 
@@ -8129,9 +8143,14 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
           // OTROS SERVICIOS (sep-2026): ids del catálogo de la agenda.
           additionalServices: (it.additionalServices || []).map((s) => s._id || s),
           // El servidor decide si este rol puede fijarlos (aplicarValorDeCita).
-          agreedValue: it.isCanje || it.isCortesia ? 0 : (it.agreedValue ?? ''),
-          isCanje: !!it.isCanje,
-          isCortesia: !!it.isCortesia,
+          // Canje/cortesía por servicio cuando la cita lleva varios (oct-2026).
+          ...camposDeValorConServicios({
+            servicios: serviciosDeFormulario(it.serviceItem, it.additionalServices),
+            sinCobro: it.noChargeServices,
+            agreedValue: it.agreedValue ?? '',
+            isCanje: it.isCanje,
+            isCortesia: it.isCortesia,
+          }),
           advancePayment: it.advancePayment || '',
           advanceAmount: it.advanceAmount ?? '',
           advanceMethod: it.advanceMethod || '',
@@ -8392,6 +8411,9 @@ function AgregarYAgendarModal({ conv, onClose, onDone }) {
                     onAdvanceAmountChange={(v) => updateItem(idx, { advanceAmount: v })}
                     advanceMethod={it.advanceMethod || ''}
                     onAdvanceMethodChange={(v) => updateItem(idx, { advanceMethod: v })}
+                    servicios={serviciosDeFormulario(it.serviceItem, it.additionalServices)}
+                    sinCobro={it.noChargeServices || []}
+                    onSinCobroChange={(lista) => updateItem(idx, { noChargeServices: lista })}
                   />
                   )}
 

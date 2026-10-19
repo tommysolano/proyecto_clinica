@@ -495,8 +495,23 @@ const cruzaComponentesAplicados = (serumComponents, enviados) => {
       quantityPrescribed: recetada,
       quantityApplied: puesta,
       omitReason: puesta < recetada ? String(enviado?.omitReason || '').trim() : '',
+      // Inyectada aparte o dentro de la bolsa. Sin dato, en el suero (lo de siempre).
+      via: enviado?.via === 'directa' ? 'directa' : 'suero',
     };
   });
+};
+
+/**
+ * Cómo se aplicó la dosis entera, a partir de lo que se puso de verdad: si todo
+ * lo aplicado fue inyectado aparte es 'directa', si hubo de los dos 'mixta'.
+ * Lo omitido no cuenta: una ampolla que no entró no dice nada de la vía.
+ */
+const viaDeLaDosis = (componentes) => {
+  const puestas = (componentes || []).filter((c) => Number(c.quantityApplied) > 0);
+  if (!puestas.length) return 'suero';
+  const directas = puestas.filter((c) => c.via === 'directa').length;
+  if (!directas) return 'suero';
+  return directas === puestas.length ? 'directa' : 'mixta';
 };
 
 /**
@@ -2344,6 +2359,8 @@ exports.updateFollowUp = async (req, res) => {
         serumComponents,
         // LO YA PUESTO NO SE TOCA. Se copia del original tal cual.
         administrations: previo ? (previo.administrations || []) : [],
+        // Ni las constancias de «no se pudo aplicar».
+        noAplicaciones: previo ? (previo.noAplicaciones || []) : [],
         isComposite,
         componentsUsed,
       };
@@ -2538,10 +2555,22 @@ exports.administerSerum = async (req, res) => {
     // paciente rechaza: se aplica el resto, queda constancia de la omitida y del
     // inventario sale solo lo aplicado.
     const componentes = cruzaComponentesAplicados(item.serumComponents, req.body?.components);
+    /**
+     * INYECTADO DIRECTAMENTE (oct-2026). Hay pacientes a los que las ampollas no
+     * se les ponen en suero: se las inyectan directamente. `via: 'directa'` en
+     * la dosis las marca todas así y entonces NO hubo bolsa — el volumen de
+     * cloruro queda vacío para que el parte no diga que entraron 500 ml que
+     * nunca se abrieron. Del inventario sale lo mismo: las ampollas puestas.
+     */
+    const todoDirecto = req.body?.via === 'directa';
+    if (todoDirecto) componentes.forEach((c) => { c.via = 'directa'; });
+    const via = todoDirecto ? 'directa' : viaDeLaDosis(componentes);
     const volumenPedido = Number(req.body?.baseVolumeMl);
-    const baseVolumeMl = SUERO_CLORURO_VOLUMENES.includes(volumenPedido)
-      ? volumenPedido
-      : item.serumBase?.volumeMl ?? null;
+    const baseVolumeMl = via === 'directa'
+      ? null
+      : SUERO_CLORURO_VOLUMENES.includes(volumenPedido)
+        ? volumenPedido
+        : item.serumBase?.volumeMl ?? null;
 
     /**
      * RECLAMO ATÓMICO DE LA DOSIS.
@@ -2565,6 +2594,7 @@ exports.administerSerum = async (req, res) => {
       note: String(req.body?.note || '').trim(),
       baseVolumeMl,
       components: componentes,
+      via,
       // El inventario se mueve DESPUÉS de que la dosis esté guardada; aquí no se
       // sabe todavía qué salió.
       stockMoves: [],
@@ -2703,6 +2733,98 @@ exports.undoSerumAdministration = async (req, res) => {
     res.json(hideContactData(hideTherapyNotes(fresco, req), req));
   } catch (error) {
     res.status(500).json({ message: 'Error al deshacer la administración', error: error.message });
+  }
+};
+
+/**
+ * EL SUERO NO SE PUDO PONER (oct-2026).
+ *
+ * El paciente vino a su suero pero no se le pudo aplicar: no se le encontró
+ * vena, tenía la presión baja, se sintió mal, no quiso… Enfermería deja
+ * constancia con el motivo. NO es una dosis: no entra en `administrations`, así
+ * que el «3 de 7» no avanza, lo recetado sigue pendiente para otro día y del
+ * inventario no sale nada.
+ */
+exports.registerSerumNotApplied = async (req, res) => {
+  try {
+    const { patientId, followUpId, itemId } = req.params;
+    const reason = String(req.body?.reason || '').trim();
+    if (!reason) return res.status(400).json({ message: 'Indica por qué no se pudo aplicar' });
+
+    const record = await ClinicalRecord.findOne({ patient: patientId });
+    if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
+    const fu = record.followUps.id(followUpId);
+    if (!fu) return res.status(404).json({ message: 'Seguimiento no encontrado' });
+    const item = (fu.recetaItems || []).id(itemId);
+    if (!item) return res.status(404).json({ message: 'Ítem de receta no encontrado' });
+    if (!item.isSerum) return res.status(400).json({ message: 'Este ítem no está marcado como suero' });
+
+    const recetados = Math.max(0, Number(item.quantity) || 0);
+    if (recetados && (item.administrations || []).length >= recetados) {
+      return res.status(409).json({ message: 'Este suero ya está completo: no queda nada por aplicar.' });
+    }
+
+    let nombre = req.user.name || '';
+    if (!nombre) {
+      const User = require('../models/User');
+      nombre = (await User.findById(req.user._id).select('name').lean().catch(() => null))?.name || '';
+    }
+
+    // `$push` directo: no hay tope que defender ni inventario que mover, y así no
+    // se pisa una dosis que otro enfermero registre a la vez sobre la misma línea.
+    await ClinicalRecord.updateOne(
+      { _id: record._id },
+      {
+        $push: {
+          'followUps.$[fu].recetaItems.$[it].noAplicaciones': {
+            at: new Date(),
+            by: req.user._id,
+            byName: nombre,
+            reason,
+            note: String(req.body?.note || '').trim(),
+          },
+        },
+      },
+      { arrayFilters: [{ 'fu._id': fu._id }, { 'it._id': item._id }] },
+    );
+
+    const fresco = await ClinicalRecord.findById(record._id);
+    emitToClinic(req.clinicId, 'clinicalRecord:updated', { patient: patientId });
+    res.json(hideContactData(hideTherapyNotes(fresco, req), req));
+  } catch (error) {
+    res.status(500).json({ message: 'Error al registrar que no se aplicó', error: error.message });
+  }
+};
+
+/** Borra una constancia de «no se pudo aplicar» (quien la registró, o un administrador). */
+exports.undoSerumNotApplied = async (req, res) => {
+  try {
+    const { patientId, followUpId, itemId, noId } = req.params;
+    const record = await ClinicalRecord.findOne({ patient: patientId });
+    if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
+    const fu = record.followUps.id(followUpId);
+    if (!fu) return res.status(404).json({ message: 'Seguimiento no encontrado' });
+    const item = (fu.recetaItems || []).id(itemId);
+    if (!item) return res.status(404).json({ message: 'Ítem de receta no encontrado' });
+    const entrada = (item.noAplicaciones || []).id(noId);
+    if (!entrada) return res.status(404).json({ message: 'Esa constancia ya no existe' });
+
+    const esAdmin = req.user.isSuperAdmin || req.role === 'admin';
+    if (!esAdmin && String(entrada.by) !== String(req.user._id)) {
+      return res.status(403).json({ message: 'Solo quien la registró (o un administrador) puede quitarla' });
+    }
+
+    await ClinicalRecord.updateOne(
+      { _id: record._id },
+      { $pull: { 'followUps.$[fu].recetaItems.$[it].noAplicaciones': { _id: entrada._id } } },
+      { arrayFilters: [{ 'fu._id': fu._id }, { 'it._id': item._id }] },
+    );
+
+    const fresco = await ClinicalRecord.findById(record._id);
+    emitToClinic(req.clinicId, 'clinicalRecord:updated', { patient: patientId });
+    res.json(hideContactData(hideTherapyNotes(fresco, req), req));
+  } catch (error) {
+    res.status(500).json({ message: 'Error al quitar la constancia', error: error.message });
   }
 };
 
@@ -3571,16 +3693,24 @@ exports.printHcu005 = async (req, res) => {
        * más, y la historia clínica no puede omitir lo que entró por la vena.
        */
       if ((fu.aplicaciones || []).length) {
-        const { resumenAplicacion } = require('../utils/nurseApplications');
-        notas.push(
-          `<b>Se aplicó:</b> ${esc(fu.aplicaciones.map(resumenAplicacion).filter(Boolean).join(' · '))}`
-        );
-        const noPuesto = fu.aplicaciones.flatMap((a) =>
+        const { resumenAplicacion, fueAplicada } = require('../utils/nurseApplications');
+        const puestas = fu.aplicaciones.filter(fueAplicada);
+        if (puestas.length) {
+          notas.push(
+            `<b>Se aplicó:</b> ${esc(puestas.map(resumenAplicacion).filter(Boolean).join(' · '))}`
+          );
+        }
+        const noPuesto = puestas.flatMap((a) =>
           (a.components || [])
             .filter((c) => Number(c.quantityApplied) < Number(c.quantityPrescribed))
             .map((c) => `${c.name}${c.omitReason ? ` (${c.omitReason})` : ''}`)
         );
         if (noPuesto.length) notas.push(`<b>No se aplicó:</b> ${esc(noPuesto.join(' · '))}`);
+        // El suero entero que no se pudo poner (sin vena, presión baja…).
+        const fallidas = fu.aplicaciones.filter((a) => !fueAplicada(a));
+        if (fallidas.length) {
+          notas.push(`<b>No se pudo aplicar:</b> ${esc(fallidas.map(resumenAplicacion).join(' · '))}`);
+        }
       }
 
       const vs = fu.vitalSigns || {};
@@ -3656,17 +3786,20 @@ exports.printHcu005 = async (req, res) => {
       if (fu.receta) presc.push(esc(fu.receta));
 
       // ── ADMINISTRACIÓN (enfermería, en rojo) ──
-      const admin = [];
+      // Se junta con su hora para ordenar dosis y «no se pudo» en el orden real.
+      const adminConHora = [];
       receta.filter((it) => it.isSerum).forEach((it) => {
         (it.administrations || []).forEach((ad) => {
           const omitidas = (ad.components || []).filter((c) => c.quantityApplied < c.quantityPrescribed);
           const puestas = (ad.components || []).filter((c) => c.quantityApplied > 0);
-          admin.push(
+          const aparte = (c) => (ad.via === 'mixta' && c.via === 'directa' ? ' (directa)' : '');
+          adminConHora.push({ at: ad.at, html:
             '<div class="adm">' +
               `<b>${fechaDe(ad.at)} ${horaDe(ad.at)}</b> — ${esc(it.name)}` +
               (ad.baseVolumeMl ? ` · ${esc(it.serumBase?.name || SUERO_CLORURO_NOMBRE)} ${ad.baseVolumeMl} ml` : '') +
+              (ad.via === 'directa' ? ' · inyectado directamente, sin suero' : '') +
               (puestas.length
-                ? `<div>${puestas.map((c) => `${esc(c.name)} x${c.quantityApplied}`).join(' · ')}</div>`
+                ? `<div>${puestas.map((c) => `${esc(c.name)} x${c.quantityApplied}${aparte(c)}`).join(' · ')}</div>`
                 : '') +
               (omitidas.length
                 ? `<div class="omit">No se aplicó: ${omitidas.map((c) => `${esc(c.name)}${c.omitReason ? ` (${esc(c.omitReason)})` : ''}`).join(' · ')}</div>`
@@ -3674,9 +3807,22 @@ exports.printHcu005 = async (req, res) => {
               (ad.note ? `<div>${esc(ad.note)}</div>` : '') +
               `<div class="firma">${esc(ad.byName || '')}</div>` +
             '</div>',
-          );
+          });
+        });
+        (it.noAplicaciones || []).forEach((no) => {
+          adminConHora.push({ at: no.at, html:
+            '<div class="adm">' +
+              `<b>${fechaDe(no.at)} ${horaDe(no.at)}</b> — ${esc(it.name)}` +
+              `<div class="omit">No se pudo aplicar${no.reason ? `: ${esc(no.reason)}` : ''}</div>` +
+              (no.note ? `<div>${esc(no.note)}</div>` : '') +
+              `<div class="firma">${esc(no.byName || '')}</div>` +
+            '</div>',
+          });
         });
       });
+      const admin = adminConHora
+        .sort((a, b) => new Date(a.at || 0) - new Date(b.at || 0))
+        .map((a) => a.html);
 
       const doc = fu.createdBy || {};
       // La firma al pie de CADA nota y de CADA grupo de prescripciones es una

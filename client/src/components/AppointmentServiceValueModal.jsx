@@ -9,6 +9,7 @@ import AppointmentPurchaseFields from './AppointmentPurchaseFields';
 import useAppointmentPurchase from '../hooks/useAppointmentPurchase';
 import { useAuth } from '../context/AuthContext';
 import { doctorOptionLabel } from '../utils/roles';
+import { listaSinCobroParaEditar, todosSinCobro } from '../utils/serviciosSinCobro';
 import { HiOutlineCheck, HiOutlineLockClosed, HiOutlineXMark, HiOutlinePlus } from 'react-icons/hi2';
 
 /**
@@ -84,6 +85,8 @@ export default function AppointmentServiceValueModal({
   );
   const [canje, setCanje] = useState(!!apt?.isCanje);
   const [cortesia, setCortesia] = useState(!!apt?.isCortesia);
+  // Canje/cortesía de UN servicio cuando la visita tiene varios (oct-2026).
+  const [sinCobro, setSinCobro] = useState(() => listaSinCobroParaEditar(apt));
   // Lo que el paciente dejó pagado (normalmente por teléfono, al agendar). Se
   // corrige aquí junto al valor: al cobrar es cuando se sabe si aquello cubría
   // lo que al final se hizo.
@@ -138,6 +141,14 @@ export default function AppointmentServiceValueModal({
 
   const quitarExtra = (id) => setExtras((prev) => prev.filter((s) => s._id !== id));
 
+  // Los servicios con los que queda la visita, para marcar cuál se cobra.
+  const serviciosVisita = [servicio, ...extras]
+    .filter((s) => s?._id)
+    .map((s) => ({ id: String(s._id), name: s.name || 'Servicio' }));
+  const porServicio = serviciosVisita.length > 1;
+  const sinCobroVigente = sinCobro.filter((e) => serviciosVisita.some((s) => s.id === String(e.serviceItem)));
+  const nadaSeCobra = porServicio ? todosSinCobro(serviciosVisita, sinCobroVigente) : canje || cortesia;
+
   const paciente = apt?.patient
     ? `${apt.patient.firstName || ''} ${apt.patient.lastName || ''}`.trim() || 'Paciente'
     : 'Paciente';
@@ -149,9 +160,12 @@ export default function AppointmentServiceValueModal({
         serviceItem: servicio?._id || null,
         // La lista COMPLETA, no un "añade este": quitar uno es mandarla sin él.
         additionalServices: extras.map((s) => s._id),
-        agreedValue: canje || cortesia ? 0 : valor === '' ? null : Number(valor),
-        isCanje: canje,
-        isCortesia: cortesia,
+        agreedValue: nadaSeCobra ? 0 : valor === '' ? null : Number(valor),
+        // Con varios servicios manda la lista por servicio y el servidor deduce
+        // la marca de la visita; con uno, las casillas de siempre.
+        ...(porServicio
+          ? { noChargeServices: sinCobroVigente }
+          : { isCanje: canje, isCortesia: cortesia }),
         advancePayment: adelanto || '',
         advanceAmount: abonado === '' ? 0 : Number(abonado),
         advanceMethod: formaPago || '',
@@ -264,6 +278,9 @@ export default function AppointmentServiceValueModal({
           advanceMethod={formaPago}
           onAdvanceMethodChange={setFormaPago}
           onAdvanceAmountChange={setAbonado}
+          servicios={serviciosVisita}
+          sinCobro={sinCobroVigente}
+          onSinCobroChange={setSinCobro}
         />
 
         {sePuedeCorregirAtendido ? (

@@ -765,6 +765,19 @@ export default function PatientDetail() {
                 .join(' · ')}
             </p>
             {hasRole('admin', 'cajero', 'contabilidad') && <SaldoAFavorChip patientId={id} />}
+            {/* AGENDAR DESDE EL PERFIL (oct-2026): lleva a la agenda con el
+                formulario de cita nueva abierto y este paciente ya escogido.
+                Mismos roles que pueden agendar allí (`canWrite` de Appointments). */}
+            {hasRole('admin', 'cajero', 'call_center', 'marketing', 'odontologia', 'odontologia_neurofocal') && (
+              <button
+                type="button"
+                onClick={() => navigate(`/appointments?nuevaCita=${patient._id}`)}
+                className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 border-none cursor-pointer"
+              >
+                <HiOutlineCalendar className="w-4 h-4" />
+                Agendar cita
+              </button>
+            )}
             <div className="mt-1.5 sm:mt-2">
               <TagEditor
                 value={patient.tags || []}
@@ -5249,6 +5262,22 @@ function AplicacionesEnfermeria({ lista }) {
       <p className="text-[11px] font-semibold text-sky-700 uppercase mb-1">Lo que se aplicó</p>
       <ul className="text-xs text-slate-700 space-y-1.5 m-0 p-0 list-none">
         {lista.map((a, i) => {
+          // Se intentó y no se pudo poner (oct-2026): va con su motivo, en ámbar.
+          if (a.estado === 'no_aplicado') {
+            return (
+              <li key={i} className="border-l-2 border-amber-400 pl-2">
+                <div className="font-medium text-slate-800">
+                  {a.itemName || 'Suero'}
+                  {a.at && <span className="font-normal text-slate-500"> · {hhmm(a.at)}</span>}
+                </div>
+                <div className="text-[11px] font-semibold text-amber-700">
+                  No se pudo aplicar{a.reason ? `: ${a.reason}` : ''}
+                </div>
+                {a.note && <div className="text-[11px] text-slate-500 italic">{a.note}</div>}
+                {a.byName && <div className="text-[11px] text-sky-700">{a.byName}</div>}
+              </li>
+            );
+          }
           const puestos = (a.components || []).filter((c) => Number(c.quantityApplied) > 0);
           // Lo que NO se puso es tan clínico como lo que sí: el paciente pudo
           // rechazar una ampolla y eso tiene que quedar escrito con su motivo.
@@ -5266,9 +5295,17 @@ function AplicacionesEnfermeria({ lista }) {
                   {a.baseName || 'Cloruro'} {a.baseVolumeMl} ml
                 </div>
               )}
+              {a.via === 'directa' && (
+                <div className="text-[11px] font-semibold text-violet-700">Inyectado directamente, sin suero</div>
+              )}
               {puestos.length > 0 && (
                 <div className="text-[11px] text-slate-600">
-                  {puestos.map((c) => `${c.name}${Number(c.quantityApplied) > 1 ? ` ×${c.quantityApplied}` : ''}`).join(' · ')}
+                  {puestos
+                    .map((c) =>
+                      `${c.name}${Number(c.quantityApplied) > 1 ? ` ×${c.quantityApplied}` : ''}${
+                        a.via === 'mixta' && c.via === 'directa' ? ' (inyectada directa)' : ''}`
+                    )
+                    .join(' · ')}
                 </div>
               )}
               {omitidos.length > 0 && (
@@ -5432,6 +5469,15 @@ function HidroterapiaDeLaCita({ cita, onCambio }) {
  *
  * El servidor no deja pasar de lo recetado: para más hace falta receta nueva.
  */
+// Los motivos de siempre para «no se pudo aplicar», a un clic. Se puede escribir otro.
+const MOTIVOS_NO_APLICADO = [
+  'No se pudo canalizar la vía',
+  'Presión arterial alterada',
+  'El paciente se sintió mal',
+  'El paciente no quiso',
+  'Contraindicación médica',
+];
+
 function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio }) {
   const [confirmar, setConfirmar] = useState(false);
   const [nota, setNota] = useState('');
@@ -5459,19 +5505,72 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
       quantityPrescribed: Number(c.quantity) || 0,
       quantityApplied: Number(c.quantity) || 0,
       omitReason: '',
+      via: 'suero',
     }));
   const [dosis, setDosis] = useState(dosisInicial);
   // Cloruro que se pone HOY. Arranca en lo recetado, pero se puede cambiar: en la
   // sala puede no haber la bolsa que pidió el médico, y el parte tiene que decir
   // lo que entró de verdad, no lo que estaba escrito.
   const [volumen, setVolumen] = useState(item.serumBase?.volumeMl ?? '');
+  /**
+   * CÓMO SE APLICA HOY (oct-2026): en el suero, o las ampollas inyectadas
+   * directamente sin bolsa. En «suero» cada ampolla puede marcarse aparte
+   * (unas en la bolsa y otras inyectadas): el servidor lo llama dosis mixta.
+   */
+  const [modo, setModo] = useState('suero');
+
+  // «No se pudo aplicar»: el paciente vino pero no se le pudo poner.
+  const [noPudo, setNoPudo] = useState(false);
+  const [motivoNo, setMotivoNo] = useState('');
+  const [notaNo, setNotaNo] = useState('');
 
   const abrirConfirmacion = () => {
     // Se rearma cada vez: la dosis de ayer no puede venir marcada a medias.
     setDosis(dosisInicial());
     setVolumen(item.serumBase?.volumeMl ?? '');
+    setModo('suero');
     setNota('');
     setConfirmar(true);
+  };
+
+  const abrirNoPudo = () => {
+    setMotivoNo('');
+    setNotaNo('');
+    setNoPudo(true);
+  };
+
+  const registrarNoPudo = async () => {
+    if (!motivoNo.trim()) {
+      toast.error('Indica por qué no se pudo aplicar');
+      return;
+    }
+    setBusy(true);
+    try {
+      const { data } = await api.post(
+        `/clinical-records/${patientId}/follow-ups/${followUpId}/receta/${item._id}/no-aplicado`,
+        { reason: motivoNo.trim(), note: notaNo.trim() }
+      );
+      onCambio(data);
+      toast.success('Registrado: no se pudo aplicar. El suero sigue pendiente.');
+      setNoPudo(false);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo registrar');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const quitarNoPudo = async (no) => {
+    if (!window.confirm('¿Quitar esta constancia de «no se pudo aplicar»?')) return;
+    try {
+      const { data } = await api.delete(
+        `/clinical-records/${patientId}/follow-ups/${followUpId}/receta/${item._id}/no-aplicado/${no._id}`
+      );
+      onCambio(data);
+      toast.success('Constancia quitada');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo quitar');
+    }
   };
 
   const setComp = (idx, patch) =>
@@ -5486,17 +5585,19 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
         `/clinical-records/${patientId}/follow-ups/${followUpId}/receta/${item._id}/administer`,
         {
           note: nota.trim(),
-          ...(volumen ? { baseVolumeMl: Number(volumen) } : {}),
+          // Inyectado directamente no lleva bolsa: el servidor deja el cloruro vacío.
+          ...(modo === 'directa' ? { via: 'directa' } : volumen ? { baseVolumeMl: Number(volumen) } : {}),
           // Solo se manda si el suero TIENE composición: sin ella el servidor
           // debe seguir comportándose como siempre (dosis completa).
           ...(receta.length ? { components: dosis } : {}),
         }
       );
       onCambio(data);
+      const que = modo === 'directa' ? 'Aplicación directa registrada' : 'Suero administrado';
       toast.success(
         faltan - 1 > 0
-          ? `Suero administrado. Faltan ${faltan - 1}.`
-          : 'Suero administrado. Ya no queda ninguno.'
+          ? `${que}. Faltan ${faltan - 1}.`
+          : `${que}. Ya no queda ninguno.`
       );
       setConfirmar(false);
       setNota('');
@@ -5570,6 +5671,17 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
             Administrar
           </button>
         )}
+        {/* El paciente vino pero no se le pudo poner: queda escrito y la dosis
+            sigue pendiente para otro día. */}
+        {puedeAdministrar && !completo && (
+          <button
+            type="button"
+            onClick={abrirNoPudo}
+            className="text-xs font-medium px-2.5 py-1 rounded-lg bg-white text-amber-700 border border-amber-300 cursor-pointer hover:bg-amber-50"
+          >
+            No se pudo aplicar
+          </button>
+        )}
         {puedeAdministrar && puestos > 0 && (
           <button
             type="button"
@@ -5586,8 +5698,19 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
           <p className="m-0">
             Última: {fmtDateTime(ultima.at)}
             {ultima.byName ? ` · ${ultima.byName}` : ''}
+            {ultima.via === 'directa' && <b className="text-violet-700"> · inyectada directamente, sin suero</b>}
+            {ultima.via === 'mixta' && <b className="text-violet-700"> · parte inyectada directamente</b>}
             {ultima.note ? ` · ${ultima.note}` : ''}
           </p>
+          {ultima.via === 'mixta' && (
+            <p className="m-0 mt-0.5 text-violet-700">
+              Inyectada directa:{' '}
+              {(ultima.components || [])
+                .filter((c) => c.via === 'directa' && c.quantityApplied > 0)
+                .map((c) => c.name)
+                .join(' · ')}
+            </p>
+          )}
           {/* Lo que se dejó de poner en la última dosis. Se enseña SIEMPRE que
               hay algo omitido: es la diferencia entre lo recetado y lo que el
               paciente recibió de verdad, y quien mire mañana tiene que verla. */}
@@ -5603,6 +5726,102 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
         </div>
       )}
 
+      {/* Las veces que NO se pudo poner (las 3 últimas). No gastan dosis. */}
+      {(item.noAplicaciones || []).length > 0 && (
+        <ul className="m-0 mt-1 p-0 list-none space-y-0.5">
+          {(item.noAplicaciones || []).slice(-3).reverse().map((no) => (
+            <li key={no._id} className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+              <b>No se pudo aplicar</b> · {fmtDateTime(no.at)}
+              {no.byName ? ` · ${no.byName}` : ''}
+              {no.reason ? ` · ${no.reason}` : ''}
+              {no.note ? ` · ${no.note}` : ''}
+              {puedeAdministrar && (
+                <button
+                  type="button"
+                  onClick={() => quitarNoPudo(no)}
+                  className="ml-2 text-[11px] text-slate-500 hover:text-red-600 bg-transparent border-none cursor-pointer p-0 underline"
+                >
+                  Quitar
+                </button>
+              )}
+            </li>
+          ))}
+          {(item.noAplicaciones || []).length > 3 && (
+            <li className="text-[11px] text-amber-700">
+              {item.noAplicaciones.length} veces en total sin poder aplicarse
+            </li>
+          )}
+        </ul>
+      )}
+
+      <Modal
+        isOpen={noPudo}
+        onClose={() => setNoPudo(false)}
+        title="No se pudo aplicar"
+        size="sm"
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-slate-700 m-0">
+            Queda registrado que hoy no se le pudo aplicar <b>{item.name}</b>. No se descuenta una
+            dosis ({faltan} sigue{faltan === 1 ? '' : 'n'} pendiente{faltan === 1 ? '' : 's'}) ni sale
+            nada del inventario.
+          </p>
+          <div>
+            <p className="m-0 mb-1.5 text-xs font-medium text-slate-700">¿Por qué?</p>
+            <div className="flex flex-wrap gap-1.5">
+              {MOTIVOS_NO_APLICADO.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMotivoNo(m)}
+                  className={`text-xs px-2.5 py-1 rounded-full border cursor-pointer ${
+                    motivoNo === m
+                      ? 'bg-amber-600 text-white border-amber-600'
+                      : 'bg-white text-slate-700 border-slate-200 hover:border-amber-300'
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+            <input
+              type="text"
+              value={motivoNo}
+              onChange={(e) => setMotivoNo(e.target.value)}
+              placeholder="O escribe el motivo…"
+              className="input mt-2"
+            />
+          </div>
+          <label className="block text-sm">
+            Nota <span className="text-slate-400 font-normal">(opcional)</span>
+            <input
+              type="text"
+              value={notaNo}
+              onChange={(e) => setNotaNo(e.target.value)}
+              placeholder="Signos, a quién se avisó, cuándo volver…"
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2 text-sm"
+            />
+          </label>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setNoPudo(false)}
+              className="px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm text-slate-600 cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={registrarNoPudo}
+              disabled={busy || !motivoNo.trim()}
+              className="px-4 py-2 rounded-lg bg-amber-600 text-white text-sm font-medium border-none cursor-pointer disabled:opacity-50"
+            >
+              {busy ? 'Registrando…' : 'Registrar'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       <Modal
         isOpen={confirmar}
         onClose={() => setConfirmar(false)}
@@ -5617,9 +5836,45 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
             Van {puestos} de {recetados}. Con este quedarían {Math.max(0, faltan - 1)} por poner.
           </p>
 
+          {/* CÓMO SE APLICÓ. Hay pacientes a los que las ampollas no se les
+              ponen en suero sino inyectadas directamente: entonces no hay bolsa
+              y el parte no puede decir que entraron 500 ml de cloruro. */}
+          {receta.length > 0 && (
+            <div>
+              <p className="m-0 mb-1.5 text-xs font-medium text-slate-700">¿Cómo se aplicó?</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {[
+                  { v: 'suero', t: 'En suero', d: 'Las ampollas van dentro del cloruro' },
+                  { v: 'directa', t: 'Inyectadas directamente', d: 'Sin suero: se inyectan al paciente' },
+                ].map((o) => (
+                  <button
+                    key={o.v}
+                    type="button"
+                    onClick={() => {
+                      setModo(o.v);
+                      // Al volver a «en suero» todo arranca dentro de la bolsa.
+                      setDosis((d) => d.map((c) => ({ ...c, via: o.v })));
+                    }}
+                    className={`text-left rounded-xl border px-3 py-2 cursor-pointer ${
+                      modo === o.v
+                        ? o.v === 'directa'
+                          ? 'border-violet-400 bg-violet-50 ring-1 ring-violet-300'
+                          : 'border-sky-400 bg-sky-50 ring-1 ring-sky-300'
+                        : 'border-slate-200 bg-white hover:border-slate-300'
+                    }`}
+                  >
+                    <span className="block text-sm font-medium text-slate-800">{o.t}</span>
+                    <span className="block text-[11px] text-slate-500">{o.d}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* El cloruro que se pone hoy. Se puede corregir: si el médico recetó
               1000 ml y en la sala solo hay bolsas de 500, el parte tiene que
               decir 500, no repetir lo que estaba escrito. */}
+          {modo !== 'directa' && (
           <label className="flex flex-wrap items-center gap-2 text-xs text-slate-700">
             <span className="font-medium">{item.serumBase?.name || SUERO_CLORURO_NOMBRE}</span>
             {/* El ancho lo pone el contenedor: `.input` ya trae `width:100%` y
@@ -5640,6 +5895,7 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
               <span className="text-amber-700">Se recetó {item.serumBase.volumeMl} ml</span>
             )}
           </label>
+          )}
 
           {/* Lo que recetó el médico, con la casilla puesta. Se desmarca lo que
               el paciente NO quiera: se aplica el resto, queda escrito por qué y
@@ -5647,7 +5903,7 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
           {receta.length > 0 && (
             <div className="rounded-xl border border-slate-200 overflow-hidden">
               <p className="m-0 px-3 py-1.5 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                Qué se le pone
+                {modo === 'directa' ? 'Qué se le inyecta' : 'Qué se le pone'}
               </p>
               <ul className="m-0 p-0 list-none divide-y divide-slate-100">
                 {dosis.map((c, idx) => {
@@ -5695,6 +5951,19 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
                             title="Cuántas se pusieron"
                             className={`input text-xs py-1 w-16 ${puesta ? '' : 'text-slate-400'}`}
                           />
+                        )}
+                        {/* En suero, una ampolla suelta puede ir inyectada aparte
+                            (dosis mixta). Con todo directo no hace falta elegir. */}
+                        {modo === 'suero' && puesta && (
+                          <label className="flex items-center gap-1 text-[11px] text-violet-700 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={c.via === 'directa'}
+                              onChange={(e) => setComp(idx, { via: e.target.checked ? 'directa' : 'suero' })}
+                              className="w-3.5 h-3.5 accent-violet-600 cursor-pointer"
+                            />
+                            Inyectada aparte
+                          </label>
                         )}
                       </div>
                       {c.quantityApplied < c.quantityPrescribed && (

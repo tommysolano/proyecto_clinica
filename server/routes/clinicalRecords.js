@@ -13,6 +13,8 @@ const {
   deleteFollowUpAttachment,
   administerSerum,
   undoSerumAdministration,
+  registerSerumNotApplied,
+  undoSerumNotApplied,
   printHcu005,
   getFollowUpsByAppointment,
 } = require('../controllers/clinicalRecordController');
@@ -115,6 +117,17 @@ router.delete(
   '/:patientId/follow-ups/:followUpId/receta/:itemId/administer',
   requireRole('admin', 'doctor', 'enfermero'),
   undoSerumAdministration
+);
+// El suero no se pudo poner (sin vena, presión baja…): constancia sin gastar dosis.
+router.post(
+  '/:patientId/follow-ups/:followUpId/receta/:itemId/no-aplicado',
+  requireRole('admin', 'doctor', 'enfermero'),
+  registerSerumNotApplied
+);
+router.delete(
+  '/:patientId/follow-ups/:followUpId/receta/:itemId/no-aplicado/:noId',
+  requireRole('admin', 'doctor', 'enfermero'),
+  undoSerumNotApplied
 );
 // La receta impresa: el call center también se la manda al paciente que la pide.
 router.get('/:patientId/follow-ups/:followUpId/print', rolesQueLeen, printFollowUp);

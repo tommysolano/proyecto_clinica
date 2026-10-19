@@ -42,11 +42,27 @@ import TimeSlotInput from '../components/TimeSlotInput';
 import DateInput from '../components/DateInput';
 import AppointmentValueFields from '../components/AppointmentValueFields';
 import AgendadoPorSelect from '../components/AgendadoPorSelect';
+import { todosSinCobro } from '../utils/serviciosSinCobro';
 import QuienAtiende, {
   CAMPOS_QUIEN_ATIENDE,
   pasosDeAtencion,
   usePersonalDeLaSede,
 } from '../components/QuienAtiende';
+
+/** Los servicios del formulario de cita (principal + otros) como [{id, name}]. */
+const serviciosDeAptForm = (f) => {
+  const out = [];
+  for (const s of [f?.serviceItem, ...(f?.additionalServices || [])]) {
+    const id = String(s?._id || '');
+    if (id && !out.some((x) => x.id === id)) out.push({ id, name: s.name || 'Servicio' });
+  }
+  return out;
+};
+/** La lista de canje/cortesía, solo de los servicios que siguen en el formulario. */
+const sinCobroVigente = (f) => {
+  const ids = serviciosDeAptForm(f).map((s) => s.id);
+  return (f?.noChargeServices || []).filter((e) => ids.includes(String(e.serviceItem)));
+};
 
 const emptyApt = {
   enabled: false,
@@ -58,6 +74,8 @@ const emptyApt = {
   serviceItem: null,
   // OTROS SERVICIOS de la misma cita (sep-2026): [{ _id, name }].
   additionalServices: [],
+  // Canje/cortesía de UN servicio cuando la visita lleva varios: [{serviceItem, kind}].
+  noChargeServices: [],
   /**
    * Valor acordado y canje, igual que en la agenda: esta cita se agenda desde
    * mostrador y ahí es donde se sabe lo que va a pagar el paciente. Solo lo ve
@@ -331,7 +349,13 @@ export default function Patients() {
             // servidor lo comprueba otra vez (`puedeFijarValor`). Vacío = «no
             // lo anotaron», que no es lo mismo que cero.
             ...(puedeFijarValor
-              ? { agreedValue: aptForm.isCanje || aptForm.isCortesia ? 0 : aptForm.agreedValue, isCanje: aptForm.isCanje, isCortesia: !!aptForm.isCortesia }
+              ? (serviciosDeAptForm(aptForm).length > 1
+                  // Varios servicios: canje/cortesía por servicio; el servidor deduce la visita.
+                  ? {
+                      agreedValue: todosSinCobro(serviciosDeAptForm(aptForm), sinCobroVigente(aptForm)) ? 0 : aptForm.agreedValue,
+                      noChargeServices: sinCobroVigente(aptForm),
+                    }
+                  : { agreedValue: aptForm.isCanje || aptForm.isCortesia ? 0 : aptForm.agreedValue, isCanje: aptForm.isCanje, isCortesia: !!aptForm.isCortesia })
               : {}),
           });
           toast.success('Cita agendada');
@@ -817,6 +841,9 @@ export default function Patients() {
                       onCanjeChange={(v) => setAptForm((f) => ({ ...f, isCanje: v }))}
                       isCortesia={!!aptForm.isCortesia}
                       onCortesiaChange={(v) => setAptForm((f) => ({ ...f, isCortesia: v }))}
+                      servicios={serviciosDeAptForm(aptForm)}
+                      sinCobro={sinCobroVigente(aptForm)}
+                      onSinCobroChange={(lista) => setAptForm((f) => ({ ...f, noChargeServices: lista }))}
                     />
                   )}
                   {aptForm.date && !aptForm.ahora && (

@@ -508,6 +508,27 @@ const appointmentSchema = new mongoose.Schema(
      * de las partes dijeran cosas distintas, y en dinero eso no se puede.
      */
     additionalServices: { type: [appointmentExtraServiceSchema], default: [] },
+    /**
+     * CANJE / CORTESÍA DE UN SOLO SERVICIO (oct-2026). En una visita con varios
+     * servicios puede que uno se cobre y otro no («la consulta se paga, el
+     * suero es cortesía»). Cada entrada dice qué servicio (principal o
+     * adicional) no se cobra y por qué. Si TODOS quedan sin cobro, la visita
+     * entera es canje/cortesía (`isCanje`/`isCortesia`), y si solo algunos, la
+     * visita se cobra y `agreedValue` es lo de los que sí se pagan. Lo escribe
+     * solo `aplicarValorDeCita` (utils/appointmentValue.js).
+     */
+    noChargeServices: {
+      type: [
+        new mongoose.Schema(
+          {
+            serviceItem: { type: mongoose.Schema.Types.ObjectId, ref: 'AppointmentServiceItem', required: true },
+            kind: { type: String, enum: ['canje', 'cortesia'], required: true },
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
     // Marca si es la primera cita del paciente (registrado por primera vez).
     // Se calcula al crear: true si el paciente no tenía citas previas.
     isFirstVisit: { type: Boolean, default: false },

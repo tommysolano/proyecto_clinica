@@ -181,6 +181,8 @@ async function reescribirSueroDelSeguimiento({ patientId, followUpId, linea, con
       serumBase: linea.serumBase,
       serumComponents: linea.serumComponents,
       administrations: [],
+      // Los «no se pudo aplicar» se quedan en la línea original, con su historia.
+      noAplicaciones: [],
     });
   }
   await record.save();

@@ -689,7 +689,7 @@ const buildServicesSnapshot = async (clinicId, items) => {
 // El valor de la cita, su canje y su pago adelantado viven en su propia
 // utilidad: entran por cinco puertas y una copia por puerta ya se demostro que
 // se desincroniza (ver utils/appointmentValue.js).
-const { puedeFijarValor, aplicarValorDeCita } = require('../utils/appointmentValue');
+const { puedeFijarValor, aplicarValorDeCita, podarSinCobro } = require('../utils/appointmentValue');
 /**
  * Resuelve el servicio de agenda y le suma un uso (ordena el buscador por lo
  * más pedido). Devuelve null si no llega ninguno: el servicio dejó de ser
@@ -1339,7 +1339,7 @@ async function crearCita(req, res) {
      * Se agenda con valor desde el alta del paciente (Pacientes → «Agendar cita
      * para este paciente»), que es mostrador registrando a quien tiene delante.
      */
-    for (const k of ['agreedValue', 'isCanje', 'isCortesia', 'valueSetAt', 'valueSetBy', 'advancePayment', 'paidInAdvance', 'advanceAmount', 'advanceMethod']) delete cleanBody[k];
+    for (const k of ['agreedValue', 'isCanje', 'isCortesia', 'valueSetAt', 'valueSetBy', 'advancePayment', 'paidInAdvance', 'advanceAmount', 'advanceMethod', 'noChargeServices']) delete cleanBody[k];
     /**
      * Los turnos NO entran a pelo por el cuerpo. `cleanBody` se vuelca entero en
      * el `create`, así que un `turns` en el JSON se guardaría sin pasar por
@@ -1352,7 +1352,11 @@ async function crearCita(req, res) {
     // de marcar asistencia y no puede llegar por el cuerpo de la petición.
     for (const k of ['arrivedAt', 'arrivalDelayMinutes', 'attentionAssignedAt']) delete cleanBody[k];
     const valorCita = {};
-    aplicarValorDeCita(valorCita, req.body, req);
+    // Con los servicios que trae el cuerpo: el canje/cortesía puede ser de uno solo.
+    aplicarValorDeCita(valorCita, req.body, req, [
+      req.body.serviceItem,
+      ...(Array.isArray(req.body.additionalServices) ? req.body.additionalServices : []),
+    ]);
     if (cleanBody.doctor === '') delete cleanBody.doctor;
     // (En el PUT, `''` significa «quítale el doctor» y se traduce a null; ver
     // `updateAppointment`. Aquí, al crear, es simplemente que no se eligió.)
@@ -1733,7 +1737,7 @@ exports.updateAppointment = async (req, res) => {
      */
     const CAMPOS_DEL_VALOR = [
       'agreedValue', 'isCanje', 'isCortesia', 'advancePayment', 'paidInAdvance', 'advanceAmount', 'advanceMethod',
-      'valueSetAt', 'valueSetBy',
+      'valueSetAt', 'valueSetBy', 'noChargeServices',
     ];
     if (!puedeFijarValor(req)) {
       for (const k of CAMPOS_DEL_VALOR) delete update[k];
@@ -1754,10 +1758,37 @@ exports.updateAppointment = async (req, res) => {
         advanceMethod: existing.advanceMethod,
         paidInAdvance: existing.paidInAdvance,
         advanceAmount: existing.advanceAmount,
+        noChargeServices: existing.noChargeServices || [],
       };
-      const cambio = aplicarValorDeCita(valor, update, req);
+      // Los servicios con los que queda la cita (los nuevos, si se cambiaron).
+      const serviciosFinales = [
+        update.serviceItem !== undefined ? update.serviceItem : existing.serviceItem,
+        ...((update.additionalServices !== undefined ? update.additionalServices : existing.additionalServices) || [])
+          .map((s) => s?.serviceItem || s),
+      ];
+      const cambio = aplicarValorDeCita(valor, update, req, serviciosFinales);
       for (const k of CAMPOS_DEL_VALOR) delete update[k];
       if (cambio) Object.assign(update, valor);
+    }
+    /**
+     * Se cambiaron los servicios sin tocar el valor: un servicio quitado no puede
+     * dejar su canje/cortesía colgado en la lista (ver `podarSinCobro`).
+     */
+    const sinCobroActual = update.noChargeServices ?? existing.noChargeServices ?? [];
+    if ((update.serviceItem !== undefined || update.additionalServices !== undefined) && sinCobroActual.length) {
+      const tras = {
+        serviceItem: update.serviceItem !== undefined ? update.serviceItem : existing.serviceItem,
+        additionalServices: update.additionalServices !== undefined ? update.additionalServices : existing.additionalServices,
+        noChargeServices: sinCobroActual.map((e) => ({ serviceItem: e.serviceItem, kind: e.kind })),
+        isCanje: update.isCanje ?? existing.isCanje,
+        isCortesia: update.isCortesia ?? existing.isCortesia,
+      };
+      if (podarSinCobro(tras)) {
+        update.noChargeServices = tras.noChargeServices;
+        for (const k of ['isCanje', 'isCortesia', 'agreedValue', 'advancePayment', 'paidInAdvance', 'advanceAmount', 'advanceMethod']) {
+          if (tras[k] !== undefined) update[k] = tras[k];
+        }
+      }
     }
 
     /**
@@ -3390,6 +3421,8 @@ exports.updateServiceAndValue = async (req, res) => {
     }
 
     if (aplicarValorDeCita(apt, req.body, req)) cambio = true;
+    // Un servicio quitado no puede dejar su «canje» colgado en la lista.
+    if (podarSinCobro(apt)) cambio = true;
 
     /**
      * CORREGIR QUIÉN ATENDIÓ, en una cita que ya está cerrada.
@@ -4566,11 +4599,13 @@ exports.nurseComplete = async (req, res) => {
        * aplicado por enfermería», que no dice ni el suero ni las ampollas. Se
        * copia lo que puso ESTA persona desde que empezó SU turno.
        */
-      const { aplicacionesDelTurno, resumenAplicacion } = require('../utils/nurseApplications');
+      const { aplicacionesDelTurno, resumenAplicacion, fueAplicada } = require('../utils/nurseApplications');
       const aplicaciones = aplicacionesDelTurno(record, req.user._id, inicioDelTurno);
       // El detalle va DENTRO de las observaciones además de en `aplicaciones`:
-      // los PDF y la hoja MSP leen texto, no el arreglo nuevo.
-      const detalle = aplicaciones.map(resumenAplicacion).filter(Boolean);
+      // los PDF y la hoja MSP leen texto, no el arreglo nuevo. Lo que no se pudo
+      // poner va aparte: no puede salir bajo «Se aplicó».
+      const detalle = aplicaciones.filter(fueAplicada).map(resumenAplicacion).filter(Boolean);
+      const noPuesto = aplicaciones.filter((a) => !fueAplicada(a)).map(resumenAplicacion).filter(Boolean);
       /**
        * HIDROTERAPIA (sep-2026): si mostrador la marcó en este paso, el parte
        * deja dicho si se realizó — es el "tal y como el suero" que pidió la
@@ -4588,7 +4623,10 @@ exports.nurseComplete = async (req, res) => {
         aplicaciones,
         observaciones:
           req.body.note
-          || (`${detalle.length ? `Se aplicó: ${detalle.join(' · ')}.` : 'Servicio aplicado por enfermería.'}${hidro}`),
+          || (`${detalle.length
+            ? `Se aplicó: ${detalle.join(' · ')}.`
+            : noPuesto.length ? '' : 'Servicio aplicado por enfermería.'}${
+            noPuesto.length ? `${detalle.length ? ' ' : ''}${noPuesto.join(' · ')}.` : ''}${hidro}`).trim(),
         vitalSigns: {
           // La hora de la toma la sella el sistema, no se digita.
           hora: nowHHMM(),

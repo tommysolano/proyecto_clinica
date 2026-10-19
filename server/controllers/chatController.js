@@ -6156,7 +6156,10 @@ async function crearCitasDesdeChat(req, res) {
        * precio.
        */
       const valorCita = {};
-      aplicarValorDeCita(valorCita, a, req);
+      aplicarValorDeCita(valorCita, a, req, [
+        a.serviceItem,
+        ...(Array.isArray(a.additionalServices) ? a.additionalServices : []),
+      ]);
       const appointment = await Appointment.create({
         clinic: targetClinic,
         patient: patientId,

@@ -41,8 +41,35 @@ const suerocomponenteAplicadoSchema = new mongoose.Schema(
     quantityApplied: { type: Number, default: 0, min: 0 },
     // Por qué no se puso (o se puso menos). Vacío cuando se puso todo.
     omitReason: { type: String, trim: true, default: '' },
+    /**
+     * CÓMO ENTRÓ (oct-2026). No todas las ampollas van dentro de la bolsa: a
+     * veces enfermería la inyecta directamente y el cloruro ni se abre.
+     * 'suero' = diluida en el cloruro; 'directa' = inyectada aparte.
+     */
+    via: { type: String, enum: ['suero', 'directa'], default: 'suero' },
   },
   { _id: false }
+);
+
+/**
+ * UNA VEZ QUE EL SUERO NO SE PUDO PONER (oct-2026).
+ *
+ * El paciente llega pero no se le puede canalizar, tiene la presión baja, se
+ * siente mal… Antes enfermería solo podía decir «se administró» o callar, y la
+ * historia quedaba muda. Esto deja constancia del intento con su motivo SIN
+ * gastar una dosis: no es una entrada de `administrations` (que es lo que
+ * cuentan el «3 de 7», las sesiones y las comisiones), así que lo recetado
+ * sigue pendiente, y no mueve inventario.
+ */
+const noAplicacionSueroSchema = new mongoose.Schema(
+  {
+    at: { type: Date, default: Date.now },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    byName: { type: String, trim: true, default: '' },
+    reason: { type: String, trim: true, default: '' },
+    note: { type: String, trim: true, default: '' },
+  },
+  { _id: true }
 );
 
 /**
@@ -62,6 +89,14 @@ const aplicacionEnfermeriaSchema = new mongoose.Schema(
     baseName: { type: String, trim: true, default: '' },
     // Las ampollas y moléculas, con lo recetado y lo puesto.
     components: { type: [suerocomponenteAplicadoSchema], default: [] },
+    /**
+     * 'aplicado' (lo normal) o 'no_aplicado': se intentó y no se pudo poner, y
+     * `reason` dice por qué (ver `noAplicacionSueroSchema`).
+     */
+    estado: { type: String, enum: ['aplicado', 'no_aplicado'], default: 'aplicado' },
+    reason: { type: String, trim: true, default: '' },
+    // En suero, inyectado directamente o las dos cosas (ver `via` del componente).
+    via: { type: String, enum: ['suero', 'directa', 'mixta'], default: 'suero' },
     note: { type: String, trim: true, default: '' },
     at: { type: Date, default: null },
     // Quién la puso. `byName` es snapshot: si esa persona se va, la aplicación
@@ -136,6 +171,12 @@ const recetaItemSchema = new mongoose.Schema(
         // Qué ampollas/moléculas se pusieron de verdad y cuáles no.
         components: { type: [suerocomponenteAplicadoSchema], default: [] },
         /**
+         * Cómo se aplicó ESTA dosis: dentro del suero (lo de siempre), con las
+         * ampollas inyectadas directamente sin bolsa, o mixta (unas en el suero
+         * y otras aparte). Sale de la `via` de cada componente.
+         */
+        via: { type: String, enum: ['suero', 'directa', 'mixta'], default: 'suero' },
+        /**
          * Inventario movido por ESTA dosis. Se guarda para poder deshacerla
          * exactamente: sin esto, "deshacer" tendría que volver a adivinar qué se
          * descontó, y si entretanto cambió la receta devolvería al stock algo
@@ -150,6 +191,10 @@ const recetaItemSchema = new mongoose.Schema(
         ],
       },
     ],
+
+    // Las veces que enfermería NO pudo ponerlo, con su motivo. No cuentan como
+    // dosis: lo recetado sigue pendiente.
+    noAplicaciones: { type: [noAplicacionSueroSchema], default: [] },
 
     componentsUsed: [
       {

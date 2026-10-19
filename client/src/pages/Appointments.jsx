@@ -7,6 +7,7 @@ import { downloadFile } from '../utils/download';
 import ProductAutocomplete from '../components/ProductAutocomplete';
 import ServiceItemPicker from '../components/ServiceItemPicker';
 import { inicioDeMiTurno } from '../utils/appointmentTurns';
+import { todosSinCobro, tipoSinCobro, ETIQUETA_SIN_COBRO } from '../utils/serviciosSinCobro';
 import SameSlotPanel from '../components/SameSlotPanel';
 import AssignAttentionModal from '../components/AssignAttentionModal';
 import AppointmentServiceValueModal from '../components/AppointmentServiceValueModal';
@@ -227,6 +228,8 @@ const emptyForm = {
   agreedValue: '',
   isCanje: false,
   isCortesia: false,
+  // Canje/cortesía de UN servicio cuando la visita lleva varios: [{serviceItem, kind}].
+  noChargeServices: [],
   // Pago por adelantado: '' | 'abono' | 'total' (ver utils/appointmentValue.js).
   advancePayment: '',
   advanceAmount: '',
@@ -241,6 +244,16 @@ const emptyForm = {
 };
 
 const roleLabels = ROLE_LABELS;
+
+/** Los servicios del formulario (principal + otros) como [{id, name}]. */
+const serviciosDelForm = (f) => {
+  const out = [];
+  for (const s of [f?.serviceItem, ...(f?.additionalServices || [])]) {
+    const id = String(s?._id || '');
+    if (id && !out.some((x) => x.id === id)) out.push({ id, name: s.name || 'Servicio' });
+  }
+  return out;
+};
 
 
 /**
@@ -376,10 +389,24 @@ function quienCobro(apt) {
   return apt.chargeRegisteredByName || apt.chargeRegisteredBy?.name || '';
 }
 
+/**
+ * «· Canje» / «· Cortesía» de UN servicio en una visita que sí se cobra
+ * (oct-2026). Si la visita entera es canje/cortesía ya lo dice su propia
+ * etiqueta y aquí no se repite.
+ */
+function marcaSinCobroParcial(apt, serviceItem) {
+  if (!apt || apt.isCanje || apt.isCortesia) return '';
+  const k = tipoSinCobro(apt, serviceItem);
+  return k ? ` · ${ETIQUETA_SIN_COBRO[k]}` : '';
+}
+
 /** Los OTROS servicios de la visita, sin el principal. Nombres, ya en snapshot. */
 function serviciosExtra(apt) {
   return (apt?.additionalServices || [])
-    .map((s) => s.name || s.serviceItem?.name)
+    .map((s) => {
+      const nombre = s.name || s.serviceItem?.name;
+      return nombre ? `${nombre}${marcaSinCobroParcial(apt, s.serviceItem)}` : '';
+    })
     .filter(Boolean);
 }
 
@@ -727,19 +754,21 @@ export default function Appointments() {
   // Modal para asignar doctor al marcar 'asistida'
   const [assignModal, setAssignModal] = useState(null); // { appointment }
   /**
-   * Recibir al paciente. Con factura desde la agenda, una cita que llega y aún
-   * no se cobró pasa PRIMERO por el cobro; al registrarlo se abre la asignación.
-   * Reasignar una cita ya cobrada (o ya en atención) no vuelve a cobrar.
+   * ¿A esta cita le falta el cobro? Solo con factura desde la agenda. Canje o
+   * cortesía (valor 0) no tienen nada que facturar, ni la cita con TODO pagado
+   * por adelantado (sesiones prepagadas: al asignar se gasta una sesión).
+   */
+  const citaSinCobrar = (apt) => {
+    if (!facturaEnAgenda || !apt || apt.cobro || apt.status === 'cancelada') return false;
+    return !(apt.isCanje || apt.isCortesia || apt.agreedValue === 0 || apt.prepago?.todo);
+  };
+  /**
+   * Recibir al paciente. COBRAR Y ASIGNAR VAN SEPARADOS (oct-2026): antes, con
+   * factura desde la agenda, «Asignar atención» obligaba a pasar primero por el
+   * cobro. Ahora se asigna directo y, si la cita no se ha cobrado, el modal lo
+   * avisa (con un botón para cobrarla ahí mismo).
    */
   const abrirAsignacion = (apt) => {
-    // Canje o cortesía (valor 0): no hay nada que facturar, va directo a asignar.
-    // Tampoco si TODO lo de la cita ya está pagado por adelantado (sesiones
-    // prepagadas): al asignar se gasta una sesión y no se cobra otra vez.
-    const sinCobro = !!apt?.isCanje || !!apt?.isCortesia || apt?.agreedValue === 0 || !!apt?.prepago?.todo;
-    if (facturaEnAgenda && !apt?.cobro && !sinCobro && ['pendiente', 'confirmada', 'no_asistio'].includes(apt?.status)) {
-      setCobrarCita({ appointment: apt, luegoAsignar: true });
-      return;
-    }
     setAssignModal({ appointment: apt });
   };
   // Corregir el servicio y el valor de una cita, incluso ya completada. Es lo
@@ -1457,19 +1486,35 @@ export default function Appointments() {
    * derivación y acredita al doctor que la hizo.
    */
   const agendarDerivada = (aptOrigen, servicio) => {
-    setEditing(null);
-    setDerivationOf(aptOrigen._id);
-    setForm({
-      ...emptyForm,
-      patient: aptOrigen.patient?._id || aptOrigen.patient || '',
+    abrirNuevaConPaciente(aptOrigen.patient, {
+      derivationOf: aptOrigen._id,
       serviceItem: servicio?.serviceItem
         ? { _id: servicio.serviceItem, name: servicio.name || '' }
         : null,
     });
+    setDerivacionModal(null);
+  };
+
+  /**
+   * NUEVA CITA PARA UN PACIENTE YA CONOCIDO (oct-2026): desde una cita de la
+   * agenda («Agendar otra cita») o desde su perfil (`?nuevaCita=<id>`). Abre el
+   * formulario NUEVO —no el de reagendar, que mueve la cita que ya existe— con
+   * el paciente ya escogido, para no tener que volver a buscarlo. La sucursal
+   * sigue en blanco a propósito (ver `openNew`).
+   */
+  const abrirNuevaConPaciente = (paciente, { derivationOf = null, serviceItem = null } = {}) => {
+    setEditing(null);
+    setDerivationOf(derivationOf);
+    setForm({
+      ...emptyForm,
+      ...(isDoctor ? { attendant: miId } : {}),
+      patient: paciente?._id || paciente || '',
+      serviceItem,
+    });
     setPatients([]);
     setPatientSearch(
-      aptOrigen.patient
-        ? [`${aptOrigen.patient.firstName} ${aptOrigen.patient.lastName}`, aptOrigen.patient.cedula].filter(Boolean).join(' - ')
+      paciente?.firstName !== undefined
+        ? [`${paciente.firstName || ''} ${paciente.lastName || ''}`.trim(), paciente.cedula].filter(Boolean).join(' - ')
         : ''
     );
     setShowPatientList(false);
@@ -1477,7 +1522,6 @@ export default function Appointments() {
     setPacienteNuevo(false);
     setPatientForm(emptyPatientForm);
     setPatientTelefonos('');
-    setDerivacionModal(null);
     setModalOpen(true);
   };
 
@@ -1632,10 +1676,26 @@ export default function Appointments() {
       delete basePayload.serum;
       // El servidor aplica la misma guardia; evitar mandar estos campos desde
       // roles que no trabajan con valores de mostrador.
+      /**
+       * CANJE/CORTESÍA POR SERVICIO (oct-2026): con varios servicios viaja la
+       * lista por servicio y el servidor deduce la marca de la visita; con uno,
+       * las casillas de siempre.
+       */
+      const serviciosForm = serviciosDelForm(form);
+      if (serviciosForm.length > 1) {
+        basePayload.noChargeServices = (form.noChargeServices || [])
+          .filter((e) => serviciosForm.some((s) => s.id === String(e.serviceItem)));
+        delete basePayload.isCanje;
+        delete basePayload.isCortesia;
+        if (todosSinCobro(serviciosForm, basePayload.noChargeServices)) basePayload.agreedValue = 0;
+      } else {
+        delete basePayload.noChargeServices;
+      }
       if (!canCharge) {
         delete basePayload.agreedValue;
         delete basePayload.isCanje;
         delete basePayload.isCortesia;
+        delete basePayload.noChargeServices;
         delete basePayload.advancePayment;
         delete basePayload.advanceAmount;
         delete basePayload.advanceMethod;
@@ -1665,6 +1725,7 @@ export default function Appointments() {
             // Los OTROS SERVICIOS son de la principal: cada cita adicional dice
             // lo suyo con su propio servicio, no hereda la lista de la primera.
             additionalServices: [],
+            noChargeServices: undefined,
             ...(canCharge
               ? {
                   agreedValue: it.isCanje || it.isCortesia ? 0 : (it.agreedValue ?? ''),
@@ -1952,6 +2013,23 @@ export default function Appointments() {
     resto.delete('cita');
     setUrlParams(resto, { replace: true });
     openDetail(cita);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlParams]);
+
+  /**
+   * `/appointments?nuevaCita=<pacienteId>`: el botón «Agendar cita» del perfil
+   * del paciente. Abre el formulario de cita nueva con ese paciente ya puesto.
+   */
+  useEffect(() => {
+    const pacienteId = (urlParams.get('nuevaCita') || '').trim();
+    if (!pacienteId) return;
+    const resto = new URLSearchParams(urlParams);
+    resto.delete('nuevaCita');
+    setUrlParams(resto, { replace: true });
+    if (!canWrite) return;
+    api.get(`/patients/${pacienteId}`)
+      .then((r) => abrirNuevaConPaciente(r.data))
+      .catch(() => toast.error('No se pudo cargar el paciente para agendar'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlParams]);
 
@@ -3224,9 +3302,7 @@ export default function Appointments() {
                       }
                       opciones.push({
                         id: 'asignar',
-                        label: facturaEnAgenda && !apt.cobro && !apt.isCanje && !apt.isCortesia && apt.agreedValue !== 0 && !apt.prepago?.todo && ['pendiente', 'confirmada', 'no_asistio'].includes(apt.status)
-                          ? 'Cobrar y asignar atención'
-                          : 'Asignar atención',
+                        label: 'Asignar atención',
                         icon: HiOutlineUserPlus,
                         fn: () => abrirAsignacion(apt),
                       });
@@ -3485,6 +3561,16 @@ export default function Appointments() {
                         fn: () => openEdit(apt),
                       });
                     }
+                    /* Una cita NUEVA para el mismo paciente (no mover esta):
+                        el formulario se abre con el paciente ya escogido. */
+                    if (canWrite && apt.patient?._id) {
+                      opciones.push({
+                        id: 'otra_cita',
+                        label: 'Agendar otra cita a este paciente',
+                        icon: HiOutlinePlus,
+                        fn: () => abrirNuevaConPaciente(apt.patient),
+                      });
+                    }
                     if (puedeQuitarPacienteNuevo && apt.isFirstVisit) {
                       opciones.push({
                         id: 'quitar_paciente_nuevo',
@@ -3626,7 +3712,7 @@ export default function Appointments() {
                               className="w-2.5 h-2.5 rounded-full shrink-0 mt-1"
                               style={{ backgroundColor: colorServicio(apt, services) || '#94a3b8' }}
                             />
-                            <span>{nombreServicio(apt)}</span>
+                            <span>{nombreServicio(apt)}{marcaSinCobroParcial(apt, apt.serviceItem)}</span>
                           </div>
                         ) : (
                           <span className="text-slate-400 italic">Sin servicio</span>
@@ -4184,6 +4270,9 @@ export default function Appointments() {
               onAdvanceAmountChange={(v) => setForm((f) => ({ ...f, advanceAmount: v }))}
               advanceMethod={form.advanceMethod}
               onAdvanceMethodChange={(v) => setForm((f) => ({ ...f, advanceMethod: v }))}
+              servicios={serviciosDelForm(form)}
+              sinCobro={form.noChargeServices || []}
+              onSinCobroChange={(lista) => setForm((f) => ({ ...f, noChargeServices: lista }))}
             />
           )}
 
@@ -4386,6 +4475,22 @@ export default function Appointments() {
                 <p className="text-sm font-medium text-slate-800 mt-0.5">
                   {detailModal.patient?.firstName} {detailModal.patient?.lastName}
                 </p>
+                {/* Otra cita para el mismo paciente, sin tocar esta. Se cierra
+                    el detalle para que no queden dos modales encima. */}
+                {canWrite && detailModal.patient?._id && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const paciente = detailModal.patient;
+                      setDetailModal(null);
+                      abrirNuevaConPaciente(paciente);
+                    }}
+                    className="mt-2 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-700 border-none cursor-pointer"
+                  >
+                    <HiOutlinePlus className="w-3.5 h-3.5" />
+                    Agendar otra cita
+                  </button>
+                )}
               </div>
               <div className="bg-emerald-50/50 rounded-xl p-3">
                 <p className="text-xs text-emerald-600 font-medium">Cédula</p>
@@ -4540,7 +4645,7 @@ export default function Appointments() {
                 {nombreServicio(detailModal) && (
                   <>
                     <p className="text-xs text-emerald-600 font-medium">Servicio</p>
-                    <p className="text-sm text-slate-800">{nombreServicio(detailModal)}</p>
+                    <p className="text-sm text-slate-800">{nombreServicio(detailModal)}{marcaSinCobroParcial(detailModal, detailModal.serviceItem)}</p>
                   </>
                 )}
                 {serviciosExtra(detailModal).length > 0 && (
@@ -5045,6 +5150,14 @@ export default function Appointments() {
           // salen si la cita YA TIENE SU COBRO (oct-2026), la asigne quien la
           // asigne: al paciente ya se le cobró, no hay valor ni pago que anotar.
           ocultarValor={facturaEnAgenda || !!assignModal.appointment?.cobro}
+          sinCobrar={citaSinCobrar(assignModal.appointment)}
+          // Cobrar sin perder la asignación: se cierra este modal, se cobra y al
+          // registrar el cobro vuelve a abrirse (`luegoAsignar`).
+          onCobrar={() => {
+            const apt = assignModal.appointment;
+            setAssignModal(null);
+            setCobrarCita({ appointment: apt, luegoAsignar: true });
+          }}
         />
       )}
 
@@ -5065,7 +5178,9 @@ export default function Appointments() {
               const { appointment: apt, luegoAsignar } = cobrarCita;
               setCobrarCita(null);
               fetchAppointments();
-              if (luegoAsignar) setAssignModal({ appointment: apt });
+              // Se marca cobrada en la copia local: la lista se está recargando y
+              // el aviso de «sin cobrar» no puede volver a salir.
+              if (luegoAsignar) setAssignModal({ appointment: { ...apt, cobro: apt.cobro || { ventas: 1 } } });
             }}
           />
         </Suspense>

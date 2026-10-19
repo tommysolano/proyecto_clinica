@@ -58,11 +58,36 @@ function aplicacionesDelTurno(record, userId, desde = null) {
             quantityPrescribed: Number(c.quantityPrescribed || 0),
             quantityApplied: Number(c.quantityApplied || 0),
             omitReason: c.omitReason || '',
+            via: c.via === 'directa' ? 'directa' : 'suero',
           })),
+          estado: 'aplicado',
+          via: adm.via || 'suero',
           note: adm.note || '',
           at: adm.at || null,
           by: adm.by || null,
           byName: adm.byName || '',
+        });
+      }
+      /**
+       * Lo que NO se pudo poner también va al parte (oct-2026): «vino a su
+       * suero y no se le pudo canalizar» es tan clínico como lo aplicado, y sin
+       * esto la tarjeta del turno no diría nada.
+       */
+      for (const no of item.noAplicaciones || []) {
+        if (String(no.by || '') !== String(userId)) continue;
+        const cuando = no.at ? new Date(no.at).getTime() : null;
+        if (limite !== null && (cuando === null || cuando < limite)) continue;
+        salida.push({
+          itemName: item.name || '',
+          baseVolumeMl: null,
+          baseName: item.serumBase?.name || '',
+          components: [],
+          estado: 'no_aplicado',
+          reason: no.reason || '',
+          note: no.note || '',
+          at: no.at || null,
+          by: no.by || null,
+          byName: no.byName || '',
         });
       }
     }
@@ -80,15 +105,25 @@ function aplicacionesDelTurno(record, userId, desde = null) {
  */
 function resumenAplicacion(a) {
   if (!a) return '';
+  if (a.estado === 'no_aplicado') {
+    return `${a.itemName || 'Suero'}: no se pudo aplicar${a.reason ? ` (${a.reason})` : ''}`;
+  }
   const partes = [];
   if (a.baseVolumeMl) partes.push(`${a.baseName || 'Cloruro'} ${a.baseVolumeMl} ml`);
   for (const c of a.components || []) {
     if (!Number(c.quantityApplied)) continue;
-    partes.push(`${c.name}${Number(c.quantityApplied) > 1 ? ` ×${c.quantityApplied}` : ''}`);
+    // En una dosis mixta se dice cuál fue aparte; si fue todo directo lo dice el final.
+    const aparte = a.via === 'mixta' && c.via === 'directa' ? ' inyectada directa' : '';
+    partes.push(`${c.name}${Number(c.quantityApplied) > 1 ? ` ×${c.quantityApplied}` : ''}${aparte}`);
   }
-  const detalle = partes.join(' + ');
+  const detalle = [partes.join(' + '), a.via === 'directa' ? 'inyectado directamente, sin suero' : '']
+    .filter(Boolean)
+    .join(', ');
   return `${a.itemName || 'Aplicación'}${detalle ? ` (${detalle})` : ''}`;
 }
+
+/** ¿Esta entrada de `aplicaciones` es algo que SÍ se puso? (las viejas no traen estado) */
+const fueAplicada = (a) => (a?.estado || 'aplicado') !== 'no_aplicado';
 
 /**
  * Desde cuándo contar cuando NO hay turno del que colgarse (atención sin cita).
@@ -116,4 +151,4 @@ function desdeElUltimoParteDe(record, userId) {
   return ultimo;
 }
 
-module.exports = { aplicacionesDelTurno, resumenAplicacion, desdeElUltimoParteDe };
+module.exports = { aplicacionesDelTurno, resumenAplicacion, fueAplicada, desdeElUltimoParteDe };

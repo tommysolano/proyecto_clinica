@@ -14,6 +14,7 @@ const Conversation = require('../models/Conversation');
 const Patient = require('../models/Patient');
 const { normalizePhone } = require('../utils/phoneNormalize');
 const { citasConHistoriaPrevia } = require('../utils/firstVisit');
+const { tipoSinCobroDelServicio } = require('../utils/appointmentValue');
 const {
   doctoresDeLaCita, filtroCitasConDoctor, enfermerosQueAtienden, filtroCitasConEnfermero,
   seguimientosDeSueroDelTurno,
@@ -211,10 +212,19 @@ const saveManagedDoctorRule = async (req, res, scope) => {
     let nombre = `${doctorDoc.name} · ${serviceDoc?.name || ''}`;
     if (isPatientRule) nombre = `${doctorDoc.name} · Paciente atendido`;
     else if (isReferralRule) nombre = `${doctorDoc.name} · Derivación${serviceDoc ? ` a ${serviceDoc.name}` : ''}`;
+    /**
+     * LA TARIFA ES DEL DOCTOR, NO DE LA SEDE QUE SE ESTABA MIRANDO (oct-2026).
+     * Una sede sin tarifa propia usa la de otra (ver `reglaServicioParaCita`),
+     * así que eliminar o cambiar la tarifa tiene que alcanzar también a las
+     * sedes donde ya existía, aunque no tengan citas en el período en pantalla:
+     * si no, la de la otra sede seguiría pagando con el valor viejo.
+     */
     if (active === false) {
-      await CommissionRule.deleteMany({ ...identity, clinic: { $in: clinicIds } });
+      await CommissionRule.deleteMany({ ...identity });
       return res.json({ active: false, clinics: clinicIds });
     }
+    const yaExistian = await CommissionRule.find({ ...identity }).distinct('clinic');
+    for (const c of yaExistian) if (!clinicIds.includes(String(c))) clinicIds.push(String(c));
 
     const saved = [];
     for (const clinicId of clinicIds) {
@@ -473,8 +483,11 @@ async function computeCommissions(clinicId, startDate, endDate) {
         sourceType: 'appointment',
       });
     };
-    addAgendaService(appt.serviceItem, appt.serviceName);
-    for (const extra of appt.additionalServices || []) addAgendaService(extra.serviceItem, extra.name);
+    // El servicio que fue canje/cortesía por su cuenta (oct-2026) no comisiona.
+    if (!tipoSinCobroDelServicio(appt, appt.serviceItem)) addAgendaService(appt.serviceItem, appt.serviceName);
+    for (const extra of appt.additionalServices || []) {
+      if (!tipoSinCobroDelServicio(appt, extra.serviceItem)) addAgendaService(extra.serviceItem, extra.name);
+    }
     const services = [...legacyServices, ...agendaServices];
     /**
      * Quién atendió, para pagarle. Se recorren los TURNOS de enfermería y no
@@ -1022,10 +1035,18 @@ async function catalogoServicios() {
  * el del catálogo cuando se puede saber (las citas viejas solo guardaron el
  * nombre y se vinculan por él).
  */
-const serviciosDeCita = (appt, catalogo) => {
+const serviciosDeCita = (appt, catalogo, { soloCobrables = false } = {}) => {
+  /**
+   * `soloCobrables` (oct-2026): para PAGAR comisiones se saltan los servicios
+   * que fueron canje/cortesía por su cuenta en una visita que sí se cobró. Para
+   * saber si es la primera vez del paciente NO: el servicio se recibió igual.
+   */
+  const cobra = (id) => !soloCobrables || !tipoSinCobroDelServicio(appt, id);
   const lista = [
-    { id: appt.serviceItem ? idDe(appt.serviceItem) : null, name: appt.serviceName },
-    ...(appt.additionalServices || []).map((s) => ({ id: s.serviceItem ? idDe(s.serviceItem) : null, name: s.name })),
+    ...(cobra(appt.serviceItem) ? [{ id: appt.serviceItem ? idDe(appt.serviceItem) : null, name: appt.serviceName }] : []),
+    ...(appt.additionalServices || [])
+      .filter((s) => cobra(s.serviceItem))
+      .map((s) => ({ id: s.serviceItem ? idDe(s.serviceItem) : null, name: s.name })),
     ...(appt.services || []).map((s) => ({ id: null, name: s.name })),
   ];
   const out = [];
@@ -1267,12 +1288,16 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
   const clinicIds = [...new Set([...appts, ...derivadas].map((a) => idDe(a.clinic)).filter(Boolean))];
 
   const [reglas, ajustes, pagos] = await Promise.all([
+    /**
+     * TODAS las tarifas del doctor, no solo las de las sucursales con citas en
+     * el período (oct-2026): si una sede no tiene tarifa para un servicio, se
+     * usa la que el doctor tiene para ese servicio en otra (ver `reglaParaCita`).
+     */
     doctorIds.length && clinicIds.length
       ? CommissionRule.find({
           managedFromDoctorCommissions: true,
           active: true,
           doctorServiceDoctor: { $in: doctorIds },
-          clinic: { $in: clinicIds },
         }).lean()
       : [],
     // Ajustes manuales del período: comisiones que el sistema no contabilizó
@@ -1299,6 +1324,23 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
     lista.find((r) => r.appointmentService && svc.id && String(r.appointmentService) === svc.id)
     || lista.find((r) => r.appointmentService
       && normalizeServiceName(catalogo.nombrePorId.get(String(r.appointmentService))) === svc.key);
+  /**
+   * LA TARIFA DEL DOCTOR NO SE QUEDA EN UNA SUCURSAL (oct-2026).
+   *
+   * Las tarifas se guardaban solo en las sedes donde el servicio tuvo citas el
+   * período en que se definieron. Cuando el doctor empezaba a atender ese
+   * servicio en otra sede, ahí no había tarifa y esas citas sumaban $0 en
+   * silencio (Dr. Orces: 9 de 13 «Consulta y terapia neurofocal» en
+   * Laboratorio). Ahora: la tarifa de ESA sucursal si la tiene; si no, la que
+   * el doctor tenga para el mismo servicio en otra.
+   */
+  const reglaServicioParaCita = (doctorId, clinicId, svc) =>
+    reglaDeServicio(reglasDe(doctorId, 'service', clinicId), svc)
+    || reglaDeServicio(reglasDe(doctorId, 'service'), svc);
+  const reglaBaseParaCita = (doctorId, scope, clinicId) =>
+    reglasDe(doctorId, scope, clinicId).find((r) => !r.appointmentService)
+    || reglasDe(doctorId, scope).find((r) => !r.appointmentService)
+    || null;
 
   const pagosPorDoctor = new Map();
   for (const p of pagos) {
@@ -1338,9 +1380,8 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
         patient: nombrePaciente(appt.patient), base: pagado,
       };
       let cubierta = false;
-      const reglasServicio = reglasDe(doctorId, 'service', clinicId);
-      for (const svc of serviciosDeCita(appt, catalogo)) {
-        const rule = reglaDeServicio(reglasServicio, svc);
+      for (const svc of serviciosDeCita(appt, catalogo, { soloCobrables: true })) {
+        const rule = reglaServicioParaCita(doctorId, clinicId, svc);
         if (!rule) continue;
         cubierta = true;
         const repetida = !!rule.firstTimeOnly && !esPrimeraVez(appt, svc.key);
@@ -1355,7 +1396,7 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
       // de «solo primera vez» repetido también cubre la cita (paga cero): si no,
       // la base pagaría justo lo que la regla dice que ya no se paga.
       if (!cubierta) {
-        const rule = reglasDe(doctorId, 'patient', clinicId)[0];
+        const rule = reglaBaseParaCita(doctorId, 'patient', clinicId);
         if (rule) {
           agregar({
             ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: 'Paciente atendido',
@@ -1372,15 +1413,16 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
     if (cita.isCanje || cita.isCortesia) continue;
     const doctorId = String(cita.referral.fromDoctor._id);
     const clinicId = idDe(cita.clinic);
-    const svcs = serviciosDeCita(cita, catalogo);
+    const svcs = serviciosDeCita(cita, catalogo, { soloCobrables: true });
     const reglasDeriva = reglasDe(doctorId, 'referral', clinicId);
     let rule = null;
     let svc = svcs[0] || { key: '', name: cita.serviceName || '—' };
     for (const s of svcs) {
-      const r = reglaDeServicio(reglasDeriva, s);
+      // La de esta sucursal y, si no tiene, la del doctor en otra (ver arriba).
+      const r = reglaDeServicio(reglasDeriva, s) || reglaDeServicio(reglasDe(doctorId, 'referral'), s);
       if (r) { rule = r; svc = s; break; }
     }
-    if (!rule) rule = reglasDeriva.find((r) => !r.appointmentService) || null;
+    if (!rule) rule = reglaBaseParaCita(doctorId, 'referral', clinicId);
     if (!rule) continue;
     const pagado = appointmentPaymentValue(cita);
     agregar({
@@ -1563,12 +1605,25 @@ exports.doctorSummary = async (req, res) => {
       const doctorId = f.doctorId;
       const misLineas = lineas.filter((l) => l.doctorId === doctorId);
       const misReglas = reglas.filter((r) => String(r.doctorServiceDoctor) === doctorId);
-      const deAlcance = (scope, clinicSet) => misReglas.filter((r) =>
-        (r.doctorCommissionScope || 'service') === scope && clinicSet.has(String(r.clinic)));
+      /**
+       * La tarifa que RIGE en cada sucursal del conjunto: la suya o, si no
+       * tiene, la del doctor en otra sede (igual que el cálculo, ver
+       * `reglaServicioParaCita`). Así «(parcial)» solo sale cuando de verdad
+       * hay una sede donde ese servicio no paga nada.
+       */
+      const efectivas = (scope, clinicSet, coincide) => {
+        const delAlcance = misReglas.filter((r) => (r.doctorCommissionScope || 'service') === scope && coincide(r));
+        const out = [];
+        for (const c of clinicSet) {
+          const r = delAlcance.find((x) => String(x.clinic) === c) || delAlcance[0];
+          if (r) out.push(r);
+        }
+        return out;
+      };
 
       const services = f.services.map((s) => {
         const clinicSet = new Set(s.clinicIds);
-        const configs = deAlcance('service', clinicSet).filter((r) => reglaDeServicio([r], { id: s.serviceId, key: s.key }));
+        const configs = efectivas('service', clinicSet, (r) => !!reglaDeServicio([r], { id: s.serviceId, key: s.key }));
         const suyas = misLineas.filter((l) => l.kind === 'servicio' && l.serviceKey === s.key);
         return {
           name: s.name,
@@ -1584,7 +1639,7 @@ exports.doctorSummary = async (req, res) => {
 
       const clinicSet = new Set(f.clinicIds);
       const patientCommission = resumenTarifa(
-        deAlcance('patient', clinicSet).filter((r) => !r.appointmentService),
+        efectivas('patient', clinicSet, (r) => !r.appointmentService),
         sumar(misLineas.filter((l) => l.kind === 'paciente')),
         clinicSet.size
       );
@@ -1592,14 +1647,13 @@ exports.doctorSummary = async (req, res) => {
       const referralClinicSet = new Set(f.referralClinicIds);
       const derivLineas = misLineas.filter((l) => l.kind === 'derivacion');
       const referralCommission = resumenTarifa(
-        deAlcance('referral', referralClinicSet).filter((r) => !r.appointmentService),
+        efectivas('referral', referralClinicSet, (r) => !r.appointmentService),
         sumar(derivLineas.filter((l) => !l.porServicio)),
         referralClinicSet.size
       );
       const referralServices = f.referralServices.map((s) => {
         const set = new Set(s.clinicIds.size ? s.clinicIds : f.referralClinicIds);
-        const configs = deAlcance('referral', set)
-          .filter((r) => r.appointmentService && reglaDeServicio([r], { id: s.serviceId, key: s.key }));
+        const configs = efectivas('referral', set, (r) => !!r.appointmentService && !!reglaDeServicio([r], { id: s.serviceId, key: s.key }));
         return {
           name: s.name,
           serviceId: s.serviceId,
@@ -2660,8 +2714,30 @@ exports.doctorReportPdf = async (req, res) => {
     const doctorName = calc.doctores.get(doctorId)?.name
       || (esEnfermeria(area) ? '' : appts.find((a) => a.doctor?.name)?.doctor?.name) || rotulo;
 
-    const lineas = calc.lineas
-      .filter((l) => !doctorId || l.doctorId === doctorId)
+    const lineasConComision = calc.lineas.filter((l) => !doctorId || l.doctorId === doctorId);
+    /**
+     * LAS CITAS QUE NO PAGARON TAMBIÉN VAN (oct-2026). El PDF solo listaba las
+     * filas con comisión, así que con 20 citas en pantalla salían 11 y no había
+     * forma de saber cuáles faltaban ni por qué. Ahora cada cita del doctor sin
+     * comisión sale en $0.00 con su motivo.
+     */
+    const conLinea = new Set(lineasConComision.filter((l) => l.kind !== 'derivacion').map((l) => l.apptId));
+    const sinComision = doctorId
+      ? appts
+          .filter((a) => doctoresQueCuentan(a, [doctorId], area).length && !conLinea.has(String(a._id)))
+          .map((a) => {
+            const motivo = a.isCanje ? 'canje: no genera comisión'
+              : a.isCortesia ? 'cortesía: no genera comisión'
+              : !esAtendida(a) ? 'cita no atendida'
+              : 'sin tarifa definida para este servicio';
+            const servicios = serviciosDeCita(a, calc.catalogo).map((s) => s.name).join(', ') || a.serviceName || '—';
+            return {
+              kind: 'sin_comision', date: a.date, patient: nombrePaciente(a.patient),
+              serviceName: `${servicios} — ${motivo}`, amount: 0,
+            };
+          })
+      : [];
+    const lineas = [...lineasConComision, ...sinComision]
       .sort((a, b) => new Date(a.date) - new Date(b.date));
     const ajustes = [...calc.ajustesPorDoctor.entries()]
       .filter(([did]) => !doctorId || did === doctorId)
@@ -2684,7 +2760,7 @@ exports.doctorReportPdf = async (req, res) => {
             : `${l.serviceName}${l.repetida ? ' — ya lo había recibido (solo paga la primera vez)' : ''}`;
           const concepto = l.franja ? `${base} · horario ${l.franja}` : base;
           return `
-            <tr>
+            <tr${l.kind === 'sin_comision' ? ' class="cero"' : ''}>
               <td>${escapeHtml(fechaCorta(l.date))}</td>
               <td>${escapeHtml(l.patient)}</td>
               <td>${escapeHtml(concepto)}</td>
@@ -2717,6 +2793,7 @@ exports.doctorReportPdf = async (req, res) => {
   td { padding: 5px 8px; border: 1px solid #e2e8f0; }
   .num { text-align: right; white-space: nowrap; }
   .vacio { text-align: center; color: #94a3b8; padding: 14px; }
+  .cero td { color: #94a3b8; }
   .totales { margin-top: 14px; width: 50%; margin-left: auto; }
   .totales td { border: none; padding: 3px 8px; }
   .totales .lbl { text-align: right; color: #475569; }

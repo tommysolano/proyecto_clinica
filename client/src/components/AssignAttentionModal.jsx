@@ -3,6 +3,7 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from './Modal';
 import AppointmentValueFields from './AppointmentValueFields';
+import { listaSinCobroParaEditar, todosSinCobro } from '../utils/serviciosSinCobro';
 import SearchableSelect from './SearchableSelect';
 import ServiceItemPicker from './ServiceItemPicker';
 import SelectorComponentesSuero from './SelectorComponentesSuero';
@@ -62,6 +63,13 @@ export default function AssignAttentionModal({
   onDone,
   // Factura desde la agenda: el cobro ya fue una venta, el valor operativo sobra.
   ocultarValor = false,
+  /**
+   * COBRO Y ASIGNACIÓN SEPARADOS (oct-2026). Con factura en la agenda ya no se
+   * obliga a cobrar antes de asignar: si la cita aún no se cobró, aquí se avisa
+   * y `onCobrar` (opcional) deja cobrarla sin salir.
+   */
+  sinCobrar = false,
+  onCobrar,
 }) {
   const apt = appointment;
 
@@ -438,6 +446,17 @@ export default function AssignAttentionModal({
   );
   const [canje, setCanje] = useState(!!apt?.isCanje);
   const [cortesia, setCortesia] = useState(!!apt?.isCortesia);
+  // Canje/cortesía de UN servicio cuando la visita tiene varios (oct-2026).
+  const [sinCobro, setSinCobro] = useState(() => listaSinCobroParaEditar(apt));
+  const serviciosVisita = [
+    ...(servicio?._id ? [{ id: String(servicio._id), name: servicio.name || 'Servicio' }] : []),
+    ...(apt?.additionalServices || [])
+      .map((s) => ({ id: String(s.serviceItem?._id || s.serviceItem || ''), name: s.name || s.serviceItem?.name || 'Servicio' }))
+      .filter((s) => s.id && s.id !== String(servicio?._id || '')),
+  ];
+  const porServicio = serviciosVisita.length > 1;
+  const sinCobroVigente = sinCobro.filter((e) => serviciosVisita.some((s) => s.id === String(e.serviceItem)));
+  const nadaSeCobra = porServicio ? todosSinCobro(serviciosVisita, sinCobroVigente) : canje || cortesia;
   // Lo que ya pagó por teléfono. Se precarga igual que el importe: recepción
   // llega a esta pantalla para CONFIRMARLO, no para volver a preguntarlo.
   const [adelanto, setAdelanto] = useState(apt?.advancePayment || '');
@@ -560,9 +579,10 @@ export default function AssignAttentionModal({
         // había anotado.
         ...(puedeFijarValor
           ? {
-              agreedValue: canje || cortesia ? 0 : valor === '' ? null : Number(valor),
-              isCanje: canje,
-              isCortesia: cortesia,
+              agreedValue: nadaSeCobra ? 0 : valor === '' ? null : Number(valor),
+              ...(porServicio
+                ? { noChargeServices: sinCobroVigente }
+                : { isCanje: canje, isCortesia: cortesia }),
               advancePayment: adelanto || '',
               advanceAmount: abonado === '' ? 0 : Number(abonado),
               advanceMethod: formaPago || '',
@@ -660,6 +680,23 @@ export default function AssignAttentionModal({
             </p>
           )}
         </div>
+
+        {sinCobrar && (
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-rose-800 bg-rose-50 border border-rose-300 rounded-lg px-3 py-2">
+            <span>
+              <b>⚠ Esta cita aún no se ha cobrado.</b> Puedes asignar la atención igual y cobrarla después.
+            </span>
+            {typeof onCobrar === 'function' && (
+              <button
+                type="button"
+                onClick={onCobrar}
+                className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-600 text-white hover:bg-rose-700 border-none cursor-pointer"
+              >
+                Cobrar ahora
+              </button>
+            )}
+          </div>
+        )}
 
         {/* La cita es de otra sucursal: se dice, porque el personal que sale en
             los selectores es el de ESA sede y no el de la propia. */}
@@ -1287,6 +1324,9 @@ export default function AssignAttentionModal({
             advanceMethod={formaPago}
             onAdvanceMethodChange={setFormaPago}
             onAdvanceAmountChange={setAbonado}
+            servicios={serviciosVisita}
+            sinCobro={sinCobroVigente}
+            onSinCobroChange={setSinCobro}
           />
         )}
 

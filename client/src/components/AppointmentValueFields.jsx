@@ -1,4 +1,6 @@
 import NumericInput from './NumericInput';
+import ServiciosSinCobro from './ServiciosSinCobro';
+import { todosSinCobro } from '../utils/serviciosSinCobro';
 
 /**
  * VALOR DE LA CITA + CANJE. Es un dato OPERATIVO: lo que se acordó que va a
@@ -68,12 +70,24 @@ export default function AppointmentValueFields({
    */
   advanceMethod,
   onAdvanceMethodChange,
+  /**
+   * CANJE/CORTESÍA POR SERVICIO (oct-2026). Con dos o más `servicios` y
+   * `onSinCobroChange`, en vez de las casillas de la visita sale una fila por
+   * servicio («Se cobra / Canje / Cortesía»): uno puede pagarse y otro no.
+   * `sinCobro` es la lista [{serviceItem, kind}]; se manda al servidor como
+   * `noChargeServices` y él deduce la marca de la visita.
+   */
+  servicios = [],
+  sinCobro = [],
+  onSinCobroChange,
   className = '',
 }) {
   const conAdelanto = typeof onAdvancePaymentChange === 'function';
   const conCortesia = typeof onCortesiaChange === 'function';
+  const porServicio = typeof onSinCobroChange === 'function' && servicios.length > 1;
   // Canje o cortesía: no entra dinero, no hay importe ni adelanto.
-  const sinDinero = !!isCanje || !!isCortesia;
+  const sinDinero = porServicio ? todosSinCobro(servicios, sinCobro) : !!isCanje || !!isCortesia;
+  const algunoSinCobro = porServicio && (sinCobro || []).length > 0 && !sinDinero;
   return (
     <div className={className}>
       <label className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -86,10 +100,13 @@ export default function AppointmentValueFields({
             value={sinDinero ? '' : value}
             onChange={(e) => onValueChange(e.target.value)}
             disabled={sinDinero}
-            placeholder={isCanje ? 'Canje — sin importe' : isCortesia ? 'Cortesía — sin importe' : '0.00'}
+            placeholder={porServicio
+              ? (sinDinero ? 'Ningún servicio se cobra' : algunoSinCobro ? 'Solo lo de los servicios que se cobran' : '0.00')
+              : isCanje ? 'Canje — sin importe' : isCortesia ? 'Cortesía — sin importe' : '0.00'}
             className="w-full pl-7 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50/50 disabled:bg-slate-100 disabled:text-slate-400"
           />
         </div>
+        {!porServicio && (<>
         <label className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-amber-200 bg-amber-50 text-sm font-medium text-amber-900 cursor-pointer shrink-0">
           <input
             type="checkbox"
@@ -116,7 +133,16 @@ export default function AppointmentValueFields({
             Fue cortesía
           </label>
         )}
+        </>)}
       </div>
+      {porServicio && (
+        <ServiciosSinCobro
+          className="mt-2"
+          servicios={servicios}
+          value={sinCobro}
+          onChange={onSinCobroChange}
+        />
+      )}
       <p className="text-[11px] text-slate-400 mt-1">
         Cuánto paga el paciente por esta visita. Es informativo para la agenda: no genera
         venta ni cobro. <b>Canje</b> = no pagó con dinero.{conCortesia && <> <b>Cortesía</b> = se regaló, no se cobra.</>}
