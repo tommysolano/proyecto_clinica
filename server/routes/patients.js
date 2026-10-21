@@ -10,6 +10,8 @@ const {
   getSaldoAFavor,
   getPatientInvoices,
   getPatientPrepaid,
+  getPatientItems,
+  applyPatientItem,
   bulkTag,
   mergePatient,
 } = require('../controllers/patientController');
@@ -58,6 +60,10 @@ router.get('/:id/saldo-a-favor', requireRole('admin', 'cajero', 'contabilidad'),
 // Facturas y sesiones prepagadas del paciente en toda la empresa (pestaña Facturas).
 router.get('/:id/facturas', requireRole('admin', 'cajero', 'contabilidad'), getPatientInvoices);
 router.get('/:id/prepaid', requireRole('admin', 'cajero', 'contabilidad'), getPatientPrepaid);
+// Lo que compró y dejó en la clínica (o se llevó) para aplicárselo: lo ven quien cobra y
+// enfermería, que es quien se lo pone. Aplicarlo sin cobro lo saca del inventario.
+router.get('/:id/items', requireRole('admin', 'cajero', 'contabilidad', 'enfermero'), getPatientItems);
+router.post('/:id/items/:itemId/aplicar', requireRole('admin', 'cajero', 'enfermero'), applyPatientItem);
 // Crear / editar: incluye doctor (con restricción de campos sensibles en el controller)
 // 'doctor' EXPANDE a las especialidades (óptica incluida): en óptica el paciente
 // llega sin cita previa y quien lo registra es el propio optómetra.

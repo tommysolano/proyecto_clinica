@@ -6,6 +6,7 @@ import NumericInput from './NumericInput';
 import SearchableSelect from './SearchableSelect';
 import { HiOutlineTrash } from 'react-icons/hi2';
 import { PRODUCT_TYPES } from '../constants/productCategories';
+import { nameMatches } from '../utils/nameSearch';
 
 const types = PRODUCT_TYPES;
 
@@ -24,6 +25,7 @@ const emptyProduct = {
   sessionsIncluded: '',
   programServices: [],
   serviceItems: [],
+  linkedItems: [],
   isComposite: false,
   components: [],
   availableInClinics: [],
@@ -56,10 +58,17 @@ function mapProductToForm(p) {
       product: s.product?._id || s.product || '',
       quantity: s.quantity || 1,
     })),
-    serviceItems: (p.serviceItems || []).map((s) => ({
+    serviceItems: [],
+    // ÍTEMS VINCULADOS. Los «items relacionados» de los servicios de antes (que nunca se
+    // usaron al cobrar) pasan aquí la primera vez que se abre el producto, ya marcados.
+    linkedItems: ((p.linkedItems || []).length
+      ? p.linkedItems
+      : (p.serviceItems || []).map((s) => ({ ...s, preselect: true }))
+    ).map((s) => ({
       product: s.product?._id || s.product || '',
       quantity: s.quantity || 1,
-    })),
+      preselect: !!s.preselect,
+    })).filter((s) => s.product),
     isComposite: !!p.isComposite,
     components: (p.components || []).map((s) => ({
       product: s.product?._id || s.product || '',
@@ -239,11 +248,11 @@ export default function ProductFormModal({
         programServices: (productForm.programServices || [])
           .filter((s) => s.product && Number(s.quantity) > 0)
           .map((s) => ({ product: s.product, quantity: parseInt(s.quantity) || 1 })),
-        serviceItems: isService
-          ? (productForm.serviceItems || [])
-              .filter((s) => s.product)
-              .map((s) => ({ product: s.product, quantity: parseInt(s.quantity) || 1 }))
-          : [],
+        // Los «items relacionados» viejos ya viajan en `linkedItems`.
+        serviceItems: [],
+        linkedItems: (productForm.linkedItems || [])
+          .filter((s) => s.product)
+          .map((s) => ({ product: s.product, quantity: parseFloat(s.quantity) > 0 ? parseFloat(s.quantity) : 1, preselect: !!s.preselect })),
         isComposite: !isService && !!productForm.isComposite,
         components: !isService && productForm.isComposite
           ? (productForm.components || [])
@@ -637,18 +646,19 @@ export default function ProductFormModal({
             </div>
           )}
 
-          {/* Servicio: items/insumos relacionados */}
-          {productForm.category === 'servicio' && (
-            <div className="sm:col-span-2">
-              <ProductItemPicker
-                label="Items relacionados al servicio (insumos que se utilizan)"
-                color="emerald"
-                products={pickerProducts.filter((p) => p._id !== editingId && p.category !== 'servicio' && p.category !== 'programa')}
-                rows={productForm.serviceItems}
-                onChange={(rows) => setProductForm({ ...productForm, serviceItems: rows })}
-              />
-            </div>
-          )}
+          {/* ÍTEMS VINCULADOS (cualquier tipo de ítem): al cobrar este producto se escoge cuáles
+              se usaron, salen del inventario y NO suman al precio. */}
+          <div className="sm:col-span-2">
+            <ProductItemPicker
+              label="Ítems vinculados"
+              help="Otros ítems del inventario que se usan con este (ej. las ampollas y moléculas de una sueroterapia). Al cobrar se escoge cuáles se usaron: salen del inventario y no suman al precio; solo se cobra este ítem. La cantidad es la que se propone por cada unidad vendida; «Siempre» los deja ya marcados al cobrar."
+              color="emerald"
+              products={pickerProducts.filter((p) => p._id !== editingId && p.category !== 'programa')}
+              rows={productForm.linkedItems}
+              onChange={(rows) => setProductForm({ ...productForm, linkedItems: rows })}
+              conPreseleccion
+            />
+          </div>
 
           {/* Producto compuesto: componentes posibles */}
           {productForm.category !== 'servicio' && productForm.category !== 'programa' && productForm.isComposite && (
@@ -825,28 +835,25 @@ function SalePriceList({ rows, onChange }) {
   );
 }
 
-// Selector de productos con buscador, para items relacionados (servicio) y componentes (compuesto).
-function ProductItemPicker({ label, products, rows, onChange, color = 'emerald' }) {
+// Selector de productos con buscador, para ítems vinculados y componentes (compuesto).
+// `conPreseleccion`: cada fila lleva la casilla «Siempre» (viene marcada al cobrar).
+function ProductItemPicker({ label, help = '', products, rows, onChange, color = 'emerald', conPreseleccion = false }) {
   const [query, setQuery] = useState('');
   const list = rows || [];
+  // Por palabras sueltas y sin tildes: «vitamina c 10» encuentra «VITAMINA C 10ML AMPOLLA».
   const filtered = query.trim()
-    ? products.filter((p) => {
-        const q = query.trim().toLowerCase();
-        return (
-          String(p.name || '').toLowerCase().includes(q) ||
-          String(p.code || '').toLowerCase().includes(q)
-        );
-      })
+    ? products.filter((p) => !list.some((r) => r.product === p._id) && nameMatches(query, p.name, p.code))
     : products;
   const addProduct = (id) => {
     if (!id || list.some((r) => r.product === id)) return;
-    onChange([...list, { product: id, quantity: 1 }]);
+    onChange([...list, { product: id, quantity: 1, ...(conPreseleccion ? { preselect: false } : {}) }]);
     setQuery('');
   };
   const bg = color === 'amber' ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200';
   return (
     <div className={`${bg} border rounded-xl p-3 space-y-2`}>
       <p className="text-sm font-semibold text-slate-800">{label}</p>
+      {help && <p className="text-[11px] text-slate-500 -mt-1">{help}</p>}
       <input
         type="search"
         value={query}
@@ -877,8 +884,22 @@ function ProductItemPicker({ label, products, rows, onChange, color = 'emerald' 
       {list.map((row, idx) => {
         const p = products.find((x) => x._id === row.product);
         return (
-          <div key={row.product || idx} className="flex items-center gap-2 bg-white rounded-lg px-2 py-1.5 border border-slate-200">
-            <span className="flex-1 text-sm text-slate-700">{p?.name || 'Producto'}</span>
+          <div key={row.product || idx} className="flex flex-wrap items-center gap-2 bg-white rounded-lg px-2 py-1.5 border border-slate-200">
+            <span className="flex-1 min-w-0 text-sm text-slate-700 break-words">
+              {p?.name || 'Producto'}
+              {p?.code && <span className="ml-1 text-[11px] text-slate-400 font-mono">{p.code}</span>}
+            </span>
+            {conPreseleccion && (
+              <label className="flex items-center gap-1 text-[11px] text-slate-600 cursor-pointer shrink-0" title="Viene ya marcado al cobrar">
+                <input
+                  type="checkbox"
+                  checked={!!row.preselect}
+                  onChange={(e) => onChange(list.map((r, i) => (i === idx ? { ...r, preselect: e.target.checked } : r)))}
+                  className="w-3.5 h-3.5 accent-emerald-600 cursor-pointer"
+                />
+                Siempre
+              </label>
+            )}
             <NumericInput
               min={1}
               value={row.quantity}

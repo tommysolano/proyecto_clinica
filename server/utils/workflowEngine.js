@@ -1422,6 +1422,118 @@ function nextNodeIdExact(workflow, nodeId, handle) {
   return edge ? edge.target : null;
 }
 
+/**
+ * LA CONDICIÓN SE VUELVE A COMPROBAR AL DESPERTAR (oct-2026, «el nodo de
+ * condiciones no funciona»).
+ *
+ * El nodo decidía UNA vez: el flujo ANTI AGE creaba la oportunidad en «Nuevo», la
+ * condición mandaba al contacto por la rama «Nuevo» y, cuatro minutos después, la
+ * asesora la pasaba a «Perdido». La rama siguió soltando su recordatorio tras cada
+ * espera (2 h, 4 h, 10 h…) a alguien que ya no era «Nuevo».
+ *
+ * Ahora cada condición por la que pasa el contacto deja una GUARDIA (la rama que
+ * tocó, calculada con el estado del chat). Cada vez que la inscripción se
+ * reanuda tras una pausa (espera, ventana, respuesta, reintento) se vuelven a
+ * mirar: si el estado cambió POR FUERA del flujo y ahora toca otra rama, el
+ * contacto pasa a esa rama desde su primer paso — o sale del flujo si esa salida
+ * no lleva a ningún paso. Lo que cambia el propio flujo (mover etapa, crear
+ * oportunidad, poner etiqueta) no cuenta: tras cada acción la guardia se pone al día.
+ *
+ * Solo se vigilan condiciones sobre el ESTADO del contacto (etapa, etiquetas,
+ * oportunidad…). Las de «última respuesta» o «sucursal del evento» describen algo
+ * que ya pasó y no se re-evalúan. Se puede apagar por nodo (`recheck: false`).
+ */
+const CAMPOS_DE_ESTADO = new Set([
+  'stage', 'tag', 'contactTag', 'chatTag', 'opportunityTag', 'opportunityValue', 'opportunityName', 'source', 'hasPatient',
+]);
+
+function conditionRechecks(data = {}) {
+  if (data.recheck === false) return false;
+  const conds = branchesOf(data).flatMap((b) => conditionsOf(b));
+  return conds.length > 0 && conds.every((c) => CAMPOS_DE_ESTADO.has(c.field));
+}
+
+/**
+ * Rama que toca con el estado ACTUAL del chat. Sin la etapa del evento que
+ * inscribió el flujo (`context.stage`): esa es la de entonces, y con ella un flujo
+ * disparado por «pasó a Nuevo» seguiría viéndose «Nuevo» para siempre.
+ */
+function liveBranchHandle(data, scope = {}) {
+  const { stage, ...context } = scope.context || {};
+  void stage;
+  const hit = matchBranch(data, { ...scope, context });
+  return hit ? hit.id : 'no';
+}
+
+function branchLabel(data, handle) {
+  if (handle === 'no') return 'Si no';
+  return branchesOf(data).find((b) => (b.id || 'yes') === handle)?.name || handle;
+}
+
+/** Nodos alcanzables desde `startId` siguiendo las aristas (sin volver a pasar por `stopId`). */
+function reachableFrom(workflow, startId, stopId) {
+  const seen = new Set();
+  const pila = [startId];
+  while (pila.length) {
+    const id = pila.pop();
+    if (!id || id === stopId || seen.has(id)) continue;
+    seen.add(id);
+    for (const e of workflow.edges || []) if (e.source === id) pila.push(e.target);
+  }
+  return seen;
+}
+
+/**
+ * Guardia = { nodeId, taken, live }: `taken` es la rama que de verdad tomó (dónde
+ * está el contacto) y `live` la que da el estado actual del chat (lo que se
+ * compara al despertar). Difieren en un flujo disparado por cambio de etapa.
+ */
+function rememberBranchGuard(ctx, workflow, nodeId, taken, scope) {
+  const node = getNode(workflow, nodeId);
+  const resto = (ctx.branchGuards || []).filter((g) => g.nodeId !== nodeId);
+  ctx.branchGuards = node && conditionRechecks(node.data)
+    ? [...resto, { nodeId, taken, live: liveBranchHandle(node.data, scope) }]
+    : resto;
+}
+
+/** Tras una acción del propio flujo: lo que él cambió no es «cambió por fuera». */
+function refreshBranchGuards(ctx, workflow, scope) {
+  for (const g of ctx.branchGuards || []) {
+    const node = getNode(workflow, g.nodeId);
+    if (node) g.live = liveBranchHandle(node.data, scope);
+  }
+}
+
+/**
+ * ¿Alguna condición ya recorrida pide hoy OTRA rama para donde está el contacto?
+ * Devuelve { index, nodeId, from, to, nextId, fromName, toName } o null. PURA
+ * salvo por limpiar las guardias que ya no aplican (el contacto salió de su rama).
+ */
+function checkBranchGuards(workflow, ctx, scope, currentId) {
+  const guards = ctx.branchGuards || [];
+  for (let i = 0; i < guards.length; i += 1) {
+    const g = guards[i];
+    const node = getNode(workflow, g.nodeId);
+    if (!node || node.type !== 'condition' || !conditionRechecks(node.data)) continue;
+    const viejo = nextNodeId(workflow, g.nodeId, g.taken);
+    // El contacto ya no está dentro de la rama de esta condición: no aplica.
+    if (!viejo || (viejo !== currentId && !reachableFrom(workflow, viejo, g.nodeId).has(currentId))) continue;
+    const ahora = liveBranchHandle(node.data, scope);
+    if (ahora === g.live) continue;
+    const nuevo = nextNodeId(workflow, g.nodeId, ahora);
+    // Las dos ramas se juntan más abajo y el contacto ya está en el tramo común.
+    if (nuevo && (nuevo === currentId || reachableFrom(workflow, nuevo, g.nodeId).has(currentId))) {
+      g.live = ahora;
+      continue;
+    }
+    return {
+      index: i, nodeId: g.nodeId, from: g.taken, to: ahora, nextId: nuevo,
+      fromName: branchLabel(node.data, g.taken), toName: branchLabel(node.data, ahora),
+    };
+  }
+  return null;
+}
+
 const publicApiBase = () => String(process.env.PUBLIC_API_URL || '')
   .trim()
   .replace(/\/+$/, '')
@@ -1531,6 +1643,30 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
     const start = findStartNode(workflow);
     if (!start) { enrollment.status = 'done'; await enrollment.save(); return; }
     currentId = start.type === 'trigger' ? nextNodeId(workflow, start.id) : start.id;
+  } else if ((ctx.branchGuards || []).length) {
+    // Se reanuda tras una pausa: ¿sigue tocando la rama por la que va? (ver checkBranchGuards)
+    const cambio = checkBranchGuards(workflow, ctx, { patient, conversation: convRef.current, context: ctx, contact }, currentId);
+    if (cambio) {
+      ctx.branchGuards = ctx.branchGuards.slice(0, cambio.index);
+      ctx.branchGuards.push({ nodeId: cambio.nodeId, taken: cambio.to, live: cambio.to });
+      enrollment.context = ctx;
+      enrollment.markModified('context');
+      enrollment.waitingForReply = false;
+      delete ctx.pendingWorkflowButtons;
+      if (!cambio.nextId) {
+        await finishDeadEnd(enrollment, workflow._id, {
+          nodeId: cambio.nodeId,
+          info: `La condición cambió mientras esperaba (antes «${cambio.fromName}», ahora «${cambio.toName}»). Esa salida no lleva a ningún paso: el contacto sale del flujo y no recibe lo que quedaba de «${cambio.fromName}».`,
+        });
+        return;
+      }
+      pushLog(enrollment, {
+        nodeId: cambio.nodeId,
+        type: 'condition',
+        info: `La condición cambió mientras esperaba (antes «${cambio.fromName}», ahora «${cambio.toName}»): sigue por la rama «${cambio.toName}»`,
+      });
+      currentId = cambio.nextId;
+    }
   }
   let transitions = 0;
   const now = new Date();
@@ -1634,8 +1770,13 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       // Se evalúan las ramas EN ORDEN (if / else-if): la primera que se cumple
       // manda. Si ninguna se cumple, sale por 'no' ("si no"). Cada rama puede
       // llevar VARIAS condiciones combinadas con Y (todas) u O (cualquiera).
-      const hit = matchBranch(data, { patient, conversation: convRef.current, context: ctx, contact });
+      const scope = { patient, conversation: convRef.current, context: ctx, contact };
+      const hit = matchBranch(data, scope);
       pushLog(enrollment, { nodeId: currentId, type, info: hit ? `Rama ${hit.name}` : 'Rama No (si no)' });
+      // Guardia: tras cada espera se comprueba que siga tocando esta rama.
+      rememberBranchGuard(ctx, workflow, currentId, hit ? hit.id : 'no', scope);
+      enrollment.context = ctx;
+      enrollment.markModified('context');
       currentId = nextNodeId(workflow, currentId, hit ? hit.id : 'no');
     } else if (type === 'split') {
       // Bifurcación: reparte el contacto por una de las rutas (cada ruta es una
@@ -1728,6 +1869,12 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
           enrollment.markModified('context');
         }
         pushLog(enrollment, { nodeId: currentId, type, ok: !fail, info: fail?.info || '' });
+        // Lo que cambió ESTE paso (etapa, etiqueta, oportunidad) no es un cambio «de fuera».
+        if ((ctx.branchGuards || []).length) {
+          refreshBranchGuards(ctx, workflow, { patient, conversation: convRef.current, context: ctx, contact });
+          enrollment.context = ctx;
+          enrollment.markModified('context');
+        }
         if (!fail && workflowButtons.length) {
           // Un mensaje con botones (o una plantilla con respuestas rápidas)
           // es una bifurcación: espera el clic/respuesta.

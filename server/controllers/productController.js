@@ -363,6 +363,24 @@ const syncSalePrices = (body, prev = null) => {
 };
 exports._syncSalePrices = syncSalePrices;
 
+/**
+ * ÍTEMS VINCULADOS (oct-2026): sin repetidos, sin el propio producto, cantidad > 0.
+ * Si no llega la lista, no se toca (edición parcial).
+ */
+const saneaVinculados = (body, selfId = null) => {
+  if (!Array.isArray(body.linkedItems)) return;
+  const { isValidObjectId } = require('mongoose');
+  const vistos = new Set();
+  body.linkedItems = body.linkedItems
+    .map((l) => ({ product: String(l?.product?._id || l?.product || ''), quantity: Number(l?.quantity), preselect: !!l?.preselect }))
+    .filter((l) => {
+      if (!l.product || !isValidObjectId(l.product) || l.product === String(selfId || '') || vistos.has(l.product)) return false;
+      vistos.add(l.product);
+      return true;
+    })
+    .map((l) => ({ ...l, quantity: Number.isFinite(l.quantity) && l.quantity > 0 ? l.quantity : 1 }));
+};
+
 exports.createProduct = async (req, res) => {
   try {
     let code = String(req.body.code || '').trim();
@@ -379,6 +397,7 @@ exports.createProduct = async (req, res) => {
 
     syncStockFromClinics(req.body);
     syncSalePrices(req.body);
+    saneaVinculados(req.body);
     // Valida/resuelve la categoría contable de inventario (obligatoria para insumos).
     await applyInventoryCategory(req.clinicId, req.body, { enforce: true });
     const product = await Product.create({ ...req.body, clinic: req.clinicId, code });
@@ -411,6 +430,7 @@ exports.updateProduct = async (req, res) => {
     delete req.body.stock;
     delete req.body.stockByClinic;
     syncSalePrices(req.body, existing);
+    saneaVinculados(req.body, existing._id);
     // Valida/resuelve la categoría contable si se envía; NO bloquea la edición de
     // productos legacy sin categoría (enforce:false) para no romper flujos existentes.
     await applyInventoryCategory(req.clinicId, req.body, { enforce: false, existing });

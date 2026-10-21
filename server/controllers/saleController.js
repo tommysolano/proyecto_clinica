@@ -261,6 +261,63 @@ exports.createSale = async (req, res) => {
         const txProductMap = new Map(txProducts.map((p) => [String(p._id), p]));
         const txIsUnlimited = (p) => p.unlimited === true || p.category === 'servicio';
 
+        /**
+         * ¿SE LO LLEVA? E ÍTEMS VINCULADOS (oct-2026, ver utils/itemsDelPaciente).
+         *  · Un ítem físico de un paciente se lo lleva ('llevado', sale del inventario)
+         *    o lo deja para aplicárselo aquí ('en_clinica': NO sale ahora, queda a su
+         *    nombre y sale el día que se le aplica).
+         *  · Cada línea puede llevar los ítems VINCULADOS que se usaron (las ampollas
+         *    de la sueroterapia): no suman al precio y salen del inventario ahora,
+         *    salvo los que trajo el paciente.
+         */
+        const itemsPaciente = require('../utils/itemsDelPaciente');
+        const lineDelivery = items.map((item) => {
+          const product = txProductMap.get(String(item.product));
+          if (txIsUnlimited(product) || !patient) {
+            if (item.delivery === 'en_clinica') {
+              throw Object.assign(new Error(`Para dejar «${product.name}» guardado en la clínica, la venta tiene que ser de un paciente.`), { status: 400 });
+            }
+            return '';
+          }
+          return item.delivery === 'en_clinica' ? 'en_clinica' : 'llevado';
+        });
+        const FUENTES_VINCULADO = new Set(['inventario', 'paciente', 'trajo']);
+        const linkedIds = new Set();
+        const linkedReq = items.map((item) => {
+          const product = txProductMap.get(String(item.product));
+          const pedidos = Array.isArray(item.linkedItems) ? item.linkedItems : [];
+          if (!pedidos.length) return [];
+          // Los «items relacionados» de antes (`serviceItems`) valen mientras el producto no
+          // se vuelva a guardar con su lista de vinculados.
+          const lista = (product.linkedItems || []).length ? product.linkedItems : (product.serviceItems || []);
+          const permitidos = new Set(lista.map((l) => String(l.product)));
+          const juntos = new Map();
+          for (const l of pedidos) {
+            const pid = String(l?.product || '');
+            const qty = Number(l?.quantity);
+            if (!pid || !(qty > 0)) continue;
+            if (!permitidos.has(pid)) {
+              throw Object.assign(new Error(`Un ítem escogido no está vinculado a «${product.name}» en el inventario.`), { status: 400 });
+            }
+            const source = FUENTES_VINCULADO.has(l.source) ? l.source : 'inventario';
+            if (source !== 'inventario' && !patient) {
+              throw Object.assign(new Error('Para usar lo que el paciente compró o trajo, la venta tiene que ser de un paciente.'), { status: 400 });
+            }
+            const k = `${pid}|${source}`;
+            juntos.set(k, { product: pid, quantity: +((juntos.get(k)?.quantity || 0) + qty).toFixed(4), source });
+            linkedIds.add(pid);
+          }
+          return [...juntos.values()];
+        });
+        const linkedMap = new Map();
+        if (linkedIds.size) {
+          const vinculados = await Product.find({ _id: { $in: [...linkedIds] } }).populate('inventoryCategory').session(session);
+          for (const p of vinculados) linkedMap.set(String(p._id), p);
+          if (linkedMap.size !== linkedIds.size) {
+            throw Object.assign(new Error('Un ítem vinculado ya no existe en el inventario'), { status: 400 });
+          }
+        }
+
         // ── Bodega y CENTRO DE COSTO de la venta ────────────────────────────
         // El centro se propone desde la bodega y solo se cambia confirmando la diferencia
         // (misma regla que en compras: `services/costCenterPolicy`). Una venta de puro
@@ -300,10 +357,12 @@ exports.createSale = async (req, res) => {
           }
         }
 
-        for (const item of items) {
+        for (const [idx, item] of items.entries()) {
           const product = txProductMap.get(String(item.product));
           const qty = Number(item.quantity);
           if (txIsUnlimited(product)) continue;
+          // Lo deja en la clínica: sigue en la percha hasta que se le aplique.
+          if (lineDelivery[idx] === 'en_clinica') continue;
           // CATÁLOGO COMPARTIDO: el producto se busca por su _id, NO por la sucursal activa.
           // Todo el catálogo se creó bajo una sola sucursal; filtrar por `req.clinicId` hacía
           // que, cobrando desde otra, el descuento no encontrara el producto y la venta
@@ -319,7 +378,7 @@ exports.createSale = async (req, res) => {
           product.stock = updated.stock;
         }
 
-        const txSaleItems = items.map((item) => {
+        const txSaleItems = items.map((item, idx) => {
           const product = txProductMap.get(String(item.product));
           // PRECIO DE LA LÍNEA: por defecto el activo del producto (`salePrice`). El cajero
           // puede escoger OTRO de la lista de precios del producto, pero solo uno de ESA lista:
@@ -360,6 +419,12 @@ exports.createSale = async (req, res) => {
             // `it.warehouse` que nunca existía, así que toda venta consumía capas FIFO de
             // CUALQUIER bodega y su movimiento quedaba sin bodega (invisible en el kardex).
             warehouse: txIsUnlimited(product) ? null : txWarehouse,
+            delivery: lineDelivery[idx],
+            // El inventario de cada vinculado se mueve con la venta ya creada (más abajo).
+            linkedItems: linkedReq[idx].map((l) => {
+              const lp = linkedMap.get(l.product);
+              return { product: lp._id, productCode: lp.code, productName: lp.name, quantity: l.quantity, source: l.source };
+            }),
             subtotal: tax.taxBase,
           };
         });
@@ -597,6 +662,7 @@ exports.createSale = async (req, res) => {
         for (const it of txSaleItems) {
           const prod = txProductMap.get(String(it.product));
           if (prod && txIsUnlimited(prod)) continue;
+          if (it.delivery === 'en_clinica') continue;
           // Kardex: consume capas FIFO -> costo de venta exacto. allowNegative cubre
           // productos con stock previo al kardex (sin capas): el faltante se valora
           // al costo promedio como respaldo.
@@ -641,6 +707,47 @@ exports.createSale = async (req, res) => {
             sourceRef: txSale._id,
             createdBy: req.user._id,
           }], { session });
+        }
+
+        // Lo que el paciente deja guardado (o se lleva siendo ítem vinculado) queda a su nombre.
+        // Va ANTES de los vinculados: lo que compra hoy y se aplica hoy sale de aquí mismo.
+        await itemsPaciente.crearDesdeVenta({ sale: txSale, items: txSaleItems, userId: req.user._id, session });
+        const usaComprasDelPaciente = linkedReq.some((ls) => ls.some((l) => l.source !== 'inventario'));
+        const sucursalesEmpresa = usaComprasDelPaciente
+          ? await require('../utils/sesionesPrepagadas').sucursalesDeLaEmpresa(req.clinicId)
+          : null;
+        const costosVinculados = [];
+        for (const [idx, it] of txSaleItems.entries()) {
+          for (const [j, l] of (it.linkedItems || []).entries()) {
+            const lp = linkedMap.get(String(l.product));
+            let holdings = [];
+            const uso = {
+              patient, product: lp._id, productName: lp.name, quantity: l.quantity, clinics: sucursalesEmpresa,
+              sale: txSale._id, saleNumber: txSale.saleNumber, detail: it.productName, clinic: req.clinicId,
+              userId: req.user._id, userName: req.user.name || '', session,
+            };
+            // Del paciente: tiene que alcanzar lo que dejó guardado. Lo que trajo puede
+            // venir de una compra en otra parte: se descuenta lo que haya anotado.
+            if (l.source === 'paciente') holdings = (await itemsPaciente.consumir({ ...uso, mode: 'en_clinica', strict: true })).usados;
+            else if (l.source === 'trajo') holdings = (await itemsPaciente.consumir({ ...uso, mode: 'llevado' })).usados;
+            let mov = { stockMoved: 0, cost: 0, aviso: null };
+            if (l.source !== 'trajo') {
+              mov = await itemsPaciente.salidaDeInventario({
+                clinicId: req.clinicId, product: lp, quantity: l.quantity, warehouse: txWarehouse,
+                costCenter: cc.costCenter || null,
+                reason: l.source === 'paciente' ? `Del paciente · usado en ${it.productName}` : `Usado en ${it.productName}`,
+                reference: txSale.saleNumber, sourceModel: 'Sale', sourceRef: txSale._id,
+                movementDate: saleDate, userId: req.user._id, session,
+              });
+              if (mov.aviso) saleWarnings.push(mov.aviso);
+            }
+            const sub = txSale.items[idx].linkedItems[j];
+            sub.stockMoved = mov.stockMoved;
+            sub.cost = mov.cost;
+            sub.warehouse = itemsPaciente.esIlimitado(lp) ? null : txWarehouse;
+            sub.holdings = holdings;
+            if (mov.cost > 0) costosVinculados.push({ prod: lp, cost: mov.cost, parent: it.productName });
+          }
         }
 
         // Asiento de venta: una línea de DÉBITO por cada método de pago. El
@@ -812,6 +919,20 @@ exports.createSale = async (req, res) => {
           }
           costLines.push({ account: await cuentaLocal(cat.expenseAccount), debit: totalCost, credit: 0, description: `Costo venta ${it.productName}` });
           costLines.push({ account: await cuentaLocal(cat.assetAccount), debit: 0, credit: totalCost, description: `Salida inventario ${it.productName}` });
+        }
+        // Lo que se usó como ítem vinculado también es costo de esta venta (misma regla:
+        // las cuentas salen solo de la categoría del ítem).
+        for (const cv of costosVinculados) {
+          const cat = cv.prod.inventoryCategory || null;
+          if (!cat || !cat.expenseAccount || !cat.assetAccount) {
+            throw Object.assign(new Error(
+              `El ítem "${cv.prod.name}" (usado en "${cv.parent}") no tiene una categoría de inventario con cuenta de costo e inventario. `
+              + 'Configúrela en Inventario → Categorías antes de cobrar.'
+            ), { status: 400 });
+          }
+          const cost = +Number(cv.cost).toFixed(2);
+          costLines.push({ account: await cuentaLocal(cat.expenseAccount), debit: cost, credit: 0, description: `Costo ${cv.prod.name} (en ${cv.parent})` });
+          costLines.push({ account: await cuentaLocal(cat.assetAccount), debit: 0, credit: cost, description: `Salida inventario ${cv.prod.name} (en ${cv.parent})` });
         }
 
         // Centro de costo de la venta: el resuelto contra la bodega (no el crudo del body).
@@ -1076,6 +1197,9 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
   });
   // SESIONES PREPAGADAS: se anulan con la venta, salvo que ya se usaran en otras citas.
   await require('../utils/sesionesPrepagadas').anularDeVenta({ saleId: sale._id, session });
+  // ÍTEMS DEL PACIENTE: lo que dejó guardado se anula (salvo que ya se le aplicara) y lo
+  // que esta venta usó de compras anteriores vuelve a estar a su nombre.
+  await require('../utils/itemsDelPaciente').anularDeVenta({ saleId: sale._id, session });
 
   // Kardex: devuelve a sus capas originales lo consumido por las salidas de esta venta.
   const salidas = await InventoryMovement.find({
@@ -1090,6 +1214,8 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
 
   for (const item of sale.items) {
     if (item.category === 'servicio') continue;
+    // Lo dejó en la clínica: nunca salió del inventario, no hay nada que devolver.
+    if (item.delivery === 'en_clinica') continue;
     // Catálogo compartido: el producto por su _id, no por la sucursal de la venta (si no,
     // anular desde otra sucursal no devolvía el stock; ver createSale).
     const prod = await Product.findOne({ _id: item.product })
@@ -1129,6 +1255,34 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
       sourceRef: sale._id,
       createdBy: userId,
     }], { session });
+  }
+
+  // Ítems vinculados: vuelve exactamente lo que bajó del stock (las capas ya se
+  // devolvieron arriba con las salidas de la venta).
+  for (const item of sale.items) {
+    for (const l of item.linkedItems || []) {
+      if (!(Number(l.stockMoved) > 0)) continue;
+      await Product.updateOne({ _id: l.product }, { $inc: { stock: l.stockMoved } }, { session });
+      const cur = await kardex.currentStock({ clinicId, product: l.product }, session);
+      await Product.updateOne({ _id: l.product, clinic: clinicId }, { $set: { averageCost: cur.averageCost } }, { session });
+      await InventoryMovement.create([{
+        clinic: clinicId,
+        product: l.product,
+        type: 'entrada',
+        quantity: l.quantity,
+        unitCost: l.quantity > 0 ? +(Number(l.cost || 0) / l.quantity).toFixed(4) : 0,
+        totalCost: +Number(l.cost || 0).toFixed(2),
+        warehouse: l.warehouse || sale.warehouse || null,
+        costCenter: sale.costCenter || null,
+        movementDate: reversalDate,
+        dateSource: 'DOCUMENTO',
+        reason: `Anulacion de venta (usado en ${item.productName})`,
+        reference: sale.saleNumber,
+        sourceModel: 'Sale',
+        sourceRef: sale._id,
+        createdBy: userId,
+      }], { session });
+    }
   }
 
   // Revertir cobros previos (venta a crédito): reversa cada asiento de COBRO y

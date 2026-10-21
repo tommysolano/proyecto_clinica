@@ -12,7 +12,7 @@
  * ─── QUÉ HACE ──────────────────────────────────────────────────────────────────────
  *  1. Ventas con paciente (también las anuladas, que lo dicen) → registro 'venta'.
  *  2. (Hasta oct-2026 también las citas, como registro 'visita'. La clínica pidió que la
- *     bitácora diga solo recetas y compras: ver utils/observacionesAutomaticas.js.)
+ *     bitácora diga solo compras: ver utils/observacionesAutomaticas.js.)
  *  3. Las «Compra registrada desde la agenda» que caja ya escribía se marcan 'compra'.
  * Cada registro va FECHADO cuando pasó, no hoy. Es idempotente (un registro por
  * cita y por venta, índice único): repetirlo reescribe, no duplica.

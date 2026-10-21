@@ -321,7 +321,82 @@ async function readByTemplate({ clinicId, from, to }) {
   }));
 }
 
+/**
+ * CHATS DE UNA CATEGORÍA DE META (oct-2026): en qué conversaciones salieron los
+ * mensajes que Meta clasificó como servicio / utilidad / marketing… en el rango.
+ * Sale de `Message.billing` (el aviso de Meta en cada mensaje), así que son los
+ * mensajes que ENVIAMOS por Cloud API; los QR no llevan cobro. CRM global: sin
+ * filtrar por sucursal, igual que el gasto (una sola WABA). Sin teléfonos: la
+ * pantalla la ve marketing, que no tiene datos de contacto; se abre el chat.
+ */
+async function readChatsByCategory({ category, from, to, limit = 300 }) {
+  const Message = require('../models/Message');
+  const Conversation = require('../models/Conversation');
+  const cat = String(category || '').trim().toLowerCase();
+  if (!cat) return { category: '', chats: [], totals: { chats: 0, messages: 0, billed: 0, free: 0 } };
+  const start = new Date(ecDayStartMs(from));
+  const end = new Date(ecDayStartMs(to) + DAY_MS);
+  const escapada = cat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rows = await Message.aggregate([
+    {
+      $match: {
+        direction: 'out',
+        'billing.category': { $regex: `^${escapada}$`, $options: 'i' },
+        createdAt: { $gte: start, $lt: end },
+      },
+    },
+    {
+      $group: {
+        _id: '$conversation',
+        messages: { $sum: 1 },
+        billed: { $sum: { $cond: [{ $eq: ['$billing.billable', true] }, 1, 0] } },
+        free: { $sum: { $cond: [{ $eq: ['$billing.billable', false] }, 1, 0] } },
+        // Automático = respuesta automática o un envío sin persona (workflow, recordatorio).
+        automatic: {
+          $sum: {
+            $cond: [{ $or: [
+              { $eq: ['$isAutoReply', true] },
+              { $and: [{ $not: ['$sentBy'] }, { $in: [{ $ifNull: ['$sentByName', ''] }, ['']] }] },
+            ] }, 1, 0],
+          },
+        },
+        lastAt: { $max: '$createdAt' },
+        senders: { $addToSet: '$sentByName' },
+      },
+    },
+    { $sort: { billed: -1, messages: -1, lastAt: -1 } },
+  ]);
+  const totals = rows.reduce((t, r) => ({
+    chats: t.chats + 1, messages: t.messages + r.messages, billed: t.billed + r.billed, free: t.free + r.free,
+  }), { chats: 0, messages: 0, billed: 0, free: 0 });
+  const page = rows.slice(0, limit);
+  const convs = await Conversation.find({ _id: { $in: page.map((r) => r._id).filter(Boolean) } })
+    .select('contactName name channel').lean();
+  const porId = new Map(convs.map((c) => [String(c._id), c]));
+  return {
+    category: cat.toUpperCase(),
+    from,
+    to,
+    totals,
+    truncated: rows.length > page.length,
+    chats: page.map((r) => {
+      const c = porId.get(String(r._id));
+      return {
+        conversation: r._id,
+        name: c?.contactName || c?.name || 'Chat sin nombre',
+        messages: r.messages,
+        billed: r.billed,
+        free: r.free,
+        automatic: r.automatic,
+        lastAt: r.lastAt,
+        senders: (r.senders || []).filter(Boolean).sort(),
+      };
+    }),
+  };
+}
+
 module.exports = {
+  readChatsByCategory,
   fetchSpendFromMeta,
   syncSpend,
   readSpend,

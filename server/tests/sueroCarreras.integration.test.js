@@ -13,6 +13,10 @@
  *     el mismo código.
  *  5. El único nombre duplicado del catálogo guardaba el código dado de baja, y
  *     entonces no se descontaba nada.
+ *
+ * 20-10-2026: aplicar YA NO mueve el inventario (las ampollas salen al cobrar,
+ * ver tests/itemsVinculados). Los casos 3 y 4 dejaron de existir; deshacer sigue
+ * devolviendo lo que movió una dosis ANTIGUA.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -106,7 +110,17 @@ test('deshacer DOS veces no devuelve el stock dos veces', async () => {
   const { followUpId, itemId } = await recetarSuero(clinicId, doctor, patient, 2);
 
   await administrar(clinicId, enfermero, patient, followUpId, itemId, TODO);
-  assert.equal(await stockDe(APIMEL.code), 9);
+  assert.equal(await stockDe(APIMEL.code), 10, 'aplicar no mueve el inventario');
+  // Dosis de antes del 20-10-2026: aplicar descontaba y lo dejaba en `stockMoves`.
+  const [apimel, hierro] = await Promise.all([Product.findOne({ code: APIMEL.code }), Product.findOne({ code: HIERRO.code })]);
+  await ClinicalRecord.updateOne(
+    { patient: patient._id },
+    { $set: { 'followUps.0.recetaItems.0.administrations.0.stockMoves': [
+      { product: apimel._id, quantity: 1 }, { product: hierro._id, quantity: 2 },
+    ] } },
+  );
+  await Product.updateOne({ _id: apimel._id }, { stock: 9 });
+  await Product.updateOne({ _id: hierro._id }, { stock: 8 });
 
   const dos = await Promise.all([
     deshacer(clinicId, enfermero, patient, followUpId, itemId),
@@ -135,34 +149,11 @@ test('dos peticiones a la vez no pasan del tope de dosis recetadas', async () =>
   const record = await ClinicalRecord.findOne({ patient: patient._id }).lean();
   const suero = record.followUps[0].recetaItems.find((it) => it.isSerum);
   assert.equal(suero.administrations.length, 1, 'una receta de 1 admite 1 aplicación');
-  assert.equal(await stockDe(APIMEL.code), 9, 'y sale una sola ampolla');
-  assert.equal(await stockDe(HIERRO.code), 8);
+  assert.equal(await stockDe(APIMEL.code), 10, 'aplicar no mueve el inventario');
+  assert.equal(await stockDe(HIERRO.code), 10);
 });
 
 // ───────────────────── stock que no da ─────────────────────
-
-test('con menos stock del recetado se descuenta lo que hay, y deshacer no lo infla', async () => {
-  const { clinicId, patient, doctor, enfermero } = await seed();
-  await H.makeProduct(clinicId, { code: APIMEL.code, name: APIMEL.name, stock: 5 });
-  await H.makeProduct(clinicId, { code: HIERRO.code, name: HIERRO.name, stock: 1 });
-  const { followUpId, itemId } = await recetarSuero(clinicId, doctor, patient, 1);
-
-  await administrar(clinicId, enfermero, patient, followUpId, itemId, TODO);
-  assert.equal(await stockDe(HIERRO.code), 0, 'solo había 1, se va a 0');
-
-  const record = await ClinicalRecord.findOne({ patient: patient._id }).lean();
-  const dosis = record.followUps[0].recetaItems.find((it) => it.isSerum).administrations[0];
-  assert.equal(
-    dosis.components.find((c) => c.code === HIERRO.code).quantityApplied, 2,
-    'clínicamente se aplicaron 2: eso no se toca',
-  );
-  const total = dosis.stockMoves.reduce((a, m) => a + m.quantity, 0);
-  assert.equal(total, 2, 'pero el inventario solo movió 1 de HIERRO + 1 de APIMEL');
-
-  await deshacer(clinicId, enfermero, patient, followUpId, itemId);
-  assert.equal(await stockDe(HIERRO.code), 1, 'vuelve a 1, no a 2');
-  assert.equal(await stockDe(APIMEL.code), 5);
-});
 
 test('una ampolla con stock 0 no crea inventario al deshacer', async () => {
   const { clinicId, patient, doctor, enfermero } = await seed();
@@ -179,20 +170,6 @@ test('una ampolla con stock 0 no crea inventario al deshacer', async () => {
 });
 
 // ───────────────────── sucursal y catálogo ─────────────────────
-
-test('la ampolla se descuenta de la sucursal donde se aplica, no de otra', async () => {
-  const { clinicId, patient, doctor, enfermero } = await seed();
-  const otraSede = new H.mongoose.Types.ObjectId();
-  await H.makeProduct(otraSede, { code: APIMEL.code, name: APIMEL.name, stock: 10 });
-  await H.makeProduct(clinicId, { code: APIMEL.code, name: APIMEL.name, stock: 4 });
-  await H.makeProduct(clinicId, { code: HIERRO.code, name: HIERRO.name, stock: 4 });
-  const { followUpId, itemId } = await recetarSuero(clinicId, doctor, patient, 1);
-
-  await administrar(clinicId, enfermero, patient, followUpId, itemId, TODO);
-
-  assert.equal(await stockDe(APIMEL.code, clinicId), 3, 'sale de la nevera de esta sede');
-  assert.equal(await stockDe(APIMEL.code, otraSede), 10, 'la otra sede no se toca');
-});
 
 test('el nombre duplicado del catálogo resuelve al código VIGENTE', async () => {
   // PTNEUREG01 está dado de baja; PTNEUREG03 repone el mismo producto. El
@@ -220,7 +197,10 @@ test('el nombre duplicado del catálogo resuelve al código VIGENTE', async () =
   await administrar(clinicId, enfermero, patient, String(fu._id), String(suero._id), {
     components: [{ code: 'PTNEUREG03', quantityApplied: 1 }],
   });
-  assert.equal(await stockDe('PTNEUREG03'), 5, 'y por eso sí se descuenta');
+  const dosis = (await ClinicalRecord.findOne({ patient: patient._id }).lean())
+    .followUps[0].recetaItems.find((it) => it.isSerum).administrations[0];
+  assert.equal(dosis.components[0].code, 'PTNEUREG03', 'la dosis consta con el código vigente');
+  assert.equal(await stockDe('PTNEUREG03'), 6, 'aplicar no mueve el inventario');
 });
 
 // ───────────────────── el cloruro de la dosis ─────────────────────
@@ -272,5 +252,5 @@ test('la misma ampolla dos veces con lista PARCIAL no descuenta de más', async 
   const dosis = r2.followUps[0].recetaItems.find((it) => it.isSerum).administrations[0];
   const total = dosis.components.reduce((a, c) => a + c.quantityApplied, 0);
   assert.equal(total, 1, 'solo la casilla que llegó cuenta; la otra fila queda en 0');
-  assert.equal(await stockDe(APIMEL.code), 9);
+  assert.equal(await stockDe(APIMEL.code), 10, 'aplicar no mueve el inventario');
 });

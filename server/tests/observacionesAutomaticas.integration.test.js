@@ -88,7 +88,7 @@ test('1b · «No pagó aún»: la cita NO queda como cobrada por quien la agend�
   assert.equal(String(guardada.valueSetBy), String(caja._id), 'quién puso el valor sigue constando');
 });
 
-test('2 · la RECETA queda en Observaciones; corregirla la reescribe y quitarla la borra', async () => {
+test('2 · la RECETA ya NO se copia a Observaciones (19-oct-2026): solo las compras', async () => {
   const { clinicId, doc, patient } = await seed();
   await ClinicalRecord.create({ clinic: clinicId, patient: patient._id, createdBy: doc._id });
   const r = await H.runController(records.addFollowUp, H.mockReq(clinicId, doc._id, {
@@ -100,34 +100,13 @@ test('2 · la RECETA queda en Observaciones; corregirla la reescribe y quitarla 
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   const fuId = r.payload.followUps.slice(-1)[0]._id;
 
-  const obs = await esperarObs({ 'auto.kind': 'receta', 'auto.ref': fuId });
-  assert.ok(obs, 'se escribió la observación de la receta');
-  assert.equal(String(obs.patient), String(patient._id));
-  assert.match(obs.text, /^Receta · /);
-  assert.match(obs.text, /Doctora/);
-  assert.match(obs.text, /• Paracetamol 500 mg × 10 · 1 tableta · cada 8 h · 3 días/);
-
-  // Se corrige la receta: la constancia se reescribe, no se duplica.
-  const editar = (recetaItems) => H.runController(records.updateFollowUp, H.mockReq(clinicId, doc._id, {
-    motivoConsulta: 'Dolor de cabeza', recetaItems,
+  // Corregirla tampoco escribe nada.
+  const e1 = await H.runController(records.updateFollowUp, H.mockReq(clinicId, doc._id, {
+    motivoConsulta: 'Dolor de cabeza', recetaItems: [{ name: 'Ibuprofeno 400 mg', quantity: 6 }],
   }, { role: 'doctor', params: { patientId: String(patient._id), followUpId: String(fuId) } }));
-  const e1 = await editar([{ name: 'Ibuprofeno 400 mg', quantity: 6 }]);
   assert.equal(e1.statusCode < 400, true, JSON.stringify(e1.payload));
-  const corregida = await esperarObs({ 'auto.kind': 'receta', 'auto.ref': fuId }, (o) => /Ibuprofeno/.test(o.text));
-  assert.match(corregida.text, /Ibuprofeno 400 mg × 6/);
-  assert.doesNotMatch(corregida.text, /Paracetamol/);
-  assert.equal(await PatientObservation.countDocuments({ 'auto.kind': 'receta' }), 1);
-
-  // Sin receta: la constancia se va.
-  const e2 = await editar([]);
-  assert.equal(e2.statusCode < 400, true, JSON.stringify(e2.payload));
-  const fin = Date.now() + 3000;
-  // eslint-disable-next-line no-await-in-loop
-  while (await PatientObservation.countDocuments({ 'auto.kind': 'receta' }) && Date.now() < fin) {
-    // eslint-disable-next-line no-await-in-loop
-    await new Promise((res) => setTimeout(res, 50));
-  }
-  assert.equal(await PatientObservation.countDocuments({ 'auto.kind': 'receta' }), 0);
+  await new Promise((res) => setTimeout(res, 300));
+  assert.equal(await PatientObservation.countDocuments({}), 0, 'recetar no es comprar: la bitácora no cambia');
 });
 
 test('2b · un seguimiento SIN receta no escribe nada', async () => {

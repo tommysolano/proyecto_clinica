@@ -135,6 +135,7 @@ exports.copyCatalog = async (req, res) => {
         availableInClinics: [],
         programServices: lines(rest.programServices),
         serviceItems: lines(rest.serviceItems),
+        linkedItems: lines(rest.linkedItems),
         components: lines(rest.components),
         inventoryAccount: rest.inventoryAccount ? accountMap.get(String(rest.inventoryAccount)) || null : null,
         expenseAccount: rest.expenseAccount ? accountMap.get(String(rest.expenseAccount)) || null : null,

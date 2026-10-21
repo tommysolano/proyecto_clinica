@@ -46,6 +46,21 @@ exports.get = async (req, res) => {
 };
 
 /**
+ * GET /whatsapp-spend/chats?category=SERVICE&from=&to=
+ * Los chats donde salieron los mensajes que Meta cobró con esa categoría.
+ */
+exports.chats = async (req, res) => {
+  try {
+    const { from, to } = parseRange(req.query);
+    const category = String(req.query.category || '').trim();
+    if (!/^[a-z_]{3,40}$/i.test(category)) return res.status(400).json({ message: 'Categoría inválida' });
+    res.json(await spend.readChatsByCategory({ category, from, to }));
+  } catch (err) {
+    res.status(500).json({ message: 'Error al consultar los chats de la categoría', error: err.message });
+  }
+};
+
+/**
  * POST /whatsapp-spend/sync?from=&to=
  * Re-pregunta a Meta TODO el rango (botón "Actualizar desde Meta"). Es lo que hay
  * que usar para traer histórico la primera vez.

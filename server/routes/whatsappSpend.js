@@ -10,6 +10,7 @@ router.use(require('../middleware/callCenterScope'));
 const ROLES = ['admin', 'marketing'];
 
 router.get('/', requireRole(...ROLES), ctrl.get);
+router.get('/chats', requireRole(...ROLES), ctrl.chats);
 router.post('/sync', requireRole(...ROLES), ctrl.sync);
 
 module.exports = router;

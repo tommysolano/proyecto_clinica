@@ -126,7 +126,7 @@ test('sin motivo no se registra; y solo quien lo registró (o admin) lo quita', 
   assert.equal((await linea(s)).noAplicaciones.length, 0);
 });
 
-test('inyectado directamente: cuenta la dosis, descuenta ampollas y deja el cloruro vacío', async () => {
+test('inyectado directamente: cuenta la dosis y deja el cloruro vacío', async () => {
   const s = await seed();
   const r = await H.runController(ctrl.administerSerum, H.mockReq(s.clinicId, s.enfermero._id, {
     via: 'directa', baseVolumeMl: 500,
@@ -139,8 +139,9 @@ test('inyectado directamente: cuenta la dosis, descuenta ampollas y deja el clor
   assert.equal(ad.via, 'directa');
   assert.equal(ad.baseVolumeMl, null, 'no hubo bolsa de cloruro');
   assert.ok(ad.components.every((c) => c.via === 'directa'));
-  assert.equal(await stockDe(APIMEL.code), 9);
-  assert.equal(await stockDe(HIERRO.code), 8);
+  // Aplicar no mueve el inventario (20-10-2026): las ampollas salen al cobrar.
+  assert.equal(await stockDe(APIMEL.code), 10);
+  assert.equal(await stockDe(HIERRO.code), 10);
 
   const record = await ClinicalRecord.findOne({ patient: s.patient._id }).lean();
   const [parte] = aplicacionesDelTurno(record, s.enfermero._id, null);
@@ -171,4 +172,32 @@ test('la dosis de siempre sigue siendo «en suero»', async () => {
   const ad = (await linea(s)).administrations[0];
   assert.equal(ad.via, 'suero');
   assert.equal(ad.baseVolumeMl, 500);
+});
+
+test('una línea SIN composición (la molécula es el nombre) también se registra inyectada directamente', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await Patient.create({ clinic: clinicId, firstName: 'Luis', lastName: 'M', cedula: '0911111111' });
+  await ClinicalRecord.create({ clinic: clinicId, patient: patient._id, createdBy: userId });
+  const doctor = await User.create({
+    name: 'Dr. Vega', email: 'vega@t.com', password: 'secreto123', clinics: [{ clinic: clinicId, role: 'doctor' }],
+  });
+  const enfermero = await User.create({
+    name: 'Ana', email: 'ana@t.com', password: 'secreto123', clinics: [{ clinic: clinicId, role: 'enfermero' }],
+  });
+  await H.runController(ctrl.addFollowUp, H.mockReq(clinicId, doctor._id, {
+    descripcion: 'Control',
+    recetaItems: [{ name: 'MEGADOSIS VITAMINA C 50ML MOL', quantity: 1, isSerum: true }],
+  }, { role: 'doctor', params: { patientId: String(patient._id) } }));
+  const rec = await ClinicalRecord.findOne({ patient: patient._id }).lean();
+  const fu = rec.followUps[rec.followUps.length - 1];
+  const it = fu.recetaItems.find((x) => x.isSerum);
+  assert.equal((it.serumComponents || []).length, 0, 'la línea no trae composición');
+  const r = await H.runController(ctrl.administerSerum, H.mockReq(clinicId, enfermero._id, { via: 'directa' }, {
+    role: 'enfermero', params: { patientId: String(patient._id), followUpId: String(fu._id), itemId: String(it._id) },
+  }));
+  assert.equal(r.statusCode < 400, true, JSON.stringify(r.payload));
+  const ad = (await ClinicalRecord.findOne({ patient: patient._id }).lean())
+    .followUps.find((f) => String(f._id) === String(fu._id)).recetaItems.find((x) => x.isSerum).administrations[0];
+  assert.equal(ad.via, 'directa');
+  assert.equal(ad.baseVolumeMl, null);
 });

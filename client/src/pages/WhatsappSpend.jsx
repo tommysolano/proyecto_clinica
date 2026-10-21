@@ -19,6 +19,8 @@ import {
 } from 'react-icons/hi2';
 import { fmtDateTime, todayEc } from '../utils/date';
 import DateInput from '../components/DateInput';
+import DayStepper from '../components/DayStepper';
+import Modal from '../components/Modal';
 
 /**
  * Gasto de WhatsApp: lo que META NOS HA COBRADO por los mensajes de plantilla,
@@ -66,6 +68,8 @@ export default function WhatsappSpend() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  // Categoría de Meta abierta para ver en qué chats se cobró.
+  const [catAbierta, setCatAbierta] = useState(null);
 
   const money = (n) =>
     `${data?.currency === 'USD' || !data?.currency ? '$' : ''}${Number(n || 0).toLocaleString('es-EC', {
@@ -171,6 +175,9 @@ export default function WhatsappSpend() {
             {p.label}
           </button>
         ))}
+        <span className="w-px h-6 bg-slate-200 mx-1" />
+        {/* Día por día, como en la agenda: hoy, ayer, anteayer… */}
+        <DayStepper from={range.from} to={range.to} onChange={setRange} />
         <span className="w-px h-6 bg-slate-200 mx-1" />
         <label className="text-xs text-slate-500 flex items-center gap-1.5">
           Desde
@@ -301,7 +308,7 @@ export default function WhatsappSpend() {
 
       <div className="grid lg:grid-cols-2 gap-4 items-start">
         {/* Por categoría */}
-        <Panel title="Por categoría de Meta">
+        <Panel title="Por categoría de Meta" hint="Pulsa una categoría para ver en qué chats se cobró.">
           <table className="tbl">
             <thead className="bg-slate-50 text-slate-600">
               <tr>
@@ -315,15 +322,24 @@ export default function WhatsappSpend() {
                 <tr><td colSpan={3} className="text-center py-6 text-slate-400">Sin datos.</td></tr>
               )}
               {(data?.byCategory || []).map((c) => (
-                <tr key={c.category} className="border-t border-slate-100">
+                <tr
+                  key={c.category}
+                  onClick={() => setCatAbierta(c.category)}
+                  className="border-t border-slate-100 cursor-pointer hover:bg-emerald-50/50"
+                  title="Ver los chats de esta categoría"
+                >
                   <td className="px-3 py-2">
-                    <span className="inline-flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setCatAbierta(c.category); }}
+                      className="inline-flex items-center gap-2 bg-transparent border-none p-0 cursor-pointer text-left"
+                    >
                       <span
                         className="w-2.5 h-2.5 rounded-full shrink-0"
                         style={{ background: CATEGORIES.find((x) => x.key === c.category)?.color || '#94a3b8' }}
                       />
-                      <span className="text-slate-700">{CATEGORY_LABEL[c.category] || c.category}</span>
-                    </span>
+                      <span className="text-emerald-700 underline decoration-dotted underline-offset-2">{CATEGORY_LABEL[c.category] || c.category}</span>
+                    </button>
                   </td>
                   <td className="px-3 py-2 text-right text-slate-600">{c.volume.toLocaleString('es-EC')}</td>
                   <td className="px-3 py-2 text-right font-semibold text-slate-800">{money(c.cost)}</td>
@@ -365,6 +381,12 @@ export default function WhatsappSpend() {
           </table>
         </Panel>
       </div>
+
+      <ChatsDeCategoria
+        category={catAbierta}
+        range={range}
+        onClose={() => setCatAbierta(null)}
+      />
 
       {/* Detalle por día: es también la vista en tabla de las cifras del gráfico */}
       <Panel title="Detalle por día">
@@ -409,6 +431,90 @@ export default function WhatsappSpend() {
         </div>
       </Panel>
     </div>
+  );
+}
+
+/**
+ * EN QUÉ CHATS SE COBRÓ UNA CATEGORÍA (oct-2026). Sale del aviso de Meta en cada
+ * mensaje que enviamos (`Message.billing`), no de la factura: sirve para ver QUIÉN
+ * genera el gasto (qué agente, qué automatización), no para cuadrar el dinero.
+ */
+function ChatsDeCategoria({ category, range, onClose }) {
+  const [res, setRes] = useState({ clave: '', data: null, error: '' });
+  const clave = category ? `${category}|${range.from}|${range.to}` : '';
+  useEffect(() => {
+    if (!clave) return undefined;
+    let vivo = true;
+    api.get('/whatsapp-spend/chats', { params: { category, from: range.from, to: range.to } })
+      .then((r) => { if (vivo) setRes({ clave, data: r.data, error: '' }); })
+      .catch((e) => { if (vivo) setRes({ clave, data: null, error: e.response?.data?.message || 'No se pudieron cargar los chats' }); });
+    return () => { vivo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clave]);
+  const cargando = !!clave && res.clave !== clave;
+  const d = res.clave === clave ? res.data : null;
+  const nombre = CATEGORY_LABEL[category] || category || '';
+  return (
+    <Modal isOpen={!!category} onClose={onClose} title={`Chats con mensajes de ${nombre}`} size="lg">
+      <p className="text-xs text-slate-500 -mt-1 mb-3">
+        {range.from === range.to ? ddmm(range.from) : `${ddmm(range.from)} – ${ddmm(range.to)}`} ·
+        mensajes que enviamos y que Meta clasificó como <b>{nombre}</b>. «Cobrados» son los que Meta factura;
+        «gratis», los que entraron en una ventana gratuita.
+      </p>
+      {cargando ? (
+        <p className="text-sm text-slate-400 py-8 text-center">Cargando…</p>
+      ) : res.error ? (
+        <p className="text-sm text-rose-600 py-8 text-center">{res.error}</p>
+      ) : !d?.chats?.length ? (
+        <p className="text-sm text-slate-400 py-8 text-center">No hay mensajes de esta categoría en el rango.</p>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-3 text-xs text-slate-600 mb-2">
+            <span><b className="text-slate-800">{d.totals.chats.toLocaleString('es-EC')}</b> chats</span>
+            <span><b className="text-slate-800">{d.totals.billed.toLocaleString('es-EC')}</b> cobrados</span>
+            <span><b className="text-slate-800">{d.totals.free.toLocaleString('es-EC')}</b> gratis</span>
+            {d.truncated && <span className="text-amber-700">Se muestran los {d.chats.length} con más mensajes cobrados.</span>}
+          </div>
+          <div className="max-h-[60vh] overflow-y-auto border border-slate-100 rounded-lg">
+            <table className="tbl tbl-cards">
+              <thead className="bg-slate-50 text-slate-600 sticky top-0">
+                <tr>
+                  <th className="text-left px-3 py-2">Chat</th>
+                  <th className="text-left px-3 py-2">Quién envió</th>
+                  <th className="text-right px-3 py-2">Cobrados</th>
+                  <th className="text-right px-3 py-2">Gratis</th>
+                  <th className="text-left px-3 py-2">Último</th>
+                  <th className="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {d.chats.map((c) => (
+                  <tr key={String(c.conversation)} className="md:border-t border-slate-100">
+                    <td data-cell="principal" className="px-3 py-2 text-slate-800 break-words">{c.name}</td>
+                    <td data-cell="detalle" className="px-3 py-2 text-xs text-slate-600">
+                      {[...c.senders, ...(c.automatic ? [`Automático (${c.automatic})`] : [])].join(', ') || '—'}
+                    </td>
+                    <td data-cell="detalle" className="px-3 py-2 text-right font-semibold text-slate-800">{c.billed}</td>
+                    <td data-cell="detalle" className="px-3 py-2 text-right text-slate-500">{c.free}</td>
+                    <td data-cell="hora" className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">{fmtDateTime(c.lastAt)}</td>
+                    <td data-cell="acciones" className="px-3 py-2 text-right">
+                      <a
+                        href={`/chats?chat=${c.conversation}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-emerald-700 font-medium hover:underline whitespace-nowrap"
+                      >
+                        Ir al chat
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
 

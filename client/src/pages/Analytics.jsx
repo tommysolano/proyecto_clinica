@@ -15,6 +15,7 @@ import {
   HiOutlineChatBubbleLeftRight,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
+import DayStepper from '../components/DayStepper';
 import Modal from '../components/Modal';
 import ServiceItemPicker from '../components/ServiceItemPicker';
 import { GraficoSerie, GraficoInversion, GraficoEstados, GraficoAnuncios } from '../components/AnaliticasGraficos';
@@ -672,6 +673,17 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
         </label>
         <label className="text-sm">Desde<DateInput value={desde} onChange={(e) => setDesde(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
         <label className="text-sm">Hasta<DateInput value={hasta} onChange={(e) => setHasta(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
+        {/* Día por día, como en la agenda: hoy, ayer, anteayer… */}
+        <div className="flex items-center gap-1.5">
+          <DayStepper from={desde} to={hasta} onChange={({ from, to }) => { setDesde(from); setHasta(to); }} />
+          <button
+            type="button"
+            onClick={() => { setDesde(todayEc()); setHasta(todayEc()); }}
+            className={`px-3 py-1.5 rounded-lg text-sm cursor-pointer shrink-0 ${desde === todayEc() && hasta === todayEc() ? 'bg-emerald-600 text-white border-none' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'}`}
+          >
+            Hoy
+          </button>
+        </div>
         <label className="text-sm">Contar por
           <select value={por} onChange={(e) => setPor(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm">
             <option value="creacion">Fecha en que se agendó</option>

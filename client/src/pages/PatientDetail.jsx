@@ -83,7 +83,6 @@ import {
   COSMETOLOGIA_ROSACEA,
   COSMETOLOGIA_LESIONES,
   COSMETOLOGIA_HIPERPIGMENTACION,
-  COSMETOLOGIA_DESHIDRATACION,
   COSMETOLOGIA_CABELLO,
   COSMETOLOGIA_CABELLO_TRATAMIENTOS,
   COSMETOLOGIA_CUERO_CABELLUDO,
@@ -118,6 +117,7 @@ import { inicioDeMiTurno } from '../utils/appointmentTurns';
 import { cargarPagina } from '../utils/lazyPage';
 import { edadGestacional, fechaProbableParto } from '../constants/gestacion';
 import { cargarServiciosAgenda } from '../utils/serviciosAgenda';
+import ItemsDelPacientePanel from '../components/ItemsDelPacientePanel';
 import {
   SCORE_MAMA_PARAMETROS,
   SCORE_MAMA_CONCIENCIA,
@@ -821,6 +821,9 @@ export default function PatientDetail() {
           )}
         </div>
       </div>
+
+      {/* Lo que compró y dejó aquí (ya pagado) o se llevó: que nadie se lo cobre otra vez. */}
+      <ItemsDelPacientePanel patientId={id} />
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
         <div className="flex border-b border-slate-200 overflow-x-auto">
@@ -5826,7 +5829,7 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
         isOpen={confirmar}
         onClose={() => setConfirmar(false)}
         title="Administrar suero"
-        size={receta.length ? 'md' : 'sm'}
+        size="md"
       >
         <div className="space-y-3">
           <p className="text-sm text-slate-700 m-0">
@@ -5838,14 +5841,25 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
 
           {/* CÓMO SE APLICÓ. Hay pacientes a los que las ampollas no se les
               ponen en suero sino inyectadas directamente: entonces no hay bolsa
-              y el parte no puede decir que entraron 500 ml de cloruro. */}
-          {receta.length > 0 && (
-            <div>
-              <p className="m-0 mb-1.5 text-xs font-medium text-slate-700">¿Cómo se aplicó?</p>
+              y el parte no puede decir que entraron 500 ml de cloruro.
+              SIEMPRE se pregunta (oct-2026): antes solo salía si la línea traía
+              ampollas en su composición, y el 12 % de los sueros los escribe el
+              doctor con la molécula como nombre de la línea («MEGADOSIS VITAMINA C
+              50ML MOL», «Oligocomplex») — ahí la opción no aparecía. */}
+          <div className="pt-1">
+            <p className="m-0 mb-1.5 text-xs font-medium text-slate-700">¿Cómo se aplicó?</p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {[
-                  { v: 'suero', t: 'En suero', d: 'Las ampollas van dentro del cloruro' },
-                  { v: 'directa', t: 'Inyectadas directamente', d: 'Sin suero: se inyectan al paciente' },
+                  {
+                    v: 'suero',
+                    t: 'En suero',
+                    d: receta.length ? 'Las ampollas van dentro del cloruro' : 'Va dentro del cloruro',
+                  },
+                  {
+                    v: 'directa',
+                    t: receta.length ? 'Inyectadas directamente' : 'Inyectado directamente',
+                    d: 'Sin suero: se inyecta al paciente',
+                  },
                 ].map((o) => (
                   <button
                     key={o.v}
@@ -5869,7 +5883,6 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
                 ))}
               </div>
             </div>
-          )}
 
           {/* El cloruro que se pone hoy. Se puede corregir: si el médico recetó
               1000 ml y en la sala solo hay bolsas de 500, el parte tiene que
@@ -5953,14 +5966,18 @@ function SueroLinea({ item, patientId, followUpId, puedeAdministrar, onCambio })
                           />
                         )}
                         {/* En suero, una ampolla suelta puede ir inyectada aparte
-                            (dosis mixta). Con todo directo no hace falta elegir. */}
-                        {modo === 'suero' && puesta && (
-                          <label className="flex items-center gap-1 text-[11px] text-violet-700 cursor-pointer select-none">
+                            (dosis mixta). Con todo directo no hace falta elegir.
+                            Se ve SIEMPRE en «en suero» —antes desaparecía al
+                            desmarcar la ampolla y parecía que la opción iba y
+                            venía—; solo se apaga si esa ampolla no se pone. */}
+                        {modo === 'suero' && (
+                          <label className={`flex items-center gap-1 text-[11px] select-none ${puesta ? 'text-violet-700 cursor-pointer' : 'text-slate-300'}`}>
                             <input
                               type="checkbox"
-                              checked={c.via === 'directa'}
+                              checked={puesta && c.via === 'directa'}
+                              disabled={!puesta}
                               onChange={(e) => setComp(idx, { via: e.target.checked ? 'directa' : 'suero' })}
-                              className="w-3.5 h-3.5 accent-violet-600 cursor-pointer"
+                              className="w-3.5 h-3.5 accent-violet-600 cursor-pointer disabled:cursor-not-allowed"
                             />
                             Inyectada aparte
                           </label>
@@ -7470,21 +7487,9 @@ function CosmetologiaSection({ value, onChange }) {
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Deshidratación dérmica facial</label>
-            <OptionChips options={COSMETOLOGIA_DESHIDRATACION} value={ev.deshidratacionFacial} onChange={(v) => setEv('deshidratacionFacial', v)} tone="fuchsia" />
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Field label="Bioestimulación dérmica facial">
-              <input type="text" value={ev.bioestimulacion || ''} onChange={(e) => setEv('bioestimulacion', e.target.value)} className="input" />
-            </Field>
-            <Field label="Nutrición dérmica facial">
-              <input type="text" value={ev.nutricionDermica || ''} onChange={(e) => setEv('nutricionDermica', e.target.value)} className="input" />
-            </Field>
-          </div>
-          <Field label="Evaluación">
-            <textarea rows={3} value={ev.observaciones || ''} onChange={(e) => setEv('observaciones', e.target.value)} className="input resize-none" />
-          </Field>
+          {/* Oct-2026, a pedido de cosmetología: se quitaron Deshidratación, Bioestimulación y
+              Nutrición dérmica facial y el texto «Evaluación». Lo ya escrito se sigue viendo
+              en el resumen del seguimiento (CosmetologiaSummary). */}
         </div>
       </Collapsible>
 
@@ -7537,21 +7542,8 @@ function CosmetologiaSection({ value, onChange }) {
         </div>
       </Collapsible>
 
-      <Collapsible title="Alteración de la fibra capilar" hint="marque y describa lo que encuentre">
-        <MspChecklist
-          catalog={COSMETOLOGIA_FIBRA_CAPILAR}
-          value={c.fibraCapilar}
-          onChange={(v) => onChange({ ...c, fibraCapilar: v })}
-        />
-      </Collapsible>
-
-      <Collapsible title="Afecciones del cuero cabelludo" hint="en alopecia, describa el tipo">
-        <MspChecklist
-          catalog={COSMETOLOGIA_AFECCIONES_CUERO}
-          value={c.afeccionesCuero}
-          onChange={(v) => onChange({ ...c, afeccionesCuero: v })}
-        />
-      </Collapsible>
+      {/* Oct-2026: se quitaron «Alteración de la fibra capilar» y «Afecciones del cuero
+          cabelludo» (pedido de cosmetología). Lo ya marcado sigue en el resumen. */}
 
       <Collapsible title="Procedimiento y productos utilizados" hint="lo realizado en la sesión">
         <div className="space-y-2">

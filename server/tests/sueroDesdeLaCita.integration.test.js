@@ -291,7 +291,7 @@ test('T10) ASIGNAR ATENCIÓN: el suero escogido ahí se escribe en los seguimien
 
 test('T11) el suero escrito así es ADMINISTRABLE, igual que uno recetado por el doctor', async () => {
   const { clinicId, userId, patient, enfermera } = await seed();
-  // La ampolla existe en el inventario: aplicar tiene que descontarla.
+  // La ampolla existe en el inventario; aplicar ya NO la descuenta (sale al cobrar).
   const ampolla = await H.makeProduct(clinicId, { code: DETOX.code, name: DETOX.name, stock: 10 });
 
   const cita = ok(await agendar(clinicId, userId, {
@@ -327,7 +327,7 @@ test('T11) el suero escrito así es ADMINISTRABLE, igual que uno recetado por el
   assert.equal(aplicaciones.length, 1, 'queda registrado que se aplicó');
   assert.equal(String(aplicaciones[0].by), String(enfermera._id));
   const Product = require('../models/Product');
-  assert.equal((await Product.findById(ampolla._id)).stock, 9, 'y la ampolla sale del inventario');
+  assert.equal((await Product.findById(ampolla._id)).stock, 10, 'aplicar no mueve el inventario: lo mueve el cobro');
 });
 
 test('T12) una cita YA agendada con servicio que trae suero lo recibe al asignar', async () => {

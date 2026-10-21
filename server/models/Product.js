@@ -47,6 +47,23 @@ const productSchema = new mongoose.Schema(
         _id: false,
       },
     ],
+    /**
+     * ÍTEMS VINCULADOS (oct-2026). Otros ítems del inventario que se USAN al vender
+     * este: al cobrar «Sueroterapia» el cajero escoge qué ampollas y moléculas lleva,
+     * y esas salen del inventario. NO suman al precio: se cobra solo este producto.
+     * Vale para cualquier tipo de ítem, no solo servicios.
+     *   · quantity  cantidad propuesta por cada unidad vendida.
+     *   · preselect viene ya marcado al cobrar (lo que se usa siempre).
+     * Reemplaza a `serviceItems` (que nunca se usó al cobrar).
+     */
+    linkedItems: [
+      {
+        product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+        quantity: { type: Number, default: 1, min: 0 },
+        preselect: { type: Boolean, default: false },
+        _id: false,
+      },
+    ],
     // Producto compuesto (ej. un suero compuesto por ampollas). Tiene precio de
     // venta fijo. `components` lista los productos que PUEDEN componerlo; al
     // recetarlo, el doctor elige cuáles usar. Se descuenta el stock de los

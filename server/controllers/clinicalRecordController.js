@@ -515,92 +515,6 @@ const viaDeLaDosis = (componentes) => {
 };
 
 /**
- * Busca la ampolla en el inventario por su código de catálogo.
- *
- * El catálogo de productos es DE TODA LA ORGANIZACIÓN, no de la sucursal: un
- * producto no pertenece a la sede que lo creó y `availableInClinics` vacío
- * significa "en todas" (ver getProducts). Filtrar por `clinic` aquí haría que una
- * ampolla dada de alta en otra sede no se encontrara y el suero se aplicara sin
- * descontar nada, en silencio.
- */
-const buscaProductoPorCodigo = async (clinicId, code) => {
-  // Primero el producto DE ESTA SEDE. El código es único por (clinic, code),
-  // así que dos sucursales pueden tener cada una su «AAPL01»: sin este primer
-  // intento se descontaba el de la otra sede y el stock de la nevera desde la
-  // que salió la ampolla seguía intacto.
-  const propio = await Product.findOne({ code, clinic: clinicId });
-  if (propio) return propio;
-  return Product.findOne({
-    code,
-    $or: [
-      { availableInClinics: { $exists: false } },
-      { availableInClinics: { $size: 0 } },
-      { availableInClinics: clinicId },
-    ],
-  });
-};
-
-/**
- * Descuenta del inventario lo que se puso DE VERDAD en una dosis de suero.
- *
- * Se descuenta al aplicar, no al recetar: hasta que el suero no está puesto no
- * ha salido nada de la percha, y la ampolla que el paciente rechaza sigue ahí.
- *
- * Se mueve el stock igual que los componentes de un producto compuesto (más
- * abajo, al guardar la receta): stock del producto + un movimiento de inventario.
- * NO pasa por las capas FIFO del kardex, que es como se descuenta una venta.
- *
- * Lo que no esté dado de alta en el inventario se aplica igual y no mueve stock:
- * enfermería NO se puede quedar sin poner un suero porque a alguien le falte
- * crear un producto.
- *
- * Devuelve lo movido para poder deshacerlo exactamente igual.
- */
-const descontarComponentesSuero = async ({ clinicId, userId, aplicados, itemName, recordId }) => {
-  const InventoryMovement = require('../models/InventoryMovement');
-  const movimientos = [];
-  for (const c of aplicados) {
-    if (!c.code || !(c.quantityApplied > 0)) continue;
-    try {
-      const prod = await buscaProductoPorCodigo(clinicId, c.code);
-      if (!prod || prod.unlimited) continue;
-      /**
-       * SE REGISTRA LO QUE DE VERDAD SALIÓ, no lo que se pidió.
-       *
-       * `Product.stock` tiene `min: 0`, así que descontar 2 de un stock de 1
-       * deja 0: solo salió 1. Anotar 2 en el movimiento descuadra el kardex, y
-       * anotar 2 en `stockMoves` hace que deshacer la dosis devuelva 2 a la
-       * percha — inventario inventado. El clínico sigue diciendo que se
-       * aplicaron 2 (que es la verdad), pero el inventario solo mueve lo que
-       * tenía.
-       */
-      const antes = prod.stock || 0;
-      const despues = Math.max(0, antes - c.quantityApplied);
-      const salieron = antes - despues;
-      if (salieron <= 0) continue;
-      prod.stock = despues;
-      await prod.save();
-      await InventoryMovement.create({
-        clinic: clinicId,
-        product: prod._id,
-        type: 'salida',
-        quantity: salieron,
-        balanceAfter: despues,
-        movementDate: new Date(),
-        reason: `${c.name} · suero ${itemName}`.trim(),
-        sourceModel: 'ClinicalRecord',
-        sourceRef: recordId || null,
-        createdBy: userId,
-      });
-      movimientos.push({ product: prod._id, quantity: salieron });
-    } catch (e) {
-      console.warn(`No se pudo descontar ${c.code} del inventario:`, e.message);
-    }
-  }
-  return movimientos;
-};
-
-/**
  * Devuelve al inventario lo que descontó una dosis que se deshace.
  *
  * Va por `stockMoves` —lo que esa dosis movió de verdad— y no por la receta: si
@@ -1998,13 +1912,9 @@ exports.addFollowUp = async (req, res) => {
         .json({ message: 'Primero debe crear la ficha clínica del paciente' });
     }
 
-    // La receta queda en Observaciones del paciente (no espera: ver
-    // utils/observacionesAutomaticas).
-    require('../utils/observacionesAutomaticas').registrarReceta(
-      patientId,
-      (record.followUps || []).slice(-1)[0]?._id,
-      req.user._id
-    );
+    // La receta YA NO se copia a Observaciones (oct-2026, a petición de la
+    // clínica): ahí solo quedan las COMPRAS — la de la receta registrada en la
+    // agenda y las ventas. Ver utils/observacionesAutomaticas.
 
     /**
      * AVANCE DE TURNO. Una cita puede pasar por varios profesionales: guardar el
@@ -2490,8 +2400,6 @@ exports.updateFollowUp = async (req, res) => {
 
     record.updatedBy = req.user._id;
     await record.save();
-    // La constancia de la receta sigue a la corrección (la firma, la del autor).
-    require('../utils/observacionesAutomaticas').registrarReceta(patientId, fu._id, fu.createdBy);
 
     emitToClinic(req.clinicId, 'clinicalRecord:updated', { patient: patientId });
     const poblado = await ClinicalRecord.findById(record._id)
@@ -2630,29 +2538,12 @@ exports.administerSerum = async (req, res) => {
     }
 
     /**
-     * El inventario se mueve AHORA, con la dosis ya guardada.
-     *
-     * Antes se descontaba primero: si fallaba el guardado, las ampollas salían
-     * del stock sin que quedara ninguna dosis en la ficha, y el reintento las
-     * volvía a descontar. Al revés, lo peor que puede pasar es una dosis con
-     * `stockMoves` vacío —visible, y deshacerla no devuelve nada de más—.
+     * APLICAR YA NO MUEVE INVENTARIO (20-10-2026, decisión de la clínica): las
+     * ampollas salen del inventario AL COBRAR, como ítems vinculados del servicio
+     * (ver utils/itemsDelPaciente). Si además se descontaran aquí saldrían dos
+     * veces. La dosis queda con `stockMoves` vacío; deshacer una dosis antigua
+     * sigue devolviendo lo que aquella movió.
      */
-    const stockMoves = await descontarComponentesSuero({
-      clinicId: req.clinicId,
-      userId: req.user._id,
-      aplicados: componentes,
-      itemName: item.name,
-      recordId: record._id,
-    });
-    if (stockMoves.length) {
-      await ClinicalRecord.updateOne(
-        { _id: record._id },
-        { $set: { 'followUps.$[fu].recetaItems.$[it].administrations.$[ad].stockMoves': stockMoves } },
-        {
-          arrayFilters: [{ 'fu._id': fu._id }, { 'it._id': item._id }, { 'ad._id': dosisId }],
-        },
-      ).catch((e) => console.warn('No se pudo anotar el movimiento de stock en la dosis:', e.message));
-    }
 
     const fresco = await ClinicalRecord.findById(record._id);
     emitToClinic(req.clinicId, 'clinicalRecord:updated', { patient: patientId });

@@ -1,5 +1,32 @@
 const mongoose = require('mongoose');
 
+/**
+ * ÍTEM VINCULADO USADO en una línea (oct-2026): las ampollas de la «Sueroterapia»,
+ * por ejemplo. No tiene precio (se cobra solo la línea). `source` dice de dónde salió:
+ *   · 'inventario' — del inventario de la clínica: sale del stock ahora.
+ *   · 'paciente'   — de lo que el paciente compró antes y dejó en la clínica
+ *                    (PatientItem 'en_clinica'): sale del stock ahora, no se cobra.
+ *   · 'trajo'      — lo trajo el paciente (lo compró y se lo llevó): no mueve stock.
+ */
+const saleLinkedItemSchema = new mongoose.Schema(
+  {
+    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+    productCode: String,
+    productName: String,
+    quantity: { type: Number, required: true, min: 0 },
+    source: { type: String, enum: ['inventario', 'paciente', 'trajo'], default: 'inventario' },
+    // Lo que de verdad bajó de `Product.stock` (con stock corto puede ser menos que
+    // `quantity`): es lo que devuelve anular la venta.
+    stockMoved: { type: Number, default: 0 },
+    // Costo de lo que salió (kardex), parte del asiento de costo de la venta.
+    cost: { type: Number, default: 0 },
+    warehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
+    // De qué compras del paciente salió ('paciente' / 'trajo').
+    holdings: [{ holding: { type: mongoose.Schema.Types.ObjectId, ref: 'PatientItem' }, quantity: Number, _id: false }],
+  },
+  { _id: false }
+);
+
 const saleItemSchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
@@ -39,6 +66,15 @@ const saleItemSchema = new mongoose.Schema({
   // Es la que consume las capas FIFO y la que ve el kardex por bodega. Vacía = stock general
   // (ventas anteriores a las bodegas: no se les inventa una).
   warehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
+  /**
+   * ¿Se lo lleva? (oct-2026, solo ítems físicos de un paciente). 'en_clinica' = lo
+   * compra pero lo deja para aplicárselo aquí: NO sale del inventario al venderlo y
+   * queda a su nombre (models/PatientItem). 'llevado' = se lo lleva. '' = ventas
+   * anteriores (o sin paciente): como siempre, sale del inventario.
+   */
+  delivery: { type: String, enum: ['', 'llevado', 'en_clinica'], default: '' },
+  // Ítems vinculados que se usaron con esta línea (no suman al precio).
+  linkedItems: { type: [saleLinkedItemSchema], default: [] },
   subtotal: { type: Number, required: true },
 });
 

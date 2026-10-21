@@ -3611,6 +3611,23 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
           (punto verde). Si no se cumple ninguna, sale por <b className="text-rose-600">{branches.length > 1 ? 'Si no' : 'No'}</b> (punto rojo,
           a la derecha). Usa los botones “+” bajo cada salida, o arrastra desde el punto hasta un nodo existente.
         </p>
+        {/* Volver a comprobar al despertar (ver workflowEngine checkBranchGuards). */}
+        <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[12px] text-slate-700 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={d.recheck !== false}
+            onChange={(e) => set({ recheck: e.target.checked })}
+            className="mt-0.5 w-4 h-4 accent-emerald-600 cursor-pointer"
+          />
+          <span>
+            <b>Volver a comprobar después de cada espera</b>
+            <span className="block text-[11px] text-slate-500">
+              Si mientras espera cambia la etapa, una etiqueta o la oportunidad (por ejemplo, un asesor la pasa a Perdido),
+              el contacto se va a la rama que le toca ahora, o sale del flujo si esa salida no está conectada. Lo que cambia
+              el propio flujo no cuenta.
+            </span>
+          </span>
+        </label>
       </div>
     );
   }

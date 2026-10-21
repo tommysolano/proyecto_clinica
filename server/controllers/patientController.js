@@ -726,3 +726,80 @@ exports.getPatientPrepaid = async (req, res) => {
     res.status(500).json({ message: 'Error al obtener las sesiones prepagadas', error: error.message });
   }
 };
+
+/**
+ * ÍTEMS DEL PACIENTE (oct-2026, ver models/PatientItem): lo que compró y dejó en
+ * la clínica para aplicárselo, y lo que se llevó siendo ítem vinculado de un
+ * servicio. Lo ven quien cobra y enfermería: es lo que evita cobrárselo otra vez.
+ */
+exports.getPatientItems = async (req, res) => {
+  try {
+    const { delPaciente } = require('../utils/itemsDelPaciente');
+    const sucursales = await sucursalesDeEmpresaVisibles(req);
+    res.json(await delPaciente(req.params.id, sucursales));
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener los ítems del paciente', error: error.message });
+  }
+};
+
+/**
+ * APLICAR lo que el paciente dejó guardado sin pasar por un cobro (vino solo a
+ * ponérselo). Lo 'en_clinica' sale del inventario AHORA; lo 'llevado' solo se
+ * marca como usado (lo trajo él: no hay nada que descontar).
+ */
+exports.applyPatientItem = async (req, res) => {
+  try {
+    const PatientItem = require('../models/PatientItem');
+    const Product = require('../models/Product');
+    const { runInTransaction } = require('../utils/accounting');
+    const itemsPaciente = require('../utils/itemsDelPaciente');
+    const qty = Number(req.body?.quantity);
+    if (!(qty > 0)) return res.status(400).json({ message: 'Indica cuántos se aplicaron' });
+    const note = String(req.body?.note || '').trim();
+    const sucursales = await sucursalesDeEmpresaVisibles(req);
+    const avisos = [];
+    await runInTransaction(async (session) => {
+      avisos.length = 0;
+      const h = await PatientItem.findOne({
+        _id: req.params.itemId, patient: req.params.id, status: 'activo',
+        ...(sucursales ? { clinic: { $in: sucursales } } : {}),
+      }).session(session);
+      if (!h) throw Object.assign(new Error('Ese ítem no está a nombre del paciente'), { status: 404 });
+      if (qty > Number(h.remaining) + 1e-9) {
+        throw Object.assign(new Error(`Solo le quedan ${h.remaining} de «${h.productName}»`), { status: 400 });
+      }
+      const enClinica = h.mode === 'en_clinica';
+      let stockMoved = 0;
+      if (enClinica) {
+        const product = await Product.findById(h.product).session(session);
+        if (product) {
+          const mov = await itemsPaciente.salidaDeInventario({
+            clinicId: req.clinicId, product, quantity: qty,
+            reason: `Aplicado al paciente (comprado en ${h.saleNumber || 'una venta anterior'})`,
+            reference: h.saleNumber || '', sourceModel: 'PatientItem', sourceRef: h._id,
+            userId: req.user._id, session,
+          });
+          stockMoved = mov.stockMoved;
+          if (mov.aviso) avisos.push(mov.aviso);
+        }
+      }
+      const hecho = await PatientItem.findOneAndUpdate(
+        { _id: h._id, status: 'activo', remaining: { $gte: qty } },
+        {
+          $inc: { remaining: -qty },
+          $push: {
+            uses: {
+              at: new Date(), quantity: qty, detail: note || (enClinica ? 'Aplicado' : 'Lo trajo y se aplicó'),
+              clinic: req.clinicId, by: req.user._id, byName: req.user.name || '', stockMoved,
+            },
+          },
+        },
+        { new: true, session },
+      );
+      if (!hecho) throw Object.assign(new Error('Alguien lo usó al mismo tiempo. Vuelve a cargar la ficha.'), { status: 409 });
+    });
+    res.json({ items: await itemsPaciente.delPaciente(req.params.id, sucursales), warnings: avisos });
+  } catch (error) {
+    res.status(error.status || 500).json({ message: error.status ? error.message : 'Error al aplicar el ítem', error: error.message });
+  }
+};

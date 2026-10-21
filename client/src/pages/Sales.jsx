@@ -32,6 +32,8 @@ import JournalEntryViewModal from '../components/JournalEntryViewModal';
 import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../utils/idempotency';
 import DateInput from '../components/DateInput';
 import ServiciosSinCobro from '../components/ServiciosSinCobro';
+import ItemsVinculadosCobro from '../components/ItemsVinculadosCobro';
+import { FUENTES_VINCULADO } from '../constants/itemsVinculados';
 import { serviciosDeLaCita, listaSinCobro, tipoSinCobro } from '../utils/serviciosSinCobro';
 import { nameMatches } from '../utils/nameSearch';
 import { soloActivos as soloUsuariosActivos } from '../utils/activeUsers';
@@ -140,6 +142,27 @@ const descuentoDeLinea = (item) => {
   return Math.min(d, bruto);
 };
 const esServicioLinea = (item) => item?.category === 'servicio' || item?.unlimited === true;
+/**
+ * ÍTEMS VINCULADOS del producto (oct-2026), con nombre y código del catálogo cargado:
+ * lo que se puede escoger como «usado» al cobrarlo. Los inactivos no salen.
+ */
+const opcionesVinculadas = (product, catalogo) => {
+  // Los «items relacionados» de antes (`serviceItems`) valen, ya marcados, mientras el
+  // producto no se vuelva a guardar con su lista de vinculados (igual en el servidor).
+  const lista = (product?.linkedItems || []).length
+    ? product.linkedItems
+    : (product?.serviceItems || []).map((s) => ({ ...s, preselect: true }));
+  return lista
+    .map((l) => {
+      const id = String(l.product?._id || l.product || '');
+      const p = catalogo.find((x) => String(x._id) === id);
+      return p ? { product: id, productName: p.name, code: p.code, quantity: Number(l.quantity) || 1, preselect: !!l.preselect } : null;
+    })
+    .filter(Boolean);
+};
+// Las cantidades de los vinculados que nadie tocó siguen a la cantidad de la línea.
+const reescalarVinculados = (linked, qty) => (linked || [])
+  .map((l) => (l.cantAuto ? { ...l, quantity: +(Number(l.base || 1) * Number(qty || 1)).toFixed(4) } : l));
 // Filtro del buscador de productos. Fuera del componente: una función nueva en cada
 // render obliga al buscador a recalcular su lista a cada rato.
 const soloActivos = (p) => p.active !== false;
@@ -527,6 +550,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           // Un servicio que se agrega al cobrar una cita y que la cita no lleva es, casi
           // siempre, algo que se deja pagado para después. Se puede desmarcar.
           prepaid: isService && prepagoPorDefecto(product._id, qty),
+          ...extrasDeLinea(product, qty),
         },
       ],
     }));
@@ -547,6 +571,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       return;
     }
     items[idx].quantity = newQty;
+    items[idx] = { ...items[idx], linked: reescalarVinculados(it.linked, newQty) };
     // Al subir la cantidad de un servicio de la cita, lo que pasa de lo de hoy queda
     // para citas futuras (sigue pudiéndose desmarcar).
     if (isService && citaPorCobrar && !modoReceta) items[idx].prepaid = prepagoPorDefecto(it.product, newQty);
@@ -734,7 +759,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       const product = products.find((p) => String(p._id) === String(productId));
       if (!product) { if (nombre) faltan.push(nombre); return; }
       const ya = lineas.find((l) => String(l.product) === String(product._id));
-      if (ya) { ya.quantity += qty; return; }
+      if (ya) { ya.quantity += qty; ya.linked = reescalarVinculados(ya.linked, ya.quantity); return; }
       const lista = priceListOf(product);
       const elegido = activePriceOf(product);
       lineas.push({
@@ -755,6 +780,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         stock: product.stock,
         treatment: '',
         prepaid: false,
+        ...extrasDeLinea(product, qty),
       });
     };
     const apt = citaPorCobrar;
@@ -860,6 +886,64 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       .catch(() => { if (vivo) setSaldoAFavor(0); });
     return () => { vivo = false; };
   }, [modalOpen, pacienteVenta]);
+  /**
+   * ÍTEMS DEL PACIENTE (oct-2026): lo que compró y dejó en la clínica (ya pagado, no se
+   * cobra otra vez) y lo que se llevó siendo ítem vinculado de un servicio. Se ofrece en
+   * los vinculados de cada línea; lo que deja guardado en ESTE cobro también cuenta.
+   */
+  const [itemsPaciente, setItemsPaciente] = useState([]);
+  useEffect(() => {
+    if (!modalOpen || !pacienteVenta) { setItemsPaciente([]); return undefined; }
+    let vivo = true;
+    api.get(`/patients/${pacienteVenta}/items`)
+      .then((r) => { if (vivo) setItemsPaciente(Array.isArray(r.data) ? r.data : []); })
+      .catch(() => { if (vivo) setItemsPaciente([]); });
+    return () => { vivo = false; };
+  }, [modalOpen, pacienteVenta]);
+  const guardados = useMemo(() => {
+    const m = new Map();
+    const de = (id) => {
+      const k = String(id);
+      if (!m.has(k)) m.set(k, { enClinica: 0, llevado: 0, ultimaLlevada: null });
+      return m.get(k);
+    };
+    for (const h of itemsPaciente) {
+      const g = de(h.product);
+      if (h.mode === 'en_clinica') g.enClinica += Number(h.remaining) || 0;
+      else {
+        g.llevado += Number(h.remaining) || 0;
+        if (!g.ultimaLlevada || new Date(h.date) > new Date(g.ultimaLlevada)) g.ultimaLlevada = h.date;
+      }
+    }
+    for (const it of form.items) {
+      if (!esServicioLinea(it) && it.delivery === 'en_clinica') de(it.product).enClinica += Number(it.quantity) || 0;
+    }
+    return m;
+  }, [itemsPaciente, form.items]);
+  /** Entrega y vinculados de una línea nueva: los marcados «Siempre» vienen escogidos. */
+  function extrasDeLinea(product, qty) {
+    const linkOptions = opcionesVinculadas(product, products);
+    return {
+      delivery: 'llevado',
+      linkOptions,
+      linked: linkOptions.filter((o) => o.preselect).map((o) => ({
+        product: o.product, productName: o.productName, code: o.code, base: o.quantity,
+        quantity: +(o.quantity * qty).toFixed(4), source: 'inventario', cantAuto: true, fuenteAuto: true,
+      })),
+    };
+  }
+  // Si el paciente tiene guardado lo que la línea usa, se toma de lo suyo (el cajero lo puede cambiar).
+  useEffect(() => {
+    const deLoSuyo = (l) => l.fuenteAuto && l.source === 'inventario' && (guardados.get(String(l.product))?.enClinica || 0) > 0;
+    if (!pacienteVenta || !form.items.some((it) => (it.linked || []).some(deLoSuyo))) return;
+    setForm((f) => ({
+      ...f,
+      items: f.items.map((it) => ({ ...it, linked: (it.linked || []).map((l) => (deLoSuyo(l) ? { ...l, source: 'paciente' } : l)) })),
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guardados, pacienteVenta]);
+  const setLinea = (idx, patch) => setForm((f) => ({ ...f, items: f.items.map((it, i) => (i === idx ? { ...it, ...patch } : it)) }));
+
   const metodosDePago = saldoAFavor > 0.005
     ? { ...paymentMethods, anticipo: `Saldo a favor ($${saldoAFavor.toFixed(2)})` }
     : paymentMethods;
@@ -996,6 +1080,21 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     if (form.items.length === 0) return toast.error('Agrega al menos un producto');
     const sinPrecio = form.items.find((i) => i.variablePrice && !(Number(i.unitPrice) > 0));
     if (sinPrecio) return toast.error(`Escribe el precio de «${sinPrecio.productName}»`);
+    // Ítems vinculados: cantidad válida y, lo del paciente, que le alcance.
+    const usoDelPaciente = new Map();
+    for (const it of form.items) {
+      for (const l of it.linked || []) {
+        if (!(Number(l.quantity) > 0)) return toast.error(`Escribe cuántos «${l.productName}» se usaron en «${it.productName}» (o quítalo)`);
+        if (l.source === 'paciente') usoDelPaciente.set(String(l.product), (usoDelPaciente.get(String(l.product)) || 0) + Number(l.quantity));
+      }
+    }
+    for (const [pid, usa] of usoDelPaciente) {
+      const tiene = guardados.get(pid)?.enClinica || 0;
+      if (usa > tiene + 1e-9) {
+        const nombre = form.items.flatMap((i) => i.linked || []).find((l) => String(l.product) === pid)?.productName || 'un ítem';
+        return toast.error(`El paciente tiene ${tiene} de «${nombre}» guardado${tiene === 1 ? '' : 's'}; se están usando ${usa}. Cambia el resto a «${FUENTES_VINCULADO.inventario}».`);
+      }
+    }
     // Sin identificación no hay venta: la factura y el ATS la exigen. Consumidor Final vale.
     if (!String(form.clientCedula || '').trim()) {
       return toast.error('Falta la cédula / RUC / pasaporte del cliente. Si no lo identificas, usa Consumidor Final (9999999999999).');
@@ -1132,6 +1231,12 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           // Sin descuento: lo pone el servidor desde el producto (inventario).
           treatment: i.treatment || null,
           prepaid: !!i.prepaid && esServicioLinea(i),
+          // ¿Se lo lleva o lo deja para aplicárselo aquí? (solo físicos de un paciente)
+          delivery: !esServicioLinea(i) && pacienteVenta ? (i.delivery || 'llevado') : undefined,
+          // Ítems vinculados usados: no suman al precio; el servidor mueve su inventario.
+          linkedItems: (i.linked || [])
+            .filter((l) => Number(l.quantity) > 0)
+            .map((l) => ({ product: l.product, quantity: Number(l.quantity), source: l.source || 'inventario' })),
         })),
         ...extra,
         // Cobrando una cita: la venta es SIEMPRE de su paciente (aunque se le
@@ -1796,6 +1901,30 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                               </span>
                             </label>
                           )}
+                          {/* ¿SE LO LLEVA? (oct-2026). Lo que deja para aplicárselo aquí NO sale del
+                              inventario: queda a su nombre y sale el día que se le aplica. */}
+                          {!esServicioLinea(item) && pacienteVenta && (
+                            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                              <select
+                                value={item.delivery || 'llevado'}
+                                onChange={(e) => setLinea(idx, { delivery: e.target.value })}
+                                className="input-sm w-auto"
+                                title="¿Se lo lleva o se lo aplica aquí después?"
+                              >
+                                <option value="llevado">Se lo lleva</option>
+                                <option value="en_clinica">No se lo lleva: se lo aplica aquí</option>
+                              </select>
+                              {item.delivery === 'en_clinica' && (
+                                <span className="text-amber-700">No sale del inventario hoy: queda a su nombre hasta que se le aplique.</span>
+                              )}
+                            </div>
+                          )}
+                          <ItemsVinculadosCobro
+                            item={item}
+                            guardados={guardados}
+                            hayPaciente={!!pacienteVenta}
+                            onChange={(linked) => setLinea(idx, { linked })}
+                          />
                         </td>
                         {/* El precio también se puede cambiar DESPUÉS de agregar la línea: es
                             habitual darse cuenta al final de que va a precio corporativo. Solo
@@ -2651,6 +2780,14 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                       {item.treatment && (
                         <span className="ml-2 text-[10px] uppercase tracking-wide bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">
                           tratamiento
+                        </span>
+                      )}
+                      {item.delivery === 'en_clinica' && (
+                        <span className="block text-[11px] text-amber-700">No se lo llevó: quedó guardado a su nombre para aplicárselo aquí</span>
+                      )}
+                      {(item.linkedItems || []).length > 0 && (
+                        <span className="block text-[11px] text-cyan-800">
+                          Usó: {item.linkedItems.map((l) => `${l.productName} ×${l.quantity}${l.source === 'inventario' ? '' : ` (${FUENTES_VINCULADO[l.source]?.toLowerCase() || l.source})`}`).join(' · ')}
                         </span>
                       )}
                     </td>
