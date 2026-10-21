@@ -132,6 +132,10 @@ function TooltipInversion({ active, payload }) {
         <span>ROI</span>
         <b className="ml-auto pl-3 text-slate-800">{roi === null ? '—' : `${Math.round(roi * 100)}%`}</b>
       </div>
+      <div className="flex items-center gap-2 text-slate-600">
+        <span>Publicidad / ingresos</span>
+        <b className="ml-auto pl-3 text-slate-800">{d.ingresos ? `${((d.inversion * 100) / d.ingresos).toFixed(1)}%` : '—'}</b>
+      </div>
     </div>
   );
 }

@@ -614,6 +614,8 @@ exports.analytics = async (req, res) => {
         costoPorCita: r.citas ? gasto / r.citas : null,
         costoPorEfectiva: r.efectivas ? gasto / r.efectivas : null,
         roi: gasto ? (r.ingresos - gasto) / gasto : null,
+        // Cuánto del ingreso se fue en publicidad: gasto × 100 / ingresos (fracción).
+        pesoPublicidad: r.ingresos ? gasto / r.ingresos : null,
         citasDetalle: detalle.get(String(p._id)).sort((a, b) => new Date(b.creada) - new Date(a.creada)),
         serie: [...seriePorPrograma.get(pid)].map(([fecha, v]) => ({ fecha, ...v })),
       };

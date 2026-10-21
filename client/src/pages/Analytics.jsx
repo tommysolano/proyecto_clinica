@@ -35,6 +35,8 @@ import { fmtDate, fmtDateTime, todayEc } from '../utils/date';
 
 const money = (v) => `$${Number(v || 0).toLocaleString('es-EC', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const pct = (v) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(0)}%`);
+// Con un decimal: el peso de la publicidad suele ser chico (3,4 % no es 3 %).
+const pct1 = (v) => (v === null || v === undefined ? '—' : `${(v * 100).toLocaleString('es-EC', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`);
 const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 /** Días que tiene el mes 'YYYY-MM'. */
 const diasDelMes = (ym) => {
@@ -705,7 +707,7 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
         ) : <p className="text-sm text-slate-400">Cargando…</p>
       ) : (
         <>
-          <div className="grid gap-3 grid-cols-2 lg:grid-cols-5">
+          <div className="grid gap-3 grid-cols-2 lg:grid-cols-6">
             <Kpi label="Inversión en publicidad" valor={money(total.gasto)} sub={subGasto} />
             <Kpi
               label="Chats de anuncios"
@@ -718,6 +720,11 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
               label="Retorno (ROI)"
               valor={pct(total.gasto ? (total.ingresos - total.gasto) / total.gasto : null)}
               sub={total.gasto && total.efectivas ? `costo por efectiva ${money(total.gasto / total.efectivas)}` : 'sin gasto registrado'}
+            />
+            <Kpi
+              label="Publicidad / ingresos"
+              valor={pct1(total.ingresos ? total.gasto / total.ingresos : null)}
+              sub={total.ingresos ? 'del ingreso se fue en publicidad' : 'sin ingresos en el rango'}
             />
           </div>
 
@@ -753,6 +760,7 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
                     <th className="text-right px-3 py-2">Ingresos</th>
                     <th className="text-right px-3 py-2">Costo / efectiva</th>
                     <th className="text-right px-3 py-2">ROI</th>
+                    <th className="text-right px-3 py-2" title="Inversión × 100 / ingresos">Publicidad / ingresos</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -780,11 +788,11 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
                           {abierto === 'sin' ? <HiOutlineChevronDown className="inline w-4 h-4 mr-1" /> : <HiOutlineChevronRight className="inline w-4 h-4 mr-1" />}
                           Sin programa{data.sinPrograma.conAnuncio ? ` (${data.sinPrograma.conAnuncio} con anuncio sin asignar)` : ''}
                         </td>
-                        <CeldasNumeros r={{ ...data.sinPrograma, gasto: null, chats: null, costoPorEfectiva: null, roi: null }} />
+                        <CeldasNumeros r={{ ...data.sinPrograma, gasto: null, chats: null, costoPorEfectiva: null, roi: null, pesoPublicidad: null }} />
                       </tr>
                       {abierto === 'sin' && (
                         <tr className="bg-slate-50/60">
-                          <td colSpan={13} className="px-3 py-3">
+                          <td colSpan={14} className="px-3 py-3">
                             <AnunciosSinPrograma
                               anuncios={data.anunciosSinPrograma || []}
                               programas={programas}
@@ -808,7 +816,8 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
 
       <p className="text-[11px] text-slate-400 m-0">
         <b>Efectivas</b> = asistidas o completadas. <b>Ingresos</b> = valor asignado a las citas efectivas, sin canjes, cortesías
-        ni servicios marcados «no genera ingresos». La <b>inversión</b> se reparte por día y solo cuentan los días ya
+        ni servicios marcados «no genera ingresos». <b>Publicidad / ingresos</b> = inversión × 100 / ingresos: qué
+        parte de lo que entró se gastó en anuncios (cuanto más bajo, mejor). La <b>inversión</b> se reparte por día y solo cuentan los días ya
         transcurridos. Una cita es del programa por el <b>anuncio</b> del que vino su chat; si el chat no vino de un
         anuncio de ningún programa, por su <b>servicio</b> (cuando ese servicio es de un solo programa).
       </p>
@@ -845,6 +854,7 @@ function CeldasNumeros({ r, sinGasto = false }) {
         <>
           <td className="px-3 py-2 text-right">{guion(r.costoPorEfectiva, money)}</td>
           <td className={`px-3 py-2 text-right font-semibold ${r.roi === null || r.roi === undefined ? '' : r.roi >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{pct(r.roi)}</td>
+          <td className="px-3 py-2 text-right">{pct1(r.pesoPublicidad)}</td>
         </>
       )}
     </>
@@ -868,7 +878,7 @@ function VistaPrograma({ p, subGasto, data, desde, hasta, por }) {
   }, [data, p._id, p.chats]);
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 grid-cols-2 lg:grid-cols-6">
+      <div className="grid gap-3 grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
         <Kpi label="Inversión" valor={money(p.gasto)} sub={subGasto} />
         <Kpi label="Chats" valor={p.chats} sub="llegaron por sus anuncios" />
         <Kpi label="Citas" valor={p.citas} sub={costoPorCita === null ? '' : `${money(costoPorCita)} por cita`} />
@@ -882,6 +892,11 @@ function VistaPrograma({ p, subGasto, data, desde, hasta, por }) {
           label="ROI"
           valor={pct(p.roi)}
           sub={p.costoPorEfectiva === null ? 'sin gasto o sin asistencias' : `${money(p.costoPorEfectiva)} por asistencia`}
+        />
+        <Kpi
+          label="Publicidad / ingresos"
+          valor={pct1(p.pesoPublicidad)}
+          sub={p.pesoPublicidad === null ? 'sin ingresos en el rango' : 'del ingreso se fue en publicidad'}
         />
       </div>
 
