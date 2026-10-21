@@ -385,6 +385,7 @@ export default function WhatsappSpend() {
       <ChatsDeCategoria
         category={catAbierta}
         range={range}
+        money={money}
         onClose={() => setCatAbierta(null)}
       />
 
@@ -435,11 +436,13 @@ export default function WhatsappSpend() {
 }
 
 /**
- * EN QUÉ CHATS SE COBRÓ UNA CATEGORÍA (oct-2026). Sale del aviso de Meta en cada
- * mensaje que enviamos (`Message.billing`), no de la factura: sirve para ver QUIÉN
- * genera el gasto (qué agente, qué automatización), no para cuadrar el dinero.
+ * EN QUÉ CHATS SE COBRÓ UNA CATEGORÍA Y CUÁNTO COSTÓ CADA UNO (oct-2026). Los
+ * mensajes salen del aviso de Meta en cada envío (`Message.billing`); el COSTO, del
+ * importe real que Meta informó cada día repartido entre los mensajes cobrados de
+ * ese día (ver server utils/whatsappSpend readChatsByCategory). La suma de los
+ * chats cuadra con lo que cobró Meta: se muestran las dos cifras.
  */
-function ChatsDeCategoria({ category, range, onClose }) {
+function ChatsDeCategoria({ category, range, money, onClose }) {
   const [res, setRes] = useState({ clave: '', data: null, error: '' });
   const clave = category ? `${category}|${range.from}|${range.to}` : '';
   useEffect(() => {
@@ -458,8 +461,9 @@ function ChatsDeCategoria({ category, range, onClose }) {
     <Modal isOpen={!!category} onClose={onClose} title={`Chats con mensajes de ${nombre}`} size="lg">
       <p className="text-xs text-slate-500 -mt-1 mb-3">
         {range.from === range.to ? ddmm(range.from) : `${ddmm(range.from)} – ${ddmm(range.to)}`} ·
-        mensajes que enviamos y que Meta clasificó como <b>{nombre}</b>. «Cobrados» son los que Meta factura;
-        «gratis», los que entraron en una ventana gratuita.
+        mensajes que enviamos y que Meta clasificó como <b>{nombre}</b>. <b>Costo</b>: lo que Meta cobró por ese chat
+        (su importe de cada día repartido entre los mensajes cobrados de ese día). <b>Mensajes cobrados</b>: los que
+        Meta factura. <b>Mensajes gratis</b>: los que entraron en una ventana gratuita (p. ej. tras tocar un anuncio).
       </p>
       {cargando ? (
         <p className="text-sm text-slate-400 py-8 text-center">Cargando…</p>
@@ -469,20 +473,29 @@ function ChatsDeCategoria({ category, range, onClose }) {
         <p className="text-sm text-slate-400 py-8 text-center">No hay mensajes de esta categoría en el rango.</p>
       ) : (
         <>
-          <div className="flex flex-wrap gap-3 text-xs text-slate-600 mb-2">
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600 mb-2">
+            <span><b className="text-emerald-700 text-sm">{money(d.totals.cost)}</b> entre todos los chats</span>
+            <span>Meta cobró <b className="text-slate-800">{money(d.totals.metaCost)}</b> en {nombre.toLowerCase()} en el rango</span>
             <span><b className="text-slate-800">{d.totals.chats.toLocaleString('es-EC')}</b> chats</span>
-            <span><b className="text-slate-800">{d.totals.billed.toLocaleString('es-EC')}</b> cobrados</span>
+            <span><b className="text-slate-800">{d.totals.billed.toLocaleString('es-EC')}</b> mensajes cobrados</span>
             <span><b className="text-slate-800">{d.totals.free.toLocaleString('es-EC')}</b> gratis</span>
-            {d.truncated && <span className="text-amber-700">Se muestran los {d.chats.length} con más mensajes cobrados.</span>}
+            {d.truncated && <span className="text-amber-700">Se muestran los {d.chats.length} que más costaron.</span>}
           </div>
+          {d.totals.costUnknown && (
+            <p className="text-[11px] text-amber-700 mb-2">
+              * Algún día del rango Meta todavía no informa el importe (suele ser hoy, que aún no cierra): en los chats
+              marcados el costo puede quedarse corto.
+            </p>
+          )}
           <div className="max-h-[60vh] overflow-y-auto border border-slate-100 rounded-lg">
             <table className="tbl tbl-cards">
               <thead className="bg-slate-50 text-slate-600 sticky top-0">
                 <tr>
                   <th className="text-left px-3 py-2">Chat</th>
                   <th className="text-left px-3 py-2">Quién envió</th>
-                  <th className="text-right px-3 py-2">Cobrados</th>
-                  <th className="text-right px-3 py-2">Gratis</th>
+                  <th className="text-right px-3 py-2">Costo</th>
+                  <th className="text-right px-3 py-2">Mensajes cobrados</th>
+                  <th className="text-right px-3 py-2">Mensajes gratis</th>
                   <th className="text-left px-3 py-2">Último</th>
                   <th className="px-3 py-2" />
                 </tr>
@@ -494,7 +507,10 @@ function ChatsDeCategoria({ category, range, onClose }) {
                     <td data-cell="detalle" className="px-3 py-2 text-xs text-slate-600">
                       {[...c.senders, ...(c.automatic ? [`Automático (${c.automatic})`] : [])].join(', ') || '—'}
                     </td>
-                    <td data-cell="detalle" className="px-3 py-2 text-right font-semibold text-slate-800">{c.billed}</td>
+                    <td data-cell="detalle" className="px-3 py-2 text-right font-semibold text-emerald-700 whitespace-nowrap">
+                      {money(c.cost)}{c.costUnknown ? ' *' : ''}
+                    </td>
+                    <td data-cell="detalle" className="px-3 py-2 text-right text-slate-800">{c.billed}</td>
                     <td data-cell="detalle" className="px-3 py-2 text-right text-slate-500">{c.free}</td>
                     <td data-cell="hora" className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">{fmtDateTime(c.lastAt)}</td>
                     <td data-cell="acciones" className="px-3 py-2 text-right">

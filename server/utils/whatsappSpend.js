@@ -322,22 +322,55 @@ async function readByTemplate({ clinicId, from, to }) {
 }
 
 /**
+ * Lo que costó cada mensaje cobrado, por DÍA, de una categoría: el importe REAL que
+ * informó Meta ese día dividido entre los mensajes cobrados que Meta contó ese día.
+ * No es una tarifa nuestra: es el dinero de Meta repartido. Un día sin importe
+ * informado (facturación por socio) queda en null — no se inventa.
+ * Devuelve Map('YYYY-MM-DD' → costo por mensaje | null).
+ */
+async function costPerBilledMessageByDay({ category, from, to }) {
+  const waba = await resolveWaba();
+  const filter = { date: { $gte: from, $lte: to }, pricingCategory: String(category).toUpperCase() };
+  if (waba.ok) filter.wabaId = waba.wabaId;
+  const rows = await WhatsappSpendDay.find(filter).lean();
+  const porDia = new Map();
+  for (const r of rows) {
+    if (isFreeType(r.pricingType)) continue;
+    const d = porDia.get(r.date) || { cost: 0, volume: 0, sinImporte: false };
+    d.volume += Number(r.volume || 0);
+    if (r.cost === null || r.cost === undefined) { if (r.volume > 0) d.sinImporte = true; } else d.cost += Number(r.cost);
+    porDia.set(r.date, d);
+  }
+  const out = new Map();
+  for (const [date, d] of porDia) out.set(date, d.volume > 0 && !d.sinImporte ? d.cost / d.volume : null);
+  return out;
+}
+
+/**
  * CHATS DE UNA CATEGORÍA DE META (oct-2026): en qué conversaciones salieron los
- * mensajes que Meta clasificó como servicio / utilidad / marketing… en el rango.
- * Sale de `Message.billing` (el aviso de Meta en cada mensaje), así que son los
- * mensajes que ENVIAMOS por Cloud API; los QR no llevan cobro. CRM global: sin
- * filtrar por sucursal, igual que el gasto (una sola WABA). Sin teléfonos: la
- * pantalla la ve marketing, que no tiene datos de contacto; se abre el chat.
+ * mensajes que Meta clasificó como servicio / utilidad / marketing… en el rango,
+ * y CUÁNTO COSTÓ cada chat.
+ *
+ * Los mensajes salen de `Message.billing` (el aviso de Meta en cada mensaje que
+ * ENVIAMOS por Cloud API; los QR no llevan cobro). Meta no da el importe por
+ * mensaje ni por chat, solo por día y categoría: el costo del chat es la suma, día
+ * por día, de sus mensajes cobrados por lo que costó cada mensaje ese día
+ * (`costPerBilledMessageByDay`). Así la suma de los chats es el dinero real de Meta.
+ *
+ * CRM global: sin filtrar por sucursal (una sola WABA). Sin teléfonos: la pantalla
+ * la ve marketing, que no tiene datos de contacto; se abre el chat.
  */
 async function readChatsByCategory({ category, from, to, limit = 300 }) {
   const Message = require('../models/Message');
   const Conversation = require('../models/Conversation');
+  const User = require('../models/User');
   const cat = String(category || '').trim().toLowerCase();
-  if (!cat) return { category: '', chats: [], totals: { chats: 0, messages: 0, billed: 0, free: 0 } };
+  const vacio = { chats: 0, messages: 0, billed: 0, free: 0, cost: 0, metaCost: 0, costUnknown: false };
+  if (!cat) return { category: '', chats: [], totals: vacio };
   const start = new Date(ecDayStartMs(from));
   const end = new Date(ecDayStartMs(to) + DAY_MS);
   const escapada = cat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const rows = await Message.aggregate([
+  const filas = await Message.aggregate([
     {
       $match: {
         direction: 'out',
@@ -347,7 +380,10 @@ async function readChatsByCategory({ category, from, to, limit = 300 }) {
     },
     {
       $group: {
-        _id: '$conversation',
+        _id: {
+          c: '$conversation',
+          d: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'America/Guayaquil' } },
+        },
         messages: { $sum: 1 },
         billed: { $sum: { $cond: [{ $eq: ['$billing.billable', true] }, 1, 0] } },
         free: { $sum: { $cond: [{ $eq: ['$billing.billable', false] }, 1, 0] } },
@@ -361,18 +397,65 @@ async function readChatsByCategory({ category, from, to, limit = 300 }) {
           },
         },
         lastAt: { $max: '$createdAt' },
-        senders: { $addToSet: '$sentByName' },
+        // Quién: por USUARIO (el nombre guardado en cada mensaje cambia con el tiempo:
+        // «Emily» y «Emily Brithany…» eran la misma persona). El nombre suelto solo
+        // cuando el mensaje no trae usuario.
+        users: { $addToSet: '$sentBy' },
+        names: { $addToSet: { $cond: [{ $ifNull: ['$sentBy', false] }, '', { $ifNull: ['$sentByName', ''] }] } },
       },
     },
-    { $sort: { billed: -1, messages: -1, lastAt: -1 } },
   ]);
+
+  const tarifa = await costPerBilledMessageByDay({ category: cat, from, to });
+  const porChat = new Map();
+  for (const f of filas) {
+    const k = String(f._id.c);
+    const r = porChat.get(k) || {
+      conversation: f._id.c, messages: 0, billed: 0, free: 0, automatic: 0, lastAt: null,
+      cost: 0, costUnknown: false, users: new Set(), names: new Set(),
+    };
+    r.messages += f.messages;
+    r.billed += f.billed;
+    r.free += f.free;
+    r.automatic += f.automatic;
+    if (!r.lastAt || f.lastAt > r.lastAt) r.lastAt = f.lastAt;
+    if (f.billed > 0) {
+      const t = tarifa.get(f._id.d);
+      if (t === null || t === undefined) r.costUnknown = true;
+      else r.cost += f.billed * t;
+    }
+    (f.users || []).filter(Boolean).forEach((u) => r.users.add(String(u)));
+    (f.names || []).filter(Boolean).forEach((n) => r.names.add(n));
+    porChat.set(k, r);
+  }
+  const rows = [...porChat.values()].sort((a, b) => b.cost - a.cost || b.billed - a.billed || b.lastAt - a.lastAt);
+  const round2 = (n) => Math.round(n * 100) / 100;
+
+  // Lo que Meta cobró de verdad en esta categoría y rango, para comparar con la suma.
+  const waba = await resolveWaba();
+  const metaRows = await WhatsappSpendDay.find({
+    date: { $gte: from, $lte: to }, pricingCategory: cat.toUpperCase(),
+    ...(waba.ok ? { wabaId: waba.wabaId } : {}),
+  }).select('cost').lean();
   const totals = rows.reduce((t, r) => ({
-    chats: t.chats + 1, messages: t.messages + r.messages, billed: t.billed + r.billed, free: t.free + r.free,
-  }), { chats: 0, messages: 0, billed: 0, free: 0 });
+    ...t,
+    chats: t.chats + 1,
+    messages: t.messages + r.messages,
+    billed: t.billed + r.billed,
+    free: t.free + r.free,
+    cost: t.cost + r.cost,
+    costUnknown: t.costUnknown || r.costUnknown,
+  }), { ...vacio, metaCost: metaRows.reduce((s, m) => s + Number(m.cost || 0), 0) });
+  totals.cost = round2(totals.cost);
+  totals.metaCost = round2(totals.metaCost);
+
   const page = rows.slice(0, limit);
-  const convs = await Conversation.find({ _id: { $in: page.map((r) => r._id).filter(Boolean) } })
-    .select('contactName name channel').lean();
-  const porId = new Map(convs.map((c) => [String(c._id), c]));
+  const [convs, users] = await Promise.all([
+    Conversation.find({ _id: { $in: page.map((r) => r.conversation).filter(Boolean) } }).select('contactName name').lean(),
+    User.find({ _id: { $in: [...new Set(page.flatMap((r) => [...r.users]))] } }).select('name').lean(),
+  ]);
+  const convDe = new Map(convs.map((c) => [String(c._id), c]));
+  const userDe = new Map(users.map((u) => [String(u._id), u.name]));
   return {
     category: cat.toUpperCase(),
     from,
@@ -380,16 +463,23 @@ async function readChatsByCategory({ category, from, to, limit = 300 }) {
     totals,
     truncated: rows.length > page.length,
     chats: page.map((r) => {
-      const c = porId.get(String(r._id));
+      const c = convDe.get(String(r.conversation));
+      const nombres = new Map();
+      for (const n of [...[...r.users].map((u) => userDe.get(u)), ...r.names].filter(Boolean)) {
+        const k = String(n).trim().toLowerCase();
+        if (!nombres.has(k)) nombres.set(k, String(n).trim());
+      }
       return {
-        conversation: r._id,
+        conversation: r.conversation,
         name: c?.contactName || c?.name || 'Chat sin nombre',
         messages: r.messages,
         billed: r.billed,
         free: r.free,
         automatic: r.automatic,
         lastAt: r.lastAt,
-        senders: (r.senders || []).filter(Boolean).sort(),
+        cost: round2(r.cost),
+        costUnknown: r.costUnknown,
+        senders: [...nombres.values()].sort((a, b) => a.localeCompare(b, 'es')),
       };
     }),
   };
