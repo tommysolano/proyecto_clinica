@@ -3,8 +3,8 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import ServiceItemPicker from '../components/ServiceItemPicker';
-import { HiOutlinePlus, HiOutlineTrash, HiOutlineNoSymbol } from 'react-icons/hi2';
-import { fmtDate } from '../utils/date';
+import { HiOutlinePlus, HiOutlineTrash, HiOutlineNoSymbol, HiOutlinePencilSquare } from 'react-icons/hi2';
+import { fmtDate, ecDayKey, todayEc } from '../utils/date';
 import DateInput from '../components/DateInput';
 import { useAuth } from '../context/AuthContext';
 
@@ -12,13 +12,20 @@ const EMPTY = {
   doctor: '',
   clinic: '',
   service: null,
-  startDate: new Date().toISOString().slice(0, 10),
-  endDate: new Date().toISOString().slice(0, 10),
+  startDate: todayEc(),
+  endDate: todayEc(),
   allDay: true,
   startTime: '08:00',
   endTime: '18:00',
   reason: '',
 };
+
+/**
+ * EL DÍA DEL BLOQUEO EN ECUADOR (oct-2026). El servidor guarda el fin a las
+ * 23:59 hora local, que en UTC ya es el día siguiente: leer el ISO tal cual
+ * (fmtDate) enseñaba un día de más en «Fin» y en el formulario de edición.
+ */
+const diaDe = (v) => (v ? ecDayKey(v) : '');
 
 /**
  * BLOQUEOS DE HORARIOS (sep-2026).
@@ -46,6 +53,8 @@ export default function Blocks() {
   const [doctors, setDoctors] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(EMPTY);
+  // El bloqueo que se está editando (null = uno nuevo).
+  const [editando, setEditando] = useState(null);
 
   // Las sucursales que se pueden bloquear: las del usuario, operativas. La
   // activa va primera y es el valor por defecto.
@@ -81,7 +90,26 @@ export default function Blocks() {
   }, []);
 
   const abrirModal = () => {
+    setEditando(null);
     setForm({ ...EMPTY, clinic: sucursalPorDefecto });
+    setShowModal(true);
+  };
+
+  /** EDITAR (oct-2026): el mismo formulario, con lo que el bloqueo tiene guardado. */
+  const abrirEdicion = (b) => {
+    setEditando(b);
+    setForm({
+      doctor: b.doctor?._id || b.doctor || '',
+      clinic: b.clinic?._id || b.clinic || sucursalPorDefecto,
+      // ServiceItemPicker trabaja con el objeto ({ _id, name }), como al crear.
+      service: b.service?._id ? b.service : null,
+      startDate: diaDe(b.startDate),
+      endDate: diaDe(b.endDate),
+      allDay: !!b.allDay,
+      startTime: b.startTime || '08:00',
+      endTime: b.endTime || '18:00',
+      reason: b.reason || '',
+    });
     setShowModal(true);
   };
 
@@ -100,15 +128,22 @@ export default function Blocks() {
     enviando.current = true;
     setGuardando(true);
     try {
-      await api.post('/time-blocks', {
+      const datos = {
         ...form,
         // Sin sucursal escogida (o sin selector disponible) la activa decide.
         clinic: form.clinic || undefined,
         doctor: form.doctor || null,
         service: form.service?._id || null,
-      });
-      toast.success('Bloqueo creado');
+      };
+      if (editando) {
+        await api.put(`/time-blocks/${editando._id}`, datos);
+        toast.success('Bloqueo actualizado');
+      } else {
+        await api.post('/time-blocks', datos);
+        toast.success('Bloqueo creado');
+      }
       setShowModal(false);
+      setEditando(null);
       setForm({ ...EMPTY, clinic: sucursalPorDefecto });
       load();
     } catch (err) {
@@ -182,11 +217,11 @@ export default function Blocks() {
               {loading && <tr><td colSpan={7} className="text-center py-4 text-slate-400">Cargando...</td></tr>}
               {list.map((b) => (
                 <tr key={b._id} className="border-t border-slate-100">
-                  <td data-cell="fecha" className="px-3 py-2 whitespace-nowrap">{fmtDate(b.startDate)}</td>
-                  <td data-cell="fecha" className="px-3 py-2 whitespace-nowrap">{fmtDate(b.endDate)}</td>
+                  <td data-cell="fecha" className="px-3 py-2 whitespace-nowrap">{fmtDate(diaDe(b.startDate))}</td>
+                  <td data-cell="fecha" className="px-3 py-2 whitespace-nowrap">{fmtDate(diaDe(b.endDate))}</td>
                   <td data-cell="hora" className="px-3 py-2">
                     <div className="md:hidden text-sm font-semibold text-slate-800">
-                      {fmtDate(b.startDate)}{b.endDate !== b.startDate ? ` – ${fmtDate(b.endDate)}` : ''}
+                      {fmtDate(diaDe(b.startDate))}{diaDe(b.endDate) !== diaDe(b.startDate) ? ` – ${fmtDate(diaDe(b.endDate))}` : ''}
                     </div>
                     <div className="text-sm text-slate-700">
                       {b.allDay ? 'Todo el día' : `${b.startTime} – ${b.endTime}`}
@@ -203,7 +238,8 @@ export default function Blocks() {
                     </span>
                   </td>
                   <td data-cell="detalle" className="px-3 py-2 text-slate-600 break-words">{b.reason}</td>
-                  <td data-cell="acciones" className="px-3 py-2 text-right">
+                  <td data-cell="acciones" className="px-3 py-2 text-right whitespace-nowrap">
+                    <button onClick={() => abrirEdicion(b)} title="Ver / editar bloqueo" className="p-1 text-slate-600 hover:bg-slate-100 rounded cursor-pointer mr-1"><HiOutlinePencilSquare className="w-4 h-4" /></button>
                     <button onClick={() => remove(b)} title="Eliminar bloqueo" className="p-1 text-rose-600 hover:bg-rose-50 rounded cursor-pointer"><HiOutlineTrash className="w-4 h-4" /></button>
                   </td>
                 </tr>
@@ -214,8 +250,15 @@ export default function Blocks() {
         </div>
       </div>
 
-      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nuevo bloqueo">
+      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={editando ? 'Editar bloqueo' : 'Nuevo bloqueo'}>
         <form onSubmit={submit} className="space-y-3">
+          {editando && (
+            <p className="text-[11px] text-slate-400 m-0">
+              Creado{editando.createdBy?.name ? ` por ${editando.createdBy.name}` : ''}
+              {editando.createdAt ? ` el ${fmtDate(diaDe(editando.createdAt))}` : ''}.
+              {editando.room?.name ? ` Consultorio: ${editando.room.name}.` : ''}
+            </p>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Desde</span>
@@ -267,6 +310,10 @@ export default function Blocks() {
               <span className="text-xs font-medium text-slate-600">Doctor (opcional)</span>
               <select value={form.doctor} onChange={(e) => setForm({ ...form, doctor: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                 <option value="">Todos</option>
+                {/* Al editar, el doctor guardado aunque ya no salga en la lista (inactivo). */}
+                {editando?.doctor?._id && !doctors.some((d) => String(d._id) === String(editando.doctor._id)) && (
+                  <option value={editando.doctor._id}>{editando.doctor.name}</option>
+                )}
                 {doctors.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
               </select>
             </label>
@@ -281,6 +328,9 @@ export default function Blocks() {
                 className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
               >
                 {!sucursalPorDefecto && <option value="">—</option>}
+                {editando?.clinic?._id && !sucursales.some((c) => String(c._id) === String(editando.clinic._id)) && (
+                  <option value={editando.clinic._id}>{editando.clinic.nombreComercial || editando.clinic.name}</option>
+                )}
                 {sucursales.map((c) => (
                   <option key={c._id} value={c._id}>
                     {c.nombreComercial || c.name}

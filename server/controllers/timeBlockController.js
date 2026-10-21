@@ -184,10 +184,33 @@ async function crearBloqueo(req, res) {
 
 exports.update = async (req, res) => {
   try {
-    const update = { ...req.body };
+    // Solo los campos editables (el formulario de edición, oct-2026): nada de
+    // createdBy ni de objetos poblados que el listado devolvió.
+    const permitidos = ['clinic', 'doctor', 'service', 'startDate', 'endDate', 'allDay', 'startTime', 'endTime', 'reason'];
+    const update = {};
+    for (const k of permitidos) if (req.body[k] !== undefined) update[k] = req.body[k];
     if (update.startDate) update.startDate = startOfLocalDay(update.startDate);
     if (update.endDate) update.endDate = endOfLocalDay(update.endDate);
+    if (update.startDate && update.endDate && update.startDate > update.endDate) {
+      return res.status(400).json({ message: 'La fecha de fin no puede ser anterior a la de inicio' });
+    }
     if (update.service !== undefined) update.service = update.service || null;
+    if (update.doctor !== undefined) update.doctor = update.doctor || null;
+    if (update.allDay !== undefined) {
+      update.allDay = !!update.allDay;
+      if (update.allDay) {
+        update.startTime = null;
+        update.endTime = null;
+      } else if (update.startTime && update.endTime && update.startTime >= update.endTime) {
+        return res.status(400).json({ message: 'La hora de fin debe ser posterior a la de inicio' });
+      }
+    }
+    // Cambiar la sucursal del bloqueo: la misma validación que al crearlo.
+    if (update.clinic !== undefined) {
+      const destino = await validarSucursalDestino(req, update.clinic);
+      if (!destino.ok) return res.status(destino.status).json({ message: destino.message });
+      update.clinic = destino.clinicId;
+    }
     // El listado puede enseñar bloqueos de OTRAS sucursales dentro del alcance
     // (la misma regla del listado), así que la escritura también respeta el
     // alcance y no solo la sucursal activa.
