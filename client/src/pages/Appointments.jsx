@@ -4754,6 +4754,11 @@ export default function Appointments() {
                       {quienAgendo(detailModal)}
                       {detailModal.conversation ? ' · desde el chat' : ''}
                     </p>
+                    {fmtDateTime(detailModal.createdAt) && (
+                      <p className="text-xs text-slate-500">
+                        Fecha y hora de agendamiento: {fmtDateTime(detailModal.createdAt)}
+                      </p>
+                    )}
                     {/* La cerró una asesora y la escribió otra: las dos constan. */}
                     {detailModal.registeredByName && (
                       <p className="text-[11px] text-slate-500">
