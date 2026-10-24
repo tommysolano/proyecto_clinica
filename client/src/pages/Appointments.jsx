@@ -3685,6 +3685,9 @@ export default function Appointments() {
                                 doctor agendó la cita, cosa que no puede hacer. */}
                             {esTareaDeSuero(apt) ? 'Suero recetado por: ' : 'Agendó: '}
                             {quienAgendo(apt)}
+                            {!esTareaDeSuero(apt) && fmtDateTime(apt.createdAt) && (
+                              <> · {fmtDateTime(apt.createdAt)}</>
+                            )}
                           </div>
                         )}
                         {/**
