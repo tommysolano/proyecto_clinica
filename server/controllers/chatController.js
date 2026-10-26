@@ -14,7 +14,7 @@ const chatMedia = require('../utils/chatMedia');
 // espejo legacy). Ver utils/opportunities.js.
 const opportunities = require('../utils/opportunities');
 const { verifyMetaSignature } = require('../utils/metaWebhook');
-const { fetchMessengerProfileName } = require('../utils/messengerProfile');
+const { fetchMessengerProfileName, fetchInstagramProfile, instagramDisplayName } = require('../utils/messengerProfile');
 const { phoneSearchRegex } = require('../utils/phoneNormalize');
 const {
   workingMsBetween,
@@ -288,7 +288,7 @@ exports.listConversations = async (req, res) => {
         // `externalUserId`: identifica los chats de «número oculto» (@lid), que NO
         // se desvían a otro número (ver gateway.destinationIsLid). Sin él, la
         // bandeja anunciaba un desvío que el envío no iba a hacer.
-        '_id clinic channel phone externalUserId contactName contactEmail patient assignedTo assignedToName workflowRestrictedTo workflowRestrictionActive ' +
+        '_id clinic channel phone externalUserId externalUsername contactName contactEmail patient assignedTo assignedToName workflowRestrictedTo workflowRestrictionActive ' +
           // El SELLO del nombre escrito a mano. Sin estos dos campos,
           // `sincronizarNombreDePaciente` creía que ningún chat de la página
           // había sido renombrado y le devolvía el nombre de la ficha en cada
@@ -669,6 +669,20 @@ exports.getConversation = async (req, res) => {
         encryptedPageAccessToken: cfg?.pageAccessToken,
       });
       if (messaging.applyContactName(conv, profileName, { source: 'profile' })) await conv.save();
+    }
+    // Igual con Instagram: los chats de antes se veían como «Contacto de Instagram».
+    if (conv.channel === 'instagram' && conv.externalUserId && !conv.externalUsername) {
+      const cfg = await getChannelConfig(conv.clinic, 'instagram');
+      const profile = await fetchInstagramProfile({
+        senderId: conv.externalUserId,
+        encryptedPageAccessToken: cfg?.pageAccessToken,
+      });
+      let dirty = messaging.applyContactName(conv, instagramDisplayName(profile), { source: 'profile' });
+      if (profile.username) {
+        conv.externalUsername = profile.username;
+        dirty = true;
+      }
+      if (dirty) await conv.save();
     }
     const out = decorateConversation(conv.toObject(), await accountsPromise);
     // Otros chats (whatsapp/messenger/instagram) del MISMO contacto: alimenta la
@@ -4378,7 +4392,7 @@ async function ingestExternalOutbound({ clinicId, account, externalUserId, phone
 
 // Procesa un evento "normalizado" (externalUserId, body, contactName) creando/
 // actualizando la conversación correspondiente.
-async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone, referral, media, account, interactiveReply, contextId }) {
+async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone, referral, media, account, interactiveReply, contextId, externalUsername }) {
   if (!externalUserId && !phone) return;
   // Meta reintenta el webhook si no respondemos a tiempo: si este message id ya
   // se procesó, no lo dupliques (ni re-dispares flujos/workflows).
@@ -4418,7 +4432,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
       contactNameSource: contactName ? 'profile' : 'contact',
       patient: patient?._id || null,
       channel,
-      ...(referral ? { attribution: referral } : {}),
+      ...(referral?.adId ? { attribution: referral } : {}),
     };
     try {
       conv = await Conversation.create(nueva);
@@ -4456,6 +4470,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     conv.patient = patient._id;
   }
   if (contactName) messaging.applyContactName(conv, contactName, { source: 'profile' });
+  if (externalUsername && conv.externalUsername !== externalUsername) conv.externalUsername = externalUsername;
   // Mantener el identificador externo al día: para números QR ahora llega el JID
   // completo de WhatsApp (…@c.us / …@lid), necesario para poder responder a
   // contactos con número oculto. Cura conversaciones creadas solo con dígitos.
@@ -4586,6 +4601,53 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     // aparte en `mediaName` (se pinta como tarjeta) y los stickers no llevan texto.
     if (!finalBody) finalBody = media.caption || '';
   }
+  // Instagram/Messenger: el adjunto llega como URL del CDN de Meta, que caduca.
+  // Se copia ya; si no se puede, queda el tipo y el motivo (como en WhatsApp).
+  if (media?.remoteUrl && channel !== 'whatsapp') {
+    mediaType = media.type || null;
+    const dl = await require('../utils/instagramInbound').downloadRemoteMedia(media.remoteUrl);
+    if (dl.ok) {
+      const stored = await chatMedia.storeBufferMedia({
+        clinicId,
+        buffer: dl.buffer,
+        mimeType: dl.mimeType,
+        name: `${media.type || 'adjunto'}_${Date.now()}`,
+      }).catch((e) => {
+        console.error('[chat media] no se pudo guardar el adjunto de %s: %s', channel, e.message);
+        return null;
+      });
+      if (stored) {
+        mediaUrl = stored.url;
+        mediaSize = stored.size || 0;
+        mediaDuration = stored.duration ?? null;
+      } else {
+        mediaError = 'No se pudo guardar el archivo.';
+      }
+    } else {
+      mediaError = String(dl.error || 'No se pudo descargar el archivo.').slice(0, 300);
+    }
+  }
+  // Miniatura de la historia / publicación / anuncio del que nos escriben
+  // (Instagram). Mismo motivo: el enlace de Meta deja de funcionar en horas.
+  let contextMediaUrl = '';
+  let contextMediaType = '';
+  if (referral?.mediaRemoteUrl) {
+    const dl = await require('../utils/instagramInbound').downloadRemoteMedia(referral.mediaRemoteUrl);
+    if (dl.ok && (dl.mediaType === 'image' || dl.mediaType === 'video')) {
+      const stored = await chatMedia.storeBufferMedia({
+        clinicId,
+        buffer: dl.buffer,
+        mimeType: dl.mimeType,
+        name: `${referral.sourceType || 'contexto'}_${Date.now()}`,
+      }).catch(() => null);
+      if (stored) {
+        contextMediaUrl = stored.url;
+        contextMediaType = dl.mediaType;
+      }
+    } else if (!dl.ok) {
+      console.warn('[chat %s] miniatura de %s no descargada: %s', channel, referral.sourceType, dl.error);
+    }
+  }
 
   // Cita entrante: el contacto respondió a un mensaje específico. Meta manda el
   // wamid citado en `context.id`; lo resolvemos a nuestro mensaje para mostrar la
@@ -4648,15 +4710,18 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     ...(interactiveReply ? { interactiveReply } : {}),
     ...(replyTo ? { replyTo } : {}),
     // Anuncio del que vino este mensaje (solo lo trae el 1er mensaje tras el clic).
-    ...(referral && referral.adId
+    // En Instagram también la historia / publicación a la que responde (sin adId).
+    ...(referral && (referral.adId || referral.sourceType)
       ? {
           referral: {
-            sourceId: referral.adId,
+            sourceId: referral.adId || referral.sourceId || '',
             sourceType: referral.sourceType || '',
             sourceUrl: referral.sourceUrl || '',
             headline: referral.headline || '',
             body: referral.body || '',
             ctwaClid: referral.ctwaClid || '',
+            mediaUrl: contextMediaUrl,
+            mediaType: contextMediaType,
           },
         }
       : {}),
@@ -4974,6 +5039,7 @@ exports.webhookInstagramReceive = async (req, res) => {
       console.error('[instagram webhook] firma invalida:', signature.reason);
       return res.status(403).json({ message: 'Firma invalida', code: signature.reason });
     }
+    const ig = require('../utils/instagramInbound');
     const entries = Array.isArray(req.body.entry) ? req.body.entry : [];
     let processed = 0;
     for (const entry of entries) {
@@ -4981,15 +5047,43 @@ exports.webhookInstagramReceive = async (req, res) => {
         if (event.message?.is_echo || String(event.sender?.id || '') === String(entry.id || '')) continue;
         const senderId = event.sender?.id;
         if (!senderId) continue;
-        if (event.message?.text) {
+        // Tocó un anuncio y abrió el chat, pero aún no escribe: se guarda para su
+        // primer mensaje (si no, ese chat no constaba como venido de un anuncio).
+        if (!event.message) {
+          ig.rememberReferral(senderId, event);
+          continue;
+        }
+        if (event.message.is_deleted) continue;
+        const parts = ig.parseInstagramEvent(event, { pendingReferral: ig.takePendingReferral(senderId) });
+        if (!parts.length) continue;
+        // El webhook solo trae el IGSID: el nombre y el @usuario se piden a Meta
+        // la primera vez (o si aún faltan), no en cada mensaje.
+        // eslint-disable-next-line no-await-in-loop
+        const existing = await Conversation.findOne({ clinic: clinicId, channel: 'instagram', externalUserId: senderId })
+          .select('contactName contactNameEditedAt externalUsername');
+        let profile = { name: '', username: '' };
+        if (!existing?.externalUsername || (!existing?.contactName && !existing?.contactNameEditedAt)) {
+          // eslint-disable-next-line no-await-in-loop
+          const cfg = await getChannelConfig(clinicId, 'instagram');
+          // eslint-disable-next-line no-await-in-loop
+          profile = await fetchInstagramProfile({ senderId, encryptedPageAccessToken: cfg?.pageAccessToken });
+        }
+        for (let i = 0; i < parts.length; i++) {
+          const part = parts[i];
           processed++;
           // eslint-disable-next-line no-await-in-loop
           await ingestExternalMessage({
             clinicId,
             channel: 'instagram',
             externalUserId: senderId,
-            body: event.message.text,
-            externalId: event.message.mid,
+            contactName: instagramDisplayName(profile),
+            externalUsername: profile.username,
+            body: part.body,
+            media: part.media,
+            referral: part.referral,
+            // Varias fotos en un mismo mensaje: cada una es una burbuja con su id.
+            externalId: i === 0 ? event.message.mid : `${event.message.mid}_${i}`,
+            contextId: i === 0 ? event.message.reply_to?.mid || '' : '',
           });
         }
       }

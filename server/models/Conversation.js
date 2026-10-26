@@ -110,6 +110,9 @@ const conversationSchema = new mongoose.Schema(
     },
     // Identificador del usuario en el canal externo (ej: PSID de Messenger, IGSID, etc.)
     externalUserId: { type: String, trim: true, default: '' },
+    // @usuario de Instagram (sin la arroba). El IGSID no le dice nada a nadie: se
+    // muestra junto al nombre para saber a quién se le está escribiendo.
+    externalUsername: { type: String, trim: true, default: '' },
     // Teléfono REAL de un chat de "número oculto" (@lid) cuando `phone` no lo puede
     // guardar porque YA existe otro chat con ese número (p.ej. la persona escribió
     // antes al número de Cloud API y ahora escribe al QR). (clinic, phone) es único,

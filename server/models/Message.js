@@ -103,11 +103,16 @@ const messageSchema = new mongoose.Schema(
     // "de qué anuncio nos escriben" (headline + link), como en la captura de Daplox.
     referral: {
       sourceId: { type: String, trim: true, default: '' }, // = referral.source_id (Ad ID)
-      sourceType: { type: String, trim: true, default: '' }, // ad | post
+      // ad | post (WhatsApp) · ig_ad | ig_story_reply | ig_story_mention | ig_post | ig_reel (Instagram)
+      sourceType: { type: String, trim: true, default: '' },
       sourceUrl: { type: String, trim: true, default: '' }, // enlace fb.me/…
       headline: { type: String, trim: true, default: '' },
       body: { type: String, trim: true, default: '' },
       ctwaClid: { type: String, trim: true, default: '' },
+      // Miniatura de la historia / publicación / anuncio (Instagram), ya copiada a
+      // nuestro almacén: la URL del CDN de Meta caduca en horas.
+      mediaUrl: { type: String, trim: true, default: '' },
+      mediaType: { type: String, trim: true, default: '' }, // image | video
     },
     // Respuesta a un mensaje específico (cita estilo WhatsApp). Snapshot para
     // renderizar la burbuja citada sin populate; `message` apunta al original

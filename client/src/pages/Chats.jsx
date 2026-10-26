@@ -196,6 +196,35 @@ function contactDisplayName(conv) {
   if (conv?.channel && conv.channel !== 'whatsapp') return `Contacto de ${channelLabel(conv)}`;
   return conv?.phone || 'Sin nombre';
 }
+// Subtítulo de un chat que no es de WhatsApp: el @usuario de Instagram (con enlace
+// a su perfil) si lo conocemos; si no, solo el canal.
+function ExternalContactLine({ conv, prefix }) {
+  const username = conv?.channel === 'instagram' ? String(conv.externalUsername || '').trim() : '';
+  if (!username) return <span>{prefix} {channelLabel(conv)}</span>;
+  return (
+    <span>
+      {channelLabel(conv)} ·{' '}
+      <a
+        href={`https://www.instagram.com/${encodeURIComponent(username)}/`}
+        target="_blank"
+        rel="noreferrer"
+        className="text-pink-700 hover:underline"
+        onClick={(e) => e.stopPropagation()}
+      >
+        @{username}
+      </a>
+    </span>
+  );
+}
+// Encabezado de la tarjeta de contexto de un mensaje entrante: de qué anuncio,
+// historia o publicación nos escribe la persona.
+const REFERRAL_TITLES = {
+  ig_ad: '📣 Mensaje desde anuncio de Instagram',
+  ig_story_reply: '💬 Respondió a tu historia',
+  ig_story_mention: '📸 Te mencionó en su historia',
+  ig_post: '📎 Compartió una publicación',
+  ig_reel: '🎬 Compartió un reel',
+};
 function ChannelBadge({ conv }) {
   return (
     <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 ${CHANNEL_BADGE_COLORS[conv?.channel] || 'bg-slate-100 text-slate-700'}`}>
@@ -3661,7 +3690,7 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onTransfer, onOpenOpportun
         </div>
         <div className="text-xs text-slate-500 truncate">
           {conv.channel && conv.channel !== 'whatsapp' ? (
-            <span>Mensaje de {channelLabel(conv)}</span>
+            <ExternalContactLine conv={conv} prefix="Mensaje de" />
           ) : isHiddenNumber(conv) ? (
             <span
               className="italic"
@@ -4655,13 +4684,29 @@ const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, high
             <HiOutlineUserCircle className="w-3.5 h-3.5" /> {senderLabel}
           </div>
         )}
-        {/* Anuncio de origen (click-to-WhatsApp): de qué anuncio nos escriben.
-            Solo entrantes y solo el 1er mensaje tras tocar el anuncio lo trae. */}
-        {!isOut && msg.referral && (msg.referral.headline || msg.referral.sourceUrl || msg.referral.sourceId) && (
+        {/* Anuncio de origen (click-to-WhatsApp) o, en Instagram, también la
+            historia / publicación a la que responde. Solo entrantes. */}
+        {!isOut && msg.referral && (msg.referral.headline || msg.referral.sourceUrl || msg.referral.sourceId || msg.referral.mediaUrl || REFERRAL_TITLES[msg.referral.sourceType]) && (
           <div className="mb-1.5 rounded-md border border-violet-200 bg-violet-50 px-2 py-1.5 text-[11px] leading-snug text-slate-700">
-            <div className="flex items-center gap-1 text-violet-700 font-semibold mb-0.5">📣 Mensaje desde anuncio</div>
+            <div className="flex items-center gap-1 text-violet-700 font-semibold mb-0.5">
+              {REFERRAL_TITLES[msg.referral.sourceType] || '📣 Mensaje desde anuncio'}
+            </div>
+            {msg.referral.mediaUrl && (
+              msg.referral.mediaType === 'video' ? (
+                <video src={msg.referral.mediaUrl} controls preload="metadata" className="my-1 max-h-48 rounded bg-black" />
+              ) : (
+                <a href={msg.referral.mediaUrl} target="_blank" rel="noreferrer">
+                  <img src={msg.referral.mediaUrl} alt="" loading="lazy" className="my-1 max-h-48 rounded object-cover" />
+                </a>
+              )
+            )}
+            {!msg.referral.mediaUrl && String(msg.referral.sourceType || '').startsWith('ig_story') && (
+              <div className="text-slate-400 italic">La historia ya no está disponible.</div>
+            )}
             {msg.referral.headline && (
-              <div><span className="font-semibold">Headline:</span> {msg.referral.headline}</div>
+              String(msg.referral.sourceType || '').startsWith('ig_') && msg.referral.sourceType !== 'ig_ad'
+                ? <div className="line-clamp-3">{msg.referral.headline}</div>
+                : <div><span className="font-semibold">Headline:</span> {msg.referral.headline}</div>
             )}
             {msg.referral.sourceUrl && (
               <div className="truncate">
@@ -4671,7 +4716,7 @@ const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, high
                 </a>
               </div>
             )}
-            {msg.referral.sourceId && (
+            {msg.referral.sourceId && (!String(msg.referral.sourceType || '').startsWith('ig_') || msg.referral.sourceType === 'ig_ad') && (
               <div className="text-slate-400" title="ID del anuncio (source_id de Meta)">ID anuncio: {msg.referral.sourceId}</div>
             )}
           </div>
@@ -5530,7 +5575,7 @@ const SidePanel = memo(function SidePanel({ conv, agents = [], meId, onUpdated, 
         </div>
         <div className="text-xs text-slate-500 mt-0.5">
           {conv.channel && conv.channel !== 'whatsapp' ? (
-            <span>Contacto de {channelLabel(conv)}</span>
+            <ExternalContactLine conv={conv} prefix="Contacto de" />
           ) : isHiddenNumber(conv) ? (
             <span className="italic" title="WhatsApp aún no comparte el teléfono de este contacto (número oculto).">
               Número oculto
