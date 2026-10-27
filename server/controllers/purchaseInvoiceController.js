@@ -23,6 +23,7 @@ const { assetCategoryIssues } = require('../utils/fixedAssetConfig');
 const assetsService = require('../services/fixedAssetsFromPurchase');
 const { createResolver, auditarDiferencias } = require('../services/costCenterPolicy');
 const { sendError } = require('../utils/apiError');
+const { scopedDocuments } = require('../services/scopedDocuments');
 
 /**
  * Memoriza las cuentas de gasto usadas en una compra como "cuentas recurrentes"
@@ -225,7 +226,8 @@ function aplicarAbonado(inv, abonado) {
  * @returns {Promise<string[]>} avisos de diferencias confirmadas (para el log de auditoría).
  */
 async function applyCostCenterPolicy(doc, req, session) {
-  const resolver = createResolver({ clinicId: req.clinicId, session });
+  const resolver = createResolver({ clinicId: req.clinicId,
+    activeClinicId: req.userClinicId || req.clinicId, session });
   const confirmed = req.body?.costCenterConfirmed === true || req.body?.costCenterConfirmed === 'true';
   // El centro de la cabecera se valida aunque no haya bodega (puede ser un gasto puro).
   if (doc.costCenter) await resolver.getCostCenter(doc.costCenter);
@@ -566,9 +568,7 @@ exports._findDuplicatePurchaseInvoice = findDuplicatePurchaseInvoice;
 
 exports.list = async (req, res) => {
   const { startDate, endDate, supplier, status, docType, q, sort = 'fecha_desc', page = 1, limit = 20 } = req.query;
-  const filter = { clinic: req.clinicId };
-  // Sucursal ligada a un centro (middleware/accountingScope): sus líneas de compra.
-  if (req.costCenterScope) filter['items.costCenter'] = req.costCenterScope;
+  const filter = { $and: [scopedDocuments(req, 'items.costCenter')] };
   if (supplier) filter.supplier = supplier;
   if (status) filter.status = status;
   if (docType) filter.docType = docType;
@@ -612,7 +612,7 @@ exports.list = async (req, res) => {
 };
 
 exports.get = async (req, res) => {
-  const p = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId })
+  const p = await PurchaseInvoice.findOne({ _id: req.params.id, ...scopedDocuments(req, 'items.costCenter') })
     .populate('supplier').populate('items.account', 'code name').populate('items.product', 'name code')
     // Encabezado del comprobante de retención emitido (número, autorización/estado, fecha, periodo):
     // la contadora quiere verlo en el modal ANTES de los porcentajes, como en su sistema anterior.

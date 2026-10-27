@@ -145,7 +145,9 @@ const styleHeader = (worksheet) => {
 exports.exportSales = async (req, res) => {
   try {
     const range = buildDateRange(req);
-    const sales = await findSalesForSheet(req.clinicId, { range, status: req.query.status, costCenter: req.costCenterScope });
+    const sales = await findSalesForSheet(req.clinicId, { range, status: req.query.status,
+      costCenter: req.costCenterScope, branchClinicId: req.userClinicId,
+      companyClinicIds: req.companyClinicIds });
 
     // La hoja la arma `services/salesWorkbook`: es el MISMO archivo que se descarga desde
     // Reportes de Ventas (el contador trabaja con este formato y no puede haber dos).
@@ -487,7 +489,9 @@ exports.exportSalesByItem = async (req, res) => {
     const mongoose = require('mongoose');
     const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
     const match = { clinic: clinicObjId, status: 'completada' };
-    if (req.costCenterScope) match.costCenter = new mongoose.Types.ObjectId(String(req.costCenterScope));
+    if (req.costCenterScope) match.costCenter = req.costCenterScope?.$in
+      ? { $in: req.costCenterScope.$in.map((id) => new mongoose.Types.ObjectId(String(id))) }
+      : new mongoose.Types.ObjectId(String(req.costCenterScope));
     const range = buildDateRange(req);
     if (range) match.createdAt = range;
 

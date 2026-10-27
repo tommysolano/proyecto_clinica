@@ -7,7 +7,14 @@ exports.scope = (req, res) => res.json(describeScope(req.accountingScope));
 exports.list = async (req, res) => {
   const filter = { clinic: req.clinicId };
   if (req.query.active !== undefined) filter.active = req.query.active === 'true';
-  const items = await CostCenter.find(filter).sort({ code: 1 });
+  let items = await CostCenter.find(filter).sort({ code: 1 });
+  if (!items.length) {
+    const clinic = await require('../models/Clinic').findById(req.clinicId).select('accountingCostCenter').lean();
+    if (clinic?.accountingCostCenter) {
+      const shared = await CostCenter.findById(clinic.accountingCostCenter);
+      if (shared && (req.query.active === undefined || shared.active === (req.query.active === 'true'))) items = [shared];
+    }
+  }
   res.json(items);
 };
 

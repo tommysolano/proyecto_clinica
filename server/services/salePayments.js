@@ -169,7 +169,7 @@ function normalizeSalePayments(sale, cobrosPosteriores = []) {
 async function loadLaterCollections(clinicId, saleIds) {
   if (!saleIds.length) return new Map();
   const pagos = await Payment.find({
-    clinic: clinicId,
+    clinic: Array.isArray(clinicId) ? { $in: clinicId } : clinicId,
     type: 'COBRO',
     status: 'REGISTRADO',
     'applications.docModel': 'Sale',

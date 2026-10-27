@@ -4,7 +4,7 @@ const { requireCap } = require('../utils/permissions');
 const c = require('../controllers/inventoryAdvancedController');
 
 router.use(auth, requireClinic);
-router.use(require('../middleware/accountingScope')());
+router.use(require('../middleware/accountingScope')({ skip: ['/warehouses'] }));
 
 // Quién puede ASOMARSE al inventario (cantidades). Los COSTOS se filtran dentro, en el
 // controlador: sin `inventory.costs` los importes no salen del servidor.

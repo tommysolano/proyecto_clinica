@@ -1,6 +1,7 @@
 const ExcelJS = require('exceljs');
 const Receivable = require('../models/Receivable');
 const Payable = require('../models/Payable');
+const { scopedDocuments } = require('../services/scopedDocuments');
 
 function modelForSide(side) {
   return side === 'AP' ? Payable : Receivable;
@@ -22,15 +23,12 @@ function parseAsOf(req) {
  */
 const escaparRegex = (v) => String(v).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** Sucursal ligada a un centro (middleware/accountingScope): la cartera de su centro. */
-const centerFilter = (req) => (req.costCenterScope ? { costCenter: req.costCenterScope } : {});
-
 /**
  * Filtro de la vista por DOCUMENTOS (misma para /subledger y el Excel):
  * status (sin ANULADO por defecto), contraparte (ref exacta o nombre) y rango de emisión.
  */
 function buildListFilter(req) {
-  const filter = { clinic: req.clinicId, ...centerFilter(req) };
+  const filter = { ...scopedDocuments(req) };
   if (req.query.status === 'PENDING') filter.status = { $in: ['ABIERTO', 'PARCIAL'] };
   else if (req.query.status) filter.status = req.query.status;
   else filter.status = { $ne: 'ANULADO' };
@@ -46,7 +44,7 @@ function buildListFilter(req) {
 
 /** Filtro de la vista por ANTIGÜEDAD: solo saldos abiertos, misma contraparte opcional. */
 function buildAgingFilter(req) {
-  const filter = { clinic: req.clinicId, status: { $in: ['ABIERTO', 'PARCIAL'] }, ...centerFilter(req) };
+  const filter = { ...scopedDocuments(req), status: { $in: ['ABIERTO', 'PARCIAL'] } };
   if (req.query.partyRef) filter['party.ref'] = req.query.partyRef;
   if (req.query.q) filter['party.name'] = { $regex: escaparRegex(req.query.q), $options: 'i' };
   return filter;
@@ -139,8 +137,7 @@ exports.statement = async (req, res) => {
     const Model = modelForSide(req.query.side);
     if (!req.query.partyRef) return res.status(400).json({ message: 'partyRef requerido' });
     const docs = await Model.find({
-      clinic: req.clinicId,
-      ...centerFilter(req),
+      ...scopedDocuments(req),
       'party.ref': req.query.partyRef,
       status: { $ne: 'ANULADO' },
     }).sort({ issueDate: 1 });

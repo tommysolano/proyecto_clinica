@@ -100,7 +100,11 @@ async function buildSalesReport(clinicId, query = {}) {
   const desde = filters.startDate ? ecuadorBoundary(filters.startDate) : null;
   const hasta = filters.endDate ? ecuadorBoundary(filters.endDate, true) : null;
 
-  const match = { clinic: oid(clinicId) };
+  const branchClinicId = query.branchClinicId && String(query.branchClinicId) !== String(clinicId)
+    ? query.branchClinicId : null;
+  const reportClinicIds = query.companyClinicIds?.length ? query.companyClinicIds
+    : branchClinicId ? [clinicId, branchClinicId] : [clinicId];
+  const match = { clinic: { $in: reportClinicIds.map(oid) } };
   if (desde || hasta) {
     match.createdAt = {};
     if (desde) match.createdAt.$gte = desde;
@@ -113,7 +117,8 @@ async function buildSalesReport(clinicId, query = {}) {
   if (filters.user) match.createdBy = oid(filters.user);
   // Centro de costo de la VENTA (el que se resolvió contra su bodega al registrarla). El filtro
   // se recibía y no se aplicaba: el reporte "por centro" devolvía todo.
-  if (filters.costCenter) match.costCenter = oid(filters.costCenter);
+  if (filters.costCenter) match.costCenter = filters.costCenter?.$in
+    ? { $in: filters.costCenter.$in.map(oid) } : oid(filters.costCenter);
   if (filters.warehouse) match.warehouse = oid(filters.warehouse);
 
   const seleccion = await resolveSelection(clinicId, {
@@ -136,12 +141,12 @@ async function buildSalesReport(clinicId, query = {}) {
   // Sin N+1: una consulta para las facturas, una para los productos, una para los cobros y una
   // para los centros de costo (el reporte muestra el NOMBRE, no un id que nadie puede leer).
   const [facturas, productos, cobrosPorVenta, centros] = await Promise.all([
-    Invoice.find({ clinic: clinicId, _id: { $in: ventas.map((s) => s.invoice).filter(Boolean) } })
+    Invoice.find({ _id: { $in: ventas.map((s) => s.invoice).filter(Boolean) } })
       .select('estab ptoEmi secuencial autorizacion estado').lean(),
-    Product.find({ clinic: clinicId, _id: { $in: [...new Set(ventas.flatMap((s) => (s.items || []).map((i) => i.product)))] } })
+    Product.find({ _id: { $in: [...new Set(ventas.flatMap((s) => (s.items || []).map((i) => i.product)))] } })
       .select('code name category categoria').lean(),
-    loadLaterCollections(clinicId, saleIds),
-    CostCenter.find({ clinic: clinicId, _id: { $in: [...new Set(ventas.map((s) => s.costCenter).filter(Boolean))] } })
+    loadLaterCollections(reportClinicIds, saleIds),
+    CostCenter.find({ _id: { $in: [...new Set(ventas.map((s) => s.costCenter).filter(Boolean))] } })
       .select('code name').lean(),
   ]);
   const facturaPorId = new Map(facturas.map((f) => [String(f._id), f]));

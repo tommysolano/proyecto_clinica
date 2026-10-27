@@ -11,6 +11,7 @@ const ChartOfAccount = require('../models/ChartOfAccount');
 const CostCenter = require('../models/CostCenter');
 const InventoryCategory = require('../models/InventoryCategory');
 const Warehouse = require('../models/Warehouse');
+const { catalogClinics, ownerForCostCenter, ownerForWarehouse } = require('../services/contificoCatalogScope');
 const BankAccount = require('../models/BankAccount');
 const Supplier = require('../models/Supplier');
 const Patient = require('../models/Patient');
@@ -366,11 +367,17 @@ class Projector {
 
   async costCenters() {
     const stage = this.stage('cost_centers'); const records = await this.records('cost_center'); stage.source = records.length;
-    const current = await CostCenter.find({ clinic: this.clinic._id }).lean(); const existingCodes = new Set(current.map((row) => String(row.code)));
-    if (this.commit) await CostCenter.bulkWrite(records.map((record) => ({ updateOne: { filter: { clinic: this.clinic._id, code: String(record.payload.codigo) }, update: { $setOnInsert: {
-      clinic: this.clinic._id, code: String(record.payload.codigo), name: String(record.payload.nombre || record.payload.codigo), active: String(record.payload.estado || 'A') === 'A', description: `Contifico ${record.externalId}; tipo ${record.payload.tipo || ''}`,
-    } }, upsert: true } })), { ordered: false });
-    const targets = this.commit ? await CostCenter.find({ clinic: this.clinic._id }).lean() : current;
+    const catalog = await catalogClinics(this.clinic._id);
+    const current = await CostCenter.find({ clinic: { $in: catalog.ids } }).lean();
+    const existingCodes = new Set(current.map((row) => String(row.code)));
+    if (this.commit) await CostCenter.bulkWrite(records.map((record) => {
+      const code = String(record.payload.codigo);
+      const owner = current.find((row) => String(row.code) === code)?.clinic || ownerForCostCenter(catalog, code);
+      return { updateOne: { filter: { clinic: owner, code }, update: { $setOnInsert: {
+        clinic: owner, code, name: String(record.payload.nombre || code), active: String(record.payload.estado || 'A') === 'A', description: `Contifico ${record.externalId}; tipo ${record.payload.tipo || ''}`,
+      } }, upsert: true } };
+    }), { ordered: false });
+    const targets = this.commit ? await CostCenter.find({ clinic: { $in: catalog.ids } }).lean() : current;
     const byCode = new Map(targets.map((row) => [String(row.code), row]));
     for (const record of records) if (!byCode.has(String(record.payload.codigo))) byCode.set(String(record.payload.codigo), { _id: fakeId() });
     const marks = records.map((record) => { const target = byCode.get(String(record.payload.codigo)); const existed = existingCodes.has(String(record.payload.codigo)); this.maps.costCenters.set(record.externalId, target._id); existed ? stage.linked++ : stage.created++; stage.projected++; return { recordId: record._id, status: existed ? 'LINKED_EXISTING' : 'PROJECTED', links: [{ model: 'CostCenter', ref: target._id, action: existed ? 'LINK' : 'CREATE' }] }; });
@@ -401,11 +408,12 @@ class Projector {
 
   async warehouses() {
     const stage = this.stage('warehouses'); const records = await this.records('warehouse'); stage.source = records.length;
-    const current = await Warehouse.find({ clinic: this.clinic._id }).lean(); const existingCodes = new Set(current.map((row) => String(row.code)));
+    const catalog = await catalogClinics(this.clinic._id);
+    const current = await Warehouse.find({ clinic: { $in: catalog.ids } }).lean(); const existingCodes = new Set(current.map((row) => String(row.code)));
     const ccRecords = await this.records('cost_center'); const ccByCode = new Map(ccRecords.map((record) => [String(record.payload.codigo), this.maps.costCenters.get(record.externalId)]));
     const ccCode = { BOD001: '1', BOD004: '2', BOD005: '5' };
-    if (this.commit) await Warehouse.bulkWrite(records.map((record) => { const code = String(record.payload.codigo || `CTF-${record.externalId}`); return { updateOne: { filter: { clinic: this.clinic._id, code }, update: { $setOnInsert: { clinic: this.clinic._id, code, name: String(record.payload.nombre || code), costCenter: ccByCode.get(ccCode[code]) || null, isMain: code === 'BOD001', active: true, address: 'Migrado desde Contifico' } }, upsert: true } }; }), { ordered: false });
-    const targets = this.commit ? await Warehouse.find({ clinic: this.clinic._id }).lean() : current; const byCode = new Map(targets.map((row) => [String(row.code), row]));
+    if (this.commit) await Warehouse.bulkWrite(records.map((record) => { const code = String(record.payload.codigo || `CTF-${record.externalId}`); const owner = current.find((row) => String(row.code) === code)?.clinic || ownerForWarehouse(catalog, code); return { updateOne: { filter: { clinic: owner, code }, update: { $setOnInsert: { clinic: owner, code, name: String(record.payload.nombre || code), costCenter: ccByCode.get(ccCode[code]) || null, isMain: code === 'BOD001', active: true, address: 'Migrado desde Contifico' } }, upsert: true } }; }), { ordered: false });
+    const targets = this.commit ? await Warehouse.find({ clinic: { $in: catalog.ids } }).lean() : current; const byCode = new Map(targets.map((row) => [String(row.code), row]));
     for (const record of records) { const code = String(record.payload.codigo || `CTF-${record.externalId}`); if (!byCode.has(code)) byCode.set(code, { _id: fakeId() }); }
     const marks = records.map((record) => { const code = String(record.payload.codigo || `CTF-${record.externalId}`), target = byCode.get(code), existed = existingCodes.has(code); this.maps.warehouses.set(record.externalId, target._id); existed ? stage.linked++ : stage.created++; stage.projected++; return { recordId: record._id, status: existed ? 'LINKED_EXISTING' : 'PROJECTED', links: [{ model: 'Warehouse', ref: target._id, action: existed ? 'LINK' : 'CREATE' }] }; });
     await this.mark(marks); await this.finishStage(stage);

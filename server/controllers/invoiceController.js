@@ -19,6 +19,7 @@ const {
 } = require('../utils/invoiceRetry');
 const { isPastDocumentDate } = require('../utils/fiscalDocumentDate');
 const { serieDelEmisor, reservarSecuencial, puntoDelUsuario, ambienteDelPunto } = require('../services/puntoEmision');
+const { scopedDocuments } = require('../services/scopedDocuments');
 
 function fmtFechaEmision(d) {
   const dt = d ? new Date(d) : new Date();
@@ -353,16 +354,14 @@ exports.emitFromSale = async (req, res) => {
 exports.list = async (req, res) => {
   try {
     const { startDate, endDate, estado, patient, puntoEmision, page = 1, limit = 20 } = req.query;
-    const query = { clinic: req.clinicId };
-    // Sucursal ligada a un centro (middleware/accountingScope): las facturas de sus ventas.
-    if (req.costCenterScope) query.costCenter = req.costCenterScope;
+    const query = scopedDocuments(req);
     if (estado) query.estado = estado;
     if (puntoEmision) query.puntoEmision = puntoEmision;
     if (startDate && endDate) {
       query.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
     }
     if (patient) {
-      const saleIds = await Sale.find({ clinic: req.clinicId, patient }).distinct('_id');
+      const saleIds = await Sale.find({ ...scopedDocuments(req), patient }).distinct('_id');
       query.sale = { $in: saleIds };
     }
     const invoices = await Invoice.find(query)
@@ -397,22 +396,26 @@ exports.list = async (req, res) => {
 exports.bulkPdf = async (req, res) => {
   try {
     const { startDate, endDate, estado, patient, client } = req.query;
-    const query = { clinic: req.clinicId, estado: estado || 'AUTORIZADO' };
-    if (req.costCenterScope) query.costCenter = req.costCenterScope;
+    const query = { ...scopedDocuments(req), estado: estado || 'AUTORIZADO' };
     if (startDate && endDate) {
       query.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999') };
     }
     if (client) query.razonSocialComprador = { $regex: client, $options: 'i' };
     if (patient) {
-      const saleIds = await Sale.find({ clinic: req.clinicId, patient }).distinct('_id');
+      const saleIds = await Sale.find({ ...scopedDocuments(req), patient }).distinct('_id');
       query.sale = { $in: saleIds };
     }
 
     const invoices = await Invoice.find(query).populate('sale').sort({ createdAt: -1 }).limit(300);
     if (!invoices.length) return res.status(404).json({ message: 'No hay facturas para descargar con esos filtros' });
 
-    const config = await InvoicingConfig.findOne({ clinic: req.clinicId });
-    const clinic = await Clinic.findById(req.clinicId);
+    const clinicIds = [...new Set(invoices.map((invoice) => String(invoice.clinic)))];
+    const [configs, clinics] = await Promise.all([
+      InvoicingConfig.find({ clinic: { $in: clinicIds } }),
+      Clinic.find({ _id: { $in: clinicIds } }),
+    ]);
+    const configByClinic = new Map(configs.map((config) => [String(config.clinic), config]));
+    const clinicById = new Map(clinics.map((clinic) => [String(clinic._id), clinic]));
     const { createZip } = require('../utils/zip');
 
     const files = [];
@@ -421,8 +424,8 @@ exports.bulkPdf = async (req, res) => {
         const pdf = await buildRidePdf({
           invoice: inv,
           sale: inv.sale,
-          config,
-          clinic,
+          config: configByClinic.get(String(inv.clinic)),
+          clinic: clinicById.get(String(inv.clinic)),
           autorizacion: { fechaAutorizacion: inv.fechaAutorizacion },
         });
         const num = `${inv.estab}-${inv.ptoEmi}-${String(inv.secuencial).padStart(9, '0')}`;
@@ -445,7 +448,7 @@ exports.bulkPdf = async (req, res) => {
 
 exports.get = async (req, res) => {
   try {
-    const invoice = await Invoice.findOne({ _id: req.params.id, clinic: req.clinicId })
+    const invoice = await Invoice.findOne({ _id: req.params.id, ...scopedDocuments(req) })
       .populate({
         path: 'sale',
         populate: [

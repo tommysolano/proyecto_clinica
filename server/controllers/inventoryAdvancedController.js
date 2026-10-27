@@ -278,10 +278,19 @@ exports.listWarehouses = async (req, res) => {
   const filter = { clinic: req.clinicId };
   if (req.query.active !== undefined) filter.active = req.query.active !== 'false';
   if (req.query.costCenter) filter.costCenter = req.query.costCenter;
-  const items = await Warehouse.find(filter)
+  let items = await Warehouse.find(filter)
     .populate('chartAccount', 'code name')
     .populate('costCenter', 'code name active')
     .sort({ code: 1 });
+  if (!items.length) {
+    const clinic = await require('../models/Clinic').findById(req.clinicId).select('accountingCostCenter').lean();
+    if (clinic?.accountingCostCenter && (!req.query.costCenter
+      || String(req.query.costCenter) === String(clinic.accountingCostCenter))) {
+      items = await Warehouse.find({ costCenter: clinic.accountingCostCenter,
+        ...(filter.active === undefined ? {} : { active: filter.active }) })
+        .populate('chartAccount', 'code name').populate('costCenter', 'code name active').sort({ code: 1 });
+    }
+  }
   res.json(items);
 };
 
@@ -398,7 +407,9 @@ exports.deleteCategory = async (req, res) => {
 exports.getKardex = async (req, res) => {
   try {
     const q = req.query;
-    const data = await kardexService.buildKardex(req.clinicId, {
+    const data = await kardexService.buildKardex(req.companyClinicIds?.length ? req.companyClinicIds
+      : req.userClinicId && String(req.userClinicId) !== String(req.clinicId)
+        ? [req.clinicId, req.userClinicId] : req.clinicId, {
       product: q.product,
       warehouse: q.warehouse || null,
       type: q.type || null,
@@ -418,7 +429,9 @@ exports.getKardex = async (req, res) => {
 exports.kardexExcel = async (req, res) => {
   try {
     const q = req.query;
-    const data = await kardexService.buildKardex(req.clinicId, {
+    const data = await kardexService.buildKardex(req.companyClinicIds?.length ? req.companyClinicIds
+      : req.userClinicId && String(req.userClinicId) !== String(req.clinicId)
+        ? [req.clinicId, req.userClinicId] : req.clinicId, {
       product: q.product,
       warehouse: q.warehouse || null,
       type: q.type || null,
@@ -745,11 +758,15 @@ exports.transferStock = async (req, res) => {
 exports.warehouseStock = async (req, res) => {
   try {
     // Los deficit historicos no son disponibilidad FIFO, pero deben verse en el reporte.
-    const match = { clinic: new (require('mongoose').Types.ObjectId)(req.clinicId), qtyRemaining: { $ne: 0 } };
+    const clinics = req.companyClinicIds?.length ? req.companyClinicIds
+      : req.userClinicId && String(req.userClinicId) !== String(req.clinicId)
+        ? [req.clinicId, req.userClinicId] : [req.clinicId];
+    const match = { clinic: { $in: clinics.map((id) => new (require('mongoose').Types.ObjectId)(id)) },
+      qtyRemaining: { $ne: 0 } };
     if (req.query.warehouse) match.warehouse = new (require('mongoose').Types.ObjectId)(req.query.warehouse);
     // Sucursal ligada a un centro (middleware/accountingScope): las bodegas de su centro.
     else if (req.costCenterScope) {
-      match.warehouse = { $in: await Warehouse.find({ clinic: req.clinicId, costCenter: req.costCenterScope }).distinct('_id') };
+      match.warehouse = { $in: await Warehouse.find({ costCenter: req.costCenterScope }).distinct('_id') };
     }
     const rows = await InventoryLayer.aggregate([
       { $match: match },
@@ -768,7 +785,8 @@ exports.warehouseStock = async (req, res) => {
     const productIds = rows.map((r) => r._id);
     const products = await Product.find({ _id: { $in: productIds } }).select('code name unit category').lean();
     const prodMap = new Map(products.map((p) => [String(p._id), p]));
-    const warehouses = await Warehouse.find({ clinic: req.clinicId }).select('code name').lean();
+    const warehouses = await Warehouse.find({ _id: { $in: rows.flatMap((r) => r.warehouses.map((w) => w.warehouse).filter(Boolean)) } })
+      .select('code name').lean();
     const whMap = new Map(warehouses.map((w) => [String(w._id), w]));
     const out = rows.map((r) => ({
       product: prodMap.get(String(r._id)) || { _id: r._id },

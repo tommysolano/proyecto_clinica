@@ -5,10 +5,14 @@ require('./Company');
 const clinicSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
-    // Centro de costo contable de la sucursal. La contabilidad de Contífico se importa
-    // en una sola sucursal (Central); el dashboard contable de cada sucursal ligada
-    // muestra esos datos filtrados por su centro (ver services/accountingScope).
+    // Centro operativo de la sucursal. El archivo importado conserva sus centros
+    // originales; accountingImportCostCenters indica cuáles puede leer aquí.
     accountingCostCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null },
+    accountingImportCostCenters: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter' }], default: [] },
+    // Almacén de los documentos históricos importados de Contífico. Es una
+    // referencia técnica al origen; el centro y la bodega pertenecen a la
+    // sucursal y los documentos nuevos se guardan allí.
+    accountingDataClinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', default: null },
     // Empresa a la que pertenece (models/Company). Mover la sucursal a otra empresa
     // es cambiar este campo: citas, ventas y personal la siguen (ver utils/companies).
     company: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', default: null, index: true },

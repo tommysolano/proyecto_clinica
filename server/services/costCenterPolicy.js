@@ -14,7 +14,7 @@
  *      confirmada queda en el log de auditoría.
  *
  * ── Por qué el backend y no React ───────────────────────────────────────────────────────────
- * Una advertencia en pantalla se salta con un `curl`. La propuesta, la validación (misma clínica,
+ * Una advertencia en pantalla se salta con un `curl`. La propuesta, la validación (sucursal autorizada,
  * ambos activos) y el rechazo de la diferencia no confirmada ocurren AQUÍ; la pantalla solo lo
  * explica antes de que el usuario llegue al error.
  *
@@ -25,6 +25,7 @@
  */
 const Warehouse = require('../models/Warehouse');
 const CostCenter = require('../models/CostCenter');
+const Clinic = require('../models/Clinic');
 
 const withSession = (q, session) => (session ? q.session(session) : q);
 const idOf = (v) => String(v && typeof v === 'object' ? (v._id ?? v) : (v ?? ''));
@@ -36,15 +37,69 @@ const etiqueta = (cc) => (cc ? `${cc.code} - ${cc.name}` : '(sin centro)');
  * Resolutor con caché: una compra de 20 líneas no consulta la misma bodega 20 veces.
  * Se crea uno por operación (create/update/authorize/venta) y se descarta.
  */
-function createResolver({ clinicId, session = null } = {}) {
+function createResolver({ clinicId, activeClinicId = clinicId, session = null } = {}) {
   const bodegas = new Map();
   const centros = new Map();
+  let sharedCenterPromise;
+  let activeClinicPromise;
+  const importedOwnerCache = new Map();
+
+  async function activeClinic() {
+    if (!activeClinicPromise) activeClinicPromise = Promise.resolve(withSession(Clinic.findById(activeClinicId)
+      .select('accountingCostCenter'), session));
+    return activeClinicPromise;
+  }
+
+  async function allowedForActive(ownerId, centerId) {
+    if (idOf(activeClinicId) === idOf(clinicId)) return true;
+    const active = await activeClinic();
+    return idOf(ownerId) === idOf(activeClinicId)
+      || Boolean(active?.accountingCostCenter && idOf(centerId) === idOf(active.accountingCostCenter));
+  }
+
+  async function importedBranchOwner(ownerId) {
+    const key = idOf(ownerId);
+    if (importedOwnerCache.has(key)) return importedOwnerCache.get(key);
+    const [owner, source] = await Promise.all([
+      withSession(Clinic.findById(ownerId).select('company accountingDataClinic'), session),
+      withSession(Clinic.findById(clinicId).select('company'), session),
+    ]);
+    const allowed = Boolean(owner?.accountingDataClinic && source
+      && idOf(owner.accountingDataClinic) === idOf(clinicId)
+      && idOf(owner.company) === idOf(source.company));
+    importedOwnerCache.set(key, allowed);
+    return allowed;
+  }
+
+  async function sharedCenter() {
+    if (!sharedCenterPromise) sharedCenterPromise = (async () => {
+      const clinic = await withSession(Clinic.findById(clinicId).select('company accountingCostCenter'), session);
+      if (!clinic?.accountingCostCenter) return null;
+      const center = await withSession(CostCenter.findById(clinic.accountingCostCenter), session);
+      if (!center || idOf(center.clinic) === idOf(clinicId)) return null;
+      const owner = await withSession(Clinic.findById(center.clinic).select('company'), session);
+      if (!owner || idOf(owner.company) !== idOf(clinic.company)) return null;
+      return center;
+    })();
+    return sharedCenterPromise;
+  }
 
   async function getWarehouse(id) {
     const key = idOf(id);
     if (!key) return null;
     if (bodegas.has(key)) return bodegas.get(key);
-    const wh = await withSession(Warehouse.findOne({ _id: key, clinic: clinicId }), session);
+    let wh = await withSession(Warehouse.findOne({ _id: key, clinic: clinicId }), session);
+    if (!wh) {
+      const shared = await sharedCenter();
+      if (shared) wh = await withSession(Warehouse.findOne({ _id: key, clinic: shared.clinic,
+        costCenter: shared._id }), session);
+    }
+    if (!wh) {
+      const candidate = await withSession(Warehouse.findById(key), session);
+      if (candidate && await importedBranchOwner(candidate.clinic)
+        && await allowedForActive(candidate.clinic, candidate.costCenter)) wh = candidate;
+    }
+    if (wh && !(await allowedForActive(wh.clinic, wh.costCenter))) wh = null;
     if (!wh) throw badRequest('La bodega seleccionada no existe en esta clínica.');
     if (wh.active === false) {
       throw badRequest(`La bodega "${wh.name}" está inactiva: no se puede registrar movimientos en ella.`);
@@ -63,7 +118,14 @@ function createResolver({ clinicId, session = null } = {}) {
       }
       return cc;
     }
-    const cc = await withSession(CostCenter.findOne({ _id: key, clinic: clinicId }), session);
+    let cc = await withSession(CostCenter.findOne({ _id: key, clinic: clinicId }), session);
+    if (!cc && idOf((await sharedCenter())?._id) === key) cc = await sharedCenter();
+    if (!cc) {
+      const candidate = await withSession(CostCenter.findById(key), session);
+      if (candidate && await importedBranchOwner(candidate.clinic)
+        && await allowedForActive(candidate.clinic, candidate._id)) cc = candidate;
+    }
+    if (cc && !(await allowedForActive(cc.clinic, cc._id))) cc = null;
     // Un centro de OTRA clínica no existe para esta: no se filtra en silencio, se rechaza.
     if (!cc) throw badRequest('El centro de costo seleccionado no existe en esta clínica.');
     centros.set(key, cc);

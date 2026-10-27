@@ -37,6 +37,7 @@ import { FUENTES_VINCULADO } from '../constants/itemsVinculados';
 import { serviciosDeLaCita, listaSinCobro, tipoSinCobro } from '../utils/serviciosSinCobro';
 import { nameMatches } from '../utils/nameSearch';
 import { soloActivos as soloUsuariosActivos } from '../utils/activeUsers';
+import { ROLE_LABELS } from '../utils/roles';
 
 const paymentMethods = {
   efectivo: 'Efectivo',
@@ -403,7 +404,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       api.get('/banks/payment-options')
         .then((r) => setPayOptions({ accounts: r.data?.accounts || [], cards: r.data?.cards || [] }))
         .catch(() => setPayOptions({ accounts: [], cards: [] }));
-      api.get('/users')
+      // En el cobro de una cita, el recomendador es personal clínico de la
+      // empresa. Caja puede leer este listado aunque no administre usuarios.
+      api.get(embebido ? '/users/purchase-recommenders' : '/users')
         .then((r) => setStaff(r.data || []))
         .catch(() => setStaff([]));
       // Bodegas (con su centro predeterminado) y centros activos. Si el usuario no tiene
@@ -641,6 +644,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   // Incrustada en la agenda, la cita llega por props; en la página, por la URL.
   const citaObjetivo = embebido ? citaId : citaParam;
   const modoReceta = Array.isArray(itemsIniciales);
+  const compraSinReceta = modoReceta && itemsIniciales.length === 0;
   /**
    * SESIONES PREPAGADAS (oct-2026). Cuántas veces lleva la cita cada servicio (por su
    * producto): eso se hace hoy. Lo que se cobre de más de un servicio queda pagado para
@@ -726,7 +730,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           patient: pid ? String(pid) : '',
           ...(conDatos ? datosDePaciente(pac) : {}),
           appointment: String(apt._id),
-          notes: `${modoReceta ? 'Receta' : 'Cobro'} de la cita del ${String(apt.date || '').slice(0, 10)} ${apt.startTime || ''}${apt.serviceItem?.name ? ` · ${apt.serviceItem.name}` : ''}`,
+          notes: `${compraSinReceta ? 'Compra de productos' : modoReceta ? 'Receta' : 'Cobro'} de la cita del ${String(apt.date || '').slice(0, 10)} ${apt.startTime || ''}${apt.serviceItem?.name ? ` · ${apt.serviceItem.name}` : ''}`,
         }));
       } catch {
         toast.error('No se pudo leer la cita a cobrar');
@@ -1412,7 +1416,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         <Modal
           isOpen={modalOpen}
           onClose={cerrarVenta}
-          title={embebido ? (modoReceta ? 'Cobrar la receta' : 'Cobrar la cita') : 'Nueva Venta'}
+          title={embebido ? (compraSinReceta ? 'Registrar compra de productos' : modoReceta ? 'Cobrar la receta' : 'Cobrar la cita') : 'Nueva Venta'}
           size="xl"
         >
           {/* El modal está ordenado por SECCIONES, en el orden en que se cobra: quién es el
@@ -1421,7 +1425,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           {citaPorCobrar && (
             <div className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50/70 p-3">
               <p className="text-xs text-emerald-900 m-0">
-                {modoReceta ? 'Cobrando la receta de la cita del ' : 'Cobrando la cita del '}
+                {compraSinReceta ? 'Registrando productos comprados en la cita del ' : modoReceta ? 'Cobrando la receta de la cita del ' : 'Cobrando la cita del '}
                 <b>{String(citaPorCobrar.date || '').slice(0, 10)} {citaPorCobrar.startTime || ''}</b>
                 {citaPorCobrar.serviceItem?.name ? ` · ${citaPorCobrar.serviceItem.name}` : ''}.
                 {!modoReceta && (
@@ -1728,7 +1732,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                 )}
               </div>
               <div>
-                <label className="lbl">Recomendado por (comisión)</label>
+                <label className="lbl">{embebido ? 'Compra recomendada por' : 'Recomendado por (comisión)'}</label>
                 <select
                   value={form.recommendedBy || ''}
                   onChange={(e) => setForm({ ...form, recommendedBy: e.target.value })}
@@ -1736,9 +1740,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                 >
                   <option value="">— Nadie / No aplica —</option>
                   {soloUsuariosActivos(staff, form.recommendedBy).map((u) => (
-                    <option key={u._id} value={u._id}>{u.name}</option>
+                    <option key={u._id} value={u._id}>{u.name}{embebido && u.role ? ` · ${ROLE_LABELS[u.role] || u.role}` : ''}</option>
                   ))}
                 </select>
+                {embebido && <p className="text-[11px] text-slate-500 mt-1">Doctor o enfermero que recomendó el producto; quien registra el cobro queda identificado por separado.</p>}
               </div>
             </div>
             </FormSection>

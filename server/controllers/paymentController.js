@@ -19,6 +19,7 @@ const {
   readIdempotencyKey, fingerprint, assertSameFingerprint, normalize: N, conflict,
 } = require('../utils/idempotency');
 const { sendError } = require('../utils/apiError');
+const { scopedDocuments } = require('../services/scopedDocuments');
 
 /** Un pago solo puede cancelar una CxP que ya exista en el mayor. */
 async function assertPurchasePosted(pi, clinicId, session) {
@@ -72,9 +73,7 @@ const escaparRegex = (v) => String(v).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$
  */
 function buildPaymentFilter(req) {
   const { type, startDate, endDate, partyRef, status, q, method, bankAccount } = req.query;
-  const filter = { clinic: req.clinicId };
-  // Sucursal ligada a un centro (middleware/accountingScope): los de sus documentos.
-  if (req.costCenterScope) filter.costCenter = req.costCenterScope;
+  const filter = { $and: [scopedDocuments(req)] };
   if (type) filter.type = type;
   if (partyRef) filter.partyRef = partyRef;
   if (status) filter.status = status;
@@ -175,7 +174,7 @@ exports.paymentsExcel = excelHandler(async (req, res) => {
 });
 
 exports.get = async (req, res) => {
-  const p = await Payment.findOne({ _id: req.params.id, clinic: req.clinicId })
+  const p = await Payment.findOne({ _id: req.params.id, ...scopedDocuments(req) })
     .populate('createdBy', 'name')
     .populate('bankAccount', 'name bank')
     .populate('journalEntry');

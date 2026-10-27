@@ -1,9 +1,11 @@
 const Appointment = require('../models/Appointment');
+const mongoose = require('mongoose');
 const Patient = require('../models/Patient');
 const Sale = require('../models/Sale');
 const Product = require('../models/Product');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 const { accountingScope } = require('../services/accountingScope');
+const { catalogClinics } = require('../services/contificoCatalogScope');
 const { bankBalancesFor } = require('./bankController');
 const { isDoctorRole } = require('../constants/roles');
 
@@ -152,7 +154,11 @@ exports.getAccountingDashboard = async (req, res) => {
     const company = req.query.scope === 'company' || String(req.get('x-accounting-scope') || '').toLowerCase() === 'company';
     const scope = await accountingScope(req.clinicId, { company });
     const clinicObjId = scope.dataClinic;
-    const ccId = scope.costCenter?._id || null;
+    const companyClinicIds = company ? (await catalogClinics(req.clinicId)).ids : null;
+    const ccId = scope.costCenter
+      ? (scope.costCenterIds.length > 1 ? { $in: scope.costCenterIds } : scope.costCenter._id) : null;
+    const centerCondition = ccId?.$in
+      ? { $in: ['$$i.costCenter', ccId.$in] } : { $eq: ['$$i.costCenter', ccId] };
     const granularity = req.query.granularity || 'month';
     const periods = Math.min(parseInt(req.query.periods) || 12, 60);
 
@@ -167,8 +173,16 @@ exports.getAccountingDashboard = async (req, res) => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
 
     const grp = dateGroupExpr(granularity, '$createdAt');
-    const sales = (extra = {}) => ({ clinic: clinicObjId, status: 'completada', ...(ccId ? { costCenter: ccId } : {}), ...extra });
-    const purchases = (extra = {}) => ({ clinic: clinicObjId, status: { $ne: 'ANULADA' }, ...extra });
+    const sales = (extra = {}) => ({
+      ...(companyClinicIds?.length ? { clinic: { $in: companyClinicIds } }
+        : String(req.clinicId) !== String(clinicObjId)
+        ? { $or: [{ clinic: clinicObjId, ...(ccId ? { costCenter: ccId } : {}) },
+          { clinic: new mongoose.Types.ObjectId(String(req.clinicId)) }] }
+        : { clinic: clinicObjId, ...(ccId ? { costCenter: ccId } : {}) }),
+      status: 'completada', ...extra,
+    });
+    const purchases = (extra = {}) => ({ clinic: companyClinicIds?.length
+      ? { $in: companyClinicIds } : clinicObjId, status: { $ne: 'ANULADA' }, ...extra });
     const lineTotal = { $add: ['$items.subtotal', { $ifNull: ['$items.ivaAmount', 0] }] };
     // Gasto de compras: total del comprobante para la empresa; líneas del centro si hay alcance.
     const expense = (match, group) => (ccId
@@ -218,7 +232,7 @@ exports.getAccountingDashboard = async (req, res) => {
       ccId
         ? PurchaseInvoice.aggregate([
           { $match: purchases({ balance: { $gt: 0 } }) },
-          { $project: { balance: 1, all: itemSum(null), cc: itemSum({ $eq: ['$$i.costCenter', ccId] }) } },
+          { $project: { balance: 1, all: itemSum(null), cc: itemSum(centerCondition) } },
           { $group: { _id: null, total: { $sum: { $cond: [{ $gt: ['$all', 0] }, { $multiply: ['$balance', { $divide: ['$cc', '$all'] }] }, 0] } } } },
         ])
         : PurchaseInvoice.aggregate([{ $match: purchases() }, { $group: { _id: null, total: { $sum: '$balance' } } }]),

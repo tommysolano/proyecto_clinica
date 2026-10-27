@@ -11,10 +11,12 @@ const os = require('os');
 // incompatible con los ObjectId que entrega mongoose.
 const { EJSON } = require('mongoose').mongo.BSON;
 const Clinic = require('../models/Clinic');
+const { contificoSourceClinic } = require('./contificoSourceClinic');
 const Record = require('../models/ContificoRecord');
 const Journal = require('../models/JournalEntry');
 const Account = require('../models/ChartOfAccount');
 const CostCenter = require('../models/CostCenter');
+const { catalogClinics, ownerForCostCenter } = require('./contificoCatalogScope');
 const AccountBalance = require('../models/AccountBalance');
 const ServerLease = require('../models/ServerLease');
 const Notification = require('../models/Notification');
@@ -85,11 +87,12 @@ async function journalReferences(clinicId, journalId) {
 }
 
 async function ledgerMaps(clinicId) {
+  const catalog = await catalogClinics(clinicId);
   const [sourceAccounts, accounts, sourceCenters, centers] = await Promise.all([
     Record.find({ clinic: clinicId, entity: 'chart_account' }).select('externalId payloadCompressed').lean(),
     Account.find({ clinic: clinicId }).select('code').lean(),
     Record.find({ clinic: clinicId, entity: 'cost_center' }).select('externalId payloadCompressed').lean(),
-    CostCenter.find({ clinic: clinicId }).select('code').lean(),
+    CostCenter.find({ clinic: { $in: catalog.ids } }).select('code').lean(),
   ]);
   return {
     sourceCodes: new Map(sourceAccounts.map((row) => [row.externalId, String(decodeCompressedJson(row.payloadCompressed).codigo)])),
@@ -97,6 +100,45 @@ async function ledgerMaps(clinicId) {
     centerCodes: new Map(sourceCenters.map((row) => [row.externalId, String(decodeCompressedJson(row.payloadCompressed).codigo)])),
     centerById: new Map(centers.map((row) => [String(row._id), row])),
   };
+}
+
+/** Mantiene el catálogo de centros de Contífico antes de proyectar asientos nuevos. */
+async function syncCostCenterCatalog({ clinic, api }) {
+  const rows = await api.listV1('/api/v1/contabilidad/centro-costo/');
+  if (!rows.length) throw new Error('Contífico devolvió el catálogo de centros vacío');
+  const ids = new Set(), codes = new Set();
+  for (const row of rows) {
+    const id = String(row.id || ''), code = String(row.codigo || '').trim();
+    if (!id || !code || ids.has(id) || codes.has(code)) throw new Error('Catálogo de centros de Contífico incompleto o duplicado');
+    ids.add(id); codes.add(code);
+  }
+  const scope = await catalogClinics(clinic._id);
+  const existing = await CostCenter.find({ clinic: { $in: scope.ids }, code: { $in: [...codes] } }).lean();
+  const byCode = new Map(existing.map((center) => [String(center.code), center]));
+  let created = 0;
+  for (const row of rows) {
+    const externalId = String(row.id), code = String(row.codigo).trim();
+    const owner = byCode.get(code)?.clinic || ownerForCostCenter(scope, code);
+    const center = await CostCenter.findOneAndUpdate({ clinic: owner, code }, {
+      $set: { name: String(row.nombre || code), active: String(row.estado || 'A') === 'A' },
+      $setOnInsert: { clinic: owner, code, description: `Contifico ${externalId}; tipo ${row.tipo || ''}` },
+    }, { upsert: true, new: true });
+    if (!byCode.has(code)) {
+      created += 1;
+      byCode.set(code, center);
+      // Un centro nuevo sin regla de sucursal queda visible en Central y en la
+      // vista de toda la empresa hasta que se le asigne una sucursal.
+      if (String(owner) === String(clinic._id)) await Clinic.updateOne({ _id: clinic._id },
+        { $addToSet: { accountingImportCostCenters: center._id } });
+    }
+    await Record.updateOne({ clinic: clinic._id, entity: 'cost_center', externalId }, {
+      $set: { payloadCompressed: zlib.gzipSync(Buffer.from(JSON.stringify(row))), checksum: checksum(row),
+        capturedAt: new Date(), projection: { status: 'PROJECTED',
+          links: [{ model: 'CostCenter', ref: center._id, action: 'LINK' }], warnings: [], projectedAt: new Date() } },
+      $setOnInsert: { clinic: clinic._id, entity: 'cost_center', externalId },
+    }, { upsert: true });
+  }
+  return { source: rows.length, created };
 }
 
 function backupRows(clinic, key, rows) {
@@ -255,7 +297,7 @@ async function syncFinancialReports({ includeHistory = false, months: requestedM
       } catch (error) { leaseLost = true; console.error('[contifico-financial-sync] Perdió arriendo:', error.message); }
     }, 60 * 1000);
     const assertLease = () => { if (leaseLost) throw new Error('Arriendo de sincronización perdido'); };
-    const clinic = await Clinic.findOne({ name: /^Central$/i }).lean();
+    const clinic = await contificoSourceClinic();
     if (!clinic) throw new Error('Clínica Central no encontrada');
     await recordSyncState({ state: 'RUNNING', trigger, host: os.hostname(),
       startedAt: new Date(), completedAt: null, months: [], failures: [], lastError: '' });
@@ -263,6 +305,7 @@ async function syncFinancialReports({ includeHistory = false, months: requestedM
       'meta.month': 'CONFIG', read: false }, { $set: { read: true, readAt: new Date() } })
       .catch((error) => console.error('[contifico-financial-sync] Aviso de configuración resuelto:', error.message));
     const api = new ContificoApi({ apiKey: process.env.CONTIFICO_API_KEY });
+    await syncCostCenterCatalog({ clinic, api });
     const today = ecToday();
     const recent = [monthRange(today.year, today.month).from,
       monthRange(today.month === 1 ? today.year - 1 : today.year, today.month === 1 ? 12 : today.month - 1).from];
@@ -337,7 +380,7 @@ function startFinancialSyncJob(leaderOnly) {
       completedAt: new Date(), lastError: 'Falta CONTIFICO_API_KEY' });
     setTimeout(leaderOnly(async () => {
       try {
-        const clinic = await Clinic.findOne({ name: /^Central$/i }).lean();
+        const clinic = await contificoSourceClinic();
         if (clinic) await Notification.updateOne({ clinic: clinic._id, user: null,
           type: 'contifico_sync_blocked', 'meta.month': 'CONFIG', read: false },
         { $setOnInsert: { clinic: clinic._id, user: null, type: 'contifico_sync_blocked',
@@ -385,4 +428,5 @@ function startFinancialSyncJob(leaderOnly) {
   setInterval(run, 60 * 60 * 1000);
 }
 
-module.exports = { fetchWindow, ledgerMaps, syncMonth, syncFinancialReports, startFinancialSyncJob, monthRange, ecToday };
+module.exports = { fetchWindow, ledgerMaps, syncCostCenterCatalog, syncMonth, syncFinancialReports,
+  startFinancialSyncJob, monthRange, ecToday };

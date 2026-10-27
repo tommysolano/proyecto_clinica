@@ -224,7 +224,8 @@ async function resolveBreakdownColumns(mode, { clinicIds, startDate, endDate, us
   if (mode === 'month') return monthColumns(startDate, endDate);
   if (mode === 'costCenter') {
     const CostCenter = require('../models/CostCenter');
-    const ccs = await CostCenter.find({ clinic: { $in: clinicIds } }).select('code name').sort({ code: 1 }).lean();
+    const ccs = await CostCenter.find({ _id: { $in: [...usados].filter((id) => id !== SIN_CENTRO) } })
+      .select('code name').sort({ code: 1 }).lean();
     const cols = ccs
       .filter((c) => usados.has(String(c._id)))
       .map((c) => ({ key: String(c._id), label: `${c.code} ${c.name}`.trim() }));
@@ -260,8 +261,11 @@ async function readableClinicIds(req) {
  * Saldos por cuenta en el período. Con `mode` distinto de `none` devuelve además
  * `byColumn` (importe por mes / centro de costo / sede) para el reporte en columnas.
  */
-async function getAccountBalances(clinicId, { startDate, endDate, mode = 'none', clinicIds, costCenter = null } = {}) {
+async function getAccountBalances(clinicId, { startDate, endDate, mode = 'none', clinicIds,
+  costCenter = null, branchClinicId = null } = {}) {
   const ids = clinicIds?.length ? clinicIds.map(asObjectId) : [asObjectId(clinicId)];
+  const branch = branchClinicId && String(branchClinicId) !== String(clinicId) ? asObjectId(branchClinicId) : null;
+  if (branch && !ids.some((id) => String(id) === String(branch))) ids.push(branch);
   const match = { clinic: { $in: ids }, status: 'CONTABILIZADO' };
   if (startDate || endDate) {
     match.date = {};
@@ -269,11 +273,16 @@ async function getAccountBalances(clinicId, { startDate, endDate, mode = 'none',
     if (endDate) match.date.$lte = endOfDay(endDate);
   }
   const bucket = breakdownExpr(mode);
+  const centerMatch = costCenter ? asObjectId(costCenter) : null;
+  const lineScope = centerMatch ? (branch
+    ? { $or: [{ clinic: asObjectId(clinicId), 'lines.costCenter': centerMatch }, { clinic: branch }] }
+    : { 'lines.costCenter': centerMatch }) : null;
   const agg = await JournalEntry.aggregate([
-    { $match: costCenter ? { ...match, 'lines.costCenter': asObjectId(costCenter) } : match },
+    { $match: match },
     { $unwind: '$lines' },
-    // Solo las líneas del centro: así presenta Contífico el resultado de un centro de costo.
-    ...(costCenter ? [{ $match: { 'lines.costCenter': asObjectId(costCenter) } }] : []),
+    // En el archivo importado manda el centro original; los asientos nuevos ya
+    // pertenecen a la sucursal que los registró.
+    ...(lineScope ? [{ $match: lineScope }] : []),
     {
       $group: {
         _id: bucket ? { account: '$lines.account', bucket } : '$lines.account',
@@ -283,12 +292,19 @@ async function getAccountBalances(clinicId, { startDate, endDate, mode = 'none',
     },
   ]);
   // El plan de cuentas es el de la sede activa (el resto de sedes comparten códigos).
-  const accounts = await ChartOfAccount.find({ clinic: clinicId }).lean();
-  const map = new Map(accounts.map((a) => [String(a._id), { ...a, debit: 0, credit: 0, balance: 0, byColumn: {} }]));
+  const accounts = await ChartOfAccount.find({ clinic: { $in: ids } }).lean();
+  const byCode = new Map();
+  const accountToCode = new Map();
+  for (const account of accounts) {
+    accountToCode.set(String(account._id), String(account.code));
+    if (!byCode.has(String(account.code)) || String(account.clinic) === String(clinicId)) {
+      byCode.set(String(account.code), { ...account, debit: 0, credit: 0, balance: 0, byColumn: {} });
+    }
+  }
   const usados = new Set();
   for (const r of agg) {
     const accountId = bucket ? r._id?.account : r._id;
-    const a = map.get(String(accountId));
+    const a = byCode.get(accountToCode.get(String(accountId)));
     if (!a) continue;
     a.debit += r.debit; a.credit += r.credit;
     a.balance = accountBalanceFromNature(a, a.debit, a.credit);
@@ -298,7 +314,7 @@ async function getAccountBalances(clinicId, { startDate, endDate, mode = 'none',
       a.byColumn[key] = round2((a.byColumn[key] || 0) + accountBalanceFromNature(a, r.debit, r.credit));
     }
   }
-  const list = Array.from(map.values());
+  const list = Array.from(byCode.values());
   list.usados = usados;   // qué columnas tienen movimiento (para no pintar columnas vacías)
   return list;
 }
@@ -403,12 +419,13 @@ exports.incomeStatement = async (req, res) => {
      */
     const mode = ['month', 'costCenter', 'clinic'].includes(req.query.breakdown) ? req.query.breakdown : 'none';
     // Solo el desglose por sede sale de la sede activa: el resto se queda en ella.
-    const clinicIds = mode === 'clinic' ? await readableClinicIds(req) : null;
+    const clinicIds = req.companyClinicIds || (mode === 'clinic' ? await readableClinicIds(req) : null);
 
     // Sucursal ligada a un centro (middleware/accountingScope): el resultado de su centro.
     // Los desgloses por centro o por sede ya separan, así que muestran la empresa.
     const costCenter = ['none', 'month'].includes(mode) ? req.costCenterScope : null;
-    const balances = await getAccountBalances(req.clinicId, { startDate, endDate, mode, clinicIds, costCenter });
+    const balances = await getAccountBalances(req.clinicId, { startDate, endDate, mode, clinicIds,
+      costCenter, branchClinicId: req.userClinicId });
     const columns = mode === 'none'
       ? []
       : await resolveBreakdownColumns(mode, { clinicIds: clinicIds || [asObjectId(req.clinicId)], startDate, endDate, usados: balances.usados });
@@ -482,8 +499,9 @@ exports.balanceSheet = async (req, res) => {
      * una cifra que no significa nada.
      */
     const mode = ['costCenter', 'clinic'].includes(req.query.breakdown) ? req.query.breakdown : 'none';
-    const clinicIds = mode === 'clinic' ? await readableClinicIds(req) : null;
-    const balances = await getAccountBalances(req.clinicId, { endDate: date, mode, clinicIds });
+    const clinicIds = req.companyClinicIds || (mode === 'clinic' ? await readableClinicIds(req) : null);
+    const balances = await getAccountBalances(req.clinicId, { endDate: date, mode, clinicIds,
+      costCenter: mode === 'none' ? req.costCenterScope : null, branchClinicId: req.userClinicId });
     const columns = mode === 'none'
       ? []
       : await resolveBreakdownColumns(mode, { clinicIds: clinicIds || [asObjectId(req.clinicId)], endDate: date, usados: balances.usados });

@@ -2,11 +2,9 @@
 
 // Centro de costo de los documentos de Contífico, para filtrar por sucursal.
 //
-// Contífico no siempre pone el centro en el documento. En las compras de bodega,
-// el centro solo está en el ASIENTO de la compra (lo toma de la bodega) y las
-// líneas del documento llegan con `centro_costo_id: null`. Aquí se completa:
-//   - Compras: el centro de cada línea es el del documento; si no trae, el del
-//     asiento de la compra (misma fecha y glosa = descripción del documento).
+// Se conserva el centro que Contífico puso en cada documento. Un documento sin
+// centro sigue sin centro, aunque su asiento tenga una atribución distinta.
+//   - Compras: el centro de cada línea es el del documento.
 //   - CxP / CxC: el centro de su compra / venta.
 //   - Facturas: el centro de su venta.
 //   - Cobros y pagos: el centro del primer documento aplicado.
@@ -18,72 +16,27 @@ const Invoice = require('../models/Invoice');
 const Payable = require('../models/Payable');
 const Receivable = require('../models/Receivable');
 const Payment = require('../models/Payment');
-const Journal = require('../models/JournalEntry');
 const CostCenter = require('../models/CostCenter');
+const { catalogClinics } = require('./contificoCatalogScope');
 const { decodeCompressedJson } = require('../utils/compressedJson');
 
-const DAY = 86400000;
-const r2 = (value) => +Number(value || 0).toFixed(2);
 const same = (left, right) => String(left || '') === String(right || '');
-const norm = (text) => String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
-const dayKey = (date) => new Date(date).toISOString().slice(0, 10);
 
 /** externalId de Contífico → _id local del centro, por código. */
 async function centerMap(clinicId) {
+  const catalog = await catalogClinics(clinicId);
   const [records, centers] = await Promise.all([
     Record.find({ clinic: clinicId, entity: 'cost_center' }).select('externalId payloadCompressed').lean(),
-    CostCenter.find({ clinic: clinicId }).select('code').lean(),
+    CostCenter.find({ clinic: { $in: catalog.ids } }).select('code').lean(),
   ]);
   const byCode = new Map(centers.map((center) => [String(center.code), center._id]));
   return new Map(records.map((record) => [record.externalId,
     byCode.get(String(decodeCompressedJson(record.payloadCompressed).codigo)) || null]));
 }
 
-/**
- * Asiento de cada compra. Los asientos de cobro/pago empiezan por «Doc.»; el de
- * la compra lleva la descripción del documento. Si hay varios con la misma
- * glosa ese día, decide el que acredita la CxP por el total (o el neto de
- * retenciones); si siguen empatados y todos dicen el mismo centro, vale igual.
- */
-function purchaseJournalFinder(journals) {
-  const byKey = new Map();
-  for (const journal of journals) {
-    if (/^doc\./i.test(String(journal.description || '').trim())) continue;
-    const key = `${dayKey(journal.date)}|${norm(journal.description)}`;
-    if (!byKey.has(key)) byKey.set(key, []);
-    byKey.get(key).push(journal);
-  }
-  const centersOf = (journal) => [...new Set(journal.lines.map((line) => line.costCenter && String(line.costCenter)).filter(Boolean))].sort().join(',');
-  return (purchase, description) => {
-    let found = byKey.get(`${dayKey(purchase.fechaEmision)}|${norm(description)}`) || [];
-    if (found.length > 1) {
-      const amounts = [r2(purchase.total), r2(purchase.total - (purchase.retentionTotal || 0))];
-      const credited = found.filter((journal) => journal.lines.some((line) => /^2\./.test(line.accountCode || '')
-        && amounts.some((amount) => Math.abs(r2(line.credit) - amount) < 0.011)));
-      if (credited.length) found = credited;
-    }
-    if (found.length > 1 && new Set(found.map(centersOf)).size === 1) found = [found[0]];
-    return found.length === 1 ? found[0] : null;
-  };
-}
-
-/** Centro de cada línea: el del documento, o el del asiento si el documento no trae. */
-function itemCenters(items, details, centers, journal) {
-  const fromDocument = items.map((item, index) => centers.get(String(details[index]?.centro_costo_id || '')) || null);
-  if (!journal || fromDocument.every(Boolean)) return fromDocument;
-  const lines = journal.lines.filter((line) => line.costCenter)
-    .map((line) => ({ center: line.costCenter, amount: r2(line.debit || line.credit), used: false }));
-  const distinct = [...new Set(lines.map((line) => String(line.center)))];
-  if (!distinct.length) return fromDocument;
-  return fromDocument.map((center, index) => {
-    if (center) return center;
-    if (distinct.length === 1) return lines[0].center;
-    // Compra repartida entre centros: la línea del asiento con el mismo importe.
-    const match = lines.find((line) => !line.used && Math.abs(line.amount - r2(items[index].subtotal)) < 0.011);
-    if (!match) return null;
-    match.used = true;
-    return match.center;
-  });
+/** Centro de cada línea tal como está en el documento de Contífico. */
+function itemCenters(items, details, centers) {
+  return items.map((item, index) => centers.get(String(details[index]?.centro_costo_id || '')) || null);
 }
 
 /**
@@ -100,19 +53,13 @@ async function refreshCostCenters({ clinicId, from, to, commit = true }) {
   const records = await Record.find({ _id: { $in: purchases.map((purchase) => purchase.sourceRef) } })
     .select('payloadCompressed').lean();
   const payloadById = new Map(records.map((record) => [String(record._id), decodeCompressedJson(record.payloadCompressed)]));
-  const journals = purchases.length ? await Journal.find({ clinic: clinicId, number: /^CTF-/, status: 'CONTABILIZADO',
-    date: { $gte: new Date(from.getTime() - DAY), $lte: new Date(to.getTime() + DAY) } })
-    .select('date description lines.accountCode lines.credit lines.debit lines.costCenter').lean() : [];
-  const findJournal = purchaseJournalFinder(journals);
-
   const purchaseOps = [];
   const purchaseCenter = new Map();
   for (const purchase of purchases) {
     const row = payloadById.get(String(purchase.sourceRef));
     if (!row) continue;
     const details = row.detalles || [];
-    const needsJournal = purchase.items.some((item, index) => !centers.get(String(details[index]?.centro_costo_id || '')));
-    const lineCenters = itemCenters(purchase.items, details, centers, needsJournal ? findJournal(purchase, row.descripcion) : null);
+    const lineCenters = itemCenters(purchase.items, details, centers);
     const header = lineCenters.find(Boolean) || null;
     purchaseCenter.set(String(purchase.sourceRef), header);
     if (!header) result.withoutCenter += 1;
@@ -199,4 +146,4 @@ async function refreshCostCenters({ clinicId, from, to, commit = true }) {
   return result;
 }
 
-module.exports = { refreshCostCenters, purchaseJournalFinder, itemCenters };
+module.exports = { refreshCostCenters, itemCenters };

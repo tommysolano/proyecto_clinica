@@ -2,20 +2,43 @@
 'use strict';
 // Uso: node scripts/syncContificoCostCenters.js [--commit] [--months=2026-09,2026-10]
 // Recalcula el centro de costo de compras, CxP, CxC, facturas y cobros/pagos de Contífico
+// respetando los documentos que llegan sin centro desde la fuente.
 // (ver services/contificoCostCenters). Sin --commit solo informa; sin --months
 // recorre desde noviembre de 2025 hasta el mes actual.
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const zlib = require('zlib');
 const mongoose = require('mongoose');
-const Clinic = require('../models/Clinic');
+const { EJSON } = mongoose.mongo.BSON;
+const PurchaseInvoice = require('../models/PurchaseInvoice');
+const Payable = require('../models/Payable');
+const Receivable = require('../models/Receivable');
+const Invoice = require('../models/Invoice');
+const Payment = require('../models/Payment');
 const { refreshCostCenters } = require('../services/contificoCostCenters');
 const { ecToday } = require('../services/contificoFinancialSync');
 
 async function main() {
   if (!process.env.MONGODB_URI) throw new Error('Falta MONGODB_URI');
   await mongoose.connect(process.env.MONGODB_URI);
-  const clinic = await Clinic.findOne({ name: /^Central$/i }).lean();
+  const clinic = await require('../services/contificoSourceClinic').contificoSourceClinic();
   if (!clinic) throw new Error('Clínica Central no encontrada');
   const commit = process.argv.includes('--commit');
+  if (commit) {
+    const rows = {};
+    for (const [name, Model, fields] of [
+      ['purchases', PurchaseInvoice, '_id costCenter items._id items.costCenter'],
+      ['payables', Payable, '_id costCenter'], ['receivables', Receivable, '_id costCenter'],
+      ['invoices', Invoice, '_id costCenter'], ['payments', Payment, '_id costCenter'],
+    ]) rows[name] = await Model.find({ clinic: clinic._id }).select(fields).lean();
+    const folder = path.resolve(__dirname, '..', 'storage', 'branch-centers');
+    fs.mkdirSync(folder, { recursive: true });
+    const backup = path.join(folder, `before-source-centers-${new Date().toISOString().replace(/[:.]/g, '-')}.json.gz`);
+    fs.writeFileSync(backup, zlib.gzipSync(Buffer.from(EJSON.stringify({ clinic: clinic._id, rows },
+      { relaxed: false }))), { flag: 'wx' });
+    console.log(`Copia previa: ${backup}`);
+  }
   const monthArg = process.argv.find((arg) => arg.startsWith('--months='));
   let months = monthArg ? monthArg.slice('--months='.length).split(',').map((value) => value.trim()) : null;
   if (!months) {

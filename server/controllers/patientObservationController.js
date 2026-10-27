@@ -81,7 +81,7 @@ const toAttachment = (file, userId) => ({
 });
 
 const populated = (query) =>
-  query.populate('createdBy', 'name').populate('updatedBy', 'name');
+  query.populate('createdBy', 'name').populate('updatedBy', 'name').populate('recommendedBy', 'name');
 
 /**
  * ¿Puede este usuario MODIFICAR esta observación?

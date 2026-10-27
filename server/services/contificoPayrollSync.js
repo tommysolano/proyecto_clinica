@@ -7,7 +7,6 @@
 // roles de un mes deben ser exactamente el gasto de sueldos contabilizado.
 const os = require('os');
 const { randomUUID } = require('crypto');
-const Clinic = require('../models/Clinic');
 const Record = require('../models/ContificoRecord');
 const JournalEntry = require('../models/JournalEntry');
 const ServerLease = require('../models/ServerLease');
@@ -130,7 +129,7 @@ async function syncPayroll({ includeHistory = false, months: requestedMonths = n
       } catch (error) { leaseLost = true; console.error('[contifico-payroll-sync] Perdió arriendo:', error.message); }
     }, 60 * 1000);
     const assertLease = () => { if (leaseLost) throw new Error('Arriendo de sincronización perdido'); };
-    const clinic = await Clinic.findOne({ name: /^Central$/i }).lean();
+    const clinic = await require('./contificoSourceClinic').contificoSourceClinic();
     if (!clinic) throw new Error('Clínica Central no encontrada');
     await recordSyncState({ state: 'RUNNING', trigger, host: os.hostname(),
       startedAt: new Date(), completedAt: null, months: [], failures: [], lastError: '' });

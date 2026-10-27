@@ -550,6 +550,30 @@ exports.getAppointments = async (req, res) => {
   }
 };
 
+/** Busca las citas del doctor por paciente en todo su historial, sin el día/mes visible. */
+exports.searchDoctorAppointments = async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.status(400).json({ message: 'Escribe al menos dos caracteres para buscar' });
+    const page = Math.min(1000, Math.max(0, Number.parseInt(req.query.page, 10) || 0));
+    const limit = 25;
+    // La misma política de sucursales y turnos que usa la agenda del doctor.
+    const query = await construirQueryAgenda(req, { q, clinic: 'all' });
+    const rows = await Appointment.find(query)
+      .select('patient clinic date startTime endTime status serviceName serviceItem doctor turns currentTurnUser currentTurnKind consultationStartedAt consultationEndedAt')
+      .populate('patient', POPULATE_PATIENT)
+      .populate('clinic', 'name nombreComercial')
+      .sort({ date: -1, startTime: -1, _id: -1 })
+      .skip(page * limit)
+      .limit(limit + 1)
+      .lean();
+    res.json({ appointments: rows.slice(0, limit), hasMore: page < 1000 && rows.length > limit });
+  } catch (error) {
+    console.error('[searchDoctorAppointments] ERROR:', error);
+    res.status(500).json({ message: 'Error al buscar citas', error: error.message });
+  }
+};
+
 /**
  * RESUMEN DEL CALENDARIO: lo mínimo que esa vista necesita.
  *
@@ -3174,6 +3198,14 @@ exports.updateCobroItems = async (req, res) => {
     const apt = await Appointment.findOne({ _id: req.params.id, ...filtroSucursalCita(req) });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
 
+    const recommendedById = req.body.recommendedBy || null;
+    const recommender = recommendedById
+      ? await require('../services/purchaseRecommenders').findRecommender(apt.clinic, recommendedById)
+      : null;
+    if (recommendedById && !recommender) {
+      return res.status(400).json({ message: 'El profesional que recomendó la compra no es válido' });
+    }
+
     let total = null;
     if (req.body.itemsValue !== undefined && req.body.itemsValue !== null && req.body.itemsValue !== '') {
       total = Number(req.body.itemsValue);
@@ -3261,6 +3293,7 @@ exports.updateCobroItems = async (req, res) => {
       }
       if (total !== null) observationLines.push('', `Total pagado: $${total.toFixed(2)}`);
       if (paymentMethod) observationLines.push(`Forma de pago: ${paymentLabels[paymentMethod]}`);
+      if (recommender) observationLines.push(`Compra recomendada por: ${recommender.name}`);
     }
 
     session = await Appointment.startSession();
@@ -3272,6 +3305,8 @@ exports.updateCobroItems = async (req, res) => {
           text: observationLines.join('\n'),
           auto: { kind: 'compra', ref: null },
           createdBy: req.user._id,
+          recommendedBy: recommender?._id || null,
+          recommendedByName: recommender?.name || '',
         }], { session });
       }
 

@@ -73,6 +73,14 @@ export default function AppointmentFollowUpModal({ appointment, onClose, onPurch
         {puedeRegistrarCobro && onCobrarReceta && data && (
           <CobrarRecetaComoVenta followUps={data.followUps} onCobrar={onCobrarReceta} />
         )}
+        {puedeRegistrarCobro && onCobrarReceta && (
+          <div className="rounded-xl border border-violet-200 bg-violet-50/60 px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="m-0 text-sm text-violet-900">¿El paciente compró un producto que no consta en la receta?</p>
+            <button type="button" onClick={() => onCobrarReceta([])} className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-violet-600 text-white hover:bg-violet-700 cursor-pointer border-none">
+              Registrar compra sin receta
+            </button>
+          </div>
+        )}
         {puedeRegistrarCobro && !onCobrarReceta && (
           <CobroReceta appointment={appointment} onSaved={onPurchaseSaved} />
         )}

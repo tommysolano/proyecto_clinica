@@ -916,8 +916,8 @@ export default function Appointments() {
   // Id del que mira, para decidir su bandeja: lo que para él está pendiente es
   // lo que todavía no ha tomado, no lo que la cita diga de sí misma.
   const miId = String(user?.id || user?._id || '');
-  // Odontología mira la agenda como mostrador (calendario disponible); el resto
-  // de quien atiende entra directo a la lista del día.
+  // Quien atiende entra directo a la lista del día. Los doctores pueden cambiar
+  // al calendario para localizar visitas pasadas o futuras por fecha.
   const [view, setView] = useState((isDoctor && !esOdontologia) || isNurse ? 'list' : 'calendar'); // 'calendar' | 'list'
   // Mes visible en la vista calendario
   const [calMonth, setCalMonth] = useState(() => {
@@ -929,6 +929,11 @@ export default function Appointments() {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   });
+  const [doctorSearchResults, setDoctorSearchResults] = useState([]);
+  const [doctorSearchPage, setDoctorSearchPage] = useState(0);
+  const [doctorSearchHasMore, setDoctorSearchHasMore] = useState(false);
+  const [doctorSearchLoading, setDoctorSearchLoading] = useState(false);
+  const [doctorSearchError, setDoctorSearchError] = useState(false);
   const [patientSearch, setPatientSearch] = useState('');
   const [showPatientList, setShowPatientList] = useState(false);
   const [patientSearchLoading, setPatientSearchLoading] = useState(false);
@@ -1251,6 +1256,41 @@ export default function Appointments() {
     fetchAppointments();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, filter, calMonth, listDay]);
+
+  // La lista carga solo un día y el calendario solo un mes. Esta búsqueda
+  // consulta todas las fechas, con el mismo alcance de turnos del doctor.
+  useEffect(() => {
+    const q = filter.patientQuery.trim();
+    if (!isDoctor || q.length < 2) {
+      setDoctorSearchResults([]);
+      setDoctorSearchHasMore(false);
+      setDoctorSearchLoading(false);
+      setDoctorSearchError(false);
+      return undefined;
+    }
+    const controller = new AbortController();
+    setDoctorSearchLoading(true);
+    setDoctorSearchError(false);
+    if (doctorSearchPage === 0) setDoctorSearchResults([]);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.get('/appointments/doctor-search', {
+          params: { q, page: doctorSearchPage }, signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        const rows = (res.data?.appointments || []).map((a) => ({
+          ...a, status: normalizeStatus(a.status),
+        }));
+        setDoctorSearchResults((prev) => doctorSearchPage === 0 ? rows : [...prev, ...rows]);
+        setDoctorSearchHasMore(!!res.data?.hasMore);
+      } catch {
+        if (!controller.signal.aborted) setDoctorSearchError(true);
+      } finally {
+        if (!controller.signal.aborted) setDoctorSearchLoading(false);
+      }
+    }, doctorSearchPage === 0 ? 300 : 0);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [isDoctor, filter.patientQuery, doctorSearchPage]);
 
   /**
    * Tiempo real: cuando llega un cambio de cita, refrescar la lista.
@@ -2520,10 +2560,9 @@ export default function Appointments() {
         */}
       <div className="flex flex-row items-center justify-end gap-2 mb-2 sm:mb-3">
         <div className="flex gap-2">
-          {/* Enfermería, como los doctores, solo ve el día que tiene delante:
-              el calendario del mes le llena la pantalla de días que no trabaja.
-              ODONTOLOGÍA SÍ: mira la agenda como mostrador (sep-2026). */}
-          {(!isDoctor || esOdontologia) && !isNurse && (
+          {/* Enfermería sigue en su lista del día. Los doctores disponen de
+              calendario además de la lista, incluida odontología. */}
+          {!isNurse && (
             <div className="inline-flex rounded-xl border border-slate-200 overflow-hidden bg-white">
               {[['calendar', 'Calendario'], ['list', 'Lista']].map(([v, label]) => (
                 <button
@@ -2624,7 +2663,10 @@ export default function Appointments() {
             <input
               type="text"
               value={filter.patientQuery}
-              onChange={(e) => setFilter({ ...filter, patientQuery: e.target.value })}
+              onChange={(e) => {
+                setFilter({ ...filter, patientQuery: e.target.value });
+                if (isDoctor) setDoctorSearchPage(0);
+              }}
               placeholder="Buscar paciente por nombre, cédula o teléfono..."
               className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
             />
@@ -2888,6 +2930,44 @@ export default function Appointments() {
             )}
           </div>
         </div>
+      )}
+
+      {isDoctor && filter.patientQuery.trim().length >= 2 && (
+        <section className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 mb-3 md:mb-4 p-3 md:p-4" aria-label="Citas del paciente en todas las fechas">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <h2 className="text-sm font-semibold text-slate-800">Citas del paciente en todas las fechas</h2>
+            <span className="text-xs text-slate-500">Abre una cita o revisa su atención</span>
+          </div>
+          {doctorSearchError && <p className="text-sm text-rose-600">No se pudo buscar. Intenta escribir de nuevo.</p>}
+          {!doctorSearchError && doctorSearchLoading && doctorSearchPage === 0 && <p className="text-sm text-slate-500">Buscando citas…</p>}
+          {!doctorSearchError && !doctorSearchLoading && doctorSearchResults.length === 0 && <p className="text-sm text-slate-500">No se encontraron citas para este paciente.</p>}
+          {doctorSearchResults.length > 0 && (
+            <div className="divide-y divide-slate-100">
+              {doctorSearchResults.map((apt) => (
+                <div key={apt._id} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-800">{apt.patient?.firstName} {apt.patient?.lastName}</p>
+                    <p className="text-xs text-slate-500">
+                      {formatLocalDate(apt.date)} · {apt.startTime || 'Sin hora'} · {apt.serviceName || 'Cita'} · {statusLabels[apt.status] || apt.status}
+                      {apt.clinic?.nombreComercial || apt.clinic?.name ? ` · ${apt.clinic.nombreComercial || apt.clinic.name}` : ''}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => openDetail(apt._id)} className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-medium cursor-pointer">Ver cita</button>
+                    {puedeVerConsulta(apt) && (
+                      <button type="button" onClick={() => setConsultaModal(apt)} className="px-3 py-1.5 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50 text-xs font-medium cursor-pointer">Ver atención</button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {!doctorSearchError && doctorSearchHasMore && (
+            <button type="button" disabled={doctorSearchLoading} onClick={() => setDoctorSearchPage((p) => p + 1)} className="mt-2 px-3 py-1.5 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50 text-xs font-medium cursor-pointer disabled:opacity-50">
+              {doctorSearchLoading ? 'Cargando…' : 'Ver más citas'}
+            </button>
+          )}
+        </section>
       )}
 
       {/* Totales por estado y por sucursal: para quien lleva la agenda (quien

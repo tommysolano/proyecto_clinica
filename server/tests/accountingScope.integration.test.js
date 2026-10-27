@@ -16,6 +16,7 @@ const H = require('./_integrationHelpers');
 const scopeMiddleware = require('../middleware/accountingScope');
 const purchases = require('../controllers/purchaseInvoiceController');
 const sales = require('../controllers/saleController');
+const invoices = require('../controllers/invoiceController');
 const subledger = require('../controllers/subledgerController');
 const costCenters = require('../controllers/costCenterController');
 const { refreshCostCenters } = require('../services/contificoCostCenters');
@@ -24,7 +25,10 @@ const Clinic = require('../models/Clinic');
 const CostCenter = require('../models/CostCenter');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 const Sale = require('../models/Sale');
+const Invoice = require('../models/Invoice');
 const Payable = require('../models/Payable');
+const Payment = require('../models/Payment');
+const payments = require('../controllers/paymentController');
 const Record = require('../models/ContificoRecord');
 const JournalEntry = require('../models/JournalEntry');
 
@@ -73,22 +77,40 @@ test('cada sucursal ligada ve las compras, ventas y cartera de su centro; la emp
     purchaseDoc(central, '001-001-1', ccCentral),
     purchaseDoc(central, '001-001-2', ccLab),
     purchaseDoc(central, '001-001-3', null),
+    purchaseDoc(lab, '001-001-4', ccLab),
+  ]);
+  await Payment.collection.insertMany([
+    { clinic: central, type: 'COBRO', costCenter: ccLab, number: 'LAB-CTF', partyName: 'Paciente Lab', date: new Date() },
+    { clinic: lab, type: 'COBRO', costCenter: ccLab, number: 'LAB-LOCAL', partyName: 'Paciente Lab', date: new Date() },
+    { clinic: central, type: 'COBRO', costCenter: ccCentral, number: 'CENTRAL', partyName: 'Paciente Central', date: new Date() },
   ]);
   await Sale.collection.insertMany([
     { clinic: central, status: 'completada', total: 10, costCenter: ccLab, createdAt: new Date() },
     { clinic: central, status: 'completada', total: 20, costCenter: ccCentral, createdAt: new Date() },
+    { clinic: lab, status: 'completada', total: 30, costCenter: null, createdAt: new Date() },
+  ]);
+  await Invoice.collection.insertMany([
+    { clinic: central, costCenter: ccLab, estado: 'AUTORIZADO', claveAcceso: 'lab-importada', createdAt: new Date() },
+    { clinic: central, costCenter: ccCentral, estado: 'AUTORIZADO', claveAcceso: 'central-importada', createdAt: new Date() },
+    { clinic: lab, costCenter: null, estado: 'AUTORIZADO', claveAcceso: 'lab-local', createdAt: new Date() },
   ]);
   await Payable.collection.insertOne({ clinic: central, status: 'ABIERTO', balance: 5, total: 5,
     costCenter: ccLab, party: { name: 'Proveedor' }, issueDate: new Date(), number: '1' });
 
   const labPurchases = (await scoped(purchases.list, lab)).out.payload;
-  assert.deepEqual(labPurchases.items.map((p) => p.serie), ['001-001-2']);
+  assert.deepEqual(labPurchases.items.map((p) => p.serie).sort(), ['001-001-2', '001-001-4']);
   const centralPurchases = (await scoped(purchases.list, central)).out.payload;
   assert.deepEqual(centralPurchases.items.map((p) => p.serie), ['001-001-1']);
   // Toda la empresa: incluso la compra que Contífico dejó sin centro.
-  assert.equal((await scoped(purchases.list, lab, { company: true })).out.payload.total, 3);
+  assert.equal((await scoped(purchases.list, lab, { company: true })).out.payload.total, 4);
+  assert.equal((await scoped(purchases.list, lab, { query: { q: '001-001-4' } })).out.payload.total, 1);
+  assert.equal((await scoped(payments.list, lab, { query: { q: 'Paciente Lab' } })).out.payload.total, 2);
 
-  assert.deepEqual((await scoped(sales.getSales, lab)).out.payload.sales.map((s) => s.total), [10]);
+  assert.deepEqual((await scoped(sales.getSales, lab)).out.payload.sales.map((s) => s.total).sort((a, b) => a - b), [10, 30]);
+  assert.deepEqual((await scoped(sales.getSales, central)).out.payload.sales.map((s) => s.total), [20]);
+  assert.equal((await scoped(sales.getSales, lab, { company: true })).out.payload.total, 3);
+  assert.deepEqual((await scoped(invoices.list, lab)).out.payload.invoices.map((i) => i.claveAcceso).sort(),
+    ['lab-importada', 'lab-local']);
   assert.equal((await scoped(subledger.list, lab, { query: { side: 'AP' } })).out.payload.length, 1);
   assert.equal((await scoped(subledger.list, central, { query: { side: 'AP' } })).out.payload.length, 0);
 
@@ -116,7 +138,7 @@ test('en las rutas de solo lectura, una escritura sigue en la sucursal activa', 
   assert.equal(req.costCenterScope, undefined);
 });
 
-test('la compra de bodega toma su centro del asiento de la compra, no del de pago', async () => {
+test('una compra sin centro en Contífico permanece sin centro aunque su asiento lo tenga', async () => {
   const { central, ccLab } = await seedCompany();
   const gz = (payload) => zlib.gzipSync(Buffer.from(JSON.stringify(payload)));
   await Record.collection.insertOne({ clinic: central, entity: 'cost_center', externalId: 'LAB',
@@ -141,14 +163,14 @@ test('la compra de bodega toma su centro del asiento de la compra, no del de pag
   ]);
 
   const range = { clinicId: central, from: new Date('2026-09-01T00:00:00Z'), to: new Date('2026-09-30T23:59:59Z') };
-  assert.equal((await refreshCostCenters({ ...range, commit: false })).purchases, 1);
+  assert.equal((await refreshCostCenters({ ...range, commit: false })).purchases, 0);
   const result = await refreshCostCenters(range);
-  assert.equal(result.purchases, 1);
-  assert.equal(result.payables, 1);
+  assert.equal(result.purchases, 0);
+  assert.equal(result.payables, 0);
   const purchase = await PurchaseInvoice.findOne({ sourceRef: record }).lean();
-  assert.equal(String(purchase.costCenter), String(ccLab));
-  assert.deepEqual(purchase.items.map((item) => String(item.costCenter)), [String(ccLab), String(ccLab)]);
-  assert.equal(String((await Payable.findOne({ sourceRef: record }).lean()).costCenter), String(ccLab));
+  assert.equal(purchase.costCenter, null);
+  assert.deepEqual(purchase.items.map((item) => item.costCenter), [null, null]);
+  assert.equal((await Payable.findOne({ sourceRef: record }).lean()).costCenter, null);
   // Idempotente: una segunda pasada no cambia nada.
   const again = await refreshCostCenters(range);
   assert.deepEqual([again.purchases, again.payables], [0, 0]);

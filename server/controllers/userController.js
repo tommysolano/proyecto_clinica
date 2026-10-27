@@ -4,6 +4,7 @@ const User = require('../models/User');
 const { VALID_ROLES, DOCTOR_LIKE_ROLES } = require('../constants/roles');
 const { sucursalPedida } = require('../utils/clinicScope');
 const { coversClinic, roleForCoveredClinic } = require('../utils/companies');
+const { recommendersForClinic } = require('../services/purchaseRecommenders');
 const { encrypt: encryptSecret } = require('../modules/invoicing/ec/crypto');
 const {
   loadP12,
@@ -582,6 +583,20 @@ exports.getNurses = async (req, res) => {
     res.json(nurses);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener enfermeros', error: error.message });
+  }
+};
+
+exports.getPurchaseRecommenders = async (req, res) => {
+  try {
+    const clinicId = sucursalPedida(req);
+    const users = await recommendersForClinic(clinicId);
+    res.json(users.map((user) => ({
+      _id: user._id,
+      name: user.name,
+      role: user.recommendationRole,
+    })));
+  } catch (error) {
+    res.status(500).json({ message: 'No se pudo cargar el personal que recomienda compras', error: error.message });
   }
 };
 

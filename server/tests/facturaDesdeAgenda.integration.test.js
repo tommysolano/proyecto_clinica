@@ -90,6 +90,26 @@ test('sin el permiso, no se puede cobrar una cita; con él, la venta queda enlaz
   assert.ok(asiento, 'el asiento existe');
 });
 
+test('vende un producto sin receta y guarda qué doctor lo recomendó', async () => {
+  const { clinicId, cajero, patient, cita } = await seed();
+  await User.updateOne({ _id: cajero._id }, { $set: { canBill: true } });
+  const conPermiso = await User.findById(cajero._id);
+  const doctor = await User.create({
+    name: 'Doctora Alba', email: 'doctora-alba@test.com', password: 'secreto123',
+    clinics: [{ clinic: clinicId, role: 'ginecologia' }],
+  });
+  const producto = await H.makeProduct(clinicId, {
+    name: 'Protector solar', category: 'insumo', salePrice: 30, stock: 10,
+  });
+  const venta = await ventaDeCita(clinicId, conPermiso, patient, cita, producto, {
+    paymentMethod: 'efectivo', recommendedBy: String(doctor._id),
+  });
+  assert.equal(venta.statusCode, 201, JSON.stringify(venta.payload));
+  const guardada = await Sale.findById(venta.payload._id).lean();
+  assert.equal(String(guardada.recommendedBy), String(doctor._id));
+  assert.equal(String(guardada.createdBy), String(cajero._id));
+});
+
 test('la agenda dice qué citas ya están cobradas (solo a quien cobra)', async () => {
   const { clinicId, cajero, patient, cita, servicio } = await seed();
   await User.updateOne({ _id: cajero._id }, { $set: { canBill: true } });

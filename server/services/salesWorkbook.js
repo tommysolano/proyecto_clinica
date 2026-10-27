@@ -144,9 +144,12 @@ function addSalesSheet(wb, sales, { title = 'Ventas' } = {}) {
  * @param {string} [opts.status]      filtro de estado (vacío = todas, incluidas las anuladas)
  * @param {string[]} [opts.productIds] solo ventas que contengan alguno de estos productos
  */
-function findSalesForSheet(clinicId, { range, status, productIds, costCenter } = {}) {
-  const query = { clinic: clinicId };
-  if (costCenter) query.costCenter = costCenter;
+function findSalesForSheet(clinicId, { range, status, productIds, costCenter, branchClinicId,
+  companyClinicIds } = {}) {
+  const query = companyClinicIds?.length ? { clinic: { $in: companyClinicIds } }
+    : branchClinicId && String(branchClinicId) !== String(clinicId)
+      ? { $or: [{ clinic: clinicId, ...(costCenter ? { costCenter } : {}) }, { clinic: branchClinicId }] }
+      : { clinic: clinicId, ...(costCenter ? { costCenter } : {}) };
   if (range) query.createdAt = range;
   if (status) query.status = status;
   if (productIds && productIds.length) query['items.product'] = { $in: productIds };

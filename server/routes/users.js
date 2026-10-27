@@ -7,6 +7,7 @@ const {
   deleteUser,
   getDoctors,
   getNurses,
+  getPurchaseRecommenders,
   getSchedulers,
   getMySignatureCert,
   getMyPrescriptionSignature,
@@ -36,6 +37,7 @@ router.get('/schedulers', requireRole('admin', 'cajero', 'call_center', 'marketi
 // Para nombrar el turno de enfermería al asignar la atención. Lo consulta
 // recepción/caja, no solo el admin.
 router.get('/nurses', requireRole('admin', 'cajero', 'doctor', 'enfermero'), getNurses);
+router.get('/purchase-recommenders', requireRole('admin', 'cajero', 'contabilidad'), getPurchaseRecommenders);
 /**
  * FIRMA ELECTRÓNICA del usuario actual (.p12). Es un ajuste de SU cuenta, así
  * que no lleva `requireRole`: quien firma documentos es el profesional, y quien

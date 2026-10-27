@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const {
   getAppointments,
+  searchDoctorAppointments,
   getCalendarSummary,
   getAppointment,
   createAppointment,
@@ -40,6 +41,7 @@ router.get('/stats', requireRole('admin', 'cajero', 'doctor', 'call_center', 'en
  */
 router.get('/analytics/by-service', requireRole('admin', 'marketing'), appointmentsByService);
 router.get('/', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getAppointments);
+router.get('/doctor-search', requireRole('doctor'), searchDoctorAppointments);
 /**
  * RESUMEN DEL CALENDARIO: por día, solo total y contadores por estado. Va
  * ANTES de `/:id` para que no lo capture esa ruta (un id de ObjectId no puede

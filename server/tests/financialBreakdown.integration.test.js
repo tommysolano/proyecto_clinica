@@ -14,6 +14,8 @@ const reports = require('../controllers/accountingReportsController');
 const { createEntry } = require('../utils/accounting');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const CostCenter = require('../models/CostCenter');
+const Clinic = require('../models/Clinic');
+const scopeMiddleware = require('../middleware/accountingScope');
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -25,6 +27,27 @@ const pedir = (clinicId, userId, query) => H.runController(
   reports.incomeStatement,
   H.mockReq(clinicId, userId, {}, { query, user: { _id: userId, clinics: [{ clinic: clinicId }] } })
 );
+
+test('Laboratorio suma sus asientos nuevos al histórico importado de su centro', async () => {
+  const { clinicId: central, userId } = await H.seedClinic({ date: d('2026-05-01') });
+  const { clinicId: lab } = await H.seedClinic({ date: d('2026-05-01') });
+  const labCenter = await CostCenter.create({ clinic: lab, code: '5', name: 'CC LABORATORIO' });
+  await Clinic.create({ _id: central, name: 'Central', active: true });
+  await Clinic.create({ _id: lab, name: 'Laboratorio', active: true,
+    accountingCostCenter: labCenter._id, accountingDataClinic: central,
+    accountingImportCostCenters: [labCenter._id] });
+  await venta(central, userId, { fecha: '2026-05-05', monto: 100, costCenter: labCenter._id });
+  await venta(central, userId, { fecha: '2026-05-06', monto: 300 });
+  await venta(lab, userId, { fecha: '2026-05-07', monto: 50, costCenter: labCenter._id });
+
+  const req = H.mockReq(String(lab), userId, {}, { query: { startDate: '2026-05-01', endDate: '2026-05-31' } });
+  req.method = 'GET';
+  req.path = '/income-statement';
+  await new Promise((resolve, reject) => scopeMiddleware()(req, {}, (error) => error ? reject(error) : resolve()));
+  const result = await H.runController(reports.incomeStatement, req);
+  assert.equal(result.statusCode, 200, JSON.stringify(result.payload));
+  assert.equal(result.payload.totalIngresos, 150);
+});
 
 /** Asiento simple ingreso/caja por `monto` en la fecha dada, con centro opcional. */
 async function venta(clinicId, userId, { fecha, monto, costCenter = null }) {

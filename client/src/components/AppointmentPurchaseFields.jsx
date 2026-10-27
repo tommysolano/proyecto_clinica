@@ -1,4 +1,5 @@
 import ProductAutocomplete from './ProductAutocomplete';
+import { ROLE_LABELS } from '../utils/roles';
 import {
   HiOutlineBeaker,
   HiOutlineMinus,
@@ -23,6 +24,8 @@ export default function AppointmentPurchaseFields({ purchase }) {
     additionalItems,
     itemsValue,
     itemsMethod,
+    recommendedBy,
+    recommenders,
     products,
     pickerKey,
     togglePrescription,
@@ -31,6 +34,7 @@ export default function AppointmentPurchaseFields({ purchase }) {
     removeProduct,
     setItemsValue,
     setItemsMethod,
+    setRecommendedBy,
   } = purchase;
 
   return (
@@ -181,6 +185,23 @@ export default function AppointmentPurchaseFields({ purchase }) {
             </select>
           </label>
         </div>
+
+        <label className="block">
+          <span className="block text-xs font-medium text-slate-600 mb-1">Compra recomendada por</span>
+          <select
+            value={recommendedBy}
+            onChange={(event) => setRecommendedBy(event.target.value)}
+            className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white"
+          >
+            <option value="">Nadie / no se indicó</option>
+            {recommenders.map((person) => (
+              <option key={person._id} value={person._id}>
+                {person.name}{person.role ? ` · ${ROLE_LABELS[person.role] || person.role}` : ''}
+              </option>
+            ))}
+          </select>
+          <span className="block text-[11px] text-slate-400 mt-1">Selecciona al doctor o enfermero que recomendó el producto, no a quien cobra.</span>
+        </label>
 
         <p className="text-[11px] text-slate-400 m-0">
           Al guardar, la compra pasa a Observaciones del paciente y este formulario queda limpio.

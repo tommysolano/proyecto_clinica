@@ -100,7 +100,8 @@ function unitCostOf(m) {
 async function openingBalance({ clinicId, product, warehouse = null, from = null }) {
   const base = { qty: 0, value: 0, unitCost: 0, movimientos: 0 };
   if (!from) return base;
-  const match = { clinic: oid(clinicId), product: oid(product) };
+  const match = { clinic: Array.isArray(clinicId) ? { $in: clinicId.map(oid) } : oid(clinicId),
+    product: oid(product) };
   const previos = await InventoryMovement.find(match).lean();
 
   let qty = 0;
@@ -134,10 +135,11 @@ async function buildKardex(clinicId, {
   const hasta = to ? endOfDay(parseLocalDate(to)) : null;
 
   const [prod, wh, todos] = await Promise.all([
-    Product.findOne({ _id: product, clinic: clinicId })
+    Product.findOne({ _id: product, clinic: Array.isArray(clinicId) ? { $in: clinicId } : clinicId })
       .select('code name unit stock averageCost category categoria inventoryCategory').lean(),
-    warehouse ? Warehouse.findOne({ _id: warehouse, clinic: clinicId }).select('code name').lean() : null,
-    InventoryMovement.find({ clinic: clinicId, product })
+    warehouse ? Warehouse.findOne({ _id: warehouse,
+      clinic: Array.isArray(clinicId) ? { $in: clinicId } : clinicId }).select('code name').lean() : null,
+    InventoryMovement.find({ clinic: Array.isArray(clinicId) ? { $in: clinicId } : clinicId, product })
       .populate('warehouse toWarehouse', 'code name')
       .populate('createdBy', 'name')
       .lean(),

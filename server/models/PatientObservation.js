@@ -80,6 +80,9 @@ const patientObservationSchema = new mongoose.Schema(
       ref: { type: mongoose.Schema.Types.ObjectId, default: null },
     },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    // Profesional que recomendó la compra; distinto de quien la registró en caja.
+    recommendedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    recommendedByName: { type: String, trim: true, default: '' },
     // Última persona que la modificó. Vacío = nadie la ha tocado desde que se creó.
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     editedAt: { type: Date, default: null },

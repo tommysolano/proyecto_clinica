@@ -12,10 +12,10 @@
 // aunque en Contífico sea un producto: esa clasificación es de la clínica.
 const os = require('os');
 const { randomUUID } = require('crypto');
-const Clinic = require('../models/Clinic');
 const Record = require('../models/ContificoRecord');
 const Product = require('../models/Product');
 const Warehouse = require('../models/Warehouse');
+const { catalogClinics } = require('./contificoCatalogScope');
 const InventoryMovement = require('../models/InventoryMovement');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const InventoryCategory = require('../models/InventoryCategory');
@@ -60,9 +60,10 @@ async function fetchAll(api, path, params) {
 
 /** Bodegas y productos de Contífico → _id local (por código de bodega y por enlace del producto). */
 async function referenceMaps(clinicId) {
+  const catalog = await catalogClinics(clinicId);
   const [warehouseRecords, warehouses, productRecords] = await Promise.all([
     Record.find({ clinic: clinicId, entity: 'warehouse' }).select('externalId payloadCompressed').lean(),
-    Warehouse.find({ clinic: clinicId }).select('code').lean(),
+    Warehouse.find({ clinic: { $in: catalog.ids } }).select('code').lean(),
     Record.find({ clinic: clinicId, entity: 'product' }).select('externalId projection.links').lean(),
   ]);
   const warehouseByCode = new Map(warehouses.map((warehouse) => [String(warehouse.code), warehouse._id]));
@@ -278,11 +279,13 @@ async function syncStock({ clinic, api, commit = true }) {
     if (product.category !== 'insumo' || product.unlimited) { skippedServices += 1; continue; }
     const stock = num(row.cantidad_stock);
     const others = (product.stockByClinic || []).filter((entry) => String(entry.clinic) !== String(clinic._id));
+    const allocated = others.reduce((sum, entry) => sum + num(entry.stock), 0);
+    const centralStock = stock - allocated;
     const current = (product.stockByClinic || []).find((entry) => String(entry.clinic) === String(clinic._id));
-    if (num(product.stock) === stock && current && num(current.stock) === stock) continue;
+    if (num(product.stock) === stock && current && Math.abs(num(current.stock) - centralStock) < 0.0001) continue;
     // Sin validadores a propósito: Contífico admite stock negativo (déficit) y aquí se refleja tal cual.
     ops.push({ updateOne: { filter: { _id: product._id }, update: { $set: {
-      stock, stockByClinic: [...others, { clinic: clinic._id, stock }] } } } });
+      stock, stockByClinic: [...others, { clinic: clinic._id, stock: centralStock }] } } } });
   }
   if (commit) for (let offset = 0; offset < ops.length; offset += 500) await Product.bulkWrite(ops.slice(offset, offset + 500), { ordered: false });
   return { products: rows.length, updated: ops.length, skippedServices, newProducts: nuevos };
@@ -313,7 +316,7 @@ async function syncInventory({ includeHistory = false, months: requestedMonths =
       } catch (error) { leaseLost = true; console.error('[contifico-inventory-sync] Perdió arriendo:', error.message); }
     }, 60 * 1000);
     const assertLease = () => { if (leaseLost) throw new Error('Arriendo de sincronización perdido'); };
-    const clinic = await Clinic.findOne({ name: /^Central$/i }).lean();
+    const clinic = await require('./contificoSourceClinic').contificoSourceClinic();
     if (!clinic) throw new Error('Clínica Central no encontrada');
     if (commit) await recordSyncState({ state: 'RUNNING', trigger, host: os.hostname(),
       startedAt: new Date(), completedAt: null, months: [], failures: [], lastError: '' });

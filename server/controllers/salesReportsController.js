@@ -10,9 +10,14 @@ const oid = (v) => new mongoose.Types.ObjectId(v);
 const fail = (res, e) => res.status(e.status || 400).json({ message: e.message });
 
 // Sucursal ligada a un centro (middleware/accountingScope): las ventas de su centro.
-const centerMatch = (req) => (req.costCenterScope ? { costCenter: oid(req.costCenterScope) } : {});
-const scopedQuery = (req) => (req.costCenterScope && !req.query.costCenter
-  ? { ...req.query, costCenter: String(req.costCenterScope) } : req.query);
+const centerMatch = (req) => (req.costCenterScope ? { costCenter: req.costCenterScope?.$in
+  ? { $in: req.costCenterScope.$in.map(oid) } : oid(req.costCenterScope) } : {});
+const scopedQuery = (req) => ({ ...req.query,
+  ...(req.costCenterScope ? { costCenter: req.costCenterScope } : {}),
+  companyClinicIds: req.companyClinicIds || null,
+  branchClinicId: req.userClinicId && String(req.userClinicId) !== String(req.clinicId)
+    ? req.userClinicId : null,
+});
 
 /** Construye el rango de fechas a partir del query. */
 function dateRange(req) {
@@ -68,7 +73,12 @@ exports.summary = async (req, res) => {
   try {
     const range = dateRange(req);
     const productIds = await resolveProductIds(req);
-    const baseMatch = { clinic: oid(req.clinicId), ...centerMatch(req) };
+    const baseMatch = req.companyClinicIds?.length
+      ? { clinic: { $in: req.companyClinicIds.map(oid) } }
+      : req.userClinicId && String(req.userClinicId) !== String(req.clinicId)
+        ? { $or: [{ clinic: oid(req.clinicId), ...centerMatch(req) },
+          { clinic: oid(req.userClinicId) }] }
+        : { clinic: oid(req.clinicId), ...centerMatch(req) };
     if (range) baseMatch.createdAt = range;
     if (productIds.length) baseMatch['items.product'] = { $in: productIds.map(oid) };
 
@@ -292,6 +302,8 @@ exports.exportSalesSheetExcel = async (req, res) => {
     const sales = await findSalesForSheet(req.clinicId, {
       range,
       costCenter: req.costCenterScope,
+      branchClinicId: req.userClinicId,
+      companyClinicIds: req.companyClinicIds,
       status: req.query.status,
       productIds: productIds.map(oid),
     });

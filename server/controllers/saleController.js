@@ -1,4 +1,5 @@
 const Sale = require('../models/Sale');
+const Clinic = require('../models/Clinic');
 const Product = require('../models/Product');
 const CreditCard = require('../models/CreditCard');
 const InventoryMovement = require('../models/InventoryMovement');
@@ -16,6 +17,7 @@ const { assertNotPastDocumentDate } = require('../utils/fiscalDocumentDate');
 const { invoiceDate } = require('../utils/dates');
 const { emitToClinic } = require('../realtime');
 const { puntoDelUsuario } = require('../services/puntoEmision');
+const { scopedDocuments } = require('../services/scopedDocuments');
 
 /**
  * Precio unitario de una línea de venta.
@@ -83,9 +85,7 @@ exports._resolveUnitPrice = resolveUnitPrice;
 exports.getSales = async (req, res) => {
   try {
     const { startDate, endDate, status, patient, product, client, page = 1, limit = 20 } = req.query;
-    const query = { clinic: req.clinicId };
-    // Sucursal ligada a un centro (middleware/accountingScope): sus ventas.
-    if (req.costCenterScope) query.costCenter = req.costCenterScope;
+    const query = scopedDocuments(req);
 
     if (startDate && endDate) {
       query.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
@@ -120,7 +120,7 @@ exports.getSales = async (req, res) => {
 
 exports.getSale = async (req, res) => {
   try {
-    const sale = await Sale.findOne({ _id: req.params.id, clinic: req.clinicId })
+    const sale = await Sale.findOne({ _id: req.params.id, ...scopedDocuments(req) })
       .populate('patient', 'firstName lastName cedula address phone email')
       .populate('items.product', 'name code')
       .populate('createdBy', 'name')
@@ -182,6 +182,13 @@ exports.createSale = async (req, res) => {
       const visibles = sucursalesVisibles(req);
       if (!cita || (visibles !== null && !visibles.some((c) => String(c) === String(cita.clinic)))) {
         return res.status(404).json({ message: 'La cita a cobrar no existe o no es de tu sucursal' });
+      }
+      if (req.body.recommendedBy) {
+        const recommender = await require('../services/purchaseRecommenders')
+          .findRecommender(cita.clinic, req.body.recommendedBy);
+        if (!recommender) {
+          return res.status(400).json({ message: 'El profesional que recomendó la compra no es válido' });
+        }
       }
     }
 
@@ -324,9 +331,10 @@ exports.createSale = async (req, res) => {
         // servicio no lleva bodega: entonces no hay centro de bodega que proponer, y el que
         // el usuario elija a mano se respeta tal cual.
         const resolver = createResolver({ clinicId: req.clinicId, session });
+        const branch = await Clinic.findById(req.clinicId).select('accountingCostCenter').session(session);
         const cc = await resolver.resolve({
           warehouse: req.body.warehouse || null,
-          costCenter: req.body.costCenter || null,
+          costCenter: req.body.costCenter || (!req.body.warehouse && branch?.accountingCostCenter) || null,
           confirmed: req.body.costCenterConfirmed === true || req.body.costCenterConfirmed === 'true',
           contexto: 'la venta',
         });
@@ -680,6 +688,12 @@ exports.createSale = async (req, res) => {
           }
           it._cogs = itemCost;
           const cur = await kardex.currentStock({ clinicId: req.clinicId, product: it.product }, session);
+          const branchStock = await Product.updateOne(
+            { _id: it.product, 'stockByClinic.clinic': req.clinicId },
+            { $set: { 'stockByClinic.$.stock': cur.qty } }, { session }
+          );
+          if (!branchStock.matchedCount) await Product.updateOne({ _id: it.product },
+            { $push: { stockByClinic: { clinic: req.clinicId, stock: cur.qty } } }, { session });
           await Product.updateOne(
             { _id: it.product, clinic: req.clinicId },
             { $set: { averageCost: cur.averageCost } },
@@ -759,23 +773,39 @@ exports.createSale = async (req, res) => {
         let clientesAcc = null; // cuenta de CxC (para abrir el documento de cartera)
         const ChartOfAccount = require('../models/ChartOfAccount');
         /**
-         * CUENTA DE LA CATEGORÍA EN EL PLAN DE ESTA SUCURSAL (oct-2026). El catálogo es
-         * compartido: el producto —y su categoría contable— se crearon bajo UNA sucursal,
-         * y sus cuentas son de ESE plan. Cada sucursal lleva su propio plan con los mismos
-         * códigos, y el asiento se valida contra el de la sucursal que vende: usar la cuenta
-         * ajena daba «Cuenta no encontrada». Se usa la cuenta del MISMO CÓDIGO de esta
-         * sucursal; si no existe, se deja la original (y el asiento lo dirá).
+         * El catálogo de productos es compartido, pero el asiento pertenece a la sucursal
+         * que cobra. Las cuentas de una categoría pueden apuntar al plan de otra sucursal.
+         * Se busca el mismo código en el plan local y, si falta, se copia la cuenta y sus
+         * padres dentro de la transacción. Así un plan parcial no bloquea la venta ni deja
+         * asientos referidos a cuentas de otra sucursal.
          */
         const cuentasLocales = new Map();
         const cuentaLocal = async (accountId) => {
           if (!accountId) return accountId;
           const k = String(accountId._id || accountId);
           if (cuentasLocales.has(k)) return cuentasLocales.get(k);
-          let out = accountId;
-          const acc = await ChartOfAccount.findById(k).select('clinic code').session(session).lean();
-          if (acc && String(acc.clinic) !== String(req.clinicId)) {
-            const local = await ChartOfAccount.findOne({ clinic: req.clinicId, code: acc.code }).select('_id').session(session).lean();
-            if (local) out = local._id;
+          const acc = await ChartOfAccount.findById(k).session(session).lean();
+          if (!acc) {
+            throw Object.assign(new Error(`La cuenta contable vinculada (${k}) ya no existe.`), { status: 400 });
+          }
+          let out = acc._id;
+          if (String(acc.clinic) !== String(req.clinicId)) {
+            let local = await ChartOfAccount.findOne({ clinic: req.clinicId, code: acc.code })
+              .select('_id').session(session).lean();
+            if (!local) {
+              const parent = acc.parent ? await cuentaLocal(acc.parent) : null;
+              local = await ChartOfAccount.findOneAndUpdate(
+                { clinic: req.clinicId, code: acc.code },
+                { $setOnInsert: {
+                  name: acc.name, type: acc.type, nature: acc.nature, parent,
+                  level: acc.level, allowsMovement: acc.allowsMovement,
+                  taxCode: acc.taxCode, description: acc.description,
+                  active: acc.active, isSystem: acc.isSystem,
+                } },
+                { upsert: true, new: true, session }
+              ).select('_id').lean();
+            }
+            out = local._id;
           }
           cuentasLocales.set(k, out);
           return out;

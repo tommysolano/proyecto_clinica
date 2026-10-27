@@ -14,6 +14,8 @@ export default function useAppointmentPurchase(appointment) {
     appointment?.itemsValue == null ? '' : String(appointment.itemsValue)
   );
   const [itemsMethod, setItemsMethod] = useState(appointment?.itemsMethod || '');
+  const [recommendedBy, setRecommendedBy] = useState('');
+  const [recommenders, setRecommenders] = useState([]);
   const [products, setProducts] = useState([]);
   const [pickerKey, setPickerKey] = useState(0);
 
@@ -50,6 +52,15 @@ export default function useAppointmentPurchase(appointment) {
       });
     return () => { alive = false; };
   }, [appointment._id]);
+
+  useEffect(() => {
+    let alive = true;
+    const clinic = appointment.clinic?._id || appointment.clinic;
+    api.get('/users/purchase-recommenders', { params: clinic ? { clinic } : {} })
+      .then((response) => { if (alive) setRecommenders(response.data || []); })
+      .catch(() => { if (alive) setRecommenders([]); });
+    return () => { alive = false; };
+  }, [appointment.clinic]);
 
   const chosenPrescription = useMemo(
     () => prescribedItems.filter((item) => selected.has(itemKey(item))),
@@ -103,6 +114,7 @@ export default function useAppointmentPurchase(appointment) {
     ],
     itemsValue: itemsValue === '' ? null : Number(itemsValue),
     itemsMethod,
+    recommendedBy: recommendedBy || null,
   });
 
   const reset = () => {
@@ -110,6 +122,7 @@ export default function useAppointmentPurchase(appointment) {
     setAdditionalItems([]);
     setItemsValue('');
     setItemsMethod('');
+    setRecommendedBy('');
     setPickerKey((key) => key + 1);
   };
 
@@ -120,6 +133,8 @@ export default function useAppointmentPurchase(appointment) {
     additionalItems,
     itemsValue,
     itemsMethod,
+    recommendedBy,
+    recommenders,
     products,
     pickerKey,
     togglePrescription,
@@ -128,6 +143,7 @@ export default function useAppointmentPurchase(appointment) {
     removeProduct,
     setItemsValue,
     setItemsMethod,
+    setRecommendedBy,
     payload,
     reset,
   };

@@ -5,7 +5,12 @@ const H = require('./_integrationHelpers');
 const Appointment = require('../models/Appointment');
 const Patient = require('../models/Patient');
 const PatientObservation = require('../models/PatientObservation');
+const User = require('../models/User');
+const Clinic = require('../models/Clinic');
+const Company = require('../models/Company');
+const { invalidateCompanyCache } = require('../utils/companies');
 const appointments = require('../controllers/appointmentController');
+const users = require('../controllers/userController');
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -108,4 +113,90 @@ test('rechaza un producto adicional que no está disponible sin borrar el estado
   assert.equal(savedAppointment.prescribedItems.length, 1);
   assert.equal(savedAppointment.itemsValue, 10);
   assert.equal(await PatientObservation.countDocuments({}), 0);
+});
+
+test('registra una compra sin receta y atribuye la recomendación al enfermero, no al cajero', async () => {
+  const { clinicId, userId, patient, appointment, product } = await seed();
+  const enfermero = await User.create({
+    name: 'Enfermero Luis', email: 'enfermero-luis@test.com', password: 'secreto123',
+    clinics: [{ clinic: clinicId, role: 'enfermero' }],
+  });
+  const result = await H.runController(
+    appointments.updateCobroItems,
+    H.mockReq(clinicId, userId, {
+      items: [{ source: 'adicional', product: String(product._id), quantity: 1 }],
+      itemsValue: 24.5,
+      recommendedBy: String(enfermero._id),
+    }, { role: 'cajero', params: { id: String(appointment._id) } }),
+  );
+  assert.equal(result.statusCode, 200, JSON.stringify(result.payload));
+  const observation = await PatientObservation.findOne({ patient: patient._id }).lean();
+  assert.equal(String(observation.createdBy), String(userId));
+  assert.equal(String(observation.recommendedBy), String(enfermero._id));
+  assert.equal(observation.recommendedByName, 'Enfermero Luis');
+  assert.match(observation.text, /Compra recomendada por: Enfermero Luis/);
+  assert.doesNotMatch(observation.text, /\(receta\)/);
+});
+
+test('no atribuye una compra de la agenda a personal que no sea doctor o enfermero', async () => {
+  const { clinicId, userId, appointment, product } = await seed();
+  const result = await H.runController(
+    appointments.updateCobroItems,
+    H.mockReq(clinicId, userId, {
+      items: [{ source: 'adicional', product: String(product._id), quantity: 1 }],
+      recommendedBy: String(userId),
+    }, { role: 'cajero', params: { id: String(appointment._id) } }),
+  );
+  assert.equal(result.statusCode, 400);
+  assert.equal(await PatientObservation.countDocuments({}), 0);
+});
+
+test('el selector de recomendaciones incluye especialidades y enfermería, sin personal de caja', async () => {
+  const { clinicId, userId } = await seed();
+  const ginecologa = await User.create({
+    name: 'Dra. Eva', email: 'dra-eva@test.com', password: 'secreto123',
+    clinics: [{ clinic: clinicId, role: 'ginecologia' }],
+  });
+  const enfermera = await User.create({
+    name: 'Enf. Rosa', email: 'enf-rosa@test.com', password: 'secreto123',
+    clinics: [{ clinic: clinicId, role: 'enfermero' }],
+  });
+  const cajero = await User.create({
+    name: 'Caja', email: 'caja-selector@test.com', password: 'secreto123',
+    clinics: [{ clinic: clinicId, role: 'cajero' }],
+  });
+  const result = await H.runController(
+    users.getPurchaseRecommenders,
+    H.mockReq(clinicId, userId, {}, { role: 'cajero' }),
+  );
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.payload.find((person) => String(person._id) === String(ginecologa._id))?.role, 'ginecologia');
+  assert.equal(result.payload.find((person) => String(person._id) === String(enfermera._id))?.role, 'enfermero');
+  assert.equal(result.payload.some((person) => String(person._id) === String(cajero._id)), false);
+});
+
+test('el selector incluye otras sucursales de la empresa y excluye otra empresa', async () => {
+  const { clinicId } = await seed();
+  const empresa = await Company.create({ name: 'Empresa clínica', isDefault: true });
+  const ajena = await Company.create({ name: 'Otra empresa' });
+  await Clinic.create({ _id: clinicId, name: 'Central', company: empresa._id });
+  const hermana = await Clinic.create({ name: 'Laboratorio', company: empresa._id });
+  const otra = await Clinic.create({ name: 'Externa', company: ajena._id });
+  const deLaboratorio = await User.create({
+    name: 'Doctora Laboratorio', email: 'laboratorio-recomienda@test.com', password: 'secreto123',
+    clinics: [{ clinic: hermana._id, role: 'doctor' }],
+  });
+  const deOtraEmpresa = await User.create({
+    name: 'Doctora Externa', email: 'externa-recomienda@test.com', password: 'secreto123',
+    clinics: [{ clinic: otra._id, role: 'doctor' }],
+  });
+  invalidateCompanyCache();
+  const result = await H.runController(
+    users.getPurchaseRecommenders,
+    H.mockReq(clinicId, deLaboratorio._id, {}, { role: 'cajero' }),
+  );
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.payload.some((person) => String(person._id) === String(deLaboratorio._id)), true);
+  assert.equal(result.payload.some((person) => String(person._id) === String(deOtraEmpresa._id)), false);
+  invalidateCompanyCache();
 });

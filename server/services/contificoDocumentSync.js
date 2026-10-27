@@ -15,7 +15,6 @@ const { randomUUID } = require('crypto');
 // El EJSON del driver: el paquete `bson` suelto puede ser otra versión e
 // incompatible con los ObjectId que entrega mongoose.
 const { EJSON } = require('mongoose').mongo.BSON;
-const Clinic = require('../models/Clinic');
 const Record = require('../models/ContificoRecord');
 const Sale = require('../models/Sale');
 const Invoice = require('../models/Invoice');
@@ -319,7 +318,7 @@ async function syncDocuments({ includeHistory = false, months: requestedMonths =
       } catch (error) { leaseLost = true; console.error('[contifico-document-sync] Perdió arriendo:', error.message); }
     }, 60 * 1000);
     const assertLease = () => { if (leaseLost) throw new Error('Arriendo de sincronización perdido'); };
-    const clinic = await Clinic.findOne({ name: /^Central$/i }).lean();
+    const clinic = await require('./contificoSourceClinic').contificoSourceClinic();
     if (!clinic) throw new Error('Clínica Central no encontrada');
     if (commit) await recordSyncState({ state: 'RUNNING', trigger, host: os.hostname(),
       startedAt: new Date(), completedAt: null, months: [], failures: [], lastError: '' });
@@ -348,8 +347,8 @@ async function syncDocuments({ includeHistory = false, months: requestedMonths =
       try {
         assertLease();
         const outcome = await syncDocumentMonth({ clinic, api, year, month, commit, assertLease });
-        // El centro de costo de las compras puede estar solo en su asiento, y la
-        // contadora puede cambiarlo sin tocar el documento: se recalcula siempre.
+        // Conserva el centro que trae cada documento de Contífico. Si no trae
+        // centro, permanece vacío aunque el asiento tenga uno.
         if (commit) {
           try {
             assertLease();
