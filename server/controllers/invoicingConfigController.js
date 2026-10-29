@@ -4,6 +4,8 @@ const multer = require('multer');
 const InvoicingConfig = require('../models/InvoicingConfig');
 const { encrypt, decrypt } = require('../modules/invoicing/ec/crypto');
 const { loadP12, rucsDelCertificado } = require('../modules/invoicing/ec/xadesSigner');
+// La configuración SRI es de la EMPRESA: desde cualquier sucursal se lee y edita la misma.
+const { sucursalSri } = require('../services/puntoEmision');
 
 const CERTS_DIR = path.join(__dirname, '..', 'storage', 'certs');
 if (!fs.existsSync(CERTS_DIR)) fs.mkdirSync(CERTS_DIR, { recursive: true });
@@ -41,7 +43,7 @@ function sanitizeOutput(config) {
 
 exports.getConfig = async (req, res) => {
   try {
-    const config = await InvoicingConfig.findOne({ clinic: req.clinicId });
+    const config = await InvoicingConfig.findOne({ clinic: await sucursalSri(req.clinicId) });
     res.json(sanitizeOutput(config));
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener configuración' });
@@ -75,9 +77,10 @@ exports.upsertConfig = async (req, res) => {
     if (update.ambiente === 'pruebas') update.ambiente = '1';
     if (update.ambiente === 'produccion') update.ambiente = '2';
 
+    const sri = await sucursalSri(req.clinicId);
     const config = await InvoicingConfig.findOneAndUpdate(
-      { clinic: req.clinicId },
-      { $set: update, $setOnInsert: { clinic: req.clinicId } },
+      { clinic: sri },
+      { $set: update, $setOnInsert: { clinic: sri } },
       { new: true, upsert: true, runValidators: true }
     );
     res.json(sanitizeOutput(config));
@@ -108,7 +111,8 @@ exports.uploadCertificate = async (req, res) => {
       return res.status(400).json({ message: 'El certificado está vencido' });
     }
 
-    const filename = `${req.clinicId}.p12`;
+    const sri = await sucursalSri(req.clinicId);
+    const filename = `${sri}.p12`;
     const filepath = path.join(CERTS_DIR, filename);
     // El directorio puede no existir aunque se cree al arrancar (borrado en
     // caliente, deploy nuevo): asegurarlo aquí para no fallar con ENOENT.
@@ -116,7 +120,7 @@ exports.uploadCertificate = async (req, res) => {
     fs.writeFileSync(filepath, req.file.buffer);
 
     const config = await InvoicingConfig.findOneAndUpdate(
-      { clinic: req.clinicId },
+      { clinic: sri },
       {
         $set: {
           certificateFilename: filename,
@@ -130,7 +134,7 @@ exports.uploadCertificate = async (req, res) => {
             ruc: rucsDelCertificado(info.certificate)[0] || '',
           },
         },
-        $setOnInsert: { clinic: req.clinicId },
+        $setOnInsert: { clinic: sri },
       },
       { new: true, upsert: true }
     );
@@ -177,7 +181,7 @@ exports.uploadCertificate = async (req, res) => {
  */
 exports.deleteCertificate = async (req, res) => {
   try {
-    const config = await InvoicingConfig.findOne({ clinic: req.clinicId });
+    const config = await InvoicingConfig.findOne({ clinic: await sucursalSri(req.clinicId) });
     if (!config || !config.certificateFilename) {
       return res.status(404).json({ message: 'No hay certificado cargado' });
     }
@@ -193,7 +197,7 @@ exports.deleteCertificate = async (req, res) => {
     }
 
     const updated = await InvoicingConfig.findOneAndUpdate(
-      { clinic: req.clinicId },
+      { _id: config._id },
       {
         $set: { certificateFilename: null, certificatePassword: null },
         $unset: { certificateInfo: '' },
@@ -212,7 +216,7 @@ exports.deleteCertificate = async (req, res) => {
  * Helper interno: obtiene configuración con certificado decifrado y buffer P12.
  */
 exports.loadForSigning = async (clinicId) => {
-  const config = await InvoicingConfig.findOne({ clinic: clinicId });
+  const config = await InvoicingConfig.findOne({ clinic: await sucursalSri(clinicId) });
   if (!config) throw new Error('Configuración de facturación no encontrada');
   if (!config.isComplete()) throw new Error('Configuración de facturación incompleta');
 

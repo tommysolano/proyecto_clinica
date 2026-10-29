@@ -3,7 +3,7 @@ const PurchaseInvoice = require('../models/PurchaseInvoice');
 const Supplier = require('../models/Supplier');
 const Clinic = require('../models/Clinic');
 const { loadForSigning } = require('./invoicingConfigController');
-const { seriesDisponibles, puntoDelUsuario, ambienteDeSerie, ambienteDelPunto } = require('../services/puntoEmision');
+const { seriesDisponibles, puntoDelUsuario, ambienteDeSerie, ambienteDelPunto, configDeEmpresa } = require('../services/puntoEmision');
 const { generarClaveAcceso } = require('../modules/invoicing/ec/accessKey');
 const { buildRetentionXml } = require('../modules/invoicing/ec/xmlBuilder');
 const { signXml } = require('../modules/invoicing/ec/xadesSigner');
@@ -307,8 +307,7 @@ exports.emitFromPurchase = async (req, res) => {
  */
 exports.config = async (req, res) => {
   try {
-    const InvoicingConfig = require('../models/InvoicingConfig');
-    const cfg = await InvoicingConfig.findOne({ clinic: req.clinicId });
+    const cfg = await configDeEmpresa(req.clinicId);
     if (!cfg) return res.json({ configured: false, series: [], defaultEstab: '001', defaultPtoEmi: '001' });
     const series = await seriesDisponibles(req.clinicId, cfg);
     const miPunto = await puntoDelUsuario(req.clinicId, req.user._id);

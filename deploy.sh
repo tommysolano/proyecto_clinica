@@ -456,6 +456,14 @@ if ! ( cd "$APP_DIR/server" && node scripts/clearPhantomWhatsappWindowOnce.js --
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/clearPhantomWhatsappWindowOnce.js --commit'"
 fi
 
+# Facturar las ventas del laboratorio que quedaron SIN factura el 29-10-2026 (su caja
+# «Caja principal» 003-001 estaba en Central y el codigo la buscaba en la sucursal activa).
+# Necesita el certificado, que solo esta en este servidor. Marca en `onetimetasks`.
+if ! ( cd "$APP_DIR/server" && node scripts/facturarVentasCajaPrincipalOnce.js --commit ); then
+  echo "ADVERTENCIA: no se pudieron facturar las ventas de Caja principal. Revisa y reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/facturarVentasCajaPrincipalOnce.js --commit'"
+fi
+
 # Catalogo de SERVICIOS DE AGENDA, enlazado con los productos de tipo SERVICIO
 # del inventario (oct-2026). Es idempotente (casa por slug antes de crear), asi
 # que puede correr en cada despliegue sin duplicar nada. Si falla no pasa nada

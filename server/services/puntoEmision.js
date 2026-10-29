@@ -5,6 +5,11 @@
  *  - Sucursal SIN puntos creados → modo anterior: la serie única de InvoicingConfig.
  *  - Sucursal CON puntos → cada usuario emite desde SU punto (uno por usuario); sin punto
  *    asignado no puede facturar ni abrir caja (400 SIN_PUNTO_EMISION).
+ *
+ * LA CONFIGURACIÓN SRI ES DE LA EMPRESA (29-10-2026). Emisor, certificado y puntos viven en
+ * UNA sucursal de la empresa (la que tiene la configuración: hoy Central) y valen para todas
+ * sus sucursales. Antes se buscaban en la sucursal activa y quien cobraba en otra (p.ej.
+ * Laboratorio) guardaba la venta sin factura y sin aviso. `sucursalSri` resuelve esa sucursal.
  */
 const PuntoEmision = require('../models/PuntoEmision');
 const InvoicingConfig = require('../models/InvoicingConfig');
@@ -12,17 +17,38 @@ const InvoicingConfig = require('../models/InvoicingConfig');
 const httpError = (status, message, code) => Object.assign(new Error(message), { status, code });
 
 const MSG_SIN_PUNTO =
-  'No tienes un punto de emisión asignado en esta sucursal. Pide al administrador que te asigne uno en Configuración SRI → Puntos de emisión.';
+  'No tienes un punto de emisión asignado en esta empresa. Pide al administrador que te asigne uno en Configuración SRI → Puntos de emisión.';
 
-/** ¿La sucursal ya trabaja con puntos de emisión? (basta con que exista uno, activo o no). */
-async function sucursalUsaPuntos(clinicId) {
-  return !!(await PuntoEmision.exists({ clinic: clinicId }));
+/**
+ * Sucursal que guarda la configuración SRI de la empresa de `clinicId`: la propia si tiene
+ * una (empresas o sucursales con emisor propio) y, si no, la de su empresa que la tenga.
+ * Sin ninguna, la misma sucursal (todo sigue como si no hubiera configuración).
+ */
+async function sucursalSri(clinicId) {
+  if (!clinicId) return clinicId;
+  if (await InvoicingConfig.exists({ clinic: clinicId })) return clinicId;
+  const { ensureCompanyCache, sisterClinicsSync } = require('../utils/companies');
+  await ensureCompanyCache();
+  const hermanas = sisterClinicsSync(clinicId, { includeInactive: true }).filter((id) => id !== String(clinicId));
+  if (!hermanas.length) return clinicId;
+  const cfg = await InvoicingConfig.findOne({ clinic: { $in: hermanas } }).sort({ createdAt: 1 }).select('clinic').lean();
+  return cfg ? cfg.clinic : clinicId;
 }
 
-/** Punto ACTIVO asignado al usuario en la sucursal, o null. */
+/** Configuración SRI de la empresa de la sucursal (documento mongoose), o null. */
+async function configDeEmpresa(clinicId) {
+  return InvoicingConfig.findOne({ clinic: await sucursalSri(clinicId) });
+}
+
+/** ¿La empresa ya trabaja con puntos de emisión? (basta con que exista uno, activo o no). */
+async function sucursalUsaPuntos(clinicId) {
+  return !!(await PuntoEmision.exists({ clinic: await sucursalSri(clinicId) }));
+}
+
+/** Punto ACTIVO asignado al usuario en la empresa, o null. */
 async function puntoDelUsuario(clinicId, userId) {
   if (!clinicId || !userId) return null;
-  return PuntoEmision.findOne({ clinic: clinicId, usuario: userId, activo: true });
+  return PuntoEmision.findOne({ clinic: await sucursalSri(clinicId), usuario: userId, activo: true });
 }
 
 /**
@@ -71,7 +97,7 @@ async function serieDelEmisor(clinicId, userId, config) {
  * serie a mano): el del punto de esa serie; sin punto, el de la configuración.
  */
 async function ambienteDeSerie(clinicId, estab, ptoEmi, config) {
-  const punto = await PuntoEmision.findOne({ clinic: clinicId, establecimiento: estab, codigo: ptoEmi })
+  const punto = await PuntoEmision.findOne({ clinic: await sucursalSri(clinicId), establecimiento: estab, codigo: ptoEmi })
     .select('ambiente').lean();
   return ambienteDelPunto(punto, config);
 }
@@ -118,7 +144,7 @@ async function seriesDisponibles(clinicId, config) {
   };
   const usaPuntos = await sucursalUsaPuntos(clinicId);
   const puntos = usaPuntos
-    ? await PuntoEmision.find({ clinic: clinicId, activo: true }).sort({ establecimiento: 1, codigo: 1 }).lean()
+    ? await PuntoEmision.find({ clinic: await sucursalSri(clinicId), activo: true }).sort({ establecimiento: 1, codigo: 1 }).lean()
     : [];
   if (!usaPuntos) {
     for (const s of config.availableSeries()) for (const p of s.puntosEmision) add(s.estab, p, s.name);
@@ -133,6 +159,8 @@ async function seriesDisponibles(clinicId, config) {
 
 module.exports = {
   MSG_SIN_PUNTO,
+  sucursalSri,
+  configDeEmpresa,
   sucursalUsaPuntos,
   puntoDelUsuario,
   puntoRequerido,

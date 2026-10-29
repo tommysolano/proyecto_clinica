@@ -7,7 +7,21 @@ const CashClosing = require('../models/CashClosing');
 const Sale = require('../models/Sale');
 const User = require('../models/User');
 const Clinic = require('../models/Clinic');
-const { sucursalUsaPuntos, puntoDelUsuario, ambienteDelPunto } = require('../services/puntoEmision');
+const { sucursalUsaPuntos, puntoDelUsuario, ambienteDelPunto, sucursalSri } = require('../services/puntoEmision');
+
+/**
+ * LOS PUNTOS SON DE LA EMPRESA (29-10-2026): viven en la sucursal de su configuración SRI
+ * (`sucursalSri`) y los usa cualquier usuario de la empresa, cobre en la sucursal que cobre.
+ */
+async function sucursalesDeLaEmpresa(clinicId) {
+  const { ensureCompanyCache, sisterClinicsSync } = require('../utils/companies');
+  await ensureCompanyCache();
+  const ids = sisterClinicsSync(clinicId, { includeInactive: true });
+  return (ids.length ? ids : [String(clinicId)]).map((id) => new mongoose.Types.ObjectId(String(id)));
+}
+/** Usuarios con alguno de esos roles en cualquier sucursal de la empresa. */
+const enLaEmpresa = (clinicas) => ({ $or: clinicas.flatMap((c) => User.enSucursal(c, ROLES_CON_PUNTO).$or) });
+const rolEnLaEmpresa = (u, clinicas) => clinicas.map((c) => u.getRoleForClinic(c)).find((r) => ROLES_CON_PUNTO.includes(r)) || null;
 
 /** Roles que pueden tener un punto de venta (los que facturan y manejan caja). */
 const ROLES_CON_PUNTO = ['admin', 'cajero', 'contabilidad'];
@@ -26,7 +40,8 @@ const cod3 = (v) => String(v ?? '').replace(/\D/g, '').slice(-3).padStart(3, '0'
  */
 async function maxEmitido(clinicId, estab, ptoEmi, ambiente) {
   const asNum = { $convert: { input: '$secuencial', to: 'long', onError: 0, onNull: 0 } };
-  const clinic = new mongoose.Types.ObjectId(String(clinicId));
+  // Los comprobantes quedan en la sucursal de la venta: se miran todas las de la empresa.
+  const clinic = { $in: await sucursalesDeLaEmpresa(clinicId) };
   const soloProduccion = ambiente === '2';
   const [fac, nc] = await Promise.all([
     Invoice.aggregate([
@@ -65,12 +80,13 @@ async function serieUsadaEnOtraSucursal(clinicId, ruc, estab, codigo) {
   return null;
 }
 
-/** Usuarios de la sucursal que pueden recibir un punto, con su rol aquí. */
+/** Usuarios de la empresa que pueden recibir un punto, con su rol. */
 async function usuariosElegibles(clinicId) {
-  const users = await User.find({ ...User.enSucursal(clinicId, ROLES_CON_PUNTO), active: { $ne: false } })
+  const clinicas = await sucursalesDeLaEmpresa(clinicId);
+  const users = await User.find({ ...enLaEmpresa(clinicas), active: { $ne: false } })
     .select('name email clinics worksInAllClinics companies')
     .sort({ name: 1 });
-  return users.map((u) => ({ _id: u._id, name: u.name, email: u.email, role: u.getRoleForClinic(clinicId) }));
+  return users.map((u) => ({ _id: u._id, name: u.name, email: u.email, role: rolEnLaEmpresa(u, clinicas) }));
 }
 
 /**
@@ -119,8 +135,8 @@ async function validar(clinicId, body, actual) {
   if (body.usuario !== undefined) {
     const usuarioId = body.usuario || null;
     if (usuarioId) {
-      const u = await User.findOne({ _id: usuarioId, ...User.enSucursal(clinicId, ROLES_CON_PUNTO) }).select('name');
-      if (!u) throw httpError(400, 'El usuario elegido no es cajero, administrador ni contabilidad en esta sucursal.');
+      const u = await User.findOne({ _id: usuarioId, ...enLaEmpresa(await sucursalesDeLaEmpresa(clinicId)) }).select('name');
+      if (!u) throw httpError(400, 'El usuario elegido no es cajero, administrador ni contabilidad en ninguna sucursal de la empresa.');
       const otroPunto = await PuntoEmision.findOne({ clinic: clinicId, usuario: usuarioId, _id: { $ne: actual?._id } }).lean();
       if (otroPunto) {
         throw httpError(400, `${u.name} ya tiene el punto ${otroPunto.establecimiento}-${otroPunto.codigo}${otroPunto.nombre ? ` (${otroPunto.nombre})` : ''}. Un usuario solo puede tener un punto de venta.`);
@@ -133,7 +149,7 @@ async function validar(clinicId, body, actual) {
   const cambiaUsuario = actual && data.usuario !== undefined && String(actual.usuario || '') !== String(data.usuario || '');
   const desactiva = actual && actual.activo && data.activo === false;
   if (cambiaUsuario || desactiva) {
-    const abierta = await CashClosing.findOne({ clinic: clinicId, status: 'ABIERTA', puntoEmision: actual._id }).populate('openedBy', 'name');
+    const abierta = await CashClosing.findOne({ status: 'ABIERTA', puntoEmision: actual._id }).populate('openedBy', 'name');
     if (abierta) {
       throw httpError(400, `El punto tiene una caja abierta por ${abierta.openedBy?.name || 'un usuario'}. Ciérrela antes de ${desactiva ? 'desactivarlo' : 'cambiar el usuario'}.`);
     }
@@ -172,12 +188,13 @@ const populatePunto = (q) => q.populate('usuario', USUARIO_FIELDS);
 
 exports.list = async (req, res) => {
   try {
+    const sri = await sucursalSri(req.clinicId);
     const [puntos, usuarios, config] = await Promise.all([
-      populatePunto(PuntoEmision.find({ clinic: req.clinicId }).sort({ establecimiento: 1, codigo: 1 })),
+      populatePunto(PuntoEmision.find({ clinic: sri }).sort({ establecimiento: 1, codigo: 1 })),
       usuariosElegibles(req.clinicId),
-      InvoicingConfig.findOne({ clinic: req.clinicId }).select('establecimiento puntoEmision secuencial creditNoteSequential direccionEstablecimiento ambiente'),
+      InvoicingConfig.findOne({ clinic: sri }).select('establecimiento puntoEmision secuencial creditNoteSequential direccionEstablecimiento ambiente'),
     ]);
-    const abiertas = await CashClosing.find({ clinic: req.clinicId, status: 'ABIERTA', puntoEmision: { $ne: null } })
+    const abiertas = await CashClosing.find({ status: 'ABIERTA', puntoEmision: { $in: puntos.map((p) => p._id) } })
       .select('puntoEmision openedAt').lean();
     const abiertaPor = new Map(abiertas.map((c) => [String(c.puntoEmision), c.openedAt]));
     res.json({
@@ -218,8 +235,9 @@ exports.mine = async (req, res) => {
 
 exports.create = async (req, res) => {
   try {
-    const data = await validar(req.clinicId, req.body, null);
-    const punto = await PuntoEmision.create({ clinic: req.clinicId, ...data });
+    const sri = await sucursalSri(req.clinicId);
+    const data = await validar(sri, req.body, null);
+    const punto = await PuntoEmision.create({ clinic: sri, ...data });
     res.status(201).json(await populatePunto(PuntoEmision.findById(punto._id)));
   } catch (e) {
     if (e.code === 11000) return res.status(400).json({ message: 'Esa serie o ese usuario ya están en otro punto de emisión.' });
@@ -229,9 +247,10 @@ exports.create = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
-    const actual = await PuntoEmision.findOne({ _id: req.params.id, clinic: req.clinicId });
+    const sri = await sucursalSri(req.clinicId);
+    const actual = await PuntoEmision.findOne({ _id: req.params.id, clinic: sri });
     if (!actual) return res.status(404).json({ message: 'Punto de emisión no encontrado' });
-    const data = await validar(req.clinicId, req.body, actual);
+    const data = await validar(sri, req.body, actual);
     Object.assign(actual, data);
     await actual.save();
     res.json(await populatePunto(PuntoEmision.findById(actual._id)));
@@ -244,7 +263,7 @@ exports.update = async (req, res) => {
 /** Solo se borra un punto sin historia; si ya facturó o tuvo caja, se desactiva. */
 exports.remove = async (req, res) => {
   try {
-    const punto = await PuntoEmision.findOne({ _id: req.params.id, clinic: req.clinicId });
+    const punto = await PuntoEmision.findOne({ _id: req.params.id, clinic: await sucursalSri(req.clinicId) });
     if (!punto) return res.status(404).json({ message: 'Punto de emisión no encontrado' });
     const usado = (await Invoice.exists({ puntoEmision: punto._id }))
       || (await CreditDebitNote.exists({ puntoEmision: punto._id }))

@@ -172,7 +172,10 @@ async function buildAts({ clinicId, range, models }) {
 
   const [clinic, config] = await Promise.all([
     Clinic.findById(clinicId).lean(),
-    InvoicingConfig ? InvoicingConfig.findOne({ clinic: clinicId }).lean() : null,
+    // La configuración SRI es de la empresa (puede vivir en otra sucursal).
+    InvoicingConfig
+      ? require('../../services/puntoEmision').sucursalSri(clinicId).then((sri) => InvoicingConfig.findOne({ clinic: sri }).lean())
+      : null,
   ]);
 
   // ── Informante ────────────────────────────────────────────────────────────

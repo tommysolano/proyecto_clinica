@@ -18,7 +18,7 @@ const {
   runInvoiceRetryQueue,
 } = require('../utils/invoiceRetry');
 const { isPastDocumentDate } = require('../utils/fiscalDocumentDate');
-const { serieDelEmisor, reservarSecuencial, puntoDelUsuario, ambienteDelPunto } = require('../services/puntoEmision');
+const { serieDelEmisor, reservarSecuencial, puntoDelUsuario, ambienteDelPunto, configDeEmpresa } = require('../services/puntoEmision');
 const { scopedDocuments } = require('../services/scopedDocuments');
 
 function fmtFechaEmision(d) {
@@ -414,10 +414,11 @@ exports.bulkPdf = async (req, res) => {
 
     const clinicIds = [...new Set(invoices.map((invoice) => String(invoice.clinic)))];
     const [configs, clinics] = await Promise.all([
-      InvoicingConfig.find({ clinic: { $in: clinicIds } }),
+      Promise.all(clinicIds.map((id) => configDeEmpresa(id))),
       Clinic.find({ _id: { $in: clinicIds } }),
     ]);
-    const configByClinic = new Map(configs.map((config) => [String(config.clinic), config]));
+    // La configuración es de la empresa: cada sucursal toma la de su empresa.
+    const configByClinic = new Map(clinicIds.map((id, i) => [id, configs[i]]));
     const clinicById = new Map(clinics.map((clinic) => [String(clinic._id), clinic]));
     const { createZip } = require('../utils/zip');
 
@@ -479,7 +480,7 @@ exports.getRidePdf = async (req, res) => {
       return res.status(404).json({ message: 'Factura no encontrada' });
     }
 
-    const config = await InvoicingConfig.findOne({ clinic: invoice.clinic });
+    const config = await configDeEmpresa(invoice.clinic);
     const clinic = await Clinic.findById(invoice.clinic);
 
     const pdf = await buildRidePdf({
@@ -627,7 +628,7 @@ exports.retryPending = async (req, res) => {
  */
 exports.sriStatus = async (req, res) => {
   try {
-    const config = await InvoicingConfig.findOne({ clinic: req.clinicId });
+    const config = await configDeEmpresa(req.clinicId);
     // El ambiente de quien mira: el de su punto de emisión (o el de la configuración).
     const miPunto = await puntoDelUsuario(req.clinicId, req.user?._id).catch(() => null);
     const ambiente = ambienteDelPunto(miPunto, config);
@@ -663,7 +664,7 @@ exports.anular = async (req, res) => {
         .json({ message: 'El motivo de anulación es requerido (mínimo 5 caracteres)' });
     }
 
-    const config = await InvoicingConfig.findOne({ clinic: req.clinicId });
+    const config = await configDeEmpresa(req.clinicId);
     if (!config) return res.status(400).json({ message: 'Configura la facturación antes de anular la factura' });
     const xmlAnulacion = buildAnulacionXml({
       claveAcceso: invoice.claveAcceso,
