@@ -211,6 +211,8 @@ exports.getProducts = async (req, res) => {
       .populate(INVENTORY_CATEGORY_POPULATE)
       .sort({ name: 1 })
       .lean();
+    // Compuestos con composición: cuánto alcanzan sus componentes (`compositeAvailable`).
+    await require('../utils/composicion').anotarDisponibles(products);
     res.json(products);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener productos' });
@@ -398,6 +400,7 @@ exports.createProduct = async (req, res) => {
     syncStockFromClinics(req.body);
     syncSalePrices(req.body);
     saneaVinculados(req.body);
+    await require('../utils/composicion').saneaComposicion(req.body);
     // Valida/resuelve la categoría contable de inventario (obligatoria para insumos).
     await applyInventoryCategory(req.clinicId, req.body, { enforce: true });
     const product = await Product.create({ ...req.body, clinic: req.clinicId, code });
@@ -431,6 +434,7 @@ exports.updateProduct = async (req, res) => {
     delete req.body.stockByClinic;
     syncSalePrices(req.body, existing);
     saneaVinculados(req.body, existing._id);
+    await require('../utils/composicion').saneaComposicion(req.body, existing._id);
     // Valida/resuelve la categoría contable si se envía; NO bloquea la edición de
     // productos legacy sin categoría (enforce:false) para no romper flujos existentes.
     await applyInventoryCategory(req.clinicId, req.body, { enforce: false, existing });

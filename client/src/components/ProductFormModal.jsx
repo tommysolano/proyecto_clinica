@@ -28,6 +28,7 @@ const emptyProduct = {
   linkedItems: [],
   isComposite: false,
   components: [],
+  composition: [],
   availableInClinics: [],
   stockByClinic: [],
 };
@@ -74,6 +75,10 @@ function mapProductToForm(p) {
       product: s.product?._id || s.product || '',
       quantity: s.quantity || 1,
     })),
+    composition: (p.composition || []).map((s) => ({
+      product: String(s.product?._id || s.product || ''),
+      quantity: s.quantity ?? 1,
+    })).filter((s) => s.product),
     availableInClinics: (p.availableInClinics || []).map((c) => c?._id || c).filter(Boolean),
     stockByClinic: (p.stockByClinic || []).map((s) => ({
       clinic: s.clinic?._id || s.clinic || '',
@@ -258,6 +263,11 @@ export default function ProductFormModal({
           ? (productForm.components || [])
               .filter((s) => s.product)
               .map((s) => ({ product: s.product, quantity: parseInt(s.quantity) || 1 }))
+          : [],
+        composition: !isService && productForm.isComposite
+          ? (productForm.composition || [])
+              .filter((s) => s.product)
+              .map((s) => ({ product: s.product, quantity: parseFloat(String(s.quantity).replace(',', '.')) }))
           : [],
         availableInClinics: productForm.availableInClinics || [],
         stockByClinic: isService
@@ -673,6 +683,22 @@ export default function ProductFormModal({
             </div>
           )}
 
+          {/* COMPOSICIÓN FIJA (29-10-2026): qué lleva UNA unidad de este compuesto. Con ella se
+              vende por lo que alcanzan sus componentes y al cobrarlo salen ellos del inventario. */}
+          {productForm.category !== 'servicio' && productForm.category !== 'programa' && productForm.isComposite && (
+            <div className="sm:col-span-2">
+              <ProductItemPicker
+                label="Composición fija (se descuenta al cobrar)"
+                help="Lo que lleva UNA unidad de este producto, en la unidad de cada componente. Ej.: ÁCIDO ALPHALIPOICO 10 ML = 0,5 del frasco de 20 ML. Se puede vender mientras alcancen los componentes, y al cobrarlo salen ellos del inventario (este producto no maneja stock propio)."
+                color="amber"
+                decimales
+                products={pickerProducts.filter((p) => p._id !== editingId && !p.isComposite && p.category !== 'servicio' && p.category !== 'programa' && !p.unlimited)}
+                rows={productForm.composition}
+                onChange={(rows) => setProductForm({ ...productForm, composition: rows })}
+              />
+            </div>
+          )}
+
           {/* Stock por clínica (inventario por sucursal; el general es la suma) */}
           {productForm.category !== 'servicio' && clinicsList.length > 0 && (
             <div className="sm:col-span-2 bg-indigo-50 border border-indigo-200 rounded-xl p-3">
@@ -837,7 +863,8 @@ function SalePriceList({ rows, onChange }) {
 
 // Selector de productos con buscador, para ítems vinculados y componentes (compuesto).
 // `conPreseleccion`: cada fila lleva la casilla «Siempre» (viene marcada al cobrar).
-function ProductItemPicker({ label, help = '', products, rows, onChange, color = 'emerald', conPreseleccion = false }) {
+// `decimales`: la cantidad admite fracciones (0,5 frasco) y se muestra la unidad del producto.
+function ProductItemPicker({ label, help = '', products, rows, onChange, color = 'emerald', conPreseleccion = false, decimales = false }) {
   const [query, setQuery] = useState('');
   const list = rows || [];
   // Por palabras sueltas y sin tildes: «vitamina c 10» encuentra «VITAMINA C 10ML AMPOLLA».
@@ -901,7 +928,7 @@ function ProductItemPicker({ label, help = '', products, rows, onChange, color =
               </label>
             )}
             <NumericInput
-              min={1}
+              min={decimales ? 0 : 1}
               value={row.quantity}
               onChange={(e) => {
                 const arr = [...list];
@@ -911,6 +938,7 @@ function ProductItemPicker({ label, help = '', products, rows, onChange, color =
               className="w-16 px-2 py-1 border border-slate-200 rounded text-sm"
               title="Cantidad"
             />
+            {decimales && <span className="text-[11px] text-slate-500 shrink-0">{p?.unit || 'unidad'}</span>}
             <button
               type="button"
               onClick={() => onChange(list.filter((_, i) => i !== idx))}

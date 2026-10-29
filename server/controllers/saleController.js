@@ -92,8 +92,35 @@ exports.getSales = async (req, res) => {
     }
     if (status) query.status = status;
     if (patient) query.patient = patient;
-    // Filtro por cliente: paciente registrado o nombre libre (consumidor final / walk-in).
-    if (client) query.clientName = { $regex: client, $options: 'i' };
+    // Filtro por cliente (29-10-2026): igual que la agenda, POR PALABRAS SUELTAS, sin tildes
+    // y en cualquier orden (utils/nameSearch): «cesar guatumillo» encuentra a «GUATUMILLO
+    // VALLEJO CESAR DANIEL». Antes era la expresión del texto tal cual y había que escribir
+    // el nombre exacto. Busca a quién se facturó (nombre/cédula) y al paciente de la venta
+    // (nombre, cédula o teléfono), que puede ser otra persona.
+    if (client && String(client).trim()) {
+      const { nameSearchFilter } = require('../utils/nameSearch');
+      const { phoneSearchRegex } = require('../utils/phoneNormalize');
+      const Patient = require('../models/Patient');
+      const term = String(client).trim();
+      const telefono = phoneSearchRegex(term);
+      const porNombrePaciente = nameSearchFilter(term, ['firstName', 'lastName', 'cedula', 'identificationAliases']);
+      const altPaciente = [
+        ...(porNombrePaciente ? [porNombrePaciente] : []),
+        ...(telefono ? [{ phone: telefono }, { whatsapp: telefono }, { otherPhones: telefono }] : []),
+      ];
+      // Sin filtrar al paciente por sucursal: las VENTAS ya van recortadas por `scopedDocuments`.
+      const pacientes = altPaciente.length
+        ? await Patient.find({ $or: altPaciente }).select('_id').limit(500).lean()
+        : [];
+      const porComprador = nameSearchFilter(term, ['clientName', 'clientCedula']);
+      const alternativas = [
+        ...(porComprador ? [porComprador] : []),
+        ...(telefono ? [{ clientPhone: telefono }] : []),
+        ...(pacientes.length ? [{ patient: { $in: pacientes.map((p) => p._id) } }] : []),
+      ];
+      // Texto de solo signos: no casa nada (un `$or: []` lo rechaza mongo).
+      query.$and = [...(query.$and || []), alternativas.length ? { $or: alternativas } : { _id: null }];
+    }
     // Filtro por producto/servicio: solo trae ventas que contengan ese producto.
     if (product) query['items.product'] = product;
     // El cajero ve solo lo suyo: lo que registró, cobró o facturó él.
@@ -283,8 +310,15 @@ exports.createSale = async (req, res) => {
          *    salvo los que trajo el paciente.
          */
         const itemsPaciente = require('../utils/itemsDelPaciente');
+        // COMPUESTO CON COMPOSICIÓN FIJA (29-10-2026, utils/composicion): no tiene stock propio;
+        // al cobrarlo salen sus componentes, como ítems vinculados obligatorios (más abajo).
+        const { tieneComposicion, lineasDe } = require('../utils/composicion');
+        const esCompuesto = (p) => tieneComposicion(p);
         const lineDelivery = items.map((item) => {
           const product = txProductMap.get(String(item.product));
+          if (esCompuesto(product) && item.delivery === 'en_clinica') {
+            throw Object.assign(new Error(`«${product.name}» se arma con otros productos del inventario: no se puede dejar guardado. Cóbrelo el día que se aplique.`), { status: 400 });
+          }
           if (txIsUnlimited(product) || !patient) {
             if (item.delivery === 'en_clinica') {
               throw Object.assign(new Error(`Para dejar «${product.name}» guardado en la clínica, la venta tiene que ser de un paciente.`), { status: 400 });
@@ -321,6 +355,16 @@ exports.createSale = async (req, res) => {
           }
           return [...juntos.values()];
         });
+        // Los componentes del compuesto: cantidad por unidad × unidades vendidas, del inventario.
+        for (const [idx, item] of items.entries()) {
+          const product = txProductMap.get(String(item.product));
+          if (!esCompuesto(product)) continue;
+          for (const c of lineasDe(product)) {
+            const pid = String(c.product);
+            linkedReq[idx].push({ product: pid, quantity: +(Number(c.quantity) * Number(item.quantity)).toFixed(4), source: 'inventario', composicion: true });
+            linkedIds.add(pid);
+          }
+        }
         const linkedMap = new Map();
         if (linkedIds.size) {
           const vinculados = await Product.find({ _id: { $in: [...linkedIds] } }).populate('inventoryCategory').session(session);
@@ -345,13 +389,36 @@ exports.createSale = async (req, res) => {
         });
         const txWarehouse = cc.warehouse || null;
 
+        // Lo que piden los compuestos de cada componente (sumado entre líneas) tiene que alcanzar:
+        // se valida igual que un producto vendido (en la bodega, si la venta lleva una).
+        const pideComposicion = new Map();
+        for (const [idx, item] of items.entries()) {
+          for (const l of linkedReq[idx]) {
+            if (l.composicion) pideComposicion.set(l.product, (pideComposicion.get(l.product) || 0) + l.quantity);
+          }
+          if (esCompuesto(txProductMap.get(String(item.product))) && !(Number(item.quantity) > 0)) {
+            throw Object.assign(new Error(`Cantidad invalida para ${txProductMap.get(String(item.product)).name}`), { status: 400 });
+          }
+        }
+        for (const [pid, pide] of pideComposicion) {
+          const comp = linkedMap.get(pid);
+          if (itemsPaciente.esIlimitado(comp)) continue;
+          const hay = txWarehouse
+            ? (await kardex.currentStock({ clinicId: req.clinicId, product: comp._id, warehouse: txWarehouse }, session)).qty
+            : Number(comp.stock || 0);
+          if (hay + 1e-9 < pide) {
+            const de = items.map((it) => txProductMap.get(String(it.product))).filter((p) => esCompuesto(p) && lineasDe(p).some((c) => String(c.product) === pid)).map((p) => p.name);
+            throw Object.assign(new Error(`Stock insuficiente de «${comp.name}» (componente de ${de.map((n) => `«${n}»`).join(', ')}). Se necesitan ${+pide.toFixed(4)} y hay ${+Number(hay).toFixed(4)}${txWarehouse ? ' en la bodega seleccionada' : ''}.`), { status: 400 });
+          }
+        }
+
         for (const item of items) {
           const product = txProductMap.get(String(item.product));
           const qty = Number(item.quantity);
           if (!qty || qty <= 0) {
             throw Object.assign(new Error(`Cantidad invalida para ${product.name}`), { status: 400 });
           }
-          if (txIsUnlimited(product)) continue;
+          if (txIsUnlimited(product) || esCompuesto(product)) continue;
           if (txWarehouse) {
             // Con bodega, el disponible lo dice el SUBMAYOR de esa bodega (las capas), no el
             // `stock` global del producto: vender 5 de una bodega que tiene 2 porque "en total
@@ -373,7 +440,7 @@ exports.createSale = async (req, res) => {
         for (const [idx, item] of items.entries()) {
           const product = txProductMap.get(String(item.product));
           const qty = Number(item.quantity);
-          if (txIsUnlimited(product)) continue;
+          if (txIsUnlimited(product) || esCompuesto(product)) continue;
           // Lo deja en la clínica: sigue en la percha hasta que se le aplique.
           if (lineDelivery[idx] === 'en_clinica') continue;
           // CATÁLOGO COMPARTIDO: el producto se busca por su _id, NO por la sucursal activa.
@@ -434,12 +501,14 @@ exports.createSale = async (req, res) => {
             // Bodega de la que sale el ítem. Antes NO se copiaba: `issueStock` leía un
             // `it.warehouse` que nunca existía, así que toda venta consumía capas FIFO de
             // CUALQUIER bodega y su movimiento quedaba sin bodega (invisible en el kardex).
-            warehouse: txIsUnlimited(product) ? null : txWarehouse,
+            warehouse: txIsUnlimited(product) || esCompuesto(product) ? null : txWarehouse,
             delivery: lineDelivery[idx],
+            // Compuesto: el compuesto no sale del inventario, salen sus componentes (vinculados).
+            composite: esCompuesto(product),
             // El inventario de cada vinculado se mueve con la venta ya creada (más abajo).
             linkedItems: linkedReq[idx].map((l) => {
               const lp = linkedMap.get(l.product);
-              return { product: lp._id, productCode: lp.code, productName: lp.name, quantity: l.quantity, source: l.source };
+              return { product: lp._id, productCode: lp.code, productName: lp.name, quantity: l.quantity, source: l.source, fromComposition: !!l.composicion };
             }),
             subtotal: tax.taxBase,
           };
@@ -683,6 +752,7 @@ exports.createSale = async (req, res) => {
           const prod = txProductMap.get(String(it.product));
           if (prod && txIsUnlimited(prod)) continue;
           if (it.delivery === 'en_clinica') continue;
+          if (it.composite) continue; // salen sus componentes, como vinculados (más abajo)
           // Kardex: consume capas FIFO -> costo de venta exacto. allowNegative cubre
           // productos con stock previo al kardex (sin capas): el faltante se valora
           // al costo promedio como respaldo.
@@ -937,7 +1007,7 @@ exports.createSale = async (req, res) => {
         const costLines = [];
         for (const it of txSaleItems) {
           const prod = txProductMap.get(String(it.product));
-          if (!prod || txIsUnlimited(prod)) continue;
+          if (!prod || txIsUnlimited(prod) || it.composite) continue; // el costo va por sus componentes
           const totalCost = +Number(it._cogs || 0).toFixed(2);
           if (totalCost <= 0) continue;
           const cat = prod.inventoryCategory || null;
@@ -1258,6 +1328,8 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
     if (item.category === 'servicio') continue;
     // Lo dejó en la clínica: nunca salió del inventario, no hay nada que devolver.
     if (item.delivery === 'en_clinica') continue;
+    // Compuesto: no salió él sino sus componentes, que vuelven con los vinculados (abajo).
+    if (item.composite) continue;
     // Catálogo compartido: el producto por su _id, no por la sucursal de la venta (si no,
     // anular desde otra sucursal no devolvía el stock; ver createSale).
     const prod = await Product.findOne({ _id: item.product })

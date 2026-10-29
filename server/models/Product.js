@@ -76,6 +76,16 @@ const productSchema = new mongoose.Schema(
         _id: false,
       },
     ],
+    // COMPOSICIÓN FIJA (29-10-2026, utils/composicion): qué lleva UNA unidad del compuesto,
+    // en la unidad de cada componente (10 ml = 0,5 × frasco de 20 ml). Con ella, el
+    // compuesto se vende por lo que alcanzan sus componentes y al cobrarlo salen ellos.
+    composition: [
+      {
+        product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+        quantity: { type: Number, required: true, min: 0 },
+        _id: false,
+      },
+    ],
     // Stock por clínica. El inventario general es la suma de todas las clínicas.
     // [{ clinic, stock }]
     stockByClinic: [

@@ -15,6 +15,8 @@ const saleLinkedItemSchema = new mongoose.Schema(
     productName: String,
     quantity: { type: Number, required: true, min: 0 },
     source: { type: String, enum: ['inventario', 'paciente', 'trajo'], default: 'inventario' },
+    // Componente de la composición fija del producto vendido (utils/composicion), no elegido.
+    fromComposition: { type: Boolean, default: false },
     // Lo que de verdad bajó de `Product.stock` (con stock corto puede ser menos que
     // `quantity`): es lo que devuelve anular la venta.
     stockMoved: { type: Number, default: 0 },
@@ -73,6 +75,9 @@ const saleItemSchema = new mongoose.Schema({
    * anteriores (o sin paciente): como siempre, sale del inventario.
    */
   delivery: { type: String, enum: ['', 'llevado', 'en_clinica'], default: '' },
+  // COMPUESTO con composición fija (29-10-2026): la línea no movió stock propio; salieron
+  // sus componentes (linkedItems con `fromComposition`). Anular no le devuelve stock a él.
+  composite: { type: Boolean, default: false },
   // Ítems vinculados que se usaron con esta línea (no suman al precio).
   linkedItems: { type: [saleLinkedItemSchema], default: [] },
   subtotal: { type: Number, required: true },

@@ -152,6 +152,15 @@ const descuentoDelProducto = (item) => {
 };
 const esServicioLinea = (item) => item?.category === 'servicio' || item?.unlimited === true;
 /**
+ * COMPUESTO CON COMPOSICIÓN FIJA (29-10-2026, server/utils/composicion): no tiene stock propio;
+ * se vende por lo que alcanzan sus componentes (`compositeAvailable`, lo calcula el servidor)
+ * y al cobrarlo salen ellos del inventario.
+ */
+const esCompuestoFijo = (product) => typeof product?.compositeAvailable === 'number';
+const stockVendible = (product) => (esCompuestoFijo(product) ? product.compositeAvailable : Number(product?.stock || 0));
+const componentesTexto = (product) => (product?.composition || [])
+  .map((c) => `${c.quantity} × ${c.productName || 'componente'}, hay ${c.stock}`).join('; ');
+/**
  * ÍTEMS VINCULADOS del producto (oct-2026), con nombre y código del catálogo cargado:
  * lo que se puede escoger como «usado» al cobrarlo. Los inactivos no salen.
  */
@@ -350,8 +359,12 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       .catch(() => setGuayaquilZones([]));
   }, []);
 
+  // Solo vale la respuesta de la ÚLTIMA búsqueda: al teclear, una más vieja que llegue tarde
+  // pisaba la lista con resultados de un texto que ya no está.
+  const busquedaRef = useRef(0);
   const fetchSales = async () => {
     if (!canViewHistory || embebido) { setLoading(false); return; }
+    const mia = ++busquedaRef.current;
     try {
       const params = {};
       if (filter.startDate) params.startDate = filter.startDate;
@@ -359,13 +372,22 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       if (filter.product) params.product = filter.product;
       if (filter.client) params.client = filter.client;
       const res = await api.get('/sales', { params });
-      setSales(res.data.sales);
+      if (mia === busquedaRef.current) setSales(res.data.sales);
     } catch {
-      toast.error('Error al cargar ventas');
+      if (mia === busquedaRef.current) toast.error('Error al cargar ventas');
     } finally {
-      setLoading(false);
+      if (mia === busquedaRef.current) setLoading(false);
     }
   };
+
+  // Buscador de cliente: se escribe en `clienteTexto` y se busca al dejar de teclear.
+  const [clienteTexto, setClienteTexto] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setFilter((f) => (f.client === clienteTexto.trim() ? f : { ...f, client: clienteTexto.trim() }));
+    }, 350);
+    return () => clearTimeout(t);
+  }, [clienteTexto]);
 
   const fetchTopProducts = async () => {
     try {
@@ -521,15 +543,17 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     if (!product) return;
 
     const isService = product.category === 'servicio' || product.unlimited === true;
-    if (!isService && product.stock <= 0) {
-      return toast.error(`${product.name} sin stock disponible`);
+    if (!isService && stockVendible(product) <= 0) {
+      return toast.error(esCompuestoFijo(product)
+        ? `${product.name}: no alcanzan sus componentes (${componentesTexto(product)})`
+        : `${product.name} sin stock disponible`);
     }
     if (form.items.find((i) => String(i.product) === String(product._id))) {
       return toast.error('El producto ya está en la lista');
     }
     const qty = parseInt(currentItem.quantity) || 1;
-    if (!isService && qty > product.stock) {
-      return toast.error(`Stock insuficiente. Disponible: ${product.stock}`);
+    if (!isService && qty > stockVendible(product)) {
+      return toast.error(`Stock insuficiente. Disponible: ${stockVendible(product)}`);
     }
 
     // Precio: el ACTIVO del producto por defecto; si en el buscador se eligió otro de la lista,
@@ -559,7 +583,8 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           taxRate: product.taxRate,
           taxCategory: product.taxCategory,
           priceIncludesVat: product.priceIncludesVat,
-          stock: product.stock,
+          stock: stockVendible(product),
+          composite: esCompuestoFijo(product),
           treatment: '',
           // Un servicio que se agrega al cobrar una cita y que la cita no lleva es, casi
           // siempre, algo que se deja pagado para después. Se puede desmarcar.
@@ -794,7 +819,8 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         taxRate: product.taxRate,
         taxCategory: product.taxCategory,
         priceIncludesVat: product.priceIncludesVat,
-        stock: product.stock,
+        stock: stockVendible(product),
+        composite: esCompuestoFijo(product),
         treatment: '',
         prepaid: false,
         ...extrasDeLinea(product, qty),
@@ -1254,7 +1280,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           treatment: i.treatment || null,
           prepaid: !!i.prepaid && esServicioLinea(i),
           // ¿Se lo lleva o lo deja para aplicárselo aquí? (solo físicos de un paciente)
-          delivery: !esServicioLinea(i) && pacienteVenta ? (i.delivery || 'llevado') : undefined,
+          delivery: !esServicioLinea(i) && pacienteVenta ? (i.composite ? 'llevado' : (i.delivery || 'llevado')) : undefined,
           // Ítems vinculados usados: no suman al precio; el servidor mueve su inventario.
           linkedItems: (i.linked || [])
             .filter((l) => Number(l.quantity) > 0)
@@ -1936,7 +1962,13 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                           )}
                           {/* ¿SE LO LLEVA? (oct-2026). Lo que deja para aplicárselo aquí NO sale del
                               inventario: queda a su nombre y sale el día que se le aplica. */}
-                          {!esServicioLinea(item) && pacienteVenta && (
+                          {item.composite && (
+                            <span className="mt-1 block text-[11px] text-slate-500">
+                              Sale del inventario: {(products.find((p) => String(p._id) === String(item.product))?.composition || [])
+                                .map((c) => `${+(c.quantity * item.quantity).toFixed(4)} × ${c.productName}`).join(', ')}
+                            </span>
+                          )}
+                          {!esServicioLinea(item) && !item.composite && pacienteVenta && (
                             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
                               <select
                                 value={item.delivery || 'llevado'}
@@ -2540,9 +2572,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           />
           <input
             type="text"
-            value={filter.client}
-            onChange={(e) => setFilter({ ...filter, client: e.target.value })}
-            placeholder="Filtrar por cliente..."
+            value={clienteTexto}
+            onChange={(e) => setClienteTexto(e.target.value)}
+            placeholder="Buscar cliente: nombre, cédula o teléfono..."
+            title="Por palabras sueltas, sin tildes y en cualquier orden (p. ej. «cesar guatumillo»)"
             className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50 min-w-[180px]"
           />
           <div className="flex-1 min-w-[200px]">

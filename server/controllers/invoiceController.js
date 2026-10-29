@@ -400,7 +400,11 @@ exports.bulkPdf = async (req, res) => {
     if (startDate && endDate) {
       query.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999') };
     }
-    if (client) query.razonSocialComprador = { $regex: client, $options: 'i' };
+    // Mismo buscador que la lista de Ventas: por palabras sueltas y sin tildes.
+    if (client && String(client).trim()) {
+      const porNombre = require('../utils/nameSearch').nameSearchFilter(client, ['razonSocialComprador', 'identificacionComprador']);
+      query.$and = [...(query.$and || []), porNombre || { _id: null }];
+    }
     if (patient) {
       const saleIds = await Sale.find({ ...scopedDocuments(req), patient }).distinct('_id');
       query.sale = { $in: saleIds };
