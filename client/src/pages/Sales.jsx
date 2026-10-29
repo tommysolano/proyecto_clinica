@@ -227,8 +227,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const canCancel = hasRole('admin');
   const canInvoice = hasRole('admin', 'cajero');
   const canAccounting = hasRole('admin', 'contabilidad');
-  // El cajero crea ventas pero NO ve el historial (solo admin/contabilidad).
-  const canViewHistory = hasRole('admin', 'contabilidad');
+  // Historial: admin y contabilidad ven todo; el cajero (29-10-2026) solo lo que él registró,
+  // cobró o facturó (lo filtra el servidor).
+  const canViewHistory = hasRole('admin', 'contabilidad', 'cajero');
 
   const [sales, setSales] = useState([]);
   const [loading, setLoading] = useState(true);

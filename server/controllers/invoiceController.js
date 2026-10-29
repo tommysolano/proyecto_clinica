@@ -405,6 +405,9 @@ exports.bulkPdf = async (req, res) => {
       const saleIds = await Sale.find({ ...scopedDocuments(req), patient }).distinct('_id');
       query.sale = { $in: saleIds };
     }
+    // Desde Ventas el cajero descarga solo sus facturas (lo mismo que ve en la lista).
+    const delCajero = await require('../utils/soloDelCajero').filtroFacturasDelCajero(req);
+    if (delCajero) query.$and = [...(query.$and || []), delCajero];
 
     const invoices = await Invoice.find(query).populate('sale').sort({ createdAt: -1 }).limit(300);
     if (!invoices.length) return res.status(404).json({ message: 'No hay facturas para descargar con esos filtros' });

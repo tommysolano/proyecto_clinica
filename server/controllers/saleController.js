@@ -96,6 +96,9 @@ exports.getSales = async (req, res) => {
     if (client) query.clientName = { $regex: client, $options: 'i' };
     // Filtro por producto/servicio: solo trae ventas que contengan ese producto.
     if (product) query['items.product'] = product;
+    // El cajero ve solo lo suyo: lo que registró, cobró o facturó él.
+    const delCajero = await require('../utils/soloDelCajero').filtroVentasDelCajero(req);
+    if (delCajero) query.$and = [...(query.$and || []), delCajero];
 
     const sales = await Sale.find(query)
       .populate('patient', 'firstName lastName cedula')
