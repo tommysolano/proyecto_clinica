@@ -36,7 +36,6 @@ import ServiciosSinCobro from '../components/ServiciosSinCobro';
 import ItemsVinculadosCobro from '../components/ItemsVinculadosCobro';
 import { FUENTES_VINCULADO } from '../constants/itemsVinculados';
 import { serviciosDeLaCita, listaSinCobro, tipoSinCobro } from '../utils/serviciosSinCobro';
-import { nameMatches } from '../utils/nameSearch';
 import { soloActivos as soloUsuariosActivos } from '../utils/activeUsers';
 import { ROLE_LABELS } from '../utils/roles';
 
@@ -243,7 +242,6 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const [sales, setSales] = useState([]);
   const [loading, setLoading] = useState(true);
   const [products, setProducts] = useState([]);
-  const [patients, setPatients] = useState([]);
   const [treatments, setTreatments] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [detailModal, setDetailModal] = useState(null);
@@ -332,6 +330,14 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   // los PACIENTES: quien registraba un cliente por allí no lo encontraba nunca al facturar,
   // ni por nombre ni por cédula. Se consultan al servidor mientras se escribe.
   const [clientResults, setClientResults] = useState([]);
+  /**
+   * PACIENTES: se buscan en el SERVIDOR mientras se escribe (29-10-2026). Antes se bajaban
+   * los 1000 más recientes y se filtraba aquí: con ~12.000 pacientes, quien no estaba entre
+   * esos 1000 (p. ej. «JESSICA GRANDA PACHECO», el 2.008) no aparecía nunca.
+   */
+  const [patientResults, setPatientResults] = useState([]);
+  const [buscandoCliente, setBuscandoCliente] = useState(false);
+  const busquedaClienteRef = useRef(0);
   const [pickedFromList, setPickedFromList] = useState(false); // ya se eligió: cierra el desplegable
   const clientDebounceRef = useRef(null);
   const [guayaquilZones, setGuayaquilZones] = useState([]);
@@ -416,23 +422,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     }
   };
 
-  const fetchPatients = async () => {
-    try {
-      // withContact: el comprobante del SRI necesita cédula, correo y teléfono del
-      // cliente. Es la excepción de facturación a la regla "solo el admin ve el
-      // contacto del paciente" (capacidad patients.billingData en el servidor).
-      const res = await api.get('/patients', { params: { limit: 1000, withContact: 1 } });
-      setPatients(res.data.patients);
-    } catch (err) {
-      void err;
-    }
-  };
-
   useEffect(() => {
     fetchSales();
     if (canCreate) {
       fetchProducts();
-      fetchPatients();
       api.get('/banks/payment-options')
         .then((r) => setPayOptions({ accounts: r.data?.accounts || [], cards: r.data?.cards || [] }))
         .catch(() => setPayOptions({ accounts: [], cards: [] }));
@@ -649,8 +642,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const removeSplitRow = (i) => setSplitPayments((rows) => rows.filter((_, x) => x !== i));
 
   /**
-   * Escribe en el buscador de cliente: filtra los pacientes ya cargados y, en paralelo, pregunta
-   * al servidor por las PERSONAS con rol CLIENTE (que no son pacientes y viven en otra colección).
+   * Escribe en el buscador de cliente: pregunta al servidor, en paralelo, por los PACIENTES
+   * (todos, por palabras sueltas, sin tildes, cédula o teléfono) y por las PERSONAS con rol
+   * CLIENTE (que no son pacientes y viven en otra colección). Solo vale la última búsqueda.
    */
   const onClientSearch = (texto) => {
     setPatientSearch(texto);
@@ -658,12 +652,21 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     if (form.patient) setForm((f) => ({ ...f, patient: '' }));
     if (clientDebounceRef.current) clearTimeout(clientDebounceRef.current);
     const q = texto.trim();
-    if (q.length < 2) { setClientResults([]); return; }
+    const mia = ++busquedaClienteRef.current;
+    if (q.length < 2) { setClientResults([]); setPatientResults([]); setBuscandoCliente(false); return; }
+    setBuscandoCliente(true);
     clientDebounceRef.current = setTimeout(async () => {
-      try {
-        const r = await api.get('/suppliers/clients', { params: { q, limit: 10 } });
-        setClientResults(r.data || []);
-      } catch { setClientResults([]); }
+      const [pac, cli] = await Promise.all([
+        // withContact: el comprobante del SRI necesita cédula, correo y teléfono del cliente.
+        // Es la excepción de facturación a "solo el admin ve el contacto del paciente"
+        // (capacidad patients.billingData en el servidor).
+        api.get('/patients', { params: { search: q, limit: 15, withContact: 1 } }).then((r) => r.data?.patients || []).catch(() => []),
+        api.get('/suppliers/clients', { params: { q, limit: 10 } }).then((r) => r.data || []).catch(() => []),
+      ]);
+      if (mia !== busquedaClienteRef.current) return;
+      setPatientResults(pac);
+      setClientResults(cli);
+      setBuscandoCliente(false);
     }, 250);
   };
 
@@ -1077,7 +1080,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   };
 
   const handlePatientSelect = (patientId) => {
-    const patient = patients.find((p) => p._id === patientId);
+    const patient = patientResults.find((p) => p._id === patientId);
     setPickedFromList(!!patientId);
     if (patient) {
       setForm((f) => ({
@@ -1619,13 +1622,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                 />
                 {/* Busca en los DOS maestros: pacientes de la clínica y personas registradas como
                     CLIENTE en Personas (proveedores/clientes). Antes solo miraba pacientes. */}
-                {patientSearch && !pickedFromList && (() => {
-                  // Por PALABRAS SUELTAS y sin tildes (ver utils/nameSearch): «tommy
-                  // solano» encuentra a «TOMMY NELSON SOLANO PEÑAFIEL», que
-                  // comparando la cadena entera no aparecía.
-                  const pac = patients
-                    .filter((p) => nameMatches(patientSearch, p.firstName, p.lastName, p.cedula, p.phone))
-                    .slice(0, 15);
+                {patientSearch.trim().length >= 2 && !pickedFromList && (() => {
+                  // La búsqueda la hace el servidor sobre TODOS los pacientes, por palabras
+                  // sueltas y sin tildes (utils/nameSearch), igual que la agenda.
+                  const pac = patientResults;
                   return (
                     <div className="absolute z-10 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white border border-emerald-100 rounded-xl shadow-lg">
                       {pac.map((p) => (
@@ -1657,7 +1657,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                           <span className="ml-2 text-[10px] uppercase text-sky-600">Cliente</span>
                         </button>
                       ))}
-                      {!pac.length && !clientResults.length && (
+                      {buscandoCliente && !pac.length && !clientResults.length && (
+                        <p className="px-4 py-2 text-xs text-slate-400">Buscando…</p>
+                      )}
+                      {!buscandoCliente && !pac.length && !clientResults.length && (
                         <p className="px-4 py-2 text-xs text-slate-400">
                           Sin coincidencias. Se buscó entre los pacientes y entre las personas registradas como cliente.
                         </p>
