@@ -93,7 +93,7 @@ test('cobra un servicio de otra sucursal aunque falte su cuenta de ingreso perso
   assert.equal((await ChartOfAccount.findById(padreSinPlan.parent))?.code, '4');
 });
 
-test('sin stock de verdad, sigue sin dejar vender', async () => {
+test('sin stock suficiente se vende igual (29-10-2026): avisa, descuenta lo que hay y anular devuelve eso', async () => {
   const { clinicId: duena } = await H.seedClinic();
   const { clinicId: activa, userId } = await H.seedClinic();
   const jarabe = await H.makeProduct(duena, { name: 'Jarabe', category: 'insumo', stock: 1, price: 20 });
@@ -101,7 +101,11 @@ test('sin stock de verdad, sigue sin dejar vender', async () => {
     items: [{ product: String(jarabe._id), quantity: 2, unitPrice: 20 }],
     paymentMethod: 'efectivo',
   }));
-  assert.equal(r.statusCode, 400);
-  assert.match(r.payload.message, /Stock insuficiente/);
-  assert.equal((await Product.findById(jarabe._id)).stock, 1);
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  assert.ok((r.payload.warnings || []).some((w) => /Jarabe.*se vendieron 2 y el inventario tenía 1/.test(w)));
+  assert.equal((await Product.findById(jarabe._id)).stock, 0, 'nunca queda negativo');
+
+  const anular = await H.runController(sales.cancelSale, H.mockReq(activa, userId, {}, { params: { id: String(r.payload._id) } }));
+  assert.ok(anular.statusCode < 400, JSON.stringify(anular.payload));
+  assert.equal((await Product.findById(jarabe._id)).stock, 1, 'devuelve solo lo que salió');
 });

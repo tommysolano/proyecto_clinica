@@ -536,17 +536,15 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     if (!product) return;
 
     const isService = product.category === 'servicio' || product.unlimited === true;
-    if (!isService && stockVendible(product) <= 0) {
-      return toast.error(esCompuestoFijo(product)
-        ? `${product.name}: no alcanzan sus componentes (${componentesTexto(product)})`
-        : `${product.name} sin stock disponible`);
-    }
     if (form.items.find((i) => String(i.product) === String(product._id))) {
       return toast.error('El producto ya está en la lista');
     }
     const qty = parseInt(currentItem.quantity) || 1;
+    // Sin stock NO bloquea (29-10-2026): solo avisa; el servidor descuenta lo que haya.
     if (!isService && qty > stockVendible(product)) {
-      return toast.error(`Stock insuficiente. Disponible: ${stockVendible(product)}`);
+      toast(esCompuestoFijo(product)
+        ? `${product.name}: no alcanzan sus componentes (${componentesTexto(product)}). Se cobra igual.`
+        : `${product.name}: el inventario tiene ${stockVendible(product)}. Se cobra igual.`, { icon: '⚠️' });
     }
 
     // Precio: el ACTIVO del producto por defecto; si en el buscador se eligió otro de la lista,
@@ -598,9 +596,8 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     const newQty = parseInt(qty) || 1;
     const it = items[idx];
     const isService = it.category === 'servicio' || it.unlimited === true;
-    if (!isService && newQty > it.stock) {
-      toast.error(`Stock máximo: ${it.stock}`);
-      return;
+    if (!isService && newQty > it.stock && !(it.quantity > it.stock)) {
+      toast(`${it.productName}: el inventario tiene ${it.stock}. Se cobra igual.`, { icon: '⚠️' });
     }
     items[idx].quantity = newQty;
     items[idx] = { ...items[idx], linked: reescalarVinculados(it.linked, newQty) };

@@ -389,54 +389,19 @@ exports.createSale = async (req, res) => {
         });
         const txWarehouse = cc.warehouse || null;
 
-        // Lo que piden los compuestos de cada componente (sumado entre líneas) tiene que alcanzar:
-        // se valida igual que un producto vendido (en la bodega, si la venta lleva una).
-        const pideComposicion = new Map();
-        for (const [idx, item] of items.entries()) {
-          for (const l of linkedReq[idx]) {
-            if (l.composicion) pideComposicion.set(l.product, (pideComposicion.get(l.product) || 0) + l.quantity);
-          }
-          if (esCompuesto(txProductMap.get(String(item.product))) && !(Number(item.quantity) > 0)) {
-            throw Object.assign(new Error(`Cantidad invalida para ${txProductMap.get(String(item.product)).name}`), { status: 400 });
-          }
-        }
-        for (const [pid, pide] of pideComposicion) {
-          const comp = linkedMap.get(pid);
-          if (itemsPaciente.esIlimitado(comp)) continue;
-          const hay = txWarehouse
-            ? (await kardex.currentStock({ clinicId: req.clinicId, product: comp._id, warehouse: txWarehouse }, session)).qty
-            : Number(comp.stock || 0);
-          if (hay + 1e-9 < pide) {
-            const de = items.map((it) => txProductMap.get(String(it.product))).filter((p) => esCompuesto(p) && lineasDe(p).some((c) => String(c.product) === pid)).map((p) => p.name);
-            throw Object.assign(new Error(`Stock insuficiente de «${comp.name}» (componente de ${de.map((n) => `«${n}»`).join(', ')}). Se necesitan ${+pide.toFixed(4)} y hay ${+Number(hay).toFixed(4)}${txWarehouse ? ' en la bodega seleccionada' : ''}.`), { status: 400 });
-          }
-        }
-
+        // SIN STOCK NO BLOQUEA (29-10-2026): se puede cobrar y facturar aunque el inventario
+        // no alcance (el stock de Vikingo va por detrás de Contífico). Se descuenta lo que haya
+        // (nunca queda negativo), el kardex valora el faltante al costo promedio y la venta
+        // devuelve un aviso. Los componentes de un compuesto salen como vinculados: mismo trato.
         for (const item of items) {
           const product = txProductMap.get(String(item.product));
           const qty = Number(item.quantity);
           if (!qty || qty <= 0) {
             throw Object.assign(new Error(`Cantidad invalida para ${product.name}`), { status: 400 });
           }
-          if (txIsUnlimited(product) || esCompuesto(product)) continue;
-          if (txWarehouse) {
-            // Con bodega, el disponible lo dice el SUBMAYOR de esa bodega (las capas), no el
-            // `stock` global del producto: vender 5 de una bodega que tiene 2 porque "en total
-            // hay 10" es lo que descuadraba el inventario por bodega.
-            const enBodega = await kardex.currentStock(
-              { clinicId: req.clinicId, product: product._id, warehouse: txWarehouse }, session
-            );
-            if (enBodega.qty < qty) {
-              throw Object.assign(
-                new Error(`Stock insuficiente para "${product.name}" en la bodega seleccionada. Disponible: ${enBodega.qty}`),
-                { status: 400 }
-              );
-            }
-          } else if (Number(product.stock || 0) < qty) {
-            throw Object.assign(new Error(`Stock insuficiente para "${product.name}". Disponible: ${product.stock}`), { status: 400 });
-          }
         }
 
+        const stockMovido = new Map();
         for (const [idx, item] of items.entries()) {
           const product = txProductMap.get(String(item.product));
           const qty = Number(item.quantity);
@@ -444,18 +409,15 @@ exports.createSale = async (req, res) => {
           // Lo deja en la clínica: sigue en la percha hasta que se le aplique.
           if (lineDelivery[idx] === 'en_clinica') continue;
           // CATÁLOGO COMPARTIDO: el producto se busca por su _id, NO por la sucursal activa.
-          // Todo el catálogo se creó bajo una sola sucursal; filtrar por `req.clinicId` hacía
-          // que, cobrando desde otra, el descuento no encontrara el producto y la venta
-          // fallara con «Stock insuficiente (cambio durante la operación)» teniendo stock.
-          const updated = await Product.findOneAndUpdate(
-            { _id: product._id, stock: { $gte: qty } },
-            { $inc: { stock: -qty } },
-            { new: true, session }
-          );
-          if (!updated) {
-            throw Object.assign(new Error(`Stock insuficiente para "${product.name}" (cambio durante la operacion)`), { status: 400 });
+          const fresco = await Product.findById(product._id).select('stock').session(session);
+          const disponible = Math.max(0, Number(fresco?.stock || 0));
+          const toma = Math.min(qty, disponible);
+          if (toma > 0) await Product.updateOne({ _id: product._id }, { $inc: { stock: -toma } }, { session });
+          stockMovido.set(idx, toma);
+          if (toma < qty) {
+            saleWarnings.push(`«${product.name}»: se vendieron ${qty} y el inventario tenía ${disponible}. Revisa el stock de ese ítem.`);
           }
-          product.stock = updated.stock;
+          product.stock = +(disponible - toma).toFixed(4);
         }
 
         let descuentoCambiado = false;
@@ -505,6 +467,7 @@ exports.createSale = async (req, res) => {
             delivery: lineDelivery[idx],
             // Compuesto: el compuesto no sale del inventario, salen sus componentes (vinculados).
             composite: esCompuesto(product),
+            stockMoved: stockMovido.has(idx) ? stockMovido.get(idx) : undefined,
             // El inventario de cada vinculado se mueve con la venta ya creada (más abajo).
             linkedItems: linkedReq[idx].map((l) => {
               const lp = linkedMap.get(l.product);
@@ -1338,7 +1301,7 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
     if (prod && (prod.unlimited || prod.category === 'servicio')) continue;
     await Product.updateOne(
       { _id: item.product },
-      { $inc: { stock: item.quantity } },
+      { $inc: { stock: item.stockMoved ?? item.quantity } },
       { session }
     );
     // El costo promedio sale de las capas de ESTA sucursal: solo se recalcula en el

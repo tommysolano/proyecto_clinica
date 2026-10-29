@@ -78,6 +78,9 @@ const saleItemSchema = new mongoose.Schema({
   // COMPUESTO con composición fija (29-10-2026): la línea no movió stock propio; salieron
   // sus componentes (linkedItems con `fromComposition`). Anular no le devuelve stock a él.
   composite: { type: Boolean, default: false },
+  // Lo que de verdad salió del stock (se vende aunque no alcance): anular devuelve esto.
+  // Las ventas anteriores no lo tienen: se devuelve la cantidad.
+  stockMoved: { type: Number },
   // Ítems vinculados que se usaron con esta línea (no suman al precio).
   linkedItems: { type: [saleLinkedItemSchema], default: [] },
   subtotal: { type: Number, required: true },

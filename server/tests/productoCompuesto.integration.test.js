@@ -62,16 +62,17 @@ test('se vende por lo que alcanzan sus componentes y al cobrarlo sale medio fras
   assert.deepEqual(salidas.map((m) => [String(m.product), m.quantity]), [[String(frasco20._id), 1.5]], 'kardex: solo sale el frasco de 20 ml');
   assert.ok(venta.items[0].linkedItems[0].cost > 0, 'el costo de venta es el del componente');
 
-  // No alcanza: 60 de 10 ml piden 30 frascos y hay 26,5.
-  const corto = await vender(clinicId, userId, diez, 60);
-  assert.equal(corto.statusCode, 400);
-  assert.match(corto.payload.message, /Stock insuficiente de «ACIDO ALPHALIPOICO 20ML MOL».*Se necesitan 30 y hay 26.5/);
-
   // Anular devuelve el medio frasco a cada venta.
   const anular = await H.runController(sales.cancelSale, H.mockReq(clinicId, userId, {}, { params: { id: String(venta._id) } }));
   assert.ok(anular.statusCode < 400, JSON.stringify(anular.payload));
   assert.equal((await Product.findById(frasco20._id)).stock, 28);
   assert.equal((await Product.findById(diez._id)).stock, 0);
+
+  // No alcanza (29-10-2026: no bloquea): 60 de 10 ml piden 30 frascos y hay 28 → avisa y saca los 28.
+  const corto = await vender(clinicId, userId, diez, 60);
+  assert.equal(corto.statusCode, 201, JSON.stringify(corto.payload));
+  assert.ok((corto.payload.warnings || []).some((w) => /ACIDO ALPHALIPOICO 20ML MOL/.test(w)));
+  assert.equal((await Product.findById(frasco20._id)).stock, 0);
 });
 
 test('la composición solo lleva productos con stock, sin anidar compuestos; un compuesto no se deja guardado', async () => {
