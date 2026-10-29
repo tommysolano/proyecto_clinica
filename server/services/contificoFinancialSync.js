@@ -29,6 +29,10 @@ const { decodeCompressedJson } = require('../utils/compressedJson');
 
 let running = false;
 let lastHistory = 0;
+let cycleRunning = false;
+// Cada cuánto se consulta Contífico (29-10-2026: 5 minutos, pedido de la clínica; antes 1 hora).
+// Ajustable sin desplegar con CONTIFICO_SYNC_MINUTES.
+const SYNC_INTERVAL_MS = Math.max(1, Number(process.env.CONTIFICO_SYNC_MINUTES) || 5) * 60 * 1000;
 const LEASE_NAME = 'contifico-financial-sync';
 const STATE_ID = 'financial-Central';
 const LEASE_MS = 10 * 60 * 1000;
@@ -392,6 +396,16 @@ function startFinancialSyncJob(leaderOnly) {
     return;
   }
   const run = leaderOnly(async () => {
+    // Con el ciclo cada 5 minutos, uno largo (p.ej. la pasada histórica de cada 6 h) puede
+    // seguir corriendo cuando toca el siguiente: ese se salta en vez de amontonarse.
+    if (cycleRunning) {
+      console.log('[contifico-sync] ciclo anterior aún en curso; se salta este turno');
+      return;
+    }
+    cycleRunning = true;
+    try { await runCycle(); } finally { cycleRunning = false; }
+  });
+  const runCycle = async () => {
     const history = Date.now() - lastHistory > 6 * 60 * 60 * 1000;
     try {
       const result = await syncFinancialReports({ includeHistory: history, trigger: 'AUTO' });
@@ -421,11 +435,11 @@ function startFinancialSyncJob(leaderOnly) {
       console.log('[contifico-payroll-sync]', JSON.stringify({ state: payroll.state,
         months: payroll.months?.map((month) => `${month.month}:${month.state}`), failures: payroll.failures }));
     } catch (error) { console.error('[contifico-payroll-sync] BLOQUEADO:', error.stack || error.message); }
-  });
+  };
   setTimeout(run, 30 * 1000);
-  // Cada hora (antes 15 min): el ciclo comparte proceso y base con las pantallas
-  // de la clínica, y una hora de desfase con Contífico es suficiente.
-  setInterval(run, 60 * 60 * 1000);
+  // Cada 5 minutos (CONTIFICO_SYNC_MINUTES). Solo cambia lo que difiere de Contífico: un ciclo
+  // sin novedades lee de la API pero casi no escribe en la base.
+  setInterval(run, SYNC_INTERVAL_MS);
 }
 
 module.exports = { fetchWindow, ledgerMaps, syncCostCenterCatalog, syncMonth, syncFinancialReports,
