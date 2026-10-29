@@ -216,6 +216,9 @@ const saleSchema = new mongoose.Schema(
     // Solo existe cuando la venta mueve inventario (no en ventas de puro servicio).
     costJournalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     notes: String,
+    // Motivo del descuento o comentario del cajero al cobrar (uno por venta). Obligatorio
+    // cuando el descuento de alguna línea difiere del que trae el producto.
+    discountReason: { type: String, default: '' },
     // Marca si es la primera venta/servicio del paciente (paciente nuevo).
     isFirstVisit: { type: Boolean, default: false },
     // Trazabilidad: quién atendió en cada eslabón del proceso.

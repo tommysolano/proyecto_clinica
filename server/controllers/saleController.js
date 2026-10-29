@@ -12,7 +12,7 @@ const { openReceivable, applyToReceivable, voidReceivable } = require('../utils/
 const kardex = require('../utils/kardex');
 const { createResolver, auditarDiferencias } = require('../services/costCenterPolicy');
 const { calculateSaleLine, summarizeSaleTaxes } = require('../utils/tax');
-const { descuentoDeLinea } = require('../utils/productDiscount');
+const { descuentoAlCobrar } = require('../utils/productDiscount');
 const { assertNotPastDocumentDate } = require('../utils/fiscalDocumentDate');
 const { invoiceDate } = require('../utils/dates');
 const { emitToClinic } = require('../realtime');
@@ -159,6 +159,8 @@ exports.createSale = async (req, res) => {
       paymentMethod,
       notes,
     } = req.body;
+    // Motivo del descuento / comentario del cobro: uno por venta, no por línea.
+    const discountReason = String(req.body.discountReason || '').trim().slice(0, 1000);
 
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Debe agregar al menos un ítem' });
@@ -386,6 +388,7 @@ exports.createSale = async (req, res) => {
           product.stock = updated.stock;
         }
 
+        let descuentoCambiado = false;
         const txSaleItems = items.map((item, idx) => {
           const product = txProductMap.get(String(item.product));
           // PRECIO DE LA LÍNEA: por defecto el activo del producto (`salePrice`). El cajero
@@ -393,13 +396,15 @@ exports.createSale = async (req, res) => {
           // aceptar cualquier `unitPrice` del cliente permitiría facturar a un precio inventado
           // desde el navegador. Un precio que no está en la lista se rechaza.
           const unitPrice = resolveUnitPrice(product, item);
-          // DESCUENTO: el del PRODUCTO, configurado en el inventario (oct-2026). Lo que
-          // mande el navegador se ignora: al cobrar ya no se teclean descuentos.
+          // DESCUENTO: por defecto el del PRODUCTO (inventario). Desde el 29-10-2026 el
+          // cajero lo puede cambiar al cobrar; si lo cambia, la venta exige el motivo.
+          const desc = descuentoAlCobrar(product, unitPrice, item.quantity, item.discount);
+          if (desc.cambiado && desc.discount > 0) descuentoCambiado = true;
           const tax = calculateSaleLine({
             product,
             quantity: item.quantity,
             unitPrice,
-            discount: descuentoDeLinea(product, unitPrice, item.quantity),
+            discount: desc.discount,
             priceIncludesVat: item.priceIncludesVat,
           });
           return {
@@ -436,6 +441,9 @@ exports.createSale = async (req, res) => {
             subtotal: tax.taxBase,
           };
         });
+        if (descuentoCambiado && !discountReason) {
+          throw Object.assign(new Error('Escribe el motivo del descuento aplicado'), { status: 400 });
+        }
         const txTotals = summarizeSaleTaxes(txSaleItems);
 
         // ── Desglose de pago (uno o varios métodos) ──────────────────────────
@@ -623,6 +631,7 @@ exports.createSale = async (req, res) => {
           paid: creditoAmount <= 0.01,
           advanceCreated: excedente > 0.01 ? excedente : 0,
           notes,
+          discountReason: discountReason || undefined,
           isFirstVisit: txIsFirstVisit,
           clientCity,
           clientZone,

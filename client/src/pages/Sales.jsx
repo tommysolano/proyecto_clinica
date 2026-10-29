@@ -27,6 +27,7 @@ import {
   HiOutlineUser,
   HiOutlineShoppingCart,
   HiOutlineBuildingStorefront,
+  HiOutlineDocumentArrowDown,
 } from 'react-icons/hi2';
 import JournalEntryViewModal from '../components/JournalEntryViewModal';
 import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../utils/idempotency';
@@ -128,11 +129,18 @@ const priceListOf = (product) => (
  */
 const r2 = (n) => +Number(n || 0).toFixed(2);
 /**
- * DESCUENTO DE LA LÍNEA = el del PRODUCTO, configurado en el inventario (oct-2026). Al cobrar
- * ya no se teclea. Espejo de server/utils/productDiscount.js: el servidor es quien lo aplica
- * (lo que mande la pantalla se ignora); esto solo lo muestra.
+ * DESCUENTO DE LA LÍNEA: por defecto el del PRODUCTO (inventario). Desde el 29-10-2026 el
+ * cajero lo puede cambiar al cobrar (`manualDiscount`, en $); si lo cambia, la venta exige
+ * el motivo. Espejo de server/utils/productDiscount.js (`descuentoAlCobrar`).
  */
 const descuentoDeLinea = (item) => {
+  if (item?.manualDiscount !== undefined && item?.manualDiscount !== null && item?.manualDiscount !== '') {
+    const bruto = Math.max(r2(Number(item.unitPrice || 0) * Number(item.quantity || 0)), 0);
+    return Math.min(Math.max(r2(item.manualDiscount), 0), bruto);
+  }
+  return descuentoDelProducto(item);
+};
+const descuentoDelProducto = (item) => {
   const valor = Number(item?.discountValue) || 0;
   if (!item?.discountType || valor <= 0) return 0;
   const bruto = r2(Number(item.unitPrice || 0) * Number(item.quantity || 0));
@@ -279,6 +287,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     dueDate: '',
     recommendedBy: '',
     notes: '',
+    discountReason: '', // motivo del descuento / comentario del cobro (uno por venta)
     // CITA que se está cobrando (deep-link desde la agenda, «Cobrar cita»).
     // Va en el cuerpo de la venta y queda en `Sale.appointment`: es lo que
     // permite a Analíticas sumar lo cobrado en mostrador por cada cita.
@@ -449,6 +458,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       dueDate: '',
       recommendedBy: '',
       notes: '',
+      discountReason: '',
       appointment: null,
       warehouse: '',
       costCenter: '',
@@ -583,7 +593,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
 
   const subtotal = form.items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
   const discountTotal = form.items.reduce((s, i) => s + descuentoDeLinea(i), 0);
-  const hayDescuento = form.items.some((i) => descuentoDeLinea(i) > 0);
+  // El motivo es obligatorio si alguna línea lleva un descuento distinto al del producto.
+  const descuentoCambiado = form.items.some((i) => descuentoDeLinea(i) > 0
+    && Math.abs(descuentoDeLinea(i) - descuentoDelProducto(i)) > 0.005);
   // El IVA lo calcula el backend por línea (`utils/tax`); `ivaDeLinea` lo replica para mostrar
   // el desglose y para que el total coincida con lo que se va a facturar.
   const lineasIva = form.items.map(ivaDeLinea);
@@ -1084,6 +1096,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     if (form.items.length === 0) return toast.error('Agrega al menos un producto');
     const sinPrecio = form.items.find((i) => i.variablePrice && !(Number(i.unitPrice) > 0));
     if (sinPrecio) return toast.error(`Escribe el precio de «${sinPrecio.productName}»`);
+    if (descuentoCambiado && !String(form.discountReason || '').trim()) {
+      return toast.error('Escribe el motivo del descuento aplicado');
+    }
     // Ítems vinculados: cantidad válida y, lo del paciente, que le alcance.
     const usoDelPaciente = new Map();
     for (const it of form.items) {
@@ -1232,7 +1247,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           // (`priceName` manda; el importe es solo respaldo para clientes antiguos).
           priceName: i.priceName || undefined,
           unitPrice: i.unitPrice,
-          // Sin descuento: lo pone el servidor desde el producto (inventario).
+          // Descuento en $: solo si el cajero lo cambió; si no, el servidor pone el del producto.
+          discount: i.manualDiscount !== undefined && i.manualDiscount !== null && i.manualDiscount !== ''
+            ? descuentoDeLinea(i) : undefined,
           treatment: i.treatment || null,
           prepaid: !!i.prepaid && esServicioLinea(i),
           // ¿Se lo lleva o lo deja para aplicárselo aquí? (solo físicos de un paciente)
@@ -1311,6 +1328,16 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     const conSerie = serieTexto ? ` con la serie ${serieTexto}` : '';
     if (!window.confirm(`¿Emitir factura electrónica para la venta ${sale.saleNumber}${conSerie}?`)) return;
     emitirFactura(sale);
+  };
+
+  const verFacturaPdf = async (invoiceId) => {
+    try {
+      const res = await api.get(`/invoices/${invoiceId}/pdf`, { responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      window.open(url, '_blank');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo abrir el PDF de la factura');
+    }
   };
 
   const emitirFactura = async (sale) => {
@@ -1868,7 +1895,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                       <th className="text-left py-2">Producto</th>
                       <th className="text-right py-2">Precio</th>
                       <th className="text-center py-2">Cant.</th>
-                      {hayDescuento && <th className="text-right py-2">Descuento</th>}
+                      <th className="text-right py-2">Descuento $</th>
                       {form.patient && treatments.length > 0 && (
                         <th className="text-left py-2 pl-2">Tratamiento</th>
                       )}
@@ -1980,19 +2007,20 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                             className="w-16 px-2 py-1 border border-slate-300 rounded text-center text-sm outline-none"
                           />
                         </td>
-                        {/* El descuento lo pone el INVENTARIO (producto); aquí solo se ve. */}
-                        {hayDescuento && (
-                          <td className="py-2 text-right text-rose-600 whitespace-nowrap">
-                            {descuentoDeLinea(item) > 0 ? (
-                              <>
-                                -${descuentoDeLinea(item).toFixed(2)}
-                                {item.discountType === 'percentage' && (
-                                  <span className="block text-[10px] text-slate-400">{Number(item.discountValue)}%</span>
-                                )}
-                              </>
-                            ) : '—'}
-                          </td>
-                        )}
+                        {/* Viene el descuento del producto (inventario); el cajero lo puede cambiar
+                            y entonces tiene que escribir el motivo abajo. */}
+                        <td className="py-2 text-right">
+                          <NumericInput
+                            value={item.manualDiscount ?? (descuentoDelProducto(item) || '')}
+                            onChange={(e) => setLinea(idx, { manualDiscount: e.target.value })}
+                            title="Descuento de la línea en dólares"
+                            placeholder="0.00"
+                            className="w-20 px-2 py-1 border border-slate-300 rounded text-right text-sm text-rose-600 outline-none"
+                          />
+                          {item.discountType === 'percentage' && descuentoDelProducto(item) > 0 && (
+                            <span className="block text-[10px] text-slate-400">Producto: {Number(item.discountValue)}%</span>
+                          )}
+                        </td>
                         {form.patient && treatments.length > 0 && (
                           <td className="py-2 pl-2">
                             <select
@@ -2054,6 +2082,24 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                   <span>Total:</span>
                   <span className="text-emerald-700">${total.toFixed(2)}</span>
                 </div>
+              </div>
+            )}
+
+            {/* MOTIVO DEL DESCUENTO (29-10-2026): uno por cobro, no por línea. Obligatorio si
+                el cajero cambió el descuento que trae el producto; sirve para cualquier comentario. */}
+            {form.items.length > 0 && discountTotal > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Motivo del descuento / comentario{descuentoCambiado && <span className="text-rose-600"> *</span>}
+                </label>
+                <textarea
+                  value={form.discountReason || ''}
+                  onChange={(e) => setForm((f) => ({ ...f, discountReason: e.target.value }))}
+                  rows={2}
+                  maxLength={1000}
+                  placeholder="¿Por qué se aplicó el descuento? Cualquier otro comentario del cobro."
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-400"
+                />
               </div>
             )}
             </FormSection>
@@ -2636,6 +2682,16 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                       >
                         <HiOutlineEye className="w-4 h-4" />
                       </button>
+                      {/* RIDE: la factura en PDF con el formato del SRI (sale del XML enviado). */}
+                      {s.invoice?._id && s.invoice.estado !== 'NO_AUTORIZADO' && (
+                        <button
+                          onClick={() => verFacturaPdf(s.invoice._id)}
+                          className="p-1.5 rounded-lg hover:bg-blue-50 text-slate-400 hover:text-blue-600 bg-transparent border-none cursor-pointer"
+                          title="Ver factura en PDF (RIDE)"
+                        >
+                          <HiOutlineDocumentArrowDown className="w-4 h-4" />
+                        </button>
+                      )}
                       {canInvoice && s.status === 'completada' && (!s.invoice || s.invoice.estado === 'NO_AUTORIZADO') && (
                         <button
                           onClick={() => facturar(s)}
@@ -2828,6 +2884,12 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                 <span className="text-emerald-700">${detailModal.total.toFixed(2)}</span>
               </div>
             </div>
+            {detailModal.discountReason && (
+              <div className="text-sm">
+                <span className="block text-slate-500">Motivo del descuento / comentario:</span>
+                <p className="text-slate-800 whitespace-pre-wrap">{detailModal.discountReason}</p>
+              </div>
+            )}
           </div>
         )}
       </Modal>

@@ -50,7 +50,8 @@ const comoCajero = (clinicId, cajero, body = {}, extra = {}) => {
   return req;
 };
 
-const cobrar = (s, cita, items) => H.runController(sales.createSale, comoCajero(s.clinicId, s.cajero, {
+const cobrar = (s, cita, items, extra = {}) => H.runController(sales.createSale, comoCajero(s.clinicId, s.cajero, {
+  ...extra,
   date: H.docDate(),
   patient: String(s.patient._id),
   appointment: cita ? String(cita._id) : undefined,
@@ -190,13 +191,27 @@ test('anular la venta: no se deja si ya se usaron sesiones en otras citas', asyn
   assert.equal((await PrepaidService.findOne({ sale: v.payload._id })).status, 'anulado');
 });
 
-test('el descuento lo pone el producto; el que manda la pantalla se ignora', async () => {
+test('el descuento viene del producto; si el cajero lo cambia, exige el motivo', async () => {
   const s = await seed();
   await s.suero.updateOne({ discountType: 'percentage', discountValue: 10 });
-  const v = await cobrar(s, null, [{ product: String(s.suero._id), quantity: 2, discount: 80 }]);
+  const v = await cobrar(s, null, [{ product: String(s.suero._id), quantity: 2 }]);
   assert.equal(v.statusCode, 201, JSON.stringify(v.payload));
   assert.equal(v.payload.discountTotal, 10); // 10 % de 100
   assert.equal(v.payload.total, 90);
+
+  // Descuento tecleado al cobrar: sin motivo no pasa; con motivo se aplica y queda guardado.
+  const sinMotivo = await cobrar(s, null, [{ product: String(s.suero._id), quantity: 2, discount: 30 }]);
+  assert.equal(sinMotivo.statusCode, 400, JSON.stringify(sinMotivo.payload));
+  const conMotivo = await cobrar(s, null, [{ product: String(s.suero._id), quantity: 2, discount: 30 }],
+    { discountReason: 'Paciente frecuente' });
+  assert.equal(conMotivo.statusCode, 201, JSON.stringify(conMotivo.payload));
+  assert.equal(conMotivo.payload.discountTotal, 30);
+  assert.equal(conMotivo.payload.total, 70);
+  assert.equal(conMotivo.payload.discountReason, 'Paciente frecuente');
+  // Nunca más que la línea ni negativo.
+  const { descuentoAlCobrar } = require('../utils/productDiscount');
+  assert.equal(descuentoAlCobrar({}, 50, 2, 999).discount, 100);
+  assert.equal(descuentoAlCobrar({}, 50, 2, -5).discount, 0);
 
   await s.suero.updateOne({ discountType: 'amount', discountValue: 5 });
   const v2 = await cobrar(s, null, [{ product: String(s.suero._id), quantity: 3 }]);

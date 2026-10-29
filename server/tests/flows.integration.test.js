@@ -410,13 +410,13 @@ test('FLUJO 14 — Anticipo de cliente (cobro sin factura): acredita Anticipos c
 // ─────────────────────────────────────────────────────────────────────────────
 test('FLUJO 15 — Venta con descuento: la base de descuento va a la cuenta de descuentos', async () => {
   const { clinicId, userId } = await H.seedClinic();
-  // El descuento lo pone el PRODUCTO (inventario); el que mande la pantalla se ignora.
+  // Sin descuento tecleado vale el del PRODUCTO (inventario).
   const serv = await H.makeProduct(clinicId, {
     category: 'servicio', salePrice: 100, unlimited: true, taxCategory: 'IVA_0',
     discountType: 'percentage', discountValue: 20,
   });
   const r = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
-    items: [{ product: serv._id, quantity: 1, unitPrice: 100, discount: 99 }], paymentMethod: 'efectivo',
+    items: [{ product: serv._id, quantity: 1, unitPrice: 100 }], paymentMethod: 'efectivo',
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   const Sale = require('../models/Sale');
