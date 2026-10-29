@@ -190,7 +190,11 @@ importantes**. Cada pestaña muestra un ✓ verde si el canal está **activo** o
 - **Messenger:** *Page ID*, *Page Access Token* 🔒, *Verify Token* 🔒, *App Secret* 🔒.
 - **Instagram:** *Instagram Business Account ID*, *Page ID* de la página de FB vinculada, *Page Access
   Token* 🔒, *Verify Token* 🔒, *App Secret* 🔒.
-- **TikTok:** *App ID*, *App Secret* 🔒, *Access Token* 🔒, *Business ID*, *Verify Token* 🔒.
+- **TikTok (Business Messaging):** *App ID*, *App Secret* 🔒 y *URL de autorización* de la app.
+  Luego **Conectar cuenta de TikTok** (llena solos *Access Token*, *Refresh Token* y *Business ID*,
+  y el token se renueva solo) y **Registrar webhook en TikTok**. La *Redirect URL* que muestra la
+  pestaña se da de alta en la app de TikTok. TikTok no usa Verify Token: cada aviso llega firmado con
+  el App Secret. Por TikTok se envían texto e imágenes JPG/PNG (hasta 3 MB).
 - **Email (Resend):** *API Key de Resend* 🔒, *Email remitente* (verificado en Resend), *Nombre
   remitente*, *Responder a* (opcional).
 
@@ -215,8 +219,8 @@ y **resumir conversaciones** en los chats, y para el paso *Responder con IA* de 
 - Los campos sensibles se muestran enmascarados (•••• + últimos 4) una vez guardados. Para reemplazar
   un valor, simplemente **escribe encima**.
 - El **Verify Token** lo eliges tú: debe ser **idéntico** aquí y en el panel del proveedor.
-- WhatsApp/Messenger/Instagram usan **Meta for Developers**; TikTok requiere una app aprobada en TikTok
-  Developers.
+- WhatsApp/Messenger/Instagram usan **Meta for Developers**; TikTok requiere una app de **TikTok API
+  for Business** con acceso aprobado a la *Business Messaging API*.
 
 ---
 

@@ -159,7 +159,10 @@ function mensajeDeError(error) {
 const RETRY_DELAY_MS = 1500;
 function isRetryableRead(error) {
   const config = error.config;
-  if (!config || config.__retried || error.response) return false;
+  // El servidor no pudo comprobar la sesión (base de datos lenta un instante):
+  // no es un error de la petición, se reintenta igual que un corte de red.
+  const authUnavailable = error.response?.status === 503 && error.response?.data?.code === 'AUTH_UNAVAILABLE';
+  if (!config || config.__retried || (error.response && !authUnavailable)) return false;
   if ((config.method || 'get').toLowerCase() !== 'get') return false;
   if (axios.isCancel(error) || error.code === 'ERR_CANCELED') return false;
   if (config.signal?.aborted) return false;

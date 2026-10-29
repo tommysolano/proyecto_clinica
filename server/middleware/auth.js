@@ -14,7 +14,14 @@ const auth = async (req, res, next) => {
       return res.status(401).json({ message: 'No autorizado, token requerido' });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    // Las sesiones no caducan (ver authController.signToken). `ignoreExpiration`
+    // mantiene vivos también los tokens emitidos antes con caducidad de 7 días.
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
+    } catch {
+      return res.status(401).json({ message: 'Token inválido' });
+    }
     // Cacheado unos segundos: este middleware corre en CADA petición y esta
     // búsqueda era 118 ms de peaje fijo contra Atlas, más la firma digital en
     // base64 que nadie lee desde aquí. Ver utils/userCache.js.
@@ -50,7 +57,14 @@ const auth = async (req, res, next) => {
 
     next();
   } catch (error) {
-    res.status(401).json({ message: 'Token inválido' });
+    // Aquí solo llegan fallos del SERVIDOR (base de datos lenta o caída, caché de
+    // empresas…), nunca un token malo. Antes respondían 401 y el frontend, al
+    // ver un 401, cerraba la sesión: un tropiezo de Atlas echaba a la gente.
+    console.error('[auth] fallo verificando la sesión:', error.message);
+    res.status(503).json({
+      message: 'No se pudo verificar la sesión en este momento. Inténtalo de nuevo en unos segundos.',
+      code: 'AUTH_UNAVAILABLE',
+    });
   }
 };
 

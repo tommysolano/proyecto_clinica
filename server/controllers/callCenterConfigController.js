@@ -13,9 +13,20 @@ const { TIME_RE, normalizeSchedule, isWorkingAt } = require('../utils/agentSched
  * Devuelve la configuración de la clínica enmascarando tokens/secrets.
  * El cliente solo ve los últimos 4 caracteres como indicador de "configurado".
  */
-const SENSITIVE_KEYS = ['accessToken', 'verifyToken', 'appSecret', 'pageAccessToken', 'apiKey'];
+const SENSITIVE_KEYS = ['accessToken', 'verifyToken', 'appSecret', 'pageAccessToken', 'apiKey', 'refreshToken'];
 // Secrets reales que se cifran en reposo (verifyToken es solo handshake → no se cifra).
-const ENCRYPT_KEYS = ['accessToken', 'appSecret', 'pageAccessToken', 'apiKey'];
+const ENCRYPT_KEYS = ['accessToken', 'appSecret', 'pageAccessToken', 'apiKey', 'refreshToken'];
+// TikTok: lo que el admin puede escribir. Caducidades, webhook y último aviso
+// los pone el servidor (OAuth, registro del webhook, recepción).
+const TIKTOK_EDITABLE = ['enabled', 'appId', 'appSecret', 'authorizationUrl', 'accessToken', 'refreshToken', 'businessId'];
+
+// URL pública del servidor sin "/api" (PUBLIC_API_URL puede venir con o sin él).
+function publicBase(req) {
+  const base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}`;
+  return base.replace(/\/+$/, '').replace(/\/api$/, '');
+}
+const tiktokCallbackUrl = (req) => `${publicBase(req)}/api/chats/webhook/tiktok/${req.clinicId}`;
+const tiktokRedirectUrl = (req) => `${publicBase(req)}/api/chats/oauth/tiktok/callback`;
 
 /**
  * Asesores del call center compartido y sus turnos. Es global igual que la
@@ -161,16 +172,17 @@ exports.get = async (req, res) => {
 exports.getWebhookUrls = async (req, res) => {
   // PUBLIC_API_URL puede venir con o sin "/api"; normalizamos para emitir el
   // prefijo una sola vez y que las URLs sean siempre .../api/chats/...
-  let base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}`;
-  base = base.replace(/\/+$/, '').replace(/\/api$/, '');
+  const base = publicBase(req);
   res.json({
     // WhatsApp es global (call center compartido): una sola URL para todos los números Cloud API.
     whatsapp: `${base}/api/chats/webhook/whatsapp`,
     messenger: `${base}/api/chats/webhook/messenger/${req.clinicId}`,
     instagram: `${base}/api/chats/webhook/instagram/${req.clinicId}`,
-    tiktok: `${base}/api/chats/webhook/tiktok/${req.clinicId}`,
+    tiktok: tiktokCallbackUrl(req),
+    // Redirect URL que hay que dar de alta en la app de TikTok (vuelta del OAuth).
+    tiktokRedirect: tiktokRedirectUrl(req),
     note:
-      'Configura estas URLs como callback en el panel de Meta for Developers (WhatsApp/Messenger/Instagram) y en TikTok Developer. ' +
+      'Configura estas URLs como callback en el panel de Meta for Developers (WhatsApp/Messenger/Instagram). ' +
       'El valor "Verify Token" que pongas en cada plataforma debe coincidir con el verifyToken configurado aquí.',
   });
 };
@@ -199,6 +211,7 @@ exports.update = async (req, res) => {
     const current = cfg[channel] || {};
     const cleaned = {};
     for (const [k, v] of Object.entries(data)) {
+      if (channel === 'tiktok' && !TIKTOK_EDITABLE.includes(k)) continue;
       if (typeof v === 'string' && v.startsWith('••••')) {
         // No tocar — el usuario no cambió el campo sensible.
         continue;
@@ -206,6 +219,9 @@ exports.update = async (req, res) => {
       // Cifra los secrets reales antes de persistir.
       cleaned[k] = ENCRYPT_KEYS.includes(k) && typeof v === 'string' && v ? encryptSecret(v) : v;
     }
+    // Token de TikTok pegado a mano: no se sabe cuándo caduca (se renovará
+    // cuando TikTok lo rechace, si hay refresh token).
+    if (channel === 'tiktok' && 'accessToken' in cleaned) cleaned.accessTokenExpiresAt = null;
     cfg[channel] = { ...current.toObject?.() || current, ...cleaned };
     cfg.updatedBy = req.user._id;
     await cfg.save();
@@ -284,14 +300,15 @@ exports.testConnection = async (req, res) => {
       });
     }
     if (channel === 'tiktok') {
-      if (!c.accessToken) {
-        return res.status(400).json({ message: 'Falta accessToken' });
+      if (!c.appId || !c.appSecret) {
+        return res.status(400).json({ message: 'Falta el App ID o el App Secret' });
       }
-      // TikTok no tiene un endpoint "ping" universal; aceptamos si el token está presente.
-      return res.json({
-        ok: true,
-        info: { message: 'Token presente. La verificación real depende del producto TikTok que uses.' },
-      });
+      // Prueba real: credenciales de la app (lee el webhook registrado) y token
+      // de la cuenta (lista conversaciones).
+      const checks = await require('../utils/tiktokMessaging').testConnection(req.clinicId);
+      const failed = checks.filter((x) => !x.ok);
+      const text = checks.map((x) => `${x.ok ? '✓' : '✗'} ${x.message}`).join(' · ');
+      return res.status(failed.length ? 400 : 200).json({ ok: !failed.length, checks, message: text });
     }
     if (channel === 'email') {
       if (!c.apiKey || !c.fromEmail) {
@@ -1599,5 +1616,58 @@ exports.healWhatsappLinks = async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ message: 'Error al reparar enlaces', error: err.message });
+  }
+};
+
+/**
+ * POST /api/call-center-config/tiktok/register-webhook
+ * Da de alta (o actualiza) en TikTok la URL donde llegan los mensajes directos
+ * (evento DIRECT_MESSAGE). En TikTok esto se hace por API, no pegando la URL en
+ * un panel como en Meta.
+ */
+exports.registerTiktokWebhook = async (req, res) => {
+  try {
+    const callbackUrl = tiktokCallbackUrl(req);
+    if (!/^https:\/\//i.test(callbackUrl)) {
+      return res.status(400).json({ message: 'TikTok exige HTTPS: revisa PUBLIC_API_URL en el servidor.' });
+    }
+    const data = await require('../utils/tiktokMessaging').registerWebhook(req.clinicId, callbackUrl);
+    res.json({ ok: true, callbackUrl: data.callback_url || callbackUrl, message: 'Webhook registrado en TikTok' });
+  } catch (err) {
+    res.status(400).json({ message: `TikTok: ${err.message}` });
+  }
+};
+
+/**
+ * GET /api/call-center-config/tiktok/authorize-url
+ * Enlace a la pantalla de permisos de TikTok para conectar la cuenta de empresa.
+ * Parte de la URL de autorización que da el portal de TikTok (lleva la app, los
+ * permisos y la redirect URL) y le añade un `state` firmado para saber, a la
+ * vuelta, qué sede lo pidió.
+ */
+exports.tiktokAuthorizeUrl = async (req, res) => {
+  try {
+    const cfg = await CallCenterConfig.findOne({ clinic: req.clinicId }).lean();
+    const raw = String(cfg?.tiktok?.authorizationUrl || '').trim();
+    if (!raw) {
+      return res.status(400).json({ message: 'Pega primero la URL de autorización que te da el portal de TikTok.' });
+    }
+    let url;
+    try {
+      url = new URL(raw);
+    } catch {
+      return res.status(400).json({ message: 'La URL de autorización no es válida.' });
+    }
+    if (!url.searchParams.get('redirect_uri')) url.searchParams.set('redirect_uri', tiktokRedirectUrl(req));
+    const jwt = require('jsonwebtoken');
+    const state = jwt.sign(
+      { p: 'tiktok_chat_oauth', c: String(req.clinicId), u: String(req.user._id), r: url.searchParams.get('redirect_uri') },
+      process.env.JWT_SECRET,
+      { expiresIn: '20m' }
+    );
+    url.searchParams.set('state', state);
+    res.json({ url: url.toString(), redirectUri: url.searchParams.get('redirect_uri') });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al preparar la autorización', error: err.message });
   }
 };

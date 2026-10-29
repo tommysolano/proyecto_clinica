@@ -37,6 +37,10 @@ router.post('/whatsapp/diagnostics/heal', ctrl.healWhatsappLinks);
 router.post('/whatsapp/capi/reveal-token', requireRole('admin'), ctrl.revealConversionsApiToken);
 router.post('/whatsapp/capi/test', ctrl.testConversionsApi);
 
+// TikTok: registro del webhook (por API) y conexión de la cuenta (OAuth).
+router.post('/tiktok/register-webhook', ctrl.registerTiktokWebhook);
+router.get('/tiktok/authorize-url', ctrl.tiktokAuthorizeUrl);
+
 router.post('/:channel/test', ctrl.testConnection);
 
 module.exports = router;

@@ -177,8 +177,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const MEDIA_CHANNELS = ['whatsapp', 'messenger', 'instagram'];
 // Meta no tiene plantillas HSM fuera de WhatsApp, pero el TEXTO de la plantilla
 // sí se puede mandar como mensaje normal por Messenger/Instagram (ver
-// server/utils/messaging.js#sendToProvider). TikTok no es de Meta: sin envío.
-const TEMPLATE_CHANNELS = ['whatsapp', 'messenger', 'instagram'];
+// server/utils/messaging.js#sendToProvider). TikTok tampoco tiene plantillas:
+// igual que en Instagram, va el texto.
+const TEMPLATE_CHANNELS = ['whatsapp', 'messenger', 'instagram', 'tiktok'];
 const CHANNEL_TAB_LABELS = { whatsapp: 'WhatsApp', messenger: 'Messenger', instagram: 'Instagram', tiktok: 'TikTok', sms: 'SMS', web: 'Web' };
 const CHANNEL_BADGE_COLORS = {
   whatsapp: 'bg-emerald-50 text-emerald-700',

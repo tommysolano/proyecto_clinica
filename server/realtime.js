@@ -43,7 +43,8 @@ function init(httpServer) {
         socket.handshake.auth?.token ||
         socket.handshake.headers?.authorization?.replace('Bearer ', '');
       if (!token) return next(new Error('No token'));
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      // Mismo criterio que middleware/auth.js: las sesiones no caducan.
+      const decoded = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
       const user = await User.findById(decoded.id).select('name email isSuperAdmin clinics worksInAllClinics companies active');
       // El rol de quien "trabaja en todas" depende de la empresa de la sucursal.
       await require('./utils/companies').ensureCompanyCache();

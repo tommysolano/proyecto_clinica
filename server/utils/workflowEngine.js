@@ -147,13 +147,13 @@ function sendWindowHold(workflow, type, at = new Date(), ctx = null, nodeId = nu
 // `provider_unavailable` e `invalid_recipient` los devuelve messaging.send para
 // CUALQUIER canal (whatsapp/messenger/instagram/email): su texto se arma según el
 // canal real del paso (ver sendFailureInfo), no queda fijo en "WhatsApp".
-const CHANNEL_LABELS = { whatsapp: 'WhatsApp', messenger: 'Messenger', instagram: 'Instagram', email: 'email' };
+const CHANNEL_LABELS = { whatsapp: 'WhatsApp', messenger: 'Messenger', instagram: 'Instagram', tiktok: 'TikTok', email: 'email' };
 // Canales donde el paso "Enviar plantilla" tiene sentido. Meta no tiene HSM fuera
 // de WhatsApp, pero SÍ deja mandar el TEXTO de la plantilla como mensaje normal
 // por Messenger/Instagram (igual que ya hacían los números QR de WhatsApp, que
-// tampoco admiten HSM) — ver `messaging.send`/`sendToProvider`. TikTok no es de
-// Meta y aún no tiene envío implementado: queda fuera.
-const TEMPLATE_CHANNELS = new Set(['whatsapp', 'messenger', 'instagram']);
+// tampoco admiten HSM) — ver `messaging.send`/`sendToProvider`. TikTok tampoco
+// tiene plantillas: igual que en Instagram, va el texto.
+const TEMPLATE_CHANNELS = new Set(['whatsapp', 'messenger', 'instagram', 'tiktok']);
 const SEND_FAIL_REASONS = {
   out_of_window: 'WhatsApp: fuera de la ventana de 24h (el paciente no ha escrito recientemente). Usa el paso "Enviar plantilla" con una plantilla aprobada.',
   opt_out: 'El paciente pidió no recibir mensajes (opt-out).',
@@ -1144,10 +1144,10 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef, con
     }
     case 'send_template': {
       // Meta no tiene plantillas HSM fuera de WhatsApp, pero SÍ se puede mandar el
-      // TEXTO de la plantilla como mensaje normal por Messenger/Instagram (ver
-      // messaging.send). TikTok (no es de Meta) y otros canales sin envío
-      // implementado fallan claro en vez de intentarlo por WhatsApp (que mandaría
-      // a un PSID/IGSID/open_id como si fuera un teléfono).
+      // TEXTO de la plantilla como mensaje normal por Messenger/Instagram/TikTok
+      // (ver messaging.send). Otros canales sin envío implementado fallan claro
+      // en vez de intentarlo por WhatsApp (que mandaría a un PSID/IGSID/open_id
+      // como si fuera un teléfono).
       const conversation = await loadConv();
       const stepChannel = conversation?.channel || 'whatsapp';
       if (!TEMPLATE_CHANNELS.has(stepChannel)) {
@@ -2053,9 +2053,9 @@ async function executeEnrollment(enrollment) {
       i++;
     } else if (step.type === 'send_template') {
       // Meta no tiene plantillas HSM fuera de WhatsApp, pero SÍ se puede mandar el
-      // TEXTO de la plantilla como mensaje normal por Messenger/Instagram. Otros
-      // canales (TikTok, no es de Meta; email; etc.) fallan claro en vez de
-      // intentarlo por WhatsApp (mandaría a un PSID/IGSID/open_id como teléfono).
+      // TEXTO de la plantilla como mensaje normal por Messenger/Instagram/TikTok.
+      // Otros canales (email, etc.) fallan claro en vez de intentarlo por
+      // WhatsApp (mandaría a un PSID/IGSID/open_id como teléfono).
       const stepChannel = conversation?.channel || 'whatsapp';
       if (!TEMPLATE_CHANNELS.has(stepChannel)) {
         pushLog(enrollment, {

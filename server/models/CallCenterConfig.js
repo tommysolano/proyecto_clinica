@@ -49,12 +49,23 @@ const instagramSchema = new mongoose.Schema(
 const tiktokSchema = new mongoose.Schema(
   {
     enabled: { type: Boolean, default: false },
-    // TikTok Business Messaging — actualmente vía Customer Service API
+    // TikTok Business Messaging (TikTok API for Business v1.3) — ver utils/tiktokMessaging.js
     appId: { type: String, trim: true, default: '' },
-    appSecret: { type: String, default: '' },
-    accessToken: { type: String, default: '' },
-    businessId: { type: String, trim: true, default: '' },
-    verifyToken: { type: String, default: '' },
+    appSecret: { type: String, default: '' }, // cifrado; también firma los avisos
+    // URL de autorización de la cuenta que da el portal de TikTok (app → Authorization).
+    authorizationUrl: { type: String, trim: true, default: '' },
+    accessToken: { type: String, default: '' }, // cifrado; dura ~24 h
+    accessTokenExpiresAt: { type: Date, default: null },
+    refreshToken: { type: String, default: '' }, // cifrado; renueva el access token
+    refreshTokenExpiresAt: { type: Date, default: null },
+    businessId: { type: String, trim: true, default: '' }, // open_id de la cuenta de empresa
+    scope: { type: String, default: '' },
+    authorizedAt: { type: Date, default: null },
+    webhookCallbackUrl: { type: String, default: '' },
+    webhookRegisteredAt: { type: Date, default: null },
+    lastEventAt: { type: Date, default: null },
+    lastEventError: { type: String, default: '' },
+    verifyToken: { type: String, default: '' }, // legado: TikTok no usa verify token
   },
   { _id: false }
 );

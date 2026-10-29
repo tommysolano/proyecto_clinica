@@ -49,12 +49,21 @@ const FIELD_DEFS = {
     { key: 'verifyToken', label: 'Verify Token', sensitive: true },
     { key: 'appSecret', label: 'App Secret', sensitive: true },
   ],
+  // TikTok Business Messaging: App ID/Secret + URL de autorización; los tokens y
+  // el Business ID se llenan solos al pulsar «Conectar cuenta de TikTok».
   tiktok: [
-    { key: 'appId', label: 'App ID', sensitive: false },
-    { key: 'appSecret', label: 'App Secret', sensitive: true },
-    { key: 'accessToken', label: 'Access Token', sensitive: true },
-    { key: 'businessId', label: 'Business ID', sensitive: false },
-    { key: 'verifyToken', label: 'Verify Token', sensitive: true },
+    { key: 'appId', label: 'App ID', help: 'TikTok API for Business → My Apps → tu app → Basic Info', sensitive: false },
+    { key: 'appSecret', label: 'App Secret', help: 'Mismo sitio que el App ID. También firma los avisos.', sensitive: true },
+    {
+      key: 'authorizationUrl',
+      label: 'URL de autorización de la cuenta',
+      help: 'La que da el portal en tu app (Authorization URL de cuentas de TikTok).',
+      sensitive: false,
+      wide: true,
+    },
+    { key: 'accessToken', label: 'Access Token (opcional, se llena solo)', sensitive: true },
+    { key: 'refreshToken', label: 'Refresh Token (opcional, se llena solo)', sensitive: true },
+    { key: 'businessId', label: 'Business ID / open_id (se llena solo)', sensitive: false },
   ],
   email: [
     { key: 'apiKey', label: 'API Key de Resend', help: 'En resend.com → API Keys', sensitive: true },
@@ -154,6 +163,165 @@ export default function CallCenterConfig() {
       </div>
 
       {section === 'system' ? <SystemIntegrations /> : <AgentSchedules />}
+    </div>
+  );
+}
+
+const fmtFecha = (d) =>
+  d
+    ? new Date(d).toLocaleString('es-EC', {
+        timeZone: 'America/Guayaquil',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '';
+
+function CopyRow({ label, value, help }) {
+  if (!value) return null;
+  return (
+    <div className="space-y-1">
+      <p className="font-semibold text-slate-700">{label}</p>
+      <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-2 py-1.5">
+        <code className="flex-1 text-slate-700 break-all">{value}</code>
+        <button
+          type="button"
+          onClick={() => copyToClipboard(value)}
+          className="px-2 py-1 text-[11px] bg-emerald-600 text-white rounded cursor-pointer border-none"
+          title="Copiar"
+        >
+          <HiOutlineClipboardDocumentList className="w-3.5 h-3.5 inline" /> Copiar
+        </button>
+      </div>
+      {help && <p className="text-[11px] text-slate-500">{help}</p>}
+    </div>
+  );
+}
+
+// TikTok no funciona como Meta: la cuenta se conecta por OAuth (ventana de
+// permisos de TikTok) y el webhook se registra por API con un botón.
+function TiktokConnectionPanel({ channel, webhookUrls, onChanged }) {
+  const [connecting, setConnecting] = useState(false);
+  const [registering, setRegistering] = useState(false);
+
+  useEffect(() => {
+    const onMessage = (e) => {
+      if (e.data?.type !== 'social-oauth' || e.data?.network !== 'tiktok-chat') return;
+      setConnecting(false);
+      if (e.data.ok) {
+        toast.success(e.data.message || 'Cuenta de TikTok conectada');
+        onChanged();
+      } else {
+        toast.error(e.data.message || 'No se pudo conectar la cuenta');
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [onChanged]);
+
+  const connect = async () => {
+    setConnecting(true);
+    try {
+      const r = await api.get('/call-center-config/tiktok/authorize-url');
+      const popup = window.open(r.data.url, 'tiktok-oauth', 'width=560,height=760');
+      if (!popup) {
+        setConnecting(false);
+        toast.error('El navegador bloqueó la ventana emergente: permítela e inténtalo de nuevo.');
+      }
+    } catch (err) {
+      setConnecting(false);
+      toast.error(err.response?.data?.message || 'No se pudo iniciar la conexión');
+    }
+  };
+
+  const registerWebhook = async () => {
+    setRegistering(true);
+    try {
+      const r = await api.post('/call-center-config/tiktok/register-webhook');
+      toast.success(r.data?.message || 'Webhook registrado');
+      onChanged();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo registrar el webhook');
+    } finally {
+      setRegistering(false);
+    }
+  };
+
+  const connected = Boolean(channel.accessToken && channel.businessId);
+  const status = [
+    {
+      ok: Boolean(channel.appId && channel.appSecret),
+      label: channel.appId && channel.appSecret ? 'App ID y App Secret guardados' : 'Falta guardar App ID y App Secret',
+    },
+    {
+      ok: connected,
+      label: connected
+        ? `Cuenta conectada${channel.authorizedAt ? ` el ${fmtFecha(channel.authorizedAt)}` : ''}${
+            channel.refreshTokenExpiresAt ? ` · reconectar antes del ${fmtFecha(channel.refreshTokenExpiresAt)}` : ''
+          }`
+        : 'Cuenta de TikTok sin conectar',
+    },
+    {
+      ok: Boolean(channel.webhookRegisteredAt),
+      label: channel.webhookRegisteredAt
+        ? `Webhook registrado el ${fmtFecha(channel.webhookRegisteredAt)}`
+        : 'Webhook sin registrar en TikTok',
+    },
+  ];
+
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-3">
+      <CopyRow
+        label="Redirect URL (dala de alta en tu app de TikTok)"
+        value={webhookUrls?.tiktokRedirect}
+        help="En el portal de TikTok API for Business → tu app → Redirect URL. Debe coincidir exactamente."
+      />
+      <CopyRow
+        label="URL de recepción de mensajes"
+        value={webhookUrls?.tiktok}
+        help="No hace falta pegarla en TikTok: se registra sola con el botón «Registrar webhook»."
+      />
+
+      <ul className="space-y-1">
+        {status.map((s) => (
+          <li key={s.label} className="flex items-center gap-1.5">
+            {s.ok ? (
+              <HiOutlineCheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+            ) : (
+              <HiOutlineXCircle className="w-4 h-4 text-slate-400 shrink-0" />
+            )}
+            <span className={s.ok ? 'text-slate-700' : 'text-slate-500'}>{s.label}</span>
+          </li>
+        ))}
+        {channel.lastEventAt && (
+          <li className={channel.lastEventError ? 'text-rose-600' : 'text-slate-500'}>
+            Último aviso de TikTok: {fmtFecha(channel.lastEventAt)}
+            {channel.lastEventError ? ` — ${channel.lastEventError}` : ' — recibido bien'}
+          </li>
+        )}
+      </ul>
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={connect}
+          disabled={connecting || !channel.appId || !channel.authorizationUrl}
+          title={!channel.authorizationUrl ? 'Guarda primero la URL de autorización' : ''}
+          className="px-3 py-1.5 rounded-lg bg-slate-900 text-white border-none cursor-pointer disabled:opacity-50"
+        >
+          {connecting ? 'Esperando a TikTok…' : connected ? 'Reconectar cuenta de TikTok' : 'Conectar cuenta de TikTok'}
+        </button>
+        <button
+          type="button"
+          onClick={registerWebhook}
+          disabled={registering || !channel.appId || !channel.appSecret}
+          className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 cursor-pointer disabled:opacity-50"
+        >
+          {registering ? 'Registrando…' : 'Registrar webhook en TikTok'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -343,8 +511,12 @@ function SystemIntegrations() {
             </div>
           </div>
 
-          {/* URLs del webhook que el usuario debe pegar en Meta/TikTok */}
-          {webhookUrls && webhookUrls[tab] && (
+          {tab === 'tiktok' && (
+            <TiktokConnectionPanel channel={currentChannel} webhookUrls={webhookUrls} onChanged={load} />
+          )}
+
+          {/* URLs del webhook que el usuario debe pegar en Meta */}
+          {tab !== 'tiktok' && webhookUrls && webhookUrls[tab] && (
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-2">
               <p className="font-semibold text-slate-700">URL del webhook (cópiala al panel del proveedor)</p>
               <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-2 py-1.5">
@@ -369,7 +541,7 @@ function SystemIntegrations() {
               const draftVal = draft[f.key];
               const showValue = draftVal !== undefined ? draftVal : stored || '';
               return (
-                <label key={f.key} className="block text-sm">
+                <label key={f.key} className={`block text-sm ${f.wide ? 'sm:col-span-2' : ''}`}>
                   <span className="text-slate-700 font-medium">{f.label}</span>
                   <input
                     type={f.sensitive ? 'password' : 'text'}

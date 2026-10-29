@@ -6,10 +6,11 @@ const Clinic = require('../models/Clinic');
 const { isAccessBlocked, blockMessage } = require('../utils/accessControl');
 const { ensureCompanyCache, userCompanyIds, clinicsOfCompanySync } = require('../utils/companies');
 
-const ACCESS_EXPIRES = process.env.JWT_EXPIRES_IN || '8h';
-
-const signToken = (payload) =>
-  jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: ACCESS_EXPIRES });
+// La sesión NO caduca: dura hasta que el usuario cierra sesión. Antes llevaba
+// `expiresIn` (JWT_EXPIRES_IN=7d en producción) y a los 7 días el sistema echaba
+// a la gente a mitad de trabajo. Lo que sigue cortando el acceso: desactivar al
+// usuario, quitarle la sucursal o un bloqueo de acceso (middleware/auth.js).
+const signToken = (payload) => jwt.sign(payload, process.env.JWT_SECRET);
 
 const buildPublicUser = (user, activeClinic = null, role = null) => ({
   id: user._id,

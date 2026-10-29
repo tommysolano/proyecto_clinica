@@ -834,6 +834,24 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
     return mediaResult;
   }
 
+  if (channel === 'tiktok') {
+    const cfg = await CallCenterConfig.findOne({ clinic: clinicId }).select('tiktok.enabled').lean();
+    if (!cfg?.tiktok?.enabled) {
+      return { ok: false, errorCode: 'provider_unavailable', error: 'TikTok no configurado' };
+    }
+    // Sin plantillas ni botones en TikTok: igual que en Instagram, va el TEXTO
+    // (los botones como líneas de texto) y la cabecera multimedia como adjunto.
+    const hm = templateInfo?.headerMedia;
+    return require('./tiktokMessaging').sendMessage({
+      clinicId,
+      conversationId: conv.externalUserId,
+      body: appendButtonFallback(body, messageButtons, { includeQuickReplies: true }),
+      mediaUrl: mediaUrl || hm?.url || null,
+      mediaType: mediaUrl ? mediaType : hm?.type,
+      referencedMessageId: contextMessageId || null,
+    });
+  }
+
   if (channel === 'web') return { ok: true, data: {} };
   if (channel === 'sms') {
     return { ok: false, errorCode: 'provider_unavailable', error: 'Canal SMS no configurado' };
@@ -1059,7 +1077,7 @@ async function send({
   // Meta), pero su TEXTO se reutiliza para Messenger/Instagram — ahí no hay
   // plantillas HSM ni aprobación: se manda como mensaje normal (ver sendToProvider,
   // igual que ya hacían los números QR de WhatsApp, que tampoco admiten HSM).
-  if (templateInfo && ['whatsapp', 'messenger', 'instagram'].includes(normalizedChannel)) {
+  if (templateInfo && ['whatsapp', 'messenger', 'instagram', 'tiktok'].includes(normalizedChannel)) {
     // Plantilla enviada SIN cita explícita (a mano desde el chat, campañas):
     // usar la PRÓXIMA cita del paciente para que {{servicio}}/{{fecha}}/{{hora}}
     // lleven datos reales y no el ejemplo documentado.

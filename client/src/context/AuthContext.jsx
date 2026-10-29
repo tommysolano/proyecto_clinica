@@ -92,8 +92,13 @@ export function AuthProvider({ children }) {
         const status = err?.response?.status;
         // Sin red o servidor reiniciándose: con copia, se sigue trabajando.
         if (cached && status !== 401 && status !== 403) return;
-        localStorage.removeItem('token');
-        clearMeCache();
+        // Sin copia tampoco se puede pintar nada, pero el token SOLO se borra si
+        // el servidor dice que la sesión no vale: un corte de red al recargar no
+        // debe obligar a escribir la contraseña otra vez (al recargar, entra).
+        if (status === 401 || status === 403) {
+          localStorage.removeItem('token');
+          clearMeCache();
+        }
         setUser(null);
       })
       .finally(() => setLoading(false));

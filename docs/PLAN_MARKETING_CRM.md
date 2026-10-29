@@ -13,7 +13,7 @@
 
 **Base sólida ya construida:**
 - Bandeja omnicanal: [Conversation.js](../server/models/Conversation.js) soporta `whatsapp, sms, web, messenger, instagram, tiktok`; webhooks por canal con `clinicId` en URL y verificación Meta/TikTok ([chatController.js](../server/controllers/chatController.js)).
-- Envío saliente real (WhatsApp Cloud, Messenger, Instagram) en `sendToExternalChannel` ([chatController.js:988](../server/controllers/chatController.js#L988)); TikTok es stub.
+- Envío saliente real (WhatsApp Cloud, Messenger, Instagram) en `sendToExternalChannel` ([chatController.js:988](../server/controllers/chatController.js#L988)); TikTok vía Business Messaging API en [tiktokMessaging.js](../server/utils/tiktokMessaging.js) (pendiente de acceso aprobado por TikTok).
 - Pipeline de oportunidades (Kanban) con múltiples oportunidades por chat, `expectedValue` desde inventario.
 - Asignación a agentes, destacar, bloquear, respuestas guardadas, galería, conversión a paciente/cita/cotización desde el chat.
 - Dos motores de automatización: `AutoMessage` (reglas simples) y `MessageFlow`/`FlowRun` (flujos con pasos `message/wait/opportunity`, job cada 60s en [index.js:101](../server/index.js#L101)).

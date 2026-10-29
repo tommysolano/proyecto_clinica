@@ -116,7 +116,7 @@ Ver plantillas completas: `server/.env.production.example` y
 |---|---|---|---|
 | `MONGODB_URI` | privada | **copiar de Render** | Atlas, sin cambios |
 | `JWT_SECRET` | privada | **copiar de Render** | reutilizar para no invalidar sesiones |
-| `JWT_EXPIRES_IN` | pública | copiar de Render | `7d` |
+| `JWT_EXPIRES_IN` | — | ya no se usa (la sesión no caduca) | — |
 | `PORT` | — | nuevo en VPS | `5000` (interno, detrás de Nginx) |
 | `ALLOWED_ORIGINS` | config | **CAMBIA** | poner dominio del frontend del VPS |
 | `INVOICE_ENCRYPTION_KEY` | privada | **copiar de Render (idéntico)** | si cambia, se rompe la firma SRI |
@@ -200,7 +200,7 @@ URLs que se exponen al exterior y deberán **reconfigurarse al nuevo dominio**:
 | WhatsApp Cloud API (Meta) | `POST/GET /api/chats/webhook/whatsapp` | Meta for Developers |
 | Messenger | `/api/chats/webhook/messenger/:clinicId` | Meta for Developers |
 | Instagram | `/api/chats/webhook/instagram/:clinicId` | Meta for Developers |
-| TikTok | `/api/chats/webhook/tiktok/:clinicId` | TikTok Developer |
+| TikTok | `/api/chats/webhook/tiktok/:clinicId` (+ redirect `/api/chats/oauth/tiktok/callback`) | TikTok API for Business (se registra con el botón «Registrar webhook») |
 | Webhook genérico | `/api/chats/webhook` | según proveedor |
 
 - El backend muestra estas URLs al admin usando `PUBLIC_API_URL`

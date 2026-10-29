@@ -21,6 +21,8 @@ router.get('/webhook/instagram/:clinicId', ctrl.webhookInstagramVerify);
 router.post('/webhook/instagram/:clinicId', ctrl.webhookInstagramReceive);
 router.get('/webhook/tiktok/:clinicId', ctrl.webhookTiktokVerify);
 router.post('/webhook/tiktok/:clinicId', ctrl.webhookTiktokReceive);
+// Vuelta del OAuth de la cuenta de TikTok (sin auth: la sede va en el state firmado).
+router.get('/oauth/tiktok/callback', ctrl.tiktokOauthCallback);
 
 // El resto requiere auth + clínica
 router.use(auth, requireClinic);

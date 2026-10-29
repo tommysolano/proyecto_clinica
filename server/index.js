@@ -128,7 +128,8 @@ app.use(express.json({
     // con HMAC). Guardar el buffer completo en CADA petición duplicaba la
     // memoria de cada subida grande de chat (un adjunto de 50 MB pasaba por
     // aquí dos veces) y era un empujón más hacia el OOM en el VPS.
-    if (req.headers['x-hub-signature-256']) req.rawBody = buf;
+    // TikTok firma igual (cabecera TikTok-Signature) y necesita lo mismo.
+    if (req.headers['x-hub-signature-256'] || req.headers['tiktok-signature']) req.rawBody = buf;
   },
 }));
 

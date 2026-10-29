@@ -4400,7 +4400,9 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     const dup = await Message.findOne({ clinic: clinicId, externalId, direction: 'in' }).select('_id');
     if (dup) return;
   }
-  const normalizedPhone = normalizePhone(phone || externalUserId);
+  // TikTok no tiene teléfono y su conversation_id lleva letras: reducirlo a
+  // dígitos podría juntar dos conversaciones distintas en un mismo chat.
+  const normalizedPhone = channel === 'tiktok' && !phone ? null : normalizePhone(phone || externalUserId);
   // Contactos de número OCULTO (@lid): su identidad estable es el JID @lid, NO el
   // teléfono (que se resuelve aparte y puede llegar después). Buscar por externalUserId
   // evita duplicar el chat y permite CURAR el número mostrado al valor real.
@@ -5096,44 +5098,75 @@ exports.webhookInstagramReceive = async (req, res) => {
   }
 };
 
-// TikTok: verificación + recepción.
-exports.webhookTiktokVerify = async (req, res) => {
-  const { clinicId } = req.params;
+// TikTok: no hay handshake de verify token como en Meta (el webhook se registra
+// por API, ver utils/tiktokMessaging.registerWebhook). El GET solo confirma que
+// la URL responde.
+exports.webhookTiktokVerify = (req, res) => res.status(200).send('ok');
+
+// TikTok: vuelta de la pantalla de permisos (ventana emergente abierta desde
+// Configuración → TikTok). Pública: llega el navegador redirigido por TikTok;
+// la sede sale del `state` firmado. Canjea el código por los tokens.
+exports.tiktokOauthCallback = async (req, res) => {
+  const { callbackHtml } = require('../utils/social/oauth');
+  const reply = (ok, message) => res.status(ok ? 200 : 400).type('html').send(callbackHtml({ ok, network: 'tiktok-chat', message }));
+  let state;
   try {
-    const c = await getChannelConfig(clinicId, 'tiktok');
-    const expected = c?.verifyToken;
-    const challenge = req.query.challenge || req.body?.challenge;
-    const token = req.query.verify_token || req.body?.verify_token;
-    if (token && token === expected) return res.status(200).send(challenge || 'ok');
-    return res.status(403).send('Verification failed');
+    state = require('jsonwebtoken').verify(String(req.query.state || ''), process.env.JWT_SECRET);
   } catch {
-    return res.status(500).send('Error');
+    state = null;
+  }
+  if (!state || state.p !== 'tiktok_chat_oauth') {
+    return reply(false, 'El enlace caducó o no es válido. Vuelve a pulsar «Conectar cuenta de TikTok».');
+  }
+  const authCode = req.query.auth_code || req.query.code;
+  if (!authCode) {
+    return reply(false, String(req.query.error_description || req.query.error || 'TikTok no devolvió el código de autorización.'));
+  }
+  try {
+    await require('../utils/tiktokMessaging').exchangeAuthCode(state.c, { authCode: String(authCode), redirectUri: state.r });
+    return reply(true, 'La cuenta de TikTok quedó conectada a la bandeja.');
+  } catch (err) {
+    return reply(false, `TikTok: ${err.message}`);
   }
 };
 
+// TikTok: recepción. Cada aviso llega firmado (TikTok-Signature) con el App
+// Secret; sin firma válida no entra nada. Se responde 200 enseguida (TikTok lo
+// exige y reintenta hasta 72 h si no) y se procesa después.
 exports.webhookTiktokReceive = async (req, res) => {
+  const { clinicId } = req.params;
+  const tiktok = require('../utils/tiktokMessaging');
+  let cfg;
   try {
-    const { clinicId } = req.params;
-    // El formato exacto depende del producto TikTok; soportamos un payload genérico:
-    // { user_id, message, name }
-    const userId = req.body.user_id || req.body.openId;
-    const body = req.body.message || req.body.content || '';
-    const name = req.body.name || req.body.nickname || '';
-    if (userId) {
-      await ingestExternalMessage({
-        clinicId,
-        channel: 'tiktok',
-        externalUserId: String(userId),
-        body,
-        contactName: name,
-        externalId: req.body.message_id || req.body.id,
-      });
-    }
-    res.status(200).json({ ok: true });
+    cfg = await getChannelConfig(clinicId, 'tiktok');
   } catch (err) {
     console.error('[tiktok webhook]', err);
-    res.status(500).json({ message: 'Error', error: err.message });
+    return res.status(500).json({ message: 'Error' });
   }
+  const { decryptSecret } = require('../utils/secretCrypto');
+  const check = tiktok.verifySignature({
+    rawBody: req.rawBody || JSON.stringify(req.body || {}),
+    header: req.headers['tiktok-signature'],
+    secret: cfg?.appSecret ? decryptSecret(cfg.appSecret) : '',
+  });
+  if (!check.ok) {
+    console.warn('[tiktok webhook] aviso rechazado clinic=%s: %s', clinicId, check.reason);
+    // Queda a la vista en Configuración → TikTok para poder diagnosticarlo.
+    CallCenterConfig.updateOne(
+      { clinic: clinicId },
+      { $set: { 'tiktok.lastEventAt': new Date(), 'tiktok.lastEventError': `Aviso rechazado: ${check.reason}` } }
+    ).catch(() => {});
+    return res.status(401).json({ message: 'Invalid signature' });
+  }
+  res.status(200).json({ ok: true });
+  if (!cfg?.enabled) return;
+  tiktok.processWebhook(clinicId, req.body, ingestExternalMessage).catch((err) => {
+    console.error('[tiktok webhook] error procesando el aviso:', err.message);
+    CallCenterConfig.updateOne(
+      { clinic: clinicId },
+      { $set: { 'tiktok.lastEventError': String(err.message || err).slice(0, 300) } }
+    ).catch(() => {});
+  });
 };
 
 // =================== Métricas / supervisor ===================

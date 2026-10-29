@@ -13,8 +13,8 @@
  * También cubre el paso "Enviar plantilla": Meta no tiene HSM fuera de
  * WhatsApp, pero SÍ se puede mandar el TEXTO de la plantilla como mensaje
  * normal por Messenger/Instagram (igual que ya hacían los números QR de
- * WhatsApp, que tampoco admiten HSM) — funciona en Instagram, falla claro en
- * un canal de verdad sin soporte (TikTok, que ni siquiera es de Meta).
+ * WhatsApp, que tampoco admiten HSM) y por TikTok (Business Messaging API) —
+ * y falla claro en un canal de verdad sin envío (SMS).
  *
  * Se mockea `fetch` global — no se llama a Meta de verdad.
  */
@@ -181,10 +181,57 @@ test('paso "Enviar plantilla" en un chat de Instagram: manda el TEXTO de la plan
   }
 });
 
-test('paso "Enviar plantilla" en un chat de TikTok falla claro: canal sin envío implementado (no es de Meta)', async () => {
+test('paso "Enviar plantilla" en un chat de TikTok: el texto sale por la Business Messaging API a ESA conversación', async () => {
+  const { clinicId } = await H.seedClinic();
+  await CallCenterConfig.create({
+    clinic: clinicId,
+    tiktok: {
+      enabled: true,
+      appId: 'APP1',
+      appSecret: encryptSecret('SECRET1'),
+      accessToken: encryptSecret('TT_TOKEN_1'),
+      accessTokenExpiresAt: new Date(Date.now() + 24 * 3600 * 1000),
+      businessId: 'BIZ_OPEN_ID',
+    },
+  });
+  const conv = await Conversation.create({
+    clinic: clinicId, phone: 'conv+ABC==', externalUserId: 'conv+ABC==', channel: 'tiktok',
+  });
+  await MessageTemplate.create({
+    clinic: clinicId, channel: 'whatsapp', name: 'saludo', status: 'approved',
+    body: 'Gracias por tu mensaje.',
+  });
+  const wf = await templateWorkflow(clinicId);
+
+  const mock = installFetchMock(async () => ({
+    ok: true, status: 200, json: async () => ({ code: 0, message: 'OK', data: { message: { message_id: 'tt_msg_1' } } }),
+  }));
+  try {
+    await workflowEngine.enrollForChatMessage({
+      clinicId, conversation: conv, patient: null, phone: conv.phone, text: 'quiero la plantilla', isNew: false,
+    });
+    const enrollment = await WorkflowEnrollment.findOne({ workflow: wf._id, conversation: conv._id });
+    assert.ok(enrollment);
+    const log = (enrollment.log || []).find((l) => l.type === 'send_template');
+    assert.ok(log, 'sin rastro del paso send_template');
+    assert.equal(log.ok, true, log.info);
+    assert.equal(mock.calls.length, 1);
+    const call = mock.calls[0];
+    assert.match(String(call.url), /business-api\.tiktok\.com\/open_api\/v1\.3\/business\/message\/send\//);
+    assert.equal(call.body.business_id, 'BIZ_OPEN_ID');
+    assert.equal(call.body.recipient_type, 'CONVERSATION');
+    assert.equal(call.body.recipient, 'conv+ABC==');
+    assert.equal(call.body.message_type, 'TEXT');
+    assert.equal(call.body.text.body, 'Gracias por tu mensaje.');
+  } finally {
+    mock.restore();
+  }
+});
+
+test('paso "Enviar plantilla" en un chat SMS falla claro: canal sin envío implementado', async () => {
   const { clinicId } = await H.seedClinic();
   const conv = await Conversation.create({
-    clinic: clinicId, phone: 'tiktok_open_id_1', externalUserId: 'tiktok_open_id_1', channel: 'tiktok',
+    clinic: clinicId, phone: '593990000111', channel: 'sms',
   });
   await MessageTemplate.create({
     clinic: clinicId, channel: 'whatsapp', name: 'saludo', status: 'approved',
@@ -203,7 +250,7 @@ test('paso "Enviar plantilla" en un chat de TikTok falla claro: canal sin envío
     assert.ok(log, 'sin rastro del paso send_template');
     assert.equal(log.ok, false);
     assert.match(log.info, /no están disponibles/i);
-    assert.equal(mock.calls.length, 0, 'no debe intentar llamar a Meta con una plantilla por TikTok');
+    assert.equal(mock.calls.length, 0, 'no debe intentar llamar a ningún proveedor con una plantilla por SMS');
   } finally {
     mock.restore();
   }
