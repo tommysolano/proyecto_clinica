@@ -449,11 +449,13 @@ async function renderPdf(html) {
   try {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
-    return await page.pdf({
+    // Puppeteer 23 devuelve un Uint8Array, no un Buffer: `res.send` lo mandaba como JSON
+    // ({"0":37,"1":80,...}) y el navegador decía «Failed to load PDF document».
+    return Buffer.from(await page.pdf({
       format: 'A4',
       printBackground: true,
       margin: { top: '10mm', right: '10mm', bottom: '10mm', left: '10mm' },
-    });
+    }));
   } finally {
     await browser.close();
   }
