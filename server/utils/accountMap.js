@@ -1,6 +1,7 @@
 const ChartOfAccount = require('../models/ChartOfAccount');
 const AccountingConfig = require('../models/AccountingConfig');
 const { findAccount, ensureAccountByCode } = require('./accounting');
+const defaultPlan = require('./defaultChartOfAccounts');
 
 /**
  * Catálogo de "roles" de cuenta usados por la contabilidad automática.
@@ -77,6 +78,38 @@ const ACCOUNT_ROLES = {
   sobranteCaja:         { group: 'Ingreso', label: 'Sobrantes de caja',         code: '4.2.03' },
 };
 
+// Nombres con que aparece cada cuenta de impuesto en un plan migrado de Contífico.
+const NOMBRE_IMPUESTO = {
+  IVA_VENTAS: /\biva\b.*\b(ventas?|cobrado)\b/i,
+  IVA_COMPRAS: /\biva\b.*\b(compras?|pagado)\b/i,
+};
+
+/**
+ * CUENTA DE IMPUESTO SIN MARCA (30-10-2026). Los roles de impuesto se buscan por `taxCode`,
+ * pero las cuentas que vienen de Contífico no lo traen: la primera venta con IVA de una
+ * sucursal así fallaba con «Cuenta contable no encontrada: IVA_VENTAS». Ahora se busca por
+ * nombre y, si no, por el código del plan estándar (que se crea si falta); la cuenta hallada
+ * queda marcada para la próxima vez. Un código ocupado por OTRA cuenta no se usa: pide
+ * configurarla en «Configuración de cuentas».
+ */
+async function cuentaDeImpuestoSinMarca(clinicId, role, def, options = {}) {
+  const session = options.session || null;
+  const marcar = async (acc) => {
+    await ChartOfAccount.updateOne({ _id: acc._id, taxCode: null }, { $set: { taxCode: def.taxCode } }, { session });
+    return acc;
+  };
+  const patron = NOMBRE_IMPUESTO[def.taxCode];
+  if (patron) {
+    const porNombre = (await ChartOfAccount.find({ clinic: clinicId, taxCode: null, allowsMovement: true, active: { $ne: false } })
+      .select('code name taxCode').session(session).lean()).filter((a) => patron.test(a.name)).sort((a, b) => String(a.code).localeCompare(String(b.code)));
+    if (porNombre.length) return marcar(await ChartOfAccount.findById(porNombre[0]._id).session(session));
+  }
+  const codigo = defaultPlan.find((a) => a.taxCode === def.taxCode)?.code;
+  const acc = codigo ? await ensureAccountByCode(clinicId, codigo, options) : null;
+  if (acc && (acc.taxCode === def.taxCode || (!acc.taxCode && /\biva\b/i.test(acc.name)))) return marcar(acc);
+  throw Object.assign(new Error(`Falta la cuenta «${def.label}» en el plan de cuentas de esta sucursal. Asígnela en Contabilidad → Configuración de cuentas.`), { status: 400 });
+}
+
 /**
  * Resuelve la cuenta contable para un rol: primero busca la configurada por el
  * contador; si no, cae al código/taxCode por defecto del catálogo.
@@ -90,7 +123,11 @@ async function getAccount(clinicId, role, options = {}) {
     const acc = await ChartOfAccount.findOne({ _id: mappedId, clinic: clinicId }).session(options.session || null);
     if (acc) return acc;
   }
-  if (def.taxCode) return findAccount(clinicId, { taxCode: def.taxCode }, options);
+  if (def.taxCode) {
+    const marcada = await ChartOfAccount.findOne({ clinic: clinicId, taxCode: def.taxCode }).session(options.session || null);
+    if (marcada) return marcada;
+    return cuentaDeImpuestoSinMarca(clinicId, role, def, options);
+  }
   // Para roles por código: crea la cuenta del plan estándar si aún no existe
   // (clínicas antiguas), garantizando que la contabilidad automática no falle.
   const ensured = await ensureAccountByCode(clinicId, def.code, options);

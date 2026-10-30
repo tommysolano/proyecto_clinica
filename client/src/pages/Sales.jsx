@@ -196,7 +196,9 @@ const enterNoEnvia = (e) => {
   e.preventDefault();
 };
 const ivaDeLinea = (item) => {
-  const cat = item.taxCategory || 'IVA_15';
+  // Como el servidor (utils/tax): IVA_15 con tasa 0 es IVA quitado desde la ficha.
+  const sinIva = item.taxCategory === 'IVA_15' && item.taxRate !== null && item.taxRate !== undefined && Number(item.taxRate) === 0;
+  const cat = sinIva ? 'IVA_0' : (item.taxCategory || 'IVA_15');
   const norm = (n) => (Number(n) > 0 ? (Number(n) <= 1 ? Number(n) * 100 : Number(n)) : 0);
   const rate = ['IVA_0', 'EXENTO', 'NO_OBJETO'].includes(cat) ? 0
     : cat === 'IVA_5' ? 5

@@ -383,6 +383,24 @@ const saneaVinculados = (body, selfId = null) => {
     .map((l) => ({ ...l, quantity: Number.isFinite(l.quantity) && l.quantity > 0 ? l.quantity : 1 }));
 };
 
+/**
+ * La ficha solo manda `taxRate`. La tarifa (`taxCategory`) y el código SRI se alinean con
+ * él: si no, un producto importado como IVA_15 seguía cobrando IVA tras ponerle 0 %.
+ * Exento / no objeto se respetan si la tasa sigue en 0.
+ */
+const alineaIva = (body, existing = null) => {
+  if (body.taxRate === undefined || body.taxRate === null || body.taxCategory !== undefined) return;
+  const rate = Number(body.taxRate);
+  if (!Number.isFinite(rate)) return;
+  const actual = existing?.taxCategory;
+  if (rate <= 0) {
+    if (actual === 'EXENTO' || actual === 'NO_OBJETO') return;
+    Object.assign(body, { taxRate: 0, taxCategory: 'IVA_0', taxCodeSri: '0' });
+  } else if (rate === 5) Object.assign(body, { taxCategory: 'IVA_5', taxCodeSri: '5' });
+  else if (rate === 12) Object.assign(body, { taxCategory: 'IVA_12', taxCodeSri: '2' });
+  else if (rate === 15) Object.assign(body, { taxCategory: 'IVA_15', taxCodeSri: '4' });
+};
+
 exports.createProduct = async (req, res) => {
   try {
     let code = String(req.body.code || '').trim();
@@ -399,6 +417,7 @@ exports.createProduct = async (req, res) => {
 
     syncStockFromClinics(req.body);
     syncSalePrices(req.body);
+    alineaIva(req.body);
     saneaVinculados(req.body);
     await require('../utils/composicion').saneaComposicion(req.body);
     // Valida/resuelve la categoría contable de inventario (obligatoria para insumos).
@@ -433,6 +452,7 @@ exports.updateProduct = async (req, res) => {
     delete req.body.stock;
     delete req.body.stockByClinic;
     syncSalePrices(req.body, existing);
+    alineaIva(req.body, existing);
     saneaVinculados(req.body, existing._id);
     await require('../utils/composicion').saneaComposicion(req.body, existing._id);
     // Valida/resuelve la categoría contable si se envía; NO bloquea la edición de

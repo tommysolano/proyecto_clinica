@@ -9,6 +9,10 @@ function normalizeRate(rate) {
 }
 
 function inferTaxCategory(product = {}) {
+  // IVA quitado desde la ficha (30-10-2026): la ficha solo cambia `taxRate`; un producto
+  // importado de Contífico seguía marcado IVA_15 y con tasa 0 se cobraba igual al 15 %.
+  if (product.taxCategory === 'IVA_15' && product.taxRate !== null && product.taxRate !== undefined
+    && Number(product.taxRate) === 0) return 'IVA_0';
   if (product.taxCategory) return product.taxCategory;
   if (product.isMedicalService || product.category === 'servicio') return 'IVA_0';
   return 'IVA_15';
@@ -27,8 +31,12 @@ function categoryRate(category, productRate, defaultVatRate = 15) {
  *   0 → 0 %, 2 → 12 %, 3 → 14 %, 4 → 15 %, 5 → 5 %, 6 → no objeto, 7 → exento, 10 → 13 %.
  * El 5 % faltaba: una venta al 5 % se firmaba con código 0 y el SRI la liquidaba como exenta.
  */
+const TASA_DE_CODIGO = { 0: 0, 2: 12, 3: 14, 4: 15, 5: 5, 6: 0, 7: 0, 10: 13 };
+
 function sriVatCode(category, rate, explicitCode) {
-  if (explicitCode) return String(explicitCode);
+  // El código guardado en el producto solo vale si cuadra con la tarifa: un '4' (15 %)
+  // que quedó de antes no puede firmar una línea al 0 %.
+  if (explicitCode && TASA_DE_CODIGO[String(explicitCode)] === Number(rate)) return String(explicitCode);
   if (category === 'NO_OBJETO') return '6';
   if (category === 'EXENTO') return '7';
   if (rate === 5) return '5';
