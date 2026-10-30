@@ -310,6 +310,10 @@ async function syncFinancialReports({ includeHistory = false, months: requestedM
       .catch((error) => console.error('[contifico-financial-sync] Aviso de configuración resuelto:', error.message));
     const api = new ContificoApi({ apiKey: process.env.CONTIFICO_API_KEY });
     await syncCostCenterCatalog({ clinic, api });
+    // Plan de cuentas: completa en cada sucursal lo que Contífico tenga y aquí falte. Un
+    // fallo aquí no frena el mayor.
+    await require('./contificoChartSync').syncChartOfAccounts({ clinic, api })
+      .catch((error) => console.error('[contifico-plan] Plan de cuentas:', error.message));
     const today = ecToday();
     const recent = [monthRange(today.year, today.month).from,
       monthRange(today.month === 1 ? today.year - 1 : today.year, today.month === 1 ? 12 : today.month - 1).from];

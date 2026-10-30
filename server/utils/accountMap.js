@@ -78,6 +78,35 @@ const ACCOUNT_ROLES = {
   sobranteCaja:         { group: 'Ingreso', label: 'Sobrantes de caja',         code: '4.2.03' },
 };
 
+/**
+ * Sucursal dueña del plan de la empresa (Central, la de archivo de Contífico), si es de la
+ * misma empresa que `clinicId` y no es ella misma.
+ */
+async function planDeLaEmpresa(clinicId) {
+  const { contificoSourceClinic } = require('../services/contificoSourceClinic');
+  const central = await contificoSourceClinic();
+  if (!central || String(central._id) === String(clinicId)) return null;
+  const { sisterClinicsSync, ensureCompanyCache } = require('./companies');
+  await ensureCompanyCache();
+  return sisterClinicsSync(clinicId, { includeInactive: true }).map(String).includes(String(central._id)) ? central._id : null;
+}
+
+/** Copia `acc` (y sus padres) al plan de `clinicId` con el mismo código; si ya existe, la de allí. */
+async function copiarAlPlan(acc, clinicId, session = null) {
+  const local = await ChartOfAccount.findOne({ clinic: clinicId, code: acc.code }).session(session);
+  if (local) return local;
+  const padre = acc.parent ? await ChartOfAccount.findById(acc.parent).session(session) : null;
+  const parent = padre ? (await copiarAlPlan(padre, clinicId, session))._id : null;
+  return ChartOfAccount.findOneAndUpdate(
+    { clinic: clinicId, code: acc.code },
+    { $setOnInsert: {
+      name: acc.name, type: acc.type, nature: acc.nature, parent, level: acc.level,
+      allowsMovement: acc.allowsMovement, description: acc.description, active: acc.active, isSystem: acc.isSystem,
+    } },
+    { upsert: true, new: true, session }
+  );
+}
+
 // Nombres con que aparece cada cuenta de impuesto en un plan migrado de Contífico.
 const NOMBRE_IMPUESTO = {
   IVA_VENTAS: /\biva\b.*\b(ventas?|cobrado)\b/i,
@@ -87,10 +116,13 @@ const NOMBRE_IMPUESTO = {
 /**
  * CUENTA DE IMPUESTO SIN MARCA (30-10-2026). Los roles de impuesto se buscan por `taxCode`,
  * pero las cuentas que vienen de Contífico no lo traen: la primera venta con IVA de una
- * sucursal así fallaba con «Cuenta contable no encontrada: IVA_VENTAS». Ahora se busca por
- * nombre y, si no, por el código del plan estándar (que se crea si falta); la cuenta hallada
- * queda marcada para la próxima vez. Un código ocupado por OTRA cuenta no se usa: pide
- * configurarla en «Configuración de cuentas».
+ * sucursal así fallaba con «Cuenta contable no encontrada: IVA_VENTAS». Ahora:
+ *   1. en el plan propio, por nombre («IVA sobre Ventas» de Contífico);
+ *   2. si no, del PLAN DE LA EMPRESA (es una sola empresa: el de Central, el de Contífico),
+ *      copiada con el mismo código en la sucursal, como las cuentas de categoría al cobrar;
+ *   3. si no, el código del plan estándar (se crea si falta).
+ * La cuenta hallada queda marcada para la próxima vez. Un código ocupado por OTRA cuenta no se
+ * usa: pide configurarla en «Configuración de cuentas».
  */
 async function cuentaDeImpuestoSinMarca(clinicId, role, def, options = {}) {
   const session = options.session || null;
@@ -99,10 +131,23 @@ async function cuentaDeImpuestoSinMarca(clinicId, role, def, options = {}) {
     return acc;
   };
   const patron = NOMBRE_IMPUESTO[def.taxCode];
-  if (patron) {
-    const porNombre = (await ChartOfAccount.find({ clinic: clinicId, taxCode: null, allowsMovement: true, active: { $ne: false } })
-      .select('code name taxCode').session(session).lean()).filter((a) => patron.test(a.name)).sort((a, b) => String(a.code).localeCompare(String(b.code)));
-    if (porNombre.length) return marcar(await ChartOfAccount.findById(porNombre[0]._id).session(session));
+  const porNombreEn = async (clinic) => {
+    if (!patron) return null;
+    const halladas = (await ChartOfAccount.find({ clinic, taxCode: null, allowsMovement: true, active: { $ne: false } })
+      .select('code name').session(session).lean()).filter((a) => patron.test(a.name)).sort((a, b) => String(a.code).localeCompare(String(b.code)));
+    return halladas.length ? ChartOfAccount.findById(halladas[0]._id).session(session) : null;
+  };
+  const propia = await porNombreEn(clinicId);
+  if (propia) return marcar(propia);
+
+  const empresa = await planDeLaEmpresa(clinicId);
+  if (empresa) {
+    const deEmpresa = (await ChartOfAccount.findOne({ clinic: empresa, taxCode: def.taxCode }).session(session))
+      || (await porNombreEn(empresa));
+    if (deEmpresa) {
+      await marcar(deEmpresa);
+      return marcar(await copiarAlPlan(deEmpresa, clinicId, session));
+    }
   }
   const codigo = defaultPlan.find((a) => a.taxCode === def.taxCode)?.code;
   const acc = codigo ? await ensureAccountByCode(clinicId, codigo, options) : null;
