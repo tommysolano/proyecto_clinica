@@ -165,8 +165,8 @@ Para que todo funcione, el **administrador/contador** debe dejar listo esto al i
      lote** y **N° de voucher** (los del comprobante del datáfono, sirven para la liquidación).
    - **Crédito (CxC):** elige **Vence (crédito)** (fecha); queda como cuenta por cobrar en Cartera.
 6. **Recomendado por (comisión)** — opcional; elige el empleado que recomendó (para comisiones).
-7. **Dirección / Ciudad / Zona** — Ciudad: *Guayaquil* u *Otra*. En Guayaquil, la **Zona/Parroquia** debe
-   elegirse del listado oficial (si escribes una no reconocida, te avisa en ámbar).
+7. **Dirección / Ciudad / Zona** — Ciudad: *Guayaquil* u *Otra*. En Guayaquil, la **Zona/Parroquia** se
+   sugiere del listado oficial, pero puedes escribir cualquier lugar (si no está en el listado, te avisa en ámbar y se guarda igual).
 8. **Agregar productos:** en el buscador escribe y selecciona el producto/servicio, pon la **cantidad**
    y pulsa **Agregar**. Repite por cada ítem. En la tabla de ítems puedes editar **Cant.**, **Desc. $**
    (descuento en dólares por ítem) y, si el paciente tiene tratamientos, asociar la línea a un

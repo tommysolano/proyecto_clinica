@@ -1775,7 +1775,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                     </datalist>
                     {form.clientZone && !guayaquilZones.some((z) => z.name.toLowerCase() === form.clientZone.toLowerCase()) && (
                       <p className="text-[11px] text-amber-600 mt-1">
-                        Zona no reconocida. Selecciona una de la lista.
+                        Zona fuera del listado: se guarda tal como la escribiste.
                       </p>
                     )}
                   </>

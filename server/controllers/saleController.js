@@ -256,19 +256,10 @@ exports.createSale = async (req, res) => {
       if (existingSale) return res.status(200).json(existingSale);
     }
 
-    // Validar dirección/zona si la ciudad es Guayaquil:
-    // En Guayaquil exigimos seleccionar una zona reconocida por la alcaldía.
+    // Ciudad y zona del cliente: texto libre. El listado de zonas de Guayaquil solo sugiere;
+    // desde el 30-10-2026 una zona fuera de él ya no bloquea el cobro (pedido de la clínica).
     const clientCity = (req.body.clientCity || 'Guayaquil').trim();
-    let clientZone = (req.body.clientZone || '').trim();
-    if (clientCity.toLowerCase() === 'guayaquil' && clientZone) {
-      const { isValidGuayaquilZone } = require('../utils/guayaquilZones');
-      if (!isValidGuayaquilZone(clientZone)) {
-        return res.status(400).json({
-          message:
-            'La zona de Guayaquil seleccionada no es válida. Debes elegirla del listado oficial.',
-        });
-      }
-    }
+    const clientZone = (req.body.clientZone || '').trim();
 
     {
       const saleWarnings = [];
