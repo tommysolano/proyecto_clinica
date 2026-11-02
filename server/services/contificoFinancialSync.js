@@ -28,11 +28,15 @@ const { entryDifference } = require('../scripts/auditContificoLedger');
 const { decodeCompressedJson } = require('../utils/compressedJson');
 
 let running = false;
-let lastHistory = 0;
 let cycleRunning = false;
-// Cada cuánto se consulta Contífico (29-10-2026: 5 minutos, pedido de la clínica; antes 1 hora).
-// Ajustable sin desplegar con CONTIFICO_SYNC_MINUTES.
-const SYNC_INTERVAL_MS = Math.max(1, Number(process.env.CONTIFICO_SYNC_MINUTES) || 5) * 60 * 1000;
+// Una vez al día, a esta hora de Ecuador (02-11-2026, pedido de la clínica). Con el ciclo
+// cada 5 minutos la sincronización no paraba (≈6 min por ciclo) y ralentizaba el sistema.
+// Ajustable sin desplegar con CONTIFICO_SYNC_TIME (HH:MM).
+const SYNC_TIME = /^([01]\d|2[0-3]):[0-5]\d$/.test(process.env.CONTIFICO_SYNC_TIME || '')
+  ? process.env.CONTIFICO_SYNC_TIME : '19:30';
+// Marca del último día en que arrancó la sincronización diaria: sobrevive a reinicios,
+// así un despliegue después de la hora no la repite.
+const DAILY_STATE_ID = 'auto-daily';
 const LEASE_NAME = 'contifico-financial-sync';
 const STATE_ID = 'financial-Central';
 const LEASE_MS = 10 * 60 * 1000;
@@ -400,20 +404,33 @@ function startFinancialSyncJob(leaderOnly) {
     return;
   }
   const run = leaderOnly(async () => {
-    // Con el ciclo cada 5 minutos, uno largo (p.ej. la pasada histórica de cada 6 h) puede
-    // seguir corriendo cuando toca el siguiente: ese se salta en vez de amontonarse.
-    if (cycleRunning) {
-      console.log('[contifico-sync] ciclo anterior aún en curso; se salta este turno');
-      return;
-    }
+    if (cycleRunning) return;
+    const now = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Guayaquil', year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
+    const part = (type) => now.find((piece) => piece.type === type).value;
+    const day = `${part('year')}-${part('month')}-${part('day')}`;
+    if (`${part('hour')}:${part('minute')}` < SYNC_TIME) return;
     cycleRunning = true;
-    try { await runCycle(); } finally { cycleRunning = false; }
+    try {
+      // Reclamo atómico del día: si ya arrancó hoy (otro proceso o antes de un reinicio), no se repite.
+      // Si el documento ya tiene el día, el upsert choca con el _id (E11000).
+      try {
+        await SyncState.updateOne({ _id: DAILY_STATE_ID, months: { $ne: day } }, { $set: { state: 'RUNNING',
+          trigger: 'AUTO', host: os.hostname(), startedAt: new Date(), completedAt: null, months: [day] } }, { upsert: true });
+      } catch (error) { if (error.code === 11000) return; throw error; }
+      console.log(`[contifico-sync] sincronización diaria ${day} ${SYNC_TIME}`);
+      await runCycle();
+      await SyncState.updateOne({ _id: DAILY_STATE_ID }, { $set: { state: 'COMPLETED', completedAt: new Date() } });
+    } catch (error) {
+      console.error('[contifico-sync] sincronización diaria:', error.stack || error.message);
+    } finally { cycleRunning = false; }
   });
   const runCycle = async () => {
-    const history = Date.now() - lastHistory > 6 * 60 * 60 * 1000;
+    // Una sola pasada al día: siempre con todo 2026. La API filtra por fecha de emisión y
+    // un cobro de hoy puede cambiar un mes antiguo.
+    const history = true;
     try {
       const result = await syncFinancialReports({ includeHistory: history, trigger: 'AUTO' });
-      if (history && ['COMPLETED', 'PARTIAL'].includes(result.state)) lastHistory = Date.now();
       console.log('[contifico-financial-sync]', JSON.stringify(result));
     } catch (error) { console.error('[contifico-financial-sync] BLOQUEADO:', error.stack || error.message); }
     // Ventas, compras y cartera van después del mayor, en el mismo ciclo, para
@@ -440,10 +457,9 @@ function startFinancialSyncJob(leaderOnly) {
         months: payroll.months?.map((month) => `${month.month}:${month.state}`), failures: payroll.failures }));
     } catch (error) { console.error('[contifico-payroll-sync] BLOQUEADO:', error.stack || error.message); }
   };
-  setTimeout(run, 30 * 1000);
-  // Cada 5 minutos (CONTIFICO_SYNC_MINUTES). Solo cambia lo que difiere de Contífico: un ciclo
-  // sin novedades lee de la API pero casi no escribe en la base.
-  setInterval(run, SYNC_INTERVAL_MS);
+  // Se mira cada minuto si ya es la hora; no arranca al iniciar el servidor (un despliegue
+  // a mediodía ya no dispara la sincronización en horario de atención).
+  setInterval(run, 60 * 1000);
 }
 
 module.exports = { fetchWindow, ledgerMaps, syncCostCenterCatalog, syncMonth, syncFinancialReports,
