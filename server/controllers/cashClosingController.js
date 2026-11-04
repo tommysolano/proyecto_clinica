@@ -10,19 +10,25 @@ const { clinicsOfCompanySync } = require('../utils/companies');
 
 const oid = (v) => new mongoose.Types.ObjectId(v);
 
-const esAdmin = (req) => !!req.user.isSuperAdmin || req.role === 'admin';
+/** Solo el super administrador ve las cajas de todos y de todas las sucursales (nov-2026). */
+const veTodo = (req) => !!req.user.isSuperAdmin;
 
 /**
- * Sucursales cuyas cajas puede consultar el usuario. Admin y super administrador ven las de
- * TODAS las sucursales de la empresa activa donde son admin (el super admin, todas); el resto,
- * solo la sucursal en la que está.
+ * Cajero y ADMIN ven solo SUS cajas (las que abrieron o cerraron), igual que cualquiera que
+ * factura: un admin que cobra veía las cajas de los demás debajo de la suya. Contabilidad
+ * sigue viendo las de su sucursal (las audita).
+ */
+const soloPropias = (req) => !veTodo(req) && ['cajero', 'admin'].includes(req.role);
+
+/**
+ * Sucursales cuyas cajas puede consultar el usuario: el super administrador, todas las de la
+ * empresa activa; el resto, solo la sucursal en la que está.
  */
 const clinicasVisibles = (req) => {
   const actual = String(req.clinicId);
-  if (!esAdmin(req)) return [actual];
+  if (!veTodo(req)) return [actual];
   const todas = clinicsOfCompanySync(req.companyId).map(String);
-  const propias = req.user.isSuperAdmin ? todas : todas.filter((c) => req.user.getRoleForClinic(c) === 'admin');
-  return propias.includes(actual) ? propias : [actual, ...propias];
+  return todas.includes(actual) ? todas : [actual, ...todas];
 };
 
 /** Fecha 'YYYY-MM-DD' a la hora local indicada (el servidor corre en America/Guayaquil). */
@@ -199,7 +205,7 @@ exports.branches = async (req, res) => {
     const Clinic = require('../models/Clinic');
     const ids = clinicasVisibles(req);
     const clinics = await Clinic.find({ _id: { $in: ids } }).select('name').sort({ name: 1 }).lean();
-    res.json({ clinics, current: String(req.clinicId), canSeeAll: esAdmin(req) });
+    res.json({ clinics, current: String(req.clinicId), canSeeAll: veTodo(req) });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
@@ -213,8 +219,8 @@ exports.list = async (req, res) => {
     const filter = { clinic: { $in: clinics } };
     if (req.query.status) filter.status = req.query.status;
     if (req.query.puntoEmision) filter.puntoEmision = req.query.puntoEmision;
-    // Cada cajero maneja SU caja: solo ve sus propias sesiones. Admin/contabilidad ven todas.
-    if (req.role === 'cajero' && !req.user.isSuperAdmin) {
+    // Cajero y admin manejan SU caja: solo ven sus propias sesiones (ver soloPropias).
+    if (soloPropias(req)) {
       filter.$or = [{ openedBy: req.user._id }, { closedBy: req.user._id }];
     }
     if (req.query.startDate || req.query.endDate) {
@@ -271,7 +277,7 @@ exports.detail = async (req, res) => {
     const closing = found.find((c) => String(c._id) === String(req.params.id));
     if (!closing) return res.status(404).json({ message: 'Caja no encontrada' });
     const mine = [closing.openedBy?._id, closing.closedBy?._id].some((u) => u && String(u) === String(req.user._id));
-    if (req.role === 'cajero' && !req.user.isSuperAdmin && !mine) {
+    if (soloPropias(req) && !mine) {
       return res.status(403).json({ message: 'Solo puedes ver tus propias cajas' });
     }
     // La de la URL primero; las sumadas, por fecha.

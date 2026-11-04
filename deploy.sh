@@ -464,6 +464,14 @@ if ! ( cd "$APP_DIR/server" && node scripts/facturarVentasCajaPrincipalOnce.js -
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/facturarVentasCajaPrincipalOnce.js --commit'"
 fi
 
+# La factura 002-001-000003344 se emitio ANTES de abrir caja (antes del bloqueo del
+# 04-11-2026): se adelanta la apertura de la caja abierta de su punto para que la venta
+# entre en ella. Si falla (p. ej. ya cerro la caja) no aborta. Marca en `onetimetasks`.
+if ! ( cd "$APP_DIR/server" && node scripts/cajaIncluirFactura3344Once.js --commit ); then
+  echo "ADVERTENCIA: no se pudo meter la factura 002-001-000003344 en su caja. Revisa y reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/cajaIncluirFactura3344Once.js --commit'"
+fi
+
 # Catalogo de SERVICIOS DE AGENDA, enlazado con los productos de tipo SERVICIO
 # del inventario (oct-2026). Es idempotente (casa por slug antes de crear), asi
 # que puede correr en cada despliegue sin duplicar nada. Si falla no pasa nada

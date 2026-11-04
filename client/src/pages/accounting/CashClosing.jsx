@@ -31,6 +31,7 @@ export default function CashClosing() {
   const [closeForm, setCloseForm] = useState({ countedCash: 0, notes: '' });
   const [busy, setBusy] = useState(false);
   const [movements, setMovements] = useState([]);
+  const [sesionVentas, setSesionVentas] = useState([]);
   const [movModal, setMovModal] = useState(false);
   const [movForm, setMovForm] = useState(MOV_EMPTY);
   const [accounts, setAccounts] = useState([]);
@@ -44,10 +45,16 @@ export default function CashClosing() {
       setList(l.data || []);
       setSession(s.data || { open: null, live: null });
       if (s.data?.open) {
-        const m = await api.get('/cash-closings/movements');
+        // Movimientos y las ventas/facturas que este usuario hizo en esta apertura de caja.
+        const [m, d] = await Promise.all([
+          api.get('/cash-closings/movements'),
+          api.get(`/cash-closings/${s.data.open._id}/detail`).catch(() => null),
+        ]);
         setMovements(m.data || []);
+        setSesionVentas(d?.data?.sales || []);
       } else {
         setMovements([]);
+        setSesionVentas([]);
       }
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
@@ -154,6 +161,47 @@ export default function CashClosing() {
             <div className="bg-sky-50 rounded-lg p-2"><p className="text-xs text-sky-700">Tarjeta</p><p className="font-bold text-sky-800">${fmt(live?.byMethod?.tarjeta)}</p></div>
             <div className="bg-violet-50 rounded-lg p-2"><p className="text-xs text-violet-700">Transferencia</p><p className="font-bold text-violet-800">${fmt(live?.byMethod?.transferencia)}</p></div>
             <div className="bg-amber-50 rounded-lg p-2"><p className="text-xs text-amber-700">Total facturado</p><p className="font-bold text-amber-800">${fmt(live?.totalSales)}</p>{live?.salesCount != null && <p className="text-[11px] text-amber-700/80">{live.salesCount} venta{live.salesCount === 1 ? '' : 's'}</p>}</div>
+          </div>
+
+          {/* Facturas / ventas de ESTA apertura de caja (las que registró quien la abrió). */}
+          <div className="mt-4 border-t border-slate-100 pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold text-slate-700">
+                Facturas de esta caja <span className="text-xs text-slate-400">({sesionVentas.length})</span>
+              </h3>
+              <button onClick={() => window.open(`/cash-register/${open._id}`, '_blank')} className="text-xs text-emerald-700 bg-transparent border-none cursor-pointer hover:underline">
+                Ver detalle completo
+              </button>
+            </div>
+            {sesionVentas.length === 0 ? (
+              <p className="text-xs text-slate-400">Aún no hay ventas en esta apertura de caja.</p>
+            ) : (
+              <div className="overflow-x-auto max-h-80 overflow-y-auto">
+                <table className="tbl text-xs">
+                  <thead className="bg-slate-50 sticky top-0"><tr>
+                    <th className="px-2 py-1 text-left">Hora</th><th className="px-2 py-1 text-left">Venta</th>
+                    <th className="px-2 py-1 text-left">Factura</th><th className="px-2 py-1 text-left">Cliente</th>
+                    <th className="px-2 py-1 text-left">Pago</th><th className="px-2 py-1 text-right">Total</th>
+                  </tr></thead>
+                  <tbody>
+                    {[...sesionVentas].reverse().map((v) => (
+                      <tr key={v._id} className={`border-t border-slate-100 ${v.status === 'anulada' ? 'line-through text-slate-400' : ''}`}>
+                        <td className="px-2 py-1 font-mono">{new Date(v.createdAt).toLocaleTimeString('es-EC', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Guayaquil' })}</td>
+                        <td className="px-2 py-1 font-mono">{v.saleNumber}</td>
+                        <td className="px-2 py-1 font-mono">
+                          {v.invoice ? (
+                            <span title={v.invoice.estado}>{v.invoice.number} <span className={v.invoice.estado === 'AUTORIZADO' ? 'text-emerald-600' : 'text-amber-600'}>●</span></span>
+                          ) : <span className="text-slate-400">Sin factura</span>}
+                        </td>
+                        <td className="px-2 py-1">{v.clientName}</td>
+                        <td className="px-2 py-1">{v.payments.map((p) => `${p.method} $${fmt(p.amount)}${p.reference ? ` (N° ${p.reference})` : ''}`).join(' + ')}</td>
+                        <td className="px-2 py-1 text-right font-mono font-semibold">${fmt(v.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           {/* Movimientos de caja (caja chica / ingresos / egresos / depósitos) */}
