@@ -275,6 +275,19 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Al abrir el cobro se relee el punto: su secuencial avanza con cada factura (de esta caja o
+  // de otra pestaña) y el cajero ve en el modal el número que llevará la factura.
+  useEffect(() => {
+    if (!modalOpen || !canCreate || !miPunto.punto) return;
+    api.get('/puntos-emision/mio')
+      .then((r) => { if (r.data) setMiPunto(r.data); })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modalOpen]);
+  const proximaFactura = miPunto.punto?.secuencialFactura
+    ? `${miPunto.punto.establecimiento}-${miPunto.punto.codigo}-${String(miPunto.punto.secuencialFactura).padStart(9, '0')}`
+    : '';
+
   const [form, setForm] = useState({
     clientName: 'Consumidor Final',
     clientCedula: '9999999999999',
@@ -2457,6 +2470,11 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                     Emitir factura electrónica al cobrar · serie{' '}
                     <b className="font-mono">{miPunto.punto.establecimiento}-{miPunto.punto.codigo}</b>
                     {miPunto.punto.nombre ? ` (${miPunto.punto.nombre})` : ''}
+                    {proximaFactura && (
+                      <span className="block text-xs text-slate-500 mt-0.5">
+                        Factura N.º <b className="font-mono text-slate-700">{proximaFactura}</b>
+                      </span>
+                    )}
                   </span>
                 </label>
               ) : (
