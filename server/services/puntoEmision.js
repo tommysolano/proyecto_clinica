@@ -62,6 +62,28 @@ async function puntoRequerido(clinicId, userId) {
   return punto;
 }
 
+const MSG_CAJA_CERRADA =
+  'No puedes facturar hasta tener la caja abierta. Abre tu caja en Caja (Apertura/Cierre) y vuelve a intentarlo.';
+
+/** ¿El usuario tiene una caja ABIERTA en esta sucursal? */
+async function cajaAbiertaDelUsuario(clinicId, userId) {
+  if (!clinicId || !userId) return false;
+  const CashClosing = require('../models/CashClosing');
+  return !!(await CashClosing.exists({ clinic: clinicId, status: 'ABIERTA', openedBy: userId }));
+}
+
+/**
+ * BLOQUEO DE FACTURACIÓN SIN CAJA (nov-2026). Quien factura electrónicamente (tiene punto de
+ * emisión) no cobra ni factura con la caja cerrada: todo lo que cobra tiene que caer en una
+ * caja suya para que su cierre cuadre. Lanza 409 CAJA_CERRADA; sin punto no aplica.
+ * `punto` evita volver a buscarlo cuando quien llama ya lo tiene.
+ */
+async function assertCajaAbiertaParaFacturar(clinicId, userId, punto) {
+  const p = punto === undefined ? await puntoDelUsuario(clinicId, userId) : punto;
+  if (!p) return;
+  if (!(await cajaAbiertaDelUsuario(clinicId, userId))) throw httpError(409, MSG_CAJA_CERRADA, 'CAJA_CERRADA');
+}
+
 /** Ambiente del SRI de un punto: el suyo o, si no lo tiene definido, el de la configuración. */
 function ambienteDelPunto(punto, config) {
   return punto?.ambiente || config?.ambiente || '1';
@@ -159,6 +181,9 @@ async function seriesDisponibles(clinicId, config) {
 
 module.exports = {
   MSG_SIN_PUNTO,
+  MSG_CAJA_CERRADA,
+  cajaAbiertaDelUsuario,
+  assertCajaAbiertaParaFacturar,
   sucursalSri,
   configDeEmpresa,
   sucursalUsaPuntos,

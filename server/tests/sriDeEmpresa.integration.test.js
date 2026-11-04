@@ -14,6 +14,7 @@ const User = require('../models/User');
 const Sale = require('../models/Sale');
 const InvoicingConfig = require('../models/InvoicingConfig');
 const PuntoEmision = require('../models/PuntoEmision');
+const CashClosing = require('../models/CashClosing');
 const companies = require('../utils/companies');
 const svc = require('../services/puntoEmision');
 const puntosCtrl = require('../controllers/puntoEmisionController');
@@ -77,6 +78,8 @@ test('el punto de la empresa vale en todas sus sucursales y la venta sale con é
   assert.deepEqual([serie.estab, serie.ptoEmi, serie.ambiente], ['003', '001', '2']);
   assert.equal(await svc.reservarSecuencial(serie, 'factura', config), '000001557');
 
+  // Con punto se cobra solo con la caja abierta: la abre en Laboratorio, donde cobra.
+  await CashClosing.create({ clinic: labId, date: new Date(), openedAt: new Date(), openedBy: jeniffer._id, status: 'ABIERTA' });
   const serv = await H.makeProduct(labId, { category: 'servicio', unlimited: true, salePrice: 25, taxCategory: 'IVA_0' });
   const req = H.mockReq(labId, jeniffer._id, { items: [{ product: String(serv._id), quantity: 1 }], paymentMethod: 'efectivo' });
   req.user = { ...jeniffer.toObject(), _id: jeniffer._id };

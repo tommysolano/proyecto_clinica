@@ -138,20 +138,24 @@ test('registra una compra sin receta y atribuye la recomendación al enfermero, 
   assert.doesNotMatch(observation.text, /\(receta\)/);
 });
 
-test('no atribuye una compra de la agenda a personal que no sea doctor o enfermero', async () => {
+test('no atribuye una compra de la agenda a un usuario desactivado', async () => {
   const { clinicId, userId, appointment, product } = await seed();
+  const inactivo = await User.create({
+    name: 'Ex empleado', email: 'ex-empleado@test.com', password: 'secreto123', active: false,
+    clinics: [{ clinic: clinicId, role: 'enfermero' }],
+  });
   const result = await H.runController(
     appointments.updateCobroItems,
     H.mockReq(clinicId, userId, {
       items: [{ source: 'adicional', product: String(product._id), quantity: 1 }],
-      recommendedBy: String(userId),
+      recommendedBy: String(inactivo._id),
     }, { role: 'cajero', params: { id: String(appointment._id) } }),
   );
   assert.equal(result.statusCode, 400);
   assert.equal(await PatientObservation.countDocuments({}), 0);
 });
 
-test('el selector de recomendaciones incluye especialidades y enfermería, sin personal de caja', async () => {
+test('el selector de recomendaciones incluye a todos los usuarios del sistema (especialidades, enfermería y caja)', async () => {
   const { clinicId, userId } = await seed();
   const ginecologa = await User.create({
     name: 'Dra. Eva', email: 'dra-eva@test.com', password: 'secreto123',
@@ -172,7 +176,7 @@ test('el selector de recomendaciones incluye especialidades y enfermería, sin p
   assert.equal(result.statusCode, 200);
   assert.equal(result.payload.find((person) => String(person._id) === String(ginecologa._id))?.role, 'ginecologia');
   assert.equal(result.payload.find((person) => String(person._id) === String(enfermera._id))?.role, 'enfermero');
-  assert.equal(result.payload.some((person) => String(person._id) === String(cajero._id)), false);
+  assert.equal(result.payload.find((person) => String(person._id) === String(cajero._id))?.role, 'cajero');
 });
 
 test('el selector incluye otras sucursales de la empresa y excluye otra empresa', async () => {

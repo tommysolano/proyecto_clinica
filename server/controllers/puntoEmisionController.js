@@ -7,7 +7,7 @@ const CashClosing = require('../models/CashClosing');
 const Sale = require('../models/Sale');
 const User = require('../models/User');
 const Clinic = require('../models/Clinic');
-const { sucursalUsaPuntos, puntoDelUsuario, ambienteDelPunto, sucursalSri } = require('../services/puntoEmision');
+const { sucursalUsaPuntos, puntoDelUsuario, ambienteDelPunto, sucursalSri, cajaAbiertaDelUsuario } = require('../services/puntoEmision');
 
 /**
  * LOS PUNTOS SON DE LA EMPRESA (29-10-2026): viven en la sucursal de su configuración SRI
@@ -227,7 +227,9 @@ exports.mine = async (req, res) => {
   try {
     const usaPuntos = await sucursalUsaPuntos(req.clinicId);
     const punto = usaPuntos ? await puntoDelUsuario(req.clinicId, req.user._id) : null;
-    res.json({ usaPuntos, punto });
+    // Con punto, el cobro exige caja abierta (ver assertCajaAbiertaParaFacturar).
+    const cajaAbierta = punto ? await cajaAbiertaDelUsuario(req.clinicId, req.user._id) : null;
+    res.json({ usaPuntos, punto, cajaAbierta });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }

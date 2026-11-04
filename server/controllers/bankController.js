@@ -18,12 +18,35 @@ const multer = require('multer');
 exports.uploadStatementMiddleware = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single('file');
 
 /**
+ * DATAFAST SIEMPRE DISPONIBLE (nov-2026). En el cobro con tarjeta, «Tarjeta / Adquirente» tiene
+ * que ofrecer Datafast en todas las sucursales. Si la sucursal no tiene ninguna tarjeta activa de
+ * Datafast, se crea una (procesa débito y crédito: el tipo lo elige el cajero). Sin cuenta
+ * contable propia, la venta va a «Tarjetas por liquidar» como cualquier tarjeta sin cuenta.
+ */
+async function asegurarDatafast(clinicId) {
+  const existe = await CreditCard.exists({
+    clinic: clinicId, active: true,
+    $or: [{ name: /datafast/i }, { acquirer: /datafast/i }],
+  });
+  if (existe) return;
+  await CreditCard.updateOne(
+    { clinic: clinicId, name: 'Datafast' },
+    {
+      $set: { active: true, acquirer: 'Datafast' },
+      $setOnInsert: { brand: 'OTRA', accountType: 'CORRIENTE', notes: 'Creada automáticamente para el cobro con tarjeta.' },
+    },
+    { upsert: true },
+  );
+}
+
+/**
  * Opciones de medios de pago para el punto de cobro (cajero / recepción).
  * Devuelve solo lo necesario para los selectores: cuentas bancarias y
  * tarjetas/POS activos. No expone saldos ni datos sensibles.
  */
 exports.paymentOptions = async (req, res) => {
   try {
+    await asegurarDatafast(req.clinicId);
     const [accounts, cards] = await Promise.all([
       BankAccount.find({ clinic: req.clinicId, active: true })
         .select('name bank accountNumber accountType')
@@ -34,6 +57,9 @@ exports.paymentOptions = async (req, res) => {
         .select('name brand acquirer accountType pos')
         .sort({ name: 1 }),
     ]);
+    // Datafast primero: es el adquirente con el que se cobra casi siempre.
+    const esDatafast = (c) => /datafast/i.test(`${c.name} ${c.acquirer}`);
+    cards.sort((a, b) => Number(esDatafast(b)) - Number(esDatafast(a)));
     const cardsOut = cards.map((c) => ({
       _id: c._id,
       name: c.name,

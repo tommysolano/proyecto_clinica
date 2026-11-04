@@ -33,6 +33,7 @@ require.cache[rutaSri].exports = {
 const invoices = require('../controllers/invoiceController');
 const sales = require('../controllers/saleController');
 const InvoicingConfig = require('../models/InvoicingConfig');
+const CashClosing = require('../models/CashClosing');
 const PuntoEmision = require('../models/PuntoEmision');
 const User = require('../models/User');
 const { encrypt } = require('../modules/invoicing/ec/crypto');
@@ -81,6 +82,12 @@ async function preparar(ambienteConfig, rucCertificado) {
   });
   const prod = await H.makeProduct(clinicId, { name: 'Consulta', category: 'servicio', salePrice: 20, taxCategory: 'IVA_0', taxRate: 0 });
   const vender = async (uid) => {
+    // Con punto de emisión se cobra y factura solo con la caja abierta (CAJA_CERRADA).
+    await CashClosing.updateOne(
+      { clinic: clinicId, openedBy: uid, status: 'ABIERTA' },
+      { $setOnInsert: { date: new Date(), openedAt: new Date(), openingBalance: 0 } },
+      { upsert: true },
+    );
     const r = await H.runController(sales.createSale, H.mockReq(clinicId, uid, {
       clientName: 'Consumidor Final', clientCedula: '9999999999999',
       items: [{ product: String(prod._id), quantity: 1, unitPrice: 20 }], paymentMethod: 'efectivo',

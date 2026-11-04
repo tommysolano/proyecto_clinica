@@ -518,7 +518,9 @@ exports.getAppointments = async (req, res) => {
       const Sale = require('../models/Sale');
       const ventas = appointments.length
         ? await Sale.find({ appointment: { $in: appointments.map((a) => a._id) }, status: 'completada' })
-          .select('appointment saleNumber total createdAt')
+          .select('appointment saleNumber total createdAt createdBy')
+          // «Cobrado por»: quien registró la venta (y la facturó desde su punto).
+          .populate('createdBy', 'name')
           .sort({ createdAt: 1 })
           .lean()
         : [];
@@ -527,7 +529,7 @@ exports.getAppointments = async (req, res) => {
         for (const v of ventas) {
           const k = String(v.appointment);
           if (!porCita.has(k)) porCita.set(k, []);
-          porCita.get(k).push({ _id: v._id, saleNumber: v.saleNumber, total: v.total });
+          porCita.get(k).push({ _id: v._id, saleNumber: v.saleNumber, total: v.total, cobradoPor: v.createdBy?.name || '' });
         }
         return res.json(await conSesionesPrepagadas(req, appointments.map((a) => {
           const o = a.toJSON();
@@ -536,6 +538,7 @@ exports.getAppointments = async (req, res) => {
             o.cobro = {
               ventas: lista,
               total: Math.round(lista.reduce((s, v) => s + (Number(v.total) || 0), 0) * 100) / 100,
+              cobradoPor: [...new Set(lista.map((v) => v.cobradoPor).filter(Boolean))],
             };
           }
           return o;

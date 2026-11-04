@@ -80,16 +80,22 @@ export default function AppointmentValueFields({
   servicios = [],
   sinCobro = [],
   onSinCobroChange,
+  /**
+   * SOLO EL ADELANTO (nov-2026): el modal de la agenda ya no pide el valor de la
+   * cita (ni canje/cortesía); solo «¿Pagó por adelantado?».
+   */
+  soloAdelanto = false,
   className = '',
 }) {
   const conAdelanto = typeof onAdvancePaymentChange === 'function';
   const conCortesia = typeof onCortesiaChange === 'function';
   const porServicio = typeof onSinCobroChange === 'function' && servicios.length > 1;
   // Canje o cortesía: no entra dinero, no hay importe ni adelanto.
-  const sinDinero = porServicio ? todosSinCobro(servicios, sinCobro) : !!isCanje || !!isCortesia;
+  const sinDinero = soloAdelanto ? false : porServicio ? todosSinCobro(servicios, sinCobro) : !!isCanje || !!isCortesia;
   const algunoSinCobro = porServicio && (sinCobro || []).length > 0 && !sinDinero;
   return (
     <div className={className}>
+      {!soloAdelanto && (<>
       <label className="block text-sm font-medium text-slate-700 mb-1.5">
         Valor de la cita <span className="font-normal text-slate-400">(opcional)</span>
       </label>
@@ -147,11 +153,12 @@ export default function AppointmentValueFields({
         Cuánto paga el paciente por esta visita. Es informativo para la agenda: no genera
         venta ni cobro. <b>Canje</b> = no pagó con dinero.{conCortesia && <> <b>Cortesía</b> = se regaló, no se cobra.</>}
       </p>
+      </>)}
 
       {/* Un canje no es un pago: si no entró dinero, no hay adelanto que anotar
           (el servidor lo borra igual, ver `aplicarValorDeCita`). */}
       {conAdelanto && !sinDinero && (
-        <div className="mt-3">
+        <div className={soloAdelanto ? '' : 'mt-3'}>
           <label className="block text-sm font-medium text-slate-700 mb-1.5">
             ¿Pagó por adelantado?
           </label>

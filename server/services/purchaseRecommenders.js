@@ -1,10 +1,11 @@
 const User = require('../models/User');
-const { DOCTOR_LIKE_ROLES, NURSE_ROLE } = require('../constants/roles');
 const { ensureCompanyCache, companyOfClinicSync, sisterClinicsSync, coversClinic, roleForCoveredClinic } = require('../utils/companies');
 
-const CLINICAL_ROLES = [...DOCTOR_LIKE_ROLES, NURSE_ROLE];
-
-// La recomendación puede venir de cualquier sucursal de la misma empresa.
+/**
+ * Quién puede figurar como «Recomendado por (comisión)» en un cobro: CUALQUIER usuario
+ * activo del sistema con rol en alguna sucursal de la misma empresa (nov-2026: antes solo
+ * doctores y enfermería, pero la venta también la atribuyen a caja, call center, marketing…).
+ */
 async function recommendersForClinic(clinicId) {
   await ensureCompanyCache();
   const companyId = companyOfClinicSync(clinicId);
@@ -13,19 +14,16 @@ async function recommendersForClinic(clinicId) {
   const users = await User.find({
     active: true,
     $or: [
-      { clinics: { $elemMatch: { clinic: { $in: ids }, role: { $in: CLINICAL_ROLES } } } },
-      ...(companyId ? [{
-        worksInAllClinics: true,
-        companies: companyId,
-        clinics: { $elemMatch: { role: { $in: CLINICAL_ROLES } } },
-      }] : []),
+      { clinics: { $elemMatch: { clinic: { $in: ids } } } },
+      ...(companyId ? [{ worksInAllClinics: true, companies: companyId }] : []),
     ],
   }).select('_id name clinics worksInAllClinics companies').sort({ name: 1 }).lean();
   return users.flatMap((user) => {
-    const directRole = user.clinics.find((assignment) => ids.some((id) => String(id) === String(assignment.clinic))
-      && CLINICAL_ROLES.includes(assignment.role))?.role;
-    const coveredRole = coversClinic(user, clinicId) ? roleForCoveredClinic(user, clinicId) : null;
-    const role = directRole || (CLINICAL_ROLES.includes(coveredRole) ? coveredRole : null);
+    // Rol para mostrar: el de esta sucursal si lo tiene; si no, el de otra sede de la empresa.
+    const enEsta = user.clinics.find((a) => String(a.clinic) === String(clinicId))?.role;
+    const enLaEmpresa = user.clinics.find((a) => ids.some((id) => String(id) === String(a.clinic)))?.role;
+    const cubierta = coversClinic(user, clinicId) ? roleForCoveredClinic(user, clinicId) : null;
+    const role = enEsta || enLaEmpresa || cubierta;
     return role ? [{ ...user, recommendationRole: role }] : [];
   });
 }

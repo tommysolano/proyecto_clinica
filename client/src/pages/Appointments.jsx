@@ -60,7 +60,7 @@ import TimeSlotInput from '../components/TimeSlotInput';
 import SearchableSelect from '../components/SearchableSelect';
 // «Quién atiende» + enfermería + el suero, en un solo bloque compartido con el
 // alta de paciente (Pacientes → «Agendar cita para este paciente»).
-import QuienAtiende, { CAMPOS_QUIEN_ATIENDE, pasosDeAtencion } from '../components/QuienAtiende';
+import { CAMPOS_QUIEN_ATIENDE, pasosDeAtencion } from '../components/QuienAtiende';
 import { doctorOptionLabel, roleSatisfies, ROLE_LABELS, ROLES_TODA_LA_ORG, ROLES_TODAS_LAS_EMPRESAS, ROLES_VEN_CORREO } from '../utils/roles';
 import CompanyClinicSelect, { ClinicOptionsByCompany } from '../components/CompanyClinicSelect';
 import ResumenEstadosAgenda from '../components/ResumenEstadosAgenda';
@@ -3875,10 +3875,15 @@ export default function Appointments() {
                           <div className="mt-1">
                             <span
                               className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase whitespace-nowrap bg-emerald-100 text-emerald-800 cursor-default"
-                              title={apt.cobro.ventas.map((v) => `${v.saleNumber || 'Venta'} · $${Number(v.total || 0).toFixed(2)}`).join('\n')}
+                              title={apt.cobro.ventas.map((v) => `${v.saleNumber || 'Venta'} · $${Number(v.total || 0).toFixed(2)}${v.cobradoPor ? ` · cobró ${v.cobradoPor}` : ''}`).join('\n')}
                             >
                               <HiOutlineBanknotes className="w-3 h-3" /> Cobrada · ${Number(apt.cobro.total || 0).toFixed(2)}
                             </span>
+                            {!!apt.cobro.cobradoPor?.length && (
+                              <div className="text-[10px] text-emerald-800 mt-0.5">
+                                Cobrado por <b>{apt.cobro.cobradoPor.join(', ')}</b>
+                              </div>
+                            )}
                           </div>
                         )}
                         {/* SESIONES PREPAGADAS: «Sesión 2 de 5» (todos) y lo prepagado aún sin usar (mostrador). */}
@@ -4276,10 +4281,8 @@ export default function Appointments() {
             )}
           </div>
 
-          {/* QUIÉN ATIENDE, ya al agendar. Solo al crear: una cita existente se
-              reparte por «Asignar atención», que además sabe reordenar la cola y
-              conserva los turnos ya completados. */}
-          {!editing && <QuienAtiende form={form} setForm={setForm} doctors={doctors} nurses={nurses} />}
+          {/* «Doctor que atiende» ya no se pide al agendar (nov-2026): quién
+              atiende se reparte en «Asignar atención». */}
 
           {/**
             * …y desde aquí se llega a esa puerta.
@@ -4336,26 +4339,18 @@ export default function Appointments() {
             />
           )}
 
-          {/* Al crear, caja registra el valor acordado con el paciente o si fue
-              canje, igual que en Pacientes → Agendar cita. Las correcciones de
-              citas existentes siguen usando su modal específico y auditado. */}
+          {/* Al crear solo se anota si pagó por adelantado: el valor de la cita
+              ya no se pide aquí (nov-2026). Las correcciones de citas existentes
+              siguen usando su modal específico y auditado. */}
           {!editing && canCharge && (
             <AppointmentValueFields
-              value={form.agreedValue}
-              onValueChange={(value) => setForm((f) => ({ ...f, agreedValue: value }))}
-              isCanje={form.isCanje}
-              onCanjeChange={(isCanje) => setForm((f) => ({ ...f, isCanje }))}
-              isCortesia={!!form.isCortesia}
-              onCortesiaChange={(isCortesia) => setForm((f) => ({ ...f, isCortesia }))}
+              soloAdelanto
               advancePayment={form.advancePayment}
               onAdvancePaymentChange={(v) => setForm((f) => ({ ...f, advancePayment: v }))}
               advanceAmount={form.advanceAmount}
               onAdvanceAmountChange={(v) => setForm((f) => ({ ...f, advanceAmount: v }))}
               advanceMethod={form.advanceMethod}
               onAdvanceMethodChange={(v) => setForm((f) => ({ ...f, advanceMethod: v }))}
-              servicios={serviciosDelForm(form)}
-              sinCobro={form.noChargeServices || []}
-              onSinCobroChange={(lista) => setForm((f) => ({ ...f, noChargeServices: lista }))}
             />
           )}
 
@@ -4419,31 +4414,6 @@ export default function Appointments() {
                       }))}
                     />
                   </div>
-                  {canCharge && (
-                    <AppointmentValueFields
-                      value={it.agreedValue ?? ''}
-                      onValueChange={(value) => setForm((f) => ({
-                        ...f,
-                        extraAppointments: f.extraAppointments.map((x, i) => (
-                          i === idx ? { ...x, agreedValue: value } : x
-                        )),
-                      }))}
-                      isCanje={!!it.isCanje}
-                      onCanjeChange={(isCanje) => setForm((f) => ({
-                        ...f,
-                        extraAppointments: f.extraAppointments.map((x, i) => (
-                          i === idx ? { ...x, isCanje } : x
-                        )),
-                      }))}
-                      isCortesia={!!it.isCortesia}
-                      onCortesiaChange={(isCortesia) => setForm((f) => ({
-                        ...f,
-                        extraAppointments: f.extraAppointments.map((x, i) => (
-                          i === idx ? { ...x, isCortesia } : x
-                        )),
-                      }))}
-                    />
-                  )}
                 </div>
               ))}
               <button

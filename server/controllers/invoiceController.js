@@ -18,7 +18,7 @@ const {
   runInvoiceRetryQueue,
 } = require('../utils/invoiceRetry');
 const { isPastDocumentDate } = require('../utils/fiscalDocumentDate');
-const { serieDelEmisor, reservarSecuencial, puntoDelUsuario, ambienteDelPunto, configDeEmpresa } = require('../services/puntoEmision');
+const { serieDelEmisor, reservarSecuencial, puntoDelUsuario, ambienteDelPunto, configDeEmpresa, assertCajaAbiertaParaFacturar } = require('../services/puntoEmision');
 const { scopedDocuments } = require('../services/scopedDocuments');
 
 function fmtFechaEmision(d) {
@@ -225,6 +225,12 @@ exports.emitFromSale = async (req, res) => {
     }
     if (sale.status === 'anulada') {
       return res.status(400).json({ message: 'No se puede facturar una venta anulada' });
+    }
+    // Con punto de emisión no se factura con la caja cerrada (409 CAJA_CERRADA).
+    try {
+      await assertCajaAbiertaParaFacturar(req.clinicId, req.user._id);
+    } catch (e) {
+      return res.status(e.status || 409).json({ message: e.message, code: e.code });
     }
 
     const { config, p12Buffer, password } = await loadForSigning(req.clinicId);

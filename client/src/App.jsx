@@ -143,6 +143,7 @@ const CreditCards = pagina(() => import('./pages/accounting/CreditCards'));
 const CardSettlements = pagina(() => import('./pages/accounting/CardSettlements'));
 const SalesReports = pagina(() => import('./pages/accounting/SalesReports'));
 const CashClosing = pagina(() => import('./pages/accounting/CashClosing'));
+const CashClosingDetail = pagina(() => import('./pages/accounting/CashClosingDetail'));
 const CashIncome = pagina(() => import('./pages/accounting/CashIncome'));
 const AccountMapping = pagina(() => import('./pages/accounting/AccountMapping'));
 const PeriodBalances = pagina(() => import('./pages/accounting/PeriodBalances'));
@@ -686,6 +687,15 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'contabilidad', 'cajero']}>
                       <CashClosing />
+                    </RoleRoute>
+                  }
+                />
+                {/* Detalle de una caja (se abre en pestaña nueva desde el historial) */}
+                <Route
+                  path="/cash-register/:id"
+                  element={
+                    <RoleRoute roles={['admin', 'contabilidad', 'cajero']}>
+                      <CashClosingDetail />
                     </RoleRoute>
                   }
                 />

@@ -274,3 +274,33 @@ test('10) en producción, los números gastados en pruebas no cuentan como emiti
   assert.equal(debajo.statusCode, 400);
   assert.match(debajo.payload.message, /003-001-000001388: el próximo número debe ser al menos 1389/);
 });
+
+test('11) con punto de emisión no se cobra ni factura con la caja cerrada; sin punto, sí', async () => {
+  const { clinicId, cajeroA, admin } = await seed();
+  await crear(clinicId, { codigo: '001', usuario: String(cajeroA._id) });
+  const prod = await H.makeProduct(clinicId, { category: 'servicio', salePrice: 30, unlimited: true, taxCategory: 'IVA_0', taxRate: 0, priceIncludesVat: false });
+  const vender = (u) => H.runController(sale.createSale, H.mockReq(clinicId, u._id, {
+    items: [{ product: prod._id, quantity: 1, unitPrice: 30 }],
+    payments: [{ method: 'efectivo', amount: 30 }],
+  }, { role: 'cajero' }));
+
+  // Caja cerrada: el cobro se rechaza con el aviso y no se crea la venta.
+  const cerrada = await vender(cajeroA);
+  assert.equal(cerrada.statusCode, 409);
+  assert.equal(cerrada.payload.code, 'CAJA_CERRADA');
+  assert.match(cerrada.payload.message, /caja abierta/);
+  assert.equal(await Sale.countDocuments({}), 0);
+  const mio = await H.runController(ctrl.mine, H.mockReq(clinicId, cajeroA._id, {}, { role: 'cajero' }));
+  assert.equal(mio.payload.cajaAbierta, false);
+
+  // Con la caja abierta cobra con normalidad.
+  await H.runController(cashClosing.open, H.mockReq(clinicId, cajeroA._id, { openingBalance: 0 }, { role: 'cajero' }));
+  const abierta = await vender(cajeroA);
+  assert.equal(abierta.statusCode, 201, JSON.stringify(abierta.payload));
+  assert.equal((await H.runController(ctrl.mine, H.mockReq(clinicId, cajeroA._id, {}, { role: 'cajero' }))).payload.cajaAbierta, true);
+
+  // Quien no factura (sin punto) no queda bloqueado por la caja.
+  const sinPunto = await vender(admin);
+  assert.equal(sinPunto.statusCode, 201, JSON.stringify(sinPunto.payload));
+  await assert.doesNotReject(svc.assertCajaAbiertaParaFacturar(clinicId, admin._id));
+});

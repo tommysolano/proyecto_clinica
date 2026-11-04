@@ -7,13 +7,24 @@ import { HiOutlineCalculator, HiOutlineLockOpen, HiOutlineLockClosed, HiOutlineE
 import { fmt, fmtDate } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import AccountSelect from '../../components/AccountSelect';
+import DateInput from '../../components/DateInput';
 
 const MOV_EMPTY = { type: 'GASTO', amount: 0, description: '', counterpartAccount: '' };
+
+// Por defecto el historial muestra los últimos 30 días (fechas locales, no UTC).
+const ymdLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const hace30Dias = () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 30);
+  return ymdLocal(d);
+};
 
 export default function CashClosing() {
   const [list, setList] = useState([]);
   const [session, setSession] = useState({ open: null, live: null });
-  const [view, setView] = useState(null);
+  // Filtros del historial. Admin y super admin pueden ver las cajas de todas las sucursales.
+  const [branches, setBranches] = useState({ clinics: [], canSeeAll: false });
+  const [filters, setFilters] = useState({ clinic: 'all', startDate: hace30Dias(), endDate: ymdLocal(new Date()) });
   const [openModal, setOpenModal] = useState(false);
   const [closeModal, setCloseModal] = useState(false);
   const [openForm, setOpenForm] = useState({ openingBalance: 0, notes: '' });
@@ -24,10 +35,10 @@ export default function CashClosing() {
   const [movForm, setMovForm] = useState(MOV_EMPTY);
   const [accounts, setAccounts] = useState([]);
 
-  const load = async () => {
+  const load = async (f = filters) => {
     try {
       const [l, s] = await Promise.all([
-        api.get('/cash-closings'),
+        api.get('/cash-closings', { params: f }),
         api.get('/cash-closings/current'),
       ]);
       setList(l.data || []);
@@ -40,8 +51,12 @@ export default function CashClosing() {
       }
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
-  useEffect(() => { load(); }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(filters); }, [filters]);
   useEffect(() => {
+    api.get('/cash-closings/branches')
+      .then((r) => setBranches(r.data || { clinics: [], canSeeAll: false }))
+      .catch(() => {});
     api.get('/chart-of-accounts')
       .then((r) => setAccounts(r.data || []))
       .catch(() => {});
@@ -70,6 +85,7 @@ export default function CashClosing() {
   const sinPunto = !!session.usaPuntos && !miPunto;
   const serie = (p) => (p ? `${p.establecimiento}-${p.codigo}${p.nombre ? ` · ${p.nombre}` : ''}` : '');
   const historial = list.filter((c) => !(open && c._id === open._id) && (c.status !== 'ABIERTA' || c.puntoEmision));
+  const conSucursal = branches.canSeeAll && branches.clinics.length > 1;
   const expectedCash = live?.expectedCash || 0;
   const closeDiff = (+closeForm.countedCash || 0) - expectedCash;
 
@@ -137,7 +153,7 @@ export default function CashClosing() {
             <div className="bg-emerald-50 rounded-lg p-2"><p className="text-xs text-emerald-700">Efectivo ventas</p><p className="font-bold text-emerald-800">${fmt(live?.byMethod?.efectivo)}</p></div>
             <div className="bg-sky-50 rounded-lg p-2"><p className="text-xs text-sky-700">Tarjeta</p><p className="font-bold text-sky-800">${fmt(live?.byMethod?.tarjeta)}</p></div>
             <div className="bg-violet-50 rounded-lg p-2"><p className="text-xs text-violet-700">Transferencia</p><p className="font-bold text-violet-800">${fmt(live?.byMethod?.transferencia)}</p></div>
-            <div className="bg-amber-50 rounded-lg p-2"><p className="text-xs text-amber-700">Efectivo esperado</p><p className="font-bold text-amber-800">${fmt(expectedCash)}</p></div>
+            <div className="bg-amber-50 rounded-lg p-2"><p className="text-xs text-amber-700">Total facturado</p><p className="font-bold text-amber-800">${fmt(live?.totalSales)}</p>{live?.salesCount != null && <p className="text-[11px] text-amber-700/80">{live.salesCount} venta{live.salesCount === 1 ? '' : 's'}</p>}</div>
           </div>
 
           {/* Movimientos de caja (caja chica / ingresos / egresos / depósitos) */}
@@ -172,10 +188,27 @@ export default function CashClosing() {
       )}
 
       {/* Historial */}
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-slate-200 p-3 flex flex-wrap items-end gap-3">
+        {branches.canSeeAll && branches.clinics.length > 1 && (
+          <label className="text-xs text-slate-500 block">Sucursal
+            <select value={filters.clinic} onChange={(e) => setFilters({ ...filters, clinic: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3 py-2 text-sm min-w-[200px]">
+              <option value="all">Todas las sucursales</option>
+              {branches.clinics.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
+            </select>
+          </label>
+        )}
+        <label className="text-xs text-slate-500 block">Desde
+          <DateInput value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="mt-1" />
+        </label>
+        <label className="text-xs text-slate-500 block">Hasta
+          <DateInput value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="mt-1" />
+        </label>
+        <span className="text-xs text-slate-400 ml-auto">{historial.length} caja{historial.length === 1 ? '' : 's'}</span>
+      </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-x-auto">
         <table className="tbl">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
-            <th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-right">Fondo inicial</th>
+            <th className="px-3 py-2 text-left">Fecha</th>{conSucursal && <th className="px-3 py-2 text-left">Sucursal</th>}<th className="px-3 py-2 text-right">Fondo inicial</th>
             <th className="px-3 py-2 text-right">Efectivo ventas</th><th className="px-3 py-2 text-right">Esperado</th>
             <th className="px-3 py-2 text-right">Contado</th><th className="px-3 py-2 text-right">Diferencia</th>
             <th className="px-3 py-2 text-left">Caja</th><th className="px-3 py-2 text-left">Cajero</th><th className="px-3 py-2 text-center">Estado</th><th></th>
@@ -184,6 +217,7 @@ export default function CashClosing() {
             {historial.map((c) => (
               <tr key={c._id} className="border-t hover:bg-slate-50">
                 <td className="px-3 py-2">{fmtDate(c.date)}</td>
+                {conSucursal && <td className="px-3 py-2 text-xs">{c.clinic?.name || '—'}</td>}
                 <td className="px-3 py-2 text-right font-mono">{fmt(c.openingBalance)}</td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(c.byMethod?.efectivo)}</td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(c.expectedCash)}</td>
@@ -192,10 +226,10 @@ export default function CashClosing() {
                 <td className="px-3 py-2 text-xs font-mono">{c.puntoEmision ? `${c.puntoEmision.establecimiento}-${c.puntoEmision.codigo}` : '—'}</td>
                 <td className="px-3 py-2 text-xs">{c.openedBy?.name || c.closedBy?.name || '—'}</td>
                 <td className="px-3 py-2 text-center"><span className={`px-2 py-0.5 rounded-full text-[11px] ${c.status === 'CERRADO' ? 'bg-emerald-100 text-emerald-700' : c.status === 'ABIERTA' ? 'bg-sky-100 text-sky-700' : 'bg-rose-100 text-rose-700'}`}>{c.status}</span></td>
-                <td className="px-3 py-2 text-right"><button onClick={() => setView(c)} className="text-slate-500 bg-transparent border-none cursor-pointer"><HiOutlineEye className="w-5 h-5" /></button></td>
+                <td className="px-3 py-2 text-right"><button onClick={() => window.open(`/cash-register/${c._id}`, '_blank')} title="Ver detalle en una pestaña nueva" className="text-slate-500 bg-transparent border-none cursor-pointer hover:text-emerald-700"><HiOutlineEye className="w-5 h-5" /></button></td>
               </tr>
             ))}
-            {!historial.length && <tr><td colSpan={10} className="px-3 py-8 text-center text-slate-400">Sin cierres registrados</td></tr>}
+            {!historial.length && <tr><td colSpan={conSucursal ? 11 : 10} className="px-3 py-8 text-center text-slate-400">Sin cierres en el período</td></tr>}
           </tbody>
         </table>
       </div>
@@ -217,11 +251,13 @@ export default function CashClosing() {
       <Modal isOpen={closeModal} onClose={() => setCloseModal(false)} title="Cerrar caja" size="lg">
         <form onSubmit={doClose} className="space-y-3">
           {live && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
               <div className="bg-slate-50 rounded-lg p-2"><p className="text-xs text-slate-500">Fondo inicial</p><p className="font-bold">${fmt(open?.openingBalance)}</p></div>
               <div className="bg-emerald-50 rounded-lg p-2"><p className="text-xs text-emerald-700">Efectivo ventas</p><p className="font-bold text-emerald-800">${fmt(live.byMethod.efectivo)}</p></div>
               <div className="bg-sky-50 rounded-lg p-2"><p className="text-xs text-sky-700">Tarjeta</p><p className="font-bold text-sky-800">${fmt(live.byMethod.tarjeta)}</p></div>
               <div className="bg-violet-50 rounded-lg p-2"><p className="text-xs text-violet-700">Transferencia</p><p className="font-bold text-violet-800">${fmt(live.byMethod.transferencia)}</p></div>
+              {/* Suma de lo cobrado en el turno (efectivo + tarjeta + transferencia). */}
+              <div className="bg-emerald-600 rounded-lg p-2 col-span-2 md:col-span-1"><p className="text-xs text-emerald-50">Total cobrado</p><p className="font-bold text-white text-lg">${fmt((live.byMethod.efectivo || 0) + (live.byMethod.tarjeta || 0) + (live.byMethod.transferencia || 0))}</p></div>
             </div>
           )}
           <label className="text-xs text-slate-500 block">Efectivo físico contado ($)
@@ -238,33 +274,6 @@ export default function CashClosing() {
           </label>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setCloseModal(false)} className="px-4 py-2 bg-slate-200 rounded-xl border-none cursor-pointer">Cancelar</button><button disabled={busy} className="px-4 py-2 bg-rose-600 text-white rounded-lg border-none cursor-pointer disabled:opacity-50">Cerrar caja</button></div>
         </form>
-      </Modal>
-
-      {/* Modal ver */}
-      <Modal isOpen={!!view} onClose={() => setView(null)} title={`Cierre ${view ? fmtDate(view.date) : ''}`} size="md">
-        {view && (
-          <div className="space-y-2 text-sm">
-            {(view.puntoEmision || view.openedBy) && (
-              <p className="text-xs text-slate-500">
-                {view.puntoEmision && <span className="font-mono">{serie(view.puntoEmision)}</span>}
-                {view.openedBy?.name && <span>{view.puntoEmision ? ' · ' : ''}Abrió {view.openedBy.name}</span>}
-                {view.closedBy?.name && <span> · Cerró {view.closedBy.name}</span>}
-              </p>
-            )}
-            <div className="grid grid-cols-2 gap-2">
-              <div><span className="text-slate-500">Fondo inicial:</span> ${fmt(view.openingBalance)}</div>
-              <div><span className="text-slate-500">Efectivo ventas:</span> ${fmt(view.byMethod?.efectivo)}</div>
-              <div><span className="text-slate-500">Esperado:</span> ${fmt(view.expectedCash)}</div>
-              <div><span className="text-slate-500">Contado:</span> ${fmt(view.countedCash)}</div>
-              <div><span className="text-slate-500">Diferencia:</span> <b className={view.difference < 0 ? 'text-rose-600' : view.difference > 0 ? 'text-amber-600' : 'text-emerald-700'}>${fmt(view.difference)}</b></div>
-              <div><span className="text-slate-500">Ventas:</span> {view.salesCount} (${fmt(view.totalSales)})</div>
-              <div><span className="text-slate-500">Tarjeta:</span> ${fmt(view.byMethod?.tarjeta)}</div>
-              <div><span className="text-slate-500">Transferencia:</span> ${fmt(view.byMethod?.transferencia)}</div>
-            </div>
-            {view.journalEntry && <p className="text-[11px] text-emerald-700">✓ Asiento contable de diferencia generado</p>}
-            {view.notes && <p className="text-slate-600 border-t pt-2">{view.notes}</p>}
-          </div>
-        )}
       </Modal>
 
       <Modal isOpen={movModal} onClose={() => setMovModal(false)} title="Movimiento de caja" size="sm">

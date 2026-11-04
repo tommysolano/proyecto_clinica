@@ -9,6 +9,7 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { fmtDateTime } from '../utils/date';
 import NumericInput from '../components/NumericInput';
+import SearchableSelect from '../components/SearchableSelect';
 import useDocDeepLink from '../hooks/useDocDeepLink';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import SriStatus from '../components/SriStatus';
@@ -26,7 +27,6 @@ import {
   HiOutlineCalculator,
   HiOutlineUser,
   HiOutlineShoppingCart,
-  HiOutlineBuildingStorefront,
   HiOutlineDocumentArrowDown,
 } from 'react-icons/hi2';
 import JournalEntryViewModal from '../components/JournalEntryViewModal';
@@ -258,6 +258,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const [miPunto, setMiPunto] = useState({ usaPuntos: false, punto: null });
   const [facturarAlGuardar, setFacturarAlGuardar] = useState(false);
   const puedeFacturarAqui = canInvoice && (!miPunto.usaPuntos || !!miPunto.punto);
+  // Quien factura electrónicamente (tiene punto) no cobra ni factura con la caja cerrada.
+  const cajaCerrada = !!miPunto.punto && miPunto.cajaAbierta === false;
+  const MSG_CAJA_CERRADA = 'No puedes facturar hasta tener la caja abierta. Abre tu caja en Caja (Apertura/Cierre).';
   const serieTexto = miPunto.punto
     ? `${miPunto.punto.establecimiento}-${miPunto.punto.codigo}${miPunto.punto.nombre ? ` (${miPunto.punto.nombre})` : ''}`
     : '';
@@ -304,6 +307,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     cardPos: '',
     cardLote: '',
     cardVoucher: '',
+    transferRef: '',   // N° de la transferencia (lo pide contabilidad para conciliar)
     cardDeferredType: 'CORRIENTE',  // solo tarjeta de crédito
     cardDeferredMonths: 0,
     creditTerm: 30,    // plazo en días de la parte a crédito ('CUSTOM' = fecha exacta)
@@ -321,8 +325,6 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     costCenter: '',
     items: [],
   });
-  const [warehouses, setWarehouses] = useState([]);
-  const [costCenters, setCostCenters] = useState([]);
   // { warehouse, esperado, elegido } cuando el backend rechaza por centro distinto (409).
   const [ccMismatch, setCcMismatch] = useState(null);
   // Cobro de la CxC de una venta (se registra como documento de Cobro, ver openCollect).
@@ -444,19 +446,11 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       api.get('/banks/payment-options')
         .then((r) => setPayOptions({ accounts: r.data?.accounts || [], cards: r.data?.cards || [] }))
         .catch(() => setPayOptions({ accounts: [], cards: [] }));
-      // En el cobro de una cita, el recomendador es personal clínico de la
+      // A quién se atribuye la venta (comisión): cualquier usuario activo de la
       // empresa. Caja puede leer este listado aunque no administre usuarios.
-      api.get(embebido ? '/users/purchase-recommenders' : '/users')
+      api.get('/users/purchase-recommenders')
         .then((r) => setStaff(r.data || []))
         .catch(() => setStaff([]));
-      // Bodegas (con su centro predeterminado) y centros activos. Si el usuario no tiene
-      // permiso para verlas, la venta sigue funcionando sin bodega (como hasta ahora).
-      api.get('/inventory-advanced/warehouses')
-        .then((r) => setWarehouses((r.data || []).filter((w) => w.active !== false)))
-        .catch(() => setWarehouses([]));
-      api.get('/cost-centers', { params: { active: true } })
-        .then((r) => setCostCenters(r.data || []))
-        .catch(() => setCostCenters([]));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -483,6 +477,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       cardPos: '',
       cardLote: '',
       cardVoucher: '',
+      transferRef: '',
       cardDeferredType: 'CORRIENTE',
       cardDeferredMonths: 0,
       creditTerm: 30,
@@ -507,17 +502,6 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   };
 
   /**
-   * Al elegir la BODEGA se PROPONE su centro de costo (solo si aún no hay uno elegido: lo que
-   * el usuario ya escogió no se pisa). La validación real y el rechazo de una diferencia sin
-   * confirmar los hace el backend.
-   */
-  const onPickWarehouse = (warehouseId) => {
-    const wh = warehouses.find((w) => String(w._id) === String(warehouseId));
-    const propuesto = wh?.costCenter?._id || wh?.costCenter || '';
-    setForm((f) => ({ ...f, warehouse: warehouseId, costCenter: f.costCenter || propuesto || '' }));
-  };
-
-  /**
    * Tarjetas ofrecidas para un tipo (débito/crédito). Se filtra por `accountType` cuando la
    * configuración lo distingue; si ninguna tarjeta coincide (p. ej. un único registro
    * "Datafast" que procesa las dos), se muestran todas: el tipo que manda es el que eligió
@@ -525,22 +509,17 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
    */
   const cardsOfType = (type) => {
     if (!type) return payOptions.cards;
-    const match = payOptions.cards.filter((c) => !c.accountType || c.accountType === type);
+    // Datafast procesa débito y crédito con un mismo registro: sale con cualquier tipo.
+    const match = payOptions.cards.filter((c) => !c.accountType || c.accountType === type || /datafast/i.test(`${c.name} ${c.acquirer || ''}`));
     return match.length ? match : payOptions.cards;
   };
   const cardOptions = cardsOfType(form.cardType);
-
-  const nombreCentro = (id) => {
-    const c = costCenters.find((x) => String(x._id) === String(id));
-    return c ? `${c.code} - ${c.name}` : '';
+  // «Datafast», o «Visa crédito (VISA · Medianet)»: sin repetir el adquirente ni la marca «OTRA».
+  const etiquetaTarjeta = (c) => {
+    const extra = [c.brand && c.brand !== 'OTRA' ? c.brand : '', c.acquirer && !String(c.name).toLowerCase().includes(String(c.acquirer).toLowerCase()) ? c.acquirer : '']
+      .filter(Boolean).join(' · ');
+    return extra ? `${c.name} (${extra})` : c.name;
   };
-  // El centro elegido difiere del predeterminado de la bodega: se avisa ANTES de enviar.
-  const centroEsperado = (() => {
-    const wh = warehouses.find((w) => String(w._id) === String(form.warehouse));
-    return wh?.costCenter?._id || wh?.costCenter || '';
-  })();
-  const centroDistinto = !!(form.warehouse && centroEsperado && form.costCenter
-    && String(centroEsperado) !== String(form.costCenter));
 
   // `elegido`: el producto escogido con ENTER en el buscador (se agrega directo, sin
   // esperar a que `currentItem` se actualice). Desde el botón llega el evento: se ignora.
@@ -644,14 +623,52 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const recibidoNum = !splitMode && metodoConRecibido && String(recibido).trim() !== '' ? Number(recibido) : null;
   const recibidoDif = recibidoNum !== null && Number.isFinite(recibidoNum) ? +(recibidoNum - total).toFixed(2) : 0;
 
+  const filaDePago = (method, amount) => ({ method, amount, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', reference: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 });
+  // La fila nueva propone un método que aún no se usa (lo normal: efectivo + tarjeta/transferencia).
+  const otroMetodo = (usados) => ['efectivo', 'tarjeta', 'transferencia'].find((m) => !usados.includes(m)) || 'efectivo';
+  /**
+   * «Agregar otro método de pago»: con UN clic quedan las DOS filas a la vista —la del
+   * método que ya estaba elegido (con el total) y la nueva—. Antes entraba con una sola
+   * fila y había que pulsar «Agregar método» otra vez para ver la segunda.
+   */
   const enableSplit = () => {
-    // Al activar, arranca con lo que haya en el método simple + el restante sugerido.
-    setSplitPayments([{ method: form.paymentMethod || 'efectivo', amount: +total.toFixed(2), bankAccount: form.bankAccount || '', creditCard: form.creditCard || '', cardPos: form.cardPos || '', cardLote: form.cardLote || '', cardVoucher: form.cardVoucher || '', cardDeferredType: form.cardDeferredType || 'CORRIENTE', cardDeferredMonths: form.cardDeferredMonths || 0 }]);
+    const primero = {
+      ...filaDePago(form.paymentMethod || 'efectivo', +total.toFixed(2)),
+      bankAccount: form.bankAccount || '', creditCard: form.creditCard || '', cardType: form.cardType || '',
+      cardPos: form.cardPos || '', cardLote: form.cardLote || '', cardVoucher: form.cardVoucher || '',
+      reference: form.transferRef || '', cardDeferredType: form.cardDeferredType || 'CORRIENTE', cardDeferredMonths: form.cardDeferredMonths || 0,
+    };
+    setSplitPayments([primero, filaDePago(otroMetodo([primero.method]), 0)]);
     setSplitMode(true);
   };
-  const addSplitRow = () => setSplitPayments((rows) => [...rows, { method: 'efectivo', amount: splitRemaining > 0 ? +splitRemaining.toFixed(2) : 0, bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 }]);
+  const addSplitRow = () => setSplitPayments((rows) => [...rows, filaDePago(otroMetodo(rows.map((r) => r.method)), splitRemaining > 0 ? +splitRemaining.toFixed(2) : 0)]);
   const setSplitRow = (i, patch) => setSplitPayments((rows) => rows.map((r, x) => (x === i ? { ...r, ...patch } : r)));
-  const removeSplitRow = (i) => setSplitPayments((rows) => rows.filter((_, x) => x !== i));
+  // Con DOS pagos, lo que se escribe en uno ajusta el otro para que sumen el total.
+  const setSplitAmount = (i, value) => setSplitPayments((rows) => {
+    const next = rows.map((r, x) => (x === i ? { ...r, amount: value } : r));
+    if (next.length === 2) {
+      const otro = 1 - i;
+      next[otro] = { ...next[otro], amount: Math.max(0, +(total - (Number(value) || 0)).toFixed(2)) };
+    }
+    return next;
+  });
+  // Lo que falta se suma al último pago (un clic en vez de hacer la resta a mano).
+  const completarRestante = () => setSplitPayments((rows) => rows.map((r, x) => (
+    x === rows.length - 1 ? { ...r, amount: +((Number(r.amount) || 0) + splitRemaining).toFixed(2) } : r
+  )));
+  // Si al quitar queda un solo pago, se vuelve al modo de un método con sus datos.
+  const removeSplitRow = (i) => {
+    const rest = splitPayments.filter((_, x) => x !== i);
+    if (rest.length > 1) { setSplitPayments(rest); return; }
+    const r = rest[0] || filaDePago(form.paymentMethod || 'efectivo', 0);
+    setForm((f) => ({
+      ...f, paymentMethod: r.method, bankAccount: r.bankAccount || '', creditCard: r.creditCard || '', cardType: r.cardType || '',
+      cardPos: r.cardPos || '', cardLote: r.cardLote || '', cardVoucher: r.cardVoucher || '', transferRef: r.reference || '',
+      cardDeferredType: r.cardDeferredType || 'CORRIENTE', cardDeferredMonths: r.cardDeferredMonths || 0,
+    }));
+    setSplitPayments([]);
+    setSplitMode(false);
+  };
 
   /**
    * Escribe en el buscador de cliente: pregunta al servidor, en paralelo, por los PACIENTES
@@ -1135,6 +1152,12 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (cajaCerrada) {
+      // Puede haberla abierto en otra pestaña con el modal abierto: se vuelve a preguntar.
+      const r = await api.get('/puntos-emision/mio').catch(() => null);
+      if (r?.data) setMiPunto(r.data);
+      if (!r?.data || r.data.cajaAbierta === false) return toast.error(MSG_CAJA_CERRADA, { duration: 7000 });
+    }
     if (form.items.length === 0) return toast.error('Agrega al menos un producto');
     const sinPrecio = form.items.find((i) => i.variablePrice && !(Number(i.unitPrice) > 0));
     if (sinPrecio) return toast.error(`Escribe el precio de «${sinPrecio.productName}»`);
@@ -1193,6 +1216,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         }
         for (const p of rows) {
           if (p.method === 'transferencia' && payOptions.accounts.length && !p.bankAccount) { setSaving(false); return toast.error('Selecciona la cuenta bancaria en el pago por transferencia'); }
+          if (p.method === 'transferencia' && !String(p.reference || '').trim()) { setSaving(false); return toast.error('Ingresa el número de transferencia'); }
           if (p.method === 'tarjeta' && payOptions.cards.length && !p.creditCard) { setSaving(false); return toast.error('Selecciona la tarjeta en el pago con tarjeta'); }
         }
         paymentPayload = {
@@ -1200,6 +1224,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
             method: p.method,
             amount: Number(p.amount) || 0,
             bankAccount: p.method === 'transferencia' ? p.bankAccount || null : null,
+            reference: p.method === 'transferencia' ? String(p.reference || '').trim() : '',
             creditCard: p.method === 'tarjeta' ? p.creditCard || null : null,
             cardType: p.method === 'tarjeta' ? p.cardType || '' : '',
             cardPos: p.method === 'tarjeta' ? p.cardPos || '' : '',
@@ -1215,6 +1240,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           setSaving(false);
           return toast.error('Selecciona la cuenta bancaria de destino');
         }
+        if (form.paymentMethod === 'transferencia' && !String(form.transferRef || '').trim()) {
+          setSaving(false);
+          return toast.error('Ingresa el número de transferencia');
+        }
         if (form.paymentMethod === 'tarjeta' && payOptions.cards.length && !form.creditCard) {
           setSaving(false);
           return toast.error('Selecciona la tarjeta / POS');
@@ -1226,7 +1255,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         if (recibidoNum !== null) {
           if (!Number.isFinite(recibidoNum) || recibidoDif < -0.01) {
             setSaving(false);
-            return toast.error(`Lo recibido no cubre el total ($${total.toFixed(2)}). Corrige el monto o usa «Dividir en varios métodos».`);
+            return toast.error(`Lo recibido no cubre el total ($${total.toFixed(2)}). Corrige el monto o usa «Agregar otro método de pago».`);
           }
           if (recibidoDif > 0.01 && !pacienteVenta) {
             setSaving(false);
@@ -1242,6 +1271,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                   method: form.paymentMethod,
                   amount: +recibidoNum.toFixed(2),
                   bankAccount: form.paymentMethod === 'transferencia' ? form.bankAccount || null : null,
+                  reference: form.paymentMethod === 'transferencia' ? String(form.transferRef || '').trim() : '',
                   creditCard: form.paymentMethod === 'tarjeta' ? form.creditCard || null : null,
                   cardType: form.paymentMethod === 'tarjeta' ? form.cardType || '' : '',
                   cardPos: form.paymentMethod === 'tarjeta' ? form.cardPos || '' : '',
@@ -1253,6 +1283,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
               }
             : {}),
           bankAccount: form.paymentMethod === 'transferencia' ? form.bankAccount || null : null,
+          reference: form.paymentMethod === 'transferencia' ? String(form.transferRef || '').trim() : '',
           creditCard: form.paymentMethod === 'tarjeta' ? form.creditCard || null : null,
           cardType: form.paymentMethod === 'tarjeta' ? form.cardType || '' : '',
           cardPos: form.paymentMethod === 'tarjeta' ? form.cardPos || '' : '',
@@ -1367,6 +1398,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     if (!puedeFacturarAqui) {
       return toast.error('No tienes un punto de emisión asignado en esta sucursal. Pide al administrador que te asigne uno en Configuración SRI.');
     }
+    if (cajaCerrada) return toast.error(MSG_CAJA_CERRADA, { duration: 7000 });
     const conSerie = serieTexto ? ` con la serie ${serieTexto}` : '';
     if (!window.confirm(`¿Emitir factura electrónica para la venta ${sale.saleNumber}${conSerie}?`)) return;
     emitirFactura(sale);
@@ -1802,63 +1834,24 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
               </div>
               <div>
                 <label className="lbl">{embebido ? 'Compra recomendada por' : 'Recomendado por (comisión)'}</label>
-                <select
+                <SearchableSelect
+                  options={soloUsuariosActivos(staff, form.recommendedBy)}
                   value={form.recommendedBy || ''}
-                  onChange={(e) => setForm({ ...form, recommendedBy: e.target.value })}
-                  className="input"
-                >
-                  <option value="">— Nadie / No aplica —</option>
-                  {soloUsuariosActivos(staff, form.recommendedBy).map((u) => (
-                    <option key={u._id} value={u._id}>{u.name}{embebido && u.role ? ` · ${ROLE_LABELS[u.role] || u.role}` : ''}</option>
-                  ))}
-                </select>
-                {embebido && <p className="text-[11px] text-slate-500 mt-1">Doctor o enfermero que recomendó el producto; quien registra el cobro queda identificado por separado.</p>}
+                  onChange={(v) => setForm((f) => ({ ...f, recommendedBy: v || '' }))}
+                  getLabel={(u) => `${u.name}${u.role ? ` · ${ROLE_LABELS[u.role] || u.role}` : ''}`}
+                  getSearchText={(u) => `${u.name || ''} ${ROLE_LABELS[u.role] || u.role || ''}`}
+                  placeholder="— Nadie / No aplica —"
+                  searchPlaceholder="Buscar usuario por nombre o cargo…"
+                  allowClear
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  {embebido
+                    ? 'Usuario que recomendó la compra; quien registra el cobro queda identificado por separado.'
+                    : 'Usuario al que se atribuye la venta para su comisión.'}
+                </p>
               </div>
             </div>
             </FormSection>
-
-            {/* Bodega y centro de costo. La bodega decide de qué capas FIFO sale la mercadería
-                (y por tanto el costo de venta) y PROPONE el centro. Una venta de solo servicios
-                no necesita bodega: entonces no hay centro de bodega que proponer. */}
-            {warehouses.length > 0 && (
-              <FormSection
-                title="Bodega y centro de costo"
-                subtitle="La bodega decide de qué existencias sale la mercadería (y con ello el costo de venta) y propone el centro."
-                icon={HiOutlineBuildingStorefront}
-              >
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="lbl">Bodega (de dónde sale la mercadería)</label>
-                    <select value={form.warehouse || ''} onChange={(e) => onPickWarehouse(e.target.value)} className="input">
-                      <option value="">— Sin bodega (stock general) —</option>
-                      {warehouses.map((w) => (
-                        <option key={w._id} value={w._id}>{w.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="lbl">Centro de costo</label>
-                    <select value={form.costCenter || ''} onChange={(e) => setForm({ ...form, costCenter: e.target.value })} className="input">
-                      <option value="">— Sin centro —</option>
-                      {costCenters.map((c) => (
-                        <option key={c._id} value={c._id}>{c.code} - {c.name}</option>
-                      ))}
-                    </select>
-                    {form.warehouse && centroEsperado && !centroDistinto && form.costCenter && (
-                      <p className="text-xs text-slate-500 mt-1">Propuesto por la bodega. Puedes cambiarlo.</p>
-                    )}
-                  </div>
-                  {centroDistinto && (
-                    <div className="sm:col-span-2 bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
-                      <b>Centro distinto al de la bodega.</b> La bodega{' '}
-                      <b>{warehouses.find((w) => String(w._id) === String(form.warehouse))?.name}</b> espera{' '}
-                      <b>{nombreCentro(centroEsperado) || '(sin centro)'}</b> y la venta se registrará con{' '}
-                      <b>{nombreCentro(form.costCenter)}</b>. Al guardar se te pedirá confirmarlo y quedará auditado.
-                    </div>
-                  )}
-                </div>
-              </FormSection>
-            )}
 
             <FormSection title="Producto / servicio" icon={HiOutlineShoppingCart}>
             {/* Agregar productos: el buscador manda (es lo que hay que leer para elegir bien) y
@@ -2160,14 +2153,20 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                     <label className="lbl">Forma de pago</label>
                     <select
                       value={form.paymentMethod}
-                      onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })}
+                      onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', transferRef: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })}
                       className="input"
                     >
                       {Object.entries(metodosDePago).map(([k, v]) => (
                         <option key={k} value={k}>{v}</option>
                       ))}
                     </select>
-                    <button type="button" onClick={enableSplit} className="mt-1 text-xs text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0">Dividir en varios métodos</button>
+                    <button
+                      type="button"
+                      onClick={enableSplit}
+                      className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-emerald-700 bg-white border border-dashed border-emerald-300 rounded-lg px-2.5 py-1.5 cursor-pointer hover:bg-emerald-50"
+                    >
+                      <HiOutlinePlus className="w-3.5 h-3.5" /> Agregar otro método de pago
+                    </button>
                   </div>
                 )}
                 {/* RECIBIDO DEL PACIENTE (oct-2026): lo que entrega. Si es más que
@@ -2215,19 +2214,30 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                   </div>
                 )}
                 {!splitMode && form.paymentMethod === 'transferencia' && (
-                  <div className="sm:col-span-2">
-                    <label className="lbl">Cuenta bancaria de destino</label>
-                    <select
-                      value={form.bankAccount || ''}
-                      onChange={(e) => setForm({ ...form, bankAccount: e.target.value })}
-                      className="input"
-                    >
-                      <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas configuradas'}</option>
-                      {payOptions.accounts.map((a) => (
-                        <option key={a._id} value={a._id}>{a.name} — {a.bank} ({a.accountNumber})</option>
-                      ))}
-                    </select>
-                  </div>
+                  <>
+                    <div>
+                      <label className="lbl">Cuenta bancaria de destino</label>
+                      <select
+                        value={form.bankAccount || ''}
+                        onChange={(e) => setForm({ ...form, bankAccount: e.target.value })}
+                        className="input"
+                      >
+                        <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas configuradas'}</option>
+                        {payOptions.accounts.map((a) => (
+                          <option key={a._id} value={a._id}>{a.name} — {a.bank} ({a.accountNumber})</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="lbl">Número de transferencia *</label>
+                      <input
+                        value={form.transferRef || ''}
+                        onChange={(e) => setForm({ ...form, transferRef: e.target.value })}
+                        placeholder="N° de comprobante del banco"
+                        className="input"
+                      />
+                    </div>
+                  </>
                 )}
                 {!splitMode && form.paymentMethod === 'tarjeta' && (
                   <>
@@ -2253,7 +2263,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                       >
                         <option value="">{cardOptions.length ? 'Seleccionar tarjeta…' : 'No hay tarjetas configuradas'}</option>
                         {cardOptions.map((c) => (
-                          <option key={c._id} value={c._id}>{c.name} ({c.brand}{c.acquirer ? ` · ${c.acquirer}` : ''})</option>
+                          <option key={c._id} value={c._id}>{etiquetaTarjeta(c)}</option>
                         ))}
                       </select>
                     </div>
@@ -2343,31 +2353,41 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                   </>
                 )}
                 {splitMode && (
-                  <div className="sm:col-span-3 rounded-xl border border-slate-200 p-3 space-y-2 bg-slate-50/40">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-semibold text-slate-700">Pago dividido (varios métodos)</span>
-                      <button type="button" onClick={() => { setSplitMode(false); setSplitPayments([]); }} className="text-xs text-slate-500 hover:text-slate-700 bg-transparent border-none cursor-pointer">Volver a un solo método</button>
+                  <div className="sm:col-span-3 rounded-xl border border-emerald-200 p-3 space-y-2 bg-emerald-50/30">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-700">Pago con {splitPayments.length} métodos</p>
+                        <p className="text-[11px] text-slate-500">Indica cuánto paga con cada método. Los montos deben sumar el total de ${total.toFixed(2)}.</p>
+                      </div>
+                      <button type="button" onClick={() => { setSplitMode(false); setSplitPayments([]); }} className="text-xs text-slate-500 hover:text-slate-700 bg-transparent border-none cursor-pointer whitespace-nowrap">Usar un solo método</button>
                     </div>
                     {splitPayments.map((p, i) => (
-                      <div key={i} className="flex flex-wrap items-end gap-2 bg-white rounded-lg border border-slate-100 p-2">
+                      <div key={i} className="flex flex-wrap items-end gap-2 bg-white rounded-lg border border-slate-200 p-2">
+                        <span className="self-center shrink-0 w-6 h-6 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center justify-center" title={`Pago ${i + 1}`}>{i + 1}</span>
                         <div className="w-36">
                           <label className="lbl">Método</label>
-                          <select value={p.method} onChange={(e) => setSplitRow(i, { method: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })} className="input">
+                          <select value={p.method} onChange={(e) => setSplitRow(i, { method: e.target.value, bankAccount: '', reference: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })} className="input">
                             {Object.entries(metodosDePago).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                           </select>
                         </div>
                         <div className="w-28">
                           <label className="lbl">Monto</label>
-                          <NumericInput step="0.01" value={p.amount} onChange={(e) => setSplitRow(i, { amount: e.target.value })} className="input" />
+                          <NumericInput step="0.01" value={p.amount} onChange={(e) => setSplitAmount(i, e.target.value)} className="input" />
                         </div>
                         {p.method === 'transferencia' && (
-                          <div className="flex-1 min-w-[180px]">
-                            <label className="lbl">Cuenta bancaria</label>
-                            <select value={p.bankAccount || ''} onChange={(e) => setSplitRow(i, { bankAccount: e.target.value })} className="input">
-                              <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas'}</option>
-                              {payOptions.accounts.map((a) => <option key={a._id} value={a._id}>{a.name} — {a.bank}</option>)}
-                            </select>
-                          </div>
+                          <>
+                            <div className="flex-1 min-w-[180px]">
+                              <label className="lbl">Cuenta bancaria</label>
+                              <select value={p.bankAccount || ''} onChange={(e) => setSplitRow(i, { bankAccount: e.target.value })} className="input">
+                                <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas'}</option>
+                                {payOptions.accounts.map((a) => <option key={a._id} value={a._id}>{a.name} — {a.bank}</option>)}
+                              </select>
+                            </div>
+                            <div className="w-40">
+                              <label className="lbl">N° transferencia *</label>
+                              <input value={p.reference || ''} onChange={(e) => setSplitRow(i, { reference: e.target.value })} placeholder="Comprobante" className="input" />
+                            </div>
+                          </>
                         )}
                         {p.method === 'tarjeta' && (
                           <>
@@ -2382,7 +2402,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                               <label className="lbl">Tarjeta</label>
                               <select value={p.creditCard || ''} onChange={(e) => setSplitRow(i, { creditCard: e.target.value })} className="input">
                                 <option value="">{cardsOfType(p.cardType).length ? 'Seleccionar…' : 'No hay tarjetas'}</option>
-                                {cardsOfType(p.cardType).map((c) => <option key={c._id} value={c._id}>{c.name} ({c.brand})</option>)}
+                                {cardsOfType(p.cardType).map((c) => <option key={c._id} value={c._id}>{etiquetaTarjeta(c)}</option>)}
                               </select>
                             </div>
                             <div className="w-24">
@@ -2416,8 +2436,26 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                         <button type="button" onClick={() => removeSplitRow(i)} className="text-rose-500 hover:text-rose-600 pb-2 bg-transparent border-none cursor-pointer" title="Quitar método"><HiOutlineTrash className="w-4 h-4" /></button>
                       </div>
                     ))}
+                    <button
+                      type="button"
+                      onClick={addSplitRow}
+                      className="w-full flex items-center justify-center gap-1 text-sm font-medium text-emerald-700 bg-white border border-dashed border-emerald-300 rounded-lg py-2 cursor-pointer hover:bg-emerald-50"
+                    >
+                      <HiOutlinePlus className="w-4 h-4" /> Agregar otro método de pago
+                    </button>
+                    {/* Barra de lo pagado vs el total */}
+                    <div className="h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                      <div
+                        className={`h-full transition-all ${splitRemaining > 0.01 ? 'bg-amber-500' : splitRemaining < -0.01 ? 'bg-sky-500' : 'bg-emerald-500'}`}
+                        style={{ width: `${total > 0 ? Math.min(100, (splitPaid / total) * 100) : 0}%` }}
+                      />
+                    </div>
                     <div className="flex items-center justify-between flex-wrap gap-2">
-                      <button type="button" onClick={addSplitRow} className="text-emerald-600 text-sm flex items-center gap-1 bg-transparent border-none cursor-pointer"><HiOutlinePlus className="w-4 h-4" /> Agregar método</button>
+                      {splitRemaining > 0.01 ? (
+                        <button type="button" onClick={completarRestante} className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1 cursor-pointer hover:bg-amber-100">
+                          Sumar lo que falta (${splitRemaining.toFixed(2)}) al pago {splitPayments.length}
+                        </button>
+                      ) : <span />}
                       <div className="text-sm text-slate-600">
                         Pagado: <b className="font-mono">${splitPaid.toFixed(2)}</b> / Total: <b className="font-mono">${total.toFixed(2)}</b>
                         {splitRemaining > 0.01
@@ -2457,7 +2495,15 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
               </div>
             </FormSection>
 
-            {canInvoice && (miPunto.usaPuntos || miPunto.punto) && (
+            {cajaCerrada && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                <span><b>Tu caja está cerrada.</b> No puedes facturar hasta tener la caja abierta.</span>
+                <a href="/cash-register" target="_blank" rel="noreferrer" className="text-xs font-semibold text-rose-700 underline">
+                  Abrir caja
+                </a>
+              </div>
+            )}
+            {canInvoice && (miPunto.usaPuntos || miPunto.punto) && !cajaCerrada && (
               puedeFacturarAqui ? (
                 <label className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50/50 px-4 py-3 text-sm text-slate-700 cursor-pointer">
                   <input

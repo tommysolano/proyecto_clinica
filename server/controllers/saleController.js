@@ -16,7 +16,7 @@ const { descuentoAlCobrar } = require('../utils/productDiscount');
 const { assertNotPastDocumentDate } = require('../utils/fiscalDocumentDate');
 const { invoiceDate } = require('../utils/dates');
 const { emitToClinic } = require('../realtime');
-const { puntoDelUsuario } = require('../services/puntoEmision');
+const { puntoDelUsuario, assertCajaAbiertaParaFacturar } = require('../services/puntoEmision');
 const { scopedDocuments } = require('../services/scopedDocuments');
 
 /**
@@ -265,6 +265,12 @@ exports.createSale = async (req, res) => {
       const saleWarnings = [];
       // Caja (punto de venta) de quien registra: su cierre de caja cuenta esta venta.
       const puntoVenta = await puntoDelUsuario(req.clinicId, req.user._id);
+      // Quien factura electrónicamente (tiene punto) no cobra con la caja cerrada.
+      try {
+        await assertCajaAbiertaParaFacturar(req.clinicId, req.user._id, puntoVenta);
+      } catch (e) {
+        return res.status(e.status || 409).json({ message: e.message, code: e.code });
+      }
       const txSaleId = await runInTransaction(async (session) => {
         saleWarnings.length = 0; // idempotente ante reintentos de la transacción
         const saleDate = req.body.date ? new Date(req.body.date) : new Date();
@@ -484,6 +490,7 @@ exports.createSale = async (req, res) => {
               method: paymentMethod || 'efectivo',
               amount: txTotals.total,
               bankAccount: req.body.bankAccount || null,
+              reference: req.body.reference || '',
               creditCard: req.body.creditCard || null,
               cardType: req.body.cardType || '',
               cardPos: req.body.cardPos || '',

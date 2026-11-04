@@ -6,8 +6,27 @@ const Sale = require('../models/Sale');
 const { createEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { puntoRequerido, puntoDelUsuario, sucursalUsaPuntos } = require('../services/puntoEmision');
+const { clinicsOfCompanySync } = require('../utils/companies');
 
 const oid = (v) => new mongoose.Types.ObjectId(v);
+
+const esAdmin = (req) => !!req.user.isSuperAdmin || req.role === 'admin';
+
+/**
+ * Sucursales cuyas cajas puede consultar el usuario. Admin y super administrador ven las de
+ * TODAS las sucursales de la empresa activa donde son admin (el super admin, todas); el resto,
+ * solo la sucursal en la que está.
+ */
+const clinicasVisibles = (req) => {
+  const actual = String(req.clinicId);
+  if (!esAdmin(req)) return [actual];
+  const todas = clinicsOfCompanySync(req.companyId).map(String);
+  const propias = req.user.isSuperAdmin ? todas : todas.filter((c) => req.user.getRoleForClinic(c) === 'admin');
+  return propias.includes(actual) ? propias : [actual, ...propias];
+};
+
+/** Fecha 'YYYY-MM-DD' a la hora local indicada (el servidor corre en America/Guayaquil). */
+const localDate = (ymd, time) => new Date(`${String(ymd).slice(0, 10)}T${time}`);
 
 /** Neto de movimientos de caja (ingresos - egresos) de una sesión abierta. */
 const cashMovementsNet = async (clinicId, cashSessionId) => {
@@ -174,26 +193,242 @@ exports.summary = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
+/** Sucursales que el usuario puede elegir en el filtro del historial de cajas. */
+exports.branches = async (req, res) => {
+  try {
+    const Clinic = require('../models/Clinic');
+    const ids = clinicasVisibles(req);
+    const clinics = await Clinic.find({ _id: { $in: ids } }).select('name').sort({ name: 1 }).lean();
+    res.json({ clinics, current: String(req.clinicId), canSeeAll: esAdmin(req) });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
 exports.list = async (req, res) => {
-  const filter = { clinic: req.clinicId };
-  if (req.query.status) filter.status = req.query.status;
-  if (req.query.puntoEmision) filter.puntoEmision = req.query.puntoEmision;
-  // Cada cajero maneja SU caja: solo ve sus propias sesiones. Admin/contabilidad ven todas.
-  if (req.role === 'cajero' && !req.user.isSuperAdmin) {
-    filter.$or = [{ openedBy: req.user._id }, { closedBy: req.user._id }];
+  try {
+    // ?clinic=all → todas las sucursales visibles; ?clinic=<id> → esa (si es visible).
+    const visibles = clinicasVisibles(req);
+    let clinics = [String(req.clinicId)];
+    if (req.query.clinic === 'all') clinics = visibles;
+    else if (req.query.clinic && visibles.includes(String(req.query.clinic))) clinics = [String(req.query.clinic)];
+    const filter = { clinic: { $in: clinics } };
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.puntoEmision) filter.puntoEmision = req.query.puntoEmision;
+    // Cada cajero maneja SU caja: solo ve sus propias sesiones. Admin/contabilidad ven todas.
+    if (req.role === 'cajero' && !req.user.isSuperAdmin) {
+      filter.$or = [{ openedBy: req.user._id }, { closedBy: req.user._id }];
+    }
+    if (req.query.startDate || req.query.endDate) {
+      filter.date = {};
+      if (req.query.startDate) filter.date.$gte = localDate(req.query.startDate, '00:00:00');
+      if (req.query.endDate) filter.date.$lte = localDate(req.query.endDate, '23:59:59.999');
+    }
+    const items = await CashClosing.find(filter)
+      .populate('closedBy', 'name')
+      .populate('openedBy', 'name')
+      .populate('puntoEmision', PUNTO_FIELDS)
+      .populate('clinic', 'name')
+      .sort({ date: -1 })
+      .limit(500);
+    res.json(items);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+const r2 = (n) => +Number(n || 0).toFixed(2);
+const horaEc = (d) => Number(new Date(d).toLocaleString('en-US', { hour: '2-digit', hour12: false, timeZone: 'America/Guayaquil' })) % 24;
+const TIPO_ITEM = { servicio: 'servicio', programa: 'programa' };
+
+/** Ventana de una caja: de la apertura al cierre (o a ahora si sigue abierta). Los cierres
+ *  antiguos de un solo paso no tienen apertura: cuadraban el día completo. */
+const ventanaDeCaja = (closing) => {
+  if (closing.openedAt) {
+    return { start: new Date(closing.openedAt), end: closing.closedAt ? new Date(closing.closedAt) : new Date() };
   }
-  if (req.query.startDate || req.query.endDate) {
-    filter.date = {};
-    if (req.query.startDate) filter.date.$gte = new Date(req.query.startDate);
-    if (req.query.endDate) filter.date.$lte = new Date(req.query.endDate + 'T23:59:59.999');
-  }
-  const items = await CashClosing.find(filter)
-    .populate('closedBy', 'name')
-    .populate('openedBy', 'name')
-    .populate('puntoEmision', PUNTO_FIELDS)
-    .sort({ date: -1 })
-    .limit(200);
-  res.json(items);
+  return dayRange(closing.date);
+};
+
+/**
+ * Detalle completo de una o VARIAS sesiones de caja: cada venta registrada en ellas (con su
+ * factura), lo vendido por servicio/producto, los cobros por método, por hora, por quién vendió,
+ * por doctor, por sucursal y por caja, y los movimientos de caja. Cada caja toma la misma
+ * ventana y el mismo punto que su cuadre.
+ *
+ * `?add=id1,id2` suma otras cajas a la de la URL (solo super administrador): así se ve cuánto
+ * se hizo en un día por sucursal. Una venta que caiga en dos cajas a la vez (p. ej. un cierre
+ * antiguo de día completo y una caja por punto) se cuenta una sola vez.
+ */
+exports.detail = async (req, res) => {
+  try {
+    const extra = req.user.isSuperAdmin && req.query.add
+      ? String(req.query.add).split(',').map((s) => s.trim()).filter((s) => mongoose.isValidObjectId(s))
+      : [];
+    const ids = [...new Set([String(req.params.id), ...extra])];
+    const found = await CashClosing.find({ _id: { $in: ids }, clinic: { $in: clinicasVisibles(req) } })
+      .populate('closedBy', 'name')
+      .populate('openedBy', 'name')
+      .populate('puntoEmision', PUNTO_FIELDS)
+      .populate('clinic', 'name')
+      .lean();
+    const closing = found.find((c) => String(c._id) === String(req.params.id));
+    if (!closing) return res.status(404).json({ message: 'Caja no encontrada' });
+    const mine = [closing.openedBy?._id, closing.closedBy?._id].some((u) => u && String(u) === String(req.user._id));
+    if (req.role === 'cajero' && !req.user.isSuperAdmin && !mine) {
+      return res.status(403).json({ message: 'Solo puedes ver tus propias cajas' });
+    }
+    // La de la URL primero; las sumadas, por fecha.
+    const closings = [closing, ...found.filter((c) => c !== closing).sort((a, b) => new Date(a.date) - new Date(b.date))];
+
+    const vistas = new Set();
+    const sales = [];
+    let start = null; let end = null;
+    for (const c of closings) {
+      const w = ventanaDeCaja(c);
+      if (!start || w.start < start) start = w.start;
+      if (!end || w.end > end) end = w.end;
+      const match = { clinic: c.clinic?._id || c.clinic, createdAt: { $gte: w.start, $lte: w.end } };
+      if (c.puntoEmision?._id) match.puntoEmision = c.puntoEmision._id;
+      const rows = await Sale.find(match)
+        .select('saleNumber clientName clientCedula patient items subtotal discountTotal taxAmount total paymentMethod payments status invoice createdAt createdBy cashier doctor recommendedBy discountReason')
+        .populate('invoice', 'estab ptoEmi secuencial estado')
+        .populate('createdBy', 'name')
+        .populate('doctor', 'name')
+        .populate('recommendedBy', 'name')
+        .lean();
+      for (const s of rows) {
+        if (vistas.has(String(s._id))) continue;
+        vistas.add(String(s._id));
+        sales.push({ ...s, _closing: c });
+      }
+    }
+    sales.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+
+    const ok = sales.filter((s) => s.status !== 'anulada');
+    const anuladas = sales.filter((s) => s.status === 'anulada');
+
+    const totals = { count: ok.length, subtotal: 0, discount: 0, tax: 0, total: 0, invoiced: 0, invoicedTotal: 0, voidedCount: anuladas.length, voidedTotal: 0 };
+    const byMethod = {};
+    const items = new Map();
+    const byType = { servicio: { qty: 0, total: 0 }, programa: { qty: 0, total: 0 }, producto: { qty: 0, total: 0 } };
+    const byHour = new Map();
+    const bySeller = new Map();
+    const byDoctor = new Map();
+    const sumar = (map, key, label, total) => {
+      const row = map.get(key) || { name: label, count: 0, total: 0 };
+      row.count += 1; row.total += total;
+      map.set(key, row);
+    };
+    const pagosDe = (s) => (s.payments?.length ? s.payments : [{ method: s.paymentMethod, amount: s.total }]);
+
+    // Por sucursal y por caja: lo vendido y cómo se cobró.
+    const fila = (name) => ({ name, count: 0, total: 0, efectivo: 0, tarjeta: 0, transferencia: 0, otros: 0 });
+    const byClinic = new Map();
+    const porCaja = new Map(closings.map((c) => [String(c._id), fila('')]));
+    const sumarCobro = (row, s) => {
+      row.count += 1; row.total += s.total || 0;
+      for (const p of pagosDe(s)) {
+        const k = ['efectivo', 'tarjeta', 'transferencia'].includes(p.method) ? p.method : 'otros';
+        row[k] += p.amount || 0;
+      }
+    };
+
+    for (const s of ok) {
+      totals.subtotal += s.subtotal || 0;
+      totals.discount += s.discountTotal || 0;
+      totals.tax += s.taxAmount || 0;
+      totals.total += s.total || 0;
+      if (s.invoice?.estado === 'AUTORIZADO') { totals.invoiced += 1; totals.invoicedTotal += s.total || 0; }
+
+      for (const p of pagosDe(s)) byMethod[p.method || 'otro'] = (byMethod[p.method || 'otro'] || 0) + (p.amount || 0);
+
+      for (const it of s.items || []) {
+        const tipo = TIPO_ITEM[it.category] || 'producto';
+        const lineTotal = it.lineTotal || ((it.unitPrice || 0) * (it.quantity || 0) - (it.discount || 0));
+        const key = String(it.product || it.productName);
+        const row = items.get(key) || { product: it.product, code: it.productCode || '', name: it.productName || '—', type: tipo, qty: 0, total: 0, discount: 0, sales: 0 };
+        row.qty += it.quantity || 0;
+        row.total += lineTotal;
+        row.discount += it.discount || 0;
+        row.sales += 1;
+        items.set(key, row);
+        byType[tipo].qty += it.quantity || 0;
+        byType[tipo].total += lineTotal;
+      }
+
+      const h = horaEc(s.createdAt);
+      const hr = byHour.get(h) || { hour: h, count: 0, total: 0 };
+      hr.count += 1; hr.total += s.total || 0;
+      byHour.set(h, hr);
+      sumar(bySeller, String(s.createdBy?._id || 'x'), s.createdBy?.name || 'Sin registrar', s.total || 0);
+      if (s.doctor) sumar(byDoctor, String(s.doctor._id), s.doctor.name, s.total || 0);
+
+      const clinicKey = String(s._closing.clinic?._id || s._closing.clinic);
+      if (!byClinic.has(clinicKey)) byClinic.set(clinicKey, fila(s._closing.clinic?.name || 'Sucursal'));
+      sumarCobro(byClinic.get(clinicKey), s);
+      sumarCobro(porCaja.get(String(s._closing._id)), s);
+    }
+    for (const s of anuladas) totals.voidedTotal += s.total || 0;
+
+    const redondear = (rows) => rows.map((r) => {
+      const out = { ...r };
+      for (const k of ['total', 'discount', 'efectivo', 'tarjeta', 'transferencia', 'otros']) if (out[k] != null) out[k] = r2(out[k]);
+      return out;
+    });
+    const movements = await CashMovement.find({ cashSession: { $in: closings.map((c) => c._id) } })
+      .sort({ date: 1 })
+      .populate('counterpartAccount', 'code name')
+      .populate('createdBy', 'name')
+      .lean();
+
+    res.json({
+      closing,
+      closings: closings.map((c) => ({
+        _id: c._id,
+        date: c.date,
+        status: c.status,
+        clinic: c.clinic?.name || '',
+        punto: c.puntoEmision ? `${c.puntoEmision.establecimiento}-${c.puntoEmision.codigo}` : '',
+        openedBy: c.openedBy?.name || '',
+        closedBy: c.closedBy?.name || '',
+        openedAt: c.openedAt || null,
+        closedAt: c.closedAt || null,
+        openingBalance: c.openingBalance || 0,
+        expectedCash: c.expectedCash || 0,
+        countedCash: c.countedCash || 0,
+        difference: c.difference || 0,
+        sales: redondear([porCaja.get(String(c._id))])[0],
+      })),
+      range: { start, end },
+      totals: Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, k.endsWith('Count') || k === 'count' || k === 'invoiced' ? v : r2(v)])),
+      averageTicket: ok.length ? r2(totals.total / ok.length) : 0,
+      byMethod: Object.entries(byMethod).map(([method, total]) => ({ method, total: r2(total) })).sort((a, b) => b.total - a.total),
+      byType: Object.entries(byType).map(([type, v]) => ({ type, qty: v.qty, total: r2(v.total) })),
+      items: redondear([...items.values()]).sort((a, b) => b.total - a.total),
+      byHour: redondear([...byHour.values()]).sort((a, b) => a.hour - b.hour),
+      bySeller: redondear([...bySeller.values()]).sort((a, b) => b.total - a.total),
+      byDoctor: redondear([...byDoctor.values()]).sort((a, b) => b.total - a.total),
+      byClinic: redondear([...byClinic.values()]).sort((a, b) => b.total - a.total),
+      sales: sales.map((s) => ({
+        _id: s._id,
+        saleNumber: s.saleNumber,
+        createdAt: s.createdAt,
+        clinic: s._closing.clinic?.name || '',
+        clientName: s.clientName,
+        clientCedula: s.clientCedula,
+        status: s.status,
+        subtotal: s.subtotal,
+        discount: s.discountTotal || 0,
+        tax: s.taxAmount,
+        total: s.total,
+        payments: s.payments?.length ? s.payments.map((p) => ({ method: p.method, amount: p.amount, reference: p.method === 'transferencia' ? p.reference || '' : '' })) : [{ method: s.paymentMethod, amount: s.total }],
+        invoice: s.invoice ? { _id: s.invoice._id, number: `${s.invoice.estab}-${s.invoice.ptoEmi}-${s.invoice.secuencial}`, estado: s.invoice.estado } : null,
+        seller: s.createdBy?.name || '',
+        doctor: s.doctor?.name || '',
+        recommendedBy: s.recommendedBy?.name || '',
+        discountReason: s.discountReason || '',
+        items: (s.items || []).map((it) => ({ name: it.productName, type: TIPO_ITEM[it.category] || 'producto', qty: it.quantity, unitPrice: it.unitPrice, discount: it.discount || 0, total: it.lineTotal })),
+      })),
+      movements,
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
 /**

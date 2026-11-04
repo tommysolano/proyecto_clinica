@@ -122,6 +122,9 @@ test('la agenda dice qué citas ya están cobradas (solo a quien cobra)', async 
   assert.ok(fila.cobro, 'la cita trae su cobro');
   assert.equal(fila.cobro.total, Number(venta(v).total));
   assert.equal(fila.cobro.ventas.length, 1);
+  // «Cobrado por»: quien registró y facturó la venta.
+  assert.deepEqual(fila.cobro.cobradoPor, [conPermiso.name]);
+  assert.equal(fila.cobro.ventas[0].cobradoPor, conPermiso.name);
 
   // A un doctor no se le manda.
   const doctor = await User.create({ name: 'Doc', email: 'doc@t.com', password: 'secreto123', clinics: [{ clinic: clinicId, role: 'doctor' }] });
