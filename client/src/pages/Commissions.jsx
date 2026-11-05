@@ -118,7 +118,7 @@ export default function Commissions() {
   const [loadingNuevos, setLoadingNuevos] = useState(false);
   const [loading, setLoading] = useState(false);
   const [commissionEditor, setCommissionEditor] = useState(null);
-  const [commissionForm, setCommissionForm] = useState({ amountType: 'fixed', value: '', firstTimeOnly: false, timeBands: [] });
+  const [commissionForm, setCommissionForm] = useState({ amountType: 'fixed', value: '', firstTimeOnly: false, minStartTime: '', timeBands: [] });
   const [savingCommission, setSavingCommission] = useState(false);
   const [adjustEditor, setAdjustEditor] = useState(null);
   const [adjustForm, setAdjustForm] = useState({ amount: '', note: '' });
@@ -278,6 +278,7 @@ export default function Commissions() {
       amountType: !current?.mixed && current?.amountType ? current.amountType : 'fixed',
       value: !current?.mixed && current?.value != null ? String(current.value) : '',
       firstTimeOnly: !!current?.firstTimeOnly,
+      minStartTime: !current?.mixed ? current?.minStartTime || '' : '',
       timeBands: !current?.mixed
         ? (current?.timeBands || []).map((b) => ({ ...b, value: String(b.value) }))
         : [],
@@ -333,6 +334,7 @@ export default function Commissions() {
         amountType: commissionForm.amountType,
         value,
         timeBands,
+        ...(commissionEditor.scope !== 'referral' ? { minStartTime: commissionForm.minStartTime || '' } : {}),
         ...(commissionEditor.scope === 'service' ? { firstTimeOnly: commissionForm.firstTimeOnly } : {}),
       });
       toast.success('Comisión guardada');
@@ -368,9 +370,11 @@ export default function Commissions() {
       ? `${Number(commission.value).toFixed(2)}%`
       : money(commission.value);
     const primera = commission.firstTimeOnly ? ' · solo 1ª vez' : '';
+    const desde = commission.minStartTime ? ` · desde ${commission.minStartTime}` : '';
     const n = commission.timeBands?.length || 0;
     const horarios = n ? ` · ${n} horario${n > 1 ? 's' : ''}` : '';
-    return `${label}${horarios}${primera}${commission.partial ? ' (parcial)' : ''} · ${ganado}`;
+    const antes = commission.beforeTime ? ` · ${commission.beforeTime} antes de hora (sin comisión)` : '';
+    return `${label}${desde}${horarios}${primera}${commission.partial ? ' (parcial)' : ''} · ${ganado}${antes}`;
   };
 
   // ─── Ajustes ───
@@ -1363,6 +1367,35 @@ export default function Commissions() {
                 </>
               )}
             </div>
+
+            {/* GANA DESDE: atendido antes de esta hora, no gana comisión. */}
+            {commissionEditor.scope !== 'referral' && (
+              <div className="rounded-xl border border-slate-200 px-3 py-2.5 space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="font-semibold text-slate-700">Gana desde las</span>
+                  <input
+                    type="time"
+                    value={commissionForm.minStartTime}
+                    onChange={(e) => setCommissionForm({ ...commissionForm, minStartTime: e.target.value })}
+                    className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                  />
+                  {commissionForm.minStartTime && (
+                    <button
+                      type="button"
+                      onClick={() => setCommissionForm({ ...commissionForm, minStartTime: '' })}
+                      className="text-xs text-slate-500 hover:text-slate-700 bg-transparent border-none cursor-pointer"
+                    >
+                      Quitar
+                    </button>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  {commissionForm.minStartTime
+                    ? `Si atiende a un paciente antes de las ${commissionForm.minStartTime}, no gana esta comisión. Cuenta la hora en que el ${T.persona} empezó a atender (si no consta, la hora de la cita).`
+                    : 'Opcional. Sin hora, gana a cualquier hora del día.'}
+                </p>
+              </div>
+            )}
 
             {commissionEditor.scope === 'service' && (
               <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5">

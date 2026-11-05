@@ -1,4 +1,5 @@
 const ExcelJS = require('exceljs');
+const { valorDeCita } = require('../utils/valorFacturado');
 
 /**
  * EL EXCEL DE LA AGENDA.
@@ -291,7 +292,7 @@ function hojaDeCitas(wb, citas, meta, opciones) {
       atiende: quienAtiende(a, opciones),
       estado: estado.texto,
       motivo: a.reason || '',
-      valor: a.isCanje || a.isCortesia ? 0 : Number(a.agreedValue ?? 0),
+      valor: Number(valorDeCita(a) ?? 0),
       canje: a.isCanje ? 'Sí' : '',
       cortesia: a.isCortesia ? 'Sí' : '',
       abonado: Number(a.advanceAmount || 0),
@@ -342,7 +343,7 @@ function hojaDeCitas(wb, citas, meta, opciones) {
   // Totales. Con borde grueso arriba: cierra la tabla y no se confunde con otra cita.
   const totales = ws.addRow({
     paciente: `${citas.length} ${citas.length === 1 ? 'cita' : 'citas'}`,
-    valor: citas.reduce((s, a) => s + (a.isCanje || a.isCortesia ? 0 : Number(a.agreedValue ?? 0)), 0),
+    valor: citas.reduce((s, a) => s + (Number(valorDeCita(a) ?? 0)), 0),
     abonado: citas.reduce((s, a) => s + Number(a.advanceAmount || 0), 0),
   });
   totales.eachCell({ includeEmpty: true }, (celda, col) => {
@@ -508,7 +509,7 @@ function hojaDeResumen(wb, citas, meta, opciones) {
     { numFmt: { 2: '0.0%' } }
   );
 
-  const valor = citas.reduce((s, a) => s + (a.isCanje || a.isCortesia ? 0 : Number(a.agreedValue ?? 0)), 0);
+  const valor = citas.reduce((s, a) => s + (Number(valorDeCita(a) ?? 0)), 0);
   const abonado = citas.reduce((s, a) => s + Number(a.advanceAmount || 0), 0);
   fila = bloque(
     ws, fila, 'Valor de las citas (dato operativo, no contable)', ['', 'Monto', ''],

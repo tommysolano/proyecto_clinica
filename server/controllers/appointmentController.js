@@ -4803,6 +4803,8 @@ exports.exportAppointments = async (req, res) => {
           'marcado no hay nada que exportar.',
       });
     }
+    // El «valor» del Excel es lo FACTURADO de cada cita (ver utils/valorFacturado).
+    await require('../utils/valorFacturado').anotarFacturado(citasFinales);
     const wb = construirLibroDeAgenda(citasFinales, {
       titulo: 'AGENDA DE CITAS',
       subtitulo: texto(req.body?.subtitulo, 120) || 'Vikingo',

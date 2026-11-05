@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const AdProgram = require('../models/AdProgram');
 const Workflow = require('../models/Workflow');
 const Appointment = require('../models/Appointment');
+const { anotarFacturado, valorDeCita } = require('../utils/valorFacturado');
 const Conversation = require('../models/Conversation');
 
 /**
@@ -393,6 +394,8 @@ exports.analytics = async (req, res) => {
       .populate('patient', 'firstName lastName')
       .populate('clinic', 'name nombreComercial')
       .lean();
+    // Valor de la cita = lo FACTURADO desde la facturación electrónica (ver utils/valorFacturado).
+    await anotarFacturado(citas);
 
     const convIds = [...new Set(citas.map((c) => String(c.conversation)))];
     const convs = convIds.length
@@ -519,7 +522,8 @@ exports.analytics = async (req, res) => {
       }
 
       const grupo = ESTADO_GRUPO[c.status] || 'pendientes';
-      const valor = Number(c.agreedValue) || 0;
+      const valorCita = valorDeCita(c);
+      const valor = Number(valorCita) || 0;
       const servicioProg = programaId
         ? clavesDeLaCita(c).map((k) => servicioDelPrograma.get(`${programaId}|${k}`)).find(Boolean)
         : null;
@@ -531,7 +535,7 @@ exports.analytics = async (req, res) => {
         isCanje: !!c.isCanje,
         isCortesia: !!c.isCortesia,
         generaIngresos,
-        sinValor: c.agreedValue === null || c.agreedValue === undefined,
+        sinValor: valorCita === null,
       };
       sumar(programaId ? resumen.get(programaId) : sinPrograma, datosCita);
       if (!programaId) {
@@ -571,7 +575,7 @@ exports.analytics = async (req, res) => {
         servicio: c.serviceName || '',
         estado: c.status,
         grupo,
-        valor: c.agreedValue,
+        valor: valorCita,
         canje: !!c.isCanje,
         cortesia: !!c.isCortesia,
         generaIngresos,

@@ -15,6 +15,7 @@ const Patient = require('../models/Patient');
 const { normalizePhone } = require('../utils/phoneNormalize');
 const { citasConHistoriaPrevia } = require('../utils/firstVisit');
 const { tipoSinCobroDelServicio } = require('../utils/appointmentValue');
+const { anotarFacturado, valorDeCita } = require('../utils/valorFacturado');
 const {
   doctoresDeLaCita, filtroCitasConDoctor, enfermerosQueAtienden, filtroCitasConEnfermero,
   seguimientosDeSueroDelTurno,
@@ -185,6 +186,11 @@ const saveManagedDoctorRule = async (req, res, scope) => {
       });
     }
     timeBands.sort((a, b) => a.startTime.localeCompare(b.startTime));
+    // «Gana desde»: hora a partir de la cual se gana (vacío = todo el día).
+    const minStartTime = String(req.body?.minStartTime || '').slice(0, 5);
+    if (minStartTime && !HHMM.test(minStartTime)) {
+      return res.status(400).json({ message: 'La hora «gana desde» no es válida (HH:MM)' });
+    }
     for (let i = 1; i < timeBands.length; i += 1) {
       if (timeBands[i].startTime < timeBands[i - 1].endTime) {
         return res.status(400).json({
@@ -250,6 +256,7 @@ const saveManagedDoctorRule = async (req, res, scope) => {
             doctorCommissionScope: scope,
             firstTimeOnly,
             timeBands,
+            minStartTime,
             amountType,
             amount: amountType === 'fixed' ? value : 0,
             percent: amountType === 'percent' ? value : 0,
@@ -265,7 +272,7 @@ const saveManagedDoctorRule = async (req, res, scope) => {
       ).lean();
       saved.push(rule);
     }
-    res.json({ active: true, amountType, value, firstTimeOnly, timeBands, clinics: clinicIds, rules: saved });
+    res.json({ active: true, amountType, value, firstTimeOnly, timeBands, minStartTime, clinics: clinicIds, rules: saved });
   } catch (e) {
     const status = e?.code === 11000 ? 409 : 500;
     res.status(status).json({
@@ -344,15 +351,13 @@ const normalizeServiceName = (value) => String(value || '')
   .replace(/\s+/g, ' ')
   .trim();
 
-/** Importe monetario representado por la columna Pago de una cita. */
-const appointmentPaymentValue = (appt) => {
-  if (appt?.isCanje || appt?.isCortesia) return 0;
-  if (appt?.agreedValue != null) return num(appt.agreedValue);
-  // El adelanto solo se usa cuando aún no existe un valor total acordado; de
-  // otro modo se contaría dos veces una parte del mismo cobro.
-  if (['abono', 'total'].includes(appt?.advancePayment)) return num(appt.advanceAmount);
-  return 0;
-};
+/**
+ * Importe monetario representado por la columna Pago de una cita: lo FACTURADO (servicios)
+ * si la cita tiene ventas y, si no, el valor escrito de siempre. La cita tiene que haber
+ * pasado antes por `anotarFacturado` (ver utils/valorFacturado). El adelanto solo cuenta
+ * cuando no hay valor acordado: si no, se contaría dos veces una parte del mismo cobro.
+ */
+const appointmentPaymentValue = (appt) => num(valorDeCita(appt));
 
 /**
  * Calcula, sobre la marcha, las comisiones devengadas en un rango de fechas a
@@ -398,6 +403,8 @@ async function computeCommissions(clinicId, startDate, endDate) {
     .populate('createdBy', 'name clinics')
     .populate('patient', 'firstName lastName')
     .populate({ path: 'referral', populate: { path: 'fromDoctor', select: 'name clinics' } });
+  // Lo facturado de cada cita (valor de la cita desde la facturación electrónica).
+  await anotarFacturado(appts);
 
   // Usuarios de la clínica (para targets por rol: admin / marketing).
   const clinicUsers = await User.find({ 'clinics.clinic': clinicId }).select('name clinics');
@@ -1009,6 +1016,26 @@ const franjaDeRegla = (rule, appt) => {
 };
 const etiquetaFranja = (b) => (b ? `${b.startTime}–${b.endTime}` : '');
 
+/** 'HH:MM' de Ecuador de una fecha. */
+const horaEcuador = (d) => new Date(d).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/Guayaquil' });
+
+/**
+ * Hora en que ESTE doctor atendió la cita: el inicio de su turno (o su cierre) y, si la cita
+ * no tiene turnos con hora, la hora agendada. Es lo que compara «gana desde».
+ */
+const horaDeAtencion = (appt, doctorId) => {
+  const turno = (appt?.turns || []).find((t) => String(t.user?._id || t.user) === String(doctorId) && (t.startedAt || t.completedAt));
+  if (turno) return horaEcuador(turno.startedAt || turno.completedAt);
+  return String(appt?.startTime || '').slice(0, 5);
+};
+
+/** ¿Atendió antes de la hora desde la que la regla paga? (sin hora configurada, nunca). */
+const antesDeHora = (rule, appt, doctorId) => {
+  if (!rule?.minStartTime) return false;
+  const hora = horaDeAtencion(appt, doctorId);
+  return !!hora && hora < rule.minStartTime;
+};
+
 /** Tarifa que aplica: la del horario de la cita si cae en uno, si no la general. */
 const cfgDeRegla = (rule, appt = null) => {
   const src = franjaDeRegla(rule, appt) || rule;
@@ -1275,6 +1302,8 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
     .lean())
     .filter((a) => a.referral?.fromDoctor?._id
       && (!doctoresFiltro.length || doctoresFiltro.includes(String(a.referral.fromDoctor._id))));
+  // Valor de cada cita = lo facturado (o lo escrito en las anteriores a la facturación).
+  await anotarFacturado([...appts, ...derivadas]);
 
   const doctores = new Map();
   for (const a of appts) {
@@ -1385,9 +1414,13 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
         if (!rule) continue;
         cubierta = true;
         const repetida = !!rule.firstTimeOnly && !esPrimeraVez(appt, svc.key);
+        // «Gana desde»: atendido antes de esa hora, la tarifa no paga (y la cita sigue
+        // cubierta: la base por paciente no la reemplaza).
+        const antes = antesDeHora(rule, appt, doctorId);
         agregar({
           ...comun, kind: 'servicio', ruleId: String(rule._id), serviceKey: svc.key, serviceName: svc.name,
-          amount: repetida ? 0 : calcAmount(cfgDeRegla(rule, appt), pagado), repetida,
+          amount: repetida || antes ? 0 : calcAmount(cfgDeRegla(rule, appt), pagado), repetida,
+          antesDeHora: antes ? rule.minStartTime : '',
           franja: etiquetaFranja(franjaDeRegla(rule, appt)),
         });
       }
@@ -1398,9 +1431,11 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
       if (!cubierta) {
         const rule = reglaBaseParaCita(doctorId, 'patient', clinicId);
         if (rule) {
+          const antes = antesDeHora(rule, appt, doctorId);
           agregar({
             ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: 'Paciente atendido',
-            amount: calcAmount(cfgDeRegla(rule, appt), pagado),
+            amount: antes ? 0 : calcAmount(cfgDeRegla(rule, appt), pagado),
+            antesDeHora: antes ? rule.minStartTime : '',
             franja: etiquetaFranja(franjaDeRegla(rule, appt)),
           });
         }
@@ -1472,7 +1507,7 @@ const resumenTarifa = (configs, earned, totalClinics, extra = {}) => {
     amountType: b.amountType || 'fixed',
     value: b.amountType === 'percent' ? num(b.percent) : num(b.amount),
   }));
-  const firma = (r) => `${r.amountType}:${r.amountType === 'percent' ? num(r.percent) : num(r.amount)}:${!!r.firstTimeOnly}:${JSON.stringify(bandas(r))}`;
+  const firma = (r) => `${r.amountType}:${r.amountType === 'percent' ? num(r.percent) : num(r.amount)}:${!!r.firstTimeOnly}:${r.minStartTime || ''}:${JSON.stringify(bandas(r))}`;
   const base = { earned: +num(earned).toFixed(2), configuredClinics: configs.length, totalClinics, ...extra };
   if (new Set(configs.map(firma)).size > 1) return { mixed: true, ...base };
   const first = configs[0];
@@ -1481,6 +1516,7 @@ const resumenTarifa = (configs, earned, totalClinics, extra = {}) => {
     amountType: first.amountType || 'fixed',
     value: first.amountType === 'percent' ? num(first.percent) : num(first.amount),
     firstTimeOnly: !!first.firstTimeOnly,
+    minStartTime: first.minStartTime || '',
     timeBands: bandas(first),
     partial: configs.length < totalClinics,
     ...base,
@@ -1632,7 +1668,10 @@ exports.doctorSummary = async (req, res) => {
           byStatus: s.byStatus,
           clinicIds: [...s.clinicIds],
           commission: s.serviceId
-            ? resumenTarifa(configs, sumar(suyas), clinicSet.size, { repeated: suyas.filter((l) => l.repetida).length })
+            ? resumenTarifa(configs, sumar(suyas), clinicSet.size, {
+              repeated: suyas.filter((l) => l.repetida).length,
+              beforeTime: suyas.filter((l) => l.antesDeHora).length,
+            })
             : null,
         };
       });
@@ -1641,7 +1680,8 @@ exports.doctorSummary = async (req, res) => {
       const patientCommission = resumenTarifa(
         efectivas('patient', clinicSet, (r) => !r.appointmentService),
         sumar(misLineas.filter((l) => l.kind === 'paciente')),
-        clinicSet.size
+        clinicSet.size,
+        { beforeTime: misLineas.filter((l) => l.kind === 'paciente' && l.antesDeHora).length }
       );
 
       const referralClinicSet = new Set(f.referralClinicIds);
@@ -1810,6 +1850,9 @@ exports.doctorAppointments = async (req, res) => {
       .select('patient doctor attendedByNurse date startTime agreedValue isCanje isCortesia advancePayment advanceAmount turns.user turns.kind turns.status turns.order')
       .sort(ORDEN)
       .lean();
+    // El total de pagos cuenta lo facturado de cada cita (ver utils/valorFacturado).
+    await anotarFacturado(todas);
+    const facturadoDe = new Map(todas.map((a) => [String(a._id), a._facturado]));
     /**
      * El doctor de cada FILA. Filtrando por un doctor es ÉL, aunque la cita la
      * cerrara otro después (el espejo `doctor` es el último que atendió); en el
@@ -1833,6 +1876,7 @@ exports.doctorAppointments = async (req, res) => {
       .populate('clinic', 'name nombreComercial')
       .sort(ORDEN)
       .lean();
+    for (const a of appts) a._facturado = facturadoDe.get(String(a._id)) || null;
 
     // Ventas ligadas: para decir CUÁNDO se pagó la cita y con qué número.
     const ids = appts.map((a) => a._id);
@@ -2036,6 +2080,8 @@ exports.doctorAppointments = async (req, res) => {
           advanceAmount: a.advanceAmount,
           advanceMethod: a.advanceMethod || '',
           valueSetAt: a.valueSetAt,
+          // Lo facturado de la cita (servicios), cuando se cobró con factura.
+          invoicedValue: a._facturado?.ventas ? a._facturado.servicios : null,
           totalValue: appointmentPaymentValue(a),
         },
         venta: venta
@@ -2758,7 +2804,8 @@ exports.doctorReportPdf = async (req, res) => {
             ? `Derivación: ${l.serviceName}${l.atendidaPor ? ` (atendió ${l.atendidaPor})` : ''}`
             : l.kind === 'paciente' ? 'Paciente atendido'
             : `${l.serviceName}${l.repetida ? ' — ya lo había recibido (solo paga la primera vez)' : ''}`;
-          const concepto = l.franja ? `${base} · horario ${l.franja}` : base;
+          const conHora = l.antesDeHora ? `${base} — atendido antes de las ${l.antesDeHora} (sin comisión)` : base;
+          const concepto = l.franja ? `${conHora} · horario ${l.franja}` : conHora;
           return `
             <tr${l.kind === 'sin_comision' ? ' class="cero"' : ''}>
               <td>${escapeHtml(fechaCorta(l.date))}</td>

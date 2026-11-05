@@ -62,6 +62,11 @@ export const fmtAtendientes = (a) =>
     .join(' → ');
 
 export const fmtPago = (a) => {
+  // Facturada: manda lo facturado (desde la facturación electrónica no se escribe el valor).
+  if (a.payment?.invoicedValue != null) {
+    const numero = a.venta?.number ? ` · ${a.venta.number}` : '';
+    return `Facturado $${Number(a.payment.invoicedValue).toFixed(2)}${numero}${a.venta ? ` · ${fmtDate(a.venta.date)}` : ''}`;
+  }
   if (a.payment?.isCanje) return 'Canje';
   if (a.payment?.isCortesia) return 'Cortesía';
   const partes = [];

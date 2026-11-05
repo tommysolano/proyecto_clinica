@@ -145,6 +145,13 @@ const commissionRuleSchema = new mongoose.Schema(
     firstTimeOnly: { type: Boolean, default: false },
     // Tarifas por horario (ver timeBandSchema). Vacío = el mismo valor todo el día.
     timeBands: { type: [timeBandSchema], default: [] },
+    /**
+     * GANA DESDE (nov-2026), reglas de Comisiones > Doctores: 'HH:MM' de Ecuador a partir de
+     * la cual se gana la comisión. Un paciente atendido ANTES no la genera (paga $0). Vacío =
+     * todo el día. Se compara con la hora en que el doctor ATENDIÓ (inicio de su turno) y, si
+     * no consta, con la hora de la cita.
+     */
+    minStartTime: { type: String, default: '' },
 
     // Agente de call center al que está ligado un usuario marketing. Sólo aplica
     // al trigger 'call_center_commission': el marketing gana en función de la
