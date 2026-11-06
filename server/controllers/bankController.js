@@ -48,7 +48,8 @@ exports.paymentOptions = async (req, res) => {
   try {
     await asegurarDatafast(req.clinicId);
     const [accounts, cards] = await Promise.all([
-      BankAccount.find({ clinic: req.clinicId, active: true })
+      // Bancos de la EMPRESA (nov-2026): se crean en Central y valen en todas las sucursales.
+      BankAccount.find({ clinic: { $in: await require('../utils/bancosEmpresa').sedesEmpresa(req.clinicId) }, active: true })
         .select('name bank accountNumber accountType')
         .sort({ name: 1 }),
       CreditCard.find({ clinic: req.clinicId, active: true })

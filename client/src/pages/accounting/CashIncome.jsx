@@ -70,10 +70,38 @@ function Dato({ etiqueta, children }) {
   );
 }
 
+/**
+ * CAJA ESCOGIDA (nov-2026): super administrador y contabilidad eligen cualquier caja abierta
+ * de la empresa y todas las acciones de la página operan sobre ella. Viaja en la cabecera
+ * `X-Caja` (el servidor pasa a la sucursal de esa caja). Vacía = la sucursal activa.
+ */
+let cajaEscogida = '';
+const conCaja = (cfg = {}) => (cajaEscogida
+  ? { ...cfg, headers: { ...(cfg.headers || {}), 'X-Caja': cajaEscogida } }
+  : cfg);
+const fechaEc = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Guayaquil' }).format(new Date(d));
+
 export default function CashIncome() {
   const navigate = useNavigate();
   const { hasRole, user } = useAuth();
   const esAdminConta = hasRole('admin', 'contabilidad') || !!user?.isSuperAdmin;
+  const puedeElegirCaja = !!user?.isSuperAdmin || hasRole('contabilidad');
+  const [cajas, setCajas] = useState([]);
+  const [caja, setCaja] = useState('');
+  useEffect(() => {
+    cajaEscogida = '';
+    if (!puedeElegirCaja) return undefined;
+    api.get('/cash-panel/cajas-abiertas').then((r) => setCajas(r.data || [])).catch(() => setCajas([]));
+    return () => { cajaEscogida = ''; };
+  }, [puedeElegirCaja]);
+  const escogerCaja = (id) => {
+    cajaEscogida = id;
+    setCaja(id);
+    const c = cajas.find((x) => String(x._id) === String(id));
+    // El cuadre de la caja escogida: desde el día en que se abrió hasta hoy.
+    setPeriodo({ from: c?.openedAt ? fechaEc(c.openedAt) : todayEc(), to: todayEc() });
+  };
+  const cajaActual = cajas.find((x) => String(x._id) === String(caja)) || null;
 
   // El período manda sobre todo lo que se ve: cuadre y los dos historiales.
   const [periodo, setPeriodo] = useState(() => ({ from: todayEc(), to: todayEc() }));
@@ -98,9 +126,9 @@ export default function CashIncome() {
     setCargando(true);
     try {
       const [p, d, s] = await Promise.all([
-        api.get('/cash-panel', { params }),
-        api.get('/cash-panel/depositos', { params }),
-        api.get('/cash-panel/salidas', { params }),
+        api.get('/cash-panel', conCaja({ params })),
+        api.get('/cash-panel/depositos', conCaja({ params })),
+        api.get('/cash-panel/salidas', conCaja({ params })),
       ]);
       if (yo !== consultaRef.current) return;
       setPanel(p.data);
@@ -111,7 +139,7 @@ export default function CashIncome() {
     } finally {
       if (yo === consultaRef.current) setCargando(false);
     }
-  }, [periodo.from, periodo.to]);
+  }, [periodo.from, periodo.to, caja]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -128,7 +156,7 @@ export default function CashIncome() {
     if (motivo === null) return;
     setAnulando(fila.entryId);
     try {
-      const r = await api.post(`/cash-panel/salidas/${fila.entryId}/void`, { reason: motivo });
+      const r = await api.post(`/cash-panel/salidas/${fila.entryId}/void`, { reason: motivo }, conCaja());
       toast.success(r.data?.message || 'Anulado');
       setSalidaAbierta(null);
       cargar();
@@ -162,6 +190,36 @@ export default function CashIncome() {
           <HiOutlineArrowPath className={`w-4 h-4 ${cargando ? 'animate-spin' : ''}`} /> Actualizar
         </button>
       </div>
+
+      {/* ── Caja (super administrador y contabilidad) ─────────────────────── */}
+      {puedeElegirCaja && (
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-3 flex flex-wrap items-end gap-3">
+          <label className="text-xs text-slate-500 flex-1 min-w-[260px]">
+            Caja
+            <select
+              value={caja}
+              onChange={(e) => escogerCaja(e.target.value)}
+              className="mt-1 block w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white"
+            >
+              <option value="">Sucursal activa (sin escoger caja)</option>
+              {cajas.map((c) => (
+                <option key={c._id} value={c._id}>
+                  {c.sucursal} · {c.usuario || 'Sin usuario'}{c.punto ? ` · punto ${c.punto}` : ''} · abierta {fmtDate(c.openedAt)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className="text-xs text-slate-500 pb-2">
+            {cajas.length ? `${cajas.length} caja(s) abierta(s)` : 'No hay cajas abiertas'}
+          </span>
+          {cajaActual && (
+            <p className="w-full text-xs text-emerald-700">
+              Trabajando sobre la caja de <strong>{cajaActual.usuario}</strong> en <strong>{cajaActual.sucursal}</strong>:
+              los vales y depósitos que registres quedan en esa caja.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* ── Período + acciones ─────────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-3 flex flex-wrap items-end gap-3">
@@ -624,7 +682,7 @@ function RegistrarVale({ alCerrar, alTerminar }) {
   const guardandoRef = useRef(false);
 
   useEffect(() => {
-    api.get('/cash-panel/cuentas')
+    api.get('/cash-panel/cuentas', conCaja())
       .then((r) => setCuentas(r.data || []))
       .catch(() => toast.error('No se pudieron cargar las cuentas contables.'));
   }, []);
@@ -638,7 +696,7 @@ function RegistrarVale({ alCerrar, alTerminar }) {
     guardandoRef.current = true;
     setGuardando(true);
     try {
-      const r = await api.post('/cash-panel/vales', { ...form, amount: importe });
+      const r = await api.post('/cash-panel/vales', { ...form, amount: importe }, conCaja());
       toast.success(r.data?.message || 'Vale registrado');
       alTerminar();
     } catch (e) {
@@ -722,7 +780,7 @@ function PasarAlBanco({ alCerrar, alTerminar }) {
   useEffect(() => {
     let vivo = true;
     setCargando(true);
-    api.get('/cash-deposits/pending', { params: { startDate: filtro.desde || undefined, cutDate: filtro.hasta || undefined } })
+    api.get('/cash-deposits/pending', conCaja({ params: { startDate: filtro.desde || undefined, cutDate: filtro.hasta || undefined } }))
       .then((r) => {
         if (!vivo) return;
         setPendientes(r.data?.items || []);
@@ -768,10 +826,10 @@ function PasarAlBanco({ alCerrar, alTerminar }) {
         date: form.date,
         description: form.description.trim()
           || (modo === 'libre' ? 'Depósito de saldo libre de caja' : `Depósito de efectivo (${marcados.size} documento(s))`),
-      }, withIdempotencyKey(intentKey(claveRef.current, [
+      }, conCaja(withIdempotencyKey(intentKey(claveRef.current, [
         form.bankAccount, form.voucher.trim(), form.date, modo, manual,
         [...marcados].sort().join(','),
-      ])));
+      ]))));
       toast.success(`Depósito registrado: ${money(r.data?.total)}`);
       claveRef.current = newIdempotencyKey();
       alTerminar();

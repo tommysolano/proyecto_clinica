@@ -205,6 +205,16 @@ async function resolveEntryLines(clinicId, lines, options = {}) {
     } else if (l.accountCode) {
       acc = await withSession(ChartOfAccount.findOne({ code: l.accountCode, clinic: clinicId }), options.session);
     }
+    // UN PLAN POR EMPRESA (nov-2026): la cuenta escogida puede ser del plan de la empresa
+    // (Central) y aún no estar en el libro de esta sucursal. Se usa su copia con el mismo
+    // código (se crea si falta). Una cuenta de OTRA empresa sigue rechazándose.
+    if (!acc && (l.account || l.accountCode)) {
+      const { cuentaEnSucursal, clinicaDelPlan } = require('./planEmpresa');
+      const origen = l.account
+        ? await withSession(ChartOfAccount.findById(l.account), options.session)
+        : await withSession(ChartOfAccount.findOne({ code: l.accountCode, clinic: await clinicaDelPlan(clinicId) }), options.session);
+      if (origen) acc = await cuentaEnSucursal(origen, clinicId, options.session || null);
+    }
     if (!acc) {
       const err = new Error(`Cuenta no encontrada: ${l.accountCode || l.account}`);
       err.status = 400;

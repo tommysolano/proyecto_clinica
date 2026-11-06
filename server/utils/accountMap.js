@@ -167,6 +167,12 @@ async function getAccount(clinicId, role, options = {}) {
   if (mappedId) {
     const acc = await ChartOfAccount.findOne({ _id: mappedId, clinic: clinicId }).session(options.session || null);
     if (acc) return acc;
+    // Configurada con una cuenta del plan de la EMPRESA: su copia en esta sucursal.
+    const deEmpresa = await ChartOfAccount.findById(mappedId).session(options.session || null);
+    const copia = deEmpresa
+      ? await require('./planEmpresa').cuentaEnSucursal(deEmpresa, clinicId, options.session || null)
+      : null;
+    if (copia) return copia;
   }
   if (def.taxCode) {
     const marcada = await ChartOfAccount.findOne({ clinic: clinicId, taxCode: def.taxCode }).session(options.session || null);
@@ -180,4 +186,4 @@ async function getAccount(clinicId, role, options = {}) {
   return findAccount(clinicId, { code: def.code }, options);
 }
 
-module.exports = { ACCOUNT_ROLES, getAccount };
+module.exports = { ACCOUNT_ROLES, getAccount, copiarAlPlan };

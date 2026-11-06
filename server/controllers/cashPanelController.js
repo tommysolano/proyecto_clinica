@@ -23,6 +23,36 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const fallo = (res, e, def = 'Error en caja') => res.status(e.status || 500).json({ message: e.message || def, code: e.code });
 const puedeAnularDepositos = (req) => !!req.user?.isSuperAdmin || ['admin', 'contabilidad'].includes(req.role);
 
+/**
+ * GET /cash-panel/cajas-abiertas — super administrador y contabilidad: todas las cajas
+ * ABIERTAS de la empresa (de todas las sucursales), para escoger sobre cuál trabajar.
+ */
+exports.cajasAbiertas = async (req, res) => {
+  try {
+    const { puedeElegirCaja } = require('../middleware/cajaSeleccionada');
+    if (!puedeElegirCaja(req)) return res.json([]);
+    const { hermanas } = require('../utils/planEmpresa');
+    const filtro = { status: 'ABIERTA' };
+    if (!req.user?.isSuperAdmin) filtro.clinic = { $in: await hermanas(req.clinicId) };
+    const cajas = await CashClosing.find(filtro)
+      .populate('clinic', 'name')
+      .populate('openedBy', 'name')
+      .populate('puntoEmision', 'estab ptoEmi nombre name')
+      .select('clinic openedBy openedAt openingBalance puntoEmision')
+      .sort({ openedAt: -1 })
+      .lean();
+    res.json(cajas.map((c) => ({
+      _id: c._id,
+      clinicId: c.clinic?._id,
+      sucursal: c.clinic?.name || '',
+      usuario: c.openedBy?.name || '',
+      openedAt: c.openedAt,
+      openingBalance: c.openingBalance || 0,
+      punto: c.puntoEmision ? `${c.puntoEmision.estab}-${c.puntoEmision.ptoEmi}` : '',
+    })));
+  } catch (e) { fallo(res, e, 'No se pudieron listar las cajas abiertas'); }
+};
+
 /** GET /cash-panel?from=&to= — el cuadre del período. */
 exports.panel = async (req, res) => {
   try {
@@ -68,16 +98,30 @@ exports.depositos = async (req, res) => {
  * su propia acción (si no, el banco quedaría con una entrada sin documento).
  */
 async function cuentasParaVale(clinicId) {
+  // UN PLAN POR EMPRESA (nov-2026): se ofrecen las cuentas del plan de la empresa (una
+  // cuenta recién creada por contabilidad aparece en todas las sucursales); el asiento
+  // usa su copia en la sucursal. Caja y bancos se excluyen por CÓDIGO, en los dos planes.
+  const { clinicaDelPlan } = require('../utils/planEmpresa');
+  const plan = await clinicaDelPlan(clinicId);
+  const sedes = [...new Set([String(clinicId), String(plan)])];
   const caja = await cuentasDeCaja(clinicId);
-  const bancos = await BankAccount.find({ clinic: clinicId, chartAccount: { $ne: null } }).select('chartAccount').lean();
-  const fuera = new Set([...caja.ids.map(String), ...bancos.map((b) => String(b.chartAccount))]);
+  const cajaPlan = String(plan) === String(clinicId) ? caja : await cuentasDeCaja(plan);
+  const bancos = await BankAccount.find({ clinic: { $in: sedes }, chartAccount: { $ne: null } })
+    .populate('chartAccount', 'code').select('chartAccount').lean();
+  const codigosFuera = new Set([
+    ...[...caja.porId.values(), ...cajaPlan.porId.values()].map((a) => a.code),
+    ...bancos.map((b) => b.chartAccount?.code).filter(Boolean),
+  ]);
   const cuentas = await ChartOfAccount.find({
-    clinic: clinicId,
+    clinic: plan,
     type: { $in: ['GASTO', 'COSTO', 'PASIVO', 'ACTIVO'] },
     allowsMovement: { $ne: false },
     active: { $ne: false },
   }).select('code name type parent').sort({ code: 1 }).lean();
-  return { cuentas: cuentas.filter((c) => !fuera.has(String(c._id))), fuera };
+  const fueraIds = await ChartOfAccount.find({ clinic: { $in: sedes }, code: { $in: [...codigosFuera] } })
+    .select('_id').lean();
+  const fuera = new Set(fueraIds.map((a) => String(a._id)));
+  return { cuentas: cuentas.filter((c) => !codigosFuera.has(c.code)), fuera };
 }
 
 /** GET /cash-panel/cuentas — cuentas elegibles para el vale. */
@@ -123,8 +167,12 @@ exports.crearVale = async (req, res) => {
     const movementId = await runInTransaction(async (session) => {
       await assertPeriodOpen(req.clinicId, date, { session });
       const caja = await getAccount(req.clinicId, 'caja', { session });
-      const abierta = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA', openedBy: req.user._id })
-        .select('_id').session(session);
+      // La caja escogida en la página (super admin / contabilidad) o la propia abierta.
+      const abierta = req.caja
+        ? { _id: req.caja._id }
+        : await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA', openedBy: req.user._id })
+          .select('_id').session(session);
+      const { operadorDeCaja } = require('../middleware/cajaSeleccionada');
       const entry = await createEntry({
         clinicId: req.clinicId,
         date,
@@ -135,7 +183,8 @@ exports.crearVale = async (req, res) => {
           { account: cuenta._id, debit: amount, credit: 0, description },
           { account: caja._id, debit: 0, credit: amount, description },
         ],
-        userId: req.user._id,
+        // A nombre del dueño de la caja: su arqueo cuenta solo sus asientos de Caja.
+        userId: operadorDeCaja(req),
         session,
       });
       const [movement] = await CashMovement.create([{
@@ -199,10 +248,13 @@ exports.anularSalida = async (req, res) => {
       }
       const date = new Date();
       if (mov.journalEntry) {
+        // El reverso, a nombre de quien registró el asiento original: si el vale era de la
+        // caja de un cajero, su arqueo (que cuenta solo sus asientos de Caja) ve el reverso.
+        const original = await JournalEntry.findById(mov.journalEntry).select('createdBy').session(session);
         await reverseEntry({
           clinicId: req.clinicId,
           entryId: mov.journalEntry,
-          userId: req.user._id,
+          userId: original?.createdBy || req.user._id,
           reason: motivo || 'Anulación de vale de caja',
           date,
           session,

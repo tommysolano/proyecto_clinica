@@ -289,7 +289,7 @@ exports.create = async (req, res) => {
         }
 
         let bank = null;
-        if (bankAccount) bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
+        if (bankAccount) bank = await require('../utils/bancosEmpresa').bancoDeEmpresa(bankAccount, req.clinicId, session);
         if (bankAccount && !bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
         // El asiento debita/acredita la cuenta contable del banco: sin ella el asiento
         // quedaría con una cuenta indefinida. Se bloquea con mensaje claro (F1).
@@ -448,7 +448,7 @@ exports.create = async (req, res) => {
             }
           }
           [bankTx] = await BankTransaction.create([{
-            clinic: req.clinicId,
+            clinic: bank.clinic,   // sede del banco: donde se concilia
             bankAccount: bank._id,
             date: txDate,
             type: txType,
@@ -682,7 +682,7 @@ exports.createBulk = async (req, res) => {
       // Banco / validación de saldo total.
       let bank = null;
       if (bankAccount) {
-        bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
+        bank = await require('../utils/bancosEmpresa').bancoDeEmpresa(bankAccount, req.clinicId, session);
         if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
       }
       if (method !== 'EFECTIVO') {
@@ -758,7 +758,7 @@ exports.createBulk = async (req, res) => {
             await bank.save({ session });
           }
           [bankTx] = await BankTransaction.create([{
-            clinic: req.clinicId,
+            clinic: bank.clinic,   // sede del banco: donde se concilia
             bankAccount: bank._id,
             date: txDate,
             type: chequeGirado ? 'CHEQUE_EMITIDO' : 'PAGO',

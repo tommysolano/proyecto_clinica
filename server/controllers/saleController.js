@@ -856,8 +856,9 @@ exports.createSale = async (req, res) => {
         for (const p of txPayments) {
           let acc = null;
           if (p.method === 'transferencia' && p.bankAccount) {
-            const BankAccount = require('../models/BankAccount');
-            const bank = await BankAccount.findOne({ _id: p.bankAccount, clinic: req.clinicId }).session(session);
+            // Bancos de la EMPRESA (nov-2026): la cuenta puede estar en Central; el asiento
+            // usa la copia de su cuenta contable en esta sucursal (utils/planEmpresa).
+            const bank = await require('../utils/bancosEmpresa').bancoDeEmpresa(p.bankAccount, req.clinicId, session);
             if (bank?.chartAccount) acc = await ChartOfAccount.findById(bank.chartAccount).session(session);
           } else if (p.method === 'tarjeta' && p.creditCard) {
             const CreditCard = require('../models/CreditCard');
@@ -1080,10 +1081,11 @@ exports.createSale = async (req, res) => {
           const BankAccount = require('../models/BankAccount');
           for (const p of txPayments) {
             if (p.method !== 'transferencia' || !p.bankAccount) continue;
-            const banco = await BankAccount.findOne({ _id: p.bankAccount, clinic: req.clinicId }).session(session);
+            const banco = await require('../utils/bancosEmpresa').bancoDeEmpresa(p.bankAccount, req.clinicId, session);
             if (!banco) continue;
             await BankTransaction.create([{
-              clinic: req.clinicId,
+              // En la sede del BANCO: es donde se concilia (puede ser Central).
+              clinic: banco.clinic,
               bankAccount: banco._id,
               date: saleDate,
               type: 'COBRO',
@@ -1386,8 +1388,10 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
   // `updateMany` masivo no se descontaba —el gancho que mantiene `bookBalance` solo corre al
   // crear—, así que anular una venta cobrada por banco dejaba el saldo del banco inflado.
   const BankAccount = require('../models/BankAccount');
+  // En cualquier sede de la empresa: el movimiento vive en la sede del banco (nov-2026).
   const bancarios = await BankTransaction.find({
-    clinic: clinicId, sourceModel: 'Sale', sourceRef: sale._id, voided: false,
+    clinic: { $in: await require('../utils/bancosEmpresa').sedesEmpresa(clinicId) },
+    sourceModel: 'Sale', sourceRef: sale._id, voided: false,
   }).session(session);
   for (const bt of bancarios) {
     bt.voided = true;
@@ -1537,7 +1541,7 @@ exports.collectSale = async (req, res) => {
         let debitAcc;
         let bank = null;
         if (method === 'transferencia' && req.body.bankAccount) {
-          bank = await BankAccount.findOne({ _id: req.body.bankAccount, clinic: req.clinicId }).session(session);
+          bank = await require('../utils/bancosEmpresa').bancoDeEmpresa(req.body.bankAccount, req.clinicId, session);
           if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
           const ChartOfAccount = require('../models/ChartOfAccount');
           debitAcc = await ChartOfAccount.findById(bank.chartAccount).session(session);
@@ -1566,7 +1570,7 @@ exports.collectSale = async (req, res) => {
 
         if (bank) {
           await BankTransaction.create([{
-            clinic: req.clinicId,
+            clinic: bank.clinic,   // sede del banco: donde se concilia
             bankAccount: bank._id,
             date,
             type: 'COBRO',

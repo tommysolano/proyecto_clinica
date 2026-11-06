@@ -3,6 +3,9 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const c = require('../controllers/cashDepositController');
 
 router.use(auth, requireClinic);
+// Caja escogida en «Caja e ingresos» (super administrador / contabilidad): el depósito sale
+// de esa caja y de su sucursal.
+router.use(require('../middleware/cajaSeleccionada'));
 
 // El efectivo pendiente lo consulta también el cajero desde Caja.
 router.get('/pending', requireRole('admin', 'contabilidad', 'cajero'), c.pending);

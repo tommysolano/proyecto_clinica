@@ -82,7 +82,7 @@ async function directCashCollections(clinicId, range = {}, session = null) {
     .select('_id number date sourceRef lines').sort({ date: 1 }).lean();
   const entries = await (session ? query.session(session) : query);
   if (!entries.length) return [];
-  const bankQuery = BankTransaction.find({ clinic: clinicId, journalEntry: { $in: entries.map((e) => e._id) }, voided: false })
+  const bankQuery = BankTransaction.find({ clinic: { $in: await require('../utils/bancosEmpresa').sedesEmpresa(clinicId) }, journalEntry: { $in: entries.map((e) => e._id) }, voided: false })
     .select('journalEntry').lean();
   const bankTx = await (session ? bankQuery.session(session) : bankQuery);
   const bankIds = new Set(bankTx.map((b) => String(b.journalEntry)));
@@ -291,7 +291,8 @@ exports.create = async (req, res) => {
       const txDate = fechaOperacion(req.body.date);
       await assertPeriodOpen(req.clinicId, txDate, { session });
 
-      const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
+      // Bancos de la empresa (nov-2026): una sucursal deposita en las cuentas de Central.
+      const bank = await require('../utils/bancosEmpresa').bancoDeEmpresa(bankAccount, req.clinicId, session);
       if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
       if (!bank.chartAccount) throw Object.assign(new Error('La cuenta bancaria no tiene cuenta contable asociada'), { status: 400 });
 
@@ -369,12 +370,13 @@ exports.create = async (req, res) => {
           { account: bankChart._id, debit: total, credit: 0, description: `Depósito ${number}` },
           { account: caja._id, debit: 0, credit: total, description: `Depósito ${number}` },
         ],
-        userId: req.user._id,
+        // Desde una caja escogida (super admin / contabilidad): a nombre del dueño de la caja.
+        userId: require('../middleware/cajaSeleccionada').operadorDeCaja(req),
         session,
       });
 
       const [tx] = await BankTransaction.create([{
-        clinic: req.clinicId,
+        clinic: bank.clinic,   // sede del banco: donde se concilia
         bankAccount: bank._id,
         date: txDate,
         type: 'DEPOSITO',
