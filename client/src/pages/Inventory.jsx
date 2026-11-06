@@ -15,7 +15,7 @@ import {
   HiOutlinePlus, HiOutlinePencil, HiOutlineTrash,
   HiOutlineMagnifyingGlass, HiOutlineArrowDown, HiOutlineArrowUp,
   HiOutlineExclamationTriangle, HiOutlineCube, HiOutlineArrowDownTray,
-  HiOutlineArrowsRightLeft,
+  HiOutlineArrowsRightLeft, HiOutlineNoSymbol, HiOutlineCheckCircle,
 } from 'react-icons/hi2';
 import { fmtDateTime } from '../utils/date';
 import { PRODUCT_TYPES, PRODUCT_CATEGORIES } from '../constants/productCategories';
@@ -92,7 +92,8 @@ export default function Inventory() {
     const reqId = ++reqRef.current;
     try {
       const res = await api.get('/products', {
-        params: { search: debouncedSearch, category: categoryFilter, categoria: categoriaFilter, lowStock: showLowStock || undefined },
+        // El inventario muestra también los inhabilitados (marcados), para poder habilitarlos.
+        params: { search: debouncedSearch, category: categoryFilter, categoria: categoriaFilter, lowStock: showLowStock || undefined, includeDisabled: 'true' },
       });
       if (reqId !== reqRef.current) return; // respuesta obsoleta: descartar
       setProducts(res.data);
@@ -163,6 +164,19 @@ export default function Inventory() {
       fetchProducts();
     } catch {
       toast.error('Error al eliminar');
+    }
+  };
+
+  // Inhabilitar / habilitar: el inhabilitado no aparece al agendar ni al vender.
+  const handleToggleDisabled = async (p) => {
+    const disabling = !p.disabled;
+    if (disabling && !window.confirm(`¿Inhabilitar "${p.name}"? Ya no aparecerá al agendar citas ni al vender.`)) return;
+    try {
+      const res = await api.patch(`/products/${p._id}/disabled`, { disabled: disabling });
+      setProducts((prev) => prev.map((x) => (x._id === p._id ? { ...x, disabled: !!res.data?.disabled } : x)));
+      toast.success(disabling ? 'Producto inhabilitado' : 'Producto habilitado');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo cambiar el estado');
     }
   };
 
@@ -329,9 +343,16 @@ export default function Inventory() {
                     <tr><td colSpan="7"><EmptyState icon={HiOutlineCube} title="No se encontraron productos" hint="Ajusta la búsqueda o crea un nuevo producto." /></td></tr>
                   ) : (
                     products.map((p) => (
-                      <tr key={p._id} className="border-b border-emerald-50 hover:bg-emerald-50/30 transition-colors">
+                      <tr key={p._id} className={`border-b border-emerald-50 hover:bg-emerald-50/30 transition-colors ${p.disabled ? 'opacity-60' : ''}`}>
                         <td className="px-6 py-3.5 text-sm text-slate-600 font-mono">{p.code}</td>
-                        <td className="px-6 py-3.5 text-sm font-medium text-slate-800">{p.name}</td>
+                        <td className="px-6 py-3.5 text-sm font-medium text-slate-800">
+                          {p.name}
+                          {p.disabled && (
+                            <span className="ml-2 inline-block px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 text-[11px] font-semibold align-middle">
+                              Inhabilitado
+                            </span>
+                          )}
+                        </td>
                         <td className="px-6 py-3.5 text-sm text-slate-600 hidden md:table-cell capitalize">{types[p.category] || p.category}</td>
                         <td className="px-6 py-3.5 text-sm text-slate-600 hidden lg:table-cell">{p.categoria || '—'}</td>
                         <td className="px-6 py-3.5 text-sm text-slate-800 text-right">${p.salePrice.toFixed(2)}</td>
@@ -357,6 +378,13 @@ export default function Inventory() {
                               </button>
                               <button onClick={() => openEditProduct(p)} className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors">
                                 <HiOutlinePencil className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => handleToggleDisabled(p)}
+                                className={`p-1.5 rounded-lg bg-transparent border-none cursor-pointer transition-colors ${p.disabled ? 'text-emerald-600 hover:bg-emerald-50' : 'text-slate-400 hover:bg-amber-50 hover:text-amber-600'}`}
+                                title={p.disabled ? 'Habilitar (volverá a aparecer al agendar y vender)' : 'Inhabilitar (no aparecerá al agendar ni al vender)'}
+                              >
+                                {p.disabled ? <HiOutlineCheckCircle className="w-4 h-4" /> : <HiOutlineNoSymbol className="w-4 h-4" />}
                               </button>
                               <button onClick={() => handleDeleteProduct(p._id)} className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer transition-colors">
                                 <HiOutlineTrash className="w-4 h-4" />

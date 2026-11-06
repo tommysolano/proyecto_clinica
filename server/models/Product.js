@@ -199,6 +199,10 @@ const productSchema = new mongoose.Schema(
     // bandeja de TODOS los enfermeros del consultorio para que uno la reclame.
     nursingService: { type: Boolean, default: false },
     active: { type: Boolean, default: true },
+    // INHABILITADO (nov-2026): sigue en el inventario (stock, kardex, reportes,
+    // compras), pero NO se ofrece al agendar una cita ni al vender. Distinto de
+    // `active: false`, que es el "eliminado" del catálogo.
+    disabled: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

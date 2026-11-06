@@ -13,6 +13,6 @@ router.post('/', requireRole('admin', 'cajero', 'contabilidad'), createSale);
 router.post('/:id/collect', requireRole('admin', 'contabilidad', 'cajero'), collectSale);
 // NO existe endpoint para editar el asiento de una venta: un asiento contabilizado es
 // inmutable. Para corregirlo se ANULA la venta (que reversa sus asientos) y se rehace.
-router.put('/:id/cancel', requireRole('admin'), cancelSale);
+router.put('/:id/cancel', requireRole('admin', 'contabilidad'), cancelSale);
 
 module.exports = router;

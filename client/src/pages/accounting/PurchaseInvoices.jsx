@@ -213,7 +213,7 @@ export default function PurchaseInvoices() {
   };
   // Catálogo de productos físicos (con su categoría contable poblada para mostrar la cuenta).
   const loadProducts = () =>
-    api.get('/products')
+    api.get('/products', { params: { includeDisabled: 'true' } })
       .then((r) => setProducts((r.data?.items || r.data || []).filter((p) => !p.unlimited && p.category !== 'servicio')))
       .catch(() => {});
 

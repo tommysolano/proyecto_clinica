@@ -98,6 +98,30 @@ test('un producto desactivado deja de ofrecerse, pero su servicio no se borra', 
   assert.equal(sigue.product, null, 'solo se desengancha');
 });
 
+test('un producto INHABILITADO no se ofrece al agendar ni al vender, y vuelve al habilitarlo', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const productCtrl = require('../controllers/productController');
+  const p = await servicio(clinicId, 'Mesoterapia');
+  await H.makeProduct(clinicId, { name: 'Crema facial', category: 'insumo' });
+  await sincronizarServiciosInventario({ force: true });
+  assert.equal((await listar(clinicId, userId)).payload.length, 1);
+
+  const off = await H.runController(productCtrl.setProductDisabled,
+    H.mockReq(clinicId, userId, { disabled: true }, { role: 'contabilidad', params: { id: String(p._id) } }));
+  assert.equal(off.payload.disabled, true);
+
+  assert.equal((await listar(clinicId, userId)).payload.length, 0, 'fuera de la agenda');
+  const venta = await H.runController(productCtrl.getProducts, H.mockReq(clinicId, userId, {}, { role: 'cajero', query: {} }));
+  assert.deepEqual(venta.payload.map((x) => x.name), ['Crema facial'], 'fuera del buscador de venta');
+  const inventario = await H.runController(productCtrl.getProducts,
+    H.mockReq(clinicId, userId, {}, { role: 'admin', query: { includeDisabled: 'true' } }));
+  assert.equal(inventario.payload.length, 2, 'el inventario lo sigue mostrando');
+
+  await H.runController(productCtrl.setProductDisabled,
+    H.mockReq(clinicId, userId, { disabled: false }, { role: 'admin', params: { id: String(p._id) } }));
+  assert.equal((await listar(clinicId, userId)).payload.length, 1, 'habilitado: vuelve a la agenda');
+});
+
 test('sincronizar dos veces no duplica nada', async () => {
   const { clinicId } = await H.seedClinic();
   await servicio(clinicId, 'Plasma');

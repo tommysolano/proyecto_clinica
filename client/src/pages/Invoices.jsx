@@ -66,7 +66,7 @@ function autorizadaOtroDia(inv) {
 export default function Invoices() {
   const { hasRole } = useAuth();
   const canRetry = hasRole('admin', 'cajero', 'contabilidad');
-  const canAnular = hasRole('admin');
+  const canAnular = hasRole('admin', 'contabilidad');
 
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);

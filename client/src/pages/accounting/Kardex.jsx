@@ -34,7 +34,7 @@ export default function Kardex() {
   const [detalle, setDetalle] = useState(null);   // fila abierta en el hub de consulta
 
   useEffect(() => {
-    api.get('/products').then((r) => setProducts(r.data?.items || r.data || [])).catch(() => {});
+    api.get('/products', { params: { includeDisabled: 'true' } }).then((r) => setProducts(r.data?.items || r.data || [])).catch(() => {});
     api.get('/inventory-advanced/warehouses').then((r) => setWarehouses(r.data || [])).catch(() => {});
     api.get('/inventory-advanced/categories', { params: { kind: 'INVENTARIO' } })
       .then((r) => setCategories(r.data || [])).catch(() => {});

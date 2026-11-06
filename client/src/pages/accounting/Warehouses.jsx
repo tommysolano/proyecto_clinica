@@ -52,7 +52,7 @@ export default function Warehouses() {
   };
   useEffect(() => {
     loadWarehouses();
-    api.get('/products').then((r) => setProducts((r.data || []).filter((p) => !p.unlimited))).catch(() => {});
+    api.get('/products', { params: { includeDisabled: 'true' } }).then((r) => setProducts((r.data || []).filter((p) => !p.unlimited))).catch(() => {});
     api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts(r.data || [])).catch(() => {});
     api.get('/cost-centers', { params: { active: true } }).then((r) => setCostCenters(r.data || [])).catch(() => {});
   }, []);

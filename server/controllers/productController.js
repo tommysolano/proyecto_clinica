@@ -168,7 +168,7 @@ const INVENTORY_CATEGORY_POPULATE = {
 
 exports.getProducts = async (req, res) => {
   try {
-    const { search, category, categoria, inventoryCategory, lowStock, bookable } = req.query;
+    const { search, category, categoria, inventoryCategory, lowStock, bookable, includeDisabled } = req.query;
     // Catálogo COMPARTIDO por toda la organización: un producto no pertenece a una
     // sola sucursal. `availableInClinics` decide en qué sucursales se ofrece: vacío
     // (o ausente) = disponible en TODAS; con clínicas = solo en esas. Por eso el
@@ -199,6 +199,9 @@ exports.getProducts = async (req, res) => {
         ],
       });
     }
+    // Inhabilitados: fuera de los buscadores (agenda, venta, cotización…). Solo los
+    // piden las pantallas de gestión (inventario, kardex, compras, reportes).
+    if (includeDisabled !== 'true' && includeDisabled !== '1') query.disabled = { $ne: true };
     if (category) query.category = category;
     // Filtro principal por categoría contable; `categoria` (texto) queda como legacy.
     if (inventoryCategory) query.inventoryCategory = inventoryCategory;
@@ -261,6 +264,7 @@ exports.getSueroComponentes = async (req, res) => {
 
     const productos = await Product.find({
       active: true,
+      disabled: { $ne: true },
       clinic: { $in: clinicas },
       $and: [
         {
@@ -493,6 +497,27 @@ exports.deleteProduct = async (req, res) => {
     res.json({ message: 'Producto eliminado' });
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar producto' });
+  }
+};
+
+/**
+ * Inhabilitar / habilitar un producto o servicio (admin, super admin y contabilidad).
+ * Inhabilitado = sigue en el inventario pero no aparece al agendar ni al vender.
+ */
+exports.setProductDisabled = async (req, res) => {
+  try {
+    const disabled = !!req.body?.disabled;
+    const product = await Product.findOneAndUpdate(
+      { _id: req.params.id, clinic: { $in: catalogClinics(req.clinicId) } },
+      { disabled },
+      { new: true }
+    ).populate(INVENTORY_CATEGORY_POPULATE);
+    if (!product) return res.status(404).json({ message: 'Producto no encontrado' });
+    // Un servicio inhabilitado deja de ofrecerse en la agenda: re-sincroniza el catálogo.
+    if (product.category === 'servicio') marcarServiciosPendientes();
+    res.json(product);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al cambiar el estado del producto' });
   }
 };
 

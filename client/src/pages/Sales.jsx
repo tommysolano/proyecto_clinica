@@ -258,7 +258,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const { hasRole } = useAuth();
   const [journalSale, setJournalSale] = useState(null); // venta cuyos asientos se consultan (solo lectura)
   const canCreate = hasRole('admin', 'cajero', 'contabilidad');
-  const canCancel = hasRole('admin');
+  const canCancel = hasRole('admin', 'contabilidad');
   const canInvoice = hasRole('admin', 'cajero');
   const canAccounting = hasRole('admin', 'contabilidad');
   // Historial: admin y contabilidad ven todo; el cajero (29-10-2026) solo lo que él registró,

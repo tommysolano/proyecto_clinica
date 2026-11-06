@@ -46,7 +46,9 @@ async function sincronizar() {
   // Cada EMPRESA tiene su catálogo (oct-2026): el producto es de la empresa de su
   // sucursal, y el servicio de agenda se casa por nombre DENTRO de esa empresa.
   await ensureCompanyCache();
-  const productos = await Product.find({ category: 'servicio', active: true })
+  // Los inhabilitados no se ofrecen al agendar: su item se desengancha (no se borra)
+  // y vuelve a engancharse al habilitarlos.
+  const productos = await Product.find({ category: 'servicio', active: true, disabled: { $ne: true } })
     .select('name clinic createdAt')
     .sort({ createdAt: 1, _id: 1 })
     .lean();

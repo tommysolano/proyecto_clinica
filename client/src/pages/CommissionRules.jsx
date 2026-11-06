@@ -204,7 +204,7 @@ export default function CommissionRules() {
       const [r, u, p] = await Promise.all([
         api.get('/commissions/rules'),
         api.get('/users').catch(() => ({ data: [] })),
-        api.get('/products', { params: { limit: 500 } }).catch(() => ({ data: [] })),
+        api.get('/products', { params: { limit: 500, includeDisabled: 'true' } }).catch(() => ({ data: [] })),
       ]);
       setRules(r.data || []);
       setUsers(u.data || []);

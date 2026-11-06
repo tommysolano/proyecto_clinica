@@ -7,6 +7,7 @@ const {
   deleteProduct,
   previewNextCode,
   getSueroComponentes,
+  setProductDisabled,
 } = require('../controllers/productController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
@@ -24,6 +25,8 @@ router.get('/next-code', requireRole('admin', 'contabilidad'), previewNextCode);
 router.get('/:id', requireRole('admin', 'cajero', 'contabilidad', 'marketing', 'doctor', 'call_center', 'enfermero'), getProduct);
 router.post('/', requireRole('admin', 'contabilidad'), createProduct);
 router.put('/:id', requireRole('admin', 'contabilidad'), updateProduct);
+// Inhabilitar / habilitar (no aparece al agendar ni al vender). Super admin pasa siempre.
+router.patch('/:id/disabled', requireRole('admin', 'contabilidad'), setProductDisabled);
 router.delete('/:id', requireRole('admin'), deleteProduct);
 
 module.exports = router;

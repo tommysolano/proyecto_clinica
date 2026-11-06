@@ -159,7 +159,7 @@ export default function ProductFormModal({
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
-    api.get('/products')
+    api.get('/products', { params: { includeDisabled: 'true' } })
       .then((r) => {
         if (cancelled) return;
         const list = Array.isArray(r.data) ? r.data : (r.data?.items || r.data?.products || []);

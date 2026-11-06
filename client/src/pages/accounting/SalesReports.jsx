@@ -54,7 +54,7 @@ export default function SalesReports() {
 
   const loadMeta = async () => {
     const [p, c] = await Promise.all([
-      api.get('/products', { params: { limit: 500 } }).catch(() => ({ data: [] })),
+      api.get('/products', { params: { limit: 500, includeDisabled: 'true' } }).catch(() => ({ data: [] })),
       api.get('/sales-reports/categories').catch(() => ({ data: [] })),
     ]);
     setProducts(p.data.products || p.data || []);
