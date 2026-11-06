@@ -424,7 +424,13 @@ exports.detail = async (req, res) => {
         discount: s.discountTotal || 0,
         tax: s.taxAmount,
         total: s.total,
-        payments: s.payments?.length ? s.payments.map((p) => ({ method: p.method, amount: p.amount, reference: p.method === 'transferencia' ? p.reference || '' : '' })) : [{ method: s.paymentMethod, amount: s.total }],
+        payments: s.payments?.length ? s.payments.map((p) => ({
+          method: p.method,
+          amount: p.amount,
+          reference: p.method === 'transferencia' ? p.reference || '' : '',
+          // Débito o crédito: el tipo que se guardó al cobrar (vacío en ventas antiguas).
+          cardType: p.method === 'tarjeta' ? p.cardTypeSnapshot || '' : '',
+        })) : [{ method: s.paymentMethod, amount: s.total }],
         invoice: s.invoice ? { _id: s.invoice._id, number: `${s.invoice.estab}-${s.invoice.ptoEmi}-${s.invoice.secuencial}`, estado: s.invoice.estado } : null,
         seller: s.createdBy?.name || '',
         doctor: s.doctor?.name || '',

@@ -18,6 +18,9 @@ import { fmt, fmtDate } from './_utils';
  */
 
 const METODO = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', transferencia: 'Transferencia', credito: 'Crédito', anticipo: 'Anticipo', otro: 'Otro' };
+const TIPO_TARJETA = { DEBITO: 'débito', CREDITO: 'crédito', CORRIENTE: 'corriente' };
+/** «Tarjeta crédito $20.00», «Transferencia $15.00 (N° 123)»… */
+const etiquetaPago = (p) => `${METODO[p.method] || p.method}${TIPO_TARJETA[p.cardType] ? ` ${TIPO_TARJETA[p.cardType]}` : ''} ${money(p.amount)}${p.reference ? ` (N° ${p.reference})` : ''}`;
 const TIPO = { servicio: 'Servicios', programa: 'Programas', producto: 'Productos' };
 const COLORS = ['#059669', '#0284c7', '#7c3aed', '#d97706', '#e11d48', '#475569'];
 const TIPO_COLOR = { servicio: '#0284c7', programa: '#7c3aed', producto: '#059669' };
@@ -542,7 +545,7 @@ export default function CashClosingDetail() {
                           ) : <span className="text-slate-400">Sin factura</span>}
                         </td>
                         <td className="px-2 py-1.5"><div>{s.clientName}</div><div className="text-[11px] text-slate-400 font-mono">{s.clientCedula}</div></td>
-                        <td className="px-2 py-1.5 text-xs">{s.payments.map((p) => `${METODO[p.method] || p.method} ${money(p.amount)}${p.reference ? ` (N° ${p.reference})` : ''}`).join(' + ')}</td>
+                        <td className="px-2 py-1.5 text-xs">{s.payments.map(etiquetaPago).join(' + ')}</td>
                         <td className="px-2 py-1.5 text-xs">{s.seller || '—'}</td>
                         <td className="px-2 py-1.5 text-right font-mono">{s.discount ? money(s.discount) : '—'}</td>
                         <td className="px-2 py-1.5 text-right font-mono">{money(s.tax)}</td>

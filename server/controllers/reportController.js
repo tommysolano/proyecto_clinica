@@ -1,4 +1,5 @@
 const ExcelJS = require('exceljs');
+const { invoiceListFilter } = require('../utils/invoiceListFilter');
 const Sale = require('../models/Sale');
 const Appointment = require('../models/Appointment');
 const Invoice = require('../models/Invoice');
@@ -327,12 +328,10 @@ exports.exportAppointments = async (req, res) => {
 /* ============================== FACTURAS ============================== */
 exports.exportInvoices = async (req, res) => {
   try {
-    const query = { clinic: req.clinicId };
+    // Mismos filtros que la pantalla de Facturación (fechas, estado, caja y buscador).
+    const query = { clinic: req.clinicId, ...(await invoiceListFilter(req.query)) };
     // Sucursal ligada a un centro (middleware/accountingScope): las facturas de sus ventas.
     if (req.costCenterScope) query.costCenter = req.costCenterScope;
-    const range = buildDateRange(req);
-    if (range) query.createdAt = range;
-    if (req.query.estado) query.estado = req.query.estado;
 
     const invoices = await Invoice.find(query)
       .populate({

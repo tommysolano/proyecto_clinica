@@ -1,8 +1,10 @@
 /**
  * Comisiones > Marketing: los agendamientos del call center.
  *
- * - Un agente DESACTIVADO sigue saliendo con lo que agendó en el período (hay
- *   que poder calcular lo que se le debe).
+ * - Solo cuentan los agentes con el perfil ACTIVO (nov-2026): el desactivado no
+ *   sale, ni lo que agendó.
+ * - Tarifa por paciente nuevo con vigencia (general o por agente) y desglose de
+ *   los nuevos por sucursal.
  * - El listado de pacientes nuevos trae quién los agendó, cuándo se agendaron y
  *   cuándo el sistema los dio por nuevos.
  * - El filtro puede ir por fecha de la cita o por fecha en que se agendó.
@@ -19,6 +21,8 @@ const Patient = require('../models/Patient');
 const Appointment = require('../models/Appointment');
 const Conversation = require('../models/Conversation');
 const ClinicalRecord = require('../models/ClinicalRecord');
+const Sale = require('../models/Sale');
+const CallCenterRate = require('../models/CallCenterRate');
 require('../models/Clinic'); // el populate de la sucursal
 
 const ok = (result) => {
@@ -52,42 +56,48 @@ async function seed() {
   const cita = (extra) => Appointment.create({
     clinic: clinicId, date: hoy, startTime: '10:00', status: 'pendiente', ...extra,
   });
-  // La asesora desactivada agendó a un paciente nuevo HACE 10 DÍAS para hoy.
+  // La asesora activa agendó a un paciente nuevo HACE 10 DÍAS para hoy.
   const citaNueva = await cita({
-    patient: nuevo._id, createdBy: ida._id, createdByName: ida.name, createdByRole: 'call_center',
+    patient: nuevo._id, createdBy: activa._id, createdByName: activa.name, createdByRole: 'call_center',
     isFirstVisit: true, status: 'asistida',
   });
   await Appointment.collection.updateOne({ _id: citaNueva._id }, { $set: { createdAt: haceDiezDias } });
   await cita({ patient: viejo._id, createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: false });
+  // La desactivada también agendó un nuevo: no debe salir en ningún lado.
+  const deLaIda = await Patient.create({ clinic: clinicId, firstName: 'PACIENTE', lastName: 'DE LA IDA' });
+  await cita({
+    patient: deLaIda._id, createdBy: ida._id, createdByName: ida.name, createdByRole: 'call_center',
+    isFirstVisit: true, status: 'asistida',
+  });
 
-  return { clinicId, userId, activa, ida, hoy, haceDiezDias };
+  return { clinicId, userId, activa, ida, hoy, haceDiezDias, citaNueva };
 }
 
-test('la asesora desactivada sigue saliendo con lo que agendó', async () => {
-  const { clinicId, userId, ida, hoy } = await seed();
+test('la asesora desactivada no sale, ni cuentan sus citas', async () => {
+  const { clinicId, userId, activa, ida, hoy } = await seed();
   const res = ok(await H.runController(
     commissions.callCenterSummary,
     H.mockReq(clinicId, userId, {}, { role: 'marketing', query: { start: ymd(hoy), end: ymd(hoy), clinic: 'all' } })
   ));
-  const suya = res.agents.find((a) => a.userId === String(ida._id));
-  assert.ok(suya, 'aparece aunque su cuenta esté desactivada');
-  assert.equal(suya.inactive, true);
-  assert.equal(suya.total, 1);
+  assert.ok(!res.agents.some((a) => a.userId === String(ida._id)), 'la desactivada no aparece');
+  const suya = res.agents.find((a) => a.userId === String(activa._id));
+  assert.equal(suya.total, 2);
   assert.equal(suya.nuevos, 1);
-  assert.equal(res.totals.total, 2);
+  assert.equal(res.totals.total, 2, 'la cita de la desactivada no suma');
+  assert.equal(res.totals.nuevos, 1);
 });
 
 test('lista a los pacientes nuevos con quién y cuándo se agendaron', async () => {
-  const { clinicId, userId, ida, hoy, haceDiezDias } = await seed();
+  const { clinicId, userId, activa, ida, hoy, haceDiezDias } = await seed();
   const res = ok(await H.runController(
     commissions.callCenterNewPatients,
     H.mockReq(clinicId, userId, {}, { role: 'marketing', query: { start: ymd(hoy), end: ymd(hoy), clinic: 'all' } })
   ));
-  assert.equal(res.total, 1, 'solo el nuevo; el recurrente no entra');
+  assert.equal(res.total, 1, 'solo el nuevo; ni el recurrente ni el de la desactivada');
   const [p] = res.patients;
   assert.equal(p.patient, 'PACIENTE NUEVO');
-  assert.equal(p.agent, ida.name);
-  assert.equal(p.agentInactive, true);
+  assert.equal(p.agent, activa.name);
+  assert.equal(p.agentInactive, false);
   assert.equal(new Date(p.scheduledAt).getTime(), haceDiezDias.getTime());
   // Cuenta como nuevo desde que asistió (sin hora de llegada: el día de la cita).
   assert.equal(new Date(p.markedNewAt).getTime(), hoy.getTime());
@@ -103,10 +113,17 @@ test('lista a los pacientes nuevos con quién y cuándo se agendaron', async () 
     commissions.callCenterNewPatients,
     H.mockReq(clinicId, userId, {}, {
       role: 'marketing',
-      query: { start: ymd(haceDiezDias), end: ymd(haceDiezDias), clinic: 'all', fecha: 'agendada', agent: String(ida._id) },
+      query: { start: ymd(haceDiezDias), end: ymd(haceDiezDias), clinic: 'all', fecha: 'agendada', agent: String(activa._id) },
     })
   ));
   assert.equal(porAgendaAntes.total, 1);
+  const deLaIda = ok(await H.runController(
+    commissions.callCenterNewPatients,
+    H.mockReq(clinicId, userId, {}, {
+      role: 'marketing', query: { start: ymd(hoy), end: ymd(hoy), clinic: 'all', agent: String(ida._id) },
+    })
+  ));
+  assert.equal(deLaIda.total, 0, 'ni pidiéndola por agente');
 });
 
 test('los pacientes nuevos vienen paginados, lo último agendado primero', async () => {
@@ -130,7 +147,7 @@ test('los pacientes nuevos vienen paginados, lo último agendado primero', async
     })
   ).then(ok);
   const p1 = await pedir(1);
-  assert.equal(p1.total, 6, '5 nuevos + el de la asesora desactivada');
+  assert.equal(p1.total, 6, '5 nuevos + el del seed');
   assert.deepEqual(p1.pagination, { page: 1, limit: 2, total: 6, pages: 3 });
   assert.deepEqual(p1.patients.map((x) => x.patient), ['PAG4', 'PAG3']);
   const p3 = await pedir(3);
@@ -154,9 +171,9 @@ test('la primera cita que no quedó asistida no cuenta como nuevo', async () => 
     commissions.callCenterSummary, H.mockReq(clinicId, userId, {}, { role: 'marketing', query })
   ));
   const suya = resumen.agents.find((a) => a.userId === String(activa._id));
-  assert.equal(suya.nuevos, 0);
+  assert.equal(suya.nuevos, 1, 'solo el asistido del seed');
   assert.equal(suya.nuevosSinAsistir, 4);
-  assert.equal(resumen.totals.nuevos, 1, 'solo el asistido de la asesora desactivada');
+  assert.equal(resumen.totals.nuevos, 1);
   assert.equal(resumen.totals.nuevosSinAsistir, 4);
 
   const lista = ok(await H.runController(
@@ -200,7 +217,7 @@ test('quien ya tenía un seguimiento anterior o ficha física no es nuevo, aunqu
     commissions.callCenterSummary, H.mockReq(clinicId, userId, {}, { role: 'marketing', query })
   ));
   const suya = resumen.agents.find((a) => a.userId === String(activa._id));
-  assert.equal(suya.nuevos, 1);
+  assert.equal(suya.nuevos, 2, 'el del seed + el del seguimiento de la cita');
   assert.equal(suya.recurrentes, 3, 'el paciente viejo + los dos con historia previa');
 });
 
@@ -235,8 +252,8 @@ test('si faltó a la primera y se le creó OTRA cita, cuenta como nuevo cuando a
   // «sin asistir» ni como recurrente.
   const resumen = await pedir(commissions.callCenterSummary, ayer);
   const suya = resumen.agents.find((a) => a.userId === String(activa._id));
-  assert.equal(suya.total, 3, 'las dos del paciente + el recurrente del seed');
-  assert.equal(suya.nuevos, 1);
+  assert.equal(suya.total, 4, 'las dos del paciente + las dos del seed');
+  assert.equal(suya.nuevos, 2);
   assert.equal(suya.nuevosSinAsistir, 0);
   assert.equal(suya.recurrentes, 1);
 
@@ -288,4 +305,106 @@ test('cada paciente nuevo trae su chat: el vinculado o, si no, el de su teléfon
   assert.equal(de('POR TELEFONO').chatId, String(delTelefono._id));
   assert.equal(de('SIN CHAT').chatId, null);
   assert.ok(!('phone' in de('POR TELEFONO')), 'el teléfono no se expone');
+});
+
+test('tarifa por paciente nuevo: la vigente ese día, la del agente manda sobre la general', async () => {
+  const { clinicId, userId, activa, hoy } = await seed();
+  const ayer = new Date(hoy.getTime() - 86400000);
+  const manana = new Date(hoy.getTime() + 86400000);
+  const crear = (body) => H.runController(commissions.createCallCenterRate, H.mockReq(clinicId, userId, body));
+  const pedirResumen = () => H.runController(commissions.callCenterSummary, H.mockReq(clinicId, userId, {}, {
+    role: 'marketing', query: { start: ymd(hoy), end: ymd(hoy), clinic: 'all' },
+  })).then(ok);
+
+  // Sin tarifas: el nuevo cuenta pero no gana nada.
+  let r = await pedirResumen();
+  assert.equal(r.totals.ganado, 0);
+  assert.equal(r.totals.sinTarifa, 1);
+
+  ok(await crear({ amount: 0.25, validFrom: ymd(ayer) }));
+  // Una general que empieza mañana todavía no rige.
+  ok(await crear({ amount: 9, validFrom: ymd(manana) }));
+  r = await pedirResumen();
+  assert.equal(r.totals.ganado, 0.25);
+  assert.equal(r.agents.find((a) => a.userId === String(activa._id)).ganado, 0.25);
+
+  // La del agente manda sobre la general.
+  ok(await crear({ user: String(activa._id), amount: 0.4, validFrom: ymd(ayer) }));
+  r = await pedirResumen();
+  assert.equal(r.totals.ganado, 0.4);
+  const lista = ok(await H.runController(commissions.callCenterNewPatients, H.mockReq(clinicId, userId, {}, {
+    role: 'marketing', query: { start: ymd(hoy), end: ymd(hoy), clinic: 'all' },
+  })));
+  assert.equal(lista.patients[0].commission, 0.4);
+
+  const malo = await crear({ amount: -1, validFrom: ymd(hoy) });
+  assert.equal(malo.statusCode, 400);
+  const sinFecha = await crear({ amount: 1 });
+  assert.equal(sinFecha.statusCode, 400);
+  assert.equal(await CallCenterRate.countDocuments(), 3);
+});
+
+test('los nuevos se desglosan por sucursal y el listado trae lo facturado en la cita', async () => {
+  const { clinicId, userId, activa, hoy, citaNueva } = await seed();
+  const otraSede = await H.seedClinic();
+  const Clinic = require('../models/Clinic');
+  await Clinic.collection.insertMany([{ _id: clinicId, name: 'Central' }, { _id: otraSede.clinicId, name: 'Extension' }]);
+  const pac = await Patient.create({ clinic: otraSede.clinicId, firstName: 'DE OTRA SEDE' });
+  await Appointment.create({
+    clinic: otraSede.clinicId, date: hoy, startTime: '10:00', status: 'completada', patient: pac._id,
+    createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: true,
+  });
+  await CallCenterRate.create({ amount: 0.25, validFrom: new Date(hoy.getTime() - 86400000) });
+  await Sale.collection.insertOne({
+    clinic: clinicId, appointment: citaNueva._id, status: 'completada', saleNumber: '001-001-000000123', total: 40,
+    items: [{ productName: 'Consulta general', quantity: 1 }, { productName: 'Suero', quantity: 2 }],
+  });
+
+  const query = { start: ymd(hoy), end: ymd(hoy), clinic: 'all' };
+  const r = ok(await H.runController(commissions.callCenterSummary, H.mockReq(clinicId, userId, {}, { role: 'marketing', query })));
+  assert.equal(r.porSucursal.length, 2, 'una fila por sucursal');
+  assert.deepEqual(r.porSucursal.map((p) => [p.clinic, p.nuevos, p.ganado]), [['Central', 1, 0.25], ['Extension', 1, 0.25]]);
+  assert.equal(r.totals.ganado, 0.5);
+  const suya = r.agents.find((a) => a.userId === String(activa._id));
+  assert.equal(suya.porSucursal.length, 2);
+
+  const lista = ok(await H.runController(commissions.callCenterNewPatients, H.mockReq(clinicId, userId, {}, { role: 'marketing', query })));
+  const conVenta = lista.patients.find((p) => p.appointmentId === String(citaNueva._id));
+  assert.deepEqual(conVenta.billedItems, ['Consulta general', 'Suero ×2']);
+  assert.equal(conVenta.billedTotal, 40);
+  assert.deepEqual(conVenta.saleNumbers, ['001-001-000000123']);
+  assert.equal(lista.patients.find((p) => p.patient === 'DE OTRA SEDE').billedTotal, null);
+});
+
+test('detalle del agente: todas sus citas con su tipo, filtrables por tipo y estado', async () => {
+  const { clinicId, userId, activa, ida, hoy } = await seed();
+  const pac = await Patient.create({ clinic: clinicId, firstName: 'SIN ASISTIR AUN' });
+  await Appointment.create({
+    clinic: clinicId, date: hoy, startTime: '15:00', status: 'pendiente', patient: pac._id,
+    createdBy: activa._id, createdByRole: 'call_center', isFirstVisit: true,
+  });
+  await CallCenterRate.create({ amount: 0.25, validFrom: new Date(hoy.getTime() - 86400000) });
+  const pedir = (query) => H.runController(commissions.callCenterAppointments, H.mockReq(clinicId, userId, {}, {
+    role: 'marketing', query: { start: ymd(hoy), end: ymd(hoy), clinic: 'all', ...query },
+  })).then(ok);
+
+  const todas = await pedir({ agent: String(activa._id) });
+  assert.equal(todas.agentName, activa.name);
+  assert.equal(todas.pagination.total, 3);
+  assert.deepEqual(todas.counts, { nuevo: 1, recurrente: 1, nuevoSinAsistir: 1, reemplazada: 0 });
+  assert.equal(todas.totals.ganado, 0.25);
+  const nuevo = todas.rows.find((r) => r.tipo === 'nuevo');
+  assert.equal(nuevo.patient, 'PACIENTE NUEVO');
+  assert.equal(nuevo.commission, 0.25);
+  assert.equal(todas.rows.find((r) => r.tipo === 'recurrente').commission, null, 'el recurrente no paga');
+
+  const soloNuevos = await pedir({ agent: String(activa._id), tipo: 'nuevo' });
+  assert.deepEqual(soloNuevos.rows.map((r) => r.patient), ['PACIENTE NUEVO']);
+  assert.equal(soloNuevos.counts.recurrente, 1, 'los contadores ignoran el filtro de tipo');
+
+  const atendidas = await pedir({ agent: 'todos', status: 'asistida,completada' });
+  assert.deepEqual(atendidas.rows.map((r) => r.patient), ['PACIENTE NUEVO'], 'la desactivada no sale');
+
+  const deLaIda = await pedir({ agent: String(ida._id) });
+  assert.equal(deLaIda.pagination.total, 0);
 });

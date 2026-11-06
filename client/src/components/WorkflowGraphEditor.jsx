@@ -2705,6 +2705,32 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [], me
           mensaje tiene que ir en un paso <b>Enviar plantilla</b>.
         </p>
       )}
+      {/* CUMPLEAÑOS (nov-2026): el sistema revisa cada día quién cumple años (fecha de
+          nacimiento de la ficha) y el saludo sale a esta hora, una sola vez al día. */}
+      {trigger.type === 'patient_birthday' && (
+        <div className="grid gap-2">
+          <label className="text-sm">
+            <span className="text-slate-600 block mb-1">Hora del saludo</span>
+            <input
+              type="time"
+              value={/^\d{1,2}:\d{2}$/.test(trigger.sendHour || '') ? trigger.sendHour : '09:00'}
+              onChange={(e) => set({ sendHour: e.target.value })}
+              className="w-40 border border-slate-200 rounded-lg px-2 py-2 text-sm"
+            />
+            <span className="text-[11px] text-slate-400 block mt-1">
+              Hora de Ecuador. Si se deja como está, el saludo sale a las 09:00 del día del cumpleaños.
+            </span>
+          </label>
+          <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2 m-0">
+            Se dispara solo, <b>el día del cumpleaños</b> de cada paciente activo que tenga su
+            <b> fecha de nacimiento</b> en la ficha (los nacidos el 29 de febrero, el 28 en años no
+            bisiestos). Un paciente recibe el saludo <b>una vez al día</b> por flujo. Como casi nunca habrá
+            escrito en las últimas 24 h, el mensaje tiene que ir en un paso <b>Enviar plantilla</b>
+            (aprobada por Meta); puedes usar <b>{'{{nombre}}'}</b> en sus variables. El filtro de sucursal
+            toma la sucursal donde está registrado el paciente.
+          </p>
+        </div>
+      )}
       {['contact_import', 'appointment_bulk'].includes(trigger.type) && (
         <label className="text-sm">
           <span className="text-slate-600 block mb-1">Hora de envío por defecto (envíos masivos)</span>

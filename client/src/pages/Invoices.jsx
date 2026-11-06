@@ -18,6 +18,11 @@ import {
   HiOutlineSignalSlash,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
+import Paginador from '../components/Paginador';
+
+// Facturas por página (el servidor pagina; antes solo llegaban las 50 últimas).
+const POR_PAGINA = 50;
+const FILTRO_VACIO = { startDate: '', endDate: '', estado: '', puntoEmision: '', q: '' };
 
 const ESTADO_STYLES = {
   AUTORIZADO: 'bg-emerald-100 text-emerald-700',
@@ -65,7 +70,15 @@ export default function Invoices() {
 
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState({ startDate: '', endDate: '', estado: '', puntoEmision: '' });
+  const [filter, setFilter] = useState(FILTRO_VACIO);
+  // El buscador se escribe aquí y pasa al filtro con un respiro (no una petición por tecla).
+  const [busqueda, setBusqueda] = useState('');
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
+  const [sumTotal, setSumTotal] = useState(0);
+  // Los filtros que viajan al servidor (lista y Excel).
+  const paramsFiltro = () => Object.fromEntries(Object.entries(filter).filter(([, v]) => v));
+  const hayFiltros = Object.values(filter).some(Boolean);
   // Puntos de emisión (cajas) para filtrar; solo admin/contabilidad los administran.
   const canVerPuntos = hasRole('admin', 'contabilidad');
   const [puntos, setPuntos] = useState([]);
@@ -85,13 +98,10 @@ export default function Invoices() {
   const load = async () => {
     setLoading(true);
     try {
-      const params = { limit: 50 };
-      if (filter.startDate) params.startDate = filter.startDate;
-      if (filter.endDate) params.endDate = filter.endDate;
-      if (filter.estado) params.estado = filter.estado;
-      if (filter.puntoEmision) params.puntoEmision = filter.puntoEmision;
-      const res = await api.get('/invoices', { params });
+      const res = await api.get('/invoices', { params: { ...paramsFiltro(), page, limit: POR_PAGINA } });
       setInvoices(res.data.invoices || []);
+      setPagination(res.data.pagination || null);
+      setSumTotal(res.data.sumTotal || 0);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar facturas');
     } finally {
@@ -125,7 +135,24 @@ export default function Invoices() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter]);
+  }, [filter, page]);
+
+  // Cambiar un filtro vuelve a la primera página.
+  const cambiarFiltro = (patch) => {
+    setPage(1);
+    setFilter((f) => ({ ...f, ...patch }));
+  };
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (busqueda.trim() !== filter.q) cambiarFiltro({ q: busqueda.trim() });
+    }, 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busqueda]);
+  const irAPagina = (n) => {
+    setPage(n);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   useEffect(() => {
     loadSriStatus();
@@ -211,11 +238,8 @@ export default function Invoices() {
         <button
           onClick={async () => {
             try {
-              const params = {};
-              if (filter.startDate) params.startDate = filter.startDate;
-              if (filter.endDate) params.endDate = filter.endDate;
-              if (filter.estado) params.estado = filter.estado;
-              await downloadFile('/reports/invoices.xlsx', { params, filename: `facturas_${Date.now()}.xlsx` });
+              // Lo mismo que se ve: fechas, estado, caja y búsqueda.
+              await downloadFile('/reports/invoices.xlsx', { params: paramsFiltro(), filename: `facturas_${Date.now()}.xlsx` });
             } catch (err) {
               toast.error(err.message || 'Error al exportar');
             }
@@ -262,46 +286,86 @@ export default function Invoices() {
         </div>
       )}
 
-      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4">
-        <div className={`grid grid-cols-1 gap-3 ${puntos.length ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
-          <DateInput
-            value={filter.startDate}
-            onChange={(e) => setFilter({ ...filter, startDate: e.target.value })}
-            className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
-          />
-          <DateInput
-            value={filter.endDate}
-            onChange={(e) => setFilter({ ...filter, endDate: e.target.value })}
-            className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
-          />
-          <select
-            value={filter.estado}
-            onChange={(e) => setFilter({ ...filter, estado: e.target.value })}
-            className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
-          >
-            <option value="">Todos los estados</option>
-            {Object.keys(ESTADO_STYLES).map((k) => (
-              <option key={k} value={k}>
-                {ESTADO_LABEL[k] || k}
-              </option>
-            ))}
-          </select>
-          {puntos.length > 0 && (
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4 space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
+          <label className="text-xs font-medium text-slate-600 sm:col-span-2">
+            Buscar
+            <input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="N° de factura, cliente o cédula/RUC"
+              className="w-full mt-1 px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
+            />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            Desde
+            <DateInput
+              value={filter.startDate}
+              onChange={(e) => cambiarFiltro({ startDate: e.target.value })}
+              className="w-full mt-1 px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
+            />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            Hasta
+            <DateInput
+              value={filter.endDate}
+              onChange={(e) => cambiarFiltro({ endDate: e.target.value })}
+              className="w-full mt-1 px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
+            />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            Estado
             <select
-              value={filter.puntoEmision}
-              onChange={(e) => setFilter({ ...filter, puntoEmision: e.target.value })}
-              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
+              value={filter.estado}
+              onChange={(e) => cambiarFiltro({ estado: e.target.value })}
+              className="w-full mt-1 px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
             >
-              <option value="">Todas las cajas</option>
-              {puntos.map((p) => (
-                <option key={p._id} value={p._id}>
-                  {p.establecimiento}-{p.codigo}{p.nombre ? ` · ${p.nombre}` : ''}{p.usuario?.name ? ` (${p.usuario.name})` : ''}
+              <option value="">Todos los estados</option>
+              {Object.keys(ESTADO_STYLES).map((k) => (
+                <option key={k} value={k}>
+                  {ESTADO_LABEL[k] || k}
                 </option>
               ))}
             </select>
+          </label>
+          {puntos.length > 0 && (
+            <label className="text-xs font-medium text-slate-600">
+              Caja
+              <select
+                value={filter.puntoEmision}
+                onChange={(e) => cambiarFiltro({ puntoEmision: e.target.value })}
+                className="w-full mt-1 px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
+              >
+                <option value="">Todas las cajas</option>
+                {puntos.map((p) => (
+                  <option key={p._id} value={p._id}>
+                    {p.establecimiento}-{p.codigo}{p.nombre ? ` · ${p.nombre}` : ''}{p.usuario?.name ? ` (${p.usuario.name})` : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+          <span className="text-slate-500">
+            {pagination ? <><b className="text-slate-800">{pagination.total}</b> factura{pagination.total === 1 ? '' : 's'}</> : '—'}
+            {pagination && (
+              <> · total facturado <b className="text-emerald-700">${Number(sumTotal || 0).toFixed(2)}</b> <span className="text-xs text-slate-400">(sin anuladas)</span></>
+            )}
+          </span>
+          {hayFiltros && (
+            <button
+              type="button"
+              onClick={() => { setBusqueda(''); setPage(1); setFilter(FILTRO_VACIO); }}
+              className="text-xs text-emerald-600 hover:underline bg-transparent border-none cursor-pointer"
+            >
+              Limpiar filtros
+            </button>
           )}
         </div>
       </div>
+
+      {pagination && <Paginador pagination={pagination} onPage={irAPagina} unidad="facturas" />}
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
         <table className="tbl">
@@ -310,6 +374,7 @@ export default function Invoices() {
               <th className="text-left px-5 py-3 text-xs font-semibold uppercase tracking-wider">N° Factura</th>
               <th className="text-left px-5 py-3 text-xs font-semibold uppercase tracking-wider">Cliente</th>
               <th className="text-left px-5 py-3 text-xs font-semibold uppercase tracking-wider">Fecha</th>
+              <th className="text-left px-5 py-3 text-xs font-semibold uppercase tracking-wider">Caja</th>
               <th className="text-right px-5 py-3 text-xs font-semibold uppercase tracking-wider">Total</th>
               <th className="text-left px-5 py-3 text-xs font-semibold uppercase tracking-wider">Estado</th>
               <th className="text-right px-5 py-3 text-xs font-semibold uppercase tracking-wider">Acciones</th>
@@ -318,13 +383,13 @@ export default function Invoices() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={6} className="text-center py-10 text-slate-500">
+                <td colSpan={7} className="text-center py-10 text-slate-500">
                   Cargando...
                 </td>
               </tr>
             ) : invoices.length === 0 ? (
               <tr>
-                <td colSpan={6}>
+                <td colSpan={7}>
                   <EmptyState icon={HiOutlineDocumentText} title="No hay facturas" hint="Emite una factura desde una venta." />
                 </td>
               </tr>
@@ -351,6 +416,10 @@ export default function Invoices() {
                     </td>
                     <td className="px-5 py-3 text-slate-600">
                       {fmtDate(inv.createdAt)}
+                    </td>
+                    <td className="px-5 py-3 text-slate-600 text-xs">
+                      {inv.puntoEmision?.nombre || `${inv.estab}-${inv.ptoEmi}`}
+                      {inv.puntoEmision?.nombre && <p className="text-[11px] text-slate-400 font-mono">{inv.estab}-{inv.ptoEmi}</p>}
                     </td>
                     <td className="px-5 py-3 text-right font-medium text-slate-800">
                       ${Number(inv.importeTotal || 0).toFixed(2)}
@@ -417,6 +486,8 @@ export default function Invoices() {
           </tbody>
         </table>
       </div>
+
+      {pagination && invoices.length > 0 && <Paginador pagination={pagination} onPage={irAPagina} unidad="facturas" />}
 
       {/* Detail Modal */}
       <Modal

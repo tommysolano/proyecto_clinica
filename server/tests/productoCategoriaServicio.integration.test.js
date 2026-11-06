@@ -54,3 +54,33 @@ test('un insumo NO puede ir a una categoría SERVICIO', async () => {
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
   assert.match(r.payload.message, /no es de tipo INVENTARIO/);
 });
+
+test('catálogo compartido: se edita el precio desde otra sucursal sin tocar la categoría', async () => {
+  // Producto y categoría de Central; el admin lo edita estando en otra sucursal.
+  const { clinicId: central, userId } = await H.seedClinic();
+  const { clinicId: otraSede } = await H.seedClinic();
+  const { servicio } = await categorias(central);
+  const colpo = await H.makeProduct(central, {
+    name: 'Colposcopia', category: 'servicio', unlimited: true, salePrice: 29, inventoryCategory: servicio._id,
+  });
+  const r = await actualizar(otraSede, userId, colpo._id, {
+    category: 'servicio', unlimited: true, inventoryCategory: String(servicio._id), salePrice: 39,
+  });
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  const guardado = await Product.findById(colpo._id);
+  assert.equal(guardado.salePrice, 39);
+  assert.equal(String(guardado.inventoryCategory), String(servicio._id));
+});
+
+test('catálogo compartido: no se puede poner la categoría de una sucursal ajena al producto', async () => {
+  const { clinicId: central, userId } = await H.seedClinic();
+  const { clinicId: otraSede } = await H.seedClinic();
+  const { clinicId: tercera } = await H.seedClinic();
+  const ajena = (await categorias(tercera)).servicio;
+  const colpo = await H.makeProduct(central, { name: 'Colposcopia', category: 'servicio', unlimited: true, salePrice: 29 });
+  const r = await actualizar(otraSede, userId, colpo._id, {
+    category: 'servicio', unlimited: true, inventoryCategory: String(ajena._id),
+  });
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /no existe o no pertenece/);
+});

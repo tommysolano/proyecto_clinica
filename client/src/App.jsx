@@ -92,6 +92,7 @@ const CallCenterConfig = pagina(() => import('./pages/CallCenterConfig'));
 const CommissionRules = pagina(() => import('./pages/CommissionRules'));
 const Commissions = pagina(() => import('./pages/Commissions'));
 const CommissionDoctorDetail = pagina(() => import('./pages/CommissionDoctorDetail'));
+const CommissionMarketingDetail = pagina(() => import('./pages/CommissionMarketingDetail'));
 const Settings = pagina(() => import('./pages/Settings'));
 const Reports = pagina(() => import('./pages/Reports'));
 const DoctorTimes = pagina(() => import('./pages/DoctorTimes'));
@@ -585,6 +586,15 @@ function AppRoutes() {
                     // esconde el de doctores); el super-admin pasa siempre.
                     <RoleRoute roles={['marketing']}>
                       <Commissions />
+                    </RoleRoute>
+                  }
+                />
+                {/* Detalle de marketing: los pacientes de un agente de call center (o todos). */}
+                <Route
+                  path="/commissions/marketing/:agentId"
+                  element={
+                    <RoleRoute roles={['marketing']}>
+                      <CommissionMarketingDetail />
                     </RoleRoute>
                   }
                 />

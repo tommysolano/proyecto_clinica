@@ -98,16 +98,40 @@ const vencimientoDesdePlazo = (dias) => {
 };
 
 /** Sección del modal de venta: agrupa campos afines con su título. */
-function FormSection({ title, subtitle, icon: Icon, children, className = '' }) {
+/**
+ * `tone="destacado"` (nov-2026): la sección del MÉTODO DE PAGO va con borde y
+ * encabezado de color y fondo suave, para que el cajero la distinga del resto del
+ * cobro de un vistazo (lo pidieron los usuarios con facturación electrónica).
+ */
+const SECTION_TONES = {
+  normal: {
+    section: 'border border-slate-200',
+    header: 'bg-slate-50 border-b border-slate-200',
+    title: 'text-sm font-semibold text-slate-700',
+    icon: 'text-emerald-600',
+    subtitle: 'text-slate-500',
+    body: '',
+  },
+  destacado: {
+    section: 'border-2 border-sky-300 shadow-sm shadow-sky-100',
+    header: 'bg-sky-600 border-b border-sky-600',
+    title: 'text-sm font-bold text-white uppercase tracking-wide',
+    icon: 'text-white',
+    subtitle: 'text-sky-100',
+    body: 'bg-sky-50/60',
+  },
+};
+function FormSection({ title, subtitle, icon: Icon, children, className = '', tone = 'normal' }) {
+  const t = SECTION_TONES[tone] || SECTION_TONES.normal;
   return (
-    <section className={`border border-slate-200 rounded-xl overflow-hidden ${className}`}>
-      <header className="bg-slate-50 px-3 py-2 border-b border-slate-200">
-        <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
-          {Icon && <Icon className="w-4 h-4 text-emerald-600" />}{title}
+    <section className={`${t.section} rounded-xl overflow-hidden ${className}`}>
+      <header className={`${t.header} px-3 py-2`}>
+        <h3 className={`${t.title} flex items-center gap-1.5`}>
+          {Icon && <Icon className={`w-4 h-4 ${t.icon}`} />}{title}
         </h3>
-        {subtitle && <p className="text-[11px] text-slate-500 mt-0.5">{subtitle}</p>}
+        {subtitle && <p className={`text-[11px] ${t.subtitle} mt-0.5`}>{subtitle}</p>}
       </header>
-      <div className="p-3">{children}</div>
+      <div className={`p-3 ${t.body}`}>{children}</div>
     </section>
   );
 }
@@ -300,7 +324,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     clientCity: 'Guayaquil',
     clientZone: '',
     patient: '',
-    paymentMethod: 'efectivo',
+    paymentMethod: '',  // sin preselección: el cajero escoge el método (obligatorio)
     bankAccount: '',
     creditCard: '',
     cardType: '',      // DEBITO | CREDITO (elegido por el cajero, no deducido de la tarjeta)
@@ -470,7 +494,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       clientCity: 'Guayaquil',
       clientZone: '',
       patient: '',
-      paymentMethod: 'efectivo',
+      paymentMethod: '',
       bankAccount: '',
       creditCard: '',
       cardType: '',
@@ -624,8 +648,6 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const recibidoDif = recibidoNum !== null && Number.isFinite(recibidoNum) ? +(recibidoNum - total).toFixed(2) : 0;
 
   const filaDePago = (method, amount) => ({ method, amount, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', reference: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 });
-  // La fila nueva propone un método que aún no se usa (lo normal: efectivo + tarjeta/transferencia).
-  const otroMetodo = (usados) => ['efectivo', 'tarjeta', 'transferencia'].find((m) => !usados.includes(m)) || 'efectivo';
   /**
    * «Agregar otro método de pago»: con UN clic quedan las DOS filas a la vista —la del
    * método que ya estaba elegido (con el total) y la nueva—. Antes entraba con una sola
@@ -633,15 +655,15 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
    */
   const enableSplit = () => {
     const primero = {
-      ...filaDePago(form.paymentMethod || 'efectivo', +total.toFixed(2)),
+      ...filaDePago(form.paymentMethod || '', +total.toFixed(2)),
       bankAccount: form.bankAccount || '', creditCard: form.creditCard || '', cardType: form.cardType || '',
       cardPos: form.cardPos || '', cardLote: form.cardLote || '', cardVoucher: form.cardVoucher || '',
       reference: form.transferRef || '', cardDeferredType: form.cardDeferredType || 'CORRIENTE', cardDeferredMonths: form.cardDeferredMonths || 0,
     };
-    setSplitPayments([primero, filaDePago(otroMetodo([primero.method]), 0)]);
+    setSplitPayments([primero, filaDePago('', 0)]);
     setSplitMode(true);
   };
-  const addSplitRow = () => setSplitPayments((rows) => [...rows, filaDePago(otroMetodo(rows.map((r) => r.method)), splitRemaining > 0 ? +splitRemaining.toFixed(2) : 0)]);
+  const addSplitRow = () => setSplitPayments((rows) => [...rows, filaDePago('', splitRemaining > 0 ? +splitRemaining.toFixed(2) : 0)]);
   const setSplitRow = (i, patch) => setSplitPayments((rows) => rows.map((r, x) => (x === i ? { ...r, ...patch } : r)));
   // Con DOS pagos, lo que se escribe en uno ajusta el otro para que sumen el total.
   const setSplitAmount = (i, value) => setSplitPayments((rows) => {
@@ -660,7 +682,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const removeSplitRow = (i) => {
     const rest = splitPayments.filter((_, x) => x !== i);
     if (rest.length > 1) { setSplitPayments(rest); return; }
-    const r = rest[0] || filaDePago(form.paymentMethod || 'efectivo', 0);
+    const r = rest[0] || filaDePago('', 0);
     setForm((f) => ({
       ...f, paymentMethod: r.method, bankAccount: r.bankAccount || '', creditCard: r.creditCard || '', cardType: r.cardType || '',
       cardPos: r.cardPos || '', cardLote: r.cardLote || '', cardVoucher: r.cardVoucher || '', transferRef: r.reference || '',
@@ -910,7 +932,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         if (igual) { lineas[0].unitPrice = igual.price; lineas[0].priceName = igual.name; }
       }
       // Lo ya abonado al agendar entra como un PAGO de esta venta con su forma;
-      // lo que falta, en efectivo (el cajero lo cambia si paga de otra forma).
+      // lo que falta, sin método: el cajero escoge con qué lo paga.
       const neto = lineas.reduce((s, l) => s + l.unitPrice * l.quantity - descuentoDeLinea(l), 0);
       if (apt.advancePayment && !apt.isCanje && !apt.isCortesia && neto > 0) {
         const abonado = apt.advancePayment === 'abono'
@@ -929,7 +951,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         });
         const resto = +(neto - abonado).toFixed(2);
         if (abonado > 0 && resto > 0.01) {
-          setSplitPayments([fila(FORMA, abonado), fila({ method: 'efectivo', cardType: '' }, resto)]);
+          setSplitPayments([fila(FORMA, abonado), fila({ method: '', cardType: '' }, resto)]);
           setSplitMode(true);
         } else if (abonado > 0) {
           setForm((f) => ({ ...f, paymentMethod: FORMA.method, cardType: FORMA.cardType }));
@@ -1022,12 +1044,12 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const metodosDePago = saldoAFavor > 0.005
     ? { ...paymentMethods, anticipo: `Saldo a favor ($${saldoAFavor.toFixed(2)})` }
     : paymentMethods;
-  /** Usar el saldo a favor: un renglón con lo que alcanza y el resto en efectivo. */
+  /** Usar el saldo a favor: un renglón con lo que alcanza y el resto sin método (lo escoge el cajero). */
   const usarSaldoAFavor = () => {
     const usa = +Math.min(saldoAFavor, total).toFixed(2);
     const resto = +(total - usa).toFixed(2);
     const fila = (method, amount) => ({ method, amount, bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 });
-    setSplitPayments(resto > 0.01 ? [fila('anticipo', usa), fila('efectivo', resto)] : [fila('anticipo', usa)]);
+    setSplitPayments(resto > 0.01 ? [fila('anticipo', usa), fila('', resto)] : [fila('anticipo', usa)]);
     setSplitMode(true);
   };
 
@@ -1215,9 +1237,11 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           return toast.error(`El paciente solo tiene $${saldoAFavor.toFixed(2)} de saldo a favor.`);
         }
         for (const p of rows) {
+          if (!p.method) { setSaving(false); return toast.error('Escoge el método de cada pago'); }
           if (p.method === 'transferencia' && payOptions.accounts.length && !p.bankAccount) { setSaving(false); return toast.error('Selecciona la cuenta bancaria en el pago por transferencia'); }
           if (p.method === 'transferencia' && !String(p.reference || '').trim()) { setSaving(false); return toast.error('Ingresa el número de transferencia'); }
           if (p.method === 'tarjeta' && payOptions.cards.length && !p.creditCard) { setSaving(false); return toast.error('Selecciona la tarjeta en el pago con tarjeta'); }
+          if (p.method === 'tarjeta' && !String(p.cardLote || '').trim()) { setSaving(false); return toast.error('Ingresa el número de lote del pago con tarjeta'); }
         }
         paymentPayload = {
           payments: rows.map((p) => ({
@@ -1236,6 +1260,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           ...plazoPayload(),
         };
       } else {
+        if (!form.paymentMethod && total > 0.005) {
+          setSaving(false);
+          return toast.error('Escoge la forma de pago');
+        }
         if (form.paymentMethod === 'transferencia' && payOptions.accounts.length && !form.bankAccount) {
           setSaving(false);
           return toast.error('Selecciona la cuenta bancaria de destino');
@@ -1247,6 +1275,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         if (form.paymentMethod === 'tarjeta' && payOptions.cards.length && !form.creditCard) {
           setSaving(false);
           return toast.error('Selecciona la tarjeta / POS');
+        }
+        if (form.paymentMethod === 'tarjeta' && !String(form.cardLote || '').trim()) {
+          setSaving(false);
+          return toast.error('Ingresa el número de lote');
         }
         if (form.paymentMethod === 'anticipo' && total > saldoAFavor + 0.01) {
           setSaving(false);
@@ -2146,16 +2178,17 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
             </FormSection>
 
             {/* ── Método(s) de pago y todas sus subopciones ────────────────────────────── */}
-            <FormSection title="Método de pago" icon={HiOutlineBanknotes}>
+            <FormSection title="Método de pago" icon={HiOutlineBanknotes} tone="destacado">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 {!splitMode && (
                   <div>
-                    <label className="lbl">Forma de pago</label>
+                    <label className="lbl">Forma de pago *</label>
                     <select
                       value={form.paymentMethod}
                       onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', transferRef: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })}
                       className="input"
                     >
+                      <option value="">Seleccionar forma de pago…</option>
                       {Object.entries(metodosDePago).map(([k, v]) => (
                         <option key={k} value={k}>{v}</option>
                       ))}
@@ -2287,7 +2320,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                       );
                     })()}
                     <div>
-                      <label className="lbl">N° de lote</label>
+                      <label className="lbl">N° de lote *</label>
                       <input
                         value={form.cardLote || ''}
                         onChange={(e) => setForm({ ...form, cardLote: e.target.value })}
@@ -2365,8 +2398,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                       <div key={i} className="flex flex-wrap items-end gap-2 bg-white rounded-lg border border-slate-200 p-2">
                         <span className="self-center shrink-0 w-6 h-6 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center justify-center" title={`Pago ${i + 1}`}>{i + 1}</span>
                         <div className="w-36">
-                          <label className="lbl">Método</label>
+                          <label className="lbl">Método *</label>
                           <select value={p.method} onChange={(e) => setSplitRow(i, { method: e.target.value, bankAccount: '', reference: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })} className="input">
+                            <option value="">Seleccionar…</option>
                             {Object.entries(metodosDePago).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                           </select>
                         </div>
@@ -2406,7 +2440,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                               </select>
                             </div>
                             <div className="w-24">
-                              <label className="lbl">N° lote</label>
+                              <label className="lbl">N° lote *</label>
                               <input value={p.cardLote || ''} onChange={(e) => setSplitRow(i, { cardLote: e.target.value })} className="input" />
                             </div>
                             {p.cardType === 'CREDITO' && (
@@ -2516,9 +2550,11 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                     Emitir factura electrónica al cobrar · serie{' '}
                     <b className="font-mono">{miPunto.punto.establecimiento}-{miPunto.punto.codigo}</b>
                     {miPunto.punto.nombre ? ` (${miPunto.punto.nombre})` : ''}
+                    {/* El número de la factura que se va a emitir, bien visible (nov-2026:
+                        antes iba en letra pequeña y el cajero no lo veía). */}
                     {proximaFactura && (
-                      <span className="block text-xs text-slate-500 mt-0.5">
-                        Factura N.º <b className="font-mono text-slate-700">{proximaFactura}</b>
+                      <span className="block text-lg text-slate-600 mt-1 leading-tight">
+                        Factura N.º <b className="font-mono font-bold text-emerald-800 tracking-wide">{proximaFactura}</b>
                       </span>
                     )}
                   </span>

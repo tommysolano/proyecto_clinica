@@ -1,22 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import {
   HiOutlineCurrencyDollar, HiOutlineMegaphone, HiOutlineUserGroup, HiOutlineDocumentArrowDown,
   HiOutlinePlusCircle, HiOutlineCheckBadge, HiOutlineArrowsRightLeft,
-  HiOutlineChatBubbleLeftRight, HiOutlineCalendarDays, HiOutlineHeart, HiOutlineBeaker,
+  HiOutlineBeaker,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
 import Modal from '../components/Modal';
-import Paginador from '../components/Paginador';
 import NumericInput from '../components/NumericInput';
 import ProductAutocomplete from '../components/ProductAutocomplete';
 import { doctorOptionLabel, doctorTypeLabel } from '../utils/roles';
-import { fmtDate, fmtDateTime, todayEc } from '../utils/date';
+import { fmtDate, todayEc } from '../utils/date';
 import { useAuth } from '../context/AuthContext';
 import {
-  STATUS_COLORS, STATUS_OPTIONS, money, doctorRolesLabel, doctorSearchOption, statusLabel,
+  STATUS_COLORS, STATUS_OPTIONS, money, doctorRolesLabel, doctorSearchOption,
 } from '../utils/commissionsFormat';
 import { soloActivos } from '../utils/activeUsers';
 
@@ -108,14 +107,18 @@ export default function Commissions() {
   // doctores bajo «Enfermería» mientras llega la respuesta (ni al revés).
   const data = rawData && (rawData.area || 'doctor') === area ? rawData : null;
   const [dataCC, setDataCC] = useState(null);
-  // Apartado marketing: por qué fecha se filtra (la de la cita o el día en que
-  // se agendó), el agente elegido y el listado de pacientes nuevos.
+  // Apartado marketing: por qué fecha se filtra (la de la cita o el día en que se
+  // agendó). El listado de pacientes vive en su propia pestaña (CommissionMarketingDetail).
   const [fechaCC, setFechaCC] = useState('cita');
-  const [agentCC, setAgentCC] = useState('');
-  const [nuevosCC, setNuevosCC] = useState(null);
-  // Pacientes nuevos de 200 en 200 (el servidor pagina).
-  const [pageNuevos, setPageNuevos] = useState(1);
-  const [loadingNuevos, setLoadingNuevos] = useState(false);
+  // TARIFA POR PACIENTE NUEVO (nov-2026): con vigencia por fecha, general o por agente.
+  // Marketing la ve; solo el super-admin la cambia.
+  const [ratesCC, setRatesCC] = useState([]);
+  const [agentesCC, setAgentesCC] = useState([]);
+  const [rateEditor, setRateEditor] = useState(false);
+  const [rateForm, setRateForm] = useState({ user: '', amount: '', validFrom: today(), note: '' });
+  const [savingRate, setSavingRate] = useState(false);
+  // Cambia al guardar/borrar una tarifa: el listado vuelve a pedir la comisión de cada fila.
+  const [versionTarifas, setVersionTarifas] = useState(0);
   const [loading, setLoading] = useState(false);
   const [commissionEditor, setCommissionEditor] = useState(null);
   const [commissionForm, setCommissionForm] = useState({ amountType: 'fixed', value: '', firstTimeOnly: false, minStartTime: '', timeBands: [] });
@@ -202,32 +205,44 @@ export default function Commissions() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [start, end, clinic, doctorFilter, statusFilter, serviceFilter, tab, fechaCC]);
 
-  /**
-   * Pacientes nuevos del call center: se piden al entrar al apartado y cada vez
-   * que cambia un filtro o el agente elegido.
-   */
   useEffect(() => {
-    if (tab !== 'marketing') return undefined;
-    let vivo = true;
-    const t = setTimeout(async () => {
-      setLoadingNuevos(true);
-      try {
-        const r = await api.get('/commissions/callcenter-new-patients', {
-          params: { ...filtrosCC(), ...(agentCC ? { agent: agentCC } : {}), page: pageNuevos, limit: 200 },
-        });
-        if (vivo) setNuevosCC(r.data);
-      } catch (err) {
-        if (vivo) toast.error(err.response?.data?.message || 'Error al cargar los pacientes nuevos');
-      } finally {
-        if (vivo) setLoadingNuevos(false);
-      }
-    }, 250);
-    return () => { vivo = false; clearTimeout(t); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, start, end, clinic, fechaCC, agentCC, pageNuevos]);
+    if (tab !== 'marketing') return;
+    api.get('/commissions/callcenter-rates').then((r) => setRatesCC(r.data || [])).catch(() => setRatesCC([]));
+    api.get('/commissions/callcenter-agents').then((r) => setAgentesCC(r.data || [])).catch(() => setAgentesCC([]));
+  }, [tab, versionTarifas]);
 
-  // Cualquier cambio de filtro vuelve a la primera página.
-  useEffect(() => { setPageNuevos(1); }, [start, end, clinic, fechaCC, agentCC]);
+  const tarifasCambiadas = () => {
+    setVersionTarifas((v) => v + 1);
+    load();
+  };
+
+  const saveRate = async (e) => {
+    e.preventDefault();
+    if (rateForm.amount === '' || !(Number(rateForm.amount) >= 0)) return toast.error('Escribe cuánto gana por paciente nuevo');
+    if (!rateForm.validFrom) return toast.error('Escoge desde qué fecha rige');
+    setSavingRate(true);
+    try {
+      await api.post('/commissions/callcenter-rates', { ...rateForm, amount: Number(rateForm.amount) });
+      toast.success('Tarifa guardada');
+      setRateEditor(false);
+      tarifasCambiadas();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo guardar la tarifa');
+    } finally {
+      setSavingRate(false);
+    }
+  };
+
+  const deleteRate = async (r) => {
+    if (!window.confirm(`¿Eliminar la tarifa de ${money(r.amount)} (${r.userName || 'todos los agentes'}) vigente desde el ${fmtDate(r.validFrom)}?`)) return;
+    try {
+      await api.delete(`/commissions/callcenter-rates/${r._id}`);
+      toast.success('Tarifa eliminada');
+      tarifasCambiadas();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo eliminar la tarifa');
+    }
+  };
 
   const nameOfService = (sid) =>
     services.find((s) => String(s._id) === String(sid))?.name || 'Servicio';
@@ -500,8 +515,20 @@ export default function Commissions() {
     }
   };
 
-  // Botones «Ir a» de la lista de pacientes nuevos (chat, cita, seguimientos).
-  const irA = 'inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs border border-slate-200 bg-white text-slate-600 hover:text-emerald-700 hover:border-emerald-300 no-underline whitespace-nowrap';
+  /**
+   * «Ver pacientes» de marketing: el detalle de un agente (o `todos`) en otra pestaña,
+   * con las mismas fechas, sucursal y tipo de fecha de esta pantalla.
+   */
+  const urlMarketing = (agentId, { name, tipo } = {}) => {
+    const params = new URLSearchParams();
+    if (start) params.set('start', start);
+    if (end) params.set('end', end);
+    if (clinic) params.set('clinic', clinic);
+    if (fechaCC !== 'cita') params.set('fecha', fechaCC);
+    if (tipo) params.set('tipo', tipo);
+    if (name) params.set('name', name);
+    return `/commissions/marketing/${agentId}?${params.toString()}`;
+  };
 
   const chipBtn = (active, extra = '') => `border-none rounded-full px-2 py-0.5 text-[10px] font-semibold cursor-pointer ${
     active ? 'bg-sky-100 text-sky-700 hover:bg-sky-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
@@ -1007,218 +1034,192 @@ export default function Commissions() {
 
       {tab === 'marketing' && dataCC && (
         <div className="space-y-3">
-          <p className="text-sm text-slate-500">
-            Citas agendadas por call center: <b>{dataCC.totals?.total ?? 0}</b>
-            <span className="text-emerald-700"> · nuevos: {dataCC.totals?.nuevos ?? 0}</span>
-            <span className="text-amber-700"> · nuevos sin asistir: {dataCC.totals?.nuevosSinAsistir ?? 0}</span>
-            <span className="text-slate-400"> · recurrentes: {dataCC.totals?.recurrentes ?? 0}</span>
-            <span className="text-slate-400">
-              {' '}· por {fechaCC === 'agendada' ? 'fecha en que se agendó' : 'fecha de la cita'}
-            </span>
-          </p>
+          {/* Totales del filtro: lo agendado por el call center y lo que se le paga. */}
+          <div className="bg-white rounded-xl border border-slate-200 p-3 space-y-3">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+              <Stat label="Citas agendadas" value={dataCC.totals?.total ?? 0} hint="Citas que agendó el call center en el filtro" />
+              <Stat
+                label="Pacientes nuevos"
+                tone="emerald"
+                value={dataCC.totals?.nuevos ?? 0}
+                hint="Pacientes nuevos cuya primera cita quedó asistida o completada: son los que pagan comisión"
+              />
+              <Stat
+                label="Nuevos sin asistir"
+                tone="amber"
+                value={dataCC.totals?.nuevosSinAsistir ?? 0}
+                hint="Pacientes nuevos que todavía no han asistido: cuentan cuando asistan"
+              />
+              <Stat label="Recurrentes" value={dataCC.totals?.recurrentes ?? 0} hint="Pacientes que ya se habían atendido antes" />
+              <Stat
+                label="Total a pagar"
+                tone="sky"
+                value={money(dataCC.totals?.ganado || 0)}
+                hint="Lo que ganan los agentes por sus pacientes nuevos, con la tarifa vigente el día en que cada uno asistió"
+              />
+            </div>
+            <p className="text-xs text-slate-500 m-0">
+              Por {fechaCC === 'agendada' ? 'fecha en que se agendó' : 'fecha de la cita'} · solo agentes con el perfil activo ·{' '}
+              <a href={urlMarketing('todos')} target="_blank" rel="noreferrer" className="text-emerald-600 hover:underline font-semibold">
+                Ver todos los pacientes
+              </a>
+              {' · '}
+              <a href={urlMarketing('todos', { tipo: 'nuevo' })} target="_blank" rel="noreferrer" className="text-emerald-600 hover:underline font-semibold">
+                Ver solo los nuevos
+              </a>
+            </p>
+            {dataCC.totals?.sinTarifa > 0 && (
+              <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 m-0">
+                {dataCC.totals.sinTarifa} paciente(s) nuevo(s) no tenían tarifa vigente el día en que asistieron y suman $0.
+              </p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {/* TARIFA POR PACIENTE NUEVO: vale la vigente el día en que el paciente
+                asistió; la de un agente manda sobre la general. */}
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-slate-50 border-b border-slate-100">
+                <div>
+                  <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide m-0">Tarifa por paciente nuevo</p>
+                  <p className="text-[11px] text-slate-500 m-0 mt-0.5">
+                    Vale la vigente el día en que el paciente asistió. La de un agente manda sobre la general.
+                  </p>
+                </div>
+                {isSuper && (
+                  <button
+                    type="button"
+                    onClick={() => { setRateForm({ user: '', amount: '', validFrom: today(), note: '' }); setRateEditor(true); }}
+                    className="inline-flex items-center gap-1 border-none bg-emerald-600 text-white hover:bg-emerald-700 rounded-full px-3 py-1 text-[11px] font-semibold cursor-pointer"
+                  >
+                    <HiOutlinePlusCircle className="w-3.5 h-3.5" /> Nueva tarifa
+                  </button>
+                )}
+              </div>
+              <div className="px-4 py-3">
+                {ratesCC.length === 0 ? (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 m-0">
+                    Todavía no hay tarifa: los pacientes nuevos cuentan pero no suman dinero.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {ratesCC.map((r) => (
+                      <div key={r._id} className="flex items-center justify-between gap-3 bg-emerald-50/50 border border-emerald-100 rounded-lg px-3 py-2 text-xs">
+                        <div className="min-w-0">
+                          <span className="font-bold text-emerald-800">{money(r.amount)}</span>
+                          <span className="text-slate-700 ml-2">{r.userName || 'Todos los agentes'}</span>
+                          <span className="text-slate-400 ml-2">desde el {fmtDate(r.validFrom)}</span>
+                          {r.note && <span className="block text-[10px] text-slate-400 mt-0.5">{r.note}</span>}
+                        </div>
+                        {isSuper && (
+                          <button
+                            type="button"
+                            onClick={() => deleteRate(r)}
+                            title="Eliminar tarifa"
+                            className="text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer text-sm leading-none"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* NUEVOS POR SUCURSAL: dónde se atendieron los pacientes nuevos del período. */}
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+              <div className="px-4 py-3 bg-slate-50 border-b border-slate-100">
+                <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide m-0">Pacientes nuevos por sucursal</p>
+                <p className="text-[11px] text-slate-500 m-0 mt-0.5">Dónde se atendió su primera cita.</p>
+              </div>
+              <div className="px-4 py-3">
+                {(dataCC.porSucursal || []).length === 0 ? (
+                  <p className="text-xs text-slate-400 m-0">No hay pacientes nuevos en el período.</p>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {dataCC.porSucursal.map((p) => (
+                      <Stat key={p.clinic} label={p.clinic} tone="emerald" value={p.nuevos} hint={`A pagar por los nuevos de ${p.clinic}: ${money(p.ganado)}`} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
 
           <div className="space-y-3">
             {(dataCC.agents || []).map((a) => (
-              <div
-                key={a.userId}
-                className={`bg-white rounded-xl border overflow-hidden ${
-                  agentCC === a.userId ? 'border-emerald-400 ring-2 ring-emerald-100' : 'border-slate-200'
-                }`}
-              >
-                <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-slate-50 border-b border-slate-100">
-                  <div>
-                    <span className="font-semibold text-slate-800">{a.name}</span>
-                    {/* Desactivado: su cuenta está cerrada, pero lo que agendó
-                        sigue contando para calcular lo que se le debe. */}
-                    {a.inactive && (
-                      <span
-                        title="Cuenta desactivada. Sus agendamientos siguen contando para la comisión."
-                        className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-700 align-middle"
+              <div key={a.userId} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 space-y-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <span className="font-semibold text-slate-800">{a.name}</span>
+                      <span className="ml-2 text-xs px-2 py-0.5 rounded bg-sky-100 text-sky-700 font-semibold">Call center</span>
+                      {(a.clinics || []).length > 0 && (
+                        <span className="block text-xs text-slate-500 mt-0.5">Agendó en: {a.clinics.join(', ')}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap justify-end">
+                      <a
+                        href={urlMarketing(a.userId, { name: a.name })}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-emerald-700 rounded-full px-2.5 py-1 text-[11px] font-semibold no-underline"
                       >
-                        Desactivado
-                      </span>
-                    )}
-                    {(a.clinics || []).length > 0 && (
-                      <span className="block text-xs text-slate-500 mt-0.5">{a.clinics.join(', ')}</span>
-                    )}
+                        <HiOutlineUserGroup className="w-3.5 h-3.5" /> Ver pacientes ({a.total})
+                      </a>
+                      <a
+                        href={urlMarketing(a.userId, { name: a.name, tipo: 'nuevo' })}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 border-none bg-emerald-600 text-white hover:bg-emerald-700 rounded-full px-3 py-1 text-[11px] font-semibold no-underline"
+                      >
+                        Ver solo nuevos ({a.nuevos})
+                      </a>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 flex-wrap justify-end">
-                    <span className="text-sm text-slate-600 mr-1">
-                      Agendadas: <b className="text-slate-900">{a.total}</b>
-                    </span>
-                    <span
-                      title="Pacientes nuevos cuya primera cita quedó asistida o completada"
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700 font-semibold"
-                    >
-                      Nuevos {a.nuevos}
-                    </span>
-                    {a.nuevosSinAsistir > 0 && (
-                      <span
-                        title="Paciente nuevo que todavía no ha asistido a ninguna cita (pendiente, no asistió o cancelada): no cuenta como nuevo hasta que asista"
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-amber-100 text-amber-700 font-semibold"
-                      >
-                        Sin asistir {a.nuevosSinAsistir}
-                      </span>
-                    )}
-                    <span
-                      title="Pacientes recurrentes"
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-slate-200/70 text-slate-700 font-semibold"
-                    >
-                      Recurrentes {a.recurrentes}
-                    </span>
-                    {a.nuevos > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setAgentCC(agentCC === a.userId ? '' : a.userId)}
-                        className="px-2.5 py-1 rounded-lg text-xs border border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50 cursor-pointer"
-                      >
-                        {agentCC === a.userId ? 'Ver todos' : 'Ver sus nuevos'}
-                      </button>
-                    )}
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+                    <Stat label="Agendadas" value={a.total} hint="Citas que agendó en el filtro" />
+                    <Stat label="Nuevos" tone="emerald" value={a.nuevos} hint="Pacientes nuevos cuya primera cita quedó asistida o completada" />
+                    <Stat label="Nuevos sin asistir" tone="amber" value={a.nuevosSinAsistir} hint="Pacientes nuevos que todavía no han asistido: no cuentan hasta que asistan" />
+                    <Stat label="Recurrentes" value={a.recurrentes} hint="Pacientes que ya se habían atendido antes" />
+                    <Stat
+                      label="Gana"
+                      tone="sky"
+                      value={money(a.ganado || 0)}
+                      hint={`Por sus pacientes nuevos, con la tarifa vigente el día en que cada uno asistió${a.sinTarifa ? ` · ${a.sinTarifa} sin tarifa vigente ($0)` : ''}`}
+                    />
                   </div>
+                </div>
+
+                <div className="px-4 py-3">
+                  <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-2">Nuevos por sucursal</p>
+                  {(a.porSucursal || []).length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 bg-emerald-50/40 border border-emerald-100 rounded-lg p-3">
+                      {a.porSucursal.map((p) => (
+                        <div
+                          key={p.clinic}
+                          title={`A pagar: ${money(p.ganado)}`}
+                          className="inline-flex items-center gap-1.5 bg-white border border-emerald-200 text-slate-700 text-xs pl-2.5 pr-1 py-1 rounded-full"
+                        >
+                          <span>{p.clinic}</span>
+                          <span className="bg-emerald-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{p.nuevos}</span>
+                          <span className="text-[10px] font-semibold text-emerald-700 pr-1">{money(p.ganado)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400 m-0">Sin pacientes nuevos en el período.</p>
+                  )}
                 </div>
               </div>
             ))}
             {(!dataCC.agents || dataCC.agents.length === 0) && (
               <div className="bg-white rounded-xl border border-slate-200 px-4 py-6 text-center text-slate-400">
-                No hay agentes de call center (o no agendaron citas) en el período.
+                No hay agentes de call center activos (o no agendaron citas) en el período.
               </div>
-            )}
-          </div>
-
-          {/* PACIENTES NUEVOS, UNO POR UNO: quién, quién lo agendó, cuándo se
-              agendó y cuándo cuenta como nuevo (cuando asistió a esa primera cita). */}
-          <div id="nuevos-cc" className="bg-white rounded-xl border border-slate-200 p-3 space-y-3 scroll-mt-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="text-base font-semibold text-slate-800 m-0">
-                  Pacientes nuevos agendados por call center
-                  {nuevosCC && <span className="text-slate-400 font-normal"> ({nuevosCC.total})</span>}
-                </h2>
-                <p className="text-xs text-slate-500 m-0 mt-0.5">
-                  Cuenta como nuevo el paciente en su primera cita atendida (asistida o completada);
-                  si faltó y se le agendó otra cita, cuenta la nueva cuando asiste. No cuenta quien ya
-                  tenía un seguimiento anterior a la cita o ficha física escaneada.
-                </p>
-              </div>
-              {agentCC && (
-                <button
-                  type="button"
-                  onClick={() => setAgentCC('')}
-                  className="inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 rounded-full bg-slate-100 text-xs text-slate-700 border-none cursor-pointer"
-                >
-                  {(dataCC.agents || []).find((x) => x.userId === agentCC)?.name || 'Agente'} ✕
-                </button>
-              )}
-            </div>
-
-            {loadingNuevos && !nuevosCC && <div className="text-sm text-slate-500">Cargando...</div>}
-            {nuevosCC && nuevosCC.patients.length === 0 && (
-              <div className="px-4 py-6 text-center text-slate-400 text-sm">
-                No hay pacientes nuevos agendados por call center en el período.
-              </div>
-            )}
-            {nuevosCC && (
-              <Paginador pagination={nuevosCC.pagination} onPage={setPageNuevos} unidad="pacientes" />
-            )}
-            {nuevosCC && nuevosCC.patients.length > 0 && (
-              <div className="tbl-wrap">
-                <div className="tbl-scroll">
-                  <table className={`tbl tbl-cards text-sm ${loadingNuevos ? 'opacity-60' : ''}`}>
-                    <thead>
-                      <tr>
-                        <th>Paciente</th>
-                        <th>Agendado por</th>
-                        <th>Agendada el</th>
-                        <th>Considerado nuevo</th>
-                        <th>Cita</th>
-                        <th>Estado</th>
-                        <th>Ir a</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {nuevosCC.patients.map((p) => (
-                        <tr key={p.appointmentId}>
-                          <td data-cell="principal">
-                            <span className="font-medium text-slate-800">{p.patient}</span>
-                            {p.patientRegisteredAt && (
-                              <span className="block text-[11px] text-slate-400">
-                                Registrado el {fmtDate(p.patientRegisteredAt)}
-                              </span>
-                            )}
-                          </td>
-                          <td data-cell="detalle">
-                            {p.agent}
-                            {p.agentInactive && (
-                              <span className="ml-1.5 inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-700">
-                                Desactivado
-                              </span>
-                            )}
-                          </td>
-                          <td data-cell="detalle">
-                            <span className="md:hidden text-slate-400">Agendada: </span>
-                            {fmtDateTime(p.scheduledAt)}
-                          </td>
-                          <td data-cell="detalle">
-                            <span className="md:hidden text-slate-400">Nuevo desde (asistió): </span>
-                            {fmtDateTime(p.markedNewAt)}
-                          </td>
-                          <td data-cell="detalle">
-                            <span className="md:hidden text-slate-400">Cita: </span>
-                            {fmtDate(p.appointmentDate)}{p.startTime ? ` ${p.startTime}` : ''}
-                            <span className="block text-[11px] text-slate-400">
-                              {[p.clinic, p.services.join(', ')].filter(Boolean).join(' · ')}
-                            </span>
-                          </td>
-                          <td data-cell="estado">
-                            <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ${STATUS_COLORS[p.status] || 'bg-slate-100 text-slate-600'}`}>
-                              {statusLabel(p.status)}
-                            </span>
-                            {p.attendedAt && (
-                              <span className="block text-[11px] text-slate-400 mt-0.5">
-                                Asistió el {fmtDate(p.attendedAt)}
-                              </span>
-                            )}
-                          </td>
-                          {/* Se abren en otra pestaña: así el listado (con su
-                              página y filtros) sigue aquí al volver. */}
-                          <td data-cell="acciones">
-                            <div className="flex flex-wrap gap-1">
-                              {p.chatId ? (
-                                <Link to={`/chats?chat=${p.chatId}`} target="_blank" rel="noopener" className={irA} title="Abrir el chat del paciente">
-                                  <HiOutlineChatBubbleLeftRight className="w-3.5 h-3.5" /> Chat
-                                </Link>
-                              ) : (
-                                <span className={`${irA} opacity-40 cursor-not-allowed`} title="Este paciente no tiene chat">
-                                  <HiOutlineChatBubbleLeftRight className="w-3.5 h-3.5" /> Chat
-                                </span>
-                              )}
-                              <Link to={`/appointments?cita=${p.appointmentId}`} target="_blank" rel="noopener" className={irA} title="Abrir la cita en la que quedó marcado como nuevo">
-                                <HiOutlineCalendarDays className="w-3.5 h-3.5" /> Cita
-                              </Link>
-                              {p.patientId && (
-                                <Link to={`/patients/${p.patientId}?tab=seguimientos`} target="_blank" rel="noopener" className={irA} title="Ver los seguimientos del paciente">
-                                  <HiOutlineHeart className="w-3.5 h-3.5" /> Seguimientos
-                                </Link>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-            {nuevosCC && nuevosCC.patients.length > 0 && (
-              <Paginador
-                pagination={nuevosCC.pagination}
-                onPage={(p) => {
-                  setPageNuevos(p);
-                  document.getElementById('nuevos-cc')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }}
-                unidad="pacientes"
-              />
             )}
           </div>
         </div>
@@ -1438,6 +1439,66 @@ export default function Commissions() {
             </div>
           </form>
         )}
+      </Modal>
+
+      <Modal
+        isOpen={rateEditor}
+        onClose={() => !savingRate && setRateEditor(false)}
+        title="Nueva tarifa por paciente nuevo"
+        size="sm"
+      >
+        <form onSubmit={saveRate} className="space-y-4">
+          <label className="block text-sm text-slate-700">
+            Agente
+            <select
+              value={rateForm.user}
+              onChange={(e) => setRateForm({ ...rateForm, user: e.target.value })}
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2.5"
+            >
+              <option value="">Todos los agentes (tarifa general)</option>
+              {agentesCC.map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
+            </select>
+          </label>
+          <label className="block text-sm text-slate-700">
+            Gana por cada paciente nuevo ($)
+            <NumericInput
+              value={rateForm.amount}
+              onChange={(e) => setRateForm({ ...rateForm, amount: e.target.value })}
+              required
+              placeholder="Ej. 0.25"
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2.5"
+            />
+          </label>
+          <label className="block text-sm text-slate-700">
+            Vigente desde
+            <DateInput
+              value={rateForm.validFrom}
+              onChange={(e) => setRateForm({ ...rateForm, validFrom: e.target.value })}
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2.5"
+            />
+          </label>
+          <label className="block text-sm text-slate-700">
+            Observación
+            <input
+              value={rateForm.note}
+              onChange={(e) => setRateForm({ ...rateForm, note: e.target.value })}
+              placeholder="Opcional"
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2.5"
+            />
+          </label>
+          <p className="text-xs text-slate-500 m-0">
+            Rige para los pacientes que asistan desde esa fecha hasta que otra tarifa la reemplace.
+            Lo ya ganado antes con otra tarifa no cambia.
+          </p>
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={() => setRateEditor(false)} disabled={savingRate} className="px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white cursor-pointer disabled:opacity-50">
+              Cancelar
+            </button>
+            <button disabled={savingRate} className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-xl border-none cursor-pointer disabled:opacity-50">
+              {savingRate ? 'Guardando...' : 'Guardar tarifa'}
+            </button>
+          </div>
+        </form>
       </Modal>
 
       <Modal

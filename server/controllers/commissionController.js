@@ -6,6 +6,7 @@ const { coversClinic, roleForCoveredClinic } = require('../utils/companies');
 const CommissionPosting = require('../models/CommissionPosting');
 const CommissionAdjustment = require('../models/CommissionAdjustment');
 const CommissionPayout = require('../models/CommissionPayout');
+const CallCenterRate = require('../models/CallCenterRate');
 const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const ClinicalRecord = require('../models/ClinicalRecord');
 const Sale = require('../models/Sale');
@@ -2175,7 +2176,14 @@ async function agendamientosCallCenter(req, { select, extra = {} }) {
     : [];
   const usuarios = new Map([...usuariosCC, ...otros].map((u) => [String(u._id), u]));
 
-  return { startDate, endDate, campo, appts, usuariosCC, usuarios };
+  /**
+   * SOLO AGENTES CON EL PERFIL ACTIVO (nov-2026, a pedido). Antes los desactivados
+   * seguían saliendo si habían agendado en el período (para liquidarles lo
+   * pendiente); ahora no aparecen ni ellos ni sus citas, en el resumen ni en el
+   * listado. Las citas sin usuario identificable tampoco.
+   */
+  const activo = (a) => usuarios.get(String(a.createdBy || ''))?.active === true;
+  return { startDate, endDate, campo, appts: appts.filter(activo), usuariosCC, usuarios };
 }
 
 /**
@@ -2197,7 +2205,7 @@ async function agendamientosCallCenter(req, { select, extra = {} }) {
  * POSTERIOR, la que faltó queda como «reemplazada»: ni nuevo ni recurrente, para
  * no contar dos veces a la misma persona. Todo lo demás es recurrente.
  */
-const CAMPOS_CLASIFICACION = 'patient date status';
+const CAMPOS_CLASIFICACION = 'patient date status arrivedAt completedAt';
 const CAMPOS_CITA_PACIENTE = 'patient date startTime createdAt status isFirstVisit turns.followUp turns.serumFollowUp turns.extraSerums.serumFollowUp autoSerumFollowUp';
 const idPaciente = (a) => String(a.patient?._id || a.patient || '');
 /** Orden cronológico de las citas: día, hora y, si empatan, cuál se creó antes. */
@@ -2307,6 +2315,26 @@ async function chatsDePacientes(patientIds) {
   return out;
 }
 
+/**
+ * TARIFA POR PACIENTE NUEVO (nov-2026, ver models/CallCenterRate). Vale la última
+ * vigente el día en que el paciente contó como nuevo (cuando asistió): primero la
+ * del agente y, si no tiene, la general.
+ */
+const fechaNuevo = (a) => a.arrivedAt || a.completedAt || a.date;
+const cargarTarifasCC = () => CallCenterRate.find().sort({ validFrom: -1, createdAt: -1 }).lean();
+function tarifaCC(tarifas, agentId, fecha) {
+  const dia = new Date(fecha);
+  const vigentes = tarifas.filter((t) => new Date(t.validFrom) <= dia);
+  return vigentes.find((t) => t.user && String(t.user) === String(agentId || ''))
+    || vigentes.find((t) => !t.user)
+    || null;
+}
+const porSucursalOrdenado = (mapa) => [...mapa.values()]
+  .map((p) => ({ ...p, ganado: r2cc(p.ganado) }))
+  .sort((x, y) => y.nuevos - x.nuevos || x.clinic.localeCompare(y.clinic));
+const sucursalDeCita = (a) => a.clinic?.nombreComercial || a.clinic?.name || 'Sin sucursal';
+const r2cc = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
 /** Nombre del agente de una cita: el usuario, o el nombre sellado si ya no existe. */
 const nombreAgente = (usuarios, a) =>
   usuarios.get(String(a.createdBy || ''))?.name || a.createdByName || 'Sin agente';
@@ -2326,9 +2354,20 @@ exports.callCenterSummary = async (req, res) => {
     const {
       startDate, endDate, campo, appts, usuariosCC, usuarios,
     } = await agendamientosCallCenter(req, { select: `createdBy createdByName clinic ${CAMPOS_CLASIFICACION}` });
-    const tipo = await clasificarAgendamientos(appts);
+    const [tipo, tarifas] = await Promise.all([clasificarAgendamientos(appts), cargarTarifasCC()]);
 
-    const filaVacia = (name) => ({ name, total: 0, nuevos: 0, nuevosSinAsistir: 0, recurrentes: 0, clinics: new Set() });
+    const filaVacia = (name) => ({
+      name, total: 0, nuevos: 0, nuevosSinAsistir: 0, recurrentes: 0, ganado: 0, sinTarifa: 0,
+      clinics: new Set(), porSucursal: new Map(),
+    });
+    // Nuevos y lo ganado por sucursal, de todo el call center.
+    const sucursales = new Map();
+    const sumar = (mapa, suc, monto) => {
+      const p = mapa.get(suc) || { clinic: suc, nuevos: 0, ganado: 0 };
+      p.nuevos += 1;
+      p.ganado += monto;
+      mapa.set(suc, p);
+    };
     const porAgente = new Map();
     for (const a of appts) {
       const id = String(a.createdBy || `nombre:${a.createdByName || ''}`);
@@ -2339,8 +2378,15 @@ exports.callCenterSummary = async (req, res) => {
       }
       fila.total += 1;
       const t = tipo.get(String(a._id));
-      if (t === 'nuevo') fila.nuevos += 1;
-      else if (t === 'nuevoSinAsistir') fila.nuevosSinAsistir += 1;
+      if (t === 'nuevo') {
+        fila.nuevos += 1;
+        const tarifa = tarifaCC(tarifas, a.createdBy, fechaNuevo(a));
+        const monto = tarifa ? tarifa.amount : 0;
+        fila.ganado += monto;
+        if (!tarifa) fila.sinTarifa += 1;
+        sumar(fila.porSucursal, sucursalDeCita(a), monto);
+        sumar(sucursales, sucursalDeCita(a), monto);
+      } else if (t === 'nuevoSinAsistir') fila.nuevosSinAsistir += 1;
       // La que faltó y se reemplazó por otra ya atendida: solo suma a «Agendadas».
       else if (t === 'recurrente') fila.recurrentes += 1;
       const nombreSucursal = a.clinic?.nombreComercial || a.clinic?.name;
@@ -2370,6 +2416,10 @@ exports.callCenterSummary = async (req, res) => {
           nuevos: f.nuevos,
           nuevosSinAsistir: f.nuevosSinAsistir,
           recurrentes: f.recurrentes,
+          ganado: r2cc(f.ganado),
+          // Nuevos que no tenían tarifa vigente ese día (ganan $0).
+          sinTarifa: f.sinTarifa,
+          porSucursal: porSucursalOrdenado(f.porSucursal),
         };
       })
       .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
@@ -2384,7 +2434,10 @@ exports.callCenterSummary = async (req, res) => {
         nuevos: agents.reduce((t, a) => t + a.nuevos, 0),
         nuevosSinAsistir: agents.reduce((t, a) => t + a.nuevosSinAsistir, 0),
         recurrentes: agents.reduce((t, a) => t + a.recurrentes, 0),
+        ganado: r2cc(agents.reduce((t, a) => t + a.ganado, 0)),
+        sinTarifa: agents.reduce((t, a) => t + a.sinTarifa, 0),
       },
+      porSucursal: porSucursalOrdenado(sucursales),
     });
   } catch (e) {
     res.status(500).json({ message: 'Error al calcular el resumen de call center', error: e.message });
@@ -2440,11 +2493,26 @@ exports.callCenterNewPatients = async (req, res) => {
       .select('patient date startTime createdAt createdBy createdByName status clinic serviceName services arrivedAt completedAt')
       .lean())
       .sort((a, b) => orden.get(String(a._id)) - orden.get(String(b._id)));
-    const chatDe = await chatsDePacientes(appts.map((a) => a.patient?._id));
+    const [chatDe, tarifas, ventas] = await Promise.all([
+      chatsDePacientes(appts.map((a) => a.patient?._id)),
+      cargarTarifasCC(),
+      // Lo que se le hizo/vendió en esa primera cita: sus ventas vigentes.
+      Sale.find({ appointment: { $in: idsPagina }, status: 'completada' })
+        .select('appointment saleNumber total items.productName items.quantity')
+        .lean(),
+    ]);
+    const ventasDe = new Map();
+    for (const v of ventas) {
+      const k = String(v.appointment);
+      if (!ventasDe.has(k)) ventasDe.set(k, []);
+      ventasDe.get(k).push(v);
+    }
 
     const patients = appts
       .map((a) => {
         const agente = usuarios.get(String(a.createdBy || ''));
+        const tarifa = tarifaCC(tarifas, a.createdBy, fechaNuevo(a));
+        const susVentas = ventasDe.get(String(a._id)) || [];
         return {
           appointmentId: String(a._id),
           patientId: a.patient?._id ? String(a.patient._id) : null,
@@ -2464,6 +2532,14 @@ exports.callCenterNewPatients = async (req, res) => {
           attendedAt: a.completedAt || a.arrivedAt || null,
           clinic: a.clinic?.nombreComercial || a.clinic?.name || '',
           services: [a.serviceName, ...(a.services || []).map((s) => s.name)].filter(Boolean),
+          // Lo facturado en esa cita: qué se le hizo y por cuánto.
+          billedItems: susVentas.flatMap((v) => (v.items || []).map((it) => (
+            Number(it.quantity) > 1 ? `${it.productName} ×${it.quantity}` : it.productName
+          ))).filter(Boolean),
+          billedTotal: susVentas.length ? r2cc(susVentas.reduce((t, v) => t + (Number(v.total) || 0), 0)) : null,
+          saleNumbers: susVentas.map((v) => v.saleNumber).filter(Boolean),
+          // Lo que gana el agente por este paciente (null = no había tarifa vigente).
+          commission: tarifa ? tarifa.amount : null,
         };
       });
 
@@ -2474,6 +2550,193 @@ exports.callCenterNewPatients = async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ message: 'Error al listar los pacientes nuevos del call center', error: e.message });
+  }
+};
+
+/**
+ * DETALLE DEL CALL CENTER (nov-2026): todas las citas que agendó un agente (o
+ * todos, `agent` vacío o 'todos'), cada una con su TIPO —nuevo, recurrente, nuevo
+ * sin asistir o reemplazada (ver `clasificarAgendamientos`)—, lo que se le
+ * facturó en esa cita, lo que gana el agente si es nuevo y los enlaces de la fila.
+ * Es el equivalente de «Ver citas» de los doctores, en su propia pestaña.
+ *
+ * Filtros: los del resumen (fechas, sucursal, `fecha=cita|agendada`), `status`
+ * (lista de estados; vacío = todos), `tipo` (lista; vacío = todos), `page`/`limit`.
+ * `counts` cuenta por tipo con los demás filtros pero SIN el de tipo, para que
+ * los botones del filtro digan cuántos hay de cada uno.
+ */
+const TIPOS_CC = ['nuevo', 'recurrente', 'nuevoSinAsistir', 'reemplazada'];
+exports.callCenterAppointments = async (req, res) => {
+  try {
+    const extra = {};
+    const agente = req.query.agent && req.query.agent !== 'todos' ? req.query.agent : null;
+    if (agente) {
+      if (!mongoose.Types.ObjectId.isValid(agente)) return res.status(400).json({ message: 'Agente no válido' });
+      extra.createdBy = new mongoose.Types.ObjectId(agente);
+    }
+    const estados = String(req.query.status || '').split(',').map((x) => x.trim()).filter(Boolean);
+    if (estados.length) extra.status = { $in: estados };
+    const tipos = String(req.query.tipo || '').split(',').map((x) => x.trim()).filter((x) => TIPOS_CC.includes(x));
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || NUEVOS_POR_PAGINA, 1), 500);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+
+    const { startDate, endDate, appts: candidatas, usuarios } = await agendamientosCallCenter(req, {
+      select: `createdAt createdBy startTime ${CAMPOS_CLASIFICACION}`,
+      extra,
+    });
+    const [tipo, tarifas] = await Promise.all([clasificarAgendamientos(candidatas), cargarTarifasCC()]);
+    const counts = Object.fromEntries(TIPOS_CC.map((t) => [t, 0]));
+    let ganado = 0;
+    for (const a of candidatas) {
+      const t = tipo.get(String(a._id));
+      counts[t] = (counts[t] || 0) + 1;
+      if (t === 'nuevo') ganado += tarifaCC(tarifas, a.createdBy, fechaNuevo(a))?.amount || 0;
+    }
+    // La cita más reciente primero.
+    const filtradas = candidatas
+      .filter((a) => !tipos.length || tipos.includes(tipo.get(String(a._id))))
+      .sort((a, b) => ordenCitas(b, a));
+    const total = filtradas.length;
+    const idsPagina = filtradas.slice((page - 1) * limit, page * limit).map((a) => a._id);
+    const orden = new Map(idsPagina.map((id, i) => [String(id), i]));
+    const appts = (await Appointment.find({ _id: { $in: idsPagina } })
+      .populate('clinic', 'name nombreComercial')
+      .populate('patient', 'firstName lastName createdAt')
+      .select('patient date startTime createdAt createdBy createdByName status clinic serviceName services arrivedAt completedAt')
+      .lean())
+      .sort((a, b) => orden.get(String(a._id)) - orden.get(String(b._id)));
+    const [chatDe, ventas] = await Promise.all([
+      chatsDePacientes(appts.map((a) => a.patient?._id)),
+      Sale.find({ appointment: { $in: idsPagina }, status: 'completada' })
+        .select('appointment saleNumber total items.productName items.quantity')
+        .lean(),
+    ]);
+    const ventasDe = new Map();
+    for (const v of ventas) {
+      const k = String(v.appointment);
+      if (!ventasDe.has(k)) ventasDe.set(k, []);
+      ventasDe.get(k).push(v);
+    }
+
+    const rows = appts.map((a) => {
+      const t = tipo.get(String(a._id));
+      const susVentas = ventasDe.get(String(a._id)) || [];
+      const tarifa = t === 'nuevo' ? tarifaCC(tarifas, a.createdBy, fechaNuevo(a)) : null;
+      return {
+        appointmentId: String(a._id),
+        tipo: t,
+        patientId: a.patient?._id ? String(a.patient._id) : null,
+        patient: nombrePaciente(a.patient),
+        patientRegisteredAt: a.patient?.createdAt || null,
+        chatId: a.patient?._id ? chatDe.get(String(a.patient._id)) || null : null,
+        agentId: a.createdBy ? String(a.createdBy) : null,
+        agent: nombreAgente(usuarios, a),
+        scheduledAt: a.createdAt,
+        markedNewAt: t === 'nuevo' ? fechaNuevo(a) : null,
+        appointmentDate: a.date,
+        startTime: a.startTime || '',
+        status: a.status,
+        attendedAt: a.completedAt || a.arrivedAt || null,
+        clinic: a.clinic?.nombreComercial || a.clinic?.name || '',
+        services: [a.serviceName, ...(a.services || []).map((x) => x.name)].filter(Boolean),
+        billedItems: susVentas.flatMap((v) => (v.items || []).map((it) => (
+          Number(it.quantity) > 1 ? `${it.productName} ×${it.quantity}` : it.productName
+        ))).filter(Boolean),
+        billedTotal: susVentas.length ? r2cc(susVentas.reduce((x, v) => x + (Number(v.total) || 0), 0)) : null,
+        saleNumbers: susVentas.map((v) => v.saleNumber).filter(Boolean),
+        // Solo los nuevos pagan; null en un nuevo = sin tarifa vigente ese día.
+        commission: tarifa ? tarifa.amount : null,
+      };
+    });
+
+    res.json({
+      start: startDate,
+      end: endDate,
+      agentName: agente ? usuarios.get(agente)?.name || null : null,
+      rows,
+      counts,
+      totals: { appointments: candidatas.length, ganado: r2cc(ganado) },
+      pagination: { page, limit, total, pages: Math.max(Math.ceil(total / limit), 1) },
+    });
+  } catch (e) {
+    res.status(500).json({ message: 'Error al cargar los agendamientos del call center', error: e.message });
+  }
+};
+
+/** Tarifas del call center por paciente nuevo, la más reciente primero. */
+exports.listCallCenterRates = async (req, res) => {
+  try {
+    const rates = await CallCenterRate.find()
+      .populate('user', 'name active')
+      .populate('createdBy', 'name')
+      .sort({ validFrom: -1, createdAt: -1 })
+      .lean();
+    res.json(rates.map((r) => ({
+      _id: r._id,
+      userId: r.user?._id ? String(r.user._id) : null,
+      userName: r.user?.name || null,
+      amount: r.amount,
+      validFrom: r.validFrom,
+      note: r.note || '',
+      createdBy: r.createdBy?.name || '',
+      createdAt: r.createdAt,
+    })));
+  } catch (e) {
+    res.status(500).json({ message: 'Error al cargar las tarifas del call center', error: e.message });
+  }
+};
+
+/** Agentes de call center ACTIVOS, para escoger a quién va una tarifa. */
+exports.callCenterAgents = async (req, res) => {
+  try {
+    const agentes = await User.find({ 'clinics.role': 'call_center', active: true })
+      .select('name')
+      .sort({ name: 1 })
+      .lean();
+    res.json(agentes.map((u) => ({ _id: String(u._id), name: u.name })));
+  } catch (e) {
+    res.status(500).json({ message: 'Error al cargar los agentes', error: e.message });
+  }
+};
+
+/** Nueva tarifa: { user (vacío = todos los agentes), amount, validFrom 'AAAA-MM-DD', note }. */
+exports.createCallCenterRate = async (req, res) => {
+  try {
+    const { user, amount, validFrom, note } = req.body || {};
+    const monto = Number(amount);
+    if (amount === '' || amount == null || !Number.isFinite(monto) || monto < 0) {
+      return res.status(400).json({ message: 'Escribe un valor válido (0 o más)' });
+    }
+    if (!validFrom || !/^\d{4}-\d{1,2}-\d{1,2}/.test(String(validFrom))) {
+      return res.status(400).json({ message: 'Escoge desde qué fecha rige la tarifa' });
+    }
+    let userId = null;
+    if (user) {
+      if (!mongoose.Types.ObjectId.isValid(user)) return res.status(400).json({ message: 'Agente no válido' });
+      if (!(await User.exists({ _id: user }))) return res.status(400).json({ message: 'El agente no existe' });
+      userId = user;
+    }
+    const rate = await CallCenterRate.create({
+      user: userId,
+      amount: r2cc(monto),
+      validFrom: parseRange(validFrom, validFrom).startDate,
+      note: String(note || '').trim(),
+      createdBy: req.user?._id || req.user?.id,
+    });
+    res.status(201).json(rate);
+  } catch (e) {
+    res.status(500).json({ message: 'No se pudo guardar la tarifa', error: e.message });
+  }
+};
+
+exports.deleteCallCenterRate = async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: 'Tarifa no válida' });
+    const r = await CallCenterRate.findByIdAndDelete(req.params.id);
+    if (!r) return res.status(404).json({ message: 'Tarifa no encontrada' });
+    res.json({ message: 'Tarifa eliminada' });
+  } catch (e) {
+    res.status(500).json({ message: 'No se pudo eliminar la tarifa', error: e.message });
   }
 };
 

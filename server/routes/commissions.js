@@ -29,6 +29,15 @@ router.get('/doctor-report.pdf', requireSuperAdmin, ctrl.doctorReportPdf);
 router.get('/callcenter-summary', requireRole('marketing'), ctrl.callCenterSummary);
 // Los pacientes nuevos que agendó el call center, uno por uno.
 router.get('/callcenter-new-patients', requireRole('marketing'), ctrl.callCenterNewPatients);
+// Detalle de un agente (o de todos): cada cita con su tipo (nuevo, recurrente…),
+// lo facturado y la comisión. Es el «Ver pacientes» de cada agente.
+router.get('/callcenter-appointments', requireRole('marketing'), ctrl.callCenterAppointments);
+// Tarifa por paciente nuevo (con vigencia por fecha, general o por agente):
+// marketing la ve; solo el super-admin la cambia, como las tarifas de doctores.
+router.get('/callcenter-rates', requireRole('marketing'), ctrl.listCallCenterRates);
+router.get('/callcenter-agents', requireRole('marketing'), ctrl.callCenterAgents);
+router.post('/callcenter-rates', requireSuperAdmin, ctrl.createCallCenterRate);
+router.delete('/callcenter-rates/:id', requireSuperAdmin, ctrl.deleteCallCenterRate);
 
 // Admin y contabilidad gestionan reglas de comisión y ven el reporte global.
 router.get('/rules', requireRole('admin', 'contabilidad'), ctrl.listRules);

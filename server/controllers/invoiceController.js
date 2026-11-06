@@ -20,6 +20,7 @@ const {
 const { isPastDocumentDate } = require('../utils/fiscalDocumentDate');
 const { serieDelEmisor, reservarSecuencial, puntoDelUsuario, ambienteDelPunto, configDeEmpresa, assertCajaAbiertaParaFacturar } = require('../services/puntoEmision');
 const { scopedDocuments } = require('../services/scopedDocuments');
+const { invoiceListFilter } = require('../utils/invoiceListFilter');
 
 function fmtFechaEmision(d) {
   const dt = d ? new Date(d) : new Date();
@@ -357,15 +358,17 @@ exports.emitFromSale = async (req, res) => {
   }
 };
 
+/**
+ * Lista de facturas PAGINADA (nov-2026). Los filtros —fechas, estado, caja y el
+ * buscador por número/cliente— salen de `utils/invoiceListFilter`, los mismos del
+ * Excel. Devuelve `pagination` (para el Paginador) y la suma del filtro entero.
+ */
 exports.list = async (req, res) => {
   try {
-    const { startDate, endDate, estado, patient, puntoEmision, page = 1, limit = 20 } = req.query;
-    const query = scopedDocuments(req);
-    if (estado) query.estado = estado;
-    if (puntoEmision) query.puntoEmision = puntoEmision;
-    if (startDate && endDate) {
-      query.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate) };
-    }
+    const { patient } = req.query;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const query = { ...scopedDocuments(req), ...(await invoiceListFilter(req.query)) };
     if (patient) {
       const saleIds = await Sale.find({ ...scopedDocuments(req), patient }).distinct('_id');
       query.sale = { $in: saleIds };
@@ -380,15 +383,26 @@ exports.list = async (req, res) => {
         },
       })
       .populate('puntoEmision', 'establecimiento codigo nombre')
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .skip((page - 1) * limit)
-      .limit(parseInt(limit));
-    const total = await Invoice.countDocuments(query);
+      .limit(limit);
+    const [total, suma] = await Promise.all([
+      Invoice.countDocuments(query),
+      // Lo facturado en el filtro, sin contar las anuladas.
+      Invoice.aggregate([
+        // aggregate no convierte ids de texto a ObjectId como find: se castea antes.
+        { $match: Invoice.find().cast(Invoice, { $and: [query, { estado: { $ne: 'ANULADA' } }] }) },
+        { $group: { _id: null, total: { $sum: '$importeTotal' } } },
+      ]),
+    ]);
+    const pages = Math.max(Math.ceil(total / limit), 1);
     res.json({
       invoices,
       total,
-      pages: Math.ceil(total / limit),
-      currentPage: parseInt(page),
+      pages,
+      currentPage: page,
+      pagination: { page, limit, total, pages },
+      sumTotal: Math.round((suma[0]?.total || 0) * 100) / 100,
     });
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener facturas' });

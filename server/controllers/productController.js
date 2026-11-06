@@ -53,9 +53,19 @@ async function applyInventoryCategory(clinicId, body, { enforce, existing = null
   let category = null;
   const provided = body.inventoryCategory != null && body.inventoryCategory !== '';
   if (provided) {
-    category = await InventoryCategory.findOne({ _id: body.inventoryCategory, clinic: clinicId });
+    /**
+     * CATÁLOGO COMPARTIDO (nov-2026): el producto se edita desde cualquier sucursal, pero su
+     * categoría vive en la sucursal donde se creó (casi siempre Central). Buscarla solo en la
+     * sucursal activa impedía, p.ej., cambiar el precio de COLPOSCOPIA desde otra sede
+     * («La categoría de inventario no existe…») aunque la categoría no se estaba tocando.
+     * Vale la de la sucursal activa o la de la sucursal dueña del producto.
+     */
+    const clinicasValidas = [clinicId, existing?.clinic].filter(Boolean);
+    category = await InventoryCategory.findOne({ _id: body.inventoryCategory, clinic: { $in: clinicasValidas } });
     if (!category) throw Object.assign(new Error('La categoría de inventario no existe o no pertenece a la clínica'), { status: 400 });
-    if (category.active === false) throw Object.assign(new Error(`La categoría de inventario "${category.name}" está inactiva`), { status: 400 });
+    // La que ya tenía el producto no bloquea la edición aunque luego se haya desactivado.
+    const sinCambio = existing && String(existing.inventoryCategory || '') === String(category._id);
+    if (category.active === false && !sinCambio) throw Object.assign(new Error(`La categoría de inventario "${category.name}" está inactiva`), { status: 400 });
     if (!clasesValidas.includes(category.kind)) {
       throw Object.assign(new Error(
         physical

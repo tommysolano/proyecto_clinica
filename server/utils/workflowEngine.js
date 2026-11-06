@@ -365,6 +365,25 @@ function matchingFlows(wf, matchFn) {
   return flows;
 }
 
+/**
+ * HORA DEL SALUDO DE CUMPLEAÑOS (nov-2026). El job de cumpleaños corre temprano,
+ * pero el saludo sale a la «Hora de envío» del disparador (por defecto 09:00, hora
+ * de Ecuador) — antes salía a la hora en que se reinició el servidor, que podía ser
+ * de madrugada. Devuelve la fecha de HOY a esa hora si todavía no pasó, o null
+ * (enviar ya) si ya pasó.
+ */
+const HORA_CUMPLE_DEFECTO = '09:00';
+function horaSaludoCumple(wf, flow, now = new Date()) {
+  const tn = flow?.startNodeId ? (wf.nodes || []).find((n) => n.id === flow.startNodeId) : null;
+  const triggers = tn ? triggersOfNode(wf, tn) : getTriggers(wf);
+  const tr = triggers.find((t) => t?.type === 'patient_birthday');
+  const hhmm = /^\d{1,2}:\d{2}$/.test(tr?.sendHour || '') ? tr.sendHour : HORA_CUMPLE_DEFECTO;
+  const [h, m] = hhmm.split(':').map(Number);
+  const at = new Date(now);
+  at.setHours(h, m, 0, 0); // el proceso corre en America/Guayaquil
+  return at > now ? at : null;
+}
+
 /** ¿Coincide un disparador con un evento de dominio (cita, venta, etc.)? */
 function triggerMatchesEvent(tr, eventType, payload, services) {
   if (!tr || tr.type !== eventType) return false;
@@ -2451,6 +2470,8 @@ async function enrollForEvent(eventType, payload = {}) {
         continue;
       }
 
+      // Cumpleaños: queda en espera hasta la hora del saludo (processDueEnrollments la retoma).
+      const programadaPara = eventType === 'patient_birthday' ? horaSaludoCumple(wf, flow) : null;
       let enrollment;
       try {
         // eslint-disable-next-line no-await-in-loop
@@ -2461,8 +2482,8 @@ async function enrollForEvent(eventType, payload = {}) {
           stepIndex: 0,
           currentNodeId: flow.currentNodeId,
           startNodeId: flow.startNodeId,
-          status: 'active',
-          nextRunAt: new Date(),
+          status: programadaPara ? 'waiting' : 'active',
+          nextRunAt: programadaPara || new Date(),
           context: {
             phone,
             eventType, // parte de la clave anti-duplicado (una vez por cita y evento)
@@ -2476,9 +2497,12 @@ async function enrollForEvent(eventType, payload = {}) {
         if (e.code === 11000) continue; // carrera anti-duplicado
         throw e;
       }
-      trace(wf, 'enrolled', 'Inscripción creada; los pasos y sus resultados quedan en "Inscritos" → registro de ejecución.');
+      trace(wf, 'enrolled', programadaPara
+        ? `Inscripción creada; el saludo de cumpleaños sale hoy a las ${String(programadaPara.getHours()).padStart(2, '0')}:${String(programadaPara.getMinutes()).padStart(2, '0')}.`
+        : 'Inscripción creada; los pasos y sus resultados quedan en "Inscritos" → registro de ejecución.');
       // eslint-disable-next-line no-await-in-loop
       await Workflow.updateOne({ _id: wf._id }, { $inc: { 'stats.enrolled': 1 } });
+      if (programadaPara) continue; // la ejecuta processDueEnrollments a su hora
       // Un error en ESTE flujo no debe impedir que los demás workflows del evento
       // se inscriban. processDueEnrollments recupera las inscripciones atascadas.
       // eslint-disable-next-line no-await-in-loop
@@ -3316,6 +3340,7 @@ module.exports = {
   executeEnrollment,
   executeGraphEnrollment,
   findStartNode,
+  horaSaludoCumple,
   nextNodeId,
   nextNodeIdExact,
   pickSplitRoute,
