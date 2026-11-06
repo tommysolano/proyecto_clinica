@@ -22,6 +22,7 @@ const ServiceCategory = require('../models/ServiceCategory');
 const SalesReportPreset = require('../models/SalesReportPreset');
 const CostCenter = require('../models/CostCenter');
 const { normalizeSalePayments, loadLaterCollections, METHODS, CREDITO } = require('./salePayments');
+const { desgloseVenta, numeroFactura } = require('../utils/desgloseVenta');
 
 const r2 = (n) => +Number(n || 0).toFixed(2);
 const oid = (v) => new mongoose.Types.ObjectId(String(v));
@@ -168,20 +169,30 @@ async function buildSalesReport(clinicId, query = {}) {
     // es del método pedido) y no rompe la conciliación, porque no se recorta el detalle.
     if (filters.method && !pay.rows.some((p) => p.method === filters.method)) continue;
 
+    // Desglose de la FACTURA (bases por tarifa, descuento, sin impuestos). Antes
+    // «subtotalGravado» era `taxableSubtotal`, que suma TODAS las bases (la 0 % incluida),
+    // y en las ventas importadas de Contífico venía en 0.
+    const dv = desgloseVenta(s);
     const doc = {
       id: String(s._id),
       date: s.createdAt,
       numero: s.saleNumber,
-      factura: f ? `${f.estab}-${f.ptoEmi}-${f.secuencial}` : '',
+      factura: f ? numeroFactura(f) : (/^\d{3}-\d{3}-\d{9}$/.test(String(s.saleNumber || '')) ? s.saleNumber : ''),
       facturaId: f ? String(f._id) : null,
       autorizacion: f?.autorizacion || '',
       cliente: s.clientName || '',
       identificacion: s.clientCedula || '',
-      subtotal0: r2(s.subtotal0 || 0),
-      subtotalGravado: r2(s.taxableSubtotal ?? s.subtotal ?? 0),
-      descuento: r2(s.discountTotal || 0),
-      iva: r2(s.taxAmount || 0),
-      total: r2(s.total),
+      subtotal0: dv.base0,
+      subtotal15: dv.base15,
+      subtotal5: dv.base5,
+      subtotalOtraTarifa: dv.baseOtraTarifa,
+      subtotalExento: dv.exento,
+      subtotalNoObjeto: dv.noObjeto,
+      subtotalGravado: r2(dv.base15 + dv.base5 + dv.baseOtraTarifa),
+      subtotal: dv.subtotal,
+      descuento: dv.descuento,
+      iva: dv.iva,
+      total: dv.total,
       cobrado: anulada ? 0 : pay.cobrado,
       saldo: anulada ? 0 : pay.saldo,
       estado: s.status,
@@ -224,7 +235,11 @@ async function buildSalesReport(clinicId, query = {}) {
         cantidad: it.quantity,
         precio: r2(it.unitPrice),
         descuento: r2(it.discount || 0),
-        subtotal: r2(it.subtotal),
+        // Base de la línea (sin IVA, ya con el descuento) y su tarifa.
+        subtotal: r2(it.taxBase ?? it.subtotal),
+        tarifa: it.taxCategory === 'EXENTO' ? 'Exento'
+          : it.taxCategory === 'NO_OBJETO' ? 'No objeto'
+            : `${Number(it.taxRate || 0)}%`,
         iva: r2(it.taxAmount || 0),
         totalLinea: lineTotal,
         estado: s.status,
@@ -261,7 +276,13 @@ async function buildSalesReport(clinicId, query = {}) {
     documentos: documentos.length,
     anuladas: documentos.filter((d) => d.anulada).length,
     subtotal0: r2(vivas.reduce((s, d) => s + d.subtotal0, 0)),
+    subtotal15: r2(vivas.reduce((s, d) => s + d.subtotal15, 0)),
+    subtotal5: r2(vivas.reduce((s, d) => s + d.subtotal5, 0)),
+    subtotalOtraTarifa: r2(vivas.reduce((s, d) => s + d.subtotalOtraTarifa, 0)),
+    subtotalExento: r2(vivas.reduce((s, d) => s + d.subtotalExento, 0)),
+    subtotalNoObjeto: r2(vivas.reduce((s, d) => s + d.subtotalNoObjeto, 0)),
     subtotalGravado: r2(vivas.reduce((s, d) => s + d.subtotalGravado, 0)),
+    subtotal: r2(vivas.reduce((s, d) => s + d.subtotal, 0)),
     descuento: r2(vivas.reduce((s, d) => s + d.descuento, 0)),
     iva: r2(vivas.reduce((s, d) => s + d.iva, 0)),
     total: r2(vivas.reduce((s, d) => s + d.total, 0)),
@@ -321,7 +342,8 @@ function vacio(preset, filters, seleccion) {
   return {
     documentos: [], detalle: [], pagos: [],
     resumen: {
-      documentos: 0, anuladas: 0, subtotal0: 0, subtotalGravado: 0, descuento: 0, iva: 0,
+      documentos: 0, anuladas: 0, subtotal0: 0, subtotal15: 0, subtotal5: 0, subtotalOtraTarifa: 0,
+      subtotalExento: 0, subtotalNoObjeto: 0, subtotalGravado: 0, subtotal: 0, descuento: 0, iva: 0,
       total: 0, cobrado: 0, pendiente: 0, porMetodo: {}, porCategoria: {}, porProducto: {},
       porCentroCosto: {}, legacy: 0, cuadra: true,
     },

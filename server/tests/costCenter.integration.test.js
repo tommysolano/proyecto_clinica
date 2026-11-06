@@ -376,7 +376,8 @@ test('16) el EXCEL usa el mismo filtro y concilia con la API', async () => {
   assert.equal(api.documentos.length, 1);
   const fila = ws.getRow(2).values;
   assert.ok(fila.includes('CC-ES - Estética'), 'con el nombre del centro');
-  const totalExcel = ws.getRow(2).getCell(11).value;   // columna "Total"
+  const colTotal = ws.getRow(1).values.indexOf('Total');
+  const totalExcel = ws.getRow(2).getCell(colTotal).value;   // columna "Total"
   assert.equal(totalExcel, api.documentos[0].total, 'y el mismo total');
 });
 

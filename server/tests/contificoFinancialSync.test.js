@@ -23,3 +23,16 @@ test('la ventana completa conserva una sola fila por ID', async () => {
   assert.equal(result.rows.length, 2);
   assert.equal(result.rows[0].glosa, 'actualizado');
 });
+
+test('los asientos que genera el sistema conviven con el espejo de Contífico; los manuales no', () => {
+  const { esEspejoContifico, esAsientoDelSistema } = require('../services/contificoFinancialSync');
+  const espejo = { number: 'CTF-123', source: 'MIGRACION', sourceModel: 'ContificoRecord' };
+  const venta = { number: 'AS-2026-000001', source: 'VENTA', sourceModel: 'Sale' };
+  const cierre = { number: 'AS-2026-000043', source: 'CIERRE', sourceModel: 'CashClosing' };
+  const reverso = { number: 'AS-2026-000002', source: 'AJUSTE', sourceModel: 'JournalEntry', reverses: 'x' };
+  const manual = { number: 'AS-2026-000099', source: 'MANUAL', sourceModel: null };
+  assert.equal(esEspejoContifico(espejo), true);
+  assert.equal(esAsientoDelSistema(espejo), false);
+  for (const j of [venta, cierre, reverso]) assert.equal(esAsientoDelSistema(j), true, j.number);
+  assert.equal(esAsientoDelSistema(manual), false, 'un asiento manual sigue bloqueando el mes');
+});

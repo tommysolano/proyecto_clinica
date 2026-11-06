@@ -836,7 +836,7 @@ exports.salesSummary = async (req, res) => {
     }
     const total = await Sale.aggregate([
       { $match: match },
-      { $group: { _id: null, count: { $sum: 1 }, subtotal: { $sum: '$subtotal' }, taxAmount: { $sum: '$taxAmount' }, total: { $sum: '$total' } } },
+      { $group: { _id: null, count: { $sum: 1 }, subtotal: { $sum: { $subtract: ['$total', { $ifNull: ['$taxAmount', 0] }] } }, taxAmount: { $sum: '$taxAmount' }, total: { $sum: '$total' } } },
     ]);
     res.json(total[0] || { count: 0, subtotal: 0, taxAmount: 0, total: 0 });
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -977,7 +977,7 @@ exports.salesByPeriod = async (req, res) => {
     }
     const rows = await Sale.aggregate([
       { $match: match },
-      { $group: { _id: groupId, count: { $sum: 1 }, subtotal: { $sum: '$subtotal' }, tax: { $sum: '$taxAmount' }, total: { $sum: '$total' } } },
+      { $group: { _id: groupId, count: { $sum: 1 }, subtotal: { $sum: { $subtract: ['$total', { $ifNull: ['$taxAmount', 0] }] } }, tax: { $sum: '$taxAmount' }, total: { $sum: '$total' } } },
       { $sort: { _id: 1 } },
     ]);
     res.json(rows);
@@ -1178,13 +1178,22 @@ exports.salesDrilldown = async (req, res) => {
         estado: s.status,
       };
       if (!porLinea) {
+        // Desglose de la factura: bases por tarifa, descuento y sin impuestos (total − IVA).
+        // `s.subtotal` es el precio visible con el IVA dentro: no es el subtotal.
+        const dv = require('../utils/desgloseVenta').desgloseVenta(s);
         rows.push({
           ...base,
           cantidad: (s.items || []).reduce((n, it) => n + (it.quantity || 0), 0),
-          subtotal: +(s.subtotal || 0).toFixed(2),
-          iva: +(s.taxAmount || 0).toFixed(2),
-          descuento: +(s.discountTotal || 0).toFixed(2),
-          total: +(s.total || 0).toFixed(2),
+          base0: dv.base0,
+          base15: dv.base15,
+          base5: dv.base5,
+          baseOtraTarifa: dv.baseOtraTarifa,
+          exento: dv.exento,
+          noObjeto: dv.noObjeto,
+          subtotal: dv.subtotal,
+          iva: dv.iva,
+          descuento: dv.descuento,
+          total: dv.total,
         });
         continue;
       }
@@ -1616,7 +1625,7 @@ exports.generalReport = async (req, res) => {
     // Ventas
     const [salesAgg] = await Sale.aggregate([
       { $match: salesMatch },
-      { $group: { _id: null, count: { $sum: 1 }, subtotal: { $sum: '$subtotal' }, tax: { $sum: '$taxAmount' }, discount: { $sum: '$discountTotal' }, total: { $sum: '$total' } } },
+      { $group: { _id: null, count: { $sum: 1 }, subtotal: { $sum: { $subtract: ['$total', { $ifNull: ['$taxAmount', 0] }] } }, tax: { $sum: '$taxAmount' }, discount: { $sum: '$discountTotal' }, total: { $sum: '$total' } } },
     ]);
     const sales = salesAgg || { count: 0, subtotal: 0, tax: 0, discount: 0, total: 0 };
 
@@ -3384,9 +3393,8 @@ exports.salesSubreportExcel = XL.excelHandler(async (req, res) => {
     XL.addSheet(wb, {
       title: 'Detalle',
       columns: [
+        { header: 'Factura', key: 'factura', width: 20 },
         { header: 'Fecha', key: 'fecha', width: 12 },
-        { header: 'Venta', key: 'venta', width: 14 },
-        { header: 'Factura', key: 'factura', width: 18 },
         { header: 'Cliente', key: 'cliente', width: 28 },
         { header: 'Código', key: 'codigo', width: 14 },
         { header: 'Producto / servicio', key: 'producto', width: 34 },
@@ -3453,10 +3461,10 @@ exports.salesDrilldownExcel = XL.excelHandler(async (req, res) => {
       ['Período', XL.periodLabel(req.query)],
       ['Ventas', d.totals?.ventas || 0],
     ],
+    // La factura primero (nov-2026, contadora); sin el número de venta interno.
     columns: [
+      { header: 'Factura', key: 'factura', width: 20 },
       { header: 'Fecha', key: 'fecha', width: 12, date: true },
-      { header: 'Venta', key: 'venta', width: 14 },
-      { header: 'Factura', key: 'factura', width: 18 },
       { header: 'Cliente', key: 'cliente', width: 30 },
       { header: 'Identificación', key: 'identificacion', width: 16 },
       ...(porLinea ? [
@@ -3464,8 +3472,17 @@ exports.salesDrilldownExcel = XL.excelHandler(async (req, res) => {
         { header: 'Producto / servicio', key: 'producto', width: 34 },
       ] : []),
       { header: 'Cantidad', key: 'cantidad', width: 10, number: true },
+      // Por venta: las bases de la factura por tarifa.
+      ...(porLinea ? [] : [
+        { header: 'Subtotal 0%', key: 'base0', width: 13, money: true },
+        { header: 'Subtotal 15%', key: 'base15', width: 13, money: true },
+        { header: 'Subtotal 5%', key: 'base5', width: 12, money: true },
+        { header: 'Subtotal otra tarifa', key: 'baseOtraTarifa', width: 14, money: true },
+        { header: 'Exento de IVA', key: 'exento', width: 13, money: true },
+        { header: 'No objeto de IVA', key: 'noObjeto', width: 14, money: true },
+      ]),
       { header: 'Descuento', key: 'descuento', width: 13, money: true },
-      { header: 'Subtotal', key: 'subtotal', width: 14, money: true },
+      { header: 'Subtotal sin impuestos', key: 'subtotal', width: 16, money: true },
       { header: 'IVA', key: 'iva', width: 12, money: true },
       { header: 'Total', key: 'total', width: 14, money: true },
       ...(porLinea ? [
@@ -3476,8 +3493,12 @@ exports.salesDrilldownExcel = XL.excelHandler(async (req, res) => {
       { header: 'Cajero', key: 'cajero', width: 24 },
       { header: 'Estado SRI', key: 'estadoSri', width: 14 },
     ],
-    rows: d.rows || [],
-    totals: d.totals || {},
+    rows: (d.rows || []).map((r) => ({ ...r, factura: r.factura || `Sin factura (${r.venta || '—'})` })),
+    totals: {
+      ...(d.totals || {}),
+      ...Object.fromEntries(['base0', 'base15', 'base5', 'baseOtraTarifa', 'exento', 'noObjeto']
+        .map((k) => [k, +(d.rows || []).reduce((s, r) => s + (Number(r[k]) || 0), 0).toFixed(2)])),
+    },
   });
   await XL.sendWorkbook(res, wb, `detalle_ventas_${Date.now()}.xlsx`);
 });

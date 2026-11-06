@@ -289,7 +289,7 @@ export default function SalesDetailReport({ rango, categories, products }) {
                           <td className="px-2 py-2">{d.cliente}</td>
                           <td className="px-2 py-2">{d.identificacion || '—'}</td>
                           <td className="px-2 py-2 text-slate-600">{d.costCenterName || '—'}</td>
-                          <td className="px-2 py-2 text-right font-mono">{fmt(d.subtotalGravado + d.subtotal0)}</td>
+                          <td className="px-2 py-2 text-right font-mono">{fmt(d.subtotal ?? (d.subtotalGravado + d.subtotal0))}</td>
                           <td className="px-2 py-2 text-right font-mono">{fmt(d.descuento)}</td>
                           <td className="px-2 py-2 text-right font-mono">{fmt(d.iva)}</td>
                           <td className="px-2 py-2 text-right font-mono font-semibold">{fmt(d.total)}</td>

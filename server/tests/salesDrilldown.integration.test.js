@@ -196,7 +196,7 @@ test('D6 · El Excel del detalle sale del MISMO controlador que la pantalla', as
   ws.eachRow((row) => row.eachCell((c) => textos.push(String(c.value ?? ''))));
   assert.ok(textos.includes('Producto / servicio'), 'el detalle por producto lleva la columna del producto');
   assert.equal(
-    textos.filter((t) => pantalla.rows.some((r) => t === r.venta)).length,
+    textos.filter((t) => pantalla.rows.some((r) => t === (r.factura || `Sin factura (${r.venta})`))).length,
     pantalla.rows.length,
     'el Excel trae las mismas ventas que la pantalla',
   );

@@ -15,6 +15,7 @@ const Sale = require('../models/Sale');
 // Fuente ÚNICA del desglose por forma de pago (distingue tarjeta débito/crédito por el
 // snapshot de la venta y nunca adivina el tipo en las ventas antiguas).
 const { normalizeSalePayments } = require('./salePayments');
+const { desgloseVenta, facturaDeVenta, COLUMNAS_DESGLOSE, CLAVES_DESGLOSE } = require('../utils/desgloseVenta');
 
 const MONEY = '"$"#,##0.00';
 
@@ -24,15 +25,16 @@ const MONEY = '"$"#,##0.00';
  * Las columnas suman exactamente el total de la venta (el backend valida el reparto).
  */
 const SALES_COLUMNS = [
-  { header: 'N° Venta', key: 'saleNumber', width: 14 },
+  // Nov-2026 (contadora): la FACTURA va en la primera columna y el número de venta interno
+  // sobra. El «Subtotal» de antes era el precio visible con el IVA dentro (subtotal = total);
+  // ahora va el desglose de la factura: bases por tarifa, descuento y subtotal sin impuestos.
+  { header: 'Factura', key: 'invoice', width: 22 },
   { header: 'Fecha', key: 'date', width: 20 },
   { header: 'Cliente', key: 'client', width: 30 },
   { header: 'Cédula/RUC', key: 'cedula', width: 16 },
   { header: 'Paciente registrado', key: 'patient', width: 28 },
   { header: 'Paciente nuevo', key: 'isFirst', width: 14 },
-  { header: 'Subtotal', key: 'subtotal', width: 12 },
-  { header: 'IVA', key: 'tax', width: 10 },
-  { header: 'Total', key: 'total', width: 12 },
+  ...COLUMNAS_DESGLOSE,
   { header: 'Forma de pago', key: 'method', width: 14 },
   { header: 'Efectivo', key: 'efectivo', width: 12 },
   { header: 'Transferencia', key: 'transferencia', width: 14 },
@@ -46,13 +48,12 @@ const SALES_COLUMNS = [
   { header: 'Saldo pendiente', key: 'balance', width: 15 },
   { header: 'Diferido tarjeta', key: 'diferido', width: 18 },
   { header: 'Estado', key: 'status', width: 12 },
-  { header: 'Factura', key: 'invoice', width: 22 },
   { header: 'Estado SRI', key: 'sri', width: 14 },
   { header: 'Registrado por', key: 'createdBy', width: 24 },
 ];
 
 const MONEY_KEYS = [
-  'subtotal', 'tax', 'total', 'efectivo', 'transferencia',
+  ...CLAVES_DESGLOSE, 'efectivo', 'transferencia',
   'tarjetaCredito', 'tarjetaDebito', 'tarjetaSinTipo', 'credito', 'otros', 'balance',
 ];
 
@@ -93,15 +94,13 @@ function salesSheetRow(s) {
   }
   const conDiferido = (s.payments || []).find((p) => p.cardDeferredType && p.cardDeferredType !== 'CORRIENTE');
   return {
-    saleNumber: s.saleNumber,
+    invoice: facturaDeVenta(s, s.invoice),
     date: new Date(s.createdAt).toLocaleString('es-EC'),
     client: s.clientName,
     cedula: s.clientCedula,
     patient: s.patient ? `${s.patient.firstName} ${s.patient.lastName}` : '—',
     isFirst: s.isFirstVisit ? 'SÍ' : '',
-    subtotal: Number(s.subtotal || 0),
-    tax: Number(s.taxAmount || 0),
-    total: Number(s.total || 0),
+    ...desgloseVenta(s),
     method: s.paymentMethod,
     efectivo: porColumna.efectivo || 0,
     transferencia: porColumna.transferencia || 0,
@@ -117,7 +116,6 @@ function salesSheetRow(s) {
       ? `${DIFERIDO_LABEL[conDiferido.cardDeferredType] || conDiferido.cardDeferredType}${conDiferido.cardDeferredMonths ? ` · ${conDiferido.cardDeferredMonths} meses` : ''}`
       : '',
     status: s.status,
-    invoice: s.invoice ? `${s.invoice.estab}-${s.invoice.ptoEmi}-${s.invoice.secuencial}` : '—',
     sri: s.invoice?.estado || '—',
     createdBy: s.createdBy?.name || '—',
   };

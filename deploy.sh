@@ -472,6 +472,15 @@ if ! ( cd "$APP_DIR/server" && node scripts/cajaIncluirFactura3344Once.js --comm
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/cajaIncluirFactura3344Once.js --commit'"
 fi
 
+# Precios importados de Contifico con IVA (06-11-2026): pvp1 de Contifico es la BASE sin
+# IVA y aqui se guardo como precio con IVA incluido (p. ej. MEGA B12 JARABE cobraba $14 en
+# vez de $16,10). Solo toca productos gravados cuyo precio sigue siendo exactamente el pvp1;
+# los precios anteriores quedan en el `result` de la marca. Marca en `onetimetasks`.
+if ! ( cd "$APP_DIR/server" && node scripts/preciosContificoConIvaOnce.js --commit ); then
+  echo "ADVERTENCIA: no se pudieron corregir los precios de Contifico con IVA. Revisa y reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/preciosContificoConIvaOnce.js --commit'"
+fi
+
 # Catalogo de SERVICIOS DE AGENDA, enlazado con los productos de tipo SERVICIO
 # del inventario (oct-2026). Es idempotente (casa por slug antes de crear), asi
 # que puede correr en cada despliegue sin duplicar nada. Si falla no pasa nada

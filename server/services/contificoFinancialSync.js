@@ -157,6 +157,17 @@ function backupRows(clinic, key, rows) {
   return filename;
 }
 
+/** Asiento que es copia de uno de Contífico (lo mantiene esta sincronización). */
+const esEspejoContifico = (journal) => journal.source === 'MIGRACION' &&
+  journal.sourceModel === 'ContificoRecord' && String(journal.number || '').startsWith('CTF-');
+
+/**
+ * Asiento que generó este sistema a partir de un documento propio (venta, cobro, cierre de
+ * caja, nota de crédito…) o el reverso de uno de ellos. No existe en Contífico.
+ */
+const esAsientoDelSistema = (journal) => !esEspejoContifico(journal) &&
+  (Boolean(journal.reverses) || (Boolean(journal.sourceModel) && journal.sourceModel !== 'ContificoRecord'));
+
 async function syncMonth({ clinic, api, year, month, assertLease = () => {} }) {
   const { from, through } = monthRange(year, month);
   const key = dateKey(from);
@@ -169,11 +180,16 @@ async function syncMonth({ clinic, api, year, month, assertLease = () => {} }) {
   const end = new Date(Date.UTC(year, month, 1));
   const posted = await Journal.find({ clinic: clinic._id, status: 'CONTABILIZADO',
     date: { $gte: start, $lt: end } }).lean();
-  const local = posted.filter((journal) => journal.source === 'MIGRACION' &&
-    journal.sourceModel === 'ContificoRecord' && journal.number.startsWith('CTF-'));
-  if (posted.length !== local.length) {
-    const extras = posted.filter((journal) => !local.includes(journal)).map((journal) => journal.number);
-    throw new Error(`Asientos locales ajenos a Contífico en ${key}: ${extras.slice(0, 10).join(', ')}`);
+  const local = posted.filter(esEspejoContifico);
+  // Desde oct-2026 se factura desde este sistema: sus ventas, cierres de caja y reversos
+  // generan asientos propios que NO están en Contífico. Conviven con el espejo (no se
+  // tocan ni se cuentan como suyos). Antes cualquier asiento propio bloqueaba el mes
+  // entero: octubre dejó de recibir el mayor de Contífico desde el 12-10 y el estado de
+  // resultados mostraba solo una parte de los ingresos. Lo escrito A MANO aquí sí
+  // bloquea: podría ser el mismo hecho que el contador registró en Contífico.
+  const manuales = posted.filter((journal) => !esEspejoContifico(journal) && !esAsientoDelSistema(journal));
+  if (manuales.length) {
+    throw new Error(`Asientos manuales locales ajenos a Contífico en ${key}: ${manuales.slice(0, 10).map((j) => j.number).join(', ')}`);
   }
   const localById = new Map(local.map((journal) => [journal.number.slice(4), journal]));
   const missing = local.filter((journal) => !liveIds.has(journal.number.slice(4)));
@@ -463,4 +479,4 @@ function startFinancialSyncJob(leaderOnly) {
 }
 
 module.exports = { fetchWindow, ledgerMaps, syncCostCenterCatalog, syncMonth, syncFinancialReports,
-  startFinancialSyncJob, monthRange, ecToday };
+  startFinancialSyncJob, monthRange, ecToday, esEspejoContifico, esAsientoDelSistema };

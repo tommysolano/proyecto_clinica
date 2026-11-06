@@ -11,6 +11,9 @@ const { canReq } = require('../utils/permissions');
 // Hoja «Ventas» del Excel contable (una fila por venta, con el desglose por forma de pago).
 // Es la MISMA que baja Reportes de Ventas: el formato del contador vive en un solo sitio.
 const { addSalesSheet, findSalesForSheet } = require('../services/salesWorkbook');
+const { desgloseVenta, COLUMNAS_DESGLOSE, CLAVES_DESGLOSE } = require('../utils/desgloseVenta');
+const { invoiceTaxBreakdown } = require('../utils/invoiceTaxBreakdown');
+const { normalizeSalePayments } = require('../services/salePayments');
 
 /**
  * Reporte de atenciones por proveedor (doctor/enfermero) en un rango de fechas.
@@ -349,15 +352,36 @@ exports.exportInvoices = async (req, res) => {
       { header: 'Cliente', key: 'client', width: 30 },
       { header: 'Identificación', key: 'cedula', width: 16 },
       { header: 'Paciente registrado', key: 'patient', width: 28 },
-      { header: 'Subtotal', key: 'subtotal', width: 12 },
-      { header: 'IVA', key: 'iva', width: 10 },
-      { header: 'Total', key: 'total', width: 12 },
+      // Nov-2026 (contadora): bases por tarifa, descuento y forma de pago con el tipo de tarjeta.
+      ...COLUMNAS_DESGLOSE,
+      { header: 'Forma de pago', key: 'pago', width: 26 },
       { header: 'Estado', key: 'estado', width: 14 },
       { header: 'Ambiente', key: 'amb', width: 12 },
     ];
+    const METODO = { tarjeta_credito: 'Tarjeta crédito', tarjeta_debito: 'Tarjeta débito', tarjeta_sin_tipo: 'Tarjeta (sin tipo)' };
     invoices.forEach((inv) => {
       const num = `${inv.estab}-${inv.ptoEmi}-${String(inv.secuencial).padStart(9, '0')}`;
+      // Con la venta a mano el desglose sale de sus líneas (cada una con su tarifa); si no,
+      // del desglose guardado en la factura.
+      let dv;
+      if (inv.sale?.items?.length) dv = desgloseVenta(inv.sale);
+      else {
+        const tb = invoiceTaxBreakdown(inv);
+        const tarifa = (t) => (tb.rates || []).filter((r) => Number(r.rate) === t).reduce((s, r) => s + r.base, 0);
+        const base15 = +tarifa(15).toFixed(2);
+        const base5 = +tarifa(5).toFixed(2);
+        dv = {
+          base0: tb.base0, base15, base5, baseOtraTarifa: +(tb.baseGravada - base15 - base5).toFixed(2),
+          exento: tb.baseExento, noObjeto: tb.baseNoObjeto, descuento: Number(inv.totalDescuento || 0),
+          subtotal: Number(inv.totalSinImpuestos || 0), iva: Number(inv.totalImpuesto || 0), total: Number(inv.importeTotal || 0),
+        };
+      }
+      const pago = inv.sale
+        ? [...new Set(normalizeSalePayments(inv.sale).rows.map((r) => METODO[r.method] || r.method))].join(' + ')
+        : '';
       ws.addRow({
+        ...dv,
+        pago,
         num,
         clave: inv.claveAcceso,
         date: inv.fechaEmision,
@@ -366,14 +390,11 @@ exports.exportInvoices = async (req, res) => {
         patient: inv.sale?.patient
           ? `${inv.sale.patient.firstName} ${inv.sale.patient.lastName}`
           : '—',
-        subtotal: Number(inv.totalSinImpuestos || 0),
-        iva: Number(inv.totalImpuesto || 0),
-        total: Number(inv.importeTotal || 0),
         estado: inv.estado,
         amb: inv.ambiente === '2' ? 'Producción' : 'Pruebas',
       });
     });
-    ['subtotal', 'iva', 'total'].forEach((k) => {
+    CLAVES_DESGLOSE.forEach((k) => {
       ws.getColumn(k).numFmt = '"$"#,##0.00';
     });
     styleHeader(ws);

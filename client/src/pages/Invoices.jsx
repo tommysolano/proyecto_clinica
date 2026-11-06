@@ -203,7 +203,7 @@ export default function Invoices() {
       setMotivo('');
       load();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al anular');
+      toast.error(err.response?.data?.error || err.response?.data?.message || 'Error al anular');
     } finally {
       setBusyId(null);
     }

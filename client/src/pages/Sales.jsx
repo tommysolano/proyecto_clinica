@@ -272,6 +272,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const [modalOpen, setModalOpen] = useState(false);
   const [detailModal, setDetailModal] = useState(null);
   const [saving, setSaving] = useState(false);
+  // Anulación de una venta con factura autorizada (se anula la factura y la venta).
+  const [anularFactura, setAnularFactura] = useState(null);
+  const [motivoAnulacion, setMotivoAnulacion] = useState('');
+  const [anulando, setAnulando] = useState(false);
   const [invoicingId, setInvoicingId] = useState(null);
   const [filter, setFilter] = useState({ startDate: '', endDate: '', product: '', client: '' });
   const [downloadingZip, setDownloadingZip] = useState(false);
@@ -1409,9 +1413,32 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     }
   };
 
+  const submitAnularFactura = async () => {
+    if (!motivoAnulacion || motivoAnulacion.trim().length < 10) {
+      toast.error('El motivo debe tener al menos 10 caracteres');
+      return;
+    }
+    setAnulando(true);
+    try {
+      const res = await api.post(`/invoices/${anularFactura.invoice._id}/anular`, { motivo: motivoAnulacion.trim(), anularVenta: true });
+      toast.success(res.data?.saleReversed ? 'Factura y venta anuladas' : 'Factura anulada');
+      setAnularFactura(null);
+      setMotivoAnulacion('');
+      fetchSales();
+      fetchProducts();
+    } catch (err) {
+      toast.error(err.response?.data?.error || err.response?.data?.message || 'Error al anular');
+    } finally {
+      setAnulando(false);
+    }
+  };
+
   const cancelSale = async (sale) => {
+    // Factura AUTORIZADA: se anula la factura (y con ella la venta), pidiendo el motivo.
     if (sale.invoice && sale.invoice.estado === 'AUTORIZADO') {
-      return toast.error('No se puede anular: la factura ya fue autorizada por el SRI');
+      setMotivoAnulacion('');
+      setAnularFactura(sale);
+      return;
     }
     if (!window.confirm('¿Anular esta venta? Se restaurará el stock.')) return;
     try {
@@ -3044,6 +3071,34 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           hideOriginLink
         />
       )}
+
+      {/* Anular una venta con factura AUTORIZADA (nov-2026): se anula la factura y, con ella,
+          la venta (mismo endpoint que Facturación). Antes Ventas lo impedía. */}
+      <Modal isOpen={!!anularFactura} onClose={() => setAnularFactura(null)}
+        title={`Anular factura ${anularFactura?.invoice ? `${anularFactura.invoice.estab}-${anularFactura.invoice.ptoEmi}-${String(anularFactura.invoice.secuencial).padStart(9, '0')}` : ''}`} size="md">
+        {anularFactura && (
+          <div className="space-y-3">
+            <p className="text-sm text-slate-600">
+              La factura está autorizada por el SRI. Se anulará en el sistema junto con la venta {anularFactura.saleNumber}
+              (se devuelve el stock y se reversan sus asientos). Recuerda anularla también en el portal del SRI.
+            </p>
+            <label className="block text-sm font-medium text-slate-700">Motivo de la anulación</label>
+            <textarea
+              value={motivoAnulacion}
+              onChange={(e) => setMotivoAnulacion(e.target.value)}
+              rows={3}
+              className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm"
+              placeholder="Mínimo 10 caracteres"
+            />
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn-secondary" onClick={() => setAnularFactura(null)}>Cancelar</button>
+              <button type="button" className="btn-primary" disabled={anulando} onClick={submitAnularFactura}>
+                {anulando ? 'Anulando…' : 'Anular factura y venta'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Cobro de la parte a crédito: genera un documento de Cobro (visible en Pagos / Cobros). */}
       <Modal isOpen={!!collectItem} onClose={() => setCollectItem(null)} title={`Cobrar venta ${collectItem?.saleNumber || ''}`} size="md">

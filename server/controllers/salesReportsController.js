@@ -162,16 +162,22 @@ exports.exportReportExcel = async (req, res) => {
 
     // ── Ventas: una fila por documento ──────────────────────────────────────────────────
     const ws = wb.addWorksheet('Ventas');
+    // Nov-2026 (contadora): la factura primero, sin el número de venta interno, y el
+    // desglose de la factura (bases por tarifa, descuento, subtotal sin impuestos).
     ws.columns = [
+      { header: 'Factura', key: 'factura', width: 20 },
       { header: 'Fecha', key: 'fecha', width: 12 },
-      { header: 'Venta', key: 'venta', width: 14 },
-      { header: 'Factura', key: 'factura', width: 18 },
       { header: 'Autorización', key: 'aut', width: 22 },
       { header: 'Cliente', key: 'cliente', width: 28 },
       { header: 'Identificación', key: 'ident', width: 16 },
       { header: 'Subtotal 0%', key: 's0', width: 13 },
-      { header: 'Subtotal gravado', key: 'sg', width: 16 },
+      { header: 'Subtotal 15%', key: 's15', width: 13 },
+      { header: 'Subtotal 5%', key: 's5', width: 12 },
+      { header: 'Subtotal otra tarifa', key: 'sOtra', width: 14 },
+      { header: 'Exento de IVA', key: 'sEx', width: 13 },
+      { header: 'No objeto de IVA', key: 'sNo', width: 14 },
       { header: 'Descuento', key: 'desc', width: 12 },
+      { header: 'Subtotal sin impuestos', key: 'sub', width: 16 },
       { header: 'IVA', key: 'iva', width: 12 },
       { header: 'Total', key: 'total', width: 13 },
       { header: 'Cobrado', key: 'cobrado', width: 13 },
@@ -184,22 +190,23 @@ exports.exportReportExcel = async (req, res) => {
     for (const d of data.documentos) {
       ws.addRow({
         fecha: new Date(d.date).toLocaleDateString('es-EC'),
-        venta: d.numero, factura: d.factura, aut: d.autorizacion,
+        factura: d.factura || `Sin factura (${d.numero})`, aut: d.autorizacion,
         cliente: d.cliente, ident: d.identificacion,
-        s0: d.subtotal0, sg: d.subtotalGravado, desc: d.descuento, iva: d.iva,
+        s0: d.subtotal0, s15: d.subtotal15, s5: d.subtotal5, sOtra: d.subtotalOtraTarifa,
+        sEx: d.subtotalExento, sNo: d.subtotalNoObjeto, sub: d.subtotal, desc: d.descuento, iva: d.iva,
         total: d.total, cobrado: d.cobrado, saldo: d.saldo, estado: d.estado,
         // El centro de costo REAL con el que se registró la venta, por su nombre.
         cc: d.costCenterName || (d.costCenter ? String(d.costCenter) : ''),
         legacy: d.legacy ? 'SÍ (sin desglose)' : '',
       });
     }
-    ['s0', 'sg', 'desc', 'iva', 'total', 'cobrado', 'saldo'].forEach((k) => { ws.getColumn(k).numFmt = MONEY; });
+    ['s0', 's15', 's5', 'sOtra', 'sEx', 'sNo', 'desc', 'sub', 'iva', 'total', 'cobrado', 'saldo']
+      .forEach((k) => { ws.getColumn(k).numFmt = MONEY; });
 
     // ── Detalle: una fila por línea (el total del documento NO se repite) ────────────────
     const wd = wb.addWorksheet('Detalle');
     wd.columns = [
-      { header: 'Venta', key: 'venta', width: 14 },
-      { header: 'Factura', key: 'factura', width: 18 },
+      { header: 'Factura', key: 'factura', width: 20 },
       { header: 'Categoría', key: 'cat', width: 20 },
       { header: 'Tipo', key: 'tipo', width: 12 },
       { header: 'Código', key: 'cod', width: 14 },
@@ -207,16 +214,17 @@ exports.exportReportExcel = async (req, res) => {
       { header: 'Cantidad', key: 'qty', width: 10 },
       { header: 'Precio', key: 'precio', width: 12 },
       { header: 'Descuento', key: 'desc', width: 12 },
-      { header: 'Subtotal', key: 'sub', width: 12 },
+      { header: 'Tarifa IVA', key: 'tarifa', width: 11 },
+      { header: 'Subtotal sin impuestos', key: 'sub', width: 16 },
       { header: 'IVA', key: 'iva', width: 12 },
       { header: 'Total línea', key: 'total', width: 13 },
     ];
     head(wd, 'FF0369A1');
     for (const l of data.detalle) {
       wd.addRow({
-        venta: l.venta, factura: l.factura, cat: l.categoria || '(sin categoría)', tipo: l.tipo,
+        factura: l.factura || `Sin factura (${l.venta})`, cat: l.categoria || '(sin categoría)', tipo: l.tipo,
         cod: l.codigo, prod: l.producto, qty: l.cantidad, precio: l.precio,
-        desc: l.descuento, sub: l.subtotal, iva: l.iva, total: l.totalLinea,
+        desc: l.descuento, tarifa: l.tarifa, sub: l.subtotal, iva: l.iva, total: l.totalLinea,
       });
     }
     ['precio', 'desc', 'sub', 'iva', 'total'].forEach((k) => { wd.getColumn(k).numFmt = MONEY; });
@@ -224,8 +232,7 @@ exports.exportReportExcel = async (req, res) => {
     // ── Pagos: una fila por pago real (la CxC no es un pago) ─────────────────────────────
     const wp = wb.addWorksheet('Pagos');
     wp.columns = [
-      { header: 'Venta', key: 'venta', width: 14 },
-      { header: 'Factura', key: 'factura', width: 18 },
+      { header: 'Factura', key: 'factura', width: 20 },
       { header: 'Fecha', key: 'fecha', width: 12 },
       { header: 'Método', key: 'metodo', width: 18 },
       { header: 'Tipo de tarjeta', key: 'tarjeta', width: 14 },
@@ -238,7 +245,7 @@ exports.exportReportExcel = async (req, res) => {
     head(wp, 'FF7C3AED');
     for (const p of data.pagos) {
       wp.addRow({
-        venta: p.venta, factura: p.factura,
+        factura: p.factura || `Sin factura (${p.venta})`,
         fecha: p.date ? new Date(p.date).toLocaleDateString('es-EC') : '',
         metodo: p.method, tarjeta: p.cardType || '',
         cuenta: p.bankAccount ? String(p.bankAccount) : '',
@@ -263,8 +270,13 @@ exports.exportReportExcel = async (req, res) => {
     };
     bloque('TOTALES', {
       'Subtotal 0%': data.resumen.subtotal0,
-      'Subtotal gravado': data.resumen.subtotalGravado,
+      'Subtotal 15%': data.resumen.subtotal15,
+      'Subtotal 5%': data.resumen.subtotal5,
+      'Subtotal otra tarifa': data.resumen.subtotalOtraTarifa,
+      'Exento de IVA': data.resumen.subtotalExento,
+      'No objeto de IVA': data.resumen.subtotalNoObjeto,
       Descuento: data.resumen.descuento,
+      'Subtotal sin impuestos': data.resumen.subtotal,
       IVA: data.resumen.iva,
       Total: data.resumen.total,
       Cobrado: data.resumen.cobrado,
@@ -425,13 +437,15 @@ exports.exportExcel = async (req, res) => {
     if (range) match.createdAt = range;
     if (productIds.length) match['items.product'] = { $in: productIds.map(oid) };
 
-    const sales = await Sale.find(match).sort({ createdAt: 1 }).lean();
+    const sales = await Sale.find(match).populate('invoice', 'estab ptoEmi secuencial')
+      .sort({ createdAt: 1 }).lean();
     const wb = new ExcelJS.Workbook();
 
-    // Hoja 1: Detalle por ítem
+    // Hoja 1: Detalle por ítem. La factura primero (no el número de venta interno) y la
+    // línea con su base sin IVA, tarifa, IVA y total; el pago con el tipo de tarjeta.
     const ws = wb.addWorksheet('Detalle ventas');
     ws.columns = [
-      { header: 'N° Venta', key: 'num', width: 14 },
+      { header: 'Factura', key: 'num', width: 20 },
       { header: 'Fecha', key: 'date', width: 18 },
       { header: 'Cliente', key: 'client', width: 28 },
       { header: 'Servicio', key: 'service', width: 32 },
@@ -439,20 +453,31 @@ exports.exportExcel = async (req, res) => {
       { header: 'Cantidad', key: 'qty', width: 10 },
       { header: 'P. Unitario', key: 'unit', width: 12 },
       { header: 'Descuento', key: 'disc', width: 12 },
-      { header: 'Subtotal', key: 'sub', width: 12 },
-      { header: 'Método pago', key: 'method', width: 14 },
+      { header: 'Tarifa IVA', key: 'tarifa', width: 11 },
+      { header: 'Subtotal sin impuestos', key: 'sub', width: 16 },
+      { header: 'IVA', key: 'iva', width: 11 },
+      { header: 'Total', key: 'total', width: 12 },
+      { header: 'Método pago', key: 'method', width: 22 },
     ];
     const psel = new Set(productIds.map(String));
+    const { facturaDeVenta } = require('../utils/desgloseVenta');
+    const { normalizeSalePayments } = require('../services/salePayments');
+    const METODO = { tarjeta_credito: 'Tarjeta crédito', tarjeta_debito: 'Tarjeta débito', tarjeta_sin_tipo: 'Tarjeta (sin tipo)' };
     for (const s of sales) {
+      const metodos = [...new Set(normalizeSalePayments(s).rows.map((r) => METODO[r.method] || r.method))].join(' + ');
       for (const it of s.items || []) {
         if (psel.size && !psel.has(String(it.product))) continue;
         ws.addRow({
-          num: s.saleNumber, date: new Date(s.createdAt).toLocaleString('es-EC'),
+          num: facturaDeVenta(s, s.invoice), date: new Date(s.createdAt).toLocaleString('es-EC'),
           client: s.clientName, service: it.productName, code: it.productCode,
-          qty: it.quantity, unit: it.unitPrice, disc: it.discount || 0, sub: it.subtotal, method: s.paymentMethod,
+          qty: it.quantity, unit: it.unitPrice, disc: it.discount || 0,
+          tarifa: it.taxCategory === 'EXENTO' ? 'Exento' : it.taxCategory === 'NO_OBJETO' ? 'No objeto' : `${Number(it.taxRate || 0)}%`,
+          sub: it.taxBase ?? it.subtotal, iva: it.taxAmount || 0, total: it.lineTotal || it.subtotal,
+          method: metodos || s.paymentMethod,
         });
       }
     }
+    ['unit', 'disc', 'sub', 'iva', 'total'].forEach((k) => { ws.getColumn(k).numFmt = MONEY; });
 
     // Hoja 2: Resumen por servicio
     const ws2 = wb.addWorksheet('Resumen por servicio');
@@ -467,7 +492,7 @@ exports.exportExcel = async (req, res) => {
       if (psel.size && !psel.has(String(it.product))) continue;
       const k = String(it.product);
       if (!agg[k]) agg[k] = { name: it.productName, code: it.productCode, qty: 0, total: 0 };
-      agg[k].qty += it.quantity; agg[k].total += it.subtotal;
+      agg[k].qty += it.quantity; agg[k].total += Number(it.lineTotal || it.subtotal || 0);
     }
     Object.values(agg).sort((a, b) => b.total - a.total).forEach((r) => ws2.addRow(r));
 
