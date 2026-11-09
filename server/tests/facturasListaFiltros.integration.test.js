@@ -69,8 +69,10 @@ test('filtra por caja, incluidas las antiguas sin enlace al punto', async () => 
 
 test('busca por número, secuencial, cliente o cédula', async () => {
   const { clinicId, userId } = await seed();
+  await Invoice.collection.updateOne({ clinic: clinicId, secuencial: '3341' }, { $set: { identificacionComprador: '0912334400' } });
   assert.equal((await listar(clinicId, userId, { q: '001-002-000003346' })).total, 1);
   assert.equal((await listar(clinicId, userId, { q: '3344' })).invoices[0].secuencial, '3344');
+  assert.equal((await listar(clinicId, userId, { q: '3344' })).total, 1, 'no confunde el secuencial con parte de una cédula');
   assert.equal((await listar(clinicId, userId, { q: 'maria perez' })).total, 1);
   assert.equal((await listar(clinicId, userId, { q: '0912345678' })).total, 1);
   assert.equal((await listar(clinicId, userId, { q: 'nadie asi' })).total, 0);

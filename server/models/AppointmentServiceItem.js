@@ -38,6 +38,7 @@ const appointmentServiceItemSchema = new mongoose.Schema(
     active: { type: Boolean, default: true, index: true },
     // Marca el servicio como propio de enfermería (sueroterapia, inyectables…).
     nursingService: { type: Boolean, default: false },
+    excludedCommissionDoctors: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     /**
      * Cuánto OCUPA este servicio, en minutos. `0` = lo que dure la cita normal.
      *

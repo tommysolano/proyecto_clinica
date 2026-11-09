@@ -4,12 +4,13 @@ import toast from 'react-hot-toast';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import {
   HiOutlineCalculator, HiOutlinePrinter, HiOutlineChevronDown, HiOutlineChevronRight, HiOutlineArrowTopRightOnSquare,
-  HiOutlinePlus, HiOutlineXMark,
+  HiOutlinePlus, HiOutlineXMark, HiOutlineArrowDownTray,
 } from 'react-icons/hi2';
 import api from '../../api/axios';
 import { useAuth } from '../../context/AuthContext';
 import DateInput from '../../components/DateInput';
 import { fmt, fmtDate } from './_utils';
+import { downloadFile } from '../../utils/download';
 
 /**
  * Detalle de una sesión de caja (se abre en pestaña nueva desde Caja → ojo): todo lo vendido
@@ -19,8 +20,15 @@ import { fmt, fmtDate } from './_utils';
 
 const METODO = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', transferencia: 'Transferencia', credito: 'Crédito', anticipo: 'Anticipo', otro: 'Otro' };
 const TIPO_TARJETA = { DEBITO: 'débito', CREDITO: 'crédito', CORRIENTE: 'corriente' };
-/** «Tarjeta crédito $20.00», «Transferencia $15.00 (N° 123)»… */
-const etiquetaPago = (p) => `${METODO[p.method] || p.method}${TIPO_TARJETA[p.cardType] ? ` ${TIPO_TARJETA[p.cardType]}` : ''} ${money(p.amount)}${p.reference ? ` (N° ${p.reference})` : ''}`;
+/** «Tarjeta débito», «Transferencia · Banco Pichincha», o que el cobro no lo registró. */
+const detallePago = (p) => {
+  const metodo = METODO[p.method] || p.method;
+  if (p.method === 'tarjeta') return TIPO_TARJETA[p.cardType] ? `${metodo} ${TIPO_TARJETA[p.cardType]}` : `${metodo} · tipo no registrado`;
+  if (p.method === 'transferencia') return `${metodo} · ${p.bank || 'banco no registrado'}`;
+  return metodo;
+};
+/** «Tarjeta crédito $20.00», «Transferencia · Banco Pichincha $15.00 (N° 123)»… */
+const etiquetaPago = (p) => `${detallePago(p)} ${money(p.amount)}${p.reference ? ` (N° ${p.reference})` : ''}`;
 const TIPO = { servicio: 'Servicios', programa: 'Programas', producto: 'Productos' };
 const COLORS = ['#059669', '#0284c7', '#7c3aed', '#d97706', '#e11d48', '#475569'];
 const TIPO_COLOR = { servicio: '#0284c7', programa: '#7c3aed', producto: '#059669' };
@@ -163,6 +171,7 @@ export default function CashClosingDetail() {
   const [itemTab, setItemTab] = useState('todos');
   const [abiertas, setAbiertas] = useState({});
   const [sumarOpen, setSumarOpen] = useState(false);
+  const [exportando, setExportando] = useState(false);
 
   useEffect(() => {
     api.get(`/cash-closings/${id}/detail`, { params: add ? { add } : {} })
@@ -204,8 +213,11 @@ export default function CashClosingDetail() {
   const hourData = data.byHour.map((h) => ({ hora: `${String(h.hour).padStart(2, '0')}:00`, total: h.total, ventas: h.count }));
   const topItems = data.items.slice(0, 10).map((i) => ({ name: i.name.length > 28 ? `${i.name.slice(0, 27)}…` : i.name, total: i.total, type: i.type }));
   const abierta = c.status === 'ABIERTA';
-  const diffTone = c.difference < 0 ? 'rose' : c.difference > 0 ? 'amber' : 'emerald';
-  const movNeto = data.movements.filter((m) => !m.voided).reduce((s, m) => s + (m.type === 'INGRESO' ? 1 : -1) * m.amount, 0);
+  const pago = (method, cardType) => data.byPaymentDetail
+    .filter((p) => p.method === method && (!cardType || p.cardType === cardType))
+    .reduce((sum, p) => sum + Number(p.total || 0), 0);
+  const tarjetasSinTipo = data.byPaymentDetail.filter((p) => p.method === 'tarjeta' && !['DEBITO', 'CREDITO'].includes(p.cardType))
+    .reduce((sum, p) => sum + Number(p.total || 0), 0);
   const cs = data.closings || [];
   const suma = (k) => cs.reduce((s, x) => s + (Number(x[k]) || 0), 0);
   const clinicData = (data.byClinic || []).map((r) => ({ name: r.name, Efectivo: r.efectivo, Tarjeta: r.tarjeta, Transferencia: r.transferencia, Otros: r.otros }));
@@ -245,6 +257,15 @@ export default function CashClosingDetail() {
               <HiOutlinePlus /> Sumar cajas
             </button>
           )}
+          <button disabled={exportando} onClick={async () => {
+            setExportando(true);
+            try {
+              await downloadFile(`/cash-closings/${id}/invoices.xlsx`, { params: add ? { add } : {}, filename: 'facturas_caja.xlsx' });
+            } catch (e) { toast.error(e.message || 'No se pudo descargar el Excel'); }
+            finally { setExportando(false); }
+          }} className="px-4 py-2 bg-white border border-slate-200 rounded-xl flex items-center gap-2 cursor-pointer hover:bg-slate-50 disabled:opacity-50">
+            <HiOutlineArrowDownTray /> {exportando ? 'Descargando…' : 'Excel de facturas'}
+          </button>
           <button onClick={() => window.print()} className="px-4 py-2 bg-white border border-slate-200 rounded-xl flex items-center gap-2 cursor-pointer hover:bg-slate-50">
             <HiOutlinePrinter /> Imprimir
           </button>
@@ -371,20 +392,17 @@ export default function CashClosingDetail() {
       )}
 
       {/* Cuadre */}
-      {!varias && (
       <Card title="Cuadre de caja">
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2 text-sm">
-          <Kpi label="Fondo inicial" value={money(c.openingBalance)} />
-          <Kpi label="Efectivo ventas" value={money(data.byMethod.find((m) => m.method === 'efectivo')?.total)} tone="emerald" />
-          <Kpi label="Movimientos neto" value={money(movNeto)} hint={`${data.movements.length} movimiento${data.movements.length === 1 ? '' : 's'}`} />
-          <Kpi label="Efectivo esperado" value={abierta ? '—' : money(c.expectedCash)} tone="amber" />
-          <Kpi label="Contado" value={abierta ? '—' : money(c.countedCash)} />
-          <Kpi label="Diferencia" value={abierta ? '—' : money(c.difference)} hint={abierta ? '' : c.difference < 0 ? 'Faltante' : c.difference > 0 ? 'Sobrante' : 'Cuadrado'} tone={abierta ? 'slate' : diffTone} />
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-2 text-sm">
+          <Kpi label="Efectivo" value={money(pago('efectivo'))} tone="emerald" />
+          <Kpi label="Tarjeta débito" value={money(pago('tarjeta', 'DEBITO'))} tone="sky" />
+          <Kpi label="Tarjeta crédito" value={money(pago('tarjeta', 'CREDITO'))} tone="violet" />
+          <Kpi label="Transferencia" value={money(pago('transferencia'))} tone="amber" />
+          <Kpi label="Total vendido" value={money(t.total)} />
         </div>
-        {c.journalEntry && <p className="text-[11px] text-emerald-700 mt-2">✓ Asiento contable de la diferencia generado</p>}
-        {c.notes && <p className="text-sm text-slate-600 border-t border-slate-100 mt-3 pt-2">{c.notes}</p>}
+        {tarjetasSinTipo > 0 && <p className="text-xs text-amber-700 mt-2">Tarjetas sin tipo débito/crédito registrado: {money(tarjetasSinTipo)}.</p>}
+        <p className="text-xs text-slate-500 mt-2">Los medios muestran cobros registrados, incluso excedentes recibidos; el total vendido también puede incluir crédito, anticipos u otros medios.</p>
       </Card>
-      )}
 
       {/* Gráficas */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -498,7 +516,7 @@ export default function CashClosingDetail() {
         {[
           ['Por quien registró la venta', data.bySeller],
           ['Por doctor', data.byDoctor],
-          ['Por método de pago', data.byMethod.map((m) => ({ name: METODO[m.method] || m.method, total: m.total }))],
+          ['Por método de pago', data.byPaymentDetail.map((m) => ({ name: detallePago(m), count: m.count, total: m.total }))],
         ].map(([title, rows]) => (
           <Card key={title} title={title}>
             {rows.length ? (

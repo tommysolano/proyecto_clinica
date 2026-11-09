@@ -5,6 +5,8 @@ const { auth, requireClinic, requireRole, requireSuperAdmin } = require('../midd
 router.use(auth, requireClinic);
 
 // Resumen de atenciones por doctor: solo el super administrador (módulo de comisiones).
+router.get('/doctor-excluded-services', requireSuperAdmin, ctrl.listDoctorExcludedServices);
+router.put('/doctor-excluded-services/:id', requireSuperAdmin, ctrl.setDoctorExcludedService);
 router.get('/doctor-summary', requireSuperAdmin, ctrl.doctorSummary);
 router.get('/doctor-appointments', requireSuperAdmin, ctrl.doctorAppointments);
 router.put('/doctor-service-rule', requireSuperAdmin, ctrl.saveDoctorServiceRule);

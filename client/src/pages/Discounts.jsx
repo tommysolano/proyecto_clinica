@@ -269,7 +269,7 @@ export default function Discounts() {
                   {AUDIENCES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
               </label>
-              <label className="block"><span className="text-xs font-medium text-slate-600">Compra mínima ($)</span>
+              <label className="block"><span className="text-xs font-medium text-slate-600">Compra mínima antes de descuentos ($)</span>
                 <NumericInput step="0.01" value={form.minAmount} onChange={(e) => setForm({ ...form, minAmount: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" />
               </label>
               <label className="block"><span className="text-xs font-medium text-slate-600">Límite de usos <span className="text-slate-400">(0=∞)</span></span>
@@ -277,6 +277,8 @@ export default function Discounts() {
               </label>
             </div>
           </div>
+
+          <p className="text-xs text-slate-500">Los descuentos aplicables se suman por producto, hasta su importe. El valor fijo se aplica por unidad y el límite de usos cuenta una vez por venta.</p>
 
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} />

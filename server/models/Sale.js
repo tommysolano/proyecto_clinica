@@ -59,6 +59,7 @@ const saleItemSchema = new mongoose.Schema({
   discount: { type: Number, default: 0 },
   // Referencia opcional al descuento maestro aplicado.
   discountRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Discount' },
+  discountRefs: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Discount' }],
   // Tratamiento al que aporta este ítem (avance automático).
   treatment: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment' },
   // SESIONES PREPAGADAS (oct-2026): este servicio se pagó para citas futuras y dejó
@@ -159,6 +160,7 @@ const saleSchema = new mongoose.Schema(
     subtotalExento: { type: Number, default: 0 },
     subtotalNoObjeto: { type: Number, default: 0 },
     discountTotal: { type: Number, default: 0 },
+    discountUses: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Discount' }],
     discountTaxBase: { type: Number, default: 0 },
     taxAmount: { type: Number, required: true },
     total: { type: Number, required: true },

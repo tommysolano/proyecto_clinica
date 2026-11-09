@@ -101,6 +101,9 @@ export default function Commissions() {
   const [serviceFilter, setServiceFilter] = useState([]);
   const [clinics, setClinics] = useState([]);
   const [doctors, setDoctors] = useState([]);
+  // El doctor elegido sigue en el filtro al cambiar de sucursal: su nombre se recuerda
+  // aunque no esté en la lista de la sucursal nueva.
+  const [personasVistas, setPersonasVistas] = useState({});
   const [services, setServices] = useState([]);
   const [rawData, setData] = useState(null);
   // El resumen solo vale para su área: al cambiar de pestaña no se enseñan los
@@ -123,6 +126,10 @@ export default function Commissions() {
   const [commissionEditor, setCommissionEditor] = useState(null);
   const [commissionForm, setCommissionForm] = useState({ amountType: 'fixed', value: '', firstTimeOnly: false, minStartTime: '', timeBands: [] });
   const [savingCommission, setSavingCommission] = useState(false);
+  const [excludedEditor, setExcludedEditor] = useState(false);
+  const [excludedServices, setExcludedServices] = useState([]);
+  const [excludedSearch, setExcludedSearch] = useState('');
+  const [savingExcluded, setSavingExcluded] = useState('');
   const [adjustEditor, setAdjustEditor] = useState(null);
   const [adjustForm, setAdjustForm] = useState({ amount: '', note: '' });
   const [savingAdjust, setSavingAdjust] = useState(false);
@@ -136,6 +143,25 @@ export default function Commissions() {
     const params = { start, end };
     if (clinic) params.clinic = clinic;
     return params;
+  };
+
+  const openExcludedServices = async (doctor) => {
+    try {
+      const res = await api.get('/commissions/doctor-excluded-services', { params: { doctor: doctor.doctorId } });
+      setExcludedServices(res.data || []);
+      setExcludedSearch('');
+      setExcludedEditor(doctor);
+    } catch (err) { toast.error(err.response?.data?.message || 'Error al cargar los servicios'); }
+  };
+
+  const toggleExcludedService = async (service) => {
+    setSavingExcluded(service._id);
+    try {
+      const res = await api.put(`/commissions/doctor-excluded-services/${service._id}`, { doctor: excludedEditor.doctorId, excluded: !service.excluded });
+      setExcludedServices((items) => items.map((item) => item._id === service._id ? res.data : item));
+      await load();
+    } catch (err) { toast.error(err.response?.data?.message || 'Error al actualizar el servicio'); }
+    finally { setSavingExcluded(''); }
   };
 
   const filtrosActuales = () => {
@@ -181,7 +207,10 @@ export default function Commissions() {
     if (!isSuper || !esPersonal) return;
     setDoctors([]);
     api.get('/commissions/doctors', { params: { clinic, area } })
-      .then((r) => setDoctors(r.data || []))
+      .then((r) => {
+        setDoctors(r.data || []);
+        setPersonasVistas((prev) => ({ ...prev, ...Object.fromEntries((r.data || []).map((d) => [String(d._id), d])) }));
+      })
       .catch(() => setDoctors([]));
   }, [clinic, isSuper, esPersonal, area]);
 
@@ -584,7 +613,7 @@ export default function Commissions() {
           <label className="text-sm">Sucursal
             <select
               value={clinic}
-              onChange={(e) => { setClinic(e.target.value); setDoctorFilter([]); }}
+              onChange={(e) => setClinic(e.target.value)}
               className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm min-w-[180px]"
             >
               <option value="all">Todas las sucursales</option>
@@ -674,7 +703,7 @@ export default function Commissions() {
               <div className="flex flex-wrap gap-1.5">
                 {doctorFilter.map((id) => (
                   <span key={id} className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full bg-slate-100 text-xs text-slate-700">
-                    {T.etiqueta(doctors.find((d) => String(d._id) === String(id)) || { name: T.Persona, roleInClinic: '' })}
+                    {T.etiqueta(personasVistas[String(id)] || { name: T.Persona, roleInClinic: '' })}
                     <button
                       type="button"
                       onClick={() => setDoctorFilter(doctorFilter.filter((x) => String(x) !== String(id)))}
@@ -767,6 +796,7 @@ export default function Commissions() {
                         )}
                       </div>
                       <div className="flex items-center gap-2 flex-wrap justify-end">
+                        {tab === 'doctores' && <button type="button" onClick={() => openExcludedServices(d)} className="inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 cursor-pointer">Servicios sin comisión</button>}
                         {columnas.map((s) => (
                           <span
                             key={s.value}
@@ -1224,6 +1254,22 @@ export default function Commissions() {
           </div>
         </div>
       )}
+
+      <Modal isOpen={!!excludedEditor} onClose={() => !savingExcluded && setExcludedEditor(false)} title={`Servicios sin comisión · ${excludedEditor?.name || ''}`}>
+        <div className="space-y-3">
+          <p className="text-sm text-slate-600">Los servicios marcados no generan comisión para este doctor, incluida la base por paciente y la de derivación. Si hay otros servicios permitidos en la cita, se calculan sus comisiones. Este ajuste también afecta los cálculos de períodos anteriores.</p>
+          <p className="text-xs text-slate-500">Las comisiones porcentuales de servicios permitidos siguen calculándose sobre el valor total de la cita, porque la agenda no registra un importe separado por servicio.</p>
+          <input value={excludedSearch} onChange={(e) => setExcludedSearch(e.target.value)} placeholder="Buscar servicio" className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+          <div className="max-h-96 overflow-y-auto divide-y divide-slate-100">
+            {excludedServices.filter((s) => s.name.toLocaleLowerCase().includes(excludedSearch.toLocaleLowerCase())).map((service) => (
+              <label key={service._id} className="flex items-center gap-3 py-2 text-sm text-slate-700 cursor-pointer">
+                <input type="checkbox" checked={!!service.excluded} disabled={!!savingExcluded} onChange={() => toggleExcludedService(service)} className="accent-emerald-600" />
+                <span>{service.name}{!service.active && ' (inactivo)'}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         isOpen={!!commissionEditor}

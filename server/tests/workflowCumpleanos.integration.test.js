@@ -18,6 +18,9 @@ const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient');
 const Workflow = require('../models/Workflow');
 const WorkflowEnrollment = require('../models/WorkflowEnrollment');
+const Conversation = require('../models/Conversation');
+const WhatsappAccount = require('../models/WhatsappAccount');
+const messaging = require('../utils/messaging');
 
 test.before(async () => {
   await H.startDb();
@@ -74,18 +77,16 @@ test('la hora del saludo: la del disparador, por defecto 09:00; si ya pasó, sal
     nodes: [{ id: 't', type: 'trigger', data: { triggers: [{ type: 'patient_birthday', sendHour: '10:30' }] } }],
     edges: [],
   };
-  const temprano = new Date(2026, 10, 5, 0, 15);
+  const temprano = new Date('2026-11-05T05:15:00Z');
   const at = workflowEngine.horaSaludoCumple(wf, { startNodeId: 't' }, temprano);
-  assert.equal(at.getHours(), 10);
-  assert.equal(at.getMinutes(), 30);
+  assert.equal(at.toISOString(), '2026-11-05T15:30:00.000Z');
   const sinHora = { nodes: [{ id: 't', type: 'trigger', data: { triggers: [{ type: 'patient_birthday' }] } }], edges: [] };
-  assert.equal(workflowEngine.horaSaludoCumple(sinHora, { startNodeId: 't' }, temprano).getHours(), 9);
-  assert.equal(workflowEngine.horaSaludoCumple(wf, { startNodeId: 't' }, new Date(2026, 10, 5, 11, 0)), null);
+  assert.equal(workflowEngine.horaSaludoCumple(sinHora, { startNodeId: 't' }, temprano).toISOString(), '2026-11-05T14:00:00.000Z');
+  assert.equal(workflowEngine.horaSaludoCumple(wf, { startNodeId: 't' }, new Date('2026-11-05T16:00:00Z')), null);
 });
 
 test('el cumpleañero queda inscrito, en espera hasta la hora del saludo, una sola vez al día', async () => {
   const clinic = await Clinic.create({ name: 'Principal' });
-  const hoy = new Date();
   const ec = new Date(Date.now() - 5 * 3600 * 1000); // día de hoy en Ecuador
   const cumple = await Patient.create({
     clinic: clinic._id, firstName: 'Ana', lastName: 'Cumple', phone: '0991234567',
@@ -103,9 +104,9 @@ test('el cumpleañero queda inscrito, en espera hasta la hora del saludo, una so
   assert.equal(await runBirthdayCheck(), 1, 'solo cumple uno');
   const enr = await waitFor(() => WorkflowEnrollment.findOne({ workflow: wf._id, patient: cumple._id }));
   assert.ok(enr, 'no se inscribió al cumpleañero');
-  if (hoy.getHours() < 23 || hoy.getMinutes() < 59) {
+  if (ec.getUTCHours() < 23 || ec.getUTCMinutes() < 59) {
     assert.equal(enr.status, 'waiting', 'espera a la hora del saludo');
-    assert.equal(new Date(enr.nextRunAt).getHours(), 23);
+    assert.equal(new Date(enr.nextRunAt.getTime() - 5 * 3600000).getUTCHours(), 23);
     const p = await Patient.findById(cumple._id);
     assert.ok(!(p.tags || []).includes('cumple-saludado'), 'todavía no corrió ningún paso');
   }
@@ -114,6 +115,30 @@ test('el cumpleañero queda inscrito, en espera hasta la hora del saludo, una so
   await runBirthdayCheck();
   await new Promise((r) => setTimeout(r, 300));
   assert.equal(await WorkflowEnrollment.countDocuments({ workflow: wf._id }), 1);
+});
+
+test('cumpleaños usa el último entrante y el número predeterminado si no existe', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const paciente = await Patient.create({ clinic: clinic._id, firstName: 'Ana', lastName: 'Prueba', phone: '0991234567' });
+  const principal = await WhatsappAccount.create({ label: 'Principal', connectionType: 'qr', isDefault: true });
+  const ultimo = await WhatsappAccount.create({ label: 'Último entrante', connectionType: 'qr' });
+  await Conversation.create({ clinic: clinic._id, patient: paciente._id, phone: '593991234567', lastInboundAt: new Date(Date.now() - 3600000), lastInboundAccount: principal._id, lastMessageAt: new Date() });
+  const reciente = await Conversation.create({ clinic: clinic._id, patient: paciente._id, phone: '123456789', linkedPhone: '593991234567', lastInboundAt: new Date(), lastInboundAccount: ultimo._id, whatsappAccount: principal._id });
+  const wf = await Workflow.create({ clinic: clinic._id, name: 'Mensaje', active: true, steps: [{ type: 'send_message', body: 'Feliz cumpleaños' }] });
+  const sent = [];
+  const original = messaging.send;
+  messaging.send = async (args) => { sent.push(args); return { ok: true }; };
+  try {
+    const crear = () => WorkflowEnrollment.create({ clinic: clinic._id, workflow: wf._id, patient: paciente._id, context: { eventType: 'patient_birthday', phone: paciente.phone } });
+    await workflowEngine.executeEnrollment(await crear());
+    assert.equal(String(sent[0].conversation._id), String(reciente._id));
+    assert.equal(sent[0].whatsappAccount, String(ultimo._id));
+    await Conversation.deleteMany({ clinic: clinic._id });
+    await workflowEngine.executeEnrollment(await crear());
+    assert.equal(sent[1].whatsappAccount, String(principal._id));
+  } finally {
+    messaging.send = original;
+  }
 });
 
 test('si la hora del saludo ya pasó, los pasos corren de inmediato', async () => {

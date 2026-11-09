@@ -124,14 +124,13 @@ function dripOf(batch) {
 
 /**
  * Próxima vez que ocurre la hora local "HH:MM": hoy si aún no pasó, mañana si ya pasó.
- * En hora de Ecuador (el proceso corre con TZ America/Guayaquil), así que "08:00" es
- * 8 am en Ecuador.
+ * La hora configurada se interpreta en Guayaquil, independientemente del servidor.
  */
 function nextOccurrenceOfLocalTime(hhmm, now = new Date()) {
   const [h, m] = String(hhmm || '').split(':').map((n) => parseInt(n, 10));
-  const t = new Date(now);
-  t.setHours(h || 0, m || 0, 0, 0);
-  if (t.getTime() <= now.getTime()) t.setDate(t.getDate() + 1);
+  const ec = new Date(now.getTime() - 5 * 3600000);
+  const t = new Date(Date.UTC(ec.getUTCFullYear(), ec.getUTCMonth(), ec.getUTCDate(), (h || 0) + 5, m || 0));
+  if (t.getTime() <= now.getTime()) t.setTime(t.getTime() + 86400000);
   return t;
 }
 

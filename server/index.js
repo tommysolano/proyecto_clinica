@@ -338,7 +338,7 @@ connectDB().then(() => {
     // resolución razonable en vez de esperar siempre al minuto.
     setInterval(only(() => { workflowEngine.processDueEnrollments().catch(() => {}); }), 20 * 1000);
     // Job: cumpleaños del día (dispara workflows patient_birthday).
-    // Cada hora, una vez por día y solo en el líder (ver utils/birthdayJob).
+    // Cada minuto y solo en el líder; el motor evita inscripciones duplicadas.
     require('./utils/birthdayJob').startBirthdayJob(only);
     // Job: abandono automático de tratamientos (dispara workflows
     // treatment_abandoned aunque nadie abra la página de Tratamientos).

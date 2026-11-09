@@ -2,7 +2,7 @@ const Patient = require('../models/Patient');
 const { emitDomainEvent, DOMAIN_EVENTS } = require('./events');
 
 const EC_OFFSET_MS = 5 * 60 * 60 * 1000; // Ecuador UTC-5
-const CADA_HORA = 60 * 60 * 1000;
+const INTERVALO = 60 * 1000;
 
 const esBisiesto = (y) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
 
@@ -49,7 +49,6 @@ async function runBirthdayCheck(now = new Date()) {
         patientId: String(p._id),
       });
     }
-    if (patients.length) console.log(`[birthdayJob] ${patients.length} cumpleaños hoy.`);
     return patients.length;
   } catch (err) {
     console.error('[birthdayJob] error:', err.message);
@@ -58,21 +57,18 @@ async function runBirthdayCheck(now = new Date()) {
 }
 
 /**
- * Antes corría al arrancar y luego cada 24 h desde ese momento: el día lo marcaba
- * la hora del último reinicio. Ahora revisa cada hora y procesa UNA vez por día
- * (en cuanto cambia el día en Ecuador), y solo en el backend LÍDER (`only`), para
- * que dos servidores vivos no emitan los mismos cumpleaños.
+ * Revisa cada minuto, incluso cuando un workflow se activa durante el día.
+ * El motor evita inscripciones duplicadas y solo corre en el líder (`only`).
  */
 function startBirthdayJob(only = (fn) => fn) {
-  let ultimoDia = null;
+  let running = false;
   const tick = only(async () => {
-    const { key } = diasQueSeCelebran();
-    if (key === ultimoDia) return;
-    ultimoDia = key;
-    await runBirthdayCheck();
+    if (running) return;
+    running = true;
+    try { await runBirthdayCheck(); } finally { running = false; }
   });
   setTimeout(tick, 0);
-  setInterval(tick, CADA_HORA);
+  setInterval(tick, INTERVALO);
 }
 
 module.exports = { runBirthdayCheck, startBirthdayJob, diasQueSeCelebran };

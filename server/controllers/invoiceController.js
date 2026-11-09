@@ -197,6 +197,8 @@ function armarFactura({ sale, config, clinic, serie, secuencial, claveAcceso, fe
   return { factura, totalSinImpuestos, tb };
 }
 
+exports._armarFactura = armarFactura;
+
 /**
  * Emite una factura electrónica a partir de una venta.
  * Roles permitidos: admin, cajero, contabilidad

@@ -86,6 +86,37 @@ test('contabilidad y marketing ven las cajas de todas las sucursales de la empre
   }
 });
 
+test('el detalle de la caja separa la tarjeta por tipo y la transferencia por banco', async () => {
+  const Sale = require('../models/Sale');
+  const BankAccount = require('../models/BankAccount');
+  const { clinicId, sa, deCajera } = await seed();
+  const chartAccount = new H.mongoose.Types.ObjectId();
+  const pichincha = await BankAccount.create({ clinic: clinicId, name: 'Banco Pichincha', bank: 'PICHINCHA', accountNumber: '1', chartAccount });
+  const pacifico = await BankAccount.create({ clinic: clinicId, name: 'Banco Pacifico', bank: 'PACIFICO', accountNumber: '2', chartAccount });
+  const venta = (payments) => Sale.collection.insertOne({
+    clinic: clinicId, status: 'completada', total: payments.reduce((t, p) => t + p.amount, 0), items: [], payments, createdAt: new Date(),
+  });
+  await venta([{ method: 'tarjeta', amount: 10, cardTypeSnapshot: 'DEBITO' }, { method: 'transferencia', amount: 20, bankAccount: pichincha._id, reference: '77' }]);
+  await venta([{ method: 'tarjeta', amount: 5, cardTypeSnapshot: 'DEBITO' }, { method: 'tarjeta', amount: 7, cardTypeSnapshot: 'CREDITO' }]);
+  await venta([{ method: 'transferencia', amount: 30, bankAccount: pacifico._id }, { method: 'transferencia', amount: 3 }, { method: 'tarjeta', amount: 2 }]);
+
+  const r = await H.runController(cashClosing.detail, como(clinicId, sa, 'admin', { params: { id: String(deCajera._id) }, query: {} }));
+  assert.equal(r.statusCode, 200);
+  const fila = (method, cardType, bank) => r.payload.byPaymentDetail.find((x) => x.method === method && x.cardType === cardType && x.bank === bank);
+  assert.deepEqual([fila('tarjeta', 'DEBITO', '').total, fila('tarjeta', 'DEBITO', '').count], [15, 2]);
+  assert.equal(fila('tarjeta', 'CREDITO', '').total, 7);
+  assert.equal(fila('tarjeta', '', '').total, 2, 'la tarjeta sin tipo se ve aparte');
+  assert.equal(fila('transferencia', '', 'Banco Pichincha').total, 20);
+  assert.equal(fila('transferencia', '', 'Banco Pacifico').total, 30);
+  assert.equal(fila('transferencia', '', '').total, 3, 'la transferencia sin banco se ve aparte');
+  // Los totales por método no cambian.
+  assert.equal(r.payload.byMethod.find((m) => m.method === 'tarjeta').total, 24);
+  // Y cada venta dice lo suyo.
+  const pagos = r.payload.sales.flatMap((s) => s.payments);
+  assert.ok(pagos.some((p) => p.bank === 'Banco Pichincha' && p.reference === '77'));
+  assert.ok(pagos.some((p) => p.cardType === 'CREDITO'));
+});
+
 test('marketing solo puede leer: las rutas de operar la caja lo rechazan', () => {
   const router = require('../routes/cashClosings');
   const guardia = (metodo, ruta) => {

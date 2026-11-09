@@ -15,13 +15,12 @@ const mongoose = require('mongoose');
 const PuntoEmision = require('../models/PuntoEmision');
 const { nameSearchFilter } = require('./nameSearch');
 
-/** Inicio o fin del día local de 'AAAA-MM-DD' (el servidor corre en America/Guayaquil). */
+/** Inicio o fin del día de 'AAAA-MM-DD' en Guayaquil. */
 function dia(v, fin) {
   const m = String(v || '').match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (!m) return null;
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  if (fin) d.setHours(23, 59, 59, 999);
-  return d;
+  const inicio = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 5);
+  return new Date(inicio + (fin ? 86400000 - 1 : 0));
 }
 
 const secuencialRegex = (n) => new RegExp(`^0*${String(Number(n))}$`);
@@ -58,9 +57,11 @@ async function invoiceListFilter(query = {}) {
       });
     } else {
       if (/^\d{1,9}$/.test(q)) opciones.push({ secuencial: secuencialRegex(q) });
-      if (/^\d{5,}$/.test(q)) opciones.push({ identificacionComprador: q });
-      const porNombre = nameSearchFilter(q, ['razonSocialComprador', 'identificacionComprador']);
-      if (porNombre) opciones.push(porNombre);
+      else if (/^\d+$/.test(q)) opciones.push({ identificacionComprador: q });
+      else {
+        const porNombre = nameSearchFilter(q, ['razonSocialComprador', 'identificacionComprador']);
+        if (porNombre) opciones.push(porNombre);
+      }
     }
     and.push(opciones.length ? { $or: opciones } : { _id: null });
   }

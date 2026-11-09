@@ -10,6 +10,7 @@ const ChartOfAccount = require('../models/ChartOfAccount');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 const RecurringAccount = require('../models/RecurringAccount');
 const Supplier = require('../models/Supplier');
+const CostCenter = require('../models/CostCenter');
 
 // Los importadores rechazan comprobantes con fecha anterior a hoy (utils/fiscalDocumentDate),
 // así que el fichero de prueba se fecha HOY en vez de con una fecha fija del calendario.
@@ -31,6 +32,7 @@ test('flujo compras: import TXT (pendiente) → autorizar (CxP, recurrente) → 
   await resetDb();
   const { clinicId, userId } = await seedClinic();
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
+  const centro = await CostCenter.create({ clinic: clinicId, code: 'CC-1', name: 'Administración' });
   assert.ok(gasto, 'cuenta de gasto 6.1.99 debe existir en el plan');
 
   // 1) Importar TXT: crea proveedores + facturas POR_AUTORIZAR con montos exactos.
@@ -49,11 +51,22 @@ test('flujo compras: import TXT (pendiente) → autorizar (CxP, recurrente) → 
   assert.equal(inv.fechaEmision.getMonth(), new Date().getMonth(), 'el mes del comprobante, no enero');
   assert.ok(await Supplier.findOne({ clinic: clinicId, ruc: '0990004196001' }), 'proveedor guardado');
 
-  // 2) Autorizar asignando la cuenta de gasto: contabiliza, abre CxP y memoriza recurrente.
+  // Sin centro de factura no se contabiliza, ni siquiera si la línea tiene uno.
+  const sinCentro = await runController(purchaseCtrl.authorize, mockReq(clinicId, userId,
+    { items: [{ description: 'Gasto', quantity: 1, unitPrice: 100, subtotal: 100, ivaRate: 15, account: gasto._id, costCenter: centro._id }] },
+    { params: { id: String(inv._id) } }));
+  assert.equal(sinCentro.statusCode, 400);
+  assert.match(sinCentro.payload.message, /centro de costo/i);
+  const pendiente = await PurchaseInvoice.findById(inv._id);
+  assert.equal(pendiente.status, 'POR_AUTORIZAR');
+  assert.equal(pendiente.journalEntry, null);
+  assert.equal(await require('../models/Payable').countDocuments({ sourceRef: inv._id }), 0);
+
+  // 2) Autorizar asignando centro y cuenta: contabiliza, abre CxP y memoriza recurrente.
   const auth = await runController(
     purchaseCtrl.authorize,
     mockReq(clinicId, userId,
-      { items: [{ description: inv.items[0].description, quantity: 1, unitPrice: 100, subtotal: 100, ivaRate: 15, account: gasto._id }] },
+      { costCenter: centro._id, items: [{ description: inv.items[0].description, quantity: 1, unitPrice: 100, subtotal: 100, ivaRate: 15, account: gasto._id }] },
       { params: { id: String(inv._id) } })
   );
   assert.equal(auth.statusCode, 200, JSON.stringify(auth.payload));

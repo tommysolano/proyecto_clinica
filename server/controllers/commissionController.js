@@ -130,6 +130,27 @@ exports.deleteRule = async (req, res) => {
   }
 };
 
+exports.listDoctorExcludedServices = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.query.doctor)) return res.status(400).json({ message: 'Doctor no válido' });
+    const items = await AppointmentServiceItem.find({}).select('name company active excludedCommissionDoctors').sort({ name: 1 }).lean();
+    res.json(items.map(({ excludedCommissionDoctors, ...item }) => ({ ...item, excluded: (excludedCommissionDoctors || []).some((id) => String(id) === String(req.query.doctor)) })));
+  } catch (e) { res.status(500).json({ message: 'Error al cargar los servicios', error: e.message }); }
+};
+
+exports.setDoctorExcludedService = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id) || !mongoose.isValidObjectId(req.body?.doctor) || typeof req.body?.excluded !== 'boolean')
+      return res.status(400).json({ message: 'Servicio o estado no válido' });
+    if (!await User.exists({ _id: req.body.doctor })) return res.status(404).json({ message: 'Doctor no encontrado' });
+    const service = await AppointmentServiceItem.findByIdAndUpdate(req.params.id,
+      req.body.excluded ? { $addToSet: { excludedCommissionDoctors: req.body.doctor } } : { $pull: { excludedCommissionDoctors: req.body.doctor } },
+      { new: true }).select('name company active').lean();
+    if (!service) return res.status(404).json({ message: 'Servicio no encontrado' });
+    res.json({ ...service, excluded: req.body.excluded });
+  } catch (e) { res.status(500).json({ message: 'Error al actualizar el servicio', error: e.message }); }
+};
+
 /** Guarda una regla administrada desde Comisiones > Doctores. */
 const saveManagedDoctorRule = async (req, res, scope) => {
   try {
@@ -369,6 +390,7 @@ const appointmentPaymentValue = (appt) => num(valorDeCita(appt));
 async function computeCommissions(clinicId, startDate, endDate) {
   const rules = await CommissionRule.find({ clinic: clinicId, active: true });
   if (!rules.length) return { rules: [], detail: [] };
+  const catalogoExclusiones = await catalogoServicios();
 
   const appointmentServiceIds = [...new Set(
     rules.filter((r) => r.appointmentService).map((r) => String(r.appointmentService))
@@ -497,6 +519,12 @@ async function computeCommissions(clinicId, startDate, endDate) {
       if (!tipoSinCobroDelServicio(appt, extra.serviceItem)) addAgendaService(extra.serviceItem, extra.name);
     }
     const services = [...legacyServices, ...agendaServices];
+    const serviciosCita = serviciosDeCita(appt, catalogoExclusiones, { soloCobrables: true });
+    const soloExcluidos = (doctor) => serviciosCita.length > 0 && serviciosCita.every((svc) => servicioExcluido(svc, catalogoExclusiones, doctor?._id));
+    const excluidoEnReporte = (svc, doctor) => servicioExcluido({
+      id: svc.appointmentService || catalogoExclusiones.idPorNombre.get(svc.normalizedName || normalizeServiceName(svc.name)),
+    }, catalogoExclusiones, doctor?._id);
+    const esDoctor = (performer) => DOCTOR_LIKE_ROLES.includes(roleFor(performer));
     /**
      * Quién atendió, para pagarle. Se recorren los TURNOS de enfermería y no
      * solo `attendedByNurse`: ese campo es un espejo del último turno, así que
@@ -576,6 +604,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
           for (const performer of performers) {
             const performerRole = roleFor(performer);
             if (!matchTarget(rule, performer, performerRole)) continue;
+            if (esDoctor(performer) && excluidoEnReporte(svc, performer)) continue;
             detail.push({
               userId: String(performer._id), userName: performer.name, userRole: performerRole,
               ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
@@ -597,12 +626,13 @@ async function computeCommissions(clinicId, startDate, endDate) {
       );
       for (const performer of performers) {
         const performerRole = roleFor(performer);
+        if (esDoctor(performer) && soloExcluidos(performer)) continue;
         const hasSpecificServiceCommission = rules.some((r) =>
           esAlcance(r, 'service')
           && !!r.appointmentService
           && matchTarget(r, performer, performerRole)
           && inSchedule(r, appt)
-          && agendaServices.some((svc) => matchesAppointmentService(r, svc))
+          && agendaServices.some((svc) => (!esDoctor(performer) || !excluidoEnReporte(svc, performer)) && matchesAppointmentService(r, svc))
         );
         if (hasSpecificServiceCommission) continue;
 
@@ -644,11 +674,11 @@ async function computeCommissions(clinicId, startDate, endDate) {
 
     // ── Tarifa de DERIVACIÓN de Comisiones > Doctores: la del servicio derivado
     // si existe, si no la base del doctor. Sobre lo que pagó el paciente. ──
-    if (isCompleted && appt.referral?.fromDoctor) {
+    if (isCompleted && appt.referral?.fromDoctor && !soloExcluidos(appt.referral.fromDoctor)) {
       const fromDoc = appt.referral.fromDoctor;
       const propias = rules.filter((r) => esAlcance(r, 'referral')
         && String(r.doctorServiceDoctor) === String(fromDoc._id));
-      const rule = propias.find((r) => r.appointmentService && agendaServices.some((svc) => matchesAppointmentService(r, svc)))
+      const rule = propias.find((r) => r.appointmentService && agendaServices.some((svc) => !excluidoEnReporte(svc, fromDoc) && matchesAppointmentService(r, svc)))
         || propias.find((r) => !r.appointmentService);
       if (rule) {
         detail.push({
@@ -661,7 +691,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
     }
 
     // ── Comisión por DERIVACIÓN: una vez por cita derivada completada ──
-    if (isCompleted && appt.origin === 'referral' && appt.referral?.fromDoctor) {
+    if (isCompleted && appt.origin === 'referral' && appt.referral?.fromDoctor && !soloExcluidos(appt.referral.fromDoctor)) {
       const fromDoc = appt.referral.fromDoctor;
       const fromRole = roleFor(fromDoc);
       for (const rule of rules) {
@@ -1049,12 +1079,15 @@ const ordenCita = (x, y) =>
 
 /** Catálogo de servicios de agenda: nombre por id e id por nombre normalizado. */
 async function catalogoServicios() {
-  const items = await AppointmentServiceItem.find({}).select('name').lean();
+  const items = await AppointmentServiceItem.find({}).select('name excludedCommissionDoctors').lean();
   return {
     nombrePorId: new Map(items.map((s) => [String(s._id), s.name])),
     idPorNombre: new Map(items.map((s) => [normalizeServiceName(s.name), String(s._id)])),
+    excludedDoctorsById: new Map(items.map((s) => [String(s._id), new Set((s.excludedCommissionDoctors || []).map(String))])),
   };
 }
+
+const servicioExcluido = (svc, catalogo, doctorId) => !!svc.id && !!doctorId && !!catalogo.excludedDoctorsById.get(String(svc.id))?.has(String(doctorId));
 
 /**
  * Servicios de agenda de una cita, sin repetir: el principal, los adicionales y
@@ -1410,7 +1443,9 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
         patient: nombrePaciente(appt.patient), base: pagado,
       };
       let cubierta = false;
-      for (const svc of serviciosDeCita(appt, catalogo, { soloCobrables: true })) {
+      const servicios = serviciosDeCita(appt, catalogo, { soloCobrables: true });
+      const permitidos = area === 'doctor' ? servicios.filter((svc) => !servicioExcluido(svc, catalogo, doctorId)) : servicios;
+      for (const svc of permitidos) {
         const rule = reglaServicioParaCita(doctorId, clinicId, svc);
         if (!rule) continue;
         cubierta = true;
@@ -1429,12 +1464,12 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
       // mismo: una tarifa de servicio REEMPLAZA a la base, no se suma. Un servicio
       // de «solo primera vez» repetido también cubre la cita (paga cero): si no,
       // la base pagaría justo lo que la regla dice que ya no se paga.
-      if (!cubierta) {
+      if (!cubierta && (!servicios.length || permitidos.length)) {
         const rule = reglaBaseParaCita(doctorId, 'patient', clinicId);
         if (rule) {
           const antes = antesDeHora(rule, appt, doctorId);
           agregar({
-            ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: 'Paciente atendido',
+            ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: serviciosDeCita(appt, catalogo).map((svc) => svc.name).join(', ') || '—',
             amount: antes ? 0 : calcAmount(cfgDeRegla(rule, appt), pagado),
             antesDeHora: antes ? rule.minStartTime : '',
             franja: etiquetaFranja(franjaDeRegla(rule, appt)),
@@ -1449,7 +1484,9 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
     if (cita.isCanje || cita.isCortesia) continue;
     const doctorId = String(cita.referral.fromDoctor._id);
     const clinicId = idDe(cita.clinic);
-    const svcs = serviciosDeCita(cita, catalogo, { soloCobrables: true });
+    const todosServicios = serviciosDeCita(cita, catalogo, { soloCobrables: true });
+    const svcs = todosServicios.filter((svc) => !servicioExcluido(svc, catalogo, doctorId));
+    if (todosServicios.length && !svcs.length) continue;
     const reglasDeriva = reglasDe(doctorId, 'referral', clinicId);
     let rule = null;
     let svc = svcs[0] || { key: '', name: cita.serviceName || '—' };
@@ -3038,7 +3075,8 @@ exports.doctorReportPdf = async (req, res) => {
             const motivo = a.isCanje ? 'canje: no genera comisión'
               : a.isCortesia ? 'cortesía: no genera comisión'
               : !esAtendida(a) ? 'cita no atendida'
-              : 'sin tarifa definida para este servicio';
+              : serviciosDeCita(a, calc.catalogo, { soloCobrables: true }).some((s) => servicioExcluido(s, calc.catalogo, doctorId))
+                ? 'servicio excluido de comisiones' : 'sin tarifa definida para este servicio';
             const servicios = serviciosDeCita(a, calc.catalogo).map((s) => s.name).join(', ') || a.serviceName || '—';
             return {
               kind: 'sin_comision', date: a.date, patient: nombrePaciente(a.patient),
@@ -3065,7 +3103,7 @@ exports.doctorReportPdf = async (req, res) => {
       ? lineas.map((l) => {
           const base = l.kind === 'derivacion'
             ? `Derivación: ${l.serviceName}${l.atendidaPor ? ` (atendió ${l.atendidaPor})` : ''}`
-            : l.kind === 'paciente' ? 'Paciente atendido'
+            : l.kind === 'paciente' ? `Paciente atendido: ${l.serviceName}`
             : `${l.serviceName}${l.repetida ? ' — ya lo había recibido (solo paga la primera vez)' : ''}`;
           const conHora = l.antesDeHora ? `${base} — atendido antes de las ${l.antesDeHora} (sin comisión)` : base;
           const concepto = l.franja ? `${conHora} · horario ${l.franja}` : conHora;

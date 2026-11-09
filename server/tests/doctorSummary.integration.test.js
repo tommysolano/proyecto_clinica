@@ -70,6 +70,75 @@ const respDe = () => {
   };
 };
 
+test('exclusiones por doctor y PDF de comisión por paciente con servicio', async () => {
+  const clinic = await Clinic.create({ name: 'Exclusiones', nombreComercial: 'Exclusiones', active: true });
+  const doctors = await User.create([
+    { name: 'Doctor Exclusiones A', email: 'exclusiones-a@test.com', password: '123456', clinics: [{ clinic: clinic._id, role: 'doctor' }] },
+    { name: 'Doctor Exclusiones B', email: 'exclusiones-b@test.com', password: '123456', clinics: [{ clinic: clinic._id, role: 'doctor' }] },
+  ]);
+  const patient = await Patient.create({ clinic: clinic._id, firstName: 'Paciente', lastName: 'Exclusiones' });
+  const excluded = await AppointmentServiceItem.create({ clinic: clinic._id, name: 'Servicio excluido único', slug: 'servicio excluido unico' });
+  const allowed = await AppointmentServiceItem.create({ clinic: clinic._id, name: 'Servicio permitido único', slug: 'servicio permitido unico' });
+  const update = reqDe(clinic._id);
+  update.params = { id: String(excluded._id) };
+  update.body = { doctor: String(doctors[0]._id), excluded: true };
+  const updateRes = respDe();
+  await ctrl.setDoctorExcludedService(update, updateRes);
+  assert.equal(updateRes.status, 200);
+  for (const doctor of doctors) {
+    const base = reqDe(clinic._id);
+    base.body = { doctor: String(doctor._id), amountType: 'fixed', value: 1.5 };
+    await ctrl.saveDoctorPatientRule(base, respDe());
+    if (doctor === doctors[0]) {
+      const rule = reqDe(clinic._id);
+      rule.body = { doctor: String(doctor._id), service: String(excluded._id), amountType: 'fixed', value: 10 };
+      await ctrl.saveDoctorServiceRule(rule, respDe());
+    }
+    await Appointment.create({ clinic: clinic._id, patient: patient._id, doctor: doctor._id, date: new Date('2027-01-05T12:00:00Z'), startTime: '09:00', status: 'completada', serviceItem: excluded._id, serviceName: excluded.name });
+  }
+  const rule = reqDe(clinic._id);
+  rule.body = { doctor: String(doctors[0]._id), service: String(allowed._id), amountType: 'fixed', value: 7 };
+  await ctrl.saveDoctorServiceRule(rule, respDe());
+  await Appointment.create({ clinic: clinic._id, patient: patient._id, doctor: doctors[0]._id, date: new Date('2027-01-06T12:00:00Z'), startTime: '09:00', status: 'completada', serviceItem: excluded._id, serviceName: excluded.name, additionalServices: [{ serviceItem: allowed._id, name: allowed.name }] });
+  const req = reqDe(clinic._id);
+  req.query = { start: '2027-01-01', end: '2027-01-31', clinic: String(clinic._id) };
+  const summary = respDe();
+  await ctrl.doctorSummary(req, summary);
+  assert.equal(summary.status, 200);
+  assert.equal(summary.payload.doctors.find((d) => d.doctorId === String(doctors[0]._id)).commissionTotal, 7);
+  assert.equal(summary.payload.doctors.find((d) => d.doctorId === String(doctors[1]._id)).commissionTotal, 1.5);
+  const report = respDe();
+  await ctrl.report(req, report);
+  assert.equal(report.payload.total, 8.5);
+  const secondUpdate = { ...update, body: { doctor: String(doctors[1]._id), excluded: true } };
+  await ctrl.setDoctorExcludedService(secondUpdate, respDe());
+  const bothExcluded = respDe();
+  await ctrl.doctorSummary(req, bothExcluded);
+  assert.equal(bothExcluded.payload.doctors.find((d) => d.doctorId === String(doctors[1]._id)).commissionTotal, 0);
+  secondUpdate.body.excluded = false;
+  await ctrl.setDoctorExcludedService(secondUpdate, respDe());
+  const puppeteer = require('puppeteer');
+  const launchOriginal = puppeteer.launch;
+  let html = '';
+  puppeteer.launch = async () => ({
+    newPage: async () => ({ setContent: async (value) => { html = value; }, pdf: async () => Buffer.from('pdf') }),
+    close: async () => {},
+  });
+  try {
+    const pdfReq = reqDe(clinic._id);
+    pdfReq.query = { ...req.query, doctor: String(doctors[1]._id) };
+    const pdfRes = { setHeader() {}, end() {}, status: (status) => ({ json: (body) => { throw new Error(`${status}: ${body.error}`); } }) };
+    await ctrl.doctorReportPdf(pdfReq, pdfRes);
+    assert.match(html, /Paciente atendido: Servicio excluido único/);
+    assert.match(html, /\$1\.50/);
+  } finally { puppeteer.launch = launchOriginal; }
+  update.body.excluded = false;
+  await ctrl.setDoctorExcludedService(update, respDe());
+  const after = respDe();
+  await ctrl.doctorSummary(req, after);
+  assert.equal(after.payload.doctors.find((d) => d.doctorId === String(doctors[0]._id)).commissionTotal, 27);
+});
+
 test('resume las citas por doctor con estados y servicios', async () => {
   const { clinicA, doctor, otro, consulta, detox } = await construir();
   const req = reqDe(clinicA._id);

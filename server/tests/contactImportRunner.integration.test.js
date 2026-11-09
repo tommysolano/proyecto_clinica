@@ -468,7 +468,7 @@ test('sendMode "at": todos arrancan a la hora del lote, escalonados por el goteo
 
   const es = await WorkflowEnrollment.find({ workflow: wf._id }).sort({ nextRunAt: 1 });
   // Los tres arrancan a las 08:00 (hora local), escalonados 45s: :00, :45, +90s.
-  for (const e of es) assert.equal(e.nextRunAt.getHours(), 8);
+  for (const e of es) assert.equal(new Date(e.nextRunAt.getTime() - 5 * 3600000).getUTCHours(), 8);
   assert.equal((es[1].nextRunAt.getTime() - es[0].nextRunAt.getTime()) / 1000, 45, 'goteo de 45s');
   assert.equal((es[2].nextRunAt.getTime() - es[1].nextRunAt.getTime()) / 1000, 45, 'goteo de 45s');
   // Próxima ocurrencia de las 08:00: siempre en el futuro (hoy o mañana).
@@ -490,7 +490,7 @@ test('sendMode "flow": arranca a la "Hora de envío" configurada en el disparado
 
   assert.equal(await enrollInWorkflows(batch, ['593999111111', '593999222222']), 2);
   const es = await WorkflowEnrollment.find({ workflow: wf._id }).sort({ nextRunAt: 1 });
-  for (const e of es) assert.equal(e.nextRunAt.getHours(), 8, 'usa la hora del flujo, no el default');
+  for (const e of es) assert.equal(new Date(e.nextRunAt.getTime() - 5 * 3600000).getUTCHours(), 8, 'usa la hora del flujo, no el default');
   assert.equal((es[1].nextRunAt.getTime() - es[0].nextRunAt.getTime()) / 1000, 30, 'goteo de 30s');
 });
 
@@ -513,14 +513,11 @@ test('goteo configurable: sin hora propia, dripSeconds separa un contacto del si
 
 test('nextOccurrenceOfLocalTime: hoy si la hora aún no pasó, mañana si ya pasó', () => {
   const { nextOccurrenceOfLocalTime } = require('../utils/contactImportRunner');
-  const base = new Date(2026, 6, 22, 10, 0, 0); // 22-jul 10:00
+  const base = new Date('2026-07-22T15:00:00Z'); // 22-jul 10:00 en Guayaquil
   const manana = nextOccurrenceOfLocalTime('08:00', base); // 08:00 ya pasó → mañana
-  assert.equal(manana.getDate(), 23);
-  assert.equal(manana.getHours(), 8);
+  assert.equal(manana.toISOString(), '2026-07-23T13:00:00.000Z');
   const hoy = nextOccurrenceOfLocalTime('14:30', base); // 14:30 aún no → hoy
-  assert.equal(hoy.getDate(), 22);
-  assert.equal(hoy.getHours(), 14);
-  assert.equal(hoy.getMinutes(), 30);
+  assert.equal(hoy.toISOString(), '2026-07-22T19:30:00.000Z');
 });
 
 test('inscribe al contacto aunque su sucursal guardada NO sea la que trae el Excel (busca por teléfono)', async () => {

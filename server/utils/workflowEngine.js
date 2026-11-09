@@ -379,8 +379,8 @@ function horaSaludoCumple(wf, flow, now = new Date()) {
   const tr = triggers.find((t) => t?.type === 'patient_birthday');
   const hhmm = /^\d{1,2}:\d{2}$/.test(tr?.sendHour || '') ? tr.sendHour : HORA_CUMPLE_DEFECTO;
   const [h, m] = hhmm.split(':').map(Number);
-  const at = new Date(now);
-  at.setHours(h, m, 0, 0); // el proceso corre en America/Guayaquil
+  const ec = new Date(now.getTime() - 5 * 3600000);
+  const at = new Date(Date.UTC(ec.getUTCFullYear(), ec.getUTCMonth(), ec.getUTCDate(), h + 5, m));
   return at > now ? at : null;
 }
 
@@ -529,14 +529,14 @@ function computeWaitUntil(step, context = {}) {
     if (Number.isNaN(base.getTime())) return null;
     // Modo "hora fija": N días antes de la cita, a una hora del reloj — p.ej.
     // "recordatorio a las 18:00 del día anterior", sin importar a qué hora sea
-    // la cita. El proceso corre en America/Guayaquil (TZ forzada en index.js).
+    // la cita. El calendario se interpreta explícitamente en Guayaquil.
     if (step.waitMode === 'clock') {
       const m = String(step.atTime || '').match(/^(\d{1,2}):(\d{2})$/);
       if (!m) return null;
-      const target = new Date(base);
-      target.setDate(target.getDate() - Math.max(0, Number(step.daysBefore || 0)));
-      target.setHours(Math.min(23, Number(m[1])), Math.min(59, Number(m[2])), 0, 0);
-      return target;
+      const ec = new Date(base.getTime() - 5 * 3600000);
+      return new Date(Date.UTC(ec.getUTCFullYear(), ec.getUTCMonth(),
+        ec.getUTCDate() - Math.max(0, Number(step.daysBefore || 0)),
+        Math.min(23, Number(m[1])) + 5, Math.min(59, Number(m[2]))));
     }
     return new Date(base.getTime() + Number(step.offsetMinutes || 0) * 60000);
   }
@@ -1964,6 +1964,23 @@ async function executeEnrollment(enrollment) {
     conversation = await loadConversationForPatient(enrollment.clinic, phone, patient?._id);
   }
 
+  if (ctx.eventType === 'patient_birthday') {
+    const identities = [];
+    if (patient?._id) identities.push({ patient: patient._id });
+    const normalized = phone && messaging.normalizePhone(phone);
+    if (normalized) identities.push({ phone: normalized }, { linkedPhone: normalized });
+    if (identities.length) {
+      conversation = await Conversation.findOne({ clinic: enrollment.clinic, channel: 'whatsapp', $or: identities })
+        .sort({ lastInboundAt: -1, lastMessageAt: -1 });
+    }
+    const gateway = require('./whatsappGateway');
+    const inboundRef = conversation?.lastInboundAt
+      ? (conversation.lastInboundAccount || (!conversation.whatsappAccountPinned && conversation.whatsappAccount)) : null;
+    const inbound = inboundRef ? await gateway.getUsableAccount(inboundRef) : null;
+    const account = inbound || await gateway.getSendableDefaultAccount();
+    if (account) ctx.whatsappAccountId = String(account._id);
+  }
+
   // Si el scheduler despertó una espera de botones, se agotó el tiempo: la salida
   // default ya está en currentNodeId. Un clic real elimina este marcador antes.
   if (enrollment.waitingForReply && ctx.pendingWorkflowButtons) {
@@ -2452,14 +2469,15 @@ async function enrollForEvent(eventType, payload = {}) {
       // inscripción del saludo ya terminó ('done'), así que el dedup por
       // inscripciones vivas no bastaba y el paciente recibía saludos repetidos.
       if (eventType === 'patient_birthday') {
-        const dayStart = new Date();
-        dayStart.setHours(0, 0, 0, 0); // día calendario Ecuador (TZ del proceso)
+        const ec = new Date(Date.now() - 5 * 3600000);
+        const dayStart = new Date(Date.UTC(ec.getUTCFullYear(), ec.getUTCMonth(), ec.getUTCDate(), 5));
         delete dedup.status;
         dedup.createdAt = { $gte: dayStart };
       }
       // eslint-disable-next-line no-await-in-loop
       const existing = await WorkflowEnrollment.findOne(dedup);
       if (existing) {
+        if (eventType === 'patient_birthday') continue;
         trace(
           wf,
           'skipped_duplicate',
@@ -2472,6 +2490,8 @@ async function enrollForEvent(eventType, payload = {}) {
 
       // Cumpleaños: queda en espera hasta la hora del saludo (processDueEnrollments la retoma).
       const programadaPara = eventType === 'patient_birthday' ? horaSaludoCumple(wf, flow) : null;
+      const birthdayKey = eventType === 'patient_birthday'
+        ? `${wf._id}:${patient._id}:${flow.startNodeId || 'linear'}:${new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10)}` : null;
       let enrollment;
       try {
         // eslint-disable-next-line no-await-in-loop
@@ -2479,6 +2499,7 @@ async function enrollForEvent(eventType, payload = {}) {
           clinic: clinicId,
           workflow: wf._id,
           patient: patient._id,
+          ...(birthdayKey ? { birthdayKey } : {}),
           stepIndex: 0,
           currentNodeId: flow.currentNodeId,
           startNodeId: flow.startNodeId,
@@ -2498,7 +2519,7 @@ async function enrollForEvent(eventType, payload = {}) {
         throw e;
       }
       trace(wf, 'enrolled', programadaPara
-        ? `Inscripción creada; el saludo de cumpleaños sale hoy a las ${String(programadaPara.getHours()).padStart(2, '0')}:${String(programadaPara.getMinutes()).padStart(2, '0')}.`
+        ? `Inscripción creada; el saludo de cumpleaños sale hoy a las ${new Date(programadaPara.getTime() - 5 * 3600000).toISOString().slice(11, 16)} (hora de Ecuador).`
         : 'Inscripción creada; los pasos y sus resultados quedan en "Inscritos" → registro de ejecución.');
       // eslint-disable-next-line no-await-in-loop
       await Workflow.updateOne({ _id: wf._id }, { $inc: { 'stats.enrolled': 1 } });

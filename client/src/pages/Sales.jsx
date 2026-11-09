@@ -161,7 +161,7 @@ const descuentoDeLinea = (item) => {
     const bruto = Math.max(r2(Number(item.unitPrice || 0) * Number(item.quantity || 0)), 0);
     return Math.min(Math.max(r2(item.manualDiscount), 0), bruto);
   }
-  return descuentoDelProducto(item);
+  return item?.automaticDiscount ?? descuentoDelProducto(item);
 };
 const descuentoDelProducto = (item) => {
   const valor = Number(item?.discountValue) || 0;
@@ -254,7 +254,7 @@ const activePriceOf = (product) => {
  *                  cobrar un canje);
  *   onCerrar()     al cerrar sin cobrar.
  */
-export default function Sales({ embebido = false, citaId = null, itemsIniciales = null, onCobrado, onCerrar } = {}) {
+export default function Sales({ embebido = false, citaId = null, itemsIniciales = null, onCobrado, onCerrar, abrirNueva = false } = {}) {
   const { hasRole } = useAuth();
   const [journalSale, setJournalSale] = useState(null); // venta cuyos asientos se consultan (solo lectura)
   const canCreate = hasRole('admin', 'cajero', 'contabilidad');
@@ -270,6 +270,8 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const [products, setProducts] = useState([]);
   const [treatments, setTreatments] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
+  const [discountPreview, setDiscountPreview] = useState({ key: '', items: [], error: '' });
+  const [discountRefresh, setDiscountRefresh] = useState(0);
   const [detailModal, setDetailModal] = useState(null);
   const [saving, setSaving] = useState(false);
   // Anulación de una venta con factura autorizada (se anula la factura y la venta).
@@ -529,6 +531,12 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     setModalOpen(true);
   };
 
+  useEffect(() => {
+    if (abrirNueva && canCreate) openNew();
+    // Solo al montar: los cambios de formulario no deben reabrir el modal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /**
    * Tarjetas ofrecidas para un tipo (débito/crédito). Se filtra por `accountType` cuando la
    * configuración lo distingue; si ninguna tarjeta coincide (p. ej. un único registro
@@ -629,14 +637,32 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     setForm({ ...form, items });
   };
 
-  const subtotal = form.items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
-  const discountTotal = form.items.reduce((s, i) => s + descuentoDeLinea(i), 0);
+  const discountKey = JSON.stringify({ patient: form.patient || null, items: form.items.map((i) => ({
+    product: i.product, quantity: Number(i.quantity), priceName: i.priceName || undefined, unitPrice: Number(i.unitPrice),
+  })) });
+  useEffect(() => {
+    if (!modalOpen || !form.items.length) return undefined;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api.post('/sales/discount-preview', JSON.parse(discountKey))
+        .then((r) => { if (!cancelled) setDiscountPreview({ key: discountKey, items: r.data.items || [], error: '' }); })
+        .catch((e) => { if (!cancelled) setDiscountPreview({ key: discountKey, items: [], error: e.response?.data?.message || 'No se pudieron calcular los descuentos' }); });
+    }, 200);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [discountKey, discountRefresh, modalOpen, form.items.length]);
+  const previewReady = discountPreview.key === discountKey && !discountPreview.error && discountPreview.items.length === form.items.length;
+  const lineasVenta = form.items.map((item, i) => ({ ...item,
+    automaticDiscount: previewReady ? discountPreview.items[i].discount : descuentoDelProducto(item),
+    appliedDiscounts: previewReady ? discountPreview.items[i].applied : [],
+  }));
+  const subtotal = lineasVenta.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
+  const discountTotal = lineasVenta.reduce((s, i) => s + descuentoDeLinea(i), 0);
   // El motivo es obligatorio si alguna línea lleva un descuento distinto al del producto.
-  const descuentoCambiado = form.items.some((i) => descuentoDeLinea(i) > 0
-    && Math.abs(descuentoDeLinea(i) - descuentoDelProducto(i)) > 0.005);
+  const descuentoCambiado = lineasVenta.some((i) => descuentoDeLinea(i) > 0
+    && Math.abs(descuentoDeLinea(i) - i.automaticDiscount) > 0.005);
   // El IVA lo calcula el backend por línea (`utils/tax`); `ivaDeLinea` lo replica para mostrar
   // el desglose y para que el total coincida con lo que se va a facturar.
-  const lineasIva = form.items.map(ivaDeLinea);
+  const lineasIva = lineasVenta.map(ivaDeLinea);
   const ivaTotal = r2(lineasIva.reduce((s, l) => s + l.iva, 0));
   const baseGravada = r2(lineasIva.reduce((s, l) => s + (l.rate > 0 ? l.base : 0), 0));
   const total = r2(lineasIva.reduce((s, l) => s + l.total, 0));
@@ -1185,6 +1211,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       if (!r?.data || r.data.cajaAbierta === false) return toast.error(MSG_CAJA_CERRADA, { duration: 7000 });
     }
     if (form.items.length === 0) return toast.error('Agrega al menos un producto');
+    if (!previewReady) return toast.error(discountPreview.key === discountKey && discountPreview.error ? discountPreview.error : 'Espera a que se calculen los descuentos');
     const sinPrecio = form.items.find((i) => i.variablePrice && !(Number(i.unitPrice) > 0));
     if (sinPrecio) return toast.error(`Escribe el precio de «${sinPrecio.productName}»`);
     if (descuentoCambiado && !String(form.discountReason || '').trim()) {
@@ -1349,6 +1376,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         recommendedBy: form.recommendedBy || null,
         warehouse: form.warehouse || null,
         costCenter: form.costCenter || null,
+        discountPreview: discountPreview.items.map((item) => item.discount),
         items: form.items.map((i) => ({
           product: i.product,
           quantity: i.quantity,
@@ -1401,6 +1429,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       if (embebido) onCobrado?.(res.data);
     } catch (err) {
       const data = err.response?.data;
+      if (data?.code === 'DISCOUNT_CHANGED') {
+        setDiscountPreview({ key: '', items: [], error: '' });
+        setDiscountRefresh((n) => n + 1);
+      }
       if (data?.code === 'COST_CENTER_MISMATCH') {
         // Se explica la diferencia y se pide confirmación; el pago ya calculado se conserva
         // para reenviar exactamente la misma venta.
@@ -1998,7 +2030,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                     </tr>
                   </thead>
                   <tbody>
-                    {form.items.map((item, idx) => (
+                    {lineasVenta.map((item, idx) => (
                       <tr key={idx} className="border-b border-slate-100">
                         <td className="py-2 text-slate-800">
                           {item.productName}
@@ -2111,7 +2143,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                             y entonces tiene que escribir el motivo abajo. */}
                         <td className="py-2 text-right">
                           <NumericInput
-                            value={item.manualDiscount ?? (descuentoDelProducto(item) || '')}
+                            value={item.manualDiscount ?? (item.automaticDiscount || '')}
                             onChange={(e) => setLinea(idx, { manualDiscount: e.target.value })}
                             title="Descuento de la línea en dólares"
                             placeholder="0.00"
@@ -2120,6 +2152,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                           {item.discountType === 'percentage' && descuentoDelProducto(item) > 0 && (
                             <span className="block text-[10px] text-slate-400">Producto: {Number(item.discountValue)}%</span>
                           )}
+                          {item.appliedDiscounts?.map((d) => <span key={d.id} className="block text-[10px] text-emerald-700">{d.name}: -${Number(d.amount).toFixed(2)}</span>)}
                         </td>
                         {form.patient && treatments.length > 0 && (
                           <td className="py-2 pl-2">
@@ -2662,7 +2695,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
 
   return (
     <div className="space-y-6">
-      <PageHeader icon={HiOutlineBanknotes} title="Ventas" subtitle="Registro y facturación electrónica">
+      <PageHeader icon={HiOutlineBanknotes} title="Facturación" subtitle="Registro e historial de ventas">
         {canCreate && (
           <>
             <button

@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SocketProvider } from './context/SocketContext';
@@ -89,7 +89,6 @@ const Scanner = pagina(() => import('./pages/Scanner'));
 const PublicBooking = pagina(() => import('./pages/PublicBooking'));
 const BookingConfig = pagina(() => import('./pages/BookingConfig'));
 const CallCenterConfig = pagina(() => import('./pages/CallCenterConfig'));
-const CommissionRules = pagina(() => import('./pages/CommissionRules'));
 const Commissions = pagina(() => import('./pages/Commissions'));
 const CommissionDoctorDetail = pagina(() => import('./pages/CommissionDoctorDetail'));
 const CommissionMarketingDetail = pagina(() => import('./pages/CommissionMarketingDetail'));
@@ -154,6 +153,21 @@ const DeferredIncome = pagina(() => import('./pages/accounting/DeferredIncome'))
 const RetentionVouchers = pagina(() => import('./pages/accounting/RetentionVouchers'));
 const AccountingHealth = pagina(() => import('./pages/accounting/AccountingHealth'));
 const Profitability = pagina(() => import('./pages/accounting/Profitability'));
+
+function Facturacion() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const ventas = location.pathname === '/sales';
+  return (
+    <div className="space-y-4">
+      <nav aria-label="Secciones de facturación" className="flex gap-2 border-b border-slate-200">
+        <button type="button" onClick={() => navigate('/invoices')} aria-current={!ventas ? 'page' : undefined} className={`px-4 py-2 text-sm font-semibold ${!ventas ? 'border-b-2 border-emerald-600 text-emerald-700' : 'text-slate-500'}`}>Facturas</button>
+        <button type="button" onClick={() => navigate('/sales')} aria-current={ventas ? 'page' : undefined} className={`px-4 py-2 text-sm font-semibold ${ventas ? 'border-b-2 border-emerald-600 text-emerald-700' : 'text-slate-500'}`}>Ventas</button>
+      </nav>
+      {ventas ? <Sales abrirNueva={!!location.state?.abrirNueva} /> : <Invoices onNewSale={() => navigate('/sales', { state: { abrirNueva: true } })} />}
+    </div>
+  );
+}
 
 function SuperAdminRoute({ children }) {
   const { user, loading } = useAuth();
@@ -302,7 +316,7 @@ function AppRoutes() {
                   path="/sales"
                   element={
                     <RoleRoute roles={['admin', 'cajero', 'contabilidad']}>
-                      <Sales />
+                      <Facturacion />
                     </RoleRoute>
                   }
                 />
@@ -311,7 +325,7 @@ function AppRoutes() {
                   path="/invoices"
                   element={
                     <RoleRoute roles={['admin', 'cajero', 'contabilidad']}>
-                      <Invoices />
+                      <Facturacion />
                     </RoleRoute>
                   }
                 />
@@ -535,14 +549,7 @@ function AppRoutes() {
                     </RoleRoute>
                   }
                 />
-                <Route
-                  path="/commission-rules"
-                  element={
-                    <RoleRoute roles={['admin', 'contabilidad']}>
-                      <CommissionRules />
-                    </RoleRoute>
-                  }
-                />
+                <Route path="/commission-rules" element={<Navigate to="/" replace />} />
                 <Route
                   path="/discounts"
                   element={

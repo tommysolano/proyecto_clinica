@@ -27,10 +27,10 @@ test.beforeEach(async () => { await H.resetDb(); });
 
 test('withinSchedule: respeta franja horaria y días', () => {
   const camp = { hourFrom: '09:00', hourTo: '20:00', days: [1, 2, 3, 4, 5] };
-  const lunes10 = new Date(2026, 6, 13, 10, 0); // lunes 10:00
-  const lunes7 = new Date(2026, 6, 13, 7, 0);   // lunes 07:00 (temprano)
-  const lunes22 = new Date(2026, 6, 13, 22, 0); // lunes 22:00 (tarde)
-  const domingo10 = new Date(2026, 6, 12, 10, 0);
+  const lunes10 = new Date('2026-07-13T15:00:00Z'); // lunes 10:00 Guayaquil
+  const lunes7 = new Date('2026-07-13T12:00:00Z');
+  const lunes22 = new Date('2026-07-14T03:00:00Z');
+  const domingo10 = new Date('2026-07-12T15:00:00Z');
 
   assert.equal(withinSchedule(camp, lunes10), true);
   assert.equal(withinSchedule(camp, lunes7), false, 'no se envía antes de la hora');

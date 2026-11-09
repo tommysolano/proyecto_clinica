@@ -16,6 +16,7 @@ const ChartOfAccount = require('../models/ChartOfAccount');
 const InventoryCategory = require('../models/InventoryCategory');
 const FixedAsset = require('../models/FixedAsset');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
+const CostCenter = require('../models/CostCenter');
 const { plannedAssetUnits } = require('../services/fixedAssetsFromPurchase');
 const { diagnose } = require('../scripts/diagnoseFixedAssetsFromPurchases');
 
@@ -106,10 +107,11 @@ test('A3) compra MIXTA: solo las líneas de activo fijo generan activos', async 
 
 test('A4) compra IMPORTADA (POR_AUTORIZAR): no hay activos hasta contabilizar, y al autorizar aparecen', async () => {
   const { clinicId, userId, cat, sup } = await setup();
+  const centro = await CostCenter.create({ clinic: clinicId, code: 'CC-1', name: 'Administración' });
   // Una compra importada por XML/TXT nace POR_AUTORIZAR: los activos NO existen todavía.
   const imp = await PurchaseInvoice.create({
     clinic: clinicId, supplier: sup._id, fechaEmision: H.docDate(),
-    serie: '001-001-000123456', status: 'POR_AUTORIZAR', subtotal: 2000, total: 2000, balance: 2000,
+    serie: '001-001-000123456', status: 'POR_AUTORIZAR', subtotal: 2000, total: 2000, balance: 2000, costCenter: centro._id,
     items: [afLine(cat._id, { qty: 2, unit: 1000 })], createdBy: userId,
   });
   assert.equal(await FixedAsset.countDocuments({ clinic: clinicId }), 0,

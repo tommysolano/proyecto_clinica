@@ -227,7 +227,7 @@ function aplicarAbonado(inv, abonado) {
  */
 async function applyCostCenterPolicy(doc, req, session) {
   const resolver = createResolver({ clinicId: req.clinicId,
-    activeClinicId: req.userClinicId || req.clinicId, session });
+    activeClinicId: req.userClinicId || req.clinicId, session, allowCompanyCenters: true });
   const confirmed = req.body?.costCenterConfirmed === true || req.body?.costCenterConfirmed === 'true';
   // El centro de la cabecera se valida aunque no haya bodega (puede ser un gasto puro).
   if (doc.costCenter) await resolver.getCostCenter(doc.costCenter);
@@ -1524,6 +1524,9 @@ exports.authorize = async (req, res) => {
         await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
         if (!(req.body && Array.isArray(req.body.items))) {
           await classifyAndValidateItems(inv.items, { clinicId: req.clinicId, supplier: supForItems, session });
+        }
+        if (!inv.costCenter) {
+          throw Object.assign(new Error('Selecciona el centro de costo de la factura para contabilizarla'), { status: 400 });
         }
         // Verificación contra el SRI: bloquea con 409 (payload SRI_MISMATCH) salvo
         // confirmación explícita; al confirmar queda marcada y auditada.

@@ -105,10 +105,8 @@ const MENU_GROUPS = [
   {
     key: 'comercial', label: 'Comercial', icon: HiOutlineShoppingCart, items: [
       { path: '/quotations', label: 'Cotizaciones', roles: ['admin', 'cajero', 'call_center', 'marketing'] },
-      { path: '/sales', label: 'Ventas', roles: ['admin', 'cajero', 'contabilidad'] },
       { path: '/invoices', label: 'Facturación', roles: ['admin', 'cajero', 'contabilidad'] },
       { path: '/discounts', label: 'Descuentos', roles: ['admin', 'cajero', 'contabilidad'] },
-      { path: '/commission-rules', label: 'Reglas de Comisión', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/credit-debit-notes', label: 'NC / ND Clientes', roles: ['admin', 'contabilidad'] },
     ],
   },

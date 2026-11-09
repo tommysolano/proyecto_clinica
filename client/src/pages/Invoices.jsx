@@ -63,7 +63,7 @@ function autorizadaOtroDia(inv) {
   return autKey !== `${dd.padStart(2, '0')}/${mm.padStart(2, '0')}/${yyyy}`;
 }
 
-export default function Invoices() {
+export default function Invoices({ onNewSale }) {
   const { hasRole } = useAuth();
   const canRetry = hasRole('admin', 'cajero', 'contabilidad');
   const canAnular = hasRole('admin', 'contabilidad');
@@ -83,8 +83,11 @@ export default function Invoices() {
   const canVerPuntos = hasRole('admin', 'contabilidad');
   const [puntos, setPuntos] = useState([]);
   useEffect(() => {
-    if (!canVerPuntos) return;
-    api.get('/puntos-emision').then((r) => setPuntos(r.data?.puntos || [])).catch(() => {});
+    if (canVerPuntos) {
+      api.get('/puntos-emision').then((r) => setPuntos(r.data?.puntos || [])).catch(() => {});
+    } else {
+      api.get('/puntos-emision/mio').then((r) => setPuntos(r.data?.punto ? [r.data.punto] : [])).catch(() => {});
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [detail, setDetail] = useState(null);
@@ -223,7 +226,8 @@ export default function Invoices() {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
-      <PageHeader icon={HiOutlineDocumentText} title="Facturación electrónica" subtitle="Emisión y seguimiento de comprobantes SRI">
+      <PageHeader icon={HiOutlineDocumentText} title="Facturación" subtitle="Emisión y seguimiento de comprobantes SRI">
+        {onNewSale && <button onClick={onNewSale} className="btn-primary">Nueva venta</button>}
         {canRetry && (
           <button
             onClick={reintentarPendientes}
@@ -330,7 +334,7 @@ export default function Invoices() {
           </label>
           {puntos.length > 0 && (
             <label className="text-xs font-medium text-slate-600">
-              Caja
+              Punto de emisión
               <select
                 value={filter.puntoEmision}
                 onChange={(e) => cambiarFiltro({ puntoEmision: e.target.value })}

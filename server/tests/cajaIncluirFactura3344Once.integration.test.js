@@ -63,6 +63,7 @@ test('adelanta la apertura y la venta entra en la caja abierta; no se repite', a
   assert.equal(String((await Sale.findById(venta._id)).puntoEmision), String(punto._id), 'venta enlazada al punto');
 
   const d = await detalle(clinicId, cajera, caja);
+  assert.equal(d.statusCode, 200, JSON.stringify(d.payload));
   assert.deepEqual(d.payload.sales.map((s) => s.saleNumber), ['V-000099']);
   assert.equal(d.payload.sales[0].invoice.number, '002-001-000003344');
 

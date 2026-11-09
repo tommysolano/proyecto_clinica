@@ -16,6 +16,7 @@ router.post('/movements/:id/void', operan, c.voidMovement);
 router.get('/branches', consultan, c.branches);
 router.get('/', consultan, c.list);
 router.get('/:id/detail', consultan, c.detail);
+router.get('/:id/invoices.xlsx', consultan, c.invoicesExcel);
 router.post('/open', operan, c.open);
 router.post('/:id/close', operan, c.close);
 router.post('/', operan, c.create);

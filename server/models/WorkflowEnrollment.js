@@ -14,6 +14,7 @@ const workflowEnrollmentSchema = new mongoose.Schema(
     workflow: { type: mongoose.Schema.Types.ObjectId, ref: 'Workflow', required: true, index: true },
     patient: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', default: null, index: true },
     conversation: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', default: null },
+    birthdayKey: { type: String },
     stepIndex: { type: Number, default: 0 },
     // Nodo actual en workflows de grafo (nodes/edges). null en workflows lineales.
     currentNodeId: { type: String, default: null },
@@ -53,6 +54,7 @@ const workflowEnrollmentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+workflowEnrollmentSchema.index({ birthdayKey: 1 }, { unique: true, sparse: true });
 workflowEnrollmentSchema.index({ status: 1, nextRunAt: 1 });
 // Panel del chat: "qué automatizaciones se activaron en esta conversación".
 // El teléfono se indexa porque las inscripciones de los disparadores de dominio

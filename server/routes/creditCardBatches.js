@@ -2,7 +2,7 @@ const router = require('express').Router();
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const c = require('../controllers/creditCardBatchController');
 
-router.use(auth, requireClinic, requireRole('admin', 'contabilidad', 'cajero'));
+router.use(auth, requireClinic, requireRole('admin', 'contabilidad'));
 
 router.get('/', c.list);
 router.get('/:id', c.get);

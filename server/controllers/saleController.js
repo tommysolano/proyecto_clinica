@@ -12,7 +12,6 @@ const { openReceivable, applyToReceivable, voidReceivable } = require('../utils/
 const kardex = require('../utils/kardex');
 const { createResolver, auditarDiferencias } = require('../services/costCenterPolicy');
 const { calculateSaleLine, summarizeSaleTaxes } = require('../utils/tax');
-const { descuentoAlCobrar } = require('../utils/productDiscount');
 const { assertNotPastDocumentDate } = require('../utils/fiscalDocumentDate');
 const { invoiceDate } = require('../utils/dates');
 const { emitToClinic } = require('../realtime');
@@ -81,6 +80,21 @@ function resolveUnitPrice(product, item) {
   return Number(product.salePrice) || 0;
 }
 exports._resolveUnitPrice = resolveUnitPrice;
+
+exports.previewDiscounts = async (req, res) => {
+  try {
+    const items = Array.isArray(req.body.items) ? req.body.items : [];
+    if (!items.length) return res.json({ items: [] });
+    const ids = [...new Set(items.map((i) => String(i.product)))];
+    const products = await Product.find({ _id: { $in: ids }, active: true });
+    if (products.length !== ids.length) return res.status(400).json({ message: 'Algún producto no existe o está inactivo' });
+    const result = await require('../services/saleDiscounts').calculateDiscounts({
+      clinicId: req.clinicId, patientId: req.body.patient || null, items,
+      products: new Map(products.map((p) => [String(p._id), p])), priceOf: resolveUnitPrice,
+    });
+    return res.json({ items: result });
+  } catch (e) { return res.status(e.status || 500).json({ message: e.message }); }
+};
 
 exports.getSales = async (req, res) => {
   try {
@@ -417,7 +431,16 @@ exports.createSale = async (req, res) => {
           product.stock = +(disponible - toma).toFixed(4);
         }
 
+        const automaticDiscounts = await require('../services/saleDiscounts').calculateDiscounts({
+          clinicId: req.clinicId, patientId: patient || null, items, products: txProductMap,
+          priceOf: resolveUnitPrice, now: new Date(), session,
+        });
+        if (Array.isArray(req.body.discountPreview) && (req.body.discountPreview.length !== items.length
+          || automaticDiscounts.some((d, i) => Math.abs(d.discount - Number(req.body.discountPreview[i])) > 0.005))) {
+          throw Object.assign(new Error('Los descuentos cambiaron. Revisa los importes antes de cobrar.'), { status: 409, code: 'DISCOUNT_CHANGED' });
+        }
         let descuentoCambiado = false;
+        const usedDiscounts = new Set();
         const txSaleItems = items.map((item, idx) => {
           const product = txProductMap.get(String(item.product));
           // PRECIO DE LA LÍNEA: por defecto el activo del producto (`salePrice`). El cajero
@@ -427,7 +450,13 @@ exports.createSale = async (req, res) => {
           const unitPrice = resolveUnitPrice(product, item);
           // DESCUENTO: por defecto el del PRODUCTO (inventario). Desde el 29-10-2026 el
           // cajero lo puede cambiar al cobrar; si lo cambia, la venta exige el motivo.
-          const desc = descuentoAlCobrar(product, unitPrice, item.quantity, item.discount);
+          const auto = automaticDiscounts[idx];
+          const manual = item.discount !== undefined && item.discount !== null && item.discount !== '';
+          const desc = manual
+            ? { discount: Math.min(Math.max(Number(item.discount) || 0, 0), unitPrice * Number(item.quantity)), cambiado: Math.abs(Number(item.discount) - auto.discount) > 0.005 }
+            : { discount: auto.discount, cambiado: false };
+          const refs = !manual || !desc.cambiado ? auto.applied.map((r) => r.id) : [];
+          refs.forEach((id) => usedDiscounts.add(id));
           if (desc.cambiado && desc.discount > 0) descuentoCambiado = true;
           const tax = calculateSaleLine({
             product,
@@ -453,6 +482,8 @@ exports.createSale = async (req, res) => {
             taxCategory: tax.taxCategory,
             priceIncludesVat: tax.priceIncludesVat,
             discount: tax.discount,
+            discountRef: refs[0] || undefined,
+            discountRefs: refs,
             discountTaxBase: tax.discountTaxBase,
             treatment: item.treatment || undefined,
             // Para citas futuras: solo un servicio (lo que tiene stock no se «guarda»).
@@ -475,6 +506,13 @@ exports.createSale = async (req, res) => {
         });
         if (descuentoCambiado && !discountReason) {
           throw Object.assign(new Error('Escribe el motivo del descuento aplicado'), { status: 400 });
+        }
+        for (const id of usedDiscounts) {
+          const result = await Discount.updateOne({ _id: id, active: true, $expr: { $or: [
+            { $lte: [{ $ifNull: ['$maxUses', 0] }, 0] },
+            { $lt: [{ $ifNull: ['$usedCount', 0] }, '$maxUses'] },
+          ] } }, { $inc: { usedCount: 1 } }, { session });
+          if (!result.modifiedCount) throw Object.assign(new Error('Un descuento alcanzó su límite de usos. Revisa la venta antes de cobrar.'), { status: 409, code: 'DISCOUNT_CHANGED' });
         }
         const txTotals = summarizeSaleTaxes(txSaleItems);
 
@@ -547,7 +585,7 @@ exports.createSale = async (req, res) => {
           if (p.cardTypeSnapshot === 'DEBITO') { p.cardDeferredType = 'CORRIENTE'; p.cardDeferredMonths = 0; }
           if (p.cardDeferredType === 'CORRIENTE') p.cardDeferredMonths = 0;
         }
-        if (!txPayments.length) throw Object.assign(new Error('Debe indicar al menos un método de pago'), { status: 400 });
+        if (!txPayments.length && txTotals.total > 0.005) throw Object.assign(new Error('Debe indicar al menos un método de pago'), { status: 400 });
         for (const p of txPayments) {
           if (!VALID_METHODS.has(p.method)) throw Object.assign(new Error(`Método de pago inválido: ${p.method}`), { status: 400 });
         }
@@ -620,7 +658,7 @@ exports.createSale = async (req, res) => {
           }
         }
         const distinctMethods = [...new Set(txPayments.map((p) => p.method))];
-        const resolvedMethod = distinctMethods.length === 1 ? distinctMethods[0] : 'mixto';
+        const resolvedMethod = distinctMethods.length === 0 ? 'desconocido' : distinctMethods.length === 1 ? distinctMethods[0] : 'mixto';
         // Datos de banco/tarjeta a nivel cabecera (compat + liquidaciones de tarjeta):
         // se toman del primer pago con tarjeta / transferencia.
         const firstCard = txPayments.find((p) => p.method === 'tarjeta') || {};
@@ -639,6 +677,7 @@ exports.createSale = async (req, res) => {
         const [txSale] = await Sale.create([{
           clinic: req.clinicId,
           items: txSaleItems,
+          discountUses: [...usedDiscounts],
           warehouse: txWarehouse,
           costCenter: cc.costCenter || null,
           patient: patient || undefined,
@@ -1206,6 +1245,7 @@ exports.createSale = async (req, res) => {
     // explicarlo y ofrecer la confirmación. Solo un fallo inesperado queda genérico.
     res.status(error.status || 500).json({
       message: error.status ? error.message : 'Error al crear venta',
+      ...(error.code === 'DISCOUNT_CHANGED' ? { code: error.code } : {}),
       ...(error.payload || {}),
       error: error.message,
     });
@@ -1470,6 +1510,10 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
 
   // Cartera: anula el documento de cobro (CxC) si la venta era a crédito.
   await voidReceivable({ clinicId, sourceModel: 'Sale', sourceRef: sale._id }, { session });
+
+  for (const id of sale.discountUses || []) {
+    await Discount.updateOne({ _id: id, usedCount: { $gt: 0 } }, { $inc: { usedCount: -1 } }, { session });
+  }
 
   sale.status = 'anulada';
   sale.balance = 0;

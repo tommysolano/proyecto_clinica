@@ -23,12 +23,12 @@ const { emitToCallCenter } = require('../realtime');
 
 /**
  * ¿Toca enviar ahora? (franja horaria y días permitidos).
- * La hora local del proceso YA es la de Ecuador: index.js fuerza
- * TZ=America/Guayaquil, igual que asumen los flujos de mensajes.
+ * Los días y horas configurados corresponden a Guayaquil.
  */
 function withinSchedule(camp, now = new Date()) {
-  const day = now.getDay();
-  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const ec = new Date(now.getTime() - 5 * 3600000);
+  const day = ec.getUTCDay();
+  const hhmm = `${String(ec.getUTCHours()).padStart(2, '0')}:${String(ec.getUTCMinutes()).padStart(2, '0')}`;
   if (Array.isArray(camp.days) && camp.days.length && !camp.days.includes(day)) return false;
   if (camp.hourFrom && hhmm < camp.hourFrom) return false;
   if (camp.hourTo && hhmm > camp.hourTo) return false;

@@ -37,11 +37,12 @@ const etiqueta = (cc) => (cc ? `${cc.code} - ${cc.name}` : '(sin centro)');
  * Resolutor con caché: una compra de 20 líneas no consulta la misma bodega 20 veces.
  * Se crea uno por operación (create/update/authorize/venta) y se descarta.
  */
-function createResolver({ clinicId, activeClinicId = clinicId, session = null } = {}) {
+function createResolver({ clinicId, activeClinicId = clinicId, session = null, allowCompanyCenters = false } = {}) {
   const bodegas = new Map();
   const centros = new Map();
   let sharedCenterPromise;
   let activeClinicPromise;
+  let companyClinicIdsPromise;
   const importedOwnerCache = new Map();
 
   async function activeClinic() {
@@ -116,6 +117,15 @@ function createResolver({ clinicId, activeClinicId = clinicId, session = null } 
       if (exigirActivo && cc && cc.active === false) {
         throw badRequest(`El centro de costo "${etiqueta(cc)}" está inactivo.`);
       }
+      return cc;
+    }
+    if (allowCompanyCenters) {
+      if (!companyClinicIdsPromise) companyClinicIdsPromise = require('./companyCostCenters').companyClinicIds(activeClinicId, session);
+      const clinicIds = await companyClinicIdsPromise;
+      const cc = await withSession(CostCenter.findOne({ _id: key, clinic: { $in: clinicIds } }), session);
+      if (!cc) throw badRequest('El centro de costo seleccionado no existe en esta empresa.');
+      if (exigirActivo && cc.active === false) throw badRequest(`El centro de costo "${etiqueta(cc)}" está inactivo: elige uno activo.`);
+      centros.set(key, cc);
       return cc;
     }
     let cc = await withSession(CostCenter.findOne({ _id: key, clinic: clinicId }), session);

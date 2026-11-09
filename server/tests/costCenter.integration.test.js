@@ -33,6 +33,10 @@ const JournalEntry = require('../models/JournalEntry');
 const FixedAsset = require('../models/FixedAsset');
 const AuditLog = require('../models/AuditLog');
 const Sale = require('../models/Sale');
+const Clinic = require('../models/Clinic');
+const Company = require('../models/Company');
+const PurchaseInvoice = require('../models/PurchaseInvoice');
+const costCenters = require('../controllers/costCenterController');
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -41,6 +45,34 @@ test.beforeEach(async () => { await H.resetDb(); });
 const run = (h, req) => H.runController(h, req);
 const ok = (r) => { assert.ok(r.statusCode < 400, JSON.stringify(r.payload)); return r.payload; };
 const idOf = (v) => String(v && typeof v === 'object' ? (v._id ?? v) : (v ?? ''));
+
+test('compras permite elegir centros activos de toda la empresa y rechaza los de otra', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const empresa = await Company.create({ name: 'Clínica' });
+  const otraEmpresa = await Company.create({ name: 'Otra empresa' });
+  await Clinic.create({ _id: clinicId, name: 'Laboratorio', company: empresa._id });
+  const otraSede = await Clinic.create({ name: 'Central', company: empresa._id });
+  const ajena = await Clinic.create({ name: 'Ajena', company: otraEmpresa._id });
+  const local = await CostCenter.create({ clinic: clinicId, code: 'LAB', name: 'Laboratorio' });
+  const central = await CostCenter.create({ clinic: otraSede._id, code: 'CENT', name: 'Central' });
+  const inactivo = await CostCenter.create({ clinic: otraSede._id, code: 'OFF', name: 'Inactivo', active: false });
+  const extranjero = await CostCenter.create({ clinic: ajena._id, code: 'EXT', name: 'Otra empresa' });
+  const listado = ok(await run(costCenters.list, H.mockReq(clinicId, userId, {}, { query: { active: 'true', scope: 'company' } })));
+  assert.deepEqual(listado.map((cc) => String(cc._id)).sort(), [String(local._id), String(central._id)].sort());
+  const supplier = await H.makeSupplier(clinicId);
+  const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
+  const pendiente = await PurchaseInvoice.create({ clinic: clinicId, supplier: supplier._id, fechaEmision: H.docDate(),
+    serie: '001-001-987654321', status: 'POR_AUTORIZAR', createdBy: userId,
+    items: [{ description: 'Servicio', lineType: 'GASTO', quantity: 1, unitPrice: 100, subtotal: 100, ivaRate: 0, account: gasto._id }] });
+  const autorizar = (costCenter) => run(purchase.authorize, H.mockReq(clinicId, userId, { costCenter }, { params: { id: String(pendiente._id) } }));
+  assert.equal((await autorizar(extranjero._id)).statusCode, 400);
+  assert.equal((await autorizar(inactivo._id)).statusCode, 400);
+  const registrada = ok(await autorizar(central._id));
+  assert.equal(String(registrada.costCenter), String(central._id));
+  assert.equal(String(registrada.items[0].costCenter), String(central._id));
+  const asiento = await JournalEntry.findById(registrada.journalEntry);
+  assert.ok(asiento.lines.some((line) => String(line.costCenter) === String(central._id)));
+});
 
 /**
  * Clínica con DOS centros de costo y una bodega cuyo centro predeterminado es el primero.

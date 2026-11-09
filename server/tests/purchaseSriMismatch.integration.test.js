@@ -13,6 +13,7 @@ const purchase = require('../controllers/purchaseInvoiceController');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 const AuditLog = require('../models/AuditLog');
+const CostCenter = require('../models/CostCenter');
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -31,7 +32,8 @@ async function importOne(clinicId, userId) {
   const imp = await H.runController(purchase.importTxt, H.mockReq(clinicId, userId, { content: SRI_TXT }));
   assert.equal(imp.statusCode, 200, JSON.stringify(imp.payload));
   assert.equal(imp.payload.created, 1);
-  return PurchaseInvoice.findOne({ clinic: clinicId });
+  const centro = await CostCenter.create({ clinic: clinicId, code: 'CC-1', name: 'Administración' });
+  return PurchaseInvoice.findOneAndUpdate({ clinic: clinicId }, { costCenter: centro._id }, { new: true });
 }
 
 const gastoItems = (accountId, { unitPrice, ivaRate = 15 } = {}) => ([

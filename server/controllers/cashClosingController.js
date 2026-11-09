@@ -3,6 +3,7 @@ const CashClosing = require('../models/CashClosing');
 const CashMovement = require('../models/CashMovement');
 const JournalEntry = require('../models/JournalEntry');
 const Sale = require('../models/Sale');
+require('../models/BankAccount'); // populate('payments.bankAccount') en el detalle
 const { createEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { puntoRequerido, puntoDelUsuario, sucursalUsaPuntos } = require('../services/puntoEmision');
@@ -297,6 +298,7 @@ exports.detail = async (req, res) => {
       const rows = await Sale.find(match)
         .select('saleNumber clientName clientCedula patient items subtotal discountTotal taxAmount total paymentMethod payments status invoice createdAt createdBy cashier doctor recommendedBy discountReason')
         .populate('invoice', 'estab ptoEmi secuencial estado')
+        .populate('payments.bankAccount', 'name')
         .populate('createdBy', 'name')
         .populate('doctor', 'name')
         .populate('recommendedBy', 'name')
@@ -325,6 +327,11 @@ exports.detail = async (req, res) => {
       map.set(key, row);
     };
     const pagosDe = (s) => (s.payments?.length ? s.payments : [{ method: s.paymentMethod, amount: s.total }]);
+    // Débito o crédito (el tipo que se guardó al cobrar) y el banco de la transferencia.
+    // Vacíos en los cobros que no los registraron.
+    const cardTypeDe = (p) => (p.method === 'tarjeta' ? p.cardTypeSnapshot || '' : '');
+    const bancoDe = (p) => (p.method === 'transferencia' ? p.bankAccount?.name || '' : '');
+    const byPaymentDetail = new Map();
 
     // Por sucursal y por caja: lo vendido y cómo se cobró.
     const fila = (name) => ({ name, count: 0, total: 0, efectivo: 0, tarjeta: 0, transferencia: 0, otros: 0 });
@@ -345,7 +352,16 @@ exports.detail = async (req, res) => {
       totals.total += s.total || 0;
       if (s.invoice?.estado === 'AUTORIZADO') { totals.invoiced += 1; totals.invoicedTotal += s.total || 0; }
 
-      for (const p of pagosDe(s)) byMethod[p.method || 'otro'] = (byMethod[p.method || 'otro'] || 0) + (p.amount || 0);
+      for (const p of pagosDe(s)) {
+        byMethod[p.method || 'otro'] = (byMethod[p.method || 'otro'] || 0) + (p.amount || 0);
+        const cardType = cardTypeDe(p);
+        const bank = bancoDe(p);
+        const clave = `${p.method}|${cardType}|${bank}`;
+        const detalle = byPaymentDetail.get(clave) || { method: p.method || 'otro', cardType, bank, count: 0, total: 0 };
+        detalle.count += 1;
+        detalle.total += p.amount || 0;
+        byPaymentDetail.set(clave, detalle);
+      }
 
       for (const it of s.items || []) {
         const tipo = TIPO_ITEM[it.category] || 'producto';
@@ -408,6 +424,8 @@ exports.detail = async (req, res) => {
       totals: Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, k.endsWith('Count') || k === 'count' || k === 'invoiced' ? v : r2(v)])),
       averageTicket: ok.length ? r2(totals.total / ok.length) : 0,
       byMethod: Object.entries(byMethod).map(([method, total]) => ({ method, total: r2(total) })).sort((a, b) => b.total - a.total),
+      // Lo mismo, separando tarjeta por tipo y transferencia por banco.
+      byPaymentDetail: redondear([...byPaymentDetail.values()]).sort((a, b) => a.method.localeCompare(b.method) || b.total - a.total),
       byType: Object.entries(byType).map(([type, v]) => ({ type, qty: v.qty, total: r2(v.total) })),
       items: redondear([...items.values()]).sort((a, b) => b.total - a.total),
       byHour: redondear([...byHour.values()]).sort((a, b) => a.hour - b.hour),
@@ -430,10 +448,10 @@ exports.detail = async (req, res) => {
           method: p.method,
           amount: p.amount,
           reference: p.method === 'transferencia' ? p.reference || '' : '',
-          // Débito o crédito: el tipo que se guardó al cobrar (vacío en ventas antiguas).
-          cardType: p.method === 'tarjeta' ? p.cardTypeSnapshot || '' : '',
+          cardType: cardTypeDe(p),
+          bank: bancoDe(p),
         })) : [{ method: s.paymentMethod, amount: s.total }],
-        invoice: s.invoice ? { _id: s.invoice._id, number: `${s.invoice.estab}-${s.invoice.ptoEmi}-${s.invoice.secuencial}`, estado: s.invoice.estado } : null,
+        invoice: s.invoice ? { _id: s.invoice._id, number: `${s.invoice.estab}-${s.invoice.ptoEmi}-${String(s.invoice.secuencial || '').padStart(9, '0')}`, estado: s.invoice.estado } : null,
         seller: s.createdBy?.name || '',
         doctor: s.doctor?.name || '',
         recommendedBy: s.recommendedBy?.name || '',
@@ -443,6 +461,46 @@ exports.detail = async (req, res) => {
       movements,
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+exports.invoicesExcel = async (req, res) => {
+  try {
+    const XL = require('../utils/excelReport');
+    // La misma consulta y los mismos permisos que el detalle, incluida la suma de cajas.
+    const detail = await XL.captureJson(exports.detail, req);
+    const rows = detail.sales.filter((sale) => sale.invoice).map((sale) => ({
+      fecha: new Date(sale.createdAt).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' }),
+      sucursal: sale.clinic,
+      venta: sale.saleNumber,
+      factura: sale.invoice.number,
+      estadoFactura: sale.invoice.estado,
+      estadoVenta: sale.status,
+      cliente: sale.clientName,
+      identificacion: sale.clientCedula,
+      pagos: sale.payments.map((p) => `${p.method}${p.cardType ? ` ${p.cardType}` : ''}${p.bank ? ` ${p.bank}` : ''}: $${Number(p.amount || 0).toFixed(2)}`).join(' + '),
+      vendedor: sale.seller,
+      subtotal: sale.subtotal,
+      descuento: sale.discount,
+      iva: sale.tax,
+      total: sale.total,
+    }));
+    const wb = XL.newWorkbook();
+    XL.addSheet(wb, {
+      title: 'Facturas', rows,
+      meta: [['Cajas incluidas', detail.closings.length], ['Desde', new Date(detail.range.start).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })], ['Hasta', new Date(detail.range.end).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })]],
+      columns: [
+        { header: 'Fecha y hora', key: 'fecha', width: 22 }, { header: 'Sucursal', key: 'sucursal', width: 22 },
+        { header: 'Venta', key: 'venta' }, { header: 'Factura', key: 'factura', width: 24 },
+        { header: 'Estado factura', key: 'estadoFactura' }, { header: 'Estado venta', key: 'estadoVenta' },
+        { header: 'Cliente', key: 'cliente', width: 30 }, { header: 'Identificación', key: 'identificacion' },
+        { header: 'Medios de pago', key: 'pagos', width: 45 }, { header: 'Registró', key: 'vendedor', width: 24 },
+        { header: 'Subtotal', key: 'subtotal', money: true }, { header: 'Descuento', key: 'descuento', money: true },
+        { header: 'IVA', key: 'iva', money: true }, { header: 'Total', key: 'total', money: true },
+      ],
+      notes: ['Incluye las facturas vinculadas a las ventas del detalle, también las anuladas; revise sus estados.'],
+    });
+    await XL.sendWorkbook(res, wb, `facturas_caja_${req.params.id}.xlsx`);
+  } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
 };
 
 /**

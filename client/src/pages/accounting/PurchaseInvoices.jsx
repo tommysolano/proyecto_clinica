@@ -225,7 +225,7 @@ export default function PurchaseInvoices() {
     loadProducts();
     api.get('/inventory-advanced/warehouses').then((r) => setWarehouses(r.data || [])).catch(() => {});
     api.get('/banks/accounts').then((r) => setBanks(r.data || [])).catch(() => {});
-    api.get('/cost-centers', { params: { active: true } }).then((r) => setCostCenters(r.data || [])).catch(() => {});
+    api.get('/cost-centers', { params: { active: true, scope: 'company' } }).then((r) => setCostCenters(r.data || [])).catch(() => {});
     api.get('/inventory-advanced/categories', { params: { kind: 'ACTIVO_FIJO' } }).then((r) => setAssetCategories(r.data?.items || r.data || [])).catch(() => {});
     api.get('/retention-rules', { params: { active: true } }).then((r) => setRetentionRules(r.data || [])).catch(() => {});
     // Serie del comprobante de retención (establecimiento / punto de emisión): se muestra en el
@@ -265,7 +265,12 @@ export default function PurchaseInvoices() {
     setForm((f) => ({ ...f, supplier: v, creditDays: creditDays || f.creditDays, fechaVencimiento: (creditDays || f.creditDays) ? addDays(f.fechaEmision, creditDays || f.creditDays) : f.fechaVencimiento }));
   };
 
-  const setInvoiceCostCenter = (cc) => setForm((f) => ({ ...f, costCenter: cc, items: f.items.map((it) => (it.costCenter ? it : { ...it, costCenter: cc })) }));
+  const setInvoiceCostCenter = (cc) => setForm((f) => ({
+    ...f,
+    costCenter: cc,
+    items: f.items.map((it) => (!it.costCenter || String(it.costCenter) === String(f.costCenter)
+      ? { ...it, costCenter: cc } : it)),
+  }));
 
   // ---- Manipulación de líneas por _uid ----
   const setItem = (u, patch) => setForm((f) => ({ ...f, items: f.items.map((it) => (it._uid === u ? { ...it, ...patch } : it)) }));
@@ -608,6 +613,7 @@ export default function PurchaseInvoices() {
     e.preventDefault();
     setFormError('');
     if (!form.supplier) return fail('Selecciona un proveedor');
+    if (authorizeId && !form.costCenter) return fail('Selecciona el centro de costo de la factura para contabilizarla');
     // El N° de comprobante ahora es un solo campo (001-001-000000123): exige el secuencial
     // salvo que la factura ya traiga una serie (documentos importados/editados).
     if (!form.serie && !(form.secuencial || '').trim()) return fail('Ingresa el N° de comprobante (formato 001-001-000000123)');
@@ -1154,7 +1160,7 @@ export default function PurchaseInvoices() {
               </Field>
               <Field label="Días de crédito"><NumericInput value={form.creditDays} onChange={(e) => setForm((f) => ({ ...f, creditDays: +e.target.value, fechaVencimiento: +e.target.value > 0 ? addDays(f.fechaEmision, +e.target.value) : '' }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-right" /></Field>
               <Field label="Vencimiento"><DateInput value={form.fechaVencimiento || ''} onChange={(e) => setForm({ ...form, fechaVencimiento: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
-              <Field label="Centro de costo (factura)" className="col-span-2 md:col-span-2">
+              <Field label="Centro de costo (factura)" required={!!authorizeId} className="col-span-2 md:col-span-2">
                 <SearchableSelect options={costCenters} value={form.costCenter} onChange={setInvoiceCostCenter} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear />
               </Field>
               {/* El n° de autorización se digita SIEMPRE (antes vivía escondido tras
