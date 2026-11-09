@@ -10,19 +10,21 @@ const { clinicsOfCompanySync } = require('../utils/companies');
 
 const oid = (v) => new mongoose.Types.ObjectId(v);
 
-/** Solo el super administrador ve las cajas de todos y de todas las sucursales (nov-2026). */
-const veTodo = (req) => !!req.user.isSuperAdmin;
+/**
+ * Ven las cajas de todos y de todas las sucursales (nov-2026): el super administrador,
+ * contabilidad (las audita) y marketing (solo lectura, ver routes/cashClosings).
+ */
+const veTodo = (req) => !!req.user.isSuperAdmin || ['contabilidad', 'marketing'].includes(req.role);
 
 /**
  * Cajero y ADMIN ven solo SUS cajas (las que abrieron o cerraron), igual que cualquiera que
- * factura: un admin que cobra veía las cajas de los demás debajo de la suya. Contabilidad
- * sigue viendo las de su sucursal (las audita).
+ * factura: un admin que cobra veía las cajas de los demás debajo de la suya.
  */
 const soloPropias = (req) => !veTodo(req) && ['cajero', 'admin'].includes(req.role);
 
 /**
- * Sucursales cuyas cajas puede consultar el usuario: el super administrador, todas las de la
- * empresa activa; el resto, solo la sucursal en la que está.
+ * Sucursales cuyas cajas puede consultar el usuario: quien ve todo, todas las de la empresa
+ * activa; el resto, solo la sucursal en la que está.
  */
 const clinicasVisibles = (req) => {
   const actual = String(req.clinicId);
@@ -258,13 +260,13 @@ const ventanaDeCaja = (closing) => {
  * por doctor, por sucursal y por caja, y los movimientos de caja. Cada caja toma la misma
  * ventana y el mismo punto que su cuadre.
  *
- * `?add=id1,id2` suma otras cajas a la de la URL (solo super administrador): así se ve cuánto
+ * `?add=id1,id2` suma otras cajas a la de la URL (solo quien ve todas): así se ve cuánto
  * se hizo en un día por sucursal. Una venta que caiga en dos cajas a la vez (p. ej. un cierre
  * antiguo de día completo y una caja por punto) se cuenta una sola vez.
  */
 exports.detail = async (req, res) => {
   try {
-    const extra = req.user.isSuperAdmin && req.query.add
+    const extra = veTodo(req) && req.query.add
       ? String(req.query.add).split(',').map((s) => s.trim()).filter((s) => mongoose.isValidObjectId(s))
       : [];
     const ids = [...new Set([String(req.params.id), ...extra])];

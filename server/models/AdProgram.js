@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
  *
  * Un programa es lo que marketing vende con sus anuncios («Detox», «Mujer Sana
  * 360»…). NO es un producto del inventario: lo escribe el usuario. Agrupa:
- *   · lo que se GASTA en publicidad, mes a mes;
+ *   · lo que se GASTA en publicidad al día, y desde qué fecha;
  *   · los ANUNCIOS de Meta que lo promocionan (los mismos ids que se ponen en
  *     el disparador «Anuncio» de las automatizaciones);
  *   · los SERVICIOS del inventario que se agendan para él, y cuáles de ellos no
@@ -14,9 +14,23 @@ const mongoose = require('mongoose');
  * Con eso la analítica cuenta las citas creadas desde el chat que salieron de
  * cada programa, cómo terminaron y cuánto dejaron (ver adProgramController).
  */
+/**
+ * TARIFA DIARIA CON FECHA DE INICIO (nov-2026): «desde el 02/11 se gastan $35
+ * al día». Corre todos los días y todos los meses hasta la siguiente tarifa, así
+ * que no hay que volver a cargar nada cada mes y un cambio no altera lo anterior.
+ */
+const tarifaSchema = new mongoose.Schema(
+  {
+    desde: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
+    montoDiario: { type: Number, required: true, min: 0 },
+    nota: { type: String, trim: true, default: '' },
+  },
+  { _id: false }
+);
+
+/** LEGADO: gasto por mes de los programas que aún no se han vuelto a guardar. */
 const gastoSchema = new mongoose.Schema(
   {
-    // 'YYYY-MM': el gasto de publicidad se paga y se mira por mes.
     mes: { type: String, required: true, match: /^\d{4}-\d{2}$/ },
     monto: { type: Number, required: true, min: 0 },
     nota: { type: String, trim: true, default: '' },
@@ -51,6 +65,7 @@ const adProgramSchema = new mongoose.Schema(
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, index: true },
     name: { type: String, required: true, trim: true },
     color: { type: String, trim: true, default: '' },
+    tarifas: { type: [tarifaSchema], default: [] },
     gastos: { type: [gastoSchema], default: [] },
     anuncios: { type: [anuncioSchema], default: [] },
     servicios: { type: [servicioSchema], default: [] },

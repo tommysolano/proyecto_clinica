@@ -26,7 +26,7 @@ import { fmtDate, fmtDateTime, todayEc } from '../utils/date';
  *
  * Reemplaza la página anterior del embudo. Dos pestañas, como Comisiones:
  *   · PROGRAMAS: se definen los programas (los escribe el usuario, no salen del
- *     inventario), lo que se gasta en publicidad cada mes, los anuncios que los
+ *     inventario), lo que se gasta en publicidad al día, los anuncios que los
  *     promocionan —escogidos en bloque desde las automatizaciones— y los
  *     servicios del inventario que se agendan para ellos.
  *   · RESULTADOS: las citas creadas desde el chat por programa, cómo terminaron
@@ -37,7 +37,10 @@ const money = (v) => `$${Number(v || 0).toLocaleString('es-EC', { minimumFractio
 const pct = (v) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(0)}%`);
 // Con un decimal: el peso de la publicidad suele ser chico (3,4 % no es 3 %).
 const pct1 = (v) => (v === null || v === undefined ? '—' : `${(v * 100).toLocaleString('es-EC', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`);
-const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+/** La tarifa que rige el día 'YYYY-MM-DD': la más reciente que ya empezó. */
+const tarifaVigente = (tarifas, dia) => (tarifas || [])
+  .filter((t) => t.desde <= dia)
+  .reduce((ultima, t) => (!ultima || t.desde > ultima.desde ? t : ultima), null);
 /** Días que tiene el mes 'YYYY-MM'. */
 const diasDelMes = (ym) => {
   const [y, m] = String(ym || '').split('-').map(Number);
@@ -52,10 +55,6 @@ const soloMonto = (texto) => {
   const limpio = String(texto || '').replace(',', '.').replace(/[^\d.]/g, '');
   const [entero, ...resto] = limpio.split('.');
   return resto.length ? `${entero}.${resto.join('').slice(0, 2)}` : entero;
-};
-const nombreMes = (ym) => {
-  const [y, m] = String(ym || '').split('-');
-  return y && m ? `${MESES[Number(m) - 1] || m} ${y}` : ym;
 };
 const ESTADO = {
   efectivas: { label: 'Efectiva', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
@@ -131,7 +130,7 @@ export default function Analytics() {
 
 function PestanaProgramas({ programas, cargando, onCambio }) {
   const [editando, setEditando] = useState(null); // programa | {} (nuevo) | null
-  const mesActual = todayEc().slice(0, 7);
+  const hoy = todayEc();
 
   const eliminar = async (p) => {
     if (!confirm(`¿Eliminar el programa «${p.name}»? Sus citas dejarán de contarse para él.`)) return;
@@ -169,7 +168,7 @@ function PestanaProgramas({ programas, cargando, onCambio }) {
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {programas.map((p) => {
-          const gastoMes = (p.gastos || []).filter((g) => g.mes === mesActual).reduce((s, g) => s + (g.monto || 0), 0);
+          const vigente = tarifaVigente(p.tarifas, hoy);
           return (
             <div key={p._id} className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col gap-2">
               <div className="flex items-start justify-between gap-2">
@@ -186,7 +185,9 @@ function PestanaProgramas({ programas, cargando, onCambio }) {
                 </div>
               </div>
               <div className="text-sm text-slate-600">
-                Gasto de {nombreMes(mesActual).toLowerCase()}: <b className="text-slate-800">{money(gastoMes)}</b>
+                {vigente ? (
+                  <>Gasto actual: <b className="text-slate-800">{money(vigente.montoDiario)} por día</b> <span className="text-xs text-slate-400">desde {fmtDate(vigente.desde)}</span></>
+                ) : 'Sin gasto vigente'}
               </div>
               <div className="flex flex-wrap gap-1.5 text-[11px]">
                 <span className="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
@@ -226,17 +227,16 @@ function PestanaProgramas({ programas, cargando, onCambio }) {
 function EditorPrograma({ programa, otros, onClose, onGuardado }) {
   const hoy = todayEc();
   const [name, setName] = useState(programa.name || '');
-  const [gastos, setGastos] = useState((programa.gastos || []).map((g) => ({ ...g })));
+  const [tarifas, setTarifas] = useState(() => [...(programa.tarifas || [])].sort((a, b) => b.desde.localeCompare(a.desde)));
   const [anuncios, setAnuncios] = useState((programa.anuncios || []).map((a) => ({ ...a })));
   const [servicios, setServicios] = useState((programa.servicios || []).map((s) => ({ ...s })));
   const [fuentes, setFuentes] = useState(null);
   const [idManual, setIdManual] = useState('');
   const [guardando, setGuardando] = useState(false);
-  const [nuevoMes, setNuevoMes] = useState(Number(hoy.slice(5, 7)));
-  const [nuevoAnio, setNuevoAnio] = useState(Number(hoy.slice(0, 4)));
+  const [nuevaDesde, setNuevaDesde] = useState(hoy);
   const [nuevoMonto, setNuevoMonto] = useState('');
-  // El gasto se puede escribir del MES o POR DÍA; se guarda siempre del mes.
-  const [modoGasto, setModoGasto] = useState('mes');
+  // El gasto se puede escribir POR DÍA o del MES; se guarda siempre por día.
+  const [modoGasto, setModoGasto] = useState('dia');
 
   useEffect(() => {
     api.get('/ad-programs/ad-sources')
@@ -265,25 +265,25 @@ function EditorPrograma({ programa, otros, onClose, onGuardado }) {
     ]);
   };
 
-  /** El gasto escrito, ya convertido al del mes (null si no hay uno válido). */
-  const gastoEscrito = () => {
-    if (!nuevoMonto) return null;
+  /** La tarifa escrita, ya convertida a gasto por día (null si no hay una válida). */
+  const tarifaEscrita = () => {
+    if (!nuevoMonto || !nuevaDesde) return null;
     const valor = Number(nuevoMonto);
     if (!Number.isFinite(valor) || valor < 0) return null;
-    const mes = `${nuevoAnio}-${String(nuevoMes).padStart(2, '0')}`;
-    const monto = modoGasto === 'dia' ? valor * diasDelMes(mes) : valor;
-    return { mes, monto: Math.round(monto * 100) / 100, nota: '' };
+    const montoDiario = modoGasto === 'mes' ? valor / diasDelMes(nuevaDesde.slice(0, 7)) : valor;
+    return { desde: nuevaDesde, montoDiario, nota: '' };
   };
-  // Un gasto por mes: si ya estaba, se reemplaza.
-  const conGasto = (lista, g) =>
-    [...lista.filter((x) => x.mes !== g.mes), g].sort((a, b) => b.mes.localeCompare(a.mes));
+  // Una tarifa por fecha: si ya estaba, se reemplaza.
+  const conTarifa = (lista, t) =>
+    [...lista.filter((x) => x.desde !== t.desde), t].sort((a, b) => b.desde.localeCompare(a.desde));
 
-  const anadirGasto = () => {
-    const g = gastoEscrito();
-    if (!g) return toast.error('Escribe el monto del gasto.');
-    setGastos((prev) => conGasto(prev, g));
+  const anadirTarifa = () => {
+    const t = tarifaEscrita();
+    if (!t) return toast.error('Escribe la fecha y el monto del gasto.');
+    setTarifas((prev) => conTarifa(prev, t));
     setNuevoMonto('');
   };
+  const vigente = tarifaVigente(tarifas, hoy);
 
   const guardar = async () => {
     if (!name.trim()) return toast.error('Escribe el nombre del programa.');
@@ -292,11 +292,11 @@ function EditorPrograma({ programa, otros, onClose, onGuardado }) {
      * el gasto, se pulsaba Guardar y el programa quedaba con $0 — el monto solo
      * entraba con el botón «Añadir», y nada lo decía.
      */
-    const pendiente = gastoEscrito();
-    const gastosFinales = pendiente ? conGasto(gastos, pendiente) : gastos;
+    const pendiente = tarifaEscrita();
+    const tarifasFinales = pendiente ? conTarifa(tarifas, pendiente) : tarifas;
     setGuardando(true);
     try {
-      const body = { name: name.trim(), gastos: gastosFinales, anuncios, servicios };
+      const body = { name: name.trim(), tarifas: tarifasFinales, anuncios, servicios };
       if (programa._id) await api.put(`/ad-programs/${programa._id}`, body);
       else await api.post('/ad-programs', body);
       toast.success('Programa guardado');
@@ -308,8 +308,7 @@ function EditorPrograma({ programa, otros, onClose, onGuardado }) {
     }
   };
 
-  const anios = [Number(hoy.slice(0, 4)) - 1, Number(hoy.slice(0, 4)), Number(hoy.slice(0, 4)) + 1];
-  const input = 'w-full border border-slate-200 rounded-xl px-3 py-2 text-sm';
+  const input ='w-full border border-slate-200 rounded-xl px-3 py-2 text-sm';
 
   return (
     <Modal isOpen onClose={onClose} title={programa._id ? 'Editar programa' : 'Nuevo programa'} size="lg">
@@ -319,15 +318,16 @@ function EditorPrograma({ programa, otros, onClose, onGuardado }) {
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Detox, Mujer Sana 360…" className={`mt-1 ${input}`} />
         </label>
 
-        {/* GASTO EN PUBLICIDAD, POR MES */}
+        {/* GASTO EN PUBLICIDAD: TARIFA DIARIA DESDE UNA FECHA */}
         <section>
           <h4 className="m-0 mb-1 text-sm font-semibold text-slate-700">Gasto en publicidad</h4>
           <p className="m-0 mb-2 text-[11px] text-slate-500">
-            Lo que se invierte en anuncios para este programa. Escríbelo del mes o por día: en los resultados se
-            reparte por día y solo cuentan los días que ya pasaron.
+            Escribe cuánto se gasta y desde qué fecha: ese valor sigue contando todos los días y todos los meses,
+            sin volver a cargarlo. Si cambia, añade el nuevo valor con la fecha desde la que rige; los días
+            anteriores conservan el suyo. Para pausar la publicidad, registra $0.
           </p>
           <div className="flex gap-1 bg-slate-100 rounded-lg p-0.5 w-fit mb-2">
-            {[['mes', 'Gasto del mes'], ['dia', 'Gasto por día']].map(([id, label]) => (
+            {[['dia', 'Gasto por día'], ['mes', 'Gasto del mes']].map(([id, label]) => (
               <button
                 key={id}
                 type="button"
@@ -341,41 +341,41 @@ function EditorPrograma({ programa, otros, onClose, onGuardado }) {
             ))}
           </div>
           <div className="flex flex-wrap items-end gap-2">
-            <select value={nuevoMes} onChange={(e) => setNuevoMes(Number(e.target.value))} className="border border-slate-200 rounded-xl px-2 py-2 text-sm">
-              {MESES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-            </select>
-            <select value={nuevoAnio} onChange={(e) => setNuevoAnio(Number(e.target.value))} className="border border-slate-200 rounded-xl px-2 py-2 text-sm">
-              {anios.map((a) => <option key={a} value={a}>{a}</option>)}
-            </select>
+            <label className="text-xs text-slate-500">Desde
+              <DateInput value={nuevaDesde} onChange={(e) => setNuevaDesde(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-2 text-sm" />
+            </label>
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
               <input
                 type="text" inputMode="decimal" value={nuevoMonto}
                 onChange={(e) => setNuevoMonto(soloMonto(e.target.value))}
-                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); anadirGasto(); } }}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); anadirTarifa(); } }}
                 placeholder={modoGasto === 'dia' ? '0.00 por día' : '0.00 del mes'}
                 className="w-36 border border-slate-200 rounded-xl pl-6 pr-2 py-2 text-sm"
               />
             </div>
-            {modoGasto === 'dia' && gastoEscrito() && (
+            {modoGasto === 'mes' && tarifaEscrita() && (
               <span className="text-[11px] text-slate-500 pb-2.5">
-                = {money(gastoEscrito().monto)} en {nombreMes(gastoEscrito().mes).toLowerCase()} ({diasDelMes(gastoEscrito().mes)} días)
+                = {money(tarifaEscrita().montoDiario)} por día ({diasDelMes(nuevaDesde.slice(0, 7))} días)
               </span>
             )}
-            <button type="button" onClick={anadirGasto}
+            <button type="button" onClick={anadirTarifa}
               className="px-3 py-2 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm font-medium cursor-pointer">
               Añadir
             </button>
           </div>
-          {gastos.length > 0 && (
+          {tarifas.length > 0 && (
             <ul className="mt-2 divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">
-              {gastos.map((g) => (
-                <li key={g.mes} className="flex items-center justify-between gap-2 px-3 py-1.5 text-sm bg-white">
-                  <span className="text-slate-700">{nombreMes(g.mes)}</span>
+              {tarifas.map((t) => (
+                <li key={t.desde} className="flex items-center justify-between gap-2 px-3 py-1.5 text-sm bg-white">
+                  <span className="text-slate-700">
+                    Desde {fmtDate(t.desde)}
+                    {t.desde === vigente?.desde && <span className="ml-2 px-2 py-0.5 rounded-full text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200">Vigente</span>}
+                    {t.desde > hoy && <span className="ml-2 px-2 py-0.5 rounded-full text-[10px] bg-sky-50 text-sky-700 border border-sky-200">Programado</span>}
+                  </span>
                   <span className="flex items-center gap-2">
-                    <span className="text-[11px] text-slate-400">{money(g.monto / diasDelMes(g.mes))} por día ·</span>
-                    <b className="text-slate-800">{money(g.monto)}</b>
-                    <button type="button" title="Quitar" onClick={() => setGastos((prev) => prev.filter((x) => x.mes !== g.mes))}
+                    <b className="text-slate-800">{money(t.montoDiario)} por día</b>
+                    <button type="button" title="Quitar" onClick={() => setTarifas((prev) => prev.filter((x) => x.desde !== t.desde))}
                       className="p-1 text-slate-400 hover:text-rose-600 bg-transparent border-none cursor-pointer">
                       <HiOutlineTrash className="w-4 h-4" />
                     </button>
@@ -815,9 +815,9 @@ function PestanaResultados({ programas, onCambio, irAProgramas }) {
       )}
 
       <p className="text-[11px] text-slate-400 m-0">
-        <b>Efectivas</b> = asistidas o completadas. <b>Ingresos</b> = valor asignado a las citas efectivas, sin canjes, cortesías
-        ni servicios marcados «no genera ingresos». <b>Publicidad / ingresos</b> = inversión × 100 / ingresos: qué
-        parte de lo que entró se gastó en anuncios (cuanto más bajo, mejor). La <b>inversión</b> se reparte por día y solo cuentan los días ya
+        <b>Efectivas</b> = asistidas o completadas. <b>Ingresos</b> = lo facturado en las citas efectivas (si la cita no tiene factura, el valor escrito en ella),
+        sin canjes y cortesías no facturados ni servicios marcados «no genera ingresos». <b>Publicidad / ingresos</b> = inversión × 100 / ingresos: qué
+        parte de lo que entró se gastó en anuncios (cuanto más bajo, mejor). La <b>inversión</b> suma, día por día, el gasto vigente en cada fecha, y solo cuentan los días ya
         transcurridos. Una cita es del programa por el <b>anuncio</b> del que vino su chat; si el chat no vino de un
         anuncio de ningún programa, por su <b>servicio</b> (cuando ese servicio es de un solo programa).
       </p>

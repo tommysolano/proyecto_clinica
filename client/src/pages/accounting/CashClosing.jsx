@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from '../../api/axios';
+import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
@@ -20,6 +21,9 @@ const hace30Dias = () => {
 };
 
 export default function CashClosing() {
+  const { role, user } = useAuth();
+  // Marketing revisa todas las cajas sin operar ninguna: no tiene caja propia.
+  const soloLectura = role === 'marketing' && !user?.isSuperAdmin;
   const [list, setList] = useState([]);
   const [session, setSession] = useState({ open: null, live: null });
   // Filtros del historial. Admin y super admin pueden ver las cajas de todas las sucursales.
@@ -40,7 +44,7 @@ export default function CashClosing() {
     try {
       const [l, s] = await Promise.all([
         api.get('/cash-closings', { params: f }),
-        api.get('/cash-closings/current'),
+        soloLectura ? { data: null } : api.get('/cash-closings/current'),
       ]);
       setList(l.data || []);
       setSession(s.data || { open: null, live: null });
@@ -64,10 +68,11 @@ export default function CashClosing() {
     api.get('/cash-closings/branches')
       .then((r) => setBranches(r.data || { clinics: [], canSeeAll: false }))
       .catch(() => {});
+    if (soloLectura) return;
     api.get('/chart-of-accounts')
       .then((r) => setAccounts(r.data || []))
       .catch(() => {});
-  }, []);
+  }, [soloLectura]);
 
   const addMovement = async (e) => {
     e.preventDefault();
@@ -133,7 +138,9 @@ export default function CashClosing() {
           <HiOutlineCalculator className="text-emerald-600" /> Caja
           {miPunto && <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 font-mono">{serie(miPunto)}</span>}
         </h1>
-        {open ? (
+        {soloLectura ? (
+          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200">Solo lectura</span>
+        ) : open ? (
           <button onClick={() => { setCloseForm({ countedCash: expectedCash, notes: '' }); setCloseModal(true); }} className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2 border-none cursor-pointer hover:bg-rose-700"><HiOutlineLockClosed /> Cerrar caja</button>
         ) : (
           <button onClick={() => setOpenModal(true)} disabled={sinPunto} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 border-none cursor-pointer hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"><HiOutlineLockOpen /> Abrir caja</button>
@@ -229,7 +236,7 @@ export default function CashClosing() {
             )}
           </div>
         </div>
-      ) : (
+      ) : !soloLectura && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-slate-200 p-6 text-center text-slate-400 text-sm">
           No hay una caja abierta. Abre la caja para empezar a registrar ventas del turno.
         </div>

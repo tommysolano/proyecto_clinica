@@ -695,7 +695,7 @@ function AppRoutes() {
                 <Route
                   path="/cash-register"
                   element={
-                    <RoleRoute roles={['admin', 'contabilidad', 'cajero']}>
+                    <RoleRoute roles={['admin', 'contabilidad', 'cajero', 'marketing']}>
                       <CashClosing />
                     </RoleRoute>
                   }
@@ -704,7 +704,7 @@ function AppRoutes() {
                 <Route
                   path="/cash-register/:id"
                   element={
-                    <RoleRoute roles={['admin', 'contabilidad', 'cajero']}>
+                    <RoleRoute roles={['admin', 'contabilidad', 'cajero', 'marketing']}>
                       <CashClosingDetail />
                     </RoleRoute>
                   }

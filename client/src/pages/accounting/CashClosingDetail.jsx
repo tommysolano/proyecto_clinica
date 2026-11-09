@@ -63,7 +63,7 @@ const ymd = (d) => {
 };
 
 /**
- * SUMAR CAJAS (solo super administrador): elige otras cajas —de cualquier sucursal— para
+ * SUMAR CAJAS (quien ve todas las cajas): elige otras cajas —de cualquier sucursal— para
  * ver todo junto. Arranca con las del mismo día de la caja abierta.
  */
 function SumarCajas({ baseId, baseDate, selected, onApply, onClose }) {
@@ -150,7 +150,11 @@ function SumarCajas({ baseId, baseDate, selected, onApply, onClose }) {
 
 export default function CashClosingDetail() {
   const { id } = useParams();
-  const { user } = useAuth();
+  const { user, role } = useAuth();
+  // Las mismas personas a las que el servidor deja ver todas las cajas (veTodo).
+  const puedeSumar = !!user?.isSuperAdmin || ['contabilidad', 'marketing'].includes(role);
+  // Marketing no entra a Ventas: el enlace a la venta solo lo devolvería al inicio.
+  const soloLectura = role === 'marketing' && !user?.isSuperAdmin;
   const [searchParams, setSearchParams] = useSearchParams();
   const add = searchParams.get('add') || '';
   const sumadas = useMemo(() => add.split(',').filter(Boolean), [add]);
@@ -236,7 +240,7 @@ export default function CashClosingDetail() {
           )}
         </div>
         <div className="flex gap-2 print:hidden">
-          {user?.isSuperAdmin && (
+          {puedeSumar && (
             <button onClick={() => setSumarOpen((v) => !v)} className="px-4 py-2 bg-emerald-600 text-white rounded-xl flex items-center gap-2 border-none cursor-pointer hover:bg-emerald-700">
               <HiOutlinePlus /> Sumar cajas
             </button>
@@ -551,8 +555,10 @@ export default function CashClosingDetail() {
                         <td className="px-2 py-1.5 text-right font-mono">{money(s.tax)}</td>
                         <td className="px-2 py-1.5 text-right font-mono font-semibold">{money(s.total)}</td>
                         <td className="px-2 py-1.5 text-right print:hidden">
-                          <button onClick={(e) => { e.stopPropagation(); window.open(`/sales?doc=${s._id}`, '_blank'); }} title="Abrir venta"
-                            className="text-slate-400 hover:text-emerald-700 bg-transparent border-none cursor-pointer"><HiOutlineArrowTopRightOnSquare className="w-4 h-4" /></button>
+                          {!soloLectura && (
+                            <button onClick={(e) => { e.stopPropagation(); window.open(`/sales?doc=${s._id}`, '_blank'); }} title="Abrir venta"
+                              className="text-slate-400 hover:text-emerald-700 bg-transparent border-none cursor-pointer"><HiOutlineArrowTopRightOnSquare className="w-4 h-4" /></button>
+                          )}
                         </td>
                       </tr>
                       {open && (

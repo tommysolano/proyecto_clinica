@@ -2,16 +2,17 @@ const mongoose = require('mongoose');
 const AdProgram = require('../models/AdProgram');
 const Workflow = require('../models/Workflow');
 const Appointment = require('../models/Appointment');
-const { anotarFacturado, valorDeCita } = require('../utils/valorFacturado');
+const { anotarFacturado, totalFacturadoDeCita } = require('../utils/valorFacturado');
 const Conversation = require('../models/Conversation');
 
 /**
  * ANALÍTICAS DEL CRM POR PROGRAMA DE PUBLICIDAD (oct-2026).
  *
  * Dos partes, como las dos pestañas de la página:
- *   1. CONFIGURAR: los programas (nombre escrito por el usuario), su gasto por
- *      mes, sus anuncios (los ids del disparador «Anuncio» de las
- *      automatizaciones) y sus servicios del inventario.
+ *   1. CONFIGURAR: los programas (nombre escrito por el usuario), su gasto
+ *      diario con la fecha desde la que rige, sus anuncios (los ids del
+ *      disparador «Anuncio» de las automatizaciones) y sus servicios del
+ *      inventario.
  *   2. VER: las citas creadas desde el chat que salieron de cada programa, cómo
  *      terminaron y cuánto dejaron.
  *
@@ -25,7 +26,38 @@ const Conversation = require('../models/Conversation');
  */
 
 const MES = /^\d{4}-\d{2}$/;
+const FECHA = /^(\d{4})-(\d{2})-(\d{2})$/;
 const limpiarId = (v) => String(v || '').trim();
+
+/** 'YYYY-MM-DD' → número de día absoluto, o null si no es una fecha real (31 de febrero…). */
+function numeroDeFecha(ymd) {
+  const m = String(ymd || '').match(FECHA);
+  if (!m) return null;
+  const [y, mes, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const f = new Date(Date.UTC(y, mes - 1, d));
+  if (f.getUTCFullYear() !== y || f.getUTCMonth() !== mes - 1 || f.getUTCDate() !== d) return null;
+  return f.getTime() / 86400000;
+}
+
+/**
+ * LAS TARIFAS DIARIAS DEL PROGRAMA, de la más antigua a la más reciente (nov-2026).
+ *
+ * Los programas guardados antes tienen el gasto por mes: cada mes se lee como una tarifa
+ * diaria desde el día 1 (monto ÷ días del mes). Así se aprovecha lo que ya escribió el
+ * usuario sin migrar la base, y su último valor sigue corriendo en los meses siguientes.
+ */
+function tarifasDelPrograma(programa) {
+  const propias = programa?.tarifas || [];
+  const tarifas = propias.length
+    ? propias.map((t) => ({ desde: t.desde, montoDiario: Number(t.montoDiario) || 0, nota: t.nota || '' }))
+    : (programa?.gastos || [])
+      .filter((g) => MES.test(String(g.mes || '')))
+      .map((g) => {
+        const [y, m] = g.mes.split('-').map(Number);
+        return { desde: `${g.mes}-01`, montoDiario: (Number(g.monto) || 0) / new Date(y, m, 0).getDate(), nota: g.nota || '' };
+      });
+  return tarifas.sort((a, b) => a.desde.localeCompare(b.desde));
+}
 
 /** El cuerpo de la pantalla → campos del programa, saneados. */
 function sanear(body = {}) {
@@ -63,13 +95,28 @@ function sanear(body = {}) {
     });
   }
 
-  return {
+  const datos = {
     name: String(body.name || '').trim(),
     color: String(body.color || '').trim(),
     gastos,
     anuncios,
     servicios,
   };
+
+  // Con tarifas, el gasto por mes queda reemplazado. Una pestaña con la versión anterior
+  // de la página no las manda: entonces no se tocan las que ya hubiera.
+  if (Array.isArray(body.tarifas)) {
+    const porFecha = new Map();
+    for (const t of body.tarifas) {
+      const desde = String(t?.desde || '').trim();
+      const montoDiario = Number(t?.montoDiario);
+      if (numeroDeFecha(desde) === null || !Number.isFinite(montoDiario) || montoDiario < 0) continue;
+      porFecha.set(desde, { desde, montoDiario, nota: String(t?.nota || '').trim() });
+    }
+    datos.tarifas = [...porFecha.values()].sort((a, b) => a.desde.localeCompare(b.desde));
+    datos.gastos = [];
+  }
+  return datos;
 }
 
 /**
@@ -104,7 +151,7 @@ const TODOS_LOS_PROGRAMAS = {};
 exports.list = async (req, res) => {
   try {
     const programas = await AdProgram.find(TODOS_LOS_PROGRAMAS).sort({ name: 1 }).lean();
-    res.json(programas);
+    res.json(programas.map((p) => ({ ...p, tarifas: tarifasDelPrograma(p) })));
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener los programas', error: error.message });
   }
@@ -234,34 +281,33 @@ function diaLocal(value, fin = false) {
 const numeroDeDia = (d) => Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
 
 /**
- * EL GASTO DEL RANGO, PROPORCIONAL POR DÍA (oct-2026).
+ * EL GASTO DEL RANGO, DÍA POR DÍA (nov-2026).
  *
- * El gasto se registra por mes, pero se reparte a partes iguales entre los días
- * del mes y solo cuentan los días YA TRANSCURRIDOS: al 9 de octubre, un gasto
- * de $775 en octubre pesa 775 ÷ 31 × 9. Antes se sumaba el mes entero en cuanto
- * el rango lo tocaba, y el costo por cita de un mes a medias salía inflado.
+ * Cada día pesa la tarifa vigente ese día, y cada tarifa corre hasta la
+ * siguiente: no hace falta cargar nada al empezar un mes, y registrar «$35 desde
+ * el 02/11» no altera lo que ya se gastó a $30. Solo cuentan los días YA
+ * TRANSCURRIDOS, para no inflar el costo por cita de un mes a medias.
  *
- * @returns {{ gasto: number, dias: number }} el gasto y los días que se contaron
+ * @returns {{ gasto: number, dias: number }} el gasto y los días con gasto contados
  */
-function gastoDelRango(gastos, desde, hasta, hoy = new Date()) {
+function gastoDelRango(programa, desde, hasta, hoy = new Date()) {
   const finHoy = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate(), 23, 59, 59, 999);
   const fin = hasta < finHoy ? hasta : finHoy;
   if (fin < desde) return { gasto: 0, dias: 0 };
+  const primero = numeroDeDia(desde);
+  const ultimo = numeroDeDia(fin);
+  const tarifas = tarifasDelPrograma(programa);
   let gasto = 0;
-  const diasContados = new Set();
-  for (const g of gastos || []) {
-    const [y, m] = String(g.mes || '').split('-').map(Number);
-    if (!y || !m) continue;
-    const inicioMes = new Date(y, m - 1, 1);
-    const finMes = new Date(y, m, 0);
-    const diasDelMes = finMes.getDate();
-    const a = Math.max(numeroDeDia(inicioMes), numeroDeDia(desde));
-    const b = Math.min(numeroDeDia(finMes), numeroDeDia(fin));
-    if (b < a) continue;
-    gasto += ((Number(g.monto) || 0) / diasDelMes) * (b - a + 1);
-    for (let d = a; d <= b; d += 1) diasContados.add(d);
-  }
-  return { gasto: Math.round(gasto * 100) / 100, dias: diasContados.size };
+  let dias = 0;
+  tarifas.forEach((t, i) => {
+    const siguiente = tarifas[i + 1];
+    const a = Math.max(numeroDeFecha(t.desde), primero);
+    const b = Math.min(siguiente ? numeroDeFecha(siguiente.desde) - 1 : Infinity, ultimo);
+    if (b < a) return;
+    gasto += t.montoDiario * (b - a + 1);
+    if (t.montoDiario > 0) dias += b - a + 1;
+  });
+  return { gasto: Math.round(gasto * 100) / 100, dias };
 }
 
 /** El anuncio del que salió la cita: el de la oportunidad que la agendó, o el del chat. */
@@ -390,7 +436,7 @@ exports.analytics = async (req, res) => {
       conversation: { $ne: null },
       [por === 'cita' ? 'date' : 'createdAt']: { $gte: desde, $lte: hasta },
     })
-      .select('patient conversation date startTime createdAt status serviceItem serviceName additionalServices agreedValue isCanje isCortesia clinic')
+      .select('patient conversation date startTime createdAt status serviceItem serviceName additionalServices agreedValue advancePayment advanceAmount isCanje isCortesia clinic')
       .populate('patient', 'firstName lastName')
       .populate('clinic', 'name nombreComercial')
       .lean();
@@ -493,7 +539,7 @@ exports.analytics = async (req, res) => {
     // Los anuncios que trajeron citas y no son de ningún programa, para asignarlos.
     const sueltos = new Map();
     /** Suma una cita a un acumulado (resumen, anuncio o suelto). */
-    const sumar = (r, { grupo, valor, isCanje, isCortesia, generaIngresos, sinValor }) => {
+    const sumar = (r, { grupo, valor, isCanje, isCortesia, generaIngresos, sinValor, facturada }) => {
       r.citas += 1;
       r[grupo] += 1;
       if (isCanje) r.canjes += 1;
@@ -501,7 +547,8 @@ exports.analytics = async (req, res) => {
       else if (!generaIngresos) r.sinIngreso += 1;
       else if (sinValor) r.sinValor += 1;
       // Lo que se espera cobrar de lo que sigue en pie; ingreso = solo lo atendido.
-      const cuenta = !isCanje && !isCortesia && generaIngresos;
+      // Lo facturado en una visita de canje o cortesía (un producto aparte) sí entró.
+      const cuenta = generaIngresos && (facturada || (!isCanje && !isCortesia));
       if (cuenta && grupo !== 'canceladas' && grupo !== 'noAsistio') r.valorAgendado += valor;
       if (cuenta && grupo === 'efectivas') r.ingresos += valor;
     };
@@ -522,7 +569,7 @@ exports.analytics = async (req, res) => {
       }
 
       const grupo = ESTADO_GRUPO[c.status] || 'pendientes';
-      const valorCita = valorDeCita(c);
+      const valorCita = totalFacturadoDeCita(c);
       const valor = Number(valorCita) || 0;
       const servicioProg = programaId
         ? clavesDeLaCita(c).map((k) => servicioDelPrograma.get(`${programaId}|${k}`)).find(Boolean)
@@ -536,6 +583,7 @@ exports.analytics = async (req, res) => {
         isCortesia: !!c.isCortesia,
         generaIngresos,
         sinValor: valorCita === null,
+        facturada: c._facturado?.ventas > 0,
       };
       sumar(programaId ? resumen.get(programaId) : sinPrograma, datosCita);
       if (!programaId) {
@@ -588,7 +636,7 @@ exports.analytics = async (req, res) => {
     const filas = programas.map((p) => {
       const pid = String(p._id);
       const r = resumen.get(pid);
-      const { gasto, dias } = gastoDelRango(p.gastos, desde, hasta);
+      const { gasto, dias } = gastoDelRango(p, desde, hasta);
       diasDelGasto = Math.max(diasDelGasto, dias);
 
       // Una fila por anuncio del programa —también los que no trajeron nada,

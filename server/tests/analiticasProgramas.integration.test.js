@@ -128,7 +128,7 @@ test('citas por programa: estados, ingresos, canjes y servicios sin ingreso', as
 });
 
 test('el gasto del mes se reparte por día y solo cuentan los días ya transcurridos', () => {
-  const g = [{ mes: '2026-10', monto: 775 }];
+  const g = { gastos: [{ mes: '2026-10', monto: 775 }] };
   const hoy = new Date(2026, 9, 9, 15, 0);
   // Del 1 al 9 de octubre: 775 / 31 * 9 = 225.
   assert.deepEqual(ctrl._gastoDelRango(g, new Date(2026, 9, 1), new Date(2026, 9, 31, 23, 59), hoy), { gasto: 225, dias: 9 });
@@ -136,6 +136,74 @@ test('el gasto del mes se reparte por día y solo cuentan los días ya transcurr
   assert.equal(ctrl._gastoDelRango(g, new Date(2026, 9, 1), new Date(2026, 11, 31), hoy).gasto, 225);
   // Mes completo ya pasado: entero.
   assert.equal(ctrl._gastoDelRango(g, new Date(2026, 9, 1), new Date(2026, 9, 31, 23, 59), new Date(2026, 10, 5)).gasto, 775);
+});
+
+test('el gasto mensual antiguo sigue corriendo en los meses siguientes sin cargarlo otra vez', () => {
+  const p = { gastos: [{ mes: '2026-10', monto: 775 }] };
+  // Noviembre no tiene registro: siguen los $25 al día de octubre.
+  const r = ctrl._gastoDelRango(p, new Date(2026, 10, 1), new Date(2026, 10, 30, 23, 59), new Date(2026, 11, 5));
+  assert.deepEqual(r, { gasto: 750, dias: 30 });
+});
+
+test('un cambio de tarifa rige desde su fecha y no altera los días anteriores', () => {
+  const p = { tarifas: [{ desde: '2026-11-02', montoDiario: 35 }, { desde: '2026-10-01', montoDiario: 30 }] };
+  const hoy = new Date(2026, 11, 20);
+  // 1/11 a $30 + 2 al 30/11 (29 días) a $35.
+  assert.deepEqual(ctrl._gastoDelRango(p, new Date(2026, 10, 1), new Date(2026, 10, 30, 23, 59), hoy), { gasto: 1045, dias: 30 });
+  // Octubre entero sigue a $30.
+  assert.equal(ctrl._gastoDelRango(p, new Date(2026, 9, 1), new Date(2026, 9, 31, 23, 59), hoy).gasto, 930);
+  // Antes de la primera tarifa no hay gasto.
+  assert.deepEqual(ctrl._gastoDelRango(p, new Date(2026, 8, 1), new Date(2026, 8, 30, 23, 59), hoy), { gasto: 0, dias: 0 });
+  // Una tarifa de $0 pausa el gasto.
+  const pausado = { tarifas: [...p.tarifas, { desde: '2026-11-10', montoDiario: 0 }] };
+  assert.deepEqual(ctrl._gastoDelRango(pausado, new Date(2026, 10, 9), new Date(2026, 10, 12, 23, 59), hoy), { gasto: 35, dias: 1 });
+});
+
+test('guardar tarifas: una por fecha, descarta fechas imposibles y reemplaza el gasto por mes', async () => {
+  const { clinicId, userId } = await seed();
+  const prog = ok(await H.runController(ctrl.create, pedir(clinicId, userId, { name: 'Detox', gastos: [{ mes: '2026-10', monto: 775 }] })));
+  // Sin guardar todavía, el programa ya se lista con su tarifa derivada del mes.
+  const [antes] = ok(await H.runController(ctrl.list, pedir(clinicId, userId)));
+  assert.deepEqual(antes.tarifas.map((t) => [t.desde, t.montoDiario]), [['2026-10-01', 25]]);
+
+  ok(await H.runController(ctrl.update, pedir(clinicId, userId, {
+    name: 'Detox',
+    tarifas: [
+      { desde: '2026-11-02', montoDiario: 30 },
+      { desde: '2026-11-02', montoDiario: 35 },
+      { desde: '2026-02-31', montoDiario: 99 },
+    ],
+  }, { params: { id: String(prog._id) } })));
+  const [despues] = ok(await H.runController(ctrl.list, pedir(clinicId, userId)));
+  assert.deepEqual(despues.tarifas.map((t) => [t.desde, t.montoDiario]), [['2026-11-02', 35]]);
+  assert.equal(despues.gastos.length, 0);
+});
+
+test('los ingresos son lo facturado en la cita: servicios y productos, también en un canje', async () => {
+  const { clinicId, userId, detox, patient } = await seed();
+  const Sale = require('../models/Sale');
+  const prog = ok(await H.runController(ctrl.create, pedir(clinicId, userId, { name: 'Detox', anuncios: [{ adId: 'AD1' }] })));
+  const c = await chat(clinicId, patient, 'AD1');
+  const venta = (appointment, total, status = 'completada') => Sale.collection.insertOne({
+    clinic: clinicId, appointment, status, total,
+    items: [{ category: 'servicio', lineTotal: total - 10 }, { category: 'producto', lineTotal: 10 }],
+  });
+  // Facturada por encima del valor escrito: manda la factura, con el producto incluido.
+  const facturada = await cita(clinicId, patient, c, detox, { status: 'asistida', agreedValue: 20 });
+  await venta(facturada._id, 150);
+  // La venta anulada no cuenta: queda el valor escrito.
+  const anulada = await cita(clinicId, patient, c, detox, { status: 'asistida', agreedValue: 40 });
+  await venta(anulada._id, 500, 'anulada');
+  // Visita de canje con un producto facturado aparte.
+  const canje = await cita(clinicId, patient, c, detox, { status: 'asistida', isCanje: true });
+  await venta(canje._id, 30);
+  // Sin factura ni valor acordado: cuenta el abono.
+  await cita(clinicId, patient, c, detox, { status: 'asistida', advancePayment: 'abono', advanceAmount: 15 });
+
+  const r = ok(await H.runController(ctrl.analytics, pedir(clinicId, userId, {}, { query: { from: hoy(), to: hoy() } })));
+  const p = r.programas.find((x) => String(x._id) === String(prog._id));
+  assert.equal(p.ingresos, 150 + 40 + 30 + 15);
+  assert.equal(p.canjes, 1);
 });
 
 test('los anuncios que traen citas y no son de ningún programa se listan para asignarlos', async () => {

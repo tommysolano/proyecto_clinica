@@ -90,10 +90,19 @@ function valorDeCita(appt) {
   return null;
 }
 
+/**
+ * TODO LO FACTURADO EN LA CITA, servicios y productos (para analíticas de ingresos, donde
+ * no hay que separar lo que se vendió aparte). Sin ventas, el valor escrito de siempre.
+ */
+function totalFacturadoDeCita(appt) {
+  if (appt?._facturado && appt._facturado.ventas > 0) return appt._facturado.total;
+  return valorDeCita(appt);
+}
+
 /** Valor de PRODUCTOS de la cita: lo facturado aparte del servicio o, si no hay ventas, `itemsValue`. */
 function valorProductosDeCita(appt) {
   if (appt?._facturado && appt._facturado.ventas > 0) return appt._facturado.productos;
   return appt?.itemsValue != null ? Number(appt.itemsValue) || 0 : null;
 }
 
-module.exports = { facturadoPorCita, anotarFacturado, valorDeCita, valorProductosDeCita };
+module.exports = { facturadoPorCita, anotarFacturado, valorDeCita, totalFacturadoDeCita, valorProductosDeCita };

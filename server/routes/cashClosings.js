@@ -2,19 +2,23 @@ const router = require('express').Router();
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const c = require('../controllers/cashClosingController');
 
-router.use(auth, requireClinic, requireRole('admin', 'contabilidad', 'cajero'));
+router.use(auth, requireClinic);
 
-router.get('/summary', c.summary);
-router.get('/current', c.current);
-router.get('/movements', c.listMovements);
-router.post('/movements', c.addMovement);
-router.post('/movements/:id/void', c.voidMovement);
-router.get('/branches', c.branches);
-router.get('/', c.list);
-router.get('/:id/detail', c.detail);
-router.post('/open', c.open);
-router.post('/:id/close', c.close);
-router.post('/', c.create);
-router.post('/:id/cancel', c.cancel);
+const operan = requireRole('admin', 'contabilidad', 'cajero');
+// Marketing revisa las cajas en SOLO LECTURA (nov-2026): el historial y su detalle, nada más.
+const consultan = requireRole('admin', 'contabilidad', 'cajero', 'marketing');
+
+router.get('/summary', operan, c.summary);
+router.get('/current', operan, c.current);
+router.get('/movements', operan, c.listMovements);
+router.post('/movements', operan, c.addMovement);
+router.post('/movements/:id/void', operan, c.voidMovement);
+router.get('/branches', consultan, c.branches);
+router.get('/', consultan, c.list);
+router.get('/:id/detail', consultan, c.detail);
+router.post('/open', operan, c.open);
+router.post('/:id/close', operan, c.close);
+router.post('/', operan, c.create);
+router.post('/:id/cancel', operan, c.cancel);
 
 module.exports = router;
