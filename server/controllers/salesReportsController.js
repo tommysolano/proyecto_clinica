@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const ExcelJS = require('exceljs');
 const Sale = require('../models/Sale');
+require('../models/Invoice');
 const ServiceCategory = require('../models/ServiceCategory');
 const SalesReportPreset = require('../models/SalesReportPreset');
 const salesReport = require('../services/salesReportService');
@@ -119,6 +120,20 @@ exports.summary = async (req, res) => {
       { $sort: { _id: 1 } },
     ]);
 
+    // Las mismas ventas que alimentan los indicadores, incluidas las anuladas.
+    const sales = await Sale.find(baseMatch)
+      .select('createdAt saleNumber clientName total status invoice')
+      .populate('invoice', 'estab ptoEmi secuencial estado')
+      .sort({ createdAt: -1, _id: -1 }).lean();
+    const documents = sales.map((s) => {
+      const invoice = s.invoice;
+      const number = invoice?.estab && invoice?.ptoEmi && invoice?.secuencial
+        ? `${invoice.estab}-${invoice.ptoEmi}-${invoice.secuencial}`
+        : (/^\d{3}-\d{3}-\d{9}$/.test(String(s.saleNumber || '')) ? s.saleNumber : '');
+      return { id: s._id, date: s.createdAt, saleNumber: s.saleNumber, invoiceNumber: number,
+        invoiceStatus: invoice?.estado || '', client: s.clientName, total: s.total, status: s.status };
+    });
+
     res.json({
       general: general || { count: 0, subtotal: 0, discount: 0, tax: 0, total: 0 },
       voided: voided || { count: 0, total: 0 },
@@ -126,6 +141,7 @@ exports.summary = async (req, res) => {
       collections,
       byService,
       timeSeries: timeSeries.map((t) => ({ date: t._id, total: t.total, count: t.count })),
+      documents,
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
@@ -45,6 +45,8 @@ export default function SalesReports() {
   const [filters, setFilters] = useState({ startDate: startOfMonth(), endDate: endOfMonth(), products: [], categories: [] });
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [visibleDocuments, setVisibleDocuments] = useState(25);
+  const requestId = useRef(0);
 
   const [showCat, setShowCat] = useState(false);
   const [catForm, setCatForm] = useState({ name: '', description: '', products: [] });
@@ -68,14 +70,18 @@ export default function SalesReports() {
   });
 
   const run = async () => {
+    const currentRequest = ++requestId.current;
     setLoading(true);
-    try { const r = await api.get('/sales-reports/summary', { params: params() }); setData(r.data); }
-    catch (e) { toast.error(e.response?.data?.message || 'Error'); }
-    finally { setLoading(false); }
+    try {
+      const r = await api.get('/sales-reports/summary', { params: params() });
+      if (currentRequest === requestId.current) { setData(r.data); setVisibleDocuments(25); }
+    } catch (e) {
+      if (currentRequest === requestId.current) toast.error(e.response?.data?.message || 'Error');
+    } finally { if (currentRequest === requestId.current) setLoading(false); }
   };
-  // Carga inicial: el resto de consultas las dispara el botón (no se re-consulta al teclear).
+  // Las categorías se aplican al instante; las fechas y productos se pueden generar manualmente.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { run(); }, []);
+  useEffect(() => { run(); }, [filters.categories]);
 
   /**
    * Excel DETALLADO: sale del mismo motor que la pantalla (`buildSalesReport`) y trae
@@ -121,6 +127,7 @@ export default function SalesReports() {
       if (editCatId) await api.put(`/sales-reports/categories/${editCatId}`, catForm);
       else await api.post('/sales-reports/categories', catForm);
       toast.success('Categoría guardada'); setShowCat(false); loadMeta();
+      if (editCatId && filters.categories.includes(editCatId)) run();
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
   };
   const delCat = async (c) => { if (!confirm(`¿Eliminar categoría "${c.name}"?`)) return; try { await api.delete(`/sales-reports/categories/${c._id}`); loadMeta(); } catch { toast.error('Error'); } };
@@ -233,6 +240,34 @@ export default function SalesReports() {
         <KPI label="Descuentos" value={`$${fmt(g.discount)}`} color="text-amber-600" />
         <KPI label="Documentos" value={data?.documentCount || 0} sub={`${g.count || 0} completados`} />
         <KPI label="Anulados" value={v.count || 0} sub={`$${fmt(v.total)}`} color="text-rose-600" />
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-x-auto">
+        <div className="p-4">
+          <h3 className="text-sm font-semibold text-slate-700">Facturas y ventas del período</h3>
+          <p className="text-xs text-slate-500 mt-1">Importes completos de las ventas que contienen los servicios seleccionados. La fecha corresponde a la venta.</p>
+        </div>
+        <table className="tbl">
+          <thead className="bg-emerald-50 text-xs uppercase"><tr>
+            <th className="px-3 py-2 text-left">Fecha de venta</th><th className="px-3 py-2 text-left">Factura</th>
+            <th className="px-3 py-2 text-left">Venta</th><th className="px-3 py-2 text-left">Cliente</th>
+            <th className="px-3 py-2 text-left">Estado</th><th className="px-3 py-2 text-right">Total venta</th>
+          </tr></thead>
+          <tbody>
+            {(data?.documents || []).slice(0, visibleDocuments).map((doc) => (
+              <tr key={doc.id} className="border-t">
+                <td className="px-3 py-2 whitespace-nowrap">{new Date(doc.date).toLocaleDateString('es-EC', { timeZone: 'America/Guayaquil' })}</td>
+                <td className="px-3 py-2 font-mono text-xs">{doc.invoiceNumber || 'Sin factura vinculada'}</td>
+                <td className="px-3 py-2 text-xs">{doc.saleNumber || '—'}</td>
+                <td className="px-3 py-2">{doc.client || '—'}</td>
+                <td className="px-3 py-2 text-xs">{doc.status === 'anulada' ? 'Venta anulada' : 'Completada'}{doc.invoiceStatus ? ` · SRI: ${doc.invoiceStatus}` : ''}</td>
+                <td className="px-3 py-2 text-right font-mono">${fmt(doc.total)}</td>
+              </tr>
+            ))}
+            {!loading && !(data?.documents || []).length && <tr><td colSpan={6} className="px-3 py-8 text-center text-slate-400">Sin ventas en el período</td></tr>}
+          </tbody>
+        </table>
+        {(data?.documents || []).length > visibleDocuments && <div className="p-4"><button type="button" onClick={() => setVisibleDocuments((n) => n + 25)} className="text-sm text-emerald-700">Mostrar más ({data.documents.length - visibleDocuments} restantes)</button></div>}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
