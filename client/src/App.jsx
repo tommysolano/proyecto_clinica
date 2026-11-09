@@ -182,7 +182,7 @@ function RoleDashboard() {
    */
   const arrancaEnLaAgenda = roleSatisfies(role, ['doctor', 'enfermero']) || role === 'optica';
   if (!user?.isSuperAdmin && arrancaEnLaAgenda) return <Navigate to="/appointments" replace />;
-  if (!user?.isSuperAdmin && role === 'contabilidad') return <AccountingDashboard />;
+  if (!user?.isSuperAdmin && roleSatisfies(role, ['contabilidad'])) return <AccountingDashboard />;
   // Las especialidades usan el dashboard del doctor (WelcomeDashboard toma la
   // etiqueta del rol, así que cada una se saluda por su nombre). Sale de la lista
   // central: enumeradas a mano, 'cardiologia' se quedó fuera y caía en el
@@ -365,7 +365,7 @@ function AppRoutes() {
                 <Route
                   path="/quotations"
                   element={
-                    <RoleRoute roles={['admin', 'cajero', 'call_center', 'contabilidad', 'marketing']}>
+                    <RoleRoute roles={['admin', 'cajero', 'call_center', 'marketing']}>
                       <Quotations />
                     </RoleRoute>
                   }

@@ -24,7 +24,7 @@ const enLaEmpresa = (clinicas) => ({ $or: clinicas.flatMap((c) => User.enSucursa
 const rolEnLaEmpresa = (u, clinicas) => clinicas.map((c) => u.getRoleForClinic(c)).find((r) => ROLES_CON_PUNTO.includes(r)) || null;
 
 /** Roles que pueden tener un punto de venta (los que facturan y manejan caja). */
-const ROLES_CON_PUNTO = ['admin', 'cajero', 'contabilidad'];
+const ROLES_CON_PUNTO = ['admin', 'cajero', 'contabilidad', 'asistente_contable'];
 const USUARIO_FIELDS = 'name email';
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });

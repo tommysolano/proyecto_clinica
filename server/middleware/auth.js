@@ -55,6 +55,11 @@ const auth = async (req, res, next) => {
       req.role = user.isSuperAdmin && !role ? 'admin' : role;
     }
 
+    if (!user.isSuperAdmin && req.role === 'asistente_contable'
+      && require('./asistenteContable').restrictedAssistantApi(req.originalUrl, req.method)) {
+      return res.status(403).json({ message: 'No tienes permisos para esta acción' });
+    }
+
     next();
   } catch (error) {
     // Aquí solo llegan fallos del SERVIDOR (base de datos lenta o caída, caché de
@@ -88,9 +93,9 @@ const requireRole = (...roles) => (req, res, next) => {
   // Las especialidades ('optica', 'ginecologia', 'podologia', 'odontologia',
   // 'cosmetologia') son funcionalmente doctores: cualquier ruta que permita
   // 'doctor' también las acepta. La lista vive en constants/roles.js.
-  const expanded = roles.includes(DOCTOR_ROLE)
-    ? Array.from(new Set([...roles, ...DOCTOR_SPECIALTY_ROLES]))
-    : roles;
+  const expanded = [...roles];
+  if (roles.includes(DOCTOR_ROLE)) expanded.push(...DOCTOR_SPECIALTY_ROLES);
+  if (roles.includes('contabilidad')) expanded.push('asistente_contable');
   if (!req.role || !expanded.includes(req.role)) {
     return res.status(403).json({ message: 'No tienes permisos para esta acción' });
   }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { roleSatisfies, ROLE_LABELS } from '../utils/roles';
+import { roleSatisfies, ROLE_LABELS, isRestrictedAssistantPage } from '../utils/roles';
 import NotificationBell from './NotificationBell';
 import AccountingScopeSwitch from './AccountingScopeSwitch';
 import { companiesOf } from '../utils/companies';
@@ -104,7 +104,7 @@ const MENU_GROUPS = [
   },
   {
     key: 'comercial', label: 'Comercial', icon: HiOutlineShoppingCart, items: [
-      { path: '/quotations', label: 'Cotizaciones', roles: ['admin', 'cajero', 'call_center', 'contabilidad', 'marketing'] },
+      { path: '/quotations', label: 'Cotizaciones', roles: ['admin', 'cajero', 'call_center', 'marketing'] },
       { path: '/sales', label: 'Ventas', roles: ['admin', 'cajero', 'contabilidad'] },
       { path: '/invoices', label: 'Facturación', roles: ['admin', 'cajero', 'contabilidad'] },
       { path: '/discounts', label: 'Descuentos', roles: ['admin', 'cajero', 'contabilidad'] },
@@ -375,6 +375,7 @@ export default function Layout({ children }) {
     if (item.superOnly) return !!user?.isSuperAdmin;
     if (user?.isSuperAdmin) return true;
     if (!role) return false;
+    if (isRestrictedAssistantPage(role, item.path)) return false;
     return roleSatisfies(role, item.roles);
   };
 

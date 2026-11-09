@@ -152,7 +152,7 @@ export default function CashClosingDetail() {
   const { id } = useParams();
   const { user, role } = useAuth();
   // Las mismas personas a las que el servidor deja ver todas las cajas (veTodo).
-  const puedeSumar = !!user?.isSuperAdmin || ['contabilidad', 'marketing'].includes(role);
+  const puedeSumar = !!user?.isSuperAdmin || ['contabilidad', 'asistente_contable', 'marketing'].includes(role);
   // Marketing no entra a Ventas: el enlace a la venta solo lo devolvería al inicio.
   const soloLectura = role === 'marketing' && !user?.isSuperAdmin;
   const [searchParams, setSearchParams] = useSearchParams();

@@ -50,6 +50,7 @@ const ROLES_OPERATIVOS = [
   'cajero',
   'admin',
   'contabilidad',
+  'asistente_contable',
   'call_center',
   'marketing',
 ];

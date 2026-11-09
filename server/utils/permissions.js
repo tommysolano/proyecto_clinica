@@ -102,7 +102,8 @@ const { DOCTOR_LIKE_ROLES: DOCTOR_LIKE } = require('../constants/roles');
 /** ¿El rol tiene la capacidad? El super-admin siempre. */
 function can(role, cap, { isSuperAdmin = false } = {}) {
   if (isSuperAdmin) return true;
-  const key = DOCTOR_LIKE.includes(role) ? 'doctor' : role;
+  if (role === 'asistente_contable' && ['cashflow.view', 'cashflow.manage'].includes(cap)) return false;
+  const key = DOCTOR_LIKE.includes(role) ? 'doctor' : role === 'asistente_contable' ? 'contabilidad' : role;
   const caps = CAPS[key] || [];
   return caps.includes('*') || caps.includes(cap);
 }

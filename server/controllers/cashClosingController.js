@@ -14,7 +14,7 @@ const oid = (v) => new mongoose.Types.ObjectId(v);
  * Ven las cajas de todos y de todas las sucursales (nov-2026): el super administrador,
  * contabilidad (las audita) y marketing (solo lectura, ver routes/cashClosings).
  */
-const veTodo = (req) => !!req.user.isSuperAdmin || ['contabilidad', 'marketing'].includes(req.role);
+const veTodo = (req) => !!req.user.isSuperAdmin || ['contabilidad', 'asistente_contable', 'marketing'].includes(req.role);
 
 /**
  * Cajero y ADMIN ven solo SUS cajas (las que abrieron o cerraron), igual que cualquiera que

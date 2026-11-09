@@ -11,7 +11,7 @@
 const mongoose = require('mongoose');
 const CashClosing = require('../models/CashClosing');
 
-const puedeElegirCaja = (req) => !!req.user?.isSuperAdmin || req.role === 'contabilidad';
+const puedeElegirCaja = (req) => !!req.user?.isSuperAdmin || ['contabilidad', 'asistente_contable'].includes(req.role);
 
 module.exports = async function cajaSeleccionada(req, res, next) {
   try {

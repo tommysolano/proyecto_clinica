@@ -10,9 +10,22 @@
 // cambiaría lo que ve hoy.
 export const DOCTOR_SPECIALTY_ROLES = ['ginecologia', 'podologia', 'odontologia', 'odontologia_neurofocal', 'cosmetologia', 'cardiologia', 'terapeuta'];
 
+const ASSISTANT_RESTRICTED_PAGES = new Set([
+  'financial-reports', 'management-reports', 'audit-logs', 'account-mapping', 'retention-rules',
+  'periods', 'ledger', 'trial-balance', 'period-balances', 'deferred-income', 'retention-vouchers',
+  'budgets', 'cash-flow', 'accounting-health',
+].map((page) => `/accounting/${page}`));
+
+export function isRestrictedAssistantPage(role, path) {
+  let normalized = String(path || '');
+  try { normalized = decodeURIComponent(normalized); } catch { return role === 'asistente_contable'; }
+  return role === 'asistente_contable' && ASSISTANT_RESTRICTED_PAGES.has(normalized.toLowerCase().replace(/\/+$/, ''));
+}
+
 export function roleSatisfies(userRole, allowedRoles) {
   if (!userRole || !Array.isArray(allowedRoles)) return false;
   if (allowedRoles.includes(userRole)) return true;
+  if (userRole === 'asistente_contable' && allowedRoles.includes('contabilidad')) return true;
   if (DOCTOR_SPECIALTY_ROLES.includes(userRole) && allowedRoles.includes('doctor')) return true;
   return false;
 }
@@ -23,6 +36,7 @@ export const ROLE_LABELS = {
   admin: 'Administrador',
   cajero: 'Cajero',
   contabilidad: 'Contabilidad',
+  asistente_contable: 'Asistente contable',
   doctor: 'Doctor',
   optica: 'Óptica',
   ginecologia: 'Ginecología',

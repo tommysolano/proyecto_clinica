@@ -26,7 +26,7 @@ const { getAccount } = require('../utils/accountMap');
 const { DOCTOR_SPECIALTY_ROLES, DOCTOR_LIKE_ROLES, NURSE_ROLE } = require('../constants/roles');
 const ExcelJS = require('exceljs');
 
-const ROLE_LABELS = { admin: 'Administrador', doctor: 'Médico', optica: 'Óptica', ginecologia: 'Ginecología', podologia: 'Podología', odontologia: 'Odontología', odontologia_neurofocal: 'Odontología Neurofocal', cosmetologia: 'Cosmetología', cardiologia: 'Cardiología', terapeuta: 'Terapeuta', nurse: 'Enfermero/a', enfermero: 'Enfermero/a', call_center: 'Call center', marketing: 'Marketing', contabilidad: 'Contabilidad' };
+const ROLE_LABELS = { admin: 'Administrador', doctor: 'Médico', optica: 'Óptica', ginecologia: 'Ginecología', podologia: 'Podología', odontologia: 'Odontología', odontologia_neurofocal: 'Odontología Neurofocal', cosmetologia: 'Cosmetología', cardiologia: 'Cardiología', terapeuta: 'Terapeuta', nurse: 'Enfermero/a', enfermero: 'Enfermero/a', call_center: 'Call center', marketing: 'Marketing', contabilidad: 'Contabilidad', asistente_contable: 'Asistente contable' };
 
 // Especialidades que heredan una regla escrita para el rol 'doctor' (ver matchTarget).
 //

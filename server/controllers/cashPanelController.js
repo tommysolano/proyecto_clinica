@@ -21,7 +21,7 @@ const {
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const fallo = (res, e, def = 'Error en caja') => res.status(e.status || 500).json({ message: e.message || def, code: e.code });
-const puedeAnularDepositos = (req) => !!req.user?.isSuperAdmin || ['admin', 'contabilidad'].includes(req.role);
+const puedeAnularDepositos = (req) => !!req.user?.isSuperAdmin || ['admin', 'contabilidad', 'asistente_contable'].includes(req.role);
 
 /**
  * GET /cash-panel/cajas-abiertas — super administrador y contabilidad: todas las cajas

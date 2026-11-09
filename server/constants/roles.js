@@ -60,6 +60,7 @@ const VALID_ROLES = [
   'admin',
   'cajero',
   'contabilidad',
+  'asistente_contable',
   ...DOCTOR_LIKE_ROLES,
   'call_center',
   'marketing',
