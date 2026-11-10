@@ -6,6 +6,8 @@ router.use(auth, requireClinic);
 
 router.get('/', requireRole('admin', 'contabilidad'), ctrl.getConfig);
 router.put('/', requireRole('admin', 'contabilidad'), ctrl.upsertConfig);
+router.put('/email', requireRole('admin', 'contabilidad'), ctrl.saveEmailConfig);
+router.post('/email/verify', requireRole('admin', 'contabilidad'), ctrl.verifyEmailConfig);
 router.post('/certificate', requireRole('admin', 'contabilidad'), ctrl.uploadMiddleware, ctrl.uploadCertificate);
 router.delete('/certificate', requireRole('admin', 'contabilidad'), ctrl.deleteCertificate);
 

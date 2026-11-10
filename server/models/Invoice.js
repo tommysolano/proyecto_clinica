@@ -109,6 +109,15 @@ const invoiceSchema = new mongoose.Schema(
     identificacionComprador: { type: String },
     direccionComprador: { type: String },
     emailComprador: { type: String },
+    emailDelivery: {
+      status: { type: String, enum: ['NO_CONFIGURADO', 'SIN_CORREO', 'PENDIENTE', 'ENVIANDO', 'ENVIADO', 'ERROR'], default: 'NO_CONFIGURADO' },
+      recipient: { type: String, default: '' },
+      attempts: { type: Number, default: 0 },
+      nextAttempt: { type: Date, default: null },
+      lockedUntil: { type: Date, default: null },
+      sentAt: { type: Date, default: null },
+      error: { type: String, default: '' },
+    },
     telefonoComprador: { type: String },
     // Totales
     subtotal: { type: Number, default: 0 },
@@ -145,6 +154,8 @@ const invoiceSchema = new mongoose.Schema(
 invoiceSchema.virtual('numeroFactura').get(function () {
   return `${this.estab}-${this.ptoEmi}-${this.secuencial}`;
 });
+
+invoiceSchema.index({ estado: 1, 'emailDelivery.status': 1, 'emailDelivery.nextAttempt': 1 });
 
 invoiceSchema.set('toJSON', { virtuals: true });
 invoiceSchema.set('toObject', { virtuals: true });

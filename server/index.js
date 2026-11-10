@@ -347,6 +347,9 @@ connectDB().then(() => {
     // (reenvía las EN_COLA y consulta autorización de las recibidas). Cada
     // SRI_RETRY_INTERVAL_MIN minutos (por defecto 5).
     require('./utils/invoiceRetry').startInvoiceRetryJob();
+    const processInvoiceEmails = () => require('./services/invoiceEmail').processInvoiceEmails().catch((err) => console.error('[invoiceEmail] job:', err.message));
+    setTimeout(only(processInvoiceEmails), 20000);
+    setInterval(only(processInvoiceEmails), 60000);
     // (Las sesiones QR las arranca/para el manejador de liderazgo, no aquí: deben
     //  vivir SOLO mientras este proceso sea líder para no pelearse con otro server.)
     // Job: sincronizar plantillas de WhatsApp con Meta para detectar cambios de

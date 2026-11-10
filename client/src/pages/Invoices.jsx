@@ -49,6 +49,7 @@ const ESTADO_LABEL = {
 
 // Estados no finales: la factura sigue en juego y puede reintentarse.
 const PENDING_ESTADOS = ['EN_COLA', 'RECIBIDA', 'EN_PROCESO', 'ERROR', 'DEVUELTA', 'NO_AUTORIZADO'];
+const EMAIL_ESTADOS = { NO_CONFIGURADO: 'Envío automático no configurado', SIN_CORREO: 'Sin correo del comprador', PENDIENTE: 'Pendiente de envío', ENVIANDO: 'Enviando', ENVIADO: 'Enviado', ERROR: 'Error de envío' };
 
 // ¿El SRI autorizó en un día calendario distinto al de emisión? En ese caso se
 // mantiene la fecha de emisión original y se muestra una advertencia.
@@ -187,6 +188,19 @@ export default function Invoices({ onNewSale }) {
     } finally {
       setBusyId(null);
     }
+  };
+
+  const enviarCorreo = async (inv) => {
+    const email = window.prompt('Correo al que se enviará la factura:', inv.emailDelivery?.recipient || inv.emailComprador || '');
+    if (email === null) return;
+    setBusyId(inv._id);
+    try {
+      const res = await api.post(`/invoices/${inv._id}/email`, { email });
+      setDetail((d) => ({ ...d, emailDelivery: res.data.emailDelivery }));
+      toast.success('Factura programada para envío por correo');
+      load();
+    } catch (err) { toast.error(err.response?.data?.message || 'No se pudo programar el envío'); }
+    finally { setBusyId(null); }
   };
 
   const submitAnular = async () => {
@@ -533,6 +547,7 @@ export default function Invoices({ onNewSale }) {
               <Item label="Cliente" value={detail.razonSocialComprador} />
               <Item label="Identificación" value={detail.identificacionComprador} />
               <Item label="Email" value={detail.emailComprador || '—'} />
+              <Item label="Envío por correo" value={EMAIL_ESTADOS[detail.emailDelivery?.status] || 'No programado'} />
               <Item label="Teléfono" value={detail.telefonoComprador || '—'} />
               {detail.sale?.patient && (
                 <Item
@@ -541,6 +556,11 @@ export default function Invoices({ onNewSale }) {
                 />
               )}
             </div>
+            {detail.emailDelivery?.recipient && <p className="text-xs text-slate-600">Destinatario del envío: {detail.emailDelivery.recipient}</p>}
+            {detail.emailDelivery?.error && <p className="text-xs text-amber-700">{detail.emailDelivery.error}</p>}
+            {detail.estado === 'AUTORIZADO' && canRetry && !['PENDIENTE', 'ENVIANDO'].includes(detail.emailDelivery?.status) && (
+              <button type="button" disabled={busyId === detail._id} onClick={() => enviarCorreo(detail)} className="px-3 py-2 border border-emerald-300 text-emerald-700 rounded-lg text-xs disabled:opacity-50">{detail.emailDelivery?.status === 'ENVIADO' ? 'Enviar nuevamente por correo' : 'Enviar factura por correo'}</button>
+            )}
             <div className="grid grid-cols-3 gap-3 pt-2 border-t border-slate-100">
               <Item
                 label="Subtotal sin imp."

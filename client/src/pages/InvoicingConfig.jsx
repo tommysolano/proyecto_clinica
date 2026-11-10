@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import SriStatus from '../components/SriStatus';
 import PuntosEmisionPanel from '../components/invoicing/PuntosEmisionPanel';
+import InvoiceEmailSettings from '../components/invoicing/InvoiceEmailSettings';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import {
   HiOutlineDocumentText,
@@ -299,6 +300,8 @@ export default function InvoicingConfig() {
           </div>
         )}
       </form>
+
+      <InvoiceEmailSettings config={config} onSaved={setConfig} />
 
       {/* Puntos de emisión (cajas): una serie y una numeración por usuario */}
       <PuntosEmisionPanel canEdit={canEdit} />

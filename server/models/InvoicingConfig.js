@@ -73,8 +73,10 @@ const invoicingConfigSchema = new mongoose.Schema(
     },
     // Email para envío de RIDE/XML
     emailRemitente: { type: String, trim: true },
+    smtpEnabled: { type: Boolean, default: false },
     smtpHost: { type: String, trim: true },
     smtpPort: { type: Number },
+    smtpSecure: { type: Boolean, default: false },
     smtpUser: { type: String, trim: true },
     smtpPassword: { type: String, trim: true },
     invoiceCount: { type: Number, default: 0 },

@@ -22,6 +22,22 @@ const { serieDelEmisor, reservarSecuencial, puntoDelUsuario, ambienteDelPunto, c
 const { scopedDocuments } = require('../services/scopedDocuments');
 const { invoiceListFilter } = require('../utils/invoiceListFilter');
 
+exports.queueEmail = async (req, res) => {
+  try {
+    const recipient = String(req.body?.email || '').trim();
+    if (!require('../services/invoiceEmail').validEmail(recipient)) return res.status(400).json({ message: 'Ingrese un correo válido.' });
+    const invoice = await Invoice.findOne({ _id: req.params.id, ...scopedDocuments(req) });
+    if (!invoice) return res.status(404).json({ message: 'Factura no encontrada' });
+    if (invoice.estado !== 'AUTORIZADO') return res.status(400).json({ message: 'Solo se pueden enviar facturas autorizadas.' });
+    const config = await configDeEmpresa(invoice.clinic);
+    if (!config?.smtpEnabled) return res.status(400).json({ message: 'Active y configure el correo en Configuración SRI.' });
+    const updated = await Invoice.findOneAndUpdate({ _id: invoice._id, estado: 'AUTORIZADO', 'emailDelivery.status': { $nin: ['PENDIENTE', 'ENVIANDO'] } },
+      { $set: { emailDelivery: { status: 'PENDIENTE', recipient, attempts: 0, nextAttempt: null, lockedUntil: null, sentAt: null, error: '' } } }, { new: true });
+    if (!updated) return res.status(409).json({ message: 'La factura ya está pendiente de envío.' });
+    res.json(updated);
+  } catch (error) { res.status(500).json({ message: 'No se pudo programar el envío.' }); }
+};
+
 function fmtFechaEmision(d) {
   const dt = d ? new Date(d) : new Date();
   const dd = String(dt.getDate()).padStart(2, '0');
@@ -286,6 +302,7 @@ exports.emitFromSale = async (req, res) => {
       razonSocialComprador: compradorNombre,
       direccionComprador: compradorDir,
       emailComprador: compradorEmail,
+      emailDelivery: { status: config.smtpEnabled ? (compradorEmail ? 'PENDIENTE' : 'SIN_CORREO') : 'NO_CONFIGURADO', recipient: compradorEmail },
       telefonoComprador: compradorTel,
       totalSinImpuestos,
       totalDescuento: totalDescuentoDe(sale),

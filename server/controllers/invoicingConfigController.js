@@ -38,6 +38,8 @@ function sanitizeOutput(config) {
   if (!config) return null;
   const obj = config.toObject ? config.toObject({ virtuals: true }) : { ...config };
   delete obj.certificatePassword;
+  obj.smtpPasswordConfigured = !!obj.smtpPassword;
+  delete obj.smtpPassword;
   return obj;
 }
 
@@ -67,7 +69,6 @@ exports.upsertConfig = async (req, res) => {
       'obligadoContabilidad',
       'agenteRetencion',
       'contribuyenteEspecial',
-      'smtp',
     ];
     const update = {};
     for (const k of allowed) if (req.body[k] !== undefined) update[k] = req.body[k];
@@ -88,6 +89,36 @@ exports.upsertConfig = async (req, res) => {
     res
       .status(500)
       .json({ message: 'Error al guardar configuración', error: error.message });
+  }
+};
+
+exports.saveEmailConfig = async (req, res) => {
+  try {
+    const { enabled, from, host, port, secure, user, password } = req.body || {};
+    if (typeof enabled !== 'boolean' || typeof secure !== 'boolean') return res.status(400).json({ message: 'Configuración de correo inválida' });
+    const sri = await sucursalSri(req.clinicId);
+    const existing = await InvoicingConfig.findOne({ clinic: sri });
+    const p = Number(port);
+    const fields = { smtpEnabled: enabled, emailRemitente: String(from || '').trim(), smtpHost: String(host || '').trim(),
+      smtpPort: p || undefined, smtpSecure: secure, smtpUser: String(user || '').trim() };
+    if (enabled && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(fields.emailRemitente) || !fields.smtpHost || !Number.isInteger(p) || p < 1 || p > 65535 || !fields.smtpUser || !(password || existing?.smtpPassword))) {
+      return res.status(400).json({ message: 'Complete el remitente, servidor, puerto, usuario y contraseña SMTP.' });
+    }
+    if (password) fields.smtpPassword = encrypt(password);
+    const config = await InvoicingConfig.findOneAndUpdate({ clinic: sri }, { $set: fields, $setOnInsert: { clinic: sri } }, { new: true, upsert: true, runValidators: true });
+    res.json(sanitizeOutput(config));
+  } catch (error) {
+    res.status(400).json({ message: 'No se pudo guardar la configuración de correo', error: error.message });
+  }
+};
+
+exports.verifyEmailConfig = async (req, res) => {
+  try {
+    const config = await InvoicingConfig.findOne({ clinic: await sucursalSri(req.clinicId) });
+    await require('../services/invoiceEmail').verifyTransport(config);
+    res.json({ message: 'Conexión SMTP verificada correctamente.' });
+  } catch (error) {
+    res.status(400).json({ message: 'No se pudo conectar al servidor SMTP. Revise los datos y la contraseña.' });
   }
 };
 
