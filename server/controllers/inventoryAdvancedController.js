@@ -335,6 +335,102 @@ exports.listCategories = async (req, res) => {
     .sort({ code: 1 });
   res.json(items);
 };
+
+/** Exporta los productos asignados directamente a una categoría del catálogo compartido. */
+exports.exportCategoryItems = async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: 'Categoría no válida' });
+    const category = await InventoryCategory.findOne({ _id: req.params.id, clinic: req.clinicId }).lean();
+    if (!category) return res.status(404).json({ message: 'Categoría no encontrada' });
+
+    const { ensureCompanyCache, sisterClinicsSync } = require('../utils/companies');
+    await ensureCompanyCache();
+    const clinics = sisterClinicsSync(req.userClinicId || req.clinicId, { includeInactive: true });
+    const products = await Product.find({
+      clinic: { $in: clinics.length ? clinics : [req.clinicId] },
+      inventoryCategory: category._id,
+      active: { $ne: false },
+      disabled: { $ne: true },
+    }).populate('includedComponents.categories', 'name code')
+      .populate('stockByClinic.clinic', 'name nombreComercial')
+      .sort({ name: 1, code: 1 }).lean();
+
+    const { newWorkbook, addSheet, sendWorkbook } = require('../utils/excelReport');
+    const { calculateSaleLine } = require('../utils/tax');
+    const costVisible = canReq(req, 'inventory.costs');
+    const yesNo = (v) => v ? 'Sí' : 'No';
+    const meta = [['Categoría', `${category.code} - ${category.name}`], ['Clase', category.kind], ['Ítems', products.length], ['Alcance', 'Ítems asignados directamente a esta categoría; excluye inhabilitados y eliminados']];
+    const columns = [
+      { header: 'Código', key: 'code', width: 18 },
+      { header: 'Código de barras', key: 'barcode', width: 20 },
+      { header: 'Nombre', key: 'name', width: 48 },
+      { header: 'Descripción', key: 'description', width: 45 },
+      { header: 'Tipo', key: 'type', width: 16 },
+      { header: 'Categoría', key: 'category', width: 28 },
+      { header: 'Unidad', key: 'unit', width: 15 },
+      { header: 'Precio de venta activo', key: 'price', width: 20, money: true },
+      { header: 'Precio variable', key: 'variable', width: 16 },
+      { header: 'Tarifa tributaria', key: 'taxCategory', width: 18 },
+      { header: 'IVA (%)', key: 'taxRate', width: 12, number: true },
+      { header: 'Precio incluye IVA', key: 'includesVat', width: 19 },
+      { header: 'Código IVA SRI', key: 'taxCode', width: 16 },
+      { header: 'Tipo de descuento', key: 'discountType', width: 20 },
+      { header: 'Valor de descuento', key: 'discountValue', width: 20, number: true },
+      { header: 'Stock general', key: 'stock', width: 16, number: true },
+      { header: 'Stock mínimo', key: 'minStock', width: 16, number: true },
+      { header: 'Stock ilimitado', key: 'unlimited', width: 18 },
+      { header: 'Método de costeo', key: 'costingMethod', width: 18 },
+      { header: 'Controla lote', key: 'tracksLot', width: 16 },
+      { header: 'Controla vencimiento', key: 'tracksExpiry', width: 21 },
+      { header: 'Producto compuesto', key: 'composite', width: 19 },
+      { header: 'Componentes por categoría', key: 'hasComponents', width: 25 },
+      { header: 'Máximo de componentes', key: 'maxComponents', width: 23, number: true },
+      { header: 'Categorías de componentes', key: 'componentCategories', width: 40 },
+      { header: 'Servicio de enfermería', key: 'nursingService', width: 22 },
+      { header: 'Máximo de citas por horario', key: 'maxAppointments', width: 25, number: true },
+      { header: 'Ingreso diferido', key: 'deferredIncome', width: 19 },
+      { header: 'Sesiones incluidas', key: 'sessionsIncluded', width: 19, number: true },
+    ];
+    if (costVisible) columns.push({ header: 'Costo promedio', key: 'averageCost', width: 19, money: true });
+    const rows = products.map((p) => {
+      const tax = calculateSaleLine({ product: p, quantity: 1, unitPrice: p.salePrice || 0 });
+      return {
+        code: p.code, barcode: p.barcode, name: p.name, description: p.description,
+        type: p.category, category: category.name, unit: p.unit, price: p.salePrice,
+        variable: yesNo(p.variablePrice), taxCategory: tax.taxCategory, taxRate: tax.taxRate,
+        includesVat: yesNo(p.priceIncludesVat !== false), taxCode: tax.taxCodeSri,
+        discountType: p.discountType === 'percentage' ? 'Porcentaje' : p.discountType === 'amount' ? 'Monto por unidad' : 'Sin descuento',
+        discountValue: p.discountValue || 0, stock: p.unlimited ? null : p.stock,
+        minStock: p.unlimited ? null : p.minStock, unlimited: yesNo(p.unlimited),
+        costingMethod: p.costingMethod, tracksLot: yesNo(p.tracksLot), tracksExpiry: yesNo(p.tracksExpiry),
+        composite: yesNo(p.isComposite), hasComponents: yesNo(p.includedComponents?.enabled),
+        maxComponents: p.includedComponents?.enabled ? p.includedComponents.maxQuantity : null,
+        componentCategories: (p.includedComponents?.categories || []).map((c) => c.name || c.code || '').filter(Boolean).join(', '),
+        nursingService: yesNo(p.nursingService), maxAppointments: p.maxAppointmentsPerDay || 0,
+        deferredIncome: yesNo(p.deferredIncome), sessionsIncluded: p.sessionsIncluded || 0,
+        ...(costVisible ? { averageCost: p.averageCost } : {}),
+      };
+    });
+    const priceRows = products.flatMap((p) => ((p.salePrices || []).length ? p.salePrices : [{ name: 'General', price: p.salePrice, active: true }])
+      .map((price) => ({ code: p.code, name: p.name, priceName: price.name, price: price.price, active: yesNo(price.active) })));
+    const wb = newWorkbook();
+    addSheet(wb, { title: 'Ítems', meta, columns, rows });
+    addSheet(wb, { title: 'Listas de precios', meta: [['Categoría', `${category.code} - ${category.name}`]], columns: [
+      { header: 'Código', key: 'code', width: 18 }, { header: 'Nombre', key: 'name', width: 48 },
+      { header: 'Lista de precio', key: 'priceName', width: 28 }, { header: 'Precio', key: 'price', width: 18, money: true },
+      { header: 'Precio activo', key: 'active', width: 18 },
+    ], rows: priceRows });
+    const stockRows = products.flatMap((p) => (p.stockByClinic || []).map((s) => ({
+      code: p.code, name: p.name, clinic: s.clinic?.nombreComercial || s.clinic?.name || 'Sucursal no disponible', stock: s.stock,
+    })));
+    addSheet(wb, { title: 'Stock por sucursal', meta: [['Categoría', `${category.code} - ${category.name}`]], columns: [
+      { header: 'Código', key: 'code', width: 18 }, { header: 'Nombre', key: 'name', width: 48 },
+      { header: 'Sucursal', key: 'clinic', width: 32 }, { header: 'Stock', key: 'stock', width: 16, number: true },
+    ], rows: stockRows });
+    await sendWorkbook(res, wb, 'items_categoria.xlsx');
+  } catch (e) { if (!res.headersSent) res.status(500).json({ message: 'No se pudo exportar la categoría', error: e.message }); }
+};
 // Verifica que una cuenta exista, sea de la clínica y permita movimiento.
 async function assertMovementAccount(clinicId, accountId, label) {
   if (!accountId) throw Object.assign(new Error(`Falta la ${label}`), { status: 400 });

@@ -4,16 +4,20 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineSquares2X2, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineExclamationTriangle } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineSquares2X2, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineExclamationTriangle, HiOutlineArrowDownTray } from 'react-icons/hi2';
 import NumericInput from '../../components/NumericInput';
 import SearchableSelect from '../../components/SearchableSelect';
 import AccountSelect from '../../components/AccountSelect';
+import { downloadFile } from '../../utils/download';
+import { useAuth } from '../../context/AuthContext';
 
 const EMPTY = { code: '', name: '', kind: 'INVENTARIO', parent: '', depreciationRate: 0, usefulLifeYears: 0, usefulLifeMonths: 0, residualPercent: 0, noDepreciate: false, expenseType: '', assetAccount: '', depreciationAccount: '', accumDepreciationAccount: '', impairmentAssetAccount: '', impairmentExpenseAccount: '', expenseAccount: '', incomeAccount: '' };
 // Tipo de gasto para el estado de resultados (afecta dónde se registra la depreciación).
 const EXPENSE_TYPES = ['ADMINISTRATIVO', 'VENTAS', 'COSTOS', 'OTRO'];
 
 export default function InventoryCategories() {
+  const { hasRole, user } = useAuth();
+  const [downloading, setDownloading] = useState('');
   const [list, setList] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [show, setShow] = useState(false);
@@ -48,6 +52,14 @@ export default function InventoryCategories() {
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
   };
   const remove = async (c) => { if (!confirm('¿Eliminar?')) return; try { await api.delete(`/inventory-advanced/categories/${c._id}`); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
+  const downloadItems = async (c) => {
+    setDownloading(c._id);
+    try {
+      const name = String(c.name || c.code || 'categoria').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+      await downloadFile(`/inventory-advanced/categories/${c._id}/items.xlsx`, { filename: `items_${name || 'categoria'}.xlsx` });
+    } catch (e) { toast.error(e.message || 'No se pudo descargar el Excel'); }
+    finally { setDownloading(''); }
+  };
 
   const openEdit = (c) => {
     setEditing(c);
@@ -141,6 +153,13 @@ export default function InventoryCategories() {
                 <td className="px-3 py-2 text-right">{c.depreciationRate || '—'}%</td>
                 <td className="px-3 py-2 text-right">{(c.usefulLifeMonths || (c.usefulLifeYears ? c.usefulLifeYears * 12 : 0)) || '—'} meses</td>
                 <td className="px-3 py-2 flex gap-1 justify-end">
+                  {c.kind !== 'ACTIVO_FIJO' && (user?.isSuperAdmin || hasRole('admin', 'contabilidad')) && (
+                    <button type="button" onClick={() => downloadItems(c)} disabled={!!downloading}
+                      title={`Descargar Excel de ${c.name}`} aria-label={`Descargar Excel de ${c.name}`}
+                      className="text-emerald-700 inline-flex items-center gap-1 text-xs px-2 py-1 rounded hover:bg-emerald-50 disabled:opacity-50">
+                      <HiOutlineArrowDownTray className="w-4 h-4" /> {downloading === c._id ? 'Descargando…' : 'Excel'}
+                    </button>
+                  )}
                   <button onClick={() => openEdit(c)} className="text-blue-600"><HiOutlinePencilSquare className="w-4 h-4" /></button>
                   <button onClick={() => remove(c)} className="text-rose-600"><HiOutlineTrash className="w-4 h-4" /></button>
                 </td>

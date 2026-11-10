@@ -18,6 +18,7 @@ router.delete('/warehouses/:id', requireRole('admin'), c.deleteWarehouse);
 
 // Categorías
 router.get('/categories', verInventario, c.listCategories);
+router.get('/categories/:id/items.xlsx', verInventario, requireCap('inventory.export'), c.exportCategoryItems);
 router.post('/categories', requireRole('admin', 'contabilidad'), c.createCategory);
 router.put('/categories/:id', requireRole('admin', 'contabilidad'), c.updateCategory);
 router.delete('/categories/:id', requireRole('admin'), c.deleteCategory);
