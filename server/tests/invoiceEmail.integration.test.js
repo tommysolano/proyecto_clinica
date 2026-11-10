@@ -31,6 +31,35 @@ test('configuración SMTP cifra y oculta la contraseña y permite conservarla', 
   assert.equal(read.payload.smtpPassword, undefined);
 });
 
+test('diagnóstico distingue causas SMTP y no revela el mensaje ni la respuesta original', async () => {
+  const cases = [
+    [{ code: 'EAUTH', command: 'AUTH PLAIN', responseCode: 535 }, 'SMTP_AUTH'],
+    [{ code: 'ESOCKET', cause: { code: 'ETIMEDOUT' } }, 'SMTP_TIMEOUT'],
+    [{ code: 'ENOTFOUND', command: 'DNS' }, 'SMTP_DNS'],
+    [{ code: 'ECONNREFUSED' }, 'SMTP_CONNECTION'],
+    [{ code: 'CERT_HAS_EXPIRED' }, 'SMTP_TLS'],
+    [{ code: 'SMTP_DECRYPT' }, 'SMTP_DECRYPT'],
+    [{ code: 'SMTP_ENCRYPTION_KEY' }, 'SMTP_ENCRYPTION_KEY'],
+    [{ responseCode: 421 }, 'SMTP_REJECTED'],
+    [{}, 'SMTP_UNKNOWN'],
+  ];
+  for (const [input, expected] of cases) {
+    const result = email.describeSmtpError({ ...input, message: 'contraseña-secreta', response: 'contraseña-secreta' });
+    assert.equal(result.code, expected);
+    assert.ok(!JSON.stringify(result).includes('contraseña-secreta'));
+  }
+  const { clinicId, userId } = await H.seedClinic();
+  const original = email.verifyTransport;
+  email.verifyTransport = async () => { throw Object.assign(new Error('contraseña-secreta'), { code: 'EAUTH', responseCode: 535, command: 'AUTH PLAIN' }); };
+  try {
+    const response = await H.runController(configCtrl.verifyEmailConfig, H.mockReq(clinicId, userId));
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.payload.code, 'SMTP_AUTH');
+    assert.match(response.payload.details, /535/);
+    assert.ok(!JSON.stringify(response.payload).includes('contraseña-secreta'));
+  } finally { email.verifyTransport = original; }
+});
+
 test('cola espera autorización, reclama una vez y registra éxito o error', async () => {
   const { clinicId } = await H.seedClinic();
   const ready = await makeInvoice(clinicId, { emailDelivery: { status: 'PENDIENTE', recipient: 'cliente@example.com' } });

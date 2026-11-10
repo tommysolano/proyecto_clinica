@@ -118,7 +118,7 @@ exports.verifyEmailConfig = async (req, res) => {
     await require('../services/invoiceEmail').verifyTransport(config);
     res.json({ message: 'Conexión SMTP verificada correctamente.' });
   } catch (error) {
-    res.status(400).json({ message: 'No se pudo conectar al servidor SMTP. Revise los datos y la contraseña.' });
+    res.status(400).json(require('../services/invoiceEmail').describeSmtpError(error));
   }
 };
 

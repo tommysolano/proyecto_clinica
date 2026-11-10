@@ -7,21 +7,22 @@ const empty = { enabled: false, from: '', host: '', port: 587, secure: false, us
 export default function InvoiceEmailSettings({ config, onSaved }) {
   const [form, setForm] = useState(empty);
   const [busy, setBusy] = useState(false);
+  const [verification, setVerification] = useState(null);
   useEffect(() => {
     setForm({ enabled: !!config?.smtpEnabled, from: config?.emailRemitente || '', host: config?.smtpHost || '',
       port: config?.smtpPort || 587, secure: !!config?.smtpSecure, user: config?.smtpUser || '', password: '' });
   }, [config]);
-  const set = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+  const set = (key, value) => { setVerification(null); setForm((f) => ({ ...f, [key]: value })); };
   const save = async (e) => {
-    e.preventDefault(); setBusy(true);
+    e.preventDefault(); setBusy(true); setVerification(null);
     try { const res = await api.put('/invoicing-config/email', form); onSaved(res.data); toast.success('Correo de facturación guardado'); }
     catch (err) { toast.error(err.response?.data?.error || err.response?.data?.message || 'No se pudo guardar'); }
     finally { setBusy(false); }
   };
   const verify = async () => {
-    setBusy(true);
-    try { const res = await api.post('/invoicing-config/email/verify'); toast.success(res.data.message); }
-    catch (err) { toast.error(err.response?.data?.message || 'No se pudo verificar la conexión'); }
+    setBusy(true); setVerification(null);
+    try { const res = await api.post('/invoicing-config/email/verify'); setVerification({ ok: true, message: res.data.message }); }
+    catch (err) { setVerification({ ok: false, message: err.response?.data?.message || 'No se pudo verificar la conexión con el sistema.', details: err.response?.data?.details }); }
     finally { setBusy(false); }
   };
   return (
@@ -38,6 +39,11 @@ export default function InvoiceEmailSettings({ config, onSaved }) {
         <label className="flex items-center gap-2 text-sm text-slate-700 self-end pb-3"><input type="checkbox" checked={form.secure} onChange={(e) => set('secure', e.target.checked)} /> SSL/TLS directo (normalmente puerto 465)</label>
       </div>
       <p className="text-xs text-slate-500">Sin SSL directo se exige STARTTLS (normalmente puerto 587). Algunos proveedores requieren una contraseña de aplicación. Las facturas anteriores se pueden enviar desde su detalle.</p>
+      {verification && <div role="status" className={`rounded-xl border p-3 text-sm ${verification.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-800'}`}>
+        <p className="font-semibold">{verification.ok ? 'Conexión verificada' : 'No se pudo verificar la conexión'}</p>
+        <p className="mt-1">{verification.message}</p>
+        {verification.details && <p className="mt-1 text-xs">{verification.details}</p>}
+      </div>}
       <div className="flex flex-wrap justify-end gap-2">
         <button type="button" disabled={busy || !config?.smtpEnabled} onClick={verify} className="px-4 py-2 border border-slate-300 rounded-lg text-sm disabled:opacity-50">Probar conexión guardada</button>
         <button disabled={busy} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm disabled:opacity-50">{busy ? 'Procesando...' : 'Guardar correo'}</button>

@@ -9,14 +9,46 @@ const validEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || 
 
 function transportFor(config) {
   if (!config?.smtpEnabled || !config.smtpHost || !config.smtpPort || !config.smtpUser || !config.smtpPassword || !validEmail(config.emailRemitente)) {
-    throw new Error('El correo de facturación no está configurado o está desactivado.');
+    throw Object.assign(new Error('El correo de facturación no está configurado o está desactivado.'), { code: 'SMTP_CONFIG' });
+  }
+  let password;
+  try { password = decrypt(config.smtpPassword); }
+  catch (error) {
+    const code = !process.env.INVOICE_ENCRYPTION_KEY || process.env.INVOICE_ENCRYPTION_KEY.length < 16 ? 'SMTP_ENCRYPTION_KEY' : 'SMTP_DECRYPT';
+    throw Object.assign(new Error('No se pudo recuperar la contraseña SMTP guardada.'), { code, cause: error });
   }
   return nodemailer.createTransport({
     host: config.smtpHost, port: config.smtpPort, secure: !!config.smtpSecure,
     requireTLS: !config.smtpSecure,
-    auth: { user: config.smtpUser, pass: decrypt(config.smtpPassword) },
+    auth: { user: config.smtpUser, pass: password },
     connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 60000,
   });
+}
+
+// No devolver mensajes crudos: pueden contener datos del servidor o credenciales.
+function describeSmtpError(error = {}) {
+  const code = String(error.code || '').toUpperCase();
+  const causeCode = String(error.cause?.code || error.errno || '').toUpperCase();
+  const command = String(error.command || '').toUpperCase();
+  const responseCode = Number(error.responseCode);
+  let kind = 'SMTP_UNKNOWN';
+  let message = 'No se pudo verificar la conexión SMTP. El servidor no proporcionó un diagnóstico identificable.';
+  if (code === 'SMTP_CONFIG') { kind = code; message = 'La configuración SMTP está incompleta o el envío automático está desactivado.'; }
+  else if (code === 'SMTP_ENCRYPTION_KEY') { kind = code; message = 'El servidor no tiene configurada correctamente la clave de cifrado de facturación. El administrador debe revisar INVOICE_ENCRYPTION_KEY.'; }
+  else if (code === 'SMTP_DECRYPT') { kind = code; message = 'El servidor no pudo descifrar la contraseña SMTP guardada. Revise que la clave de cifrado sea la misma con la que se guardó.'; }
+  else if (code === 'EAUTH' || command.startsWith('AUTH')) { kind = 'SMTP_AUTH'; message = 'El servidor SMTP rechazó la autenticación. Compruebe las credenciales y si el proveedor permite acceso SMTP a la cuenta.'; }
+  else if (['ENOTFOUND', 'EAI_AGAIN'].includes(code) || ['ENOTFOUND', 'EAI_AGAIN'].includes(causeCode) || command === 'DNS') { kind = 'SMTP_DNS'; message = 'No se pudo resolver el nombre del servidor SMTP desde el servidor de la clínica. Revise el nombre y la conexión DNS.'; }
+  else if (['ETIMEDOUT', 'ESOCKETTIMEDOUT'].includes(code) || ['ETIMEDOUT', 'ESOCKETTIMEDOUT'].includes(causeCode) || /TIMEOUT/i.test(String(error.message || ''))) { kind = 'SMTP_TIMEOUT'; message = 'La conexión SMTP agotó el tiempo de espera. Revise el puerto y la salida de red del servidor de la clínica.'; }
+  else if (/CERT|TLS|SSL/.test(`${code} ${causeCode}`) || /wrong version number|certificate|ssl routines/i.test(String(error.message || '')) || command === 'STARTTLS') { kind = 'SMTP_TLS'; message = 'Falló la negociación segura TLS o la validación del certificado. Revise el puerto y la opción SSL/TLS directo.'; }
+  else if (['ECONNREFUSED', 'ECONNRESET', 'ENETUNREACH', 'EHOSTUNREACH', 'ECONNECTION', 'ESOCKET'].includes(code) || ['ECONNREFUSED', 'ECONNRESET', 'ENETUNREACH', 'EHOSTUNREACH'].includes(causeCode)) { kind = 'SMTP_CONNECTION'; message = 'No se pudo establecer o mantener la conexión SMTP desde el servidor de la clínica. Revise el puerto y la red.'; }
+  else if (Number.isInteger(responseCode) && responseCode >= 400 && responseCode <= 599) { kind = 'SMTP_REJECTED'; message = 'El servidor SMTP rechazó la conexión o la prueba. Consulte el código de respuesta con el proveedor.'; }
+  const details = [];
+  const safeCodes = new Set(['SMTP_CONFIG', 'SMTP_ENCRYPTION_KEY', 'SMTP_DECRYPT', 'EAUTH', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'ECONNREFUSED', 'ECONNRESET', 'ENETUNREACH', 'EHOSTUNREACH', 'ECONNECTION', 'ESOCKET', 'ETLS', 'EPROTOCOL', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_SSL_WRONG_VERSION_NUMBER']);
+  if (safeCodes.has(code)) details.push(`Código: ${code}`);
+  if (safeCodes.has(causeCode) && causeCode !== code) details.push(`Causa: ${causeCode}`);
+  if (Number.isInteger(responseCode) && responseCode >= 400 && responseCode <= 599) details.push(`Respuesta SMTP: ${responseCode}`);
+  if (['CONN', 'DNS', 'EHLO', 'HELO', 'STARTTLS', 'AUTH', 'AUTH LOGIN', 'AUTH PLAIN'].includes(command)) details.push(`Etapa: ${command}`);
+  return { code: kind, message, details: details.join(' · ') };
 }
 
 async function verifyTransport(config) {
@@ -77,4 +109,4 @@ async function processInvoiceEmails({ limit = 20, deliver = deliverInvoice, getC
   }
 }
 
-module.exports = { validEmail, transportFor, verifyTransport, deliverInvoice, processInvoiceEmails };
+module.exports = { validEmail, transportFor, verifyTransport, deliverInvoice, processInvoiceEmails, describeSmtpError };
