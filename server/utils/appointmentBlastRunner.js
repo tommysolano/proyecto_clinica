@@ -24,6 +24,7 @@ const { appointmentDateTime } = require('./appointmentDate');
 // Fuente única: la hora "HH:MM" y el "hoy si no ha pasado, mañana si ya pasó" son
 // exactamente los mismos que en la importación de contactos.
 const { nextOccurrenceOfLocalTime, flowSendHour } = require('./contactImportRunner');
+const { recipientForAppointment, conversationPopulation } = require('./appointmentBlastRecipient');
 
 const HHMM_RE = /^\d{1,2}:\d{2}$/;
 const DEFAULT_DRIP_SECONDS = 20;
@@ -33,16 +34,10 @@ const REENROLL_GUARD_MS = 30 * 60 * 1000;
 // Tope de seguridad: una tanda es "las citas de mañana", no la agenda del año.
 const MAX_APPOINTMENTS = 5000;
 
-/** ¿A este paciente se le puede escribir? (baja de marketing / sin consentimiento) */
-const enviable = (p) => p?.marketing?.whatsappOptIn !== false && !p?.marketing?.optOutAt;
-
 /** dripSeconds válido y acotado (1s … 1h). */
 function dripOf(blast) {
   return Math.min(3600, Math.max(1, Number(blast?.dripSeconds) || DEFAULT_DRIP_SECONDS));
 }
-
-/** Teléfono de WhatsApp del paciente (el mismo orden que usa el motor). */
-const phoneOf = (patient) => String(patient?.whatsapp || patient?.phone || '').trim();
 
 /**
  * Inscribe las citas del lote en los flujos elegidos, ESCALONADAS (goteo).
@@ -115,7 +110,8 @@ async function enrollAppointments(blast) {
   // 18:00 si la tanda se corta a medias.
   const citas = await Appointment.find({ _id: { $in: ids } })
     .populate('patient', 'firstName lastName phone whatsapp marketing')
-    .select('_id clinic date startTime patient status')
+    .populate(conversationPopulation)
+    .select('_id clinic date startTime patient conversation status')
     .sort({ date: 1, startTime: 1 })
     .lean();
 
@@ -136,12 +132,12 @@ async function enrollAppointments(blast) {
     return immediateSlot;
   };
 
-  // UN MENSAJE POR NÚMERO Y POR FLUJO. Un paciente puede tener dos citas el mismo
+  // UN MENSAJE POR PACIENTE Y POR FLUJO. Un paciente puede tener dos citas el mismo
   // día (la consulta y el suero de enfermería, una serie de detox): son dos citas
   // de verdad, pero el recordatorio lo recibe una persona, y recibir dos seguidos
   // se lee como un error del sistema. Se queda la PRIMERA de la agenda, que es la
   // que marca a qué hora tiene que salir de casa.
-  const phonesPorFlujo = new Map(perWorkflow.map((x) => [String(x.wf._id), new Set()]));
+  const pacientesPorFlujo = new Map(perWorkflow.map((x) => [String(x.wf._id), new Set()]));
   let mismoPaciente = 0;
   // Contador en memoria del `stats.enrolled` de cada flujo. Se suma de una sola
   // vez al final y no cita a cita: cada viaje a la base cuesta ~120 ms, y en una
@@ -164,14 +160,15 @@ async function enrollAppointments(blast) {
   for (const apt of citas) {
     if (++desdeElUltimoLatido >= 50) await latido(); // eslint-disable-line no-await-in-loop
     const patient = apt.patient;
-    if (!patient?._id) { blast.skippedNoPatient++; continue; }
-    if (!enviable(patient)) { blast.skippedOptOut++; continue; }
-    const phone = phoneOf(patient);
-    if (!phone) { blast.skippedNoPhone++; continue; }
+    const recipient = recipientForAppointment(apt, blast.clinic);
+    if (recipient.reason === 'sin_paciente') { blast.skippedNoPatient++; continue; }
+    if (recipient.reason === 'baja') { blast.skippedOptOut++; continue; }
+    if (recipient.reason === 'sin_telefono') { blast.skippedNoPhone++; continue; }
+    const { phone } = recipient;
 
     for (const { wf, flows, hour } of perWorkflow) {
-      const yaEsteNumero = phonesPorFlujo.get(String(wf._id));
-      if (yaEsteNumero.has(phone)) { mismoPaciente++; blast.skippedDuplicate++; continue; }
+      const yaEstePaciente = pacientesPorFlujo.get(String(wf._id));
+      if (yaEstePaciente.has(String(patient._id))) { mismoPaciente++; blast.skippedDuplicate++; continue; }
 
       for (const flow of flows) {
         // EL CANDADO.
@@ -205,6 +202,7 @@ async function enrollAppointments(blast) {
           clinic: blast.clinic,
           workflow: wf._id,
           patient: patient._id,
+          ...(recipient.conversation ? { conversation: recipient.conversation } : {}),
           stepIndex: 0,
           currentNodeId: flow.currentNodeId,
           startNodeId: flow.startNodeId,
@@ -226,7 +224,7 @@ async function enrollAppointments(blast) {
           },
         });
         blast.enrolled++;
-        yaEsteNumero.add(phone);
+        yaEstePaciente.add(String(patient._id));
         creadasPorFlujo.set(String(wf._id), (creadasPorFlujo.get(String(wf._id)) || 0) + 1);
       }
     }
@@ -242,14 +240,14 @@ async function enrollAppointments(blast) {
   // que hizo falta arreglar en la importación de contactos.
   if (mismoPaciente) {
     avisos.push(
-      `${mismoPaciente} cita(s) eran del mismo paciente que otra de la tanda: se envió UN solo recordatorio por número (el de su primera cita del día).`
+      `${mismoPaciente} cita(s) eran del mismo paciente que otra de la tanda: se envió UN solo recordatorio por paciente (el de su primera cita del día).`
     );
   }
   if (blast.skippedNoPhone) {
-    avisos.push(`${blast.skippedNoPhone} cita(s) no recibirán nada: el paciente no tiene teléfono en su ficha.`);
+    avisos.push(`${blast.skippedNoPhone} cita(s) no recibirán nada: no hay teléfono del paciente ni un chat de WhatsApp de origen disponible.`);
   }
   if (blast.skippedOptOut) {
-    avisos.push(`${blast.skippedOptOut} cita(s) no recibirán nada: el paciente está dado de baja de los mensajes.`);
+    avisos.push(`${blast.skippedOptOut} cita(s) no recibirán nada: el paciente o el titular del chat está dado de baja de los mensajes.`);
   }
   blast.warning = avisos.join(' ');
 }

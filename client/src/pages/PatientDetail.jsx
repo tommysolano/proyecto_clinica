@@ -2160,16 +2160,8 @@ function DiagnosticosEditor({ value = [], onChange }) {
 
 // ──────────────────── Seguimientos ────────────────────
 /**
- * Tabla de líneas escritas a mano. Se reutiliza para la Receta
- * (medicamentos/insumos, variant="receta") y para las Derivaciones
- * (servicios/programas, variant="derivacion").
- *
- * TODO ES TEXTO LIBRE, y es deliberado. Antes cada línea obligaba a elegir un
- * producto del inventario con un buscador —o a pulsar "Manual" para poder
- * escribir— y eso ataba la consulta clínica al catálogo de lo que la clínica
- * vende: el médico no podía recetar algo que no estuviera en existencias sin dar
- * un rodeo. El seguimiento describe lo que se receta y a dónde se deriva; lo que
- * haya que cobrar se factura por su lado.
+ * Tabla de receta y derivaciones. En la receta se propone elegir del inventario
+ * y se conserva la entrada manual cuando el ítem no está en el catálogo.
  *
  * Los campos se ven desde el primer momento (no hay que pulsar "Agregar ítem"
  * antes de poder escribir) y "Agregar línea" añade la siguiente. Nunca se queda
@@ -2236,13 +2228,14 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onUpdateMany, onRemove, t
    * que la casilla se apaga y se limpia cualquier composición previa.
    */
   const [productosInv, setProductosInv] = useState([]);
+  const [estadoInventario, setEstadoInventario] = useState('loading');
   useEffect(() => {
     if (!isReceta) return undefined;
     let vivo = true;
     api
       .get('/products')
-      .then((r) => { if (vivo) setProductosInv(Array.isArray(r.data) ? r.data : []); })
-      .catch(() => {});
+      .then((r) => { if (vivo) { setProductosInv(Array.isArray(r.data) ? r.data : []); setEstadoInventario('ready'); } })
+      .catch(() => { if (vivo) setEstadoInventario('error'); });
     return () => { vivo = false; };
   }, [isReceta]);
   // Los servicios/programas del inventario no se recetan: eso son las
@@ -2258,6 +2251,7 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onUpdateMany, onRemove, t
       onUpdateMany(idx, {
         product: p._id,
         name: p.name || previo.name || '',
+        _entryMode: 'inventory',
         isSerum: false,
         serumBase: { name: SUERO_CLORURO_NOMBRE, volumeMl: null },
         serumComponents: [],
@@ -2377,30 +2371,50 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onUpdateMany, onRemove, t
         menuMinWidth={340}
       />
     ) : isReceta && c.key === 'name' ? (
-      /**
-       * EL MEDICAMENTO, A MANO O DEL INVENTARIO (sep-2026). El texto libre
-       * sigue mandando —se receta lo que sea— y debajo queda el buscador para
-       * vincularlo con lo que la clínica vende.
-       */
-      <div className="space-y-1">
-        <input
-          type="text"
-          value={row[c.key] || ''}
-          onChange={(e) => onUpdate(idx, c.key, e.target.value)}
-          placeholder={c.placeholder}
-          className="input text-xs py-1"
-        />
-        <SearchableSelect
-          options={opcionesInventario}
-          value={row.product ? String(row.product) : ''}
-          onChange={(v) => escogerProducto(idx, v)}
-          getLabel={(p) => p.name || ''}
-          placeholder="…o escógelo del inventario"
-          searchPlaceholder="Buscar en inventario…"
-          allowClear
-          size="sm"
-          menuMinWidth={220}
-        />
+      <div className="space-y-1.5 min-w-[220px]">
+        {(row._entryMode === 'manual' || (!row._entryMode && !row.product && (row.name || row.isSerum))) ? (
+          <>
+            <span className="block text-[11px] font-semibold text-amber-700">Escrito manualmente · sin vínculo al inventario</span>
+            <input
+              type="text"
+              value={row.name || ''}
+              onChange={(e) => onUpdate(idx, 'name', e.target.value)}
+              placeholder={c.placeholder}
+              aria-label="Nombre escrito manualmente"
+              className="input text-xs py-1 w-full"
+            />
+            <button type="button" onClick={() => onUpdateMany(idx, { _entryMode: 'inventory' })}
+              className="text-xs font-semibold text-emerald-700 hover:text-emerald-900 bg-transparent border-none cursor-pointer p-0 underline">
+              Buscar y vincular al inventario
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="block text-[11px] font-semibold text-emerald-700">{row.product ? '✓ Vinculado al inventario' : 'Selecciona del inventario'}</span>
+            <SearchableSelect
+              options={opcionesInventario}
+              value={row.product ? String(row.product) : ''}
+              onChange={(v) => escogerProducto(idx, v)}
+              getLabel={(p) => p.name || ''}
+              getSearchText={(p) => `${p.name || ''} ${p.code || ''}`}
+              fallbackLabel={row.name || ''}
+              placeholder={estadoInventario === 'loading' ? 'Cargando inventario…' : 'Buscar medicamento o insumo…'}
+              searchPlaceholder="Buscar por nombre o código…"
+              disabled={estadoInventario !== 'ready'}
+              wrapOptions
+              wrapLabel
+              size="sm"
+              menuMinWidth={340}
+              className="!border-emerald-400 !bg-emerald-50"
+            />
+            {!row.product && row.name && <span className="block text-[11px] text-amber-700">Texto sin vincular: {row.name}</span>}
+            {estadoInventario === 'error' && <span className="block text-[11px] text-rose-700">No se pudo cargar el inventario. Puedes escribir la indicación manualmente.</span>}
+            <button type="button" onClick={() => onUpdateMany(idx, { product: null, _entryMode: 'manual' })}
+              className="text-xs text-slate-600 hover:text-slate-900 bg-transparent border-none cursor-pointer p-0 underline">
+              Escribir manualmente
+            </button>
+          </>
+        )}
       </div>
     ) : (
       <input
@@ -2427,6 +2441,7 @@ function ItemsTable({ variant, items, onAdd, onUpdate, onUpdateMany, onRemove, t
           <HiOutlinePlus className="w-3 h-3" /> Agregar línea
         </button>
       </div>
+      {isReceta && <p className="text-xs text-slate-600 mb-2">Busca y selecciona cada ítem del inventario para vincularlo a la receta. Si no está disponible, puedes escribirlo manualmente.</p>}
       {/* En el escritorio, una línea por fila. En el móvil NO: seis columnas con
           ancho mínimo obligan a arrastrar la tabla de lado mientras se escribe,
           que es lo último que quiere quien está con el paciente delante. Ahí
@@ -3267,7 +3282,8 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false, cita
       // Las líneas en blanco de Receta/Derivaciones no viajan: la tabla siempre
       // muestra una fila vacía lista para escribir, y guardar sin usarla no debe
       // dejar un ítem fantasma en la historia clínica.
-      const conNombre = (lista) => (lista || []).filter((it) => String(it.name || '').trim());
+      const conNombre = (lista) => (lista || []).filter((it) => String(it.name || '').trim())
+        .map(({ _entryMode, ...it }) => it);
       const payload = {
         ...form,
         recetaItems: conNombre(form.recetaItems),

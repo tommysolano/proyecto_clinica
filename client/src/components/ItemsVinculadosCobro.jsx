@@ -27,7 +27,9 @@ import { FUENTES_VINCULADO as FUENTES } from '../constants/itemsVinculados';
 export default function ItemsVinculadosCobro({ item, guardados, hayPaciente, onChange }) {
   const opciones = item.linkOptions || [];
   const elegidos = item.linked || [];
-  if (!opciones.length) return null;
+  if (!opciones.length) return item.includedMax != null
+    ? <p className="mt-1 text-xs text-amber-700">No hay componentes disponibles en las categorías configuradas.</p>
+    : null;
   // Lo que el cajero toca deja de seguir solo: la cantidad a la de la línea, el origen a lo
   // que el paciente tenga guardado.
   const set = (idx, patch) => onChange(elegidos.map((l, i) => (i === idx
@@ -64,6 +66,9 @@ export default function ItemsVinculadosCobro({ item, guardados, hayPaciente, onC
       <p className="text-[11px] font-semibold text-cyan-800 m-0">
         Ítems que se usan <span className="font-normal text-cyan-700">· no suman al precio</span>
       </p>
+      {item.includedMax != null && <p className="text-[11px] text-cyan-700 m-0">
+        {(elegidos || []).reduce((n, l) => n + (Number(l.quantity) || 0), 0)} de {item.includedMax * Number(item.quantity || 1)} unidades incluidas
+      </p>}
 
       {delPaciente.map((o) => {
         const g = guardados.get(String(o.product));

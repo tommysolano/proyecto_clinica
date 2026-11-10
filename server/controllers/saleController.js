@@ -86,8 +86,8 @@ exports.previewDiscounts = async (req, res) => {
     const items = Array.isArray(req.body.items) ? req.body.items : [];
     if (!items.length) return res.json({ items: [] });
     const ids = [...new Set(items.map((i) => String(i.product)))];
-    const products = await Product.find({ _id: { $in: ids }, active: true });
-    if (products.length !== ids.length) return res.status(400).json({ message: 'Algún producto no existe o está inactivo' });
+    const products = await Product.find({ _id: { $in: ids }, active: true, disabled: { $ne: true } });
+    if (products.length !== ids.length) return res.status(400).json({ message: 'Algún producto no existe, está inactivo o inhabilitado para facturar.' });
     const result = await require('../services/saleDiscounts').calculateDiscounts({
       clinicId: req.clinicId, patientId: req.body.patient || null, items,
       products: new Map(products.map((p) => [String(p._id), p])), priceOf: resolveUnitPrice,
@@ -303,9 +303,10 @@ exports.createSale = async (req, res) => {
         const txProducts = await Product.find({
           _id: { $in: txProductIds },
           active: true,
+          disabled: { $ne: true },
         }).populate('inventoryCategory').session(session);
         if (txProducts.length !== txProductIds.length) {
-          throw Object.assign(new Error('Algun producto no existe o esta inactivo'), { status: 400 });
+          throw Object.assign(new Error('Algún producto no existe, está inactivo o inhabilitado para facturar.'), { status: 400 });
         }
 
         const txProductMap = new Map(txProducts.map((p) => [String(p._id), p]));
@@ -347,15 +348,21 @@ exports.createSale = async (req, res) => {
           // Los «items relacionados» de antes (`serviceItems`) valen mientras el producto no
           // se vuelva a guardar con su lista de vinculados.
           const lista = (product.linkedItems || []).length ? product.linkedItems : (product.serviceItems || []);
+          const config = product.includedComponents;
+          const byCategory = config?.enabled === true;
           const permitidos = new Set(lista.map((l) => String(l.product)));
           const juntos = new Map();
+          let totalIncluded = 0;
           for (const l of pedidos) {
             const pid = String(l?.product || '');
             const qty = Number(l?.quantity);
-            if (!pid || !(qty > 0)) continue;
-            if (!permitidos.has(pid)) {
+            if (!pid || !Number.isFinite(qty) || !(qty > 0) || (byCategory && !Number.isSafeInteger(qty))) {
+              throw Object.assign(new Error('La cantidad de componentes debe ser un entero mayor que cero.'), { status: 400 });
+            }
+            if (!byCategory && !permitidos.has(pid)) {
               throw Object.assign(new Error(`Un ítem escogido no está vinculado a «${product.name}» en el inventario.`), { status: 400 });
             }
+            totalIncluded += qty;
             const source = FUENTES_VINCULADO.has(l.source) ? l.source : 'inventario';
             if (source !== 'inventario' && !patient) {
               throw Object.assign(new Error('Para usar lo que el paciente compró o trajo, la venta tiene que ser de un paciente.'), { status: 400 });
@@ -363,6 +370,9 @@ exports.createSale = async (req, res) => {
             const k = `${pid}|${source}`;
             juntos.set(k, { product: pid, quantity: +((juntos.get(k)?.quantity || 0) + qty).toFixed(4), source });
             linkedIds.add(pid);
+          }
+          if (byCategory && totalIncluded > Number(config.maxQuantity) * Number(item.quantity)) {
+            throw Object.assign(new Error(`«${product.name}» admite hasta ${config.maxQuantity} componentes por unidad.`), { status: 400 });
           }
           return [...juntos.values()];
         });
@@ -382,6 +392,19 @@ exports.createSale = async (req, res) => {
           for (const p of vinculados) linkedMap.set(String(p._id), p);
           if (linkedMap.size !== linkedIds.size) {
             throw Object.assign(new Error('Un ítem vinculado ya no existe en el inventario'), { status: 400 });
+          }
+        }
+        for (const [idx, item] of items.entries()) {
+          const parent = txProductMap.get(String(item.product));
+          if (!parent.includedComponents?.enabled) continue;
+          const categories = new Set((parent.includedComponents.categories || []).map(String));
+          for (const linked of linkedReq[idx]) {
+            if (linked.composicion) continue;
+            const child = linkedMap.get(linked.product);
+            if (!child || child.active === false || child.disabled === true || child.category !== 'insumo' || child.unlimited ||
+                !categories.has(String(child.inventoryCategory?._id || child.inventoryCategory || '')) || String(child._id) === String(parent._id)) {
+              throw Object.assign(new Error(`Un componente de «${parent.name}» no pertenece a las categorías permitidas o está inactivo.`), { status: 400 });
+            }
           }
         }
 

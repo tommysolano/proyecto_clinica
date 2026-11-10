@@ -28,16 +28,13 @@ const { parseLocalDate } = require('../utils/appointmentDate');
 const { resolveCallCenterClinicId } = require('../utils/callCenterClinic');
 const { canReq } = require('../utils/permissions');
 const { runBlast, MAX_APPOINTMENTS } = require('../utils/appointmentBlastRunner');
+const { recipientForAppointment, conversationPopulation } = require('../utils/appointmentBlastRecipient');
 
 // Por defecto, las citas que SIGUEN EN PIE: a una cancelada o a una ya atendida
 // no se le manda un recordatorio.
 const DEFAULT_STATUSES = ['pendiente', 'confirmada'];
 const ALL_STATUSES = ['pendiente', 'confirmada', 'asistida', 'no_asistio', 'cancelada', 'completada'];
 const HHMM_RE = /^\d{1,2}:\d{2}$/;
-
-/** ¿A este paciente se le puede escribir? (mismo criterio que el runner) */
-const enviable = (p) => p?.marketing?.whatsappOptIn !== false && !p?.marketing?.optOutAt;
-const phoneOf = (p) => String(p?.whatsapp || p?.phone || '').trim();
 
 /**
  * Traduce el filtro del asistente a una consulta de citas, respetando SIEMPRE las
@@ -114,12 +111,14 @@ function cleanFilters(filters = {}) {
  */
 async function resolveAudience(req, filters) {
   const query = buildAppointmentQuery(req, filters);
+  const anchorClinic = (await resolveCallCenterClinicId()) || req.clinicId;
   const citas = await Appointment.find(query)
     .populate('patient', 'firstName lastName phone whatsapp marketing')
+    .populate(conversationPopulation)
     .populate('clinic', 'name')
     .populate('doctor', 'name')
     .populate('serviceItem', 'name')
-    .select('_id clinic date startTime patient status serviceItem serviceName doctor isFirstVisit')
+    .select('_id clinic date startTime patient conversation status serviceItem serviceName doctor isFirstVisit')
     .sort({ date: 1, startTime: 1 })
     .limit(MAX_APPOINTMENTS + 1)
     .lean();
@@ -132,16 +131,14 @@ async function resolveAudience(req, filters) {
   // basta con saber si lo hay, y eso sí se puede contar sin enseñar el número.
   const puedeVerTelefono = canReq(req, 'patients.contactData') || canReq(req, 'patients.phone');
 
-  const vistos = new Set(); // teléfonos ya incluidos: un mensaje por número
+  const vistos = new Set(); // un recordatorio por paciente
   const rows = lista.map((apt) => {
     const p = apt.patient;
-    const phone = phoneOf(p);
-    let reason = '';
-    if (!p?._id) reason = 'sin_paciente';
-    else if (!enviable(p)) reason = 'baja';
-    else if (!phone) reason = 'sin_telefono';
-    else if (vistos.has(phone)) reason = 'repetido';
-    if (!reason) vistos.add(phone);
+    const recipient = recipientForAppointment(apt, anchorClinic);
+    const phone = recipient.phone || '';
+    let reason = recipient.reason || '';
+    if (!reason && vistos.has(String(p._id))) reason = 'repetido';
+    if (!reason) vistos.add(String(p._id));
 
     return {
       _id: String(apt._id),

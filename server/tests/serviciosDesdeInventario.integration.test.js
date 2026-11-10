@@ -122,6 +122,41 @@ test('un producto INHABILITADO no se ofrece al agendar ni al vender, y vuelve al
   assert.equal((await listar(clinicId, userId)).payload.length, 1, 'habilitado: vuelve a la agenda');
 });
 
+test('un servicio inhabilitado puede habilitarse para agendar sin permitir venderlo', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const productCtrl = require('../controllers/productController');
+  const sales = require('../controllers/saleController');
+  const appointments = require('../controllers/appointmentController');
+  const Patient = require('../models/Patient');
+  const p = await servicio(clinicId, 'Servicio solo agenda', { disabled: true });
+  const edit = await H.runController(productCtrl.updateProduct, H.mockReq(clinicId, userId,
+    { bookableWhenDisabled: true }, { role: 'admin', params: { id: String(p._id) } }));
+  assert.equal(edit.statusCode, 200, JSON.stringify(edit.payload));
+  const list = await listar(clinicId, userId);
+  assert.equal(list.payload.length, 1);
+  assert.equal(String(list.payload[0].product), String(p._id));
+  const catalog = (query) => H.runController(productCtrl.getProducts, H.mockReq(clinicId, userId, {}, { role: 'cajero', query }));
+  assert.equal((await catalog({})).payload.length, 0, 'no aparece en el buscador de ventas');
+  assert.equal((await catalog({ bookable: 'true' })).payload.length, 1, 'sí se ofrece al agendar desde el chat');
+
+  const patient = await Patient.create({ clinic: clinicId, firstName: 'Ana', lastName: 'Vera' });
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+  const result = await H.runController(appointments.createAppointment, H.mockReq(clinicId, userId, {
+    patient: String(patient._id), date: tomorrow.toISOString().slice(0, 10), startTime: '10:00', serviceItem: list.payload[0]._id,
+  }, { role: 'cajero' }));
+  assert.equal(result.statusCode, 201, JSON.stringify(result.payload));
+  const request = { paymentMethod: 'efectivo', items: [{ product: String(p._id), quantity: 1 }] };
+  const sale = await H.runController(sales.createSale, H.mockReq(clinicId, userId, request));
+  assert.equal(sale.statusCode, 400, JSON.stringify(sale.payload));
+  assert.match(sale.payload.message, /inhabilitado/i);
+  const preview = await H.runController(sales.previewDiscounts, H.mockReq(clinicId, userId, request));
+  assert.equal(preview.statusCode, 400);
+
+  await H.runController(productCtrl.updateProduct, H.mockReq(clinicId, userId,
+    { bookableWhenDisabled: false }, { role: 'admin', params: { id: String(p._id) } }));
+  assert.equal((await listar(clinicId, userId)).payload.length, 0, 'al quitar el permiso deja de ofrecerse');
+});
+
 test('sincronizar dos veces no duplica nada', async () => {
   const { clinicId } = await H.seedClinic();
   await servicio(clinicId, 'Plasma');

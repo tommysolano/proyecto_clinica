@@ -30,6 +30,14 @@ async function componentesVinculados(productIds, session = null) {
   const buscados = new Set(ids);
   const out = new Set();
   for (const f of filas) for (const l of f.linkedItems || []) if (buscados.has(idDe(l.product))) out.add(idDe(l.product));
+  const productos = await Product.find({ _id: { $in: ids } }).select('inventoryCategory').session(session).lean();
+  const categorias = [...new Set(productos.map((p) => idDe(p.inventoryCategory)).filter(Boolean))];
+  if (categorias.length) {
+    const servicios = await Product.find({ 'includedComponents.enabled': true, 'includedComponents.categories': { $in: categorias } })
+      .select('includedComponents.categories').session(session).lean();
+    const permitidas = new Set(servicios.flatMap((s) => (s.includedComponents?.categories || []).map(idDe)));
+    for (const p of productos) if (permitidas.has(idDe(p.inventoryCategory))) out.add(idDe(p._id));
+  }
   return out;
 }
 

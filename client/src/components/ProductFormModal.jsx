@@ -18,6 +18,7 @@ const emptyProduct = {
   maxAppointmentsPerDay: '0',
   excludeFromFirstVisit: false,
   nursingService: false,
+  bookableWhenDisabled: false,
   deferredIncome: false,
   variablePrice: false,
   discountType: '',
@@ -26,6 +27,7 @@ const emptyProduct = {
   programServices: [],
   serviceItems: [],
   linkedItems: [],
+  includedComponents: { enabled: false, maxQuantity: 3, categories: [] },
   isComposite: false,
   components: [],
   composition: [],
@@ -50,6 +52,7 @@ function mapProductToForm(p) {
     maxAppointmentsPerDay: String(p.maxAppointmentsPerDay ?? 0),
     excludeFromFirstVisit: !!p.excludeFromFirstVisit,
     nursingService: !!p.nursingService,
+    bookableWhenDisabled: !!p.bookableWhenDisabled,
     deferredIncome: !!p.deferredIncome,
     variablePrice: !!p.variablePrice,
     discountType: p.discountType || '',
@@ -70,6 +73,11 @@ function mapProductToForm(p) {
       quantity: s.quantity || 1,
       preselect: !!s.preselect,
     })).filter((s) => s.product),
+    includedComponents: {
+      enabled: !!p.includedComponents?.enabled,
+      maxQuantity: p.includedComponents?.maxQuantity || 3,
+      categories: (p.includedComponents?.categories || []).map((c) => String(c?._id || c)),
+    },
     isComposite: !!p.isComposite,
     components: (p.components || []).map((s) => ({
       product: s.product?._id || s.product || '',
@@ -221,6 +229,11 @@ export default function ProductFormModal({
         toast.error('El descuento no puede pasar de 100%.');
         return;
       }
+      if (productForm.includedComponents?.enabled &&
+          (!Number.isSafeInteger(Number(productForm.includedComponents.maxQuantity)) || Number(productForm.includedComponents.maxQuantity) < 1 || !productForm.includedComponents.categories.length)) {
+        toast.error('Indica un máximo entero mayor que cero y selecciona al menos una categoría de componentes.');
+        return;
+      }
       if (!salePrices.some((s) => s.active)) salePrices[0].active = true;
       const activo = salePrices.find((s) => s.active);
       const data = {
@@ -244,6 +257,7 @@ export default function ProductFormModal({
         maxAppointmentsPerDay: parseInt(productForm.maxAppointmentsPerDay) || 0,
         excludeFromFirstVisit: !!productForm.excludeFromFirstVisit,
         nursingService: !!productForm.nursingService,
+        bookableWhenDisabled: isService && !!productForm.bookableWhenDisabled,
         variablePrice: !!productForm.variablePrice,
         // Descuento del producto: lo aplica el servidor solo al cobrar y sale en la factura.
         discountType: Number(productForm.discountValue) > 0 ? (productForm.discountType || '') : '',
@@ -258,6 +272,7 @@ export default function ProductFormModal({
         linkedItems: (productForm.linkedItems || [])
           .filter((s) => s.product)
           .map((s) => ({ product: s.product, quantity: parseFloat(s.quantity) > 0 ? parseFloat(s.quantity) : 1, preselect: !!s.preselect })),
+        includedComponents: productForm.includedComponents,
         isComposite: !isService && !!productForm.isComposite,
         components: !isService && productForm.isComposite
           ? (productForm.components || [])
@@ -522,6 +537,13 @@ export default function ProductFormModal({
             )}
           </div>
           {productForm.category === 'servicio' && (
+            <label className="sm:col-span-2 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-slate-700">
+              <input type="checkbox" checked={!!productForm.bookableWhenDisabled}
+                onChange={(e) => setProductForm({ ...productForm, bookableWhenDisabled: e.target.checked })} />
+              <span><strong>Permitir agendar aunque esté inhabilitado</strong><br />El servicio podrá elegirse para citas, pero seguirá inhabilitado para facturación.</span>
+            </label>
+          )}
+          {productForm.category === 'servicio' && (
             <div className="sm:col-span-2 bg-emerald-50 border border-emerald-200 rounded-xl p-2 text-xs text-emerald-700">
               Los servicios son <strong>ilimitados</strong>: no manejan stock, precio de compra ni unidad.
             </div>
@@ -656,9 +678,36 @@ export default function ProductFormModal({
             </div>
           )}
 
+          <div className="sm:col-span-2 rounded-xl border border-cyan-200 bg-cyan-50/50 p-4 space-y-3">
+            <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+              <input type="checkbox" checked={!!productForm.includedComponents?.enabled}
+                onChange={(e) => setProductForm({ ...productForm, includedComponents: { ...productForm.includedComponents, enabled: e.target.checked } })} />
+              Incluir componentes elegidos por categoría
+            </label>
+            {productForm.includedComponents?.enabled && <>
+              <p className="text-xs text-slate-600">Al cobrar se escogen los componentes; no aumentan el precio y se descuentan del inventario según su origen.</p>
+              <label className="block text-sm text-slate-700">Máximo de unidades por cada ítem vendido
+                <NumericInput min="1" value={productForm.includedComponents.maxQuantity}
+                  onChange={(e) => setProductForm({ ...productForm, includedComponents: { ...productForm.includedComponents, maxQuantity: e.target.value } })}
+                  className="input w-24 ml-2" />
+              </label>
+              <p className="text-sm font-medium text-slate-700">Categorías permitidas</p>
+              <div className="max-h-40 overflow-y-auto space-y-1">
+                {inventarioCats.map((c) => <label key={c._id} className="flex items-center gap-2 text-sm text-slate-700">
+                  <input type="checkbox" checked={productForm.includedComponents.categories.includes(String(c._id))}
+                    onChange={(e) => {
+                      const ids = new Set(productForm.includedComponents.categories);
+                      if (e.target.checked) ids.add(String(c._id)); else ids.delete(String(c._id));
+                      setProductForm({ ...productForm, includedComponents: { ...productForm.includedComponents, categories: [...ids] } });
+                    }} />{c.name}
+                </label>)}
+                {!inventarioCats.length && <p className="text-xs text-slate-500">No hay categorías de inventario activas.</p>}
+              </div>
+            </>}
+          </div>
           {/* ÍTEMS VINCULADOS (cualquier tipo de ítem): al cobrar este producto se escoge cuáles
               se usaron, salen del inventario y NO suman al precio. */}
-          <div className="sm:col-span-2">
+          {!productForm.includedComponents?.enabled && <div className="sm:col-span-2">
             <ProductItemPicker
               label="Ítems vinculados"
               help="Otros ítems del inventario que se usan con este (ej. las ampollas y moléculas de una sueroterapia). Al cobrar se escoge cuáles se usaron: salen del inventario y no suman al precio; solo se cobra este ítem. La cantidad es la que se propone por cada unidad vendida; «Siempre» los deja ya marcados al cobrar."
@@ -668,7 +717,7 @@ export default function ProductFormModal({
               onChange={(rows) => setProductForm({ ...productForm, linkedItems: rows })}
               conPreseleccion
             />
-          </div>
+          </div>}
 
           {/* Producto compuesto: componentes posibles */}
           {productForm.category !== 'servicio' && productForm.category !== 'programa' && productForm.isComposite && (

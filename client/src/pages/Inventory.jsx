@@ -167,10 +167,10 @@ export default function Inventory() {
     }
   };
 
-  // Inhabilitar / habilitar: el inhabilitado no aparece al agendar ni al vender.
+  // Un servicio puede seguir disponible en agenda si así se configuró.
   const handleToggleDisabled = async (p) => {
     const disabling = !p.disabled;
-    if (disabling && !window.confirm(`¿Inhabilitar "${p.name}"? Ya no aparecerá al agendar citas ni al vender.`)) return;
+    if (disabling && !window.confirm(`¿Inhabilitar "${p.name}"? No se podrá vender.${p.category === 'servicio' && p.bookableWhenDisabled ? ' Seguirá disponible para agendar citas.' : ' Tampoco aparecerá al agendar citas.'}`)) return;
     try {
       const res = await api.patch(`/products/${p._id}/disabled`, { disabled: disabling });
       setProducts((prev) => prev.map((x) => (x._id === p._id ? { ...x, disabled: !!res.data?.disabled } : x)));
@@ -382,7 +382,7 @@ export default function Inventory() {
                               <button
                                 onClick={() => handleToggleDisabled(p)}
                                 className={`p-1.5 rounded-lg bg-transparent border-none cursor-pointer transition-colors ${p.disabled ? 'text-emerald-600 hover:bg-emerald-50' : 'text-slate-400 hover:bg-amber-50 hover:text-amber-600'}`}
-                                title={p.disabled ? 'Habilitar (volverá a aparecer al agendar y vender)' : 'Inhabilitar (no aparecerá al agendar ni al vender)'}
+                                title={p.disabled ? 'Habilitar el ítem' : (p.category === 'servicio' && p.bookableWhenDisabled ? 'Inhabilitar para vender; seguirá disponible en agenda' : 'Inhabilitar para agendar y vender')}
                               >
                                 {p.disabled ? <HiOutlineCheckCircle className="w-4 h-4" /> : <HiOutlineNoSymbol className="w-4 h-4" />}
                               </button>

@@ -19,6 +19,24 @@ const catalogClinics = (clinicId) => {
   return (ids.length ? ids : [String(clinicId)]).map((id) => new (require('mongoose').Types.ObjectId)(id));
 };
 
+async function validateIncludedComponents(clinicId, body) {
+  if (body.includedComponents === undefined) return;
+  const config = body.includedComponents || {};
+  if (!config.enabled) {
+    body.includedComponents = { enabled: false, maxQuantity: 0, categories: [] };
+    return;
+  }
+  const maxQuantity = Number(config.maxQuantity);
+  const categories = [...new Set((Array.isArray(config.categories) ? config.categories : []).map(String))];
+  const mongoose = require('mongoose');
+  if (!Number.isSafeInteger(maxQuantity) || maxQuantity < 1 || !categories.length || categories.some((id) => !mongoose.isValidObjectId(id))) {
+    throw Object.assign(new Error('Indica un máximo entero mayor que cero y al menos una categoría de componentes.'), { status: 400 });
+  }
+  const count = await InventoryCategory.countDocuments({ _id: { $in: categories }, clinic: { $in: catalogClinics(clinicId) }, kind: 'INVENTARIO', active: { $ne: false } });
+  if (count !== categories.length) throw Object.assign(new Error('Las categorías de componentes deben estar activas y ser de inventario.'), { status: 400 });
+  body.includedComponents = { enabled: true, maxQuantity, categories };
+}
+
 /**
  * Resuelve y valida la categoría contable de inventario (`InventoryCategory`,
  * kind INVENTARIO) de un producto y sincroniza el campo legacy `categoria`.
@@ -199,9 +217,12 @@ exports.getProducts = async (req, res) => {
         ],
       });
     }
-    // Inhabilitados: fuera de los buscadores (agenda, venta, cotización…). Solo los
-    // piden las pantallas de gestión (inventario, kardex, compras, reportes).
-    if (includeDisabled !== 'true' && includeDisabled !== '1') query.disabled = { $ne: true };
+    // Inhabilitados: fuera de los buscadores de venta. La agenda puede incluir
+    // servicios autorizados y gestión puede consultar todo el catálogo.
+    if (includeDisabled !== 'true' && includeDisabled !== '1') {
+      if (bookable === 'true') query.$and.push({ $or: [{ disabled: { $ne: true } }, { category: 'servicio', bookableWhenDisabled: true }] });
+      else query.disabled = { $ne: true };
+    }
     if (category) query.category = category;
     // Filtro principal por categoría contable; `categoria` (texto) queda como legacy.
     if (inventoryCategory) query.inventoryCategory = inventoryCategory;
@@ -433,6 +454,7 @@ exports.createProduct = async (req, res) => {
     syncSalePrices(req.body);
     alineaIva(req.body);
     saneaVinculados(req.body);
+    await validateIncludedComponents(req.clinicId, req.body);
     await require('../utils/composicion').saneaComposicion(req.body);
     // Valida/resuelve la categoría contable de inventario (obligatoria para insumos).
     await applyInventoryCategory(req.clinicId, req.body, { enforce: true });
@@ -468,6 +490,7 @@ exports.updateProduct = async (req, res) => {
     syncSalePrices(req.body, existing);
     alineaIva(req.body, existing);
     saneaVinculados(req.body, existing._id);
+    await validateIncludedComponents(req.clinicId, req.body);
     await require('../utils/composicion').saneaComposicion(req.body, existing._id);
     // Valida/resuelve la categoría contable si se envía; NO bloquea la edición de
     // productos legacy sin categoría (enforce:false) para no romper flujos existentes.
@@ -502,7 +525,7 @@ exports.deleteProduct = async (req, res) => {
 
 /**
  * Inhabilitar / habilitar un producto o servicio (admin, super admin y contabilidad).
- * Inhabilitado = sigue en el inventario pero no aparece al agendar ni al vender.
+ * Inhabilitado = sigue en el inventario y no se vende; puede permitirse en agenda.
  */
 exports.setProductDisabled = async (req, res) => {
   try {
@@ -513,7 +536,7 @@ exports.setProductDisabled = async (req, res) => {
       { new: true }
     ).populate(INVENTORY_CATEGORY_POPULATE);
     if (!product) return res.status(404).json({ message: 'Producto no encontrado' });
-    // Un servicio inhabilitado deja de ofrecerse en la agenda: re-sincroniza el catálogo.
+    // El estado puede cambiar su disponibilidad en la agenda.
     if (product.category === 'servicio') marcarServiciosPendientes();
     res.json(product);
   } catch (error) {

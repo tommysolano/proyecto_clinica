@@ -16,6 +16,7 @@ const Sale = require('../models/Sale');
 const PatientItem = require('../models/PatientItem');
 const sales = require('../controllers/saleController');
 const patients = require('../controllers/patientController');
+const products = require('../controllers/productController');
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -79,6 +80,55 @@ test('un ítem que no está vinculado al producto se rechaza', async () => {
   assert.equal(r.statusCode, 400);
   assert.match(r.payload.message, /no está vinculado/);
   assert.equal(await stock(otro), 5);
+});
+
+test('componentes por categoría: hasta tres unidades incluidas, costo de inventario y anulación', async () => {
+  const { clinicId, userId, suero, vitC, zinc, cobrar, anular } = await escenario();
+  const cat = vitC.inventoryCategory;
+  const updated = await H.runController(products.updateProduct, H.mockReq(clinicId, userId, {
+    salePrices: [{ name: 'General', price: 29, active: true }],
+    includedComponents: { enabled: true, maxQuantity: 3, categories: [String(cat)] },
+  }, { params: { id: String(suero._id) } }));
+  assert.equal(updated.statusCode, 200, JSON.stringify(updated.payload));
+  const result = await cobrar({ items: [{ product: String(suero._id), quantity: 1, linkedItems: [
+    { product: String(vitC._id), quantity: 2 }, { product: String(zinc._id), quantity: 1 },
+  ] }] });
+  assert.equal(result.statusCode, 201, JSON.stringify(result.payload));
+  assert.equal(result.payload.total, 29);
+  assert.equal(await stock(vitC), 8);
+  assert.equal(await stock(zinc), 9);
+  const sale = await Sale.findById(result.payload._id);
+  assert.equal(sale.items[0].linkedItems.length, 2);
+  assert.ok(sale.costJournalEntry);
+  assert.equal((await anular(result.payload._id)).statusCode, 200);
+  assert.equal(await stock(vitC), 10);
+  assert.equal(await stock(zinc), 10);
+});
+
+test('componentes por categoría: valida límite, unidades y categorías desde el servidor', async () => {
+  const { clinicId, suero, vitC, cobrar } = await escenario();
+  const InventoryCategory = require('../models/InventoryCategory');
+  const otherCat = await InventoryCategory.create({ clinic: clinicId, code: 'OTRA', name: 'Otra', kind: 'INVENTARIO' });
+  const otro = await H.makeProduct(clinicId, { inventoryCategory: otherCat._id, stock: 5 });
+  await Product.updateOne({ _id: suero._id }, { includedComponents: { enabled: true, maxQuantity: 3, categories: [vitC.inventoryCategory] } });
+  const request = (linkedItems, quantity = 1) => cobrar({ items: [{ product: String(suero._id), quantity, linkedItems }] });
+  assert.equal((await request([{ product: String(vitC._id), quantity: 4 }])).statusCode, 400);
+  assert.equal((await request([{ product: String(vitC._id), quantity: 1.5 }])).statusCode, 400);
+  assert.equal((await request([{ product: String(otro._id), quantity: 1 }])).statusCode, 400);
+  await Product.updateOne({ _id: vitC._id }, { disabled: true });
+  assert.equal((await request([{ product: String(vitC._id), quantity: 1 }])).statusCode, 400);
+  await Product.updateOne({ _id: vitC._id }, { disabled: false });
+  assert.equal((await request([{ product: String(vitC._id), quantity: 6 }], 2)).statusCode, 201);
+  assert.equal((await request([])).statusCode, 201);
+});
+
+test('la configuración de componentes rechaza categorías y límites inválidos', async () => {
+  const { clinicId, userId, suero, vitC } = await escenario();
+  const update = (config) => H.runController(products.updateProduct, H.mockReq(clinicId, userId,
+    { includedComponents: config }, { params: { id: String(suero._id) } }));
+  assert.equal((await update({ enabled: true, maxQuantity: 0, categories: [String(vitC.inventoryCategory)] })).statusCode, 400);
+  assert.equal((await update({ enabled: true, maxQuantity: 3, categories: [String(new mongoose.Types.ObjectId())] })).statusCode, 400);
+  assert.equal((await update({ enabled: true, maxQuantity: 3, categories: [String(vitC.inventoryCategory)] })).statusCode, 200);
 });
 
 test('sin stock suficiente avisa pero deja cobrar', async () => {

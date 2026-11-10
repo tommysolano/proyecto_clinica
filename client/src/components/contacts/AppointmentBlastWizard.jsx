@@ -42,7 +42,7 @@ const STATUS_OPTIONS = [
 
 const REASON_LABEL = {
   sin_paciente: 'La cita no tiene ficha de paciente',
-  sin_telefono: 'El paciente no tiene teléfono en su ficha',
+  sin_telefono: 'No hay teléfono del paciente ni chat de WhatsApp de origen disponible',
   baja: 'El paciente está dado de baja de los mensajes',
   repetido: 'Mismo paciente que otra cita de la tanda',
 };

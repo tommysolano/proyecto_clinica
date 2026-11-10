@@ -20,6 +20,9 @@ const AppointmentBlast = require('../models/AppointmentBlast');
 const Patient = require('../models/Patient');
 const Workflow = require('../models/Workflow');
 const WorkflowEnrollment = require('../models/WorkflowEnrollment');
+const Conversation = require('../models/Conversation');
+require('../models/AppointmentServiceItem');
+const blastController = require('../controllers/appointmentBlastController');
 const { enrollAppointments } = require('../utils/appointmentBlastRunner');
 const { cancelWaitingEnrollmentsForAppointment, syncEnrollmentsForAppointment } = require('../utils/workflowEngine');
 
@@ -173,8 +176,72 @@ test('sin teléfono y dado de baja: no se inscriben, y el envío lo dice', async
   assert.equal(blast.enrolled, 1);
   assert.equal(blast.skippedNoPhone, 1);
   assert.equal(blast.skippedOptOut, 1);
-  assert.match(blast.warning, /no tiene teléfono/i);
+  assert.match(blast.warning, /no hay teléfono/i);
   assert.match(blast.warning, /dado de baja/i);
+});
+
+test('incluye a distintos pacientes del mismo chat y conserva la cita y el destinatario', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const wf = await unTrigger(clinicId);
+  const titular = await makePatient(clinicId);
+  const familiar = await makePatient(clinicId, { firstName: 'Luis', phone: '', whatsapp: '' });
+  const conv = await Conversation.create({ clinic: clinicId, patient: titular._id, phone: titular.phone, channel: 'whatsapp' });
+  const c1 = await makeAppointment(clinicId, titular, { startTime: '08:00', conversation: conv._id });
+  const c2 = await makeAppointment(clinicId, familiar, { startTime: '09:00', conversation: conv._id });
+  const c3 = await makeAppointment(clinicId, familiar, { startTime: '10:00', conversation: conv._id });
+
+  const date = manana();
+  const day = [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
+  const preview = await H.runController(blastController.preview, H.mockReq(clinicId, userId, { filters: { startDate: day } }, { role: 'admin' }));
+  assert.equal(preview.statusCode, 200, JSON.stringify(preview.payload));
+  assert.equal(preview.payload.counts.eligible, 2);
+  assert.equal(preview.payload.counts.repetido, 1);
+
+  const blast = await makeBlast(clinicId, userId, wf, [c1, c2, c3]);
+  await enrollAppointments(blast);
+  assert.equal(blast.enrolled, 2);
+  const enrollment = await WorkflowEnrollment.findOne({ 'context.appointmentId': String(c2._id) });
+  assert.equal(String(enrollment.patient), String(familiar._id));
+  assert.equal(String(enrollment.conversation), String(conv._id));
+  assert.equal(enrollment.context.phone, titular.phone);
+  assert.equal(await WorkflowEnrollment.countDocuments({ 'context.appointmentId': String(c3._id) }), 0);
+});
+
+test('no usa el chat de origen si su titular pidió no recibir mensajes o el canal no es WhatsApp', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const wf = await unTrigger(clinicId);
+  const titular = await makePatient(clinicId, { marketing: { whatsappOptIn: false } });
+  const familiar = await makePatient(clinicId, { phone: '', whatsapp: '' });
+  const conv = await Conversation.create({ clinic: clinicId, patient: titular._id, phone: titular.phone, channel: 'whatsapp' });
+  const cita = await makeAppointment(clinicId, familiar, { conversation: conv._id });
+  const blast = await makeBlast(clinicId, userId, wf, [cita]);
+  await enrollAppointments(blast);
+  assert.equal(blast.enrolled, 0);
+  assert.equal(blast.skippedOptOut, 1);
+  titular.marketing.whatsappOptIn = true;
+  await titular.save();
+  conv.channel = 'instagram';
+  await conv.save();
+  const second = await makeBlast(clinicId, userId, wf, [cita]);
+  await enrollAppointments(second);
+  assert.equal(second.enrolled, 0);
+  assert.equal(second.skippedNoPhone, 1);
+});
+
+test('el recordatorio va al chat que agendó para otro paciente aunque este tenga teléfono propio', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const wf = await unTrigger(clinicId);
+  const titular = await makePatient(clinicId, { phone: '0999111222' });
+  const familiar = await makePatient(clinicId, { firstName: 'Luis', phone: '0988333444' });
+  const conv = await Conversation.create({ clinic: clinicId, patient: titular._id, phone: titular.phone, channel: 'whatsapp' });
+  const cita = await makeAppointment(clinicId, familiar, { conversation: conv._id });
+  const blast = await makeBlast(clinicId, userId, wf, [cita]);
+  await enrollAppointments(blast);
+  const enrollment = await WorkflowEnrollment.findOne({ 'context.appointmentId': String(cita._id) });
+  assert.equal(blast.enrolled, 1);
+  assert.equal(String(enrollment.patient), String(familiar._id));
+  assert.equal(String(enrollment.conversation), String(conv._id));
+  assert.equal(enrollment.context.phone, titular.phone);
 });
 
 // ─────────── 3. un mensaje, aunque el botón se apriete dos veces ───────────

@@ -64,6 +64,11 @@ const productSchema = new mongoose.Schema(
         _id: false,
       },
     ],
+    includedComponents: {
+      enabled: { type: Boolean, default: false },
+      maxQuantity: { type: Number, default: 0, min: 0 },
+      categories: [{ type: mongoose.Schema.Types.ObjectId, ref: 'InventoryCategory' }],
+    },
     // Producto compuesto (ej. un suero compuesto por ampollas). Tiene precio de
     // venta fijo. `components` lista los productos que PUEDEN componerlo; al
     // recetarlo, el doctor elige cuáles usar. Se descuenta el stock de los
@@ -200,9 +205,11 @@ const productSchema = new mongoose.Schema(
     nursingService: { type: Boolean, default: false },
     active: { type: Boolean, default: true },
     // INHABILITADO (nov-2026): sigue en el inventario (stock, kardex, reportes,
-    // compras), pero NO se ofrece al agendar una cita ni al vender. Distinto de
+    // compras), pero no se ofrece al vender. Puede admitirse en agenda mediante
+    // bookableWhenDisabled. Distinto de
     // `active: false`, que es el "eliminado" del catálogo.
     disabled: { type: Boolean, default: false },
+    bookableWhenDisabled: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

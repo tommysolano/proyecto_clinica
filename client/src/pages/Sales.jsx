@@ -188,6 +188,12 @@ const componentesTexto = (product) => (product?.composition || [])
  * lo que se puede escoger como «usado» al cobrarlo. Los inactivos no salen.
  */
 const opcionesVinculadas = (product, catalogo) => {
+  if (product?.includedComponents?.enabled) {
+    const categorias = new Set((product.includedComponents.categories || []).map((c) => String(c?._id || c)));
+    return catalogo.filter((p) => p.active !== false && p.category === 'insumo' && !p.unlimited &&
+      String(p._id) !== String(product._id) && categorias.has(String(p.inventoryCategory?._id || p.inventoryCategory || '')))
+      .map((p) => ({ product: String(p._id), productName: p.name, code: p.code, quantity: 1, preselect: false }));
+  }
   // Los «items relacionados» de antes (`serviceItems`) valen, ya marcados, mientras el
   // producto no se vuelva a guardar con su lista de vinculados (igual en el servidor).
   const lista = (product?.linkedItems || []).length
@@ -1053,6 +1059,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     return {
       delivery: 'llevado',
       linkOptions,
+      includedMax: product.includedComponents?.enabled ? Number(product.includedComponents.maxQuantity) : null,
       linked: linkOptions.filter((o) => o.preselect).map((o) => ({
         product: o.product, productName: o.productName, code: o.code, base: o.quantity,
         quantity: +(o.quantity * qty).toFixed(4), source: 'inventario', cantAuto: true, fuenteAuto: true,
@@ -1220,6 +1227,11 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     // Ítems vinculados: cantidad válida y, lo del paciente, que le alcance.
     const usoDelPaciente = new Map();
     for (const it of form.items) {
+      if (it.includedMax != null) {
+        const totalComponentes = (it.linked || []).reduce((n, l) => n + Number(l.quantity || 0), 0);
+        if ((it.linked || []).some((l) => !Number.isSafeInteger(Number(l.quantity)) || Number(l.quantity) < 1)) return toast.error(`Las cantidades de componentes de «${it.productName}» deben ser enteros mayores que cero.`);
+        if (totalComponentes > it.includedMax * Number(it.quantity)) return toast.error(`«${it.productName}» admite hasta ${it.includedMax} componentes por unidad.`);
+      }
       for (const l of it.linked || []) {
         if (!(Number(l.quantity) > 0)) return toast.error(`Escribe cuántos «${l.productName}» se usaron en «${it.productName}» (o quítalo)`);
         if (l.source === 'paciente') usoDelPaciente.set(String(l.product), (usoDelPaciente.get(String(l.product)) || 0) + Number(l.quantity));
