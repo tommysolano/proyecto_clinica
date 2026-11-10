@@ -71,14 +71,9 @@ async function applyInventoryCategory(clinicId, body, { enforce, existing = null
   let category = null;
   const provided = body.inventoryCategory != null && body.inventoryCategory !== '';
   if (provided) {
-    /**
-     * CATÁLOGO COMPARTIDO (nov-2026): el producto se edita desde cualquier sucursal, pero su
-     * categoría vive en la sucursal donde se creó (casi siempre Central). Buscarla solo en la
-     * sucursal activa impedía, p.ej., cambiar el precio de COLPOSCOPIA desde otra sede
-     * («La categoría de inventario no existe…») aunque la categoría no se estaba tocando.
-     * Vale la de la sucursal activa o la de la sucursal dueña del producto.
-     */
-    const clinicasValidas = [clinicId, existing?.clinic].filter(Boolean);
+    // Las categorías del catálogo son compartidas entre sucursales de la empresa.
+    // Se conserva la sucursal dueña para productos históricos ya existentes.
+    const clinicasValidas = [...catalogClinics(clinicId), existing?.clinic].filter(Boolean);
     category = await InventoryCategory.findOne({ _id: body.inventoryCategory, clinic: { $in: clinicasValidas } });
     if (!category) throw Object.assign(new Error('La categoría de inventario no existe o no pertenece a la clínica'), { status: 400 });
     // La que ya tenía el producto no bloquea la edición aunque luego se haya desactivado.
@@ -94,7 +89,7 @@ async function applyInventoryCategory(clinicId, body, { enforce, existing = null
   } else if (body.categoria) {
     // Compatibilidad legacy: resolver por nombre normalizado dentro de la clínica.
     const target = normName(body.categoria);
-    const candidates = await InventoryCategory.find({ clinic: clinicId, kind: { $in: clasesValidas }, active: true });
+    const candidates = await InventoryCategory.find({ clinic: { $in: catalogClinics(clinicId) }, kind: { $in: clasesValidas }, active: true });
     category = candidates.find((c) => normName(c.name) === target) || null;
     if (category) body.inventoryCategory = category._id;
     else if (physical && enforce) {

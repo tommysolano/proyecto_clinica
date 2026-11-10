@@ -182,7 +182,8 @@ export default function ProductFormModal({
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
-    api.get('/inventory-advanced/categories')
+    setInvCategories([]);
+    api.get('/inventory-advanced/categories', { params: { catalog: 'company' } })
       .then((r) => { if (!cancelled) setInvCategories((r.data || []).filter((c) => c.active !== false)); })
       .catch(() => { if (!cancelled) setInvCategories([]); });
     return () => { cancelled = true; };

@@ -21,6 +21,7 @@ const { normalizeAssetConfig, assetCategoryIssues } = require('../utils/fixedAss
 const { sendError } = require('../utils/apiError');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
+const { sisterClinicsSync } = require('../utils/companies');
 
 exports.uploadMiddleware = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single('file');
 
@@ -329,6 +330,10 @@ exports.deleteWarehouse = async (req, res) => {
 // ----- Categorías -----
 exports.listCategories = async (req, res) => {
   const filter = { clinic: req.clinicId };
+  if (req.query.catalog === 'company') {
+    const clinics = sisterClinicsSync(req.clinicId, { includeInactive: true });
+    filter.clinic = { $in: clinics.length ? clinics : [req.clinicId] };
+  }
   if (req.query.kind) filter.kind = req.query.kind;
   const items = await InventoryCategory.find(filter)
     .populate('assetAccount depreciationAccount accumDepreciationAccount expenseAccount incomeAccount', 'code name')
