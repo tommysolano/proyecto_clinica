@@ -686,11 +686,12 @@ export default function ProductFormModal({
             </label>
             {productForm.includedComponents?.enabled && <>
               <p className="text-xs text-slate-600">Al cobrar se escogen los componentes; no aumentan el precio y se descuentan del inventario según su origen.</p>
-              <label className="block text-sm text-slate-700">Máximo de unidades por cada ítem vendido
+              <label className="block text-sm text-slate-700">Máximo de componentes incluidos por cada unidad vendida
                 <NumericInput min="1" value={productForm.includedComponents.maxQuantity}
                   onChange={(e) => setProductForm({ ...productForm, includedComponents: { ...productForm.includedComponents, maxQuantity: e.target.value } })}
                   className="input w-24 ml-2" />
               </label>
+              <p className="text-xs text-slate-600">Se suman las cantidades de todos los componentes elegidos, aunque sean de distintas categorías.</p>
               <p className="text-sm font-medium text-slate-700">Categorías permitidas</p>
               <div className="max-h-40 overflow-y-auto space-y-1">
                 {inventarioCats.map((c) => <label key={c._id} className="flex items-center gap-2 text-sm text-slate-700">

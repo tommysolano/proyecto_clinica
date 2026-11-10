@@ -106,13 +106,15 @@ test('componentes por categoría: hasta tres unidades incluidas, costo de invent
 });
 
 test('componentes por categoría: valida límite, unidades y categorías desde el servidor', async () => {
-  const { clinicId, suero, vitC, cobrar } = await escenario();
+  const { clinicId, suero, vitC, zinc, cobrar } = await escenario();
   const InventoryCategory = require('../models/InventoryCategory');
   const otherCat = await InventoryCategory.create({ clinic: clinicId, code: 'OTRA', name: 'Otra', kind: 'INVENTARIO' });
   const otro = await H.makeProduct(clinicId, { inventoryCategory: otherCat._id, stock: 5 });
   await Product.updateOne({ _id: suero._id }, { includedComponents: { enabled: true, maxQuantity: 3, categories: [vitC.inventoryCategory] } });
   const request = (linkedItems, quantity = 1) => cobrar({ items: [{ product: String(suero._id), quantity, linkedItems }] });
   assert.equal((await request([{ product: String(vitC._id), quantity: 4 }])).statusCode, 400);
+  assert.equal((await request([{ product: String(vitC._id), quantity: 2 }, { product: String(zinc._id), quantity: 2 }])).statusCode, 400);
+  assert.equal((await request([{ product: String(vitC._id), quantity: 2 }, { product: String(vitC._id), quantity: 2 }])).statusCode, 400);
   assert.equal((await request([{ product: String(vitC._id), quantity: 1.5 }])).statusCode, 400);
   assert.equal((await request([{ product: String(otro._id), quantity: 1 }])).statusCode, 400);
   await Product.updateOne({ _id: vitC._id }, { disabled: true });

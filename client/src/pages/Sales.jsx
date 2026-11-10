@@ -35,6 +35,7 @@ import DateInput from '../components/DateInput';
 import ServiciosSinCobro from '../components/ServiciosSinCobro';
 import ItemsVinculadosCobro from '../components/ItemsVinculadosCobro';
 import { FUENTES_VINCULADO } from '../constants/itemsVinculados';
+import { includedLimit, totalIncluded } from '../utils/includedComponents';
 import { serviciosDeLaCita, listaSinCobro, tipoSinCobro } from '../utils/serviciosSinCobro';
 import { soloActivos as soloUsuariosActivos } from '../utils/activeUsers';
 import { ROLE_LABELS } from '../utils/roles';
@@ -635,8 +636,12 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     if (!isService && newQty > it.stock && !(it.quantity > it.stock)) {
       toast(`${it.productName}: el inventario tiene ${it.stock}. Se cobra igual.`, { icon: '⚠️' });
     }
-    items[idx].quantity = newQty;
-    items[idx] = { ...items[idx], linked: reescalarVinculados(it.linked, newQty) };
+    const linked = reescalarVinculados(it.linked, newQty);
+    const limite = includedLimit({ ...it, quantity: newQty });
+    if (limite != null && totalIncluded(linked) > limite) {
+      return toast.error(`Reduce primero los componentes de «${it.productName}»: el máximo sería ${limite}.`);
+    }
+    items[idx] = { ...items[idx], quantity: newQty, linked };
     // Al subir la cantidad de un servicio de la cita, lo que pasa de lo de hoy queda
     // para citas futuras (sigue pudiéndose desmarcar).
     if (isService && citaPorCobrar && !modoReceta) items[idx].prepaid = prepagoPorDefecto(it.product, newQty);

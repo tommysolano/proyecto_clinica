@@ -3,6 +3,7 @@ import SearchableSelect from './SearchableSelect';
 import { HiOutlineTrash } from 'react-icons/hi2';
 import { fmtDate } from '../utils/date';
 import { FUENTES_VINCULADO as FUENTES } from '../constants/itemsVinculados';
+import { totalIncluded, includedLimit, remainingIncluded, boundedIncludedQuantity } from '../utils/includedComponents';
 
 /**
  * ÍTEMS VINCULADOS DE UNA LÍNEA DEL COBRO (oct-2026).
@@ -27,6 +28,8 @@ import { FUENTES_VINCULADO as FUENTES } from '../constants/itemsVinculados';
 export default function ItemsVinculadosCobro({ item, guardados, hayPaciente, onChange }) {
   const opciones = item.linkOptions || [];
   const elegidos = item.linked || [];
+  const limite = includedLimit(item);
+  const restantes = remainingIncluded(item, elegidos);
   if (!opciones.length) return item.includedMax != null
     ? <p className="mt-1 text-xs text-amber-700">No hay componentes disponibles en las categorías configuradas.</p>
     : null;
@@ -38,17 +41,19 @@ export default function ItemsVinculadosCobro({ item, guardados, hayPaciente, onC
   const quitar = (idx) => onChange(elegidos.filter((_, i) => i !== idx));
   const agregar = (productId, source) => {
     const op = opciones.find((o) => String(o.product) === String(productId));
-    if (!op) return;
+    if (!op || (restantes != null && restantes < 1)) return;
     const g = guardados.get(String(op.product));
     const fuente = source || (hayPaciente && g?.enClinica > 0 ? 'paciente' : 'inventario');
+    const propuesta = +(Number(op.quantity || 1) * Number(item.quantity || 1)).toFixed(4);
+    const cantidad = restantes == null ? propuesta : Math.min(propuesta, restantes);
     onChange([...elegidos, {
       product: op.product,
       productName: op.productName,
       code: op.code,
       base: op.quantity,
-      quantity: +(Number(op.quantity || 1) * Number(item.quantity || 1)).toFixed(4),
+      quantity: cantidad,
       source: fuente,
-      cantAuto: true,
+      cantAuto: cantidad === propuesta,
       fuenteAuto: !source,
     }]);
   };
@@ -66,8 +71,8 @@ export default function ItemsVinculadosCobro({ item, guardados, hayPaciente, onC
       <p className="text-[11px] font-semibold text-cyan-800 m-0">
         Ítems que se usan <span className="font-normal text-cyan-700">· no suman al precio</span>
       </p>
-      {item.includedMax != null && <p className="text-[11px] text-cyan-700 m-0">
-        {(elegidos || []).reduce((n, l) => n + (Number(l.quantity) || 0), 0)} de {item.includedMax * Number(item.quantity || 1)} unidades incluidas
+      {limite != null && <p className="text-[11px] text-cyan-700 m-0">
+        {totalIncluded(elegidos)} de {limite} unidades incluidas{restantes === 0 ? ' · Límite alcanzado' : ''}
       </p>}
 
       {delPaciente.map((o) => {
@@ -80,14 +85,14 @@ export default function ItemsVinculadosCobro({ item, guardados, hayPaciente, onC
               {g.llevado > 0 && <> · compró y se llevó <strong>{g.llevado}</strong>{g.ultimaLlevada ? ` (${fmtDate(g.ultimaLlevada)})` : ''}</>}
             </span>
             {g.enClinica > 0 && (
-              <button type="button" onClick={() => agregar(o.product, 'paciente')}
-                className="px-2 py-0.5 rounded bg-amber-600 text-white border-none cursor-pointer text-[11px]">
+              <button type="button" disabled={restantes === 0} onClick={() => agregar(o.product, 'paciente')}
+                className="px-2 py-0.5 rounded bg-amber-600 text-white border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed text-[11px]">
                 Usar lo suyo
               </button>
             )}
             {g.llevado > 0 && (
-              <button type="button" onClick={() => agregar(o.product, 'trajo')}
-                className="px-2 py-0.5 rounded bg-white text-amber-800 border border-amber-400 cursor-pointer text-[11px]">
+              <button type="button" disabled={restantes === 0} onClick={() => agregar(o.product, 'trajo')}
+                className="px-2 py-0.5 rounded bg-white text-amber-800 border border-amber-400 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed text-[11px]">
                 Lo trajo
               </button>
             )}
@@ -105,12 +110,20 @@ export default function ItemsVinculadosCobro({ item, guardados, hayPaciente, onC
               {l.productName}
               {l.code && <span className="ml-1 text-[10px] text-slate-400 font-mono">{l.code}</span>}
             </span>
-            <NumericInput
+            {limite != null ? <input
+              type="text"
+              inputMode="numeric"
+              value={l.quantity}
+              onChange={(e) => set(idx, { quantity: boundedIncludedQuantity(e.target.value, limite - totalIncluded(elegidos.filter((_, i) => i !== idx))) })}
+              title="Cantidad usada"
+              aria-label={`Cantidad de ${l.productName}`}
+              className="input-sm w-14 text-center"
+            /> : <NumericInput
               value={l.quantity}
               onChange={(e) => set(idx, { quantity: e.target.value })}
               title="Cantidad usada"
               className="input-sm w-14 text-center"
-            />
+            />}
             <select
               value={l.source}
               onChange={(e) => set(idx, { source: e.target.value })}
@@ -147,6 +160,7 @@ export default function ItemsVinculadosCobro({ item, guardados, hayPaciente, onC
           getSearchText={(o) => `${o.productName} ${o.code || ''}`}
           placeholder={elegidos.length ? '+ Agregar otro ítem' : '+ Escoger los ítems que se usan'}
           searchPlaceholder="Buscar ítem vinculado…"
+          disabled={restantes === 0}
           size="sm"
           wrapOptions
         />
