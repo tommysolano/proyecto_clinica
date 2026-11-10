@@ -40,6 +40,10 @@ function sanitizeOutput(config) {
   delete obj.certificatePassword;
   obj.smtpPasswordConfigured = !!obj.smtpPassword;
   delete obj.smtpPassword;
+  obj.gmailClientSecretConfigured = !!obj.gmailClientSecret;
+  obj.gmailConnected = !!obj.gmailRefreshToken;
+  for (const key of ['gmailClientSecret', 'gmailRefreshToken', 'gmailOauthStateHash', 'gmailOauthUser', 'gmailOauthExpires']) delete obj[key];
+  obj.gmailRedirectUri = process.env.GMAIL_OAUTH_REDIRECT_URI || '';
   return obj;
 }
 
@@ -94,12 +98,26 @@ exports.upsertConfig = async (req, res) => {
 
 exports.saveEmailConfig = async (req, res) => {
   try {
-    const { enabled, from, host, port, secure, user, password } = req.body || {};
+    const { enabled, from, host, port, secure, user, password, provider = 'smtp', gmailClientId, gmailClientSecret } = req.body || {};
+    if (!['smtp', 'gmail'].includes(provider)) return res.status(400).json({ message: 'Proveedor de correo inválido.' });
     if (typeof enabled !== 'boolean' || typeof secure !== 'boolean') return res.status(400).json({ message: 'Configuración de correo inválida' });
     const sri = await sucursalSri(req.clinicId);
     const existing = await InvoicingConfig.findOne({ clinic: sri });
+    if (provider === 'gmail') {
+      const address = String(from || '').trim().toLowerCase();
+      const clientId = String(gmailClientId || '').trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address) || !clientId || !(gmailClientSecret || existing?.gmailClientSecret)) return res.status(400).json({ message: 'Complete el remitente y las credenciales de Google.' });
+      const changed = clientId !== existing?.gmailClientId || !!gmailClientSecret || address !== existing?.emailRemitente?.toLowerCase();
+      if (enabled && (changed || !existing?.gmailRefreshToken || existing.gmailAccount !== address)) return res.status(400).json({ message: 'Guarde la configuración desactivada y conecte la cuenta de Google antes de activar el envío.' });
+      const fields = { smtpEnabled: enabled, emailProvider: provider, emailRemitente: address, gmailClientId: clientId };
+      if (gmailClientSecret) fields.gmailClientSecret = encrypt(gmailClientSecret);
+      const update = { $set: fields, $setOnInsert: { clinic: sri } };
+      if (changed) update.$unset = { gmailRefreshToken: '', gmailAccount: '', gmailOauthStateHash: '', gmailOauthUser: '', gmailOauthExpires: '' };
+      const config = await InvoicingConfig.findOneAndUpdate({ clinic: sri }, update, { new: true, upsert: true, runValidators: true });
+      return res.json(sanitizeOutput(config));
+    }
     const p = Number(port);
-    const fields = { smtpEnabled: enabled, emailRemitente: String(from || '').trim(), smtpHost: String(host || '').trim(),
+    const fields = { smtpEnabled: enabled, emailProvider: 'smtp', emailRemitente: String(from || '').trim(), smtpHost: String(host || '').trim(),
       smtpPort: p || undefined, smtpSecure: secure, smtpUser: String(user || '').trim() };
     if (enabled && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(fields.emailRemitente) || !fields.smtpHost || !Number.isInteger(p) || p < 1 || p > 65535 || !fields.smtpUser || !(password || existing?.smtpPassword))) {
       return res.status(400).json({ message: 'Complete el remitente, servidor, puerto, usuario y contraseña SMTP.' });
@@ -113,13 +131,50 @@ exports.saveEmailConfig = async (req, res) => {
 };
 
 exports.verifyEmailConfig = async (req, res) => {
+  let config;
   try {
-    const config = await InvoicingConfig.findOne({ clinic: await sucursalSri(req.clinicId) });
-    await require('../services/invoiceEmail').verifyTransport(config);
-    res.json({ message: 'Conexión SMTP verificada correctamente.' });
+    config = await InvoicingConfig.findOne({ clinic: await sucursalSri(req.clinicId) });
+    if (config?.emailProvider === 'gmail') await require('../services/gmailApi').verify(config);
+    else await require('../services/invoiceEmail').verifyTransport(config);
+    res.json({ message: config?.emailProvider === 'gmail' ? 'Cuenta de Gmail verificada correctamente.' : 'Conexión SMTP verificada correctamente.' });
   } catch (error) {
+    if (config?.emailProvider === 'gmail') return res.status(400).json({ code: error.code || 'GMAIL_ERROR', message: error.code === 'GMAIL_CONNECTION' ? 'No se pudo conectar con Google. Revise la conexión del servidor.' : 'No se pudo verificar Gmail. Compruebe la cuenta y vuelva a conectarla.' });
     res.status(400).json(require('../services/invoiceEmail').describeSmtpError(error));
   }
+};
+
+exports.startGmailAuth = async (req, res) => {
+  try {
+    const crypto = require('crypto');
+    const redirect = process.env.GMAIL_OAUTH_REDIRECT_URI;
+    if (!redirect || !/^https:\/\//.test(redirect)) return res.status(400).json({ message: 'Configure GMAIL_OAUTH_REDIRECT_URI con la URL HTTPS de Configuración SRI.' });
+    const sri = await sucursalSri(req.clinicId);
+    const config = await InvoicingConfig.findOne({ clinic: sri });
+    if (config?.emailProvider !== 'gmail' || !config.gmailClientId || !config.gmailClientSecret) return res.status(400).json({ message: 'Guarde primero los datos de Gmail.' });
+    const state = crypto.randomBytes(32).toString('base64url');
+    await InvoicingConfig.updateOne({ _id: config._id }, { $set: { gmailOauthStateHash: crypto.createHash('sha256').update(state).digest('hex'), gmailOauthUser: String(req.user._id), gmailOauthExpires: new Date(Date.now() + 10 * 60 * 1000) } });
+    const params = new URLSearchParams({ client_id: config.gmailClientId, redirect_uri: redirect, response_type: 'code', scope: require('../services/gmailApi').SCOPES.join(' '), access_type: 'offline', prompt: 'consent', state, login_hint: config.emailRemitente });
+    res.json({ url: `https://accounts.google.com/o/oauth2/v2/auth?${params}` });
+  } catch { res.status(500).json({ message: 'No se pudo iniciar la conexión con Google.' }); }
+};
+
+exports.completeGmailAuth = async (req, res) => {
+  try {
+    const crypto = require('crypto');
+    const { state, code } = req.body || {};
+    if (typeof state !== 'string' || typeof code !== 'string' || !state || !code || state.length > 256 || code.length > 4096) return res.status(400).json({ message: 'Respuesta de autorización inválida.' });
+    const sri = await sucursalSri(req.clinicId);
+    const config = await InvoicingConfig.findOneAndUpdate({ clinic: sri, emailProvider: 'gmail', gmailOauthStateHash: crypto.createHash('sha256').update(state).digest('hex'), gmailOauthUser: String(req.user._id), gmailOauthExpires: { $gt: new Date() } }, { $unset: { gmailOauthStateHash: '', gmailOauthUser: '', gmailOauthExpires: '' } }, { new: true });
+    if (!config) return res.status(400).json({ message: 'La autorización caducó o no corresponde a esta sesión. Intente conectar de nuevo.' });
+    const gmail = require('../services/gmailApi');
+    const tokens = await gmail.token({ code, client_id: config.gmailClientId, client_secret: decrypt(config.gmailClientSecret), redirect_uri: process.env.GMAIL_OAUTH_REDIRECT_URI, grant_type: 'authorization_code' });
+    if (!tokens.refresh_token || !String(tokens.scope || '').split(' ').includes('https://www.googleapis.com/auth/gmail.send')) return res.status(400).json({ message: 'Google no concedió el permiso de envío permanente. Vuelva a conectar y acepte el permiso.' });
+    const account = await gmail.account(tokens.access_token);
+    if (account !== config.emailRemitente.toLowerCase()) return res.status(400).json({ message: 'La cuenta de Google elegida no coincide con el remitente guardado.' });
+    const updated = await InvoicingConfig.findOneAndUpdate({ _id: config._id, emailProvider: 'gmail', gmailClientId: config.gmailClientId, gmailClientSecret: config.gmailClientSecret, emailRemitente: config.emailRemitente }, { $set: { gmailRefreshToken: encrypt(tokens.refresh_token), gmailAccount: account } }, { new: true });
+    if (!updated) return res.status(400).json({ message: 'La configuración cambió durante la autorización. Inténtelo de nuevo.' });
+    res.json(sanitizeOutput(updated));
+  } catch { res.status(400).json({ message: 'No se pudo completar la conexión con Google. Intente nuevamente.' }); }
 };
 
 exports.uploadCertificate = async (req, res) => {

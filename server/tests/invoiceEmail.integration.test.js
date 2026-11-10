@@ -31,6 +31,39 @@ test('configuración SMTP cifra y oculta la contraseña y permite conservarla', 
   assert.equal(read.payload.smtpPassword, undefined);
 });
 
+test('Gmail requiere autorización, cifra secretos y rechaza estados reutilizados', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const gmail = require('../services/gmailApi');
+  const oldToken = gmail.token, oldAccount = gmail.account;
+  const oldRedirect = process.env.GMAIL_OAUTH_REDIRECT_URI;
+  process.env.GMAIL_OAUTH_REDIRECT_URI = 'https://clinica.example/invoicing-config';
+  const data = { ...smtp, enabled: false, provider: 'gmail', from: 'clinica@gmail.com', gmailClientId: 'client-id', gmailClientSecret: 'client-secret' };
+  const run = (controller, body = {}) => H.runController(controller, H.mockReq(clinicId, userId, body));
+  try {
+    assert.equal((await run(configCtrl.saveEmailConfig, { ...data, enabled: true })).statusCode, 400);
+    const saved = await run(configCtrl.saveEmailConfig, data);
+    assert.equal(saved.statusCode, 200);
+    assert.equal(saved.payload.gmailClientSecret, undefined);
+    assert.equal(saved.payload.gmailRefreshToken, undefined);
+    assert.notEqual((await InvoicingConfig.findOne({ clinic: clinicId })).gmailClientSecret, 'client-secret');
+    const started = await run(configCtrl.startGmailAuth);
+    const state = new URL(started.payload.url).searchParams.get('state');
+    gmail.token = async () => ({ access_token: 'access', refresh_token: 'refresh-secret', scope: 'openid email https://www.googleapis.com/auth/gmail.send' });
+    gmail.account = async () => 'clinica@gmail.com';
+    const complete = await run(configCtrl.completeGmailAuth, { state, code: 'code' });
+    assert.equal(complete.statusCode, 200);
+    assert.equal(complete.payload.gmailConnected, true);
+    assert.equal(complete.payload.gmailRefreshToken, undefined);
+    assert.notEqual((await InvoicingConfig.findOne({ clinic: clinicId })).gmailRefreshToken, 'refresh-secret');
+    assert.equal((await run(configCtrl.completeGmailAuth, { state, code: 'code' })).statusCode, 400);
+    assert.equal((await run(configCtrl.saveEmailConfig, { ...data, gmailClientSecret: '', enabled: true })).statusCode, 200);
+    assert.equal((await run(configCtrl.saveEmailConfig, { ...data, gmailClientSecret: '', from: 'otra@gmail.com', enabled: true })).statusCode, 400);
+  } finally {
+    gmail.token = oldToken; gmail.account = oldAccount;
+    if (oldRedirect === undefined) delete process.env.GMAIL_OAUTH_REDIRECT_URI; else process.env.GMAIL_OAUTH_REDIRECT_URI = oldRedirect;
+  }
+});
+
 test('diagnóstico distingue causas SMTP y no revela el mensaje ni la respuesta original', async () => {
   const cases = [
     [{ code: 'EAUTH', command: 'AUTH PLAIN', responseCode: 535 }, 'SMTP_AUTH'],
