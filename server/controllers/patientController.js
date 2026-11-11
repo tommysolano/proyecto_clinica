@@ -452,6 +452,21 @@ exports.createPatient = async (req, res) => {
     if (ajena) {
       return res.status(400).json({ message: `Ya existe un paciente con la identificación ${ajena}` });
     }
+    // ¿Es alguien que ya está registrado con el nombre escrito distinto (tildes)
+    // o con el mismo celular? Se PREGUNTA, no se prohíbe: ver utils/patientDuplicates.
+    if (!req.body.confirmDuplicate) {
+      const { posiblesDuplicados } = require('../utils/patientDuplicates');
+      const matches = await posiblesDuplicados({ ...cuerpo, cedula });
+      if (matches.length) {
+        return res.status(409).json({
+          code: 'POSSIBLE_DUPLICATE',
+          message: matches.length > 1
+            ? `Ya hay ${matches.length} pacientes que parecen ser esta persona.`
+            : `Ya hay un paciente que parece ser esta persona: ${matches[0].name}.`,
+          matches,
+        });
+      }
+    }
 
     const patient = await Patient.create({
       ...cuerpo,
@@ -546,15 +561,87 @@ exports.updatePatient = async (req, res) => {
   }
 };
 
+/**
+ * ¿Hay algo en la base que apunte a este paciente? Recorre TODOS los modelos
+ * registrados que tengan un campo `patient` (así un modelo nuevo entra solo)
+ * más las referencias "polimórficas" de contabilidad y los referidos.
+ */
+async function pacienteTieneDatos(patientId) {
+  const mongoose = require('mongoose');
+  // Que TODOS los modelos estén registrados aunque esta ruta sea la primera en
+  // tocarlos (PatientCredit, PatientItem… no se cargan en todos lados).
+  const fs = require('fs');
+  const path = require('path');
+  const dir = path.join(__dirname, '..', 'models');
+  for (const f of fs.readdirSync(dir)) {
+    if (f.endsWith('.js')) {
+      try { require(path.join(dir, f)); } catch (_) { /* archivo que no es modelo */ }
+    }
+  }
+  for (const name of mongoose.modelNames()) {
+    const Model = mongoose.model(name);
+    if (Model.modelName === 'Patient' || !Model.schema.path('patient')) continue;
+    // eslint-disable-next-line no-await-in-loop
+    if (await Model.exists({ patient: patientId })) return name;
+  }
+  const especiales = [
+    ['Payment', { partyModel: 'Patient', partyRef: patientId }],
+    ['CashFlowManualItem', { partyModel: 'Patient', partyRef: patientId }],
+    ['Receivable', { 'party.model': 'Patient', 'party.ref': patientId }],
+    ['Payable', { 'party.model': 'Patient', 'party.ref': patientId }],
+    ['Patient', { referredByType: 'patient', referredById: patientId }],
+    ['CashFlowMapping', { matchType: 'CUSTOMER', matchValue: String(patientId) }],
+  ];
+  for (const [name, filtro] of especiales) {
+    if (!mongoose.modelNames().includes(name)) continue;
+    // eslint-disable-next-line no-await-in-loop
+    if (await mongoose.model(name).exists(filtro)) return name;
+  }
+  return null;
+}
+
+/**
+ * DELETE /patients/:id
+ *
+ * Antes solo ponía `active: false` y la cédula se quedaba ocupada: la ficha
+ * desaparecía de los buscadores pero bloqueaba registrar esa cédula en otro
+ * paciente («ya existe» sin que nadie lo encontrara). Ahora:
+ *  - Sin nada vinculado → se BORRA de verdad.
+ *  - Con citas/ventas/historia… → no se puede borrar sin romper esos
+ *    registros, así que se desactiva y SE LIBERA la cédula (queda guardada en
+ *    `deletedIdentification` para auditoría).
+ */
 exports.deletePatient = async (req, res) => {
   try {
-    const patient = await Patient.findByIdAndUpdate(
-      req.params.id,
-      { active: false },
-      { new: true }
-    );
+    const patient = await Patient.findById(req.params.id);
     if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
-    res.json({ message: 'Paciente eliminado' });
+
+    const vinculo = await pacienteTieneDatos(patient._id);
+    if (!vinculo) {
+      await Patient.deleteOne({ _id: patient._id });
+      return res.json({ message: 'Paciente eliminado', hardDeleted: true });
+    }
+
+    const ids = [patient.cedula, ...(patient.identificationAliases || [])]
+      .map((x) => String(x || '').trim())
+      .filter(Boolean);
+    await Patient.updateOne(
+      { _id: patient._id },
+      {
+        $set: {
+          active: false,
+          cedula: '',
+          identificationAliases: [],
+          deletedAt: new Date(),
+          ...(ids.length ? { deletedIdentification: ids } : {}),
+        },
+      }
+    );
+    res.json({
+      message: 'Paciente eliminado (tenía registros vinculados: queda archivado y su cédula liberada)',
+      hardDeleted: false,
+      linkedTo: vinculo,
+    });
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar paciente' });
   }

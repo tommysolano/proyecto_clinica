@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, Fragment, lazy, Suspense } from '
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import api from '../api/axios';
+import useAltaPaciente from '../components/useAltaPaciente';
 import Modal from '../components/Modal';
 import { downloadFile } from '../utils/download';
 import ProductAutocomplete from '../components/ProductAutocomplete';
@@ -627,6 +628,7 @@ const hhmmToMin = (s) => {
 
 export default function Appointments() {
   const navigate = useNavigate();
+  const { crearPaciente, modalDuplicado } = useAltaPaciente();
   const [urlParams, setUrlParams] = useSearchParams();
   const { user, role, hasRole, activeClinic, clinics } = useAuth();
   // 'odontologia' va enumerada y no por 'doctor', que expande a todas las
@@ -1685,9 +1687,12 @@ export default function Appointments() {
        */
       let pacienteId = form.patient;
       if (altaNuevo) {
-        const { data: nuevo } = await api.post('/patients', payloadDePaciente(patientForm, patientTelefonos));
-        pacienteId = nuevo?._id || '';
-        toast.success('Paciente registrado');
+        // Con aviso si ya parece registrado (mismo nombre sin tildes / celular):
+        // «Es esta persona» agenda la cita a la ficha que ya existía.
+        const r = await crearPaciente(payloadDePaciente(patientForm, patientTelefonos));
+        if (!r) { setSaving(false); return; }
+        pacienteId = r.patient?._id || '';
+        toast.success(r.existente ? 'Se usó la ficha que ya existía' : 'Paciente registrado');
       }
       /**
        * QUIÉN ATIENDE viaja como la MISMA cola que manda el mostrador
@@ -2551,6 +2556,7 @@ export default function Appointments() {
 
   return (
     <div>
+      {modalDuplicado}
       {/**
         * SIN TÍTULO. La barra superior de la app ya dice «Calendario y Citas»
         * (sale del propio menú, ver `pageTitle` en Layout.jsx): repetirlo aquí a

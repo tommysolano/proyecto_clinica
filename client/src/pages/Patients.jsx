@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../api/axios';
+import useAltaPaciente from '../components/useAltaPaciente';
 import useDebounce from '../hooks/useDebounce';
 import { downloadFile } from '../utils/download';
 import { todayEc, nowEcHHMM } from '../utils/date';
@@ -98,6 +99,7 @@ const emptyApt = {
 
 export default function Patients() {
   const navigate = useNavigate();
+  const { crearPaciente, modalDuplicado } = useAltaPaciente();
   const { hasRole, clinics, activeClinic } = useAuth();
   /**
    * LAS SUCURSALES PARA AGENDAR SON LAS DE LA ORGANIZACIÓN, no las del usuario.
@@ -310,9 +312,11 @@ export default function Patients() {
         await api.put(`/patients/${editing}`, payload);
         toast.success('Paciente actualizado');
       } else {
-        const res = await api.post('/patients', payload);
-        createdId = res.data._id;
-        toast.success('Paciente creado');
+        // Con aviso si ya parece registrado (mismo nombre sin tildes / celular).
+        const r = await crearPaciente(payload);
+        if (!r) { setSaving(false); return; }
+        createdId = r.patient._id;
+        toast.success(r.existente ? 'Se usó la ficha que ya existía' : 'Paciente creado');
       }
       // Crear cita asociada si se solicitó
       if (aptForm.enabled && !editing && createdId) {
@@ -397,6 +401,7 @@ export default function Patients() {
 
   return (
     <div className="space-y-6">
+      {modalDuplicado}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="w-11 h-11 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shadow-sm">

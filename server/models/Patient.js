@@ -147,6 +147,14 @@ const patientSchema = new mongoose.Schema(
     mergedInto: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', default: null, index: true },
     mergedAt: { type: Date, default: null },
     mergedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    /**
+     * Ficha ELIMINADA que no se pudo borrar físicamente porque tiene citas,
+     * ventas, historia… colgando. Su cédula se SACA de `cedula` y queda aquí,
+     * solo para auditoría: así deja de ocupar el índice único y se puede volver
+     * a registrar esa identificación en otro paciente (nov-2026).
+     */
+    deletedIdentification: { type: [String], default: undefined },
+    deletedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

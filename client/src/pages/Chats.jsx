@@ -64,6 +64,7 @@ import {
   HiOutlineHeart,
 } from 'react-icons/hi2';
 import api from '../api/axios';
+import useAltaPaciente from '../components/useAltaPaciente';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent, useSocket } from '../context/SocketContext';
 import SameSlotPanel from '../components/SameSlotPanel';
@@ -7623,6 +7624,7 @@ function TransferChatModal({ conv, meId, canAutoAssign, onClose, onTransfer }) {
  */
 function SelectorOtroPaciente({ valor, onChange, sinAlta = false }) {
   const { hasRole } = useAuth();
+  const { crearPaciente, modalDuplicado } = useAltaPaciente();
   // Espejo del `requireRole` de POST /patients (con 'optica' enumerada aparte,
   // que en el cliente no expande desde 'doctor'). `sinAlta`: solo buscar (al
   // asignar un chat a alguien que YA está registrado).
@@ -7660,14 +7662,15 @@ function SelectorOtroPaciente({ valor, onChange, sinAlta = false }) {
     if (!firstName && !lastName) return toast.error('Escribe el nombre de la persona');
     setGuardando(true);
     try {
-      const { data } = await api.post('/patients', {
+      const r = await crearPaciente({
         firstName,
         lastName,
         email: (alta.email || '').trim(),
       });
-      onChange(data);
+      if (!r) return;
+      onChange(r.patient);
       setAlta(null);
-      toast.success('Paciente agregado al sistema');
+      toast.success(r.existente ? 'Se usó la ficha que ya existía' : 'Paciente agregado al sistema');
     } catch (err) {
       toast.error(err.response?.data?.message || 'No se pudo registrar a la persona');
     } finally {
@@ -7696,6 +7699,7 @@ function SelectorOtroPaciente({ valor, onChange, sinAlta = false }) {
   if (alta) {
     return (
       <div className="space-y-2 bg-white border border-slate-200 rounded-lg p-2">
+        {modalDuplicado}
         <input
           autoFocus
           value={alta.fullName}
