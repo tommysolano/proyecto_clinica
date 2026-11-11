@@ -443,6 +443,10 @@ else
 fi
 
 echo "==> 6/6 Tareas de UNA SOLA VEZ que exigen el codigo NUEVO ya corriendo"
+# Las facturas históricas se encolan una vez; la cola existente realiza los envíos.
+if ! ( cd "$APP_DIR/server" && node scripts/encolarFacturasHistoricasOnce.js --commit ); then
+  echo "ADVERTENCIA: no se pudo encolar el histórico de facturas; revisar Gmail y reintentar en el siguiente despliegue."
+fi
 # Va DESPUES del reinicio a proposito: esta tarea borra un estado que el codigo VIEJO
 # fabricaba solo. Si corriera antes (en el paso 4), el backend viejo, todavia vivo,
 # podria volver a crear una ventana fantasma entre la limpieza y el reinicio, y la

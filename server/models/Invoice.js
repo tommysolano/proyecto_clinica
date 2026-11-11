@@ -117,6 +117,7 @@ const invoiceSchema = new mongoose.Schema(
       lockedUntil: { type: Date, default: null },
       sentAt: { type: Date, default: null },
       error: { type: String, default: '' },
+      historicalBatch: { type: String, default: '' },
     },
     telefonoComprador: { type: String },
     // Totales
