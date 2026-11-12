@@ -105,6 +105,21 @@ test('vender con OTRO precio de la lista usa ese precio', async () => {
   assert.equal(v.payload.items[0].unitPrice, 80);
 });
 
+test('precios con el mismo nombre se cobran por el importe seleccionado', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const p = await H.runController(products.createProduct, H.mockReq(clinicId, userId, nuevoProducto({
+    salePrices: [{ name: 'General', price: 100, active: true }, { name: 'General', price: 80, active: false }],
+  })));
+  const body = { items: [{ product: p.payload._id, quantity: 1, priceName: 'General', unitPrice: 80 }], paymentMethod: 'efectivo', date: H.docDate(0) };
+  const preview = await H.runController(sale.previewDiscounts, H.mockReq(clinicId, userId, body));
+  assert.equal(preview.statusCode, 200, JSON.stringify(preview.payload));
+  const venta = await H.runController(sale.createSale, H.mockReq(clinicId, userId, body));
+  assert.equal(venta.statusCode, 201, JSON.stringify(venta.payload));
+  assert.equal(venta.payload.items[0].unitPrice, 80);
+  const invalido = await H.runController(sale.createSale, H.mockReq(clinicId, userId, { ...body, items: [{ ...body.items[0], unitPrice: 1 }] }));
+  assert.equal(invalido.statusCode, 400);
+});
+
 test('sin indicar precio se cobra el ACTIVO', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const p = await H.runController(products.createProduct, H.mockReq(clinicId, userId, nuevoProducto({

@@ -49,14 +49,21 @@ function resolveUnitPrice(product, item) {
 
   // 1) Por nombre de precio: es lo que manda la UI y no depende de redondeos.
   if (item.priceName) {
-    const elegido = lista.find((p) => String(p.name) === String(item.priceName));
-    if (!elegido) {
+    const coincidencias = lista.filter((p) => String(p.name) === String(item.priceName));
+    if (!coincidencias.length) {
       throw Object.assign(
         new Error(`El precio "${item.priceName}" no existe en la lista de "${product.name}"`),
         { status: 400 }
       );
     }
-    return Number(elegido.price);
+    // Si hay nombres repetidos, el importe distingue la opcion y debe pertenecer a ese nombre.
+    if (coincidencias.length > 1 && item.unitPrice !== undefined && item.unitPrice !== null && item.unitPrice !== '') {
+      const pedido = Number(item.unitPrice);
+      const elegido = coincidencias.find((p) => Number.isFinite(pedido) && Math.abs(Number(p.price) - pedido) < 0.005);
+      if (!elegido) throw Object.assign(new Error(`El precio elegido para "${product.name}" ya no esta disponible`), { status: 400 });
+      return Number(elegido.price);
+    }
+    return Number(coincidencias[0].price);
   }
 
   // 2) Por importe: se admite solo si coincide con alguno de la lista.

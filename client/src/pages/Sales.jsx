@@ -586,11 +586,11 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
 
     // Precio: el ACTIVO del producto por defecto; si en el buscador se eligió otro de la lista,
     // ese. Se guarda el NOMBRE del precio además del importe: es lo que valida el backend
-    // (dos precios pueden coincidir en importe y el nombre no depende de redondeos).
+    // junto con el importe, para distinguir tambien nombres repetidos.
     const lista = priceListOf(product);
     // (El precio escogido en el buscador es del producto de `currentItem`, no de otro.)
-    const precioPedido = String(currentItem.product) === String(product._id) ? currentItem.priceName : '';
-    const elegido = lista.find((p) => p.name === precioPedido) || activePriceOf(product);
+    const precioPedido = String(currentItem.product) === String(product._id) ? currentItem.priceIndex : undefined;
+    const elegido = lista[precioPedido] || activePriceOf(product);
 
     setForm((f) => ({
       ...f,
@@ -621,7 +621,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         },
       ],
     }));
-    setCurrentItem({ product: '', quantity: 1, priceName: '' });
+    setCurrentItem({ product: '', quantity: 1 });
   };
 
   const removeItem = (idx) => {
@@ -1974,7 +1974,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                     value={currentItem.product}
                     onSelect={(p) =>
                       // Al cambiar de producto se descarta el precio elegido: pertenecía al anterior.
-                      setCurrentItem({ ...currentItem, product: p?._id || '', priceName: '' })
+                      setCurrentItem({ ...currentItem, product: p?._id || '', priceIndex: undefined })
                     }
                     // ENTER escoge y agrega directo (sin el botón «Agregar»); las flechas
                     // recorren las opciones.
@@ -1989,17 +1989,17 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                   const prod = products.find((p) => p._id === currentItem.product);
                   const lista = prod ? priceListOf(prod) : [];
                   if (lista.length < 2) return null;
-                  const sel = currentItem.priceName || activePriceOf(prod).name;
+                  const sel = currentItem.priceIndex ?? Math.max(0, lista.findIndex((p) => p.active));
                   return (
                     <div className="basis-full sm:basis-auto sm:w-52 shrink-0">
                       <label className="block text-[11px] font-semibold text-slate-500 mb-1">Precio</label>
                       <select
                         value={sel}
-                        onChange={(e) => setCurrentItem({ ...currentItem, priceName: e.target.value })}
+                        onChange={(e) => setCurrentItem({ ...currentItem, priceIndex: Number(e.target.value) })}
                         className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white outline-none"
                       >
-                        {lista.map((p) => (
-                          <option key={p.name} value={p.name}>
+                        {lista.map((p, i) => (
+                          <option key={i} value={i}>
                             {p.name} — ${Number(p.price).toFixed(2)}{p.active ? ' (activo)' : ''}
                           </option>
                         ))}
@@ -2129,9 +2129,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                             />
                           ) : (item.priceList || []).length > 1 ? (
                             <select
-                              value={item.priceName || ''}
+                              value={Math.max(0, item.priceList.findIndex((p) => p.name === item.priceName && p.price === item.unitPrice))}
                               onChange={(e) => {
-                                const elegido = item.priceList.find((p) => p.name === e.target.value);
+                                const elegido = item.priceList[Number(e.target.value)];
                                 if (!elegido) return;
                                 const items = [...form.items];
                                 items[idx] = { ...items[idx], priceName: elegido.name, unitPrice: elegido.price };
@@ -2140,8 +2140,8 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                               title="Precio de la lista del producto"
                               className="px-2 py-1 border border-slate-300 rounded text-sm bg-white outline-none text-right"
                             >
-                              {item.priceList.map((p) => (
-                                <option key={p.name} value={p.name}>{p.name} — ${Number(p.price).toFixed(2)}</option>
+                              {item.priceList.map((p, i) => (
+                                <option key={i} value={i}>{p.name} — ${Number(p.price).toFixed(2)}</option>
                               ))}
                             </select>
                           ) : (
