@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { HiOutlineMagnifyingGlass, HiOutlineXMark } from 'react-icons/hi2';
 
 /**
@@ -57,12 +58,13 @@ export default function ProductAutocomplete({
     }
   }, [value, list]);
 
-  // Cerrar al hacer click fuera
+  // Cerrar al hacer click fuera (la lista vive en un portal: también cuenta como «dentro»).
+  const popRef = useRef(null);
   useEffect(() => {
     const onDoc = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
-        setOpen(false);
-      }
+      if (wrapRef.current?.contains(e.target)) return;
+      if (popRef.current?.contains(e.target)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
@@ -110,6 +112,48 @@ export default function ProductAutocomplete({
     setOpen(false);
     onSelect?.(null);
   };
+
+  /**
+   * LISTA EN PORTAL (nov-2026). Antes era `absolute` dentro del buscador y la recortaba
+   * cualquier contenedor con `overflow` (las tarjetas del modal de cobro llevan
+   * `overflow-hidden`): solo se veía la primera opción. Ahora se pinta en <body> con
+   * posición fija bajo el input —o encima, si abajo no cabe— y se recoloca al hacer
+   * scroll o cambiar el tamaño de la ventana.
+   */
+  const [pos, setPos] = useState(null);
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    const colocar = () => {
+      const r = wrapRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const margen = 8;
+      const abajo = window.innerHeight - r.bottom - margen;
+      const arriba = r.top - margen;
+      const haciaArriba = abajo < 220 && arriba > abajo;
+      const alto = Math.max(120, Math.min(360, haciaArriba ? arriba : abajo) - 4);
+      const ancho = Math.max(r.width, 280);
+      const left = Math.max(margen, Math.min(r.left, window.innerWidth - ancho - margen));
+      setPos({
+        left,
+        width: ancho,
+        maxHeight: alto,
+        ...(haciaArriba
+          ? { bottom: window.innerHeight - r.top + 4 }
+          : { top: r.bottom + 4 }),
+      });
+    };
+    colocar();
+    window.addEventListener('scroll', colocar, true);
+    window.addEventListener('resize', colocar);
+    return () => {
+      window.removeEventListener('scroll', colocar, true);
+      window.removeEventListener('resize', colocar);
+    };
+  }, [open, query]);
+
+  const estiloPop = pos
+    ? { position: 'fixed', zIndex: 10000, left: pos.left, width: pos.width, top: pos.top, bottom: pos.bottom }
+    : { display: 'none' };
 
   // La opción resaltada con las flechas siempre a la vista dentro de la lista.
   const listaRef = useRef(null);
@@ -175,8 +219,12 @@ export default function ProductAutocomplete({
           </button>
         )}
       </div>
-      {open && filtered.length > 0 && (
-        <ul ref={listaRef} className="absolute z-30 mt-1 w-full min-w-[280px] bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-y-auto text-sm">
+      {open && filtered.length > 0 && createPortal(
+        <ul
+          ref={(el) => { listaRef.current = el; popRef.current = el; }}
+          style={{ ...estiloPop, maxHeight: pos?.maxHeight }}
+          className="bg-white border border-slate-200 rounded-lg shadow-lg overflow-y-auto text-sm m-0 p-0 list-none"
+        >
           {filtered.map((p, idx) => (
             <li
               key={p._id}
@@ -218,12 +266,18 @@ export default function ProductAutocomplete({
               )}
             </li>
           ))}
-        </ul>
+        </ul>,
+        document.body
       )}
-      {open && filtered.length === 0 && query && (
-        <div className="absolute z-30 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg p-3 text-xs text-slate-400 text-center">
+      {open && filtered.length === 0 && query && createPortal(
+        <div
+          ref={popRef}
+          style={estiloPop}
+          className="bg-white border border-slate-200 rounded-lg shadow-lg p-3 text-xs text-slate-400 text-center"
+        >
           Sin resultados
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
