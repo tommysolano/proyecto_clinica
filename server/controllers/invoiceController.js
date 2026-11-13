@@ -557,6 +557,29 @@ exports.getRidePdf = async (req, res) => {
  * acceso, número, serie, fecha y ambiente— y lo firma de nuevo. El SRI no registró la clave
  * (la devolvió en la recepción), así que puede recibirla otra vez.
  */
+/**
+ * FACTURA SOBRE LA QUE SE ACTÚA (anular, reintentar) — nov-2026.
+ *
+ * El listado de Facturación se lee con `scopedDocuments` + accountingScope: la sucursal
+ * de datos del centro de costo o, con «toda la empresa», todas sus sucursales. Las
+ * escrituras (POST) no pasan por ese cambio y buscaban la factura solo en la sucursal
+ * ACTIVA: contabilidad y su asistente veían una factura de otra sucursal y al anularla
+ * recibían «Factura no encontrada». Ahora vale cualquier factura de la EMPRESA de la
+ * sucursal activa (el super admin, cualquiera). La operación se hace luego en la
+ * sucursal de la factura, no en la activa.
+ */
+async function facturaDeLaEmpresa(req, id) {
+  const invoice = await Invoice.findById(id).catch(() => null);
+  if (!invoice) return null;
+  if (req.user?.isSuperAdmin) return invoice;
+  const activas = [req.clinicId, req.userClinicId].filter(Boolean).map(String);
+  if (activas.includes(String(invoice.clinic))) return invoice;
+  const { ensureCompanyCache, companyOfClinicSync } = require('../utils/companies');
+  await ensureCompanyCache();
+  const empresa = companyOfClinicSync(invoice.clinic);
+  return empresa && activas.some((c) => companyOfClinicSync(c) === empresa) ? invoice : null;
+}
+
 const ESTADOS_REFIRMABLES = ['EN_COLA', 'ERROR', 'DEVUELTA'];
 // Marca del firmador anterior: su referencia al certificado llevaba este Id.
 const MARCA_FIRMADOR_ANTERIOR = 'Reference-ID-Cert-';
@@ -604,7 +627,7 @@ async function refirmarFactura(invoice) {
  */
 exports.retry = async (req, res) => {
   try {
-    const invoice = await Invoice.findOne({ _id: req.params.id, clinic: req.clinicId });
+    const invoice = await facturaDeLaEmpresa(req, req.params.id);
     if (!invoice) return res.status(404).json({ message: 'Factura no encontrada' });
     if (['AUTORIZADO', 'ANULADA'].includes(invoice.estado)) {
       return res
@@ -695,8 +718,9 @@ exports.sriStatus = async (req, res) => {
 
 exports.anular = async (req, res) => {
   try {
-    const invoice = await Invoice.findOne({ _id: req.params.id, clinic: req.clinicId });
+    const invoice = await facturaDeLaEmpresa(req, req.params.id);
     if (!invoice) return res.status(404).json({ message: 'Factura no encontrada' });
+    const clinicaFactura = invoice.clinic;
     if (invoice.estado === 'ANULADA') {
       return res.status(400).json({ message: 'La factura ya está anulada' });
     }
@@ -707,7 +731,7 @@ exports.anular = async (req, res) => {
         .json({ message: 'El motivo de anulación es requerido (mínimo 5 caracteres)' });
     }
 
-    const config = await configDeEmpresa(req.clinicId);
+    const config = await configDeEmpresa(clinicaFactura);
     if (!config) return res.status(400).json({ message: 'Configura la facturación antes de anular la factura' });
     const xmlAnulacion = buildAnulacionXml({
       claveAcceso: invoice.claveAcceso,
@@ -724,7 +748,7 @@ exports.anular = async (req, res) => {
     const anularVenta = req.body.anularVenta !== false; // default true
     const { runInTransaction } = require('../utils/accounting');
     await runInTransaction(async (session) => {
-      const current = await Invoice.findOne({ _id: invoice._id, clinic: req.clinicId }).session(session);
+      const current = await Invoice.findOne({ _id: invoice._id, clinic: clinicaFactura }).session(session);
       if (!current || current.estado === 'ANULADA') throw Object.assign(new Error('Factura ya anulada'), { status: 409 });
       current.estado = 'ANULADA';
       current.anuladaAt = new Date();
@@ -734,7 +758,7 @@ exports.anular = async (req, res) => {
       await current.save({ session });
       if (anularVenta && current.sale) {
         const { reverseSaleTx } = require('./saleController');
-        await reverseSaleTx(session, { clinicId: req.clinicId, saleId: current.sale,
+        await reverseSaleTx(session, { clinicId: clinicaFactura, saleId: current.sale,
           userId: req.user._id, reversalDate: new Date(), allowInvoiced: true });
         saleReversed = true;
       }
