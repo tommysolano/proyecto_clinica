@@ -18,7 +18,7 @@ import {
   HiOutlineArrowsRightLeft, HiOutlineNoSymbol, HiOutlineCheckCircle,
 } from 'react-icons/hi2';
 import { fmtDateTime } from '../utils/date';
-import { PRODUCT_TYPES, PRODUCT_CATEGORIES } from '../constants/productCategories';
+import { PRODUCT_TYPES } from '../constants/productCategories';
 import DateInput from '../components/DateInput';
 
 // Tipos de producto (en la UI: "Tipo").
@@ -45,7 +45,17 @@ export default function Inventory() {
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebounce(search, 300);
   const [categoryFilter, setCategoryFilter] = useState(''); // filtro por tipo
-  const [categoriaFilter, setCategoriaFilter] = useState(''); // filtro por categoría
+  // Filtro por CATEGORÍA CONTABLE (la que se edita en Inventario → Categorías). Antes salía de
+  // una lista fija escrita en el código y filtraba por el texto viejo `categoria`: renombrar una
+  // categoría no se veía aquí (nov-2026).
+  const [categoriaFilter, setCategoriaFilter] = useState('');
+  const [categoriasInv, setCategoriasInv] = useState([]);
+  useEffect(() => {
+    api.get('/inventory-advanced/categories', { params: { catalog: 'company' } })
+      .then((r) => setCategoriasInv((r.data || []).filter((c) => c.kind !== 'ACTIVO_FIJO' && c.active !== false)
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)))))
+      .catch(() => {});
+  }, []);
   const [showLowStock, setShowLowStock] = useState(false);
   const [tab, setTab] = useState('products');
 
@@ -93,7 +103,7 @@ export default function Inventory() {
     try {
       const res = await api.get('/products', {
         // El inventario muestra también los inhabilitados (marcados), para poder habilitarlos.
-        params: { search: debouncedSearch, category: categoryFilter, categoria: categoriaFilter, lowStock: showLowStock || undefined, includeDisabled: 'true' },
+        params: { search: debouncedSearch, category: categoryFilter, inventoryCategory: categoriaFilter || undefined, lowStock: showLowStock || undefined, includeDisabled: 'true' },
       });
       if (reqId !== reqRef.current) return; // respuesta obsoleta: descartar
       setProducts(res.data);
@@ -297,11 +307,12 @@ export default function Inventory() {
               </select>
               <div className="w-full sm:w-56">
                 <SearchableSelect
-                  options={PRODUCT_CATEGORIES}
+                  options={categoriasInv}
                   value={categoriaFilter}
-                  onChange={(v) => setCategoriaFilter(v)}
-                  getLabel={(o) => o}
-                  getValue={(o) => o}
+                  onChange={(v) => setCategoriaFilter(v || '')}
+                  getLabel={(c) => `${c.name}${c.kind === 'SERVICIO' ? ' (servicio)' : ''}`}
+                  getValue={(c) => c._id}
+                  getSearchText={(c) => `${c.code || ''} ${c.name}`}
                   placeholder="Todas las categorías"
                   searchPlaceholder="Buscar categoría…"
                   allowClear
@@ -354,7 +365,7 @@ export default function Inventory() {
                           )}
                         </td>
                         <td className="px-6 py-3.5 text-sm text-slate-600 hidden md:table-cell capitalize">{types[p.category] || p.category}</td>
-                        <td className="px-6 py-3.5 text-sm text-slate-600 hidden lg:table-cell">{p.categoria || '—'}</td>
+                        <td className="px-6 py-3.5 text-sm text-slate-600 hidden lg:table-cell">{p.inventoryCategory?.name || p.categoria || '—'}</td>
                         <td className="px-6 py-3.5 text-sm text-slate-800 text-right">${p.salePrice.toFixed(2)}</td>
                         <td className="px-6 py-3.5 text-right">
                           {p.unlimited ? (

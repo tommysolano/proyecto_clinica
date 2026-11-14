@@ -1373,11 +1373,65 @@ const COUNT_SHEET_ALIASES = {
   notes: ['Observación', 'Observacion', 'Observaciones', 'Notas'],
 };
 
+/**
+ * PONER AL DÍA LA LISTA DE UNA TOMA EN BORRADOR (nov-2026). La toma congela sus productos al
+ * iniciarse; si DESPUÉS se crea el producto real («ANTIOX - NAD 50 ML») y se marca el de 25 ML
+ * como compuesto, la toma seguía con la lista vieja. Mientras está en borrador:
+ *   · salen los que ya no se cuentan (compuestos, inhabilitados, inactivos, servicios)
+ *     — salvo que alguien ya los haya contado;
+ *   · entran los inventariables nuevos, con el stock que el sistema dice HOY en esa bodega.
+ * Lo ya congelado (stock del sistema y costo) de los demás no se toca.
+ */
+async function sincronizarToma(pc) {
+  if (!pc || pc.status !== 'BORRADOR' || !pc.warehouse) return { agregados: 0, quitados: 0 };
+  const filtro = {
+    clinic: pc.clinic, active: true, unlimited: { $ne: true }, category: { $ne: 'servicio' },
+    isComposite: { $ne: true }, disabled: { $ne: true },
+  };
+  if (pc.category) filtro.inventoryCategory = pc.category;
+  const vigentes = await Product.find(filtro).select('code name barcode categoria inventoryCategory').lean();
+  const vigentesIds = new Set(vigentes.map((p) => String(p._id)));
+  const antes = pc.items.length;
+  pc.items = pc.items.filter((it) => it.counted || vigentesIds.has(String(it.product)));
+  const quitados = antes - pc.items.length;
+  const enToma = new Set(pc.items.map((it) => String(it.product)));
+  const nuevos = vigentes.filter((p) => !enToma.has(String(p._id)));
+  if (nuevos.length) {
+    const existencias = await kardexService.stockByWarehouse({ clinicId: pc.clinic, warehouse: pc.warehouse });
+    const porProducto = new Map(existencias.map((e) => [String(e.product), e]));
+    for (const p of nuevos) {
+      const e = porProducto.get(String(p._id)) || { qty: 0, unitCost: 0 };
+      pc.items.push({
+        product: p._id, productCode: p.code, productName: p.name, barcode: p.barcode || '',
+        inventoryCategory: p.inventoryCategory || null, categoria: p.categoria || '',
+        systemQty: e.qty, countedQty: e.qty, counted: false, difference: 0, unitCost: e.unitCost, adjustmentValue: 0,
+      });
+    }
+  }
+  if (quitados || nuevos.length) { pc.markModified('items'); await pc.save(); }
+  return { agregados: nuevos.length, quitados };
+}
+
+exports.refreshCount = async (req, res) => {
+  try {
+    const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!pc) return res.status(404).json({ message: 'Toma no encontrada' });
+    const cambios = await sincronizarToma(pc);
+    await pc.populate([
+      { path: 'warehouse', select: 'code name' },
+      { path: 'category', select: 'code name' },
+      { path: 'responsible confirmedBy', select: 'name' },
+    ]);
+    res.json({ count: countForRole(req, pc), cambios });
+  } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
+};
+
 exports.downloadCountSheet = async (req, res) => {
   try {
-    const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId })
-      .populate('warehouse', 'code name').lean();
-    if (!pc) return res.status(404).json({ message: 'Toma no encontrada' });
+    const doc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!doc) return res.status(404).json({ message: 'Toma no encontrada' });
+    await sincronizarToma(doc);
+    const pc = await PhysicalCount.findById(doc._id).populate('warehouse', 'code name').lean();
     const productos = await Product.find({ _id: { $in: pc.items.map((it) => it.product) } }).select('unit').lean();
     const unidad = new Map(productos.map((p) => [String(p._id), p.unit || '']));
 
@@ -1443,6 +1497,8 @@ exports.uploadCountSheet = async (req, res) => {
     const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!pc) return res.status(404).json({ message: 'Toma no encontrada' });
     if (pc.status !== 'BORRADOR') return res.status(400).json({ message: 'La toma ya está cerrada: no se puede cargar otro conteo.' });
+    // El Excel pudo bajarse con la lista ya al día: la toma también lo está antes de cruzar códigos.
+    await sincronizarToma(pc);
 
     const { loadWorkbookFull, findSheet, mapHeaders, rowsToObjects, parseNumber, cellValue, norm } = require('../utils/excelImport');
     const wb = await loadWorkbookFull(req.file.buffer);

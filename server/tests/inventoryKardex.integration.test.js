@@ -734,3 +734,27 @@ test('D14) movimiento por fechas: saldo del sistema en cada corte, lo contado en
   })));
   assert.equal(String(asc.filas[0].product._id), String(otro._id), 'el que menos se mueve, primero');
 });
+
+test('D15) toma en borrador se pone al día: entra el producto real creado después y sale el que pasó a compuesto', async () => {
+  const { clinicId, userId, A } = await tomaSetup();
+  const chico = await H.makeProduct(clinicId, { code: 'NAD25', name: 'ANTIOX - NAD 25 ML' });
+  const pc = ok(await iniciar(clinicId, userId, { warehouse: String(A._id) }));
+  assert.ok(pc.items.some((i) => String(i.product) === String(chico._id)), 'al iniciar estaba el de 25 ML');
+
+  // Después de iniciar la toma: se crea el frasco real y el de 25 ML pasa a compuesto.
+  const frasco = await H.makeProduct(clinicId, { code: 'NAD50', name: 'ANTIOX - NAD 50 ML' });
+  await Product.updateOne({ _id: chico._id }, { $set: { isComposite: true, composition: [{ product: frasco._id, quantity: 0.5 }] } });
+
+  const r = ok(await run(ctrl.refreshCount, H.mockReq(clinicId, userId, {}, { params: { id: String(pc._id) } })));
+  assert.equal(r.cambios.agregados, 1);
+  assert.equal(r.cambios.quitados, 1);
+  const ids = r.count.items.map((i) => String(i.product));
+  assert.ok(ids.includes(String(frasco._id)), 'entra el de 50 ML');
+  assert.ok(!ids.includes(String(chico._id)), 'sale el compuesto de 25 ML');
+
+  // Una toma confirmada no se toca.
+  ok(await confirmar(clinicId, userId, pc._id, { date: '2026-06-15' }));
+  await Product.updateOne({ _id: frasco._id }, { $set: { disabled: true } });
+  const r2 = ok(await run(ctrl.refreshCount, H.mockReq(clinicId, userId, {}, { params: { id: String(pc._id) } })));
+  assert.equal(r2.cambios.quitados, 0);
+});

@@ -66,6 +66,18 @@ export default function PhysicalCounts() {
     load();
   }, []);
 
+  /** Abre una toma; si está en borrador, primero pone al día su lista de productos (nov-2026). */
+  const abrir = async (c) => {
+    setSelected(c);
+    if (c.status !== 'BORRADOR') return;
+    try {
+      const r = await api.post(`/inventory-advanced/counts/${c._id}/refresh`);
+      setSelected(r.data.count);
+      const { agregados, quitados } = r.data.cambios || {};
+      if (agregados || quitados) toast(`Lista al día: ${agregados || 0} nuevo(s), ${quitados || 0} quitado(s).`, { icon: 'ℹ️' });
+    } catch { /* se queda con la lista que tenía */ }
+  };
+
   const conCostos = selected ? !selected.costsHidden : true;
   const bodega = warehouses.find((w) => w._id === form.warehouse);
 
@@ -181,7 +193,7 @@ export default function PhysicalCounts() {
             </thead>
             <tbody>
               {list.map((c) => (
-                <tr key={c._id} className="border-t cursor-pointer hover:bg-slate-50" onClick={() => setSelected(c)}>
+                <tr key={c._id} className="border-t cursor-pointer hover:bg-slate-50" onClick={() => abrir(c)}>
                   <td className="px-2 py-2 font-mono">{c.code}</td>
                   <td className="px-2 py-2">{c.warehouse?.code || '—'}</td>
                   <td className="px-2 py-2">{fmtDate(c.date)}</td>

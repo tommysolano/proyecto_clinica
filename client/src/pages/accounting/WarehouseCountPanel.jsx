@@ -75,6 +75,24 @@ export default function WarehouseCountPanel({ warehouses, initialWarehouse = '' 
 
   const reemplazar = (doc) => setCounts((prev) => prev.map((c) => (c._id === doc._id ? doc : c)));
 
+  // Una toma en borrador se pone al día con la configuración actual al abrirla: entran los
+  // productos creados después (p. ej. el frasco real de 50 ML) y salen los que ahora son
+  // compuestos o están inhabilitados (si nadie los contó).
+  const estadoToma = counts.find((c) => c._id === tomaId)?.status;
+  useEffect(() => {
+    if (!tomaId || estadoToma !== 'BORRADOR') return undefined;
+    let vivo = true;
+    api.post(`/inventory-advanced/counts/${tomaId}/refresh`)
+      .then((r) => {
+        if (!vivo) return;
+        reemplazar(r.data.count);
+        const { agregados, quitados } = r.data.cambios || {};
+        if (agregados || quitados) toast(`Lista de la toma al día: ${agregados || 0} producto(s) nuevo(s), ${quitados || 0} quitado(s) (compuestos o inhabilitados).`, { icon: 'ℹ️', duration: 6000 });
+      })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [tomaId, estadoToma]);
+
   const iniciar = async () => {
     if (!bodega || busy) return;
     setBusy(true);
