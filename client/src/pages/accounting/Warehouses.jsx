@@ -9,6 +9,7 @@ import AccountSelect from '../../components/AccountSelect';
 import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import TransferStockModal from '../../components/TransferStockModal';
 import WarehouseCountPanel from './WarehouseCountPanel';
+import StockHistoryPanel from './StockHistoryPanel';
 
 // Clave de la bodega en el resumen; las capas sin bodega se agrupan como «Sin bodega».
 const SIN_BODEGA = '__sin__';
@@ -147,6 +148,7 @@ export default function Warehouses() {
         {tabBtn('list', 'Bodegas')}
         {tabBtn('stock', 'Existencias por bodega')}
         {tabBtn('count', 'Toma física')}
+        {tabBtn('history', 'Movimiento por fechas')}
         {tabBtn('transfers', 'Traslados')}
       </div>
 
@@ -332,6 +334,9 @@ export default function Warehouses() {
 
       {/* --- Pestaña Toma física: sistema vs. lo contado, por Excel --- */}
       {tab === 'count' && <WarehouseCountPanel warehouses={list} initialWarehouse={bodegaToma} />}
+
+      {/* --- Pestaña Movimiento por fechas: sistema vs. físico por fecha, y rotación --- */}
+      {tab === 'history' && <StockHistoryPanel warehouses={list} />}
 
       {/* --- Pestaña Traslados --- */}
       {tab === 'transfers' && (

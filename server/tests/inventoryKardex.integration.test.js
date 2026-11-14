@@ -685,3 +685,52 @@ test('D11) los productos COMPUESTOS no salen en existencias por bodega ni en la 
   assert.ok(ids.includes(String(frasco._id)));
   assert.ok(!ids.includes(String(chico._id)), 'el compuesto no se cuenta en la toma');
 });
+
+test('D12) un producto INHABILITADO no sale en existencias por bodega ni en la toma física', async () => {
+  const { clinicId, userId, A, prod, otro } = await tomaSetup();
+  await entrada(clinicId, userId, { product: prod, warehouse: A, qty: 4, cost: 5, date: d('2026-06-01') });
+  await Product.updateMany({ _id: { $in: [prod._id, otro._id] } }, { $set: { disabled: true } });
+  const filas = ok(await run(ctrl.warehouseStock, H.mockReq(clinicId, userId)));
+  assert.ok(!filas.some((f) => [String(prod._id), String(otro._id)].includes(String(f.product._id))));
+  const pc = ok(await iniciar(clinicId, userId, { warehouse: String(A._id) }));
+  assert.ok(!pc.items.some((i) => String(i.product) === String(prod._id)));
+});
+
+test('D13) inhabilitar una CATEGORÍA inhabilita sus productos y los de sus subcategorías; habilitar los devuelve', async () => {
+  const { clinicId, userId, prod, otro, catInsumos } = await tomaSetup();
+  const sub = await InventoryCategory.create({ clinic: clinicId, code: 'INS-A', name: 'Ampollas', kind: 'INVENTARIO', parent: catInsumos._id });
+  await Product.updateOne({ _id: otro._id }, { $set: { inventoryCategory: sub._id } });
+  const r = ok(await run(ctrl.setCategoryProductsDisabled, H.mockReq(clinicId, userId, { disabled: true }, { params: { id: String(catInsumos._id) } })));
+  assert.equal(r.modificados, 2);
+  assert.equal((await Product.findById(prod._id)).disabled, true);
+  assert.equal((await Product.findById(otro._id)).disabled, true);
+  const cuenta = ok(await run(ctrl.categoryProductCounts, H.mockReq(clinicId, userId)));
+  assert.equal(cuenta[String(catInsumos._id)].inhabilitados, 1);
+  ok(await run(ctrl.setCategoryProductsDisabled, H.mockReq(clinicId, userId, { disabled: false }, { params: { id: String(catInsumos._id) } })));
+  assert.equal((await Product.findById(otro._id)).disabled, false);
+});
+
+test('D14) movimiento por fechas: saldo del sistema en cada corte, lo contado en la toma y orden por rotación', async () => {
+  const { clinicId, userId, A, prod, otro } = await tomaSetup();
+  await entrada(clinicId, userId, { product: prod, warehouse: A, qty: 10, cost: 5, date: d('2026-06-01') });
+  await entrada(clinicId, userId, { product: prod, warehouse: A, qty: 5, cost: 5, date: d('2026-06-09') });
+  const pc = ok(await iniciar(clinicId, userId, { warehouse: String(A._id), date: '2026-06-10' }));
+  ok(await run(ctrl.updateCount, H.mockReq(clinicId, userId, {
+    items: [{ product: String(prod._id), countedQty: 14 }],
+  }, { params: { id: String(pc._id) } })));
+
+  const r = ok(await run(ctrl.stockHistory, H.mockReq(clinicId, userId, {}, {
+    query: { warehouse: String(A._id), from: '2026-06-01', to: '2026-06-14', step: 'semana' },
+  })));
+  assert.equal(r.cortes.length, 2, 'dos semanas');
+  const fila = r.filas.find((f) => String(f.product._id) === String(prod._id));
+  assert.deepEqual(fila.sistema, [10, 15], 'saldo al cierre de cada semana');
+  assert.deepEqual(fila.fisico, [null, 14], 'lo contado cae en la semana de la toma');
+  assert.equal(fila.entradas, 15);
+  assert.equal(fila.movimientos, 2);
+  assert.equal(String(r.filas[0].product._id), String(prod._id), 'el que más se mueve, primero');
+  const asc = ok(await run(ctrl.stockHistory, H.mockReq(clinicId, userId, {}, {
+    query: { warehouse: String(A._id), from: '2026-06-01', to: '2026-06-14', step: 'semana', orden: 'movimiento_asc' },
+  })));
+  assert.equal(String(asc.filas[0].product._id), String(otro._id), 'el que menos se mueve, primero');
+});

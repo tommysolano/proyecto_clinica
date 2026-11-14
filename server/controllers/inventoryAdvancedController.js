@@ -341,6 +341,51 @@ exports.listCategories = async (req, res) => {
   res.json(items);
 };
 
+/**
+ * INHABILITAR / HABILITAR POR CATEGORÍA (nov-2026): todos los productos de la categoría —y de
+ * sus subcategorías— en el catálogo de la empresa. Mismo efecto que hacerlo uno por uno.
+ */
+async function categoriaYDescendientes(rootId, clinics) {
+  const ids = [String(rootId)];
+  for (let i = 0; i < ids.length && i < 500; i += 1) {
+    const hijas = await InventoryCategory.find({ parent: ids[i], clinic: { $in: clinics } }).select('_id').lean();
+    hijas.forEach((h) => { if (!ids.includes(String(h._id))) ids.push(String(h._id)); });
+  }
+  return ids;
+}
+
+exports.setCategoryProductsDisabled = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ message: 'Categoría no válida' });
+    const catalogo = sisterClinicsSync(req.clinicId, { includeInactive: true });
+    const clinics = catalogo.length ? catalogo : [String(req.clinicId)];
+    const cat = await InventoryCategory.findOne({ _id: req.params.id, clinic: { $in: clinics } }).lean();
+    if (!cat) return res.status(404).json({ message: 'Categoría no encontrada' });
+    const disabled = req.body?.disabled === true || req.body?.disabled === 'true';
+    const ids = await categoriaYDescendientes(cat._id, clinics);
+    const r = await Product.updateMany(
+      { clinic: { $in: clinics }, inventoryCategory: { $in: ids } },
+      { $set: { disabled } },
+    );
+    // Puede cambiar qué servicios se ofrecen en la agenda.
+    require('../utils/serviciosInventario').marcarServiciosPendientes();
+    res.json({ disabled, modificados: r.modifiedCount, categorias: ids.length });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/** Cuántos productos tiene cada categoría y cuántos están inhabilitados. */
+exports.categoryProductCounts = async (req, res) => {
+  try {
+    const catalogo = sisterClinicsSync(req.clinicId, { includeInactive: true });
+    const clinics = (catalogo.length ? catalogo : [String(req.clinicId)]).map((id) => new mongoose.Types.ObjectId(id));
+    const filas = await Product.aggregate([
+      { $match: { clinic: { $in: clinics }, inventoryCategory: { $ne: null }, active: { $ne: false } } },
+      { $group: { _id: '$inventoryCategory', total: { $sum: 1 }, inhabilitados: { $sum: { $cond: [{ $eq: ['$disabled', true] }, 1, 0] } } } },
+    ]);
+    res.json(Object.fromEntries(filas.map((f) => [String(f._id), { total: f.total, inhabilitados: f.inhabilitados }])));
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
 /** Exporta los productos asignados directamente a una categoría del catálogo compartido. */
 exports.exportCategoryItems = async (req, res) => {
   try {
@@ -895,12 +940,13 @@ exports.warehouseStock = async (req, res) => {
       if (!conCapas.has(String(p._id))) rows.push({ _id: p._id, warehouses: [], totalQty: 0, totalValue: 0 });
     }
     const productIds = rows.map((r) => r._id);
-    const products = await Product.find({ _id: { $in: productIds } }).select('code name unit category barcode isComposite').lean();
+    const products = await Product.find({ _id: { $in: productIds } }).select('code name unit category barcode isComposite disabled').lean();
     const prodMap = new Map(products.map((p) => [String(p._id), p]));
     // PRODUCTOS COMPUESTOS FUERA (nov-2026): «DMSO PLUS 10ML» y «25ML» salen del frasco de
     // 50ML (su composición fija); en la percha solo existe el de 50ML. En bodegas y tomas
     // físicas se ve únicamente el producto real, para no contar tres veces lo mismo.
-    const compuestos = new Set(products.filter((p) => p.isComposite).map((p) => String(p._id)));
+    // Tampoco los INHABILITADOS (nov-2026): no se venden ni se cuentan en la toma física.
+    const compuestos = new Set(products.filter((p) => p.isComposite || p.disabled).map((p) => String(p._id)));
     if (compuestos.size) {
       for (let i = rows.length - 1; i >= 0; i--) if (compuestos.has(String(rows[i]._id))) rows.splice(i, 1);
     }
@@ -920,6 +966,171 @@ exports.warehouseStock = async (req, res) => {
         .sort((a, b) => (a.warehouse?.code || '~').localeCompare(b.warehouse?.code || '~')),
     })).sort((a, b) => (a.product.name || '').localeCompare(b.product.name || ''));
     res.json(out);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/**
+ * MOVIMIENTO POR FECHAS (nov-2026). Como la hoja que llevan a mano: un producto por fila y una
+ * columna por fecha de corte (día, semana o mes), con LOS DOS inventarios:
+ *   · Sistema — el saldo del kardex al cierre de ese corte (en la bodega elegida, o consolidado);
+ *   · Físico  — lo contado en una toma física de ese período (si la hubo).
+ * Además, en todo el rango: entradas, salidas y número de movimientos, para ordenar por lo que
+ * más (o menos) se mueve: qué hay que vender más y qué hay que comprar más.
+ *
+ * Query: warehouse?, from, to (YYYY-MM-DD), step = dia | semana | mes, q?, category?,
+ *        orden = movimiento_desc | movimiento_asc | salidas_desc | salidas_asc | nombre,
+ *        format = xlsx (descarga el Excel).
+ */
+const PASOS = { dia: 1, semana: 7 };
+function cortesDeFechas(from, to, step) {
+  const cortes = [];
+  const fin = kardexService.parseLocalDate(to);
+  let d = kardexService.parseLocalDate(from);
+  if (!d || !fin || d > fin) return cortes;
+  while (d <= fin && cortes.length < 60) {
+    let cierre;
+    if (step === 'mes') cierre = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    else cierre = new Date(d.getFullYear(), d.getMonth(), d.getDate() + (PASOS[step] || 7) - 1);
+    if (cierre > fin) cierre = new Date(fin);
+    cortes.push({ desde: new Date(d), hasta: new Date(cierre.getFullYear(), cierre.getMonth(), cierre.getDate(), 23, 59, 59, 999) });
+    d = new Date(cierre.getFullYear(), cierre.getMonth(), cierre.getDate() + 1);
+  }
+  return cortes;
+}
+const ddmm = (d) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+
+exports.stockHistory = async (req, res) => {
+  try {
+    const hoy = new Date();
+    const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const from = req.query.from || ymd(new Date(hoy.getFullYear(), hoy.getMonth() - 1, hoy.getDate()));
+    const to = req.query.to || ymd(hoy);
+    const step = ['dia', 'semana', 'mes'].includes(req.query.step) ? req.query.step : 'semana';
+    const cortes = cortesDeFechas(from, to, step);
+    if (!cortes.length) return res.status(400).json({ message: 'Revisa las fechas: «desde» no puede ser posterior a «hasta».' });
+    const warehouse = req.query.warehouse && mongoose.isValidObjectId(req.query.warehouse) ? String(req.query.warehouse) : null;
+
+    // Mismo alcance que «Existencias por bodega».
+    const clinics = (req.companyClinicIds?.length ? req.companyClinicIds
+      : req.userClinicId && String(req.userClinicId) !== String(req.clinicId) ? [req.clinicId, req.userClinicId] : [req.clinicId])
+      .map((id) => new mongoose.Types.ObjectId(String(id)));
+    const catalogo = sisterClinicsSync(req.clinicId, { includeInactive: true });
+    const filtroProd = {
+      clinic: { $in: (catalogo.length ? catalogo : [String(req.clinicId)]).map((id) => new mongoose.Types.ObjectId(id)) },
+      active: { $ne: false }, disabled: { $ne: true }, unlimited: { $ne: true },
+      category: { $nin: ['servicio', 'programa'] }, isComposite: { $ne: true },
+    };
+    if (req.query.category && mongoose.isValidObjectId(req.query.category)) filtroProd.inventoryCategory = req.query.category;
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filtroProd.$or = [{ name: rx }, { code: rx }, { barcode: rx }];
+    }
+    const productos = await Product.find(filtroProd).select('code name unit barcode').sort({ name: 1 }).lean();
+    const ids = productos.map((p) => p._id);
+
+    // Movimientos hasta el último corte (los anteriores al rango dan el saldo de arranque).
+    const movFiltro = { clinic: { $in: clinics }, product: { $in: ids } };
+    if (warehouse) movFiltro.$or = [{ warehouse }, { toWarehouse: warehouse }];
+    else if (req.costCenterScope) {
+      movFiltro.warehouse = { $in: await Warehouse.find({ costCenter: req.costCenterScope }).distinct('_id') };
+    }
+    const movs = await InventoryMovement.find(movFiltro)
+      .select('product type quantity warehouse toWarehouse movementDate createdAt').lean();
+    const ultimo = cortes[cortes.length - 1].hasta;
+    const inicioRango = cortes[0].desde;
+    const porProducto = new Map(ids.map((id) => [String(id), { deltas: [], entradas: 0, salidas: 0, movimientos: 0 }]));
+    for (const m of movs) {
+      const { date } = kardexService.effectiveDate(m);
+      if (!date || date > ultimo) continue;
+      const qty = kardexService.signedQty(m, warehouse);
+      if (!qty) continue;
+      const acc = porProducto.get(String(m.product));
+      if (!acc) continue;
+      acc.deltas.push({ date, qty });
+      if (date >= inicioRango) {
+        acc.movimientos += 1;
+        if (qty > 0) acc.entradas = kardex.round4(acc.entradas + qty);
+        else acc.salidas = kardex.round4(acc.salidas - qty);
+      }
+    }
+
+    // Tomas físicas del rango (no anuladas): lo contado, en el corte donde cae su fecha.
+    const tomas = await PhysicalCount.find({
+      clinic: { $in: clinics }, status: { $ne: 'ANULADO' },
+      date: { $gte: inicioRango, $lte: ultimo },
+      ...(warehouse ? { warehouse } : {}),
+    }).select('date warehouse items.product items.countedQty items.counted').sort({ date: 1 }).lean();
+    const contado = new Map(); // `${prod}|${corte}|${bodega}` → qty (la toma más reciente gana)
+    for (const t of tomas) {
+      const ci = cortes.findIndex((c) => t.date >= c.desde && t.date <= c.hasta);
+      if (ci < 0) continue;
+      for (const it of t.items || []) {
+        if (!it.counted) continue;
+        contado.set(`${it.product}|${ci}|${t.warehouse || ''}`, Number(it.countedQty) || 0);
+      }
+    }
+    const fisicoDe = new Map(); // `${prod}|${corte}` → suma de bodegas
+    for (const [k, v] of contado) {
+      const [p, ci] = k.split('|');
+      const kk = `${p}|${ci}`;
+      fisicoDe.set(kk, kardex.round4((fisicoDe.get(kk) || 0) + v));
+    }
+
+    let filas = productos.map((p) => {
+      const acc = porProducto.get(String(p._id));
+      acc.deltas.sort((a, b) => a.date - b.date);
+      const saldos = [];
+      let i = 0;
+      let saldo = 0;
+      for (const c of cortes) {
+        while (i < acc.deltas.length && acc.deltas[i].date <= c.hasta) { saldo = kardex.round4(saldo + acc.deltas[i].qty); i += 1; }
+        saldos.push(saldo);
+      }
+      return {
+        product: { _id: p._id, code: p.code, name: p.name, unit: p.unit },
+        sistema: saldos,
+        fisico: cortes.map((_, ci) => (fisicoDe.has(`${p._id}|${ci}`) ? fisicoDe.get(`${p._id}|${ci}`) : null)),
+        entradas: acc.entradas, salidas: acc.salidas, movimientos: acc.movimientos,
+      };
+    });
+    const orden = String(req.query.orden || 'movimiento_desc');
+    const porNombre = (a, b) => String(a.product.name).localeCompare(String(b.product.name));
+    const ordenes = {
+      movimiento_desc: (a, b) => b.movimientos - a.movimientos || b.salidas - a.salidas || porNombre(a, b),
+      movimiento_asc: (a, b) => a.movimientos - b.movimientos || a.salidas - b.salidas || porNombre(a, b),
+      salidas_desc: (a, b) => b.salidas - a.salidas || porNombre(a, b),
+      salidas_asc: (a, b) => a.salidas - b.salidas || porNombre(a, b),
+      nombre: porNombre,
+    };
+    filas = filas.sort(ordenes[orden] || ordenes.movimiento_desc);
+    const etiquetas = cortes.map((c) => ({ desde: c.desde, hasta: c.hasta, label: ddmm(c.hasta) }));
+
+    if (req.query.format === 'xlsx') {
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('Movimiento por fechas', { views: [{ state: 'frozen', xSplit: 2, ySplit: 2 }] });
+      const wh = warehouse ? await Warehouse.findById(warehouse).select('code name').lean() : null;
+      ws.addRow([`Bodega: ${wh ? `${wh.code} - ${wh.name}` : 'Todas'} · del ${ddmm(cortes[0].desde)} al ${ddmm(new Date(ultimo))} · cortes por ${step}`]);
+      const cab = ['Código', 'Producto'];
+      etiquetas.forEach((e) => cab.push(`${e.label} Sistema`, `${e.label} Físico`));
+      cab.push('Entradas', 'Salidas', 'Movimientos');
+      ws.addRow(cab);
+      ws.getRow(2).font = { bold: true };
+      ws.getRow(2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
+      ws.getColumn(1).width = 14;
+      ws.getColumn(2).width = 40;
+      for (const f of filas) {
+        const fila = [f.product.code, f.product.name];
+        f.sistema.forEach((s, i) => fila.push(s, f.fisico[i]));
+        fila.push(f.entradas, f.salidas, f.movimientos);
+        ws.addRow(fila);
+      }
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="movimiento_por_fechas_${from}_${to}.xlsx"`);
+      await wb.xlsx.write(res);
+      return res.end();
+    }
+    res.json({ cortes: etiquetas, filas, step, from, to, warehouse });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
@@ -1072,6 +1283,8 @@ exports.startCount = async (req, res) => {
       unlimited: { $ne: true },
       category: { $ne: 'servicio' },
       isComposite: { $ne: true },
+      // Los inhabilitados no se cuentan (nov-2026).
+      disabled: { $ne: true },
     };
     if (!includeInactive) filtro.active = true;
     if (cat) filtro.inventoryCategory = cat._id;

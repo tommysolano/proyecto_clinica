@@ -19,6 +19,9 @@ router.delete('/warehouses/:id', requireRole('admin'), c.deleteWarehouse);
 // Categorías
 router.get('/categories', verInventario, c.listCategories);
 router.get('/categories/:id/items.xlsx', verInventario, requireCap('inventory.export'), c.exportCategoryItems);
+router.get('/categories/product-counts', verInventario, c.categoryProductCounts);
+// Inhabilitar / habilitar todos los productos de una categoría (y sus subcategorías).
+router.post('/categories/:id/products-disabled', requireRole('admin', 'contabilidad'), c.setCategoryProductsDisabled);
 router.post('/categories', requireRole('admin', 'contabilidad'), c.createCategory);
 router.put('/categories/:id', requireRole('admin', 'contabilidad'), c.updateCategory);
 router.delete('/categories/:id', requireRole('admin'), c.deleteCategory);
@@ -27,6 +30,8 @@ router.delete('/categories/:id', requireRole('admin'), c.deleteCategory);
 router.get('/kardex', verInventario, requireCap('inventory.view'), c.getKardex);
 router.get('/kardex.xlsx', verInventario, requireCap('inventory.export'), c.kardexExcel);
 router.get('/warehouse-stock', verInventario, requireCap('inventory.view'), c.warehouseStock);
+// Movimiento por fechas: sistema vs. toma física por corte, y rotación (nov-2026).
+router.get('/stock-history', verInventario, requireCap('inventory.view'), c.stockHistory);
 router.get('/transfers', verInventario, requireCap('inventory.view'), c.listTransfers);
 router.post('/transfer', requireRole('admin', 'contabilidad'), c.transferStock);
 

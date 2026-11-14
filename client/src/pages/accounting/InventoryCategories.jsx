@@ -4,7 +4,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineSquares2X2, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineExclamationTriangle, HiOutlineArrowDownTray } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineSquares2X2, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineExclamationTriangle, HiOutlineArrowDownTray, HiOutlineNoSymbol, HiOutlineCheckCircle } from 'react-icons/hi2';
 import NumericInput from '../../components/NumericInput';
 import SearchableSelect from '../../components/SearchableSelect';
 import AccountSelect from '../../components/AccountSelect';
@@ -27,9 +27,25 @@ export default function InventoryCategories() {
   // Al entrar desde Activos Fijos (?kind=ACTIVO_FIJO) las nuevas categorías nacen como activo fijo.
   const defaultKind = searchParams.get('kind') === 'ACTIVO_FIJO' ? 'ACTIVO_FIJO' : 'INVENTARIO';
 
+  // Cuántos productos tiene cada categoría y cuántos están inhabilitados (nov-2026).
+  const [conteos, setConteos] = useState({});
+  const [cambiando, setCambiando] = useState('');
   const load = async () => {
     try { const r = await api.get('/inventory-advanced/categories'); setList(r.data || []); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    api.get('/inventory-advanced/categories/product-counts').then((r) => setConteos(r.data || {})).catch(() => {});
+  };
+  /** Inhabilita (o habilita) todos los productos de la categoría y de sus subcategorías. */
+  const cambiarProductos = async (c, disabled) => {
+    const accion = disabled ? 'INHABILITAR' : 'HABILITAR';
+    if (!confirm(`¿${accion} todos los productos de «${c.name}» (y de sus subcategorías)? ${disabled ? 'No se podrán vender ni saldrán en bodegas ni en tomas físicas.' : 'Vuelven a venderse y a salir en bodegas.'}`)) return;
+    setCambiando(c._id);
+    try {
+      const r = await api.post(`/inventory-advanced/categories/${c._id}/products-disabled`, { disabled });
+      toast.success(`${r.data.modificados} producto(s) ${disabled ? 'inhabilitados' : 'habilitados'}`);
+      load();
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    finally { setCambiando(''); }
   };
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- carga inicial: el setState ocurre tras el await (asíncrono, seguro).
@@ -130,7 +146,7 @@ export default function InventoryCategories() {
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
         <table className="tbl">
-          <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Cód.</th><th className="px-3 py-2 text-left">Nombre</th><th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Categoría padre</th><th className="px-3 py-2 text-right">% Dep.</th><th className="px-3 py-2 text-right">Vida útil</th><th></th></tr></thead>
+          <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Cód.</th><th className="px-3 py-2 text-left">Nombre</th><th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Categoría padre</th><th className="px-3 py-2 text-right">% Dep.</th><th className="px-3 py-2 text-right">Vida útil</th><th className="px-3 py-2 text-right">Productos</th><th></th></tr></thead>
           <tbody>
             {list.map((c) => (
               <tr key={c._id} className="border-t">
@@ -152,6 +168,12 @@ export default function InventoryCategories() {
                 <td className="px-3 py-2 text-xs text-slate-500">{c.parent ? nameById(idOf(c.parent)) : '—'}</td>
                 <td className="px-3 py-2 text-right">{c.depreciationRate || '—'}%</td>
                 <td className="px-3 py-2 text-right">{(c.usefulLifeMonths || (c.usefulLifeYears ? c.usefulLifeYears * 12 : 0)) || '—'} meses</td>
+                <td className="px-3 py-2 text-right text-xs">
+                  {conteos[c._id]?.total || 0}
+                  {conteos[c._id]?.inhabilitados > 0 && (
+                    <span className="block text-[11px] text-rose-600">{conteos[c._id].inhabilitados} inhabilitado(s)</span>
+                  )}
+                </td>
                 <td className="px-3 py-2 flex gap-1 justify-end">
                   {c.kind !== 'ACTIVO_FIJO' && (user?.isSuperAdmin || hasRole('admin', 'contabilidad')) && (
                     <button type="button" onClick={() => downloadItems(c)} disabled={!!downloading}
@@ -159,6 +181,30 @@ export default function InventoryCategories() {
                       className="text-emerald-700 inline-flex items-center gap-1 text-xs px-2 py-1 rounded hover:bg-emerald-50 disabled:opacity-50">
                       <HiOutlineArrowDownTray className="w-4 h-4" /> {downloading === c._id ? 'Descargando…' : 'Excel'}
                     </button>
+                  )}
+                  {c.kind !== 'ACTIVO_FIJO' && (user?.isSuperAdmin || hasRole('admin', 'contabilidad')) && (
+                    (conteos[c._id]?.total || 0) > 0 && conteos[c._id]?.inhabilitados === conteos[c._id]?.total ? (
+                      <button type="button" onClick={() => cambiarProductos(c, false)} disabled={cambiando === c._id}
+                        title="Habilitar todos los productos de esta categoría"
+                        className="text-emerald-700 inline-flex items-center gap-1 text-xs px-2 py-1 rounded hover:bg-emerald-50 disabled:opacity-50">
+                        <HiOutlineCheckCircle className="w-4 h-4" /> Habilitar
+                      </button>
+                    ) : (
+                      <>
+                        <button type="button" onClick={() => cambiarProductos(c, true)} disabled={cambiando === c._id}
+                          title="Inhabilitar todos los productos de esta categoría"
+                          className="text-rose-700 inline-flex items-center gap-1 text-xs px-2 py-1 rounded hover:bg-rose-50 disabled:opacity-50">
+                          <HiOutlineNoSymbol className="w-4 h-4" /> Inhabilitar
+                        </button>
+                        {conteos[c._id]?.inhabilitados > 0 && (
+                          <button type="button" onClick={() => cambiarProductos(c, false)} disabled={cambiando === c._id}
+                            title="Habilitar todos los productos de esta categoría"
+                            className="text-emerald-700 inline-flex items-center gap-1 text-xs px-2 py-1 rounded hover:bg-emerald-50 disabled:opacity-50">
+                            <HiOutlineCheckCircle className="w-4 h-4" /> Habilitar
+                          </button>
+                        )}
+                      </>
+                    )
                   )}
                   <button onClick={() => openEdit(c)} className="text-blue-600"><HiOutlinePencilSquare className="w-4 h-4" /></button>
                   <button onClick={() => remove(c)} className="text-rose-600"><HiOutlineTrash className="w-4 h-4" /></button>
