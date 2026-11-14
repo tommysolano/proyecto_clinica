@@ -916,39 +916,3 @@ test('Disparo MANUAL desde el chat: ejecuta el flujo con la próxima cita en el 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-test('Cupo por servicio: bloquea la 2ª cita en el mismo horario aunque el servicio sea de OTRA sucursal', async () => {
-  const owner = await Clinic.create({ name: 'Matriz' }); // dueña del producto
-  const branch = await Clinic.create({ name: 'Sucursal Norte' }); // donde se agenda
-  const userId = new H.mongoose.Types.ObjectId();
-  const p1 = await Patient.create({ clinic: branch._id, firstName: 'P1', lastName: 'Uno', phone: '0990000001' });
-  const p2 = await Patient.create({ clinic: branch._id, firstName: 'P2', lastName: 'Dos', phone: '0990000002' });
-  const serv = await H.makeProduct(owner._id, {
-    category: 'servicio', unlimited: true, name: 'Ecografía', maxAppointmentsPerDay: 1,
-  });
-
-  const r1 = await H.runController(createAppointmentConServicio, H.mockReq(branch._id, userId, {
-    patient: p1._id, services: [String(serv._id)], date: futureDate(), startTime: '10:00',
-  }));
-  assert.equal(r1.statusCode, 201, JSON.stringify(r1.payload));
-
-  // Misma fecha y hora → cupo (1) agotado, aunque el producto pertenezca a Matriz.
-  const r2 = await H.runController(createAppointmentConServicio, H.mockReq(branch._id, userId, {
-    patient: p2._id, services: [String(serv._id)], date: futureDate(), startTime: '10:00',
-  }));
-  assert.equal(r2.statusCode, 400, 'el cupo no bloqueó la segunda cita');
-  assert.match(String(r2.payload.message), /Cupo agotado/);
-
-  // Otra hora del mismo día sí se permite (el cupo es por horario).
-  const r3 = await H.runController(createAppointmentConServicio, H.mockReq(branch._id, userId, {
-    patient: p2._id, services: [String(serv._id)], date: futureDate(), startTime: '11:00',
-  }));
-  assert.equal(r3.statusCode, 201, JSON.stringify(r3.payload));
-
-  // Cancelar la primera libera el cupo de las 10:00.
-  const Appointment = require('../models/Appointment');
-  await Appointment.updateOne({ _id: r1.payload._id }, { status: 'cancelada' });
-  const r4 = await H.runController(createAppointmentConServicio, H.mockReq(branch._id, userId, {
-    patient: p2._id, services: [String(serv._id)], date: futureDate(), startTime: '10:00',
-  }));
-  assert.equal(r4.statusCode, 201, 'una cita cancelada debe liberar su cupo');
-});

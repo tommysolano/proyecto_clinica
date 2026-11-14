@@ -12,6 +12,8 @@ const {
   getPatientPrepaid,
   getPatientItems,
   applyPatientItem,
+  transferPatientItem,
+  transferPrepaid,
   bulkTag,
   mergePatient,
 } = require('../controllers/patientController');
@@ -64,6 +66,9 @@ router.get('/:id/prepaid', requireRole('admin', 'cajero', 'contabilidad'), getPa
 // enfermería, que es quien se lo pone. Aplicarlo sin cobro lo saca del inventario.
 router.get('/:id/items', requireRole('admin', 'cajero', 'contabilidad', 'enfermero'), getPatientItems);
 router.post('/:id/items/:itemId/aplicar', requireRole('admin', 'cajero', 'enfermero'), applyPatientItem);
+// Ceder a otro paciente (nov-2026): es plata del paciente, lo hace caja o administración.
+router.post('/:id/items/:itemId/ceder', requireRole('admin', 'cajero'), transferPatientItem);
+router.post('/:id/prepaid/:packageId/ceder', requireRole('admin', 'cajero'), transferPrepaid);
 // Crear / editar: incluye doctor (con restricción de campos sensibles en el controller)
 // 'doctor' EXPANDE a las especialidades (óptica incluida): en óptica el paciente
 // llega sin cita previa y quien lo registra es el propio optómetra.

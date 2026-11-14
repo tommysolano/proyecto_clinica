@@ -36,11 +36,22 @@ exports.searchClients = async (req, res) => {
     const rx = new RegExp(escaparRegex(q), 'i');
     filter.$or = [{ ruc: rx }, { razonSocial: rx }, { nombreComercial: rx }];
   }
+  const limite = Math.min(parseInt(req.query.limit, 10) || 15, 50);
   const items = await Supplier.find(filter)
     .select('ruc tipoIdentificacion razonSocial nombreComercial email phone address')
     .sort({ razonSocial: 1 })
-    .limit(Math.min(parseInt(req.query.limit, 10) || 15, 50));
-  res.json(items);
+    .limit(limite * 3)
+    .lean();
+  // UNA PERSONA, UNA FILA (nov-2026): quien ya es paciente (misma cédula, o RUC = cédula
+  // + 001) sale en el buscador como paciente, no también como «Cliente». Los pacientes son
+  // de toda la organización: no se filtra por sucursal.
+  const { candidatas } = require('../utils/pacientePorCedula');
+  const Patient = require('../models/Patient');
+  const ids = [...new Set(items.flatMap((s) => candidatas(s.ruc)))];
+  const yaPacientes = new Set(ids.length
+    ? (await Patient.find({ cedula: { $in: ids } }).distinct('cedula')).map(String)
+    : []);
+  res.json(items.filter((s) => !candidatas(s.ruc).some((c) => yaPacientes.has(c))).slice(0, limite));
 };
 
 exports.get = async (req, res) => {

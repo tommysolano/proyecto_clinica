@@ -33,16 +33,7 @@ const { scopedDocuments } = require('../services/scopedDocuments');
  * válido es `salePrice`.
  */
 function resolveUnitPrice(product, item) {
-  // 0) PRECIO VARIABLE: el producto lo marca así en el inventario y el importe lo pone quien
-  // cobra. Es la única excepción a la lista, y la decide el producto, no el navegador.
-  if (product.variablePrice && item.unitPrice !== undefined && item.unitPrice !== null && item.unitPrice !== '') {
-    const pedido = +Number(item.unitPrice).toFixed(2);
-    if (!Number.isFinite(pedido) || pedido < 0) {
-      throw Object.assign(new Error(`Precio inválido para "${product.name}"`), { status: 400 });
-    }
-    return pedido;
-  }
-
+  // (Nov-2026: se quitó el «precio variable»; el precio sale siempre de la lista.)
   const lista = Array.isArray(product.salePrices) && product.salePrices.length
     ? product.salePrices
     : [{ name: 'General', price: Number(product.salePrice) || 0, active: true }];
@@ -201,7 +192,7 @@ exports.createSale = async (req, res) => {
   try {
     const {
       items,
-      patient,
+      patient: patientBody,
       clientName,
       clientCedula,
       clientEmail,
@@ -216,6 +207,12 @@ exports.createSale = async (req, res) => {
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Debe agregar al menos un ítem' });
     }
+    // Sin paciente elegido pero facturando a la cédula/RUC de un paciente: es esa persona
+    // (utils/pacientePorCedula). Así la venta queda en su historia igual que desde la cita.
+    const patient = patientBody
+      || (await require('../utils/pacientePorCedula').pacientePorCedula(clientCedula))
+      || null;
+    if (patient && !patientBody) req.body.patient = String(patient);
 
     /**
      * COBRAR UNA CITA = FACTURA DESDE LA AGENDA (oct-2026, en prueba). Solo quien
@@ -333,30 +330,53 @@ exports.createSale = async (req, res) => {
         // al cobrarlo salen sus componentes, como ítems vinculados obligatorios (más abajo).
         const { tieneComposicion, lineasDe } = require('../utils/composicion');
         const esCompuesto = (p) => tieneComposicion(p);
+        /**
+         * ENTREGA DE CADA ÍTEM FÍSICO (nov-2026, tres opciones):
+         *  · 'llevado'    — se lo lleva: sale del inventario hoy.
+         *  · 'aplicado'   — se lo aplica aquí hoy: sale del inventario hoy (no queda nada guardado).
+         *  · 'en_clinica' — lo compra y lo DEJA en la clínica: se factura pero NO sale hoy; queda a
+         *                   su nombre y sale el día que se le aplica. También los compuestos: al
+         *                   aplicarlos salen sus componentes.
+         */
         const lineDelivery = items.map((item) => {
           const product = txProductMap.get(String(item.product));
-          if (esCompuesto(product) && item.delivery === 'en_clinica') {
-            throw Object.assign(new Error(`«${product.name}» se arma con otros productos del inventario: no se puede dejar guardado. Cóbrelo el día que se aplique.`), { status: 400 });
-          }
           if (txIsUnlimited(product) || !patient) {
             if (item.delivery === 'en_clinica') {
               throw Object.assign(new Error(`Para dejar «${product.name}» guardado en la clínica, la venta tiene que ser de un paciente.`), { status: 400 });
             }
-            return '';
+            return txIsUnlimited(product) ? '' : (item.delivery === 'aplicado' ? 'aplicado' : '');
           }
-          return item.delivery === 'en_clinica' ? 'en_clinica' : 'llevado';
+          return ['en_clinica', 'aplicado'].includes(item.delivery) ? item.delivery : 'llevado';
         });
         const FUENTES_VINCULADO = new Set(['inventario', 'paciente', 'trajo']);
         const linkedIds = new Set();
         const linkedReq = items.map((item) => {
           const product = txProductMap.get(String(item.product));
-          const pedidos = Array.isArray(item.linkedItems) ? item.linkedItems : [];
-          if (!pedidos.length) return [];
           // Los «items relacionados» de antes (`serviceItems`) valen mientras el producto no
           // se vuelva a guardar con su lista de vinculados.
           const lista = (product.linkedItems || []).length ? product.linkedItems : (product.serviceItems || []);
           const config = product.includedComponents;
           const byCategory = config?.enabled === true;
+          /**
+           * ÍTEMS VINCULADOS AUTOMÁTICOS (nov-2026). Lo que se gasta al hacer el servicio (guantes,
+           * jeringas…) se configura en la ficha del producto y sale SOLO al cobrar: cantidad
+           * configurada × unidades vendidas, del inventario. Quien cobra no escoge nada, así
+           * que lo que mande el navegador para estos productos se ignora.
+           */
+          if (!byCategory) {
+            const juntos = new Map();
+            for (const l of lista) {
+              const pid = String(l?.product?._id || l?.product || '');
+              const qty = +(Number(l?.quantity) > 0 ? Number(l.quantity) : 1) * Number(item.quantity);
+              if (!pid || !(qty > 0) || pid === String(product._id)) continue;
+              juntos.set(pid, { product: pid, quantity: +((juntos.get(pid)?.quantity || 0) + qty).toFixed(4), source: 'inventario', auto: true });
+              linkedIds.add(pid);
+            }
+            return [...juntos.values()];
+          }
+          // Componentes por categoría: estos sí los escoge quien cobra.
+          const pedidos = Array.isArray(item.linkedItems) ? item.linkedItems : [];
+          if (!pedidos.length) return [];
           const permitidos = new Set(lista.map((l) => String(l.product)));
           const juntos = new Map();
           let totalIncluded = 0;
@@ -383,10 +403,30 @@ exports.createSale = async (req, res) => {
           }
           return [...juntos.values()];
         });
+        // Lo que se DEJA en la clínica no mueve nada hoy: ni sus vinculados ni (si es
+        // compuesto) sus componentes. Salen el día que se le aplica.
+        // «Se aplica una parte hoy» (nov-2026): de lo que deja en la clínica, `appliedNow`
+        // unidades guardables (el producto, o sus ampollas si es un compuesto simple) se usan
+        // hoy. Salen con la venta como un vinculado más (costo y anulación incluidos); el resto
+        // queda a su nombre. Si se aplica todo, es simplemente «se lo aplica aquí».
+        const aplicadoHoy = items.map(() => 0);
+        for (const [idx, item] of items.entries()) {
+          if (lineDelivery[idx] !== 'en_clinica') continue;
+          const n = Number(item.appliedNow) || 0;
+          const product = txProductMap.get(String(item.product));
+          const u = itemsPaciente.unidadGuardable(product);
+          const total = +(u.factor * Number(item.quantity)).toFixed(6);
+          if (n >= total - 1e-9) { lineDelivery[idx] = 'aplicado'; continue; }
+          linkedReq[idx] = linkedReq[idx].filter((l) => !l.auto);
+          if (!(n > 0)) continue;
+          aplicadoHoy[idx] = +n.toFixed(6);
+          linkedReq[idx].push({ product: u.product, quantity: aplicadoHoy[idx], source: 'inventario', hoy: true });
+          linkedIds.add(u.product);
+        }
         // Los componentes del compuesto: cantidad por unidad × unidades vendidas, del inventario.
         for (const [idx, item] of items.entries()) {
           const product = txProductMap.get(String(item.product));
-          if (!esCompuesto(product)) continue;
+          if (!esCompuesto(product) || lineDelivery[idx] === 'en_clinica') continue;
           for (const c of lineasDe(product)) {
             const pid = String(c.product);
             linkedReq[idx].push({ product: pid, quantity: +(Number(c.quantity) * Number(item.quantity)).toFixed(4), source: 'inventario', composicion: true });
@@ -397,7 +437,15 @@ exports.createSale = async (req, res) => {
         if (linkedIds.size) {
           const vinculados = await Product.find({ _id: { $in: [...linkedIds] } }).populate('inventoryCategory').session(session);
           for (const p of vinculados) linkedMap.set(String(p._id), p);
-          if (linkedMap.size !== linkedIds.size) {
+          // Un vinculado automático que ya no existe (o es un servicio sin stock) no frena el
+          // cobro: simplemente no hay nada que descontar de él.
+          const usable = (l) => {
+            if (!l.auto) return true;
+            const p = linkedMap.get(l.product);
+            return !!p && p.category !== 'servicio' && !p.unlimited;
+          };
+          for (let i = 0; i < linkedReq.length; i++) linkedReq[i] = linkedReq[i].filter(usable);
+          if ([...linkedIds].some((id) => !linkedMap.has(id) && linkedReq.some((ls) => ls.some((l) => l.product === id)))) {
             throw Object.assign(new Error('Un ítem vinculado ya no existe en el inventario'), { status: 400 });
           }
         }
@@ -406,7 +454,7 @@ exports.createSale = async (req, res) => {
           if (!parent.includedComponents?.enabled) continue;
           const categories = new Set((parent.includedComponents.categories || []).map(String));
           for (const linked of linkedReq[idx]) {
-            if (linked.composicion) continue;
+            if (linked.composicion || linked.hoy) continue;
             const child = linkedMap.get(linked.product);
             if (!child || child.active === false || child.disabled === true || child.category !== 'insumo' || child.unlimited ||
                 !categories.has(String(child.inventoryCategory?._id || child.inventoryCategory || '')) || String(child._id) === String(parent._id)) {
@@ -523,6 +571,7 @@ exports.createSale = async (req, res) => {
             // CUALQUIER bodega y su movimiento quedaba sin bodega (invisible en el kardex).
             warehouse: txIsUnlimited(product) || esCompuesto(product) ? null : txWarehouse,
             delivery: lineDelivery[idx],
+            appliedNow: aplicadoHoy[idx] || 0,
             // Compuesto: el compuesto no sale del inventario, salen sus componentes (vinculados).
             composite: esCompuesto(product),
             stockMoved: stockMovido.has(idx) ? stockMovido.get(idx) : undefined,
@@ -701,7 +750,7 @@ exports.createSale = async (req, res) => {
             patient,
             status: 'completada',
           }).session(session);
-          if (previousCount === 0) txIsFirstVisit = txProducts.some((p) => !p.excludeFromFirstVisit);
+          if (previousCount === 0) txIsFirstVisit = txProducts.length > 0;
         }
 
         const [txSale] = await Sale.create([{
@@ -837,7 +886,7 @@ exports.createSale = async (req, res) => {
 
         // Lo que el paciente deja guardado (o se lleva siendo ítem vinculado) queda a su nombre.
         // Va ANTES de los vinculados: lo que compra hoy y se aplica hoy sale de aquí mismo.
-        await itemsPaciente.crearDesdeVenta({ sale: txSale, items: txSaleItems, userId: req.user._id, session });
+        await itemsPaciente.crearDesdeVenta({ sale: txSale, items: txSaleItems, userId: req.user._id, session, productMap: txProductMap });
         const usaComprasDelPaciente = linkedReq.some((ls) => ls.some((l) => l.source !== 'inventario'));
         const sucursalesEmpresa = usaComprasDelPaciente
           ? await require('../utils/sesionesPrepagadas').sucursalesDeLaEmpresa(req.clinicId)

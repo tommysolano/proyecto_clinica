@@ -1,13 +1,18 @@
-import { useEffect, useState, Fragment } from 'react';
+import { useEffect, useMemo, useState, Fragment } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineCube, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineArrowsRightLeft, HiOutlineChevronDown, HiOutlineChevronRight, HiOutlineDocumentText } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineCube, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineArrowsRightLeft, HiOutlineChevronDown, HiOutlineChevronRight, HiOutlineDocumentText, HiOutlineMagnifyingGlass } from 'react-icons/hi2';
 import { fmt } from './_utils';
 import AccountSelect from '../../components/AccountSelect';
 import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import TransferStockModal from '../../components/TransferStockModal';
+import WarehouseCountPanel from './WarehouseCountPanel';
+
+// Clave de la bodega en el resumen; las capas sin bodega se agrupan como «Sin bodega».
+const SIN_BODEGA = '__sin__';
+const claveBodega = (w) => (w?._id ? String(w._id) : SIN_BODEGA);
 
 const EMPTY_WH = {
   code: '', name: '', address: '', chartAccount: '', costCenter: '', isMain: false, active: true,
@@ -21,6 +26,11 @@ export default function Warehouses() {
   const [products, setProducts] = useState([]);
   const [loadingStock, setLoadingStock] = useState(false);
   const [expanded, setExpanded] = useState({});
+  // Existencias: '' = todas las bodegas (vista por producto); un id = solo esa bodega.
+  const [bodegaSel, setBodegaSel] = useState('');
+  const [busq, setBusq] = useState('');
+  // Bodega con la que se abre la pestaña de toma física.
+  const [bodegaToma, setBodegaToma] = useState('');
 
   // CRUD bodega
   const [show, setShow] = useState(false);
@@ -61,6 +71,39 @@ export default function Warehouses() {
     if (tab === 'stock') loadStock();
     if (tab === 'transfers') { loadStock(); loadTransfers(); }
   }, [tab]);
+
+  /** Totales POR BODEGA: unidades, valor y cuántos productos tienen existencias en ella. */
+  const resumenBodegas = useMemo(() => {
+    const acc = new Map();
+    list.filter((w) => w.active !== false).forEach((w) => acc.set(String(w._id), { warehouse: w, qty: 0, value: 0, productos: 0 }));
+    for (const s of stock) {
+      for (const w of s.warehouses) {
+        const k = claveBodega(w.warehouse);
+        if (!acc.has(k)) acc.set(k, { warehouse: w.warehouse, qty: 0, value: 0, productos: 0 });
+        const r = acc.get(k);
+        r.qty += Number(w.qty) || 0;
+        r.value += Number(w.value) || 0;
+        if (Number(w.qty)) r.productos += 1;
+      }
+    }
+    return [...acc.entries()]
+      .map(([key, r]) => ({ key, ...r, qty: +r.qty.toFixed(4), value: +r.value.toFixed(2) }))
+      .sort((a, b) => (b.warehouse?.isMain ? 1 : 0) - (a.warehouse?.isMain ? 1 : 0)
+        || String(a.warehouse?.code || '~').localeCompare(String(b.warehouse?.code || '~')));
+  }, [list, stock]);
+
+  const stockVisible = useMemo(() => {
+    const t = busq.trim().toLowerCase();
+    return stock.filter((s) => !t || `${s.product.name || ''} ${s.product.code || ''} ${s.product.barcode || ''}`.toLowerCase().includes(t));
+  }, [stock, busq]);
+  // Filas de UNA bodega: TODOS los productos inventariables, con 0 los que no tienen
+  // existencias en ella (los usuarios necesitan verlos para saber que se acabaron).
+  const filasBodega = useMemo(() => (bodegaSel
+    ? stockVisible.map((s) => ({
+      product: s.product,
+      linea: s.warehouses.find((w) => claveBodega(w.warehouse) === bodegaSel) || { qty: 0, value: 0 },
+    }))
+    : []), [stockVisible, bodegaSel]);
 
   // --- CRUD bodega ---
   const submit = async (e) => {
@@ -103,6 +146,7 @@ export default function Warehouses() {
       <div className="flex gap-1 bg-emerald-50 rounded-xl p-1 w-fit">
         {tabBtn('list', 'Bodegas')}
         {tabBtn('stock', 'Existencias por bodega')}
+        {tabBtn('count', 'Toma física')}
         {tabBtn('transfers', 'Traslados')}
       </div>
 
@@ -155,10 +199,84 @@ export default function Warehouses() {
 
       {/* --- Pestaña Existencias por bodega --- */}
       {tab === 'stock' && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <button onClick={() => setBodegaSel('')}
+            className={`text-left rounded-2xl p-3 border cursor-pointer transition-colors ${bodegaSel === '' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white border-slate-200 hover:border-emerald-300'}`}>
+            <p className={`text-[11px] uppercase m-0 ${bodegaSel === '' ? 'text-emerald-100' : 'text-slate-500'}`}>Todas las bodegas</p>
+            <p className="text-xl font-bold font-mono m-0">{fmt(resumenBodegas.reduce((s, r) => s + r.qty, 0))}</p>
+            <p className={`text-[11px] m-0 ${bodegaSel === '' ? 'text-emerald-100' : 'text-slate-500'}`}>
+              unidades · ${fmt(resumenBodegas.reduce((s, r) => s + r.value, 0))} · {stock.length} productos
+            </p>
+          </button>
+          {resumenBodegas.map((r) => {
+            const sel = bodegaSel === r.key;
+            return (
+              <div key={r.key}
+                className={`rounded-2xl p-3 border transition-colors ${sel ? 'bg-emerald-50 border-emerald-400' : 'bg-white border-slate-200 hover:border-emerald-300'}`}>
+                <button onClick={() => setBodegaSel(r.key)} className="w-full text-left bg-transparent border-none p-0 cursor-pointer">
+                  <p className="text-[11px] uppercase text-slate-500 m-0 truncate">
+                    {r.warehouse ? `${r.warehouse.code || ''} · ${r.warehouse.name || ''}` : 'Sin bodega'}
+                    {r.warehouse?.isMain && <span className="ml-1 text-emerald-700 font-semibold">(principal)</span>}
+                  </p>
+                  <p className={`text-xl font-bold font-mono m-0 ${r.qty < 0 ? 'text-rose-700' : 'text-slate-800'}`}>{fmt(r.qty)}</p>
+                  <p className="text-[11px] text-slate-500 m-0">unidades · ${fmt(r.value)} · {r.productos} productos con stock</p>
+                </button>
+                {r.warehouse?._id && (
+                  <button onClick={() => { setBodegaToma(String(r.warehouse._id)); setTab('count'); }}
+                    className="mt-2 text-xs text-sky-700 bg-sky-50 rounded-lg px-2 py-1 border-none cursor-pointer">
+                    Toma física de esta bodega →
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {tab === 'stock' && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
           <p className="px-3 py-2 text-xs text-amber-800 bg-amber-50 border-b border-amber-100">
             El valor es estimado con el costo registrado en nuestro sistema. El stock por bodega de Contífico informa cantidades, pero no costos por bodega.
           </p>
+          <div className="px-3 py-2 border-b border-slate-100 flex flex-wrap items-center gap-2">
+            <div className="flex-1 min-w-[200px] flex items-center gap-2 border border-slate-200 rounded-lg px-3 py-1.5 bg-white focus-within:ring-2 focus-within:ring-emerald-500">
+              <HiOutlineMagnifyingGlass className="w-4 h-4 text-slate-400 shrink-0" />
+              <input type="search" value={busq} onChange={(e) => setBusq(e.target.value)}
+                placeholder="Buscar ítem por nombre, código o código de barras…"
+                className="flex-1 min-w-0 border-none outline-none text-sm bg-transparent" />
+            </div>
+            <span className="text-xs text-slate-500">
+              {bodegaSel ? filasBodega.length : stockVisible.length} ítem(s)
+            </span>
+            {bodegaSel && (
+              <span className="text-xs text-slate-600">
+                Mostrando solo: <b>{resumenBodegas.find((r) => r.key === bodegaSel)?.warehouse?.name || 'Sin bodega'}</b>
+                <button onClick={() => setBodegaSel('')} className="ml-2 text-emerald-700 bg-transparent border-none cursor-pointer underline">ver todas</button>
+              </span>
+            )}
+          </div>
+          {bodegaSel ? (
+            <table className="tbl">
+              <thead className="bg-emerald-50 text-xs uppercase"><tr>
+                <th className="px-3 py-2 text-left">Código</th>
+                <th className="px-3 py-2 text-left">Producto</th>
+                <th className="px-3 py-2 text-right">Stock en la bodega</th>
+                <th className="px-3 py-2 text-right">Valor estimado</th>
+              </tr></thead>
+              <tbody>
+                {loadingStock && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-500">Cargando...</td></tr>}
+                {!loadingStock && filasBodega.length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-500">{busq.trim() ? 'Ningún ítem coincide con la búsqueda.' : 'No hay ítems inventariables.'}</td></tr>}
+                {filasBodega.map(({ product, linea }) => (
+                  <tr key={product._id} className="border-t hover:bg-slate-50">
+                    <td className="px-3 py-2 font-mono text-xs">{product.code}</td>
+                    <td className="px-3 py-2 font-medium">{product.name}</td>
+                    <td className={`px-3 py-2 text-right font-mono ${linea.qty < 0 ? 'text-rose-700 font-semibold' : ''}`}>{fmt(linea.qty)}</td>
+                    <td className={`px-3 py-2 text-right font-mono ${linea.value < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>${fmt(linea.value)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
           <table className="tbl">
             <thead className="bg-emerald-50 text-xs uppercase"><tr>
               <th className="w-8"></th>
@@ -171,7 +289,7 @@ export default function Warehouses() {
             <tbody>
               {loadingStock && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-500">Cargando...</td></tr>}
               {!loadingStock && stock.length === 0 && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-500">Aún no hay existencias con capas de inventario. Registra entradas (con bodega) en Inventario o compras.</td></tr>}
-              {stock.map((s) => {
+              {stockVisible.map((s) => {
                 const isOpen = !!expanded[s.product._id];
                 return (
                   <Fragment key={s.product._id}>
@@ -182,7 +300,9 @@ export default function Warehouses() {
                       <td className={`px-3 py-2 text-right font-mono ${s.totalQty < 0 ? 'text-rose-700 font-semibold' : ''}`}>{fmt(s.totalQty)}</td>
                       <td className={`px-3 py-2 text-right font-mono ${s.totalValue < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>${fmt(s.totalValue)}</td>
                       <td className="px-3 py-2 text-xs text-slate-600">
-                        {s.warehouses.map((w) => `${w.warehouse?.name || 'Sin bodega'} (${fmt(w.qty)})`).join(', ')}
+                        {s.warehouses.length
+                          ? s.warehouses.map((w) => `${w.warehouse?.name || 'Sin bodega'} (${fmt(w.qty)})`).join(', ')
+                          : <span className="text-slate-400">Sin existencias</span>}
                       </td>
                     </tr>
                     {isOpen && (
@@ -206,8 +326,12 @@ export default function Warehouses() {
               })}
             </tbody>
           </table>
+          )}
         </div>
       )}
+
+      {/* --- Pestaña Toma física: sistema vs. lo contado, por Excel --- */}
+      {tab === 'count' && <WarehouseCountPanel warehouses={list} initialWarehouse={bodegaToma} />}
 
       {/* --- Pestaña Traslados --- */}
       {tab === 'transfers' && (

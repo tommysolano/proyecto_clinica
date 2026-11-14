@@ -5460,9 +5460,6 @@ function ServiceAutocomplete({ services, selectedIds, onAdd, onRemove }) {
                   {s.category === 'programa' && (
                     <span className="ml-2 text-[10px] text-purple-600 font-semibold">(programa)</span>
                   )}
-                  {s.excludeFromFirstVisit && (
-                    <span className="ml-2 text-[10px] text-slate-400">(recurrente)</span>
-                  )}
                 </span>
                 <span className="text-xs text-slate-500">${Number(s.salePrice).toFixed(2)}</span>
               </button>

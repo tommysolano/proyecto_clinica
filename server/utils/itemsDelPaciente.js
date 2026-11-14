@@ -42,30 +42,68 @@ async function componentesVinculados(productIds, session = null) {
 }
 
 /**
+ * EN QUÉ UNIDAD SE GUARDA lo que el paciente deja en la clínica (nov-2026). Un compuesto de
+ * UN solo componente («NEURO REGENERADOR 20ML» = 2 × «TRIPTOFANO 10 ML») se guarda como sus
+ * ampollas, para poder aplicar una hoy y otra después; lo demás, como el producto mismo.
+ * Devuelve { product (id), factor } — factor = unidades guardadas por unidad vendida.
+ */
+function unidadGuardable(product) {
+  const { tieneComposicion, lineasDe } = require('./composicion');
+  if (tieneComposicion(product)) {
+    const lineas = lineasDe(product);
+    const q = Number(lineas[0]?.quantity);
+    if (lineas.length === 1 && Number.isInteger(q) && q >= 1) return { product: idDe(lineas[0].product), factor: q };
+  }
+  return { product: idDe(product._id), factor: 1 };
+}
+
+/**
  * Deja a nombre del paciente lo que compró en esta venta: lo que NO se lleva
  * ('en_clinica') y lo que se lleva siendo ítem vinculado de algún servicio
  * ('llevado', para avisar el día que lo traiga).
  */
-async function crearDesdeVenta({ sale, items, userId, session }) {
+async function crearDesdeVenta({ sale, items, userId, session, productMap = null }) {
   if (!sale.patient) return [];
   const llevados = items.filter((i) => i.delivery === 'llevado').map((i) => i.product);
   const comps = llevados.length ? await componentesVinculados(llevados, session) : new Set();
-  const docs = items
-    .filter((i) => i.delivery === 'en_clinica' || (i.delivery === 'llevado' && comps.has(idDe(i.product))))
-    .map((i) => ({
+  const elegidos = items.filter((i) => i.delivery === 'en_clinica' || (i.delivery === 'llevado' && comps.has(idDe(i.product))));
+  // Lo dejado en la clínica se guarda en su unidad (las ampollas de un compuesto simple).
+  const unidades = new Map();
+  for (const i of elegidos) {
+    if (i.delivery !== 'en_clinica') continue;
+    const prod = productMap?.get(idDe(i.product)) || await Product.findById(i.product).session(session).lean();
+    if (prod) unidades.set(i, unidadGuardable(prod));
+  }
+  const otros = [...new Set([...unidades.values()].map((u) => u.product))];
+  const nombres = new Map((otros.length
+    ? await Product.find({ _id: { $in: otros } }).select('code name').session(session).lean() : [])
+    .map((p) => [String(p._id), p]));
+  const docs = elegidos.map((i) => {
+    const u = unidades.get(i);
+    const propio = !u || u.product === idDe(i.product);
+    const total = +(Number(i.quantity) * (u?.factor || 1)).toFixed(6);
+    const hoy = i.delivery === 'en_clinica' ? Math.min(Math.max(0, Number(i.appliedNow) || 0), total) : 0;
+    const comp = propio ? null : nombres.get(u.product);
+    return {
       clinic: sale.clinic,
       patient: sale.patient,
-      product: i.product,
-      productCode: i.productCode || '',
-      productName: i.productName || '',
+      product: propio ? i.product : u.product,
+      productCode: propio ? (i.productCode || '') : (comp?.code || ''),
+      productName: propio ? (i.productName || '') : `${comp?.name || 'Componente'} (de ${i.productName || 'un compuesto'})`,
       mode: i.delivery,
-      quantity: Number(i.quantity),
-      remaining: Number(i.quantity),
+      quantity: total,
+      remaining: +(total - hoy).toFixed(6),
+      // Lo que se aplicó el mismo día de la compra (ya salió del inventario con la venta).
+      uses: hoy > 0 ? [{
+        at: new Date(), quantity: hoy, sale: sale._id, saleNumber: sale.saleNumber || '',
+        detail: 'Aplicado el día de la compra', clinic: sale.clinic, by: userId, stockMoved: hoy,
+      }] : [],
       sale: sale._id,
       saleNumber: sale.saleNumber || '',
       date: sale.createdAt || new Date(),
       createdBy: userId,
-    }));
+    };
+  });
   if (!docs.length) return [];
   return PatientItem.insertMany(docs, { session });
 }
@@ -160,6 +198,65 @@ async function salidaDeInventario({
   return { stockMoved: toma, cost: r2(cost), aviso };
 }
 
+/**
+ * Qué sale del inventario al APLICAR `quantity` de un producto que el paciente dejó en la
+ * clínica (nov-2026): el producto mismo o, si es COMPUESTO, sus componentes (composición
+ * fija × cantidad); y en ambos casos sus ítems vinculados automáticos. Devuelve
+ * [{ product (doc), quantity }].
+ */
+async function salidasAlAplicar(product, quantity, session = null) {
+  const { tieneComposicion, lineasDe } = require('./composicion');
+  const qty = Number(quantity) || 0;
+  const pedidos = new Map();
+  const sumar = (id, q) => {
+    const k = idDe(id);
+    if (!k || !(q > 0)) return;
+    pedidos.set(k, +((pedidos.get(k) || 0) + q).toFixed(6));
+  };
+  if (tieneComposicion(product)) lineasDe(product).forEach((c) => sumar(c.product, Number(c.quantity) * qty));
+  else sumar(product._id, qty);
+  if (!product.includedComponents?.enabled) {
+    (product.linkedItems || []).forEach((l) => sumar(l.product, (Number(l.quantity) > 0 ? Number(l.quantity) : 1) * qty));
+  }
+  if (!pedidos.size) return [];
+  const docs = await Product.find({ _id: { $in: [...pedidos.keys()] } }).session(session);
+  return docs.filter((d) => !esIlimitado(d)).map((d) => ({ product: d, quantity: pedidos.get(String(d._id)) }));
+}
+
+/**
+ * CEDER A OTRO PACIENTE lo que este dejó en la clínica (nov-2026): sale de su saldo (queda
+ * anotado como uso «Cedido a …») y el otro lo recibe a su nombre, de la misma venta. El
+ * inventario no se mueve: sigue en la clínica hasta que se le aplique a quien lo recibió.
+ */
+async function cederItem({ itemId, fromPatient, toPatient, toPatientName = '', quantity, reason, userId, userName = '', clinics = null, session = null }) {
+  const n = Number(quantity);
+  if (!(n > 0)) throw err(400, 'Indica cuánto cede');
+  if (!String(reason || '').trim()) throw err(400, 'Escribe el motivo de la cesión');
+  if (String(fromPatient) === String(toPatient)) throw err(400, 'Elige a otro paciente');
+  const h = await PatientItem.findOne({
+    _id: itemId, patient: fromPatient, status: 'activo', mode: 'en_clinica',
+    ...(clinics ? { clinic: { $in: clinics } } : {}),
+  }).session(session);
+  if (!h) throw err(404, 'Ese ítem no está guardado en la clínica a nombre del paciente');
+  if (n > Number(h.remaining) + 1e-9) throw err(400, `Solo le quedan ${h.remaining} de «${h.productName}»`);
+  const hecho = await PatientItem.findOneAndUpdate(
+    { _id: h._id, status: 'activo', remaining: { $gte: n } },
+    {
+      $inc: { remaining: -n },
+      $push: { uses: { at: new Date(), quantity: n, detail: `Cedido a ${toPatientName || 'otro paciente'}: ${String(reason).trim()}`, by: userId, byName: userName, stockMoved: 0 } },
+    },
+    { new: true, session },
+  );
+  if (!hecho) throw err(409, 'Alguien lo usó al mismo tiempo. Vuelve a cargar la ficha.');
+  const [nuevo] = await PatientItem.create([{
+    clinic: h.clinic, patient: toPatient, product: h.product, productCode: h.productCode, productName: h.productName,
+    mode: 'en_clinica', quantity: n, remaining: n, sale: h.sale, saleNumber: h.saleNumber, date: new Date(),
+    createdBy: userId,
+    transferredFrom: { patient: fromPatient, ref: h._id, reason: String(reason).trim(), by: userId, at: new Date() },
+  }], { session });
+  return nuevo;
+}
+
 /** Lo que el paciente tiene a su nombre (con saldo), de las sucursales indicadas. */
 async function delPaciente(patientId, clinics = null, { soloConSaldo = true } = {}) {
   const filas = await PatientItem.find({
@@ -168,7 +265,12 @@ async function delPaciente(patientId, clinics = null, { soloConSaldo = true } = 
     ...(soloConSaldo ? { remaining: { $gt: 0 } } : {}),
     ...(clinics ? { clinic: { $in: clinics } } : {}),
   }).sort({ date: 1, _id: 1 }).lean();
+  const Patient = require('../models/Patient');
+  const origen = [...new Set(filas.map((f) => idDe(f.transferredFrom?.patient)).filter(Boolean))];
+  const nombres = new Map((origen.length ? await Patient.find({ _id: { $in: origen } }).select('firstName lastName').lean() : [])
+    .map((x) => [String(x._id), [x.firstName, x.lastName].filter(Boolean).join(' ')]));
   return filas.map((f) => ({
+    cedidoPor: f.transferredFrom?.patient ? nombres.get(idDe(f.transferredFrom.patient)) || 'otro paciente' : null,
     _id: f._id,
     product: f.product,
     productCode: f.productCode,
@@ -224,6 +326,9 @@ module.exports = {
   crearDesdeVenta,
   consumir,
   salidaDeInventario,
+  salidasAlAplicar,
+  unidadGuardable,
+  cederItem,
   delPaciente,
   anularDeVenta,
   esIlimitado,

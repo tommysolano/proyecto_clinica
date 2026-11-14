@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
@@ -46,8 +47,15 @@ export default function PhysicalCounts() {
   const [confirmar, setConfirmar] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  // `?id=` abre esa toma (llega desde Bodegas → Toma física → «Revisar y confirmar»).
+  const [searchParams] = useSearchParams();
+  const idInicial = searchParams.get('id');
   const load = async () => {
-    try { const r = await api.get('/inventory-advanced/counts'); setList(r.data || []); }
+    try {
+      const r = await api.get('/inventory-advanced/counts');
+      setList(r.data || []);
+      if (idInicial) setSelected((prev) => prev || (r.data || []).find((c) => c._id === idInicial) || null);
+    }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   useEffect(() => {

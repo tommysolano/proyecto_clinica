@@ -1,8 +1,8 @@
 /**
  * ÍTEMS VINCULADOS E ÍTEMS DEL PACIENTE (oct-2026).
  *
- * Al cobrar «Sueroterapia» se escogen las ampollas que lleva: salen del inventario
- * en el cobro y no suman al precio. Lo que el paciente compra y NO se lleva no sale
+ * Al cobrar «Sueroterapia» salen SOLOS del inventario los ítems de su ficha
+ * (cantidad × unidades vendidas) y no suman al precio: quien cobra no escoge nada. Lo que el paciente compra y NO se lleva no sale
  * del inventario y queda a su nombre hasta que se le aplica; lo que se lleva y luego
  * trae no se vuelve a descontar.
  */
@@ -38,14 +38,11 @@ async function escenario() {
   return { clinicId, userId, vitC, zinc, suero, patient, cobrar, anular };
 }
 
-test('los vinculados salen del inventario al cobrar y no suman al precio; anular los devuelve', async () => {
+test('los vinculados salen SOLOS del inventario al cobrar (cantidad × unidades) y no suman al precio; anular los devuelve', async () => {
   const { suero, vitC, zinc, cobrar, anular, clinicId } = await escenario();
-  const r = await cobrar({
-    items: [{
-      product: String(suero._id), quantity: 1,
-      linkedItems: [{ product: String(vitC._id), quantity: 2 }, { product: String(zinc._id), quantity: 1 }],
-    }],
-  });
+  await Product.updateOne({ _id: suero._id }, { linkedItems: [{ product: vitC._id, quantity: 2 }, { product: zinc._id, quantity: 1 }] });
+  // Quien cobra solo escoge el servicio: no manda nada de vinculados.
+  const r = await cobrar({ items: [{ product: String(suero._id), quantity: 1 }] });
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   assert.equal(r.payload.total, 50, 'solo se cobra el servicio');
   assert.equal(await stock(vitC), 8);
@@ -62,24 +59,30 @@ test('los vinculados salen del inventario al cobrar y no suman al precio; anular
   assert.equal(await stock(zinc), 10);
 });
 
-test('con precio variable se cobra el importe tecleado del servicio, y los vinculados siguen sin sumar', async () => {
-  const { suero, vitC, cobrar } = await escenario();
-  await Product.updateOne({ _id: suero._id }, { variablePrice: true });
-  const r = await cobrar({
-    items: [{ product: String(suero._id), quantity: 1, unitPrice: 75, linkedItems: [{ product: String(vitC._id), quantity: 1 }] }],
-  });
+test('dos unidades del servicio descuentan el doble', async () => {
+  const { suero, vitC, zinc, cobrar } = await escenario();
+  const r = await cobrar({ items: [{ product: String(suero._id), quantity: 2 }] });
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
-  assert.equal(r.payload.total, 75);
-  assert.equal(await stock(vitC), 9);
+  assert.equal(await stock(vitC), 8);
+  assert.equal(await stock(zinc), 8);
 });
 
-test('un ítem que no está vinculado al producto se rechaza', async () => {
-  const { suero, cobrar, clinicId } = await escenario();
+test('lo que mande el navegador como vinculado se ignora: manda la ficha del producto', async () => {
+  const { suero, vitC, zinc, cobrar, clinicId } = await escenario();
   const otro = await H.makeProduct(clinicId, { name: 'OTRA COSA', stock: 5 });
-  const r = await cobrar({ items: [{ product: String(suero._id), quantity: 1, linkedItems: [{ product: String(otro._id), quantity: 1 }] }] });
-  assert.equal(r.statusCode, 400);
-  assert.match(r.payload.message, /no está vinculado/);
-  assert.equal(await stock(otro), 5);
+  const r = await cobrar({ items: [{ product: String(suero._id), quantity: 1, linkedItems: [{ product: String(otro._id), quantity: 3 }] }] });
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  assert.equal(await stock(otro), 5, 'no se toca lo que no está en la ficha');
+  assert.equal(await stock(vitC), 9);
+  assert.equal(await stock(zinc), 9);
+});
+
+test('un vinculado que ya no existe no frena el cobro', async () => {
+  const { suero, vitC, zinc, cobrar } = await escenario();
+  await Product.deleteOne({ _id: zinc._id });
+  const r = await cobrar({ items: [{ product: String(suero._id), quantity: 1 }] });
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  assert.equal(await stock(vitC), 9);
 });
 
 test('componentes por categoría: hasta tres unidades incluidas, costo de inventario y anulación', async () => {
@@ -134,18 +137,19 @@ test('la configuración de componentes rechaza categorías y límites inválidos
 });
 
 test('sin stock suficiente avisa pero deja cobrar', async () => {
-  const { suero, vitC, cobrar } = await escenario();
+  const { suero, vitC, zinc, cobrar } = await escenario();
   await Product.updateOne({ _id: vitC._id }, { stock: 1 });
-  const r = await cobrar({ items: [{ product: String(suero._id), quantity: 1, linkedItems: [{ product: String(vitC._id), quantity: 3 }] }] });
+  await Product.updateOne({ _id: suero._id }, { linkedItems: [{ product: vitC._id, quantity: 3 }, { product: zinc._id, quantity: 1 }] });
+  const r = await cobrar({ items: [{ product: String(suero._id), quantity: 1 }] });
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   assert.equal(await stock(vitC), 0);
   assert.ok((r.payload.warnings || []).some((w) => /VITAMINA C/.test(w)), 'avisa del stock corto');
   const venta = await Sale.findById(r.payload._id);
-  assert.equal(venta.items[0].linkedItems[0].stockMoved, 1, 'anota lo que de verdad bajó');
+  assert.equal(venta.items[0].linkedItems.find((l) => String(l.product) === String(vitC._id)).stockMoved, 1, 'anota lo que de verdad bajó');
 });
 
-test('lo comprado que NO se lleva no sale del inventario; sale cuando se le aplica en el servicio', async () => {
-  const { suero, vitC, patient, cobrar, anular } = await escenario();
+test('lo comprado que NO se lleva no sale del inventario y queda a nombre del paciente', async () => {
+  const { vitC, patient, cobrar, anular } = await escenario();
   const compra = await cobrar({ patient, items: [{ product: String(vitC._id), quantity: 3, delivery: 'en_clinica' }] });
   assert.equal(compra.statusCode, 201, JSON.stringify(compra.payload));
   assert.equal(compra.payload.total, 24, 'las ampollas sí se cobran');
@@ -153,72 +157,9 @@ test('lo comprado que NO se lleva no sale del inventario; sale cuando se le apli
   const [guardado] = await PatientItem.find({ patient });
   assert.equal(guardado.mode, 'en_clinica');
   assert.equal(guardado.remaining, 3);
-
-  const servicio = await cobrar({
-    patient,
-    items: [{ product: String(suero._id), quantity: 1, linkedItems: [{ product: String(vitC._id), quantity: 2, source: 'paciente' }] }],
-  });
-  assert.equal(servicio.statusCode, 201, JSON.stringify(servicio.payload));
-  assert.equal(servicio.payload.total, 50, 'las suyas no se cobran otra vez');
-  assert.equal(await stock(vitC), 8, 'salen del inventario al aplicarlas');
-  assert.equal((await PatientItem.findById(guardado._id)).remaining, 1);
-
-  // La compra ya se usó: no se puede anular. Anular el servicio las devuelve al paciente.
-  const a1 = await anular(compra.payload._id);
-  assert.equal(a1.statusCode, 409, JSON.stringify(a1.payload));
-  const a2 = await anular(servicio.payload._id);
-  assert.equal(a2.statusCode, 200, JSON.stringify(a2.payload));
-  assert.equal(await stock(vitC), 10);
-  assert.equal((await PatientItem.findById(guardado._id)).remaining, 3);
-  // Ahora sí se anula la compra, y no devuelve stock que nunca salió.
-  const a3 = await anular(compra.payload._id);
-  assert.equal(a3.statusCode, 200, JSON.stringify(a3.payload));
-  assert.equal(await stock(vitC), 10);
-  assert.equal((await PatientItem.findById(guardado._id)).status, 'anulado');
-});
-
-test('no alcanza lo guardado del paciente → 400 y nada se mueve', async () => {
-  const { suero, vitC, patient, cobrar } = await escenario();
-  await cobrar({ patient, items: [{ product: String(vitC._id), quantity: 1, delivery: 'en_clinica' }] });
-  const r = await cobrar({
-    patient,
-    items: [{ product: String(suero._id), quantity: 1, linkedItems: [{ product: String(vitC._id), quantity: 2, source: 'paciente' }] }],
-  });
-  assert.equal(r.statusCode, 400);
-  assert.match(r.payload.message, /no alcanza/);
-  assert.equal(await stock(vitC), 10);
-});
-
-test('lo que se llevó y TRAJO no se descuenta otra vez', async () => {
-  const { suero, vitC, patient, cobrar } = await escenario();
-  const compra = await cobrar({ patient, items: [{ product: String(vitC._id), quantity: 2, delivery: 'llevado' }] });
-  assert.equal(compra.statusCode, 201, JSON.stringify(compra.payload));
-  assert.equal(await stock(vitC), 8, 'se lo llevó: sale al venderlo');
-  const [llevado] = await PatientItem.find({ patient });
-  assert.equal(llevado.mode, 'llevado', 'queda anotado porque es ítem vinculado de un servicio');
-
-  const r = await cobrar({
-    patient,
-    items: [{ product: String(suero._id), quantity: 1, linkedItems: [{ product: String(vitC._id), quantity: 2, source: 'trajo' }] }],
-  });
-  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
-  assert.equal(await stock(vitC), 8, 'no se descuenta lo que trajo');
-  assert.equal((await PatientItem.findById(llevado._id)).remaining, 0);
-});
-
-test('lo que se compra y se aplica en la MISMA venta sale una sola vez', async () => {
-  const { suero, vitC, patient, cobrar } = await escenario();
-  const r = await cobrar({
-    patient,
-    items: [
-      { product: String(vitC._id), quantity: 2, delivery: 'en_clinica' },
-      { product: String(suero._id), quantity: 1, linkedItems: [{ product: String(vitC._id), quantity: 2, source: 'paciente' }] },
-    ],
-  });
-  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
-  assert.equal(r.payload.total, 66);
-  assert.equal(await stock(vitC), 8);
-  assert.equal((await PatientItem.findOne({ patient })).remaining, 0);
+  const a = await anular(compra.payload._id);
+  assert.equal(a.statusCode, 200, JSON.stringify(a.payload));
+  assert.equal(await stock(vitC), 10, 'no devuelve stock que nunca salió');
 });
 
 test('aplicar desde el perfil saca del inventario lo que dejó guardado', async () => {
@@ -244,4 +185,47 @@ test('dejarlo en la clínica sin paciente se rechaza', async () => {
   const r = await cobrar({ items: [{ product: String(vitC._id), quantity: 1, delivery: 'en_clinica' }] });
   assert.equal(r.statusCode, 400);
   assert.equal(await stock(vitC), 10);
+});
+
+test('«se lo aplica aquí» sale del inventario hoy y no deja nada guardado', async () => {
+  const { vitC, patient, cobrar } = await escenario();
+  const r = await cobrar({ patient, items: [{ product: String(vitC._id), quantity: 2, delivery: 'aplicado' }] });
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  assert.equal(await stock(vitC), 8);
+  assert.equal(await PatientItem.countDocuments({ patient }), 0);
+  assert.equal((await Sale.findById(r.payload._id)).items[0].delivery, 'aplicado');
+});
+
+test('un COMPUESTO que lo deja en la clínica no mueve nada hoy; al aplicarlo salen sus componentes', async () => {
+  const { clinicId, userId, patient, cobrar, anular } = await escenario();
+  const frasco = await H.makeProduct(clinicId, { name: 'TRIPTOFANO 10 ML NOVA', stock: 10, price: 20, averageCost: 3 });
+  const neuro = await H.makeProduct(clinicId, { name: 'NEURO REGENERADOR 20ML', stock: 0, price: 45 });
+  await Product.updateOne({ _id: neuro._id }, { isComposite: true, composition: [{ product: frasco._id, quantity: 2 }] });
+
+  const r = await cobrar({ patient, items: [{ product: String(neuro._id), quantity: 1, delivery: 'en_clinica' }] });
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  assert.equal(r.payload.total, 45, 'se factura');
+  assert.equal(await stock(frasco), 10, 'hoy no sale nada');
+  const [guardado] = await PatientItem.find({ patient });
+  assert.equal(guardado.mode, 'en_clinica');
+
+  assert.equal(guardado.remaining, 2, 'se guarda como sus 2 ampollas');
+  const req = H.mockReq(clinicId, userId, { quantity: 2 }, { params: { id: patient, itemId: String(guardado._id) } });
+  const ap = await H.runController(patients.applyPatientItem, req);
+  assert.equal(ap.statusCode, 200, JSON.stringify(ap.payload));
+  assert.equal(await stock(frasco), 8, 'al aplicarlo salen sus componentes');
+  assert.equal(await stock(neuro), 0);
+
+  // Ya aplicado: la venta no se puede anular.
+  assert.equal((await anular(r.payload._id)).statusCode, 409);
+});
+
+test('un COMPUESTO que se lleva o se aplica hoy saca sus componentes al cobrar', async () => {
+  const { clinicId, patient, cobrar } = await escenario();
+  const frasco = await H.makeProduct(clinicId, { name: 'DMSO PLUS 50ML', stock: 10, price: 30, averageCost: 3 });
+  const chico = await H.makeProduct(clinicId, { name: 'DMSO PLUS 10ML', stock: 0, price: 10 });
+  await Product.updateOne({ _id: chico._id }, { isComposite: true, composition: [{ product: frasco._id, quantity: 0.2 }] });
+  const r = await cobrar({ patient, items: [{ product: String(chico._id), quantity: 5, delivery: 'aplicado' }] });
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  assert.equal(await stock(frasco), 9);
 });

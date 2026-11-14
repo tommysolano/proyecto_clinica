@@ -15,24 +15,19 @@ const emptyProduct = {
   // `salePrices` es la lista; `salePrice` (el activo) lo deriva el backend de ella.
   salePrices: [{ name: 'General', price: '', active: true }],
   purchasePrice: '', salePrice: '', stock: '', minStock: '5', unit: 'unidad', taxRate: '15',
-  maxAppointmentsPerDay: '0',
-  excludeFromFirstVisit: false,
-  nursingService: false,
   bookableWhenDisabled: false,
   deferredIncome: false,
-  variablePrice: false,
   discountType: '',
   discountValue: '',
   sessionsIncluded: '',
   programServices: [],
+  packageSessions: [],
   serviceItems: [],
   linkedItems: [],
   includedComponents: { enabled: false, maxQuantity: 3, categories: [] },
   isComposite: false,
   components: [],
   composition: [],
-  availableInClinics: [],
-  stockByClinic: [],
 };
 
 // Convierte un producto existente al shape del formulario (campos numéricos como string).
@@ -49,12 +44,8 @@ function mapProductToForm(p) {
       : [{ name: 'General', price: String(p.salePrice ?? ''), active: true }],
     salePrice: String(p.salePrice), stock: String(p.stock),
     minStock: String(p.minStock), unit: p.unit, taxRate: String(p.taxRate),
-    maxAppointmentsPerDay: String(p.maxAppointmentsPerDay ?? 0),
-    excludeFromFirstVisit: !!p.excludeFromFirstVisit,
-    nursingService: !!p.nursingService,
     bookableWhenDisabled: !!p.bookableWhenDisabled,
     deferredIncome: !!p.deferredIncome,
-    variablePrice: !!p.variablePrice,
     discountType: p.discountType || '',
     discountValue: p.discountValue ? String(p.discountValue) : '',
     sessionsIncluded: p.sessionsIncluded ? String(p.sessionsIncluded) : '',
@@ -62,6 +53,10 @@ function mapProductToForm(p) {
       product: s.product?._id || s.product || '',
       quantity: s.quantity || 1,
     })),
+    packageSessions: (p.packageSessions || []).map((s) => ({
+      product: String(s.product?._id || s.product || ''),
+      quantity: s.quantity || 1,
+    })).filter((s) => s.product),
     serviceItems: [],
     // ÍTEMS VINCULADOS. Los «items relacionados» de los servicios de antes (que nunca se
     // usaron al cobrar) pasan aquí la primera vez que se abre el producto, ya marcados.
@@ -87,11 +82,6 @@ function mapProductToForm(p) {
       product: String(s.product?._id || s.product || ''),
       quantity: s.quantity ?? 1,
     })).filter((s) => s.product),
-    availableInClinics: (p.availableInClinics || []).map((c) => c?._id || c).filter(Boolean),
-    stockByClinic: (p.stockByClinic || []).map((s) => ({
-      clinic: s.clinic?._id || s.clinic || '',
-      stock: s.stock ?? 0,
-    })),
   };
 }
 
@@ -99,7 +89,7 @@ function mapProductToForm(p) {
 function normalizeInitial(init) {
   if (!init) return {};
   const out = { ...init };
-  ['purchasePrice', 'salePrice', 'stock', 'minStock', 'taxRate', 'sessionsIncluded', 'maxAppointmentsPerDay'].forEach((k) => {
+  ['purchasePrice', 'salePrice', 'stock', 'minStock', 'taxRate', 'sessionsIncluded'].forEach((k) => {
     if (out[k] !== undefined && out[k] !== null) out[k] = String(out[k]);
   });
   return out;
@@ -116,7 +106,6 @@ function normalizeInitial(init) {
  *  - editingProduct: objeto producto a editar (null = nuevo)
  *  - initialValues: prefill para producto nuevo (p.ej. { name, purchasePrice } desde una compra)
  *  - products: catálogo existente (para selectores de servicios/componentes/programa)
- *  - clinicsList: clínicas (stock por sucursal y disponibilidad)
  */
 export default function ProductFormModal({
   isOpen,
@@ -125,7 +114,6 @@ export default function ProductFormModal({
   editingProduct = null,
   initialValues = null,
   products = [],
-  clinicsList = [],
 }) {
   const editingId = editingProduct?._id || null;
   const [productForm, setProductForm] = useState(emptyProduct);
@@ -255,11 +243,13 @@ export default function ProductFormModal({
         // si el campo quedó vacío o no es numérico.
         taxRate: Number.isFinite(parseFloat(productForm.taxRate)) ? parseFloat(productForm.taxRate) : 15,
         unlimited,
-        maxAppointmentsPerDay: parseInt(productForm.maxAppointmentsPerDay) || 0,
-        excludeFromFirstVisit: !!productForm.excludeFromFirstVisit,
-        nursingService: !!productForm.nursingService,
+        // Opciones retiradas (nov-2026): se apagan al guardar para no dejar restos.
+        maxAppointmentsPerDay: 0,
+        excludeFromFirstVisit: false,
+        nursingService: false,
+        variablePrice: false,
+        availableInClinics: [],
         bookableWhenDisabled: isService && !!productForm.bookableWhenDisabled,
-        variablePrice: !!productForm.variablePrice,
         // Descuento del producto: lo aplica el servidor solo al cobrar y sale en la factura.
         discountType: Number(productForm.discountValue) > 0 ? (productForm.discountType || '') : '',
         discountValue: productForm.discountType ? Math.max(0, parseFloat(productForm.discountValue) || 0) : 0,
@@ -268,6 +258,11 @@ export default function ProductFormModal({
         programServices: (productForm.programServices || [])
           .filter((s) => s.product && Number(s.quantity) > 0)
           .map((s) => ({ product: s.product, quantity: parseInt(s.quantity) || 1 })),
+        // Paquete de sesiones (solo servicios): «2 DETOX PLUS» = 2 × DETOX PLUS.
+        packageSessions: isService
+          ? (productForm.packageSessions || []).filter((s) => s.product)
+            .map((s) => ({ product: s.product, quantity: Math.max(1, Math.round(Number(s.quantity) || 1)) }))
+          : [],
         // Los «items relacionados» viejos ya viajan en `linkedItems`.
         serviceItems: [],
         linkedItems: (productForm.linkedItems || [])
@@ -285,12 +280,6 @@ export default function ProductFormModal({
               .filter((s) => s.product)
               .map((s) => ({ product: s.product, quantity: parseFloat(String(s.quantity).replace(',', '.')) }))
           : [],
-        availableInClinics: productForm.availableInClinics || [],
-        stockByClinic: isService
-          ? []
-          : (productForm.stockByClinic || [])
-              .filter((s) => s.clinic)
-              .map((s) => ({ clinic: s.clinic, stock: parseInt(s.stock) || 0 })),
       };
       let saved;
       if (editingId) {
@@ -447,19 +436,6 @@ export default function ProductFormModal({
               rows={productForm.salePrices}
               onChange={(rows) => setProductForm({ ...productForm, salePrices: rows })}
             />
-            {/* Precio variable: el cobro trae el precio de arriba pero deja teclear otro. */}
-            <label className="mt-2 flex items-start gap-2 text-sm text-slate-700 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={!!productForm.variablePrice}
-                onChange={(e) => setProductForm({ ...productForm, variablePrice: e.target.checked })}
-                className="w-4 h-4 mt-0.5 accent-emerald-600 cursor-pointer"
-              />
-              <span>
-                <strong>Precio variable</strong>
-                <span className="block text-xs text-slate-500">Al cobrar se muestra el precio registrado, pero se puede escribir otro importe.</span>
-              </span>
-            </label>
             {/* DESCUENTO DEL PRODUCTO: al cobrar ya no se teclean descuentos. El de aquí se
                 aplica solo en cada venta y aparece en la factura. */}
             <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
@@ -563,43 +539,6 @@ export default function ProductFormModal({
               </label>
             </div>
           )}
-          {(productForm.category === 'servicio' || productForm.category === 'programa') && (
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Cupo máximo de citas por horario</label>
-              <NumericInput
-                min="0"
-                value={productForm.maxAppointmentsPerDay}
-                onChange={(e) => setProductForm({ ...productForm, maxAppointmentsPerDay: e.target.value })}
-                className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
-              />
-              <p className="text-[11px] text-slate-400 mt-1">0 = sin límite. Es el máximo de citas que pueden coincidir en el mismo horario (hora de inicio).</p>
-            </div>
-          )}
-          <div className="flex items-center gap-2 pt-7">
-            <input
-              id="excludeFromFirstVisit"
-              type="checkbox"
-              checked={!!productForm.excludeFromFirstVisit}
-              onChange={(e) => setProductForm({ ...productForm, excludeFromFirstVisit: e.target.checked })}
-              className="w-4 h-4 accent-emerald-600 cursor-pointer"
-            />
-            <label htmlFor="excludeFromFirstVisit" className="text-sm text-slate-700 cursor-pointer">
-              <strong>No marcar paciente como nuevo</strong> al usar este servicio
-            </label>
-          </div>
-          <div className="flex items-center gap-2 pt-7">
-            <input
-              id="nursingService"
-              type="checkbox"
-              checked={!!productForm.nursingService}
-              onChange={(e) => setProductForm({ ...productForm, nursingService: e.target.checked })}
-              className="w-4 h-4 accent-emerald-600 cursor-pointer"
-            />
-            <label htmlFor="nursingService" className="text-sm text-slate-700 cursor-pointer">
-              Servicio atendido por <strong>enfermería</strong> (p.ej. sueroterapia)
-            </label>
-          </div>
-
           {/* Programa: ingreso diferido */}
           {productForm.category === 'programa' && (
             <div className="sm:col-span-2 bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
@@ -707,19 +646,35 @@ export default function ProductFormModal({
               </div>
             </>}
           </div>
-          {/* ÍTEMS VINCULADOS (cualquier tipo de ítem): al cobrar este producto se escoge cuáles
-              se usaron, salen del inventario y NO suman al precio. */}
+          {/* ÍTEMS VINCULADOS (nov-2026): lo que se GASTA al usar este ítem. Al cobrarlo salen
+              solos del inventario; quien cobra no escoge nada. */}
           {!productForm.includedComponents?.enabled && <div className="sm:col-span-2">
             <ProductItemPicker
               label="Ítems vinculados"
-              help="Otros ítems del inventario que se usan con este (ej. las ampollas y moléculas de una sueroterapia). Al cobrar se escoge cuáles se usaron: salen del inventario y no suman al precio; solo se cobra este ítem. La cantidad es la que se propone por cada unidad vendida; «Siempre» los deja ya marcados al cobrar."
+              help="Lo que se gasta cada vez que se usa este ítem (ej. en una sueroterapia: un par de guantes, una jeringa, un catéter). Indica la cantidad por cada unidad vendida. Al cobrar, se descuentan solos del inventario: no suman al precio y quien cobra no tiene que escoger nada."
               color="emerald"
-              products={pickerProducts.filter((p) => p._id !== editingId && p.category !== 'programa')}
+              decimales
+              products={pickerProducts.filter((p) => p._id !== editingId && p.category !== 'programa' && p.category !== 'servicio' && !p.unlimited)}
               rows={productForm.linkedItems}
               onChange={(rows) => setProductForm({ ...productForm, linkedItems: rows })}
-              conPreseleccion
             />
           </div>}
+
+          {/* PAQUETE DE SESIONES (nov-2026, solo servicios): a qué sesiones equivale. Al cobrarlo
+              quedan a nombre del paciente; la cita de hoy usa una y las demás se gastan solas en
+              sus próximas citas de ese servicio, o se ceden a otro paciente desde su ficha. */}
+          {isService && (
+            <div className="sm:col-span-2">
+              <ProductItemPicker
+                label="Paquete de sesiones (este servicio equivale a…)"
+                help="Para servicios que incluyen varias sesiones, ej. «2 DETOX PLUS» = 2 × «DETOX PLUS». Al cobrarlo, las sesiones quedan a favor del paciente: la cita de hoy usa una y las demás se descuentan solas cuando vuelva con una cita de ese servicio. También se pueden ceder a otro paciente desde la pestaña Facturas de su ficha. Déjalo vacío si es un servicio normal."
+                color="amber"
+                products={pickerProducts.filter((p) => p._id !== editingId && (p.category === 'servicio' || p.unlimited) && p.category !== 'programa')}
+                rows={productForm.packageSessions}
+                onChange={(rows) => setProductForm({ ...productForm, packageSessions: rows })}
+              />
+            </div>
+          )}
 
           {/* Producto compuesto: componentes posibles */}
           {productForm.category !== 'servicio' && productForm.category !== 'programa' && productForm.isComposite && (
@@ -750,83 +705,6 @@ export default function ProductFormModal({
             </div>
           )}
 
-          {/* Stock por clínica (inventario por sucursal; el general es la suma) */}
-          {productForm.category !== 'servicio' && clinicsList.length > 0 && (
-            <div className="sm:col-span-2 bg-indigo-50 border border-indigo-200 rounded-xl p-3">
-              <p className="text-sm font-semibold text-indigo-800 mb-1">Stock por clínica</p>
-              <p className="text-xs text-slate-500 mb-2">
-                {editingId
-                  ? 'Solo lectura: el stock de cada sucursal lo mueven las compras, las ventas, los traslados y las tomas físicas.'
-                  : 'Saldo inicial por sucursal. El inventario general es la suma del stock de todas las clínicas.'}
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {clinicsList.map((c) => {
-                  const row = (productForm.stockByClinic || []).find((s) => s.clinic === c._id);
-                  return (
-                    <div key={c._id} className="flex items-center gap-2">
-                      <span className="text-sm text-slate-700 flex-1 truncate">{c.nombreComercial || c.name}</span>
-                      {editingId ? (
-                        <span className="w-24 px-2 py-1.5 border border-slate-200 rounded text-sm bg-slate-100 text-slate-600 font-mono text-right">
-                          {Number(row?.stock || 0)}
-                        </span>
-                      ) : (
-                        <NumericInput
-                          min="0"
-                          value={row?.stock ?? ''}
-                          placeholder="0"
-                          onChange={(e) => {
-                            const arr = [...(productForm.stockByClinic || [])];
-                            const idx = arr.findIndex((s) => s.clinic === c._id);
-                            const val = e.target.value;
-                            if (idx >= 0) arr[idx] = { ...arr[idx], stock: val };
-                            else arr.push({ clinic: c._id, stock: val });
-                            setProductForm({ ...productForm, stockByClinic: arr });
-                          }}
-                          className="w-24 px-2 py-1.5 border border-slate-200 rounded text-sm bg-white"
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              <p className="text-[11px] text-indigo-700 mt-2 font-medium">
-                Total general:{' '}
-                {(productForm.stockByClinic || []).reduce((a, s) => a + (parseInt(s.stock) || 0), 0)}
-              </p>
-            </div>
-          )}
-
-          {/* Disponibilidad por clínica (sucursal) */}
-          {clinicsList.length > 1 && (
-            <div className="sm:col-span-2 bg-sky-50 border border-sky-200 rounded-xl p-3">
-              <p className="text-sm font-semibold text-sky-800 mb-2">
-                Disponible solo en estas clínicas
-              </p>
-              <p className="text-xs text-slate-500 mb-2">
-                Si no marcas ninguna, estará disponible en todas.
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                {clinicsList.map((c) => {
-                  const checked = (productForm.availableInClinics || []).includes(c._id);
-                  return (
-                    <label key={c._id} className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) => {
-                          const arr = new Set(productForm.availableInClinics || []);
-                          if (e.target.checked) arr.add(c._id); else arr.delete(c._id);
-                          setProductForm({ ...productForm, availableInClinics: Array.from(arr) });
-                        }}
-                        className="w-4 h-4 accent-emerald-600"
-                      />
-                      <span>{c.nombreComercial || c.name}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          )}
         </div>
         <div className="flex justify-end gap-3 pt-2">
           <button type="button" onClick={onClose} className="px-5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-600 hover:bg-slate-50 cursor-pointer bg-white transition-colors">Cancelar</button>

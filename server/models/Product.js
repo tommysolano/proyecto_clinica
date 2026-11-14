@@ -39,6 +39,19 @@ const productSchema = new mongoose.Schema(
         _id: false,
       },
     ],
+    /**
+     * PAQUETE DE SESIONES (nov-2026), solo servicios. «2 DETOX PLUS» equivale a 2 sesiones de
+     * «DETOX PLUS»: al cobrarlo se dejan esas sesiones a nombre del paciente; la cita en la que
+     * se cobra usa una y las demás se gastan solas en sus próximas citas de ese servicio (o se
+     * ceden a otro paciente desde su ficha). Ver utils/sesionesPrepagadas.
+     */
+    packageSessions: [
+      {
+        product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+        quantity: { type: Number, default: 1, min: 1 },
+        _id: false,
+      },
+    ],
     // Para 'servicio': insumos/items relacionados que se utilizan al ofrecer el servicio.
     serviceItems: [
       {

@@ -75,7 +75,7 @@ test('se vende por lo que alcanzan sus componentes y al cobrarlo sale medio fras
   assert.equal((await Product.findById(frasco20._id)).stock, 0);
 });
 
-test('la composición solo lleva productos con stock, sin anidar compuestos; un compuesto no se deja guardado', async () => {
+test('la composición solo lleva productos con stock, sin anidar compuestos; un compuesto sí se puede dejar guardado', async () => {
   const { clinicId, userId, frasco20, diez } = await seed();
   const servicio = await H.makeProduct(clinicId, { category: 'servicio', unlimited: true, name: 'Consulta' });
   const editar = (id, body) => H.runController(products.updateProduct, H.mockReq(clinicId, userId, body, { params: { id: String(id) } }));
@@ -96,6 +96,6 @@ test('la composición solo lleva productos con stock, sin anidar compuestos; un 
   const guardado = await vender(clinicId, userId, diez, 1, {
     item: { delivery: 'en_clinica' }, body: { patient: String(paciente._id), clientName: 'Ana Pérez', clientCedula: '0102030405' },
   });
-  assert.equal(guardado.statusCode, 400);
-  assert.match(guardado.payload.message, /no se puede dejar guardado/);
+  // Nov-2026: un compuesto SÍ se puede dejar en la clínica: se factura y no mueve nada hoy.
+  assert.equal(guardado.statusCode, 201, JSON.stringify(guardado.payload));
 });

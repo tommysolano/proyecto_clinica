@@ -5,6 +5,7 @@ import Modal from './Modal';
 import NumericInput from './NumericInput';
 import { useAuth } from '../context/AuthContext';
 import { fmtDate } from '../utils/date';
+import CederAPacienteModal from './CederAPacienteModal';
 
 /**
  * LO QUE EL PACIENTE TIENE A SU NOMBRE (oct-2026, ver server models/PatientItem).
@@ -22,6 +23,9 @@ export default function ItemsDelPacientePanel({ patientId }) {
   const { hasRole } = useAuth();
   const puedeVer = hasRole('admin', 'cajero', 'contabilidad', 'enfermero');
   const puedeAplicar = hasRole('admin', 'cajero', 'enfermero');
+  // Ceder a otro paciente (nov-2026): es plata del paciente, lo hace caja o administración.
+  const puedeCeder = hasRole('admin', 'cajero');
+  const [cediendo, setCediendo] = useState(null);
   const [items, setItems] = useState([]);
   const [aplicando, setAplicando] = useState(null); // { item, quantity, note }
   const [guardando, setGuardando] = useState(false);
@@ -68,8 +72,18 @@ export default function ItemsDelPacientePanel({ patientId }) {
         <span className="text-slate-600"> · le quedan <strong>{i.remaining}</strong>{i.quantity !== i.remaining ? ` de ${i.quantity}` : ''}</span>
         <span className="block text-[11px] text-slate-500">
           {i.mode === 'en_clinica' ? 'Comprado' : 'Comprado y llevado'} el {fmtDate(i.date)}{i.saleNumber ? ` · ${i.saleNumber}` : ''}
+          {i.cedidoPor && <span className="text-indigo-700"> · cedido por {i.cedidoPor}</span>}
         </span>
       </span>
+      {puedeCeder && i.mode === 'en_clinica' && (
+        <button
+          type="button"
+          onClick={() => setCediendo(i)}
+          className="px-2.5 py-1 text-xs rounded-lg cursor-pointer bg-white border border-amber-300 text-amber-800 hover:bg-amber-100"
+        >
+          Ceder
+        </button>
+      )}
       {puedeAplicar && (
         <button
           type="button"
@@ -88,7 +102,7 @@ export default function ItemsDelPacientePanel({ patientId }) {
         <>
           <h3 className="text-sm font-semibold text-amber-900 m-0">Guardado en la clínica a su nombre · ya pagado</h3>
           <p className="text-[11px] text-amber-800 mt-0.5 mb-1">
-            Lo compró y no se lo llevó. No se le cobra otra vez: al cobrar el servicio que lo usa, escoge «Guardado del paciente».
+            Lo compró y lo dejó en la clínica. No se le cobra otra vez: cuando se lo pongan, pulsa «Aplicar» (ahí sale del inventario). Con «Ceder» pasa a nombre de otro paciente.
           </p>
           <ul className="list-none m-0 p-0">{enClinica.map(fila)}</ul>
         </>
@@ -113,7 +127,7 @@ export default function ItemsDelPacientePanel({ patientId }) {
           <div className="space-y-3">
             <p className="text-sm text-slate-600 m-0">
               {aplicando.item.mode === 'en_clinica'
-                ? 'Sale del inventario ahora. Úsalo cuando vino solo a aplicárselo; si se cobra un servicio, escógelo allí como «Guardado del paciente».'
+                ? 'Sale del inventario ahora (si es un compuesto, salen sus componentes).'
                 : 'Lo trajo el paciente: solo se anota como aplicado, no se descuenta del inventario.'}
             </p>
             <div>
@@ -146,6 +160,16 @@ export default function ItemsDelPacientePanel({ patientId }) {
           </div>
         )}
       </Modal>
+      <CederAPacienteModal
+        isOpen={!!cediendo}
+        onClose={() => setCediendo(null)}
+        titulo={cediendo ? `Ceder ${cediendo.productName}` : ''}
+        maximo={Number(cediendo?.remaining || 0)}
+        enteros={false}
+        excluir={patientId}
+        url={cediendo ? `/patients/${patientId}/items/${cediendo._id}/ceder` : ''}
+        onDone={(data) => setItems(Array.isArray(data?.items) ? data.items : items)}
+      />
     </section>
   );
 }

@@ -71,7 +71,9 @@ test('paga 300 por 100: se factura 100, entran 300 y quedan 200 a favor (pasivo)
 
 test('el excedente exige paciente y dinero que entra', async () => {
   const { clinicId, userId, patient, servicio } = await seed();
+  // Sin paciente = a otra identificación (con la cédula de Ana, la venta se enlaza a ella).
   const sinPaciente = await vender(clinicId, userId, {
+    clientName: 'Consumidor Final', clientCedula: '9999999999999',
     items: [{ product: String(servicio._id), quantity: 1, unitPrice: 100 }],
     payments: [{ method: 'efectivo', amount: 300 }],
   });

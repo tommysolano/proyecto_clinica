@@ -175,6 +175,21 @@ const descuentoDelProducto = (item) => {
   return Math.min(d, bruto);
 };
 const esServicioLinea = (item) => item?.category === 'servicio' || item?.unlimited === true;
+// En qué se guarda lo que el paciente deja en la clínica (igual que el servidor): un compuesto
+// de UN componente entero (2 × ampolla) se guarda como sus ampollas; lo demás, como sí mismo.
+const unidadGuardable = (product) => {
+  const comp = product?.isComposite ? (product.composition || []) : [];
+  const q = Number(comp[0]?.quantity);
+  if (comp.length === 1 && Number.isInteger(q) && q >= 1) return { factor: q, nombre: comp[0].productName || 'componente' };
+  return { factor: 1, nombre: product?.unit && product.unit !== 'unidad' ? product.unit : 'unidad(es)' };
+};
+// Identificaciones con las que un paciente puede aparecer: su cédula y, en un RUC de
+// persona natural (cédula + 001), la cédula de dentro. Consumidor Final no cuenta.
+const cedulasCandidatas = (identificacion) => {
+  const id = String(identificacion || '').replace(/\s+/g, '').trim();
+  if (!/^\d{10}$|^\d{13}$/.test(id) || /^9{10,13}$/.test(id)) return [];
+  return id.length === 13 && id.endsWith('001') ? [id, id.slice(0, 10)] : [id];
+};
 /**
  * COMPUESTO CON COMPOSICIÓN FIJA (29-10-2026, server/utils/composicion): no tiene stock propio;
  * se vende por lo que alcanzan sus componentes (`compositeAvailable`, lo calcula el servidor)
@@ -195,18 +210,9 @@ const opcionesVinculadas = (product, catalogo) => {
       String(p._id) !== String(product._id) && categorias.has(String(p.inventoryCategory?._id || p.inventoryCategory || '')))
       .map((p) => ({ product: String(p._id), productName: p.name, code: p.code, quantity: 1, preselect: false }));
   }
-  // Los «items relacionados» de antes (`serviceItems`) valen, ya marcados, mientras el
-  // producto no se vuelva a guardar con su lista de vinculados (igual en el servidor).
-  const lista = (product?.linkedItems || []).length
-    ? product.linkedItems
-    : (product?.serviceItems || []).map((s) => ({ ...s, preselect: true }));
-  return lista
-    .map((l) => {
-      const id = String(l.product?._id || l.product || '');
-      const p = catalogo.find((x) => String(x._id) === id);
-      return p ? { product: id, productName: p.name, code: p.code, quantity: Number(l.quantity) || 1, preselect: !!l.preselect } : null;
-    })
-    .filter(Boolean);
+  // Nov-2026: los ítems vinculados normales NO se escogen al cobrar. Los descuenta el
+  // servidor solo, según lo configurado en la ficha del producto.
+  return [];
 };
 // Las cantidades de los vinculados que nadie tocó siguen a la cantidad de la línea.
 const reescalarVinculados = (linked, qty) => (linked || [])
@@ -605,7 +611,6 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           unitPrice: elegido.price,
           priceName: elegido.name,
           priceList: lista,
-          variablePrice: product.variablePrice === true,
           discountType: product.discountType || '',
           discountValue: Number(product.discountValue) || 0,
           taxRate: product.taxRate,
@@ -752,7 +757,9 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         // withContact: el comprobante del SRI necesita cédula, correo y teléfono del cliente.
         // Es la excepción de facturación a "solo el admin ve el contacto del paciente"
         // (capacidad patients.billingData en el servidor).
-        api.get('/patients', { params: { search: q, limit: 15, withContact: 1 } }).then((r) => r.data?.patients || []).catch(() => []),
+        // Un RUC de persona natural (cédula + 001) encuentra al paciente por su cédula.
+        api.get('/patients', { params: { search: /^\d{10}001$/.test(q) ? q.slice(0, 10) : q, limit: 15, withContact: 1 } })
+          .then((r) => r.data?.patients || []).catch(() => []),
         api.get('/suppliers/clients', { params: { q, limit: 10 } }).then((r) => r.data || []).catch(() => []),
       ]);
       if (mia !== busquedaClienteRef.current) return;
@@ -908,7 +915,6 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
         unitPrice: elegido.price,
         priceName: elegido.name,
         priceList: lista,
-        variablePrice: product.variablePrice === true,
         discountType: product.discountType || '',
         discountValue: Number(product.discountValue) || 0,
         taxRate: product.taxRate,
@@ -1015,6 +1021,47 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   const pacienteVenta = citaPorCobrar
     ? String(citaPorCobrar.patient?._id || citaPorCobrar.patient || '')
     : String(form.patient || '');
+
+  /**
+   * CLIENTE = PACIENTE SI ES LA MISMA PERSONA (nov-2026). Las personas «Cliente» vienen de
+   * Contífico y son también pacientes (misma cédula, o RUC = cédula + 001). Si se factura a
+   * esa identificación sin haber elegido al paciente —fila «Cliente» del buscador o cédula
+   * escrita a mano— la venta se enlaza sola a él (el servidor hace lo mismo al guardar).
+   */
+  const [enlazadoPorCedula, setEnlazadoPorCedula] = useState('');
+  // Cédula con la que se enlazó solo: si luego se cambia la cédula, el enlace se suelta.
+  const cedulaEnlazadaRef = useRef('');
+  useEffect(() => {
+    if (cedulaEnlazadaRef.current && form.patient && String(form.clientCedula) !== cedulaEnlazadaRef.current) {
+      cedulaEnlazadaRef.current = '';
+      setForm((f) => ({ ...f, patient: '' }));
+      setTreatments([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.clientCedula]);
+  useEffect(() => {
+    // Mientras se escribe en el buscador no se adivina nada: se espera a que elija.
+    if (!modalOpen || citaPorCobrar || form.patient || (patientSearch.trim() && !pickedFromList)) return undefined;
+    const ids = cedulasCandidatas(form.clientCedula);
+    if (!ids.length) return undefined;
+    let vivo = true;
+    const t = setTimeout(async () => {
+      const lista = await api.get('/patients', { params: { search: ids[ids.length - 1], limit: 5, withContact: 1 } })
+        .then((r) => r.data?.patients || []).catch(() => []);
+      const iguales = lista.filter((p) => ids.includes(String(p.cedula || '').trim()));
+      if (!vivo || iguales.length !== 1) return;
+      const p = iguales[0];
+      setForm((f) => (f.patient || String(f.clientCedula) !== String(form.clientCedula) ? f : { ...f, patient: p._id }));
+      cedulaEnlazadaRef.current = String(form.clientCedula);
+      setEnlazadoPorCedula(`${p.firstName || ''} ${p.lastName || ''}`.trim());
+      api.get('/treatments', { params: { patient: p._id } }).then((r) => vivo && setTreatments(r.data || [])).catch(() => {});
+    }, 400);
+    return () => { vivo = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.clientCedula, form.patient, modalOpen, citaPorCobrar, pickedFromList]);
+  useEffect(() => {
+    if (!form.patient) { setEnlazadoPorCedula(''); cedulaEnlazadaRef.current = ''; }
+  }, [form.patient]);
   const [saldoAFavor, setSaldoAFavor] = useState(0);
   useEffect(() => {
     if (!modalOpen || !pacienteVenta) { setSaldoAFavor(0); return undefined; }
@@ -1157,6 +1204,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
 
   /** Factura a una persona del maestro de Personas (rol CLIENTE): no es un paciente, no lleva ficha. */
   const handleClientSelect = (cli) => {
+    cedulaEnlazadaRef.current = '';
     const nombre = cli.razonSocial || cli.nombreComercial || '';
     setForm((f) => ({
       ...f,
@@ -1173,6 +1221,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   };
 
   const handlePatientSelect = (patientId) => {
+    cedulaEnlazadaRef.current = '';
     const patient = patientResults.find((p) => p._id === patientId);
     setPickedFromList(!!patientId);
     if (patient) {
@@ -1224,8 +1273,6 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     }
     if (form.items.length === 0) return toast.error('Agrega al menos un producto');
     if (!previewReady) return toast.error(discountPreview.key === discountKey && discountPreview.error ? discountPreview.error : 'Espera a que se calculen los descuentos');
-    const sinPrecio = form.items.find((i) => i.variablePrice && !(Number(i.unitPrice) > 0));
-    if (sinPrecio) return toast.error(`Escribe el precio de «${sinPrecio.productName}»`);
     if (descuentoCambiado && !String(form.discountReason || '').trim()) {
       return toast.error('Escribe el motivo del descuento aplicado');
     }
@@ -1405,11 +1452,16 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
           discount: i.manualDiscount !== undefined && i.manualDiscount !== null && i.manualDiscount !== ''
             ? descuentoDeLinea(i) : undefined,
           treatment: i.treatment || null,
-          prepaid: !!i.prepaid && esServicioLinea(i),
+          prepaid: !!i.prepaid && esServicioLinea(i) && !!pacienteVenta,
           // ¿Se lo lleva o lo deja para aplicárselo aquí? (solo físicos de un paciente)
-          delivery: !esServicioLinea(i) && pacienteVenta ? (i.composite ? 'llevado' : (i.delivery || 'llevado')) : undefined,
-          // Ítems vinculados usados: no suman al precio; el servidor mueve su inventario.
-          linkedItems: (i.linked || [])
+          // Se lo lleva / se lo aplica aquí (ambos salen hoy) / lo deja en la clínica (sale al aplicarlo).
+          // De lo que deja en la clínica, cuánto se aplica hoy (sale del inventario hoy).
+          appliedNow: !esServicioLinea(i) && pacienteVenta && i.delivery === 'en_clinica' ? (Number(i.appliedNow) || 0) : undefined,
+          delivery: esServicioLinea(i) ? undefined
+            : (pacienteVenta ? (i.delivery || 'llevado') : (i.delivery === 'aplicado' ? 'aplicado' : undefined)),
+          // Solo los componentes elegidos por categoría. Los ítems vinculados del producto
+          // los pone el servidor solo (no suman al precio y salen del inventario).
+          linkedItems: (i.includedMax != null ? (i.linked || []) : [])
             .filter((l) => Number(l.quantity) > 0)
             .map((l) => ({ product: l.product, quantity: Number(l.quantity), source: l.source || 'inventario' })),
         })),
@@ -1854,6 +1906,11 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                   placeholder="Cédula, RUC o pasaporte"
                 />
                 <SriStatus status={cedulaLookup} />
+                {enlazadoPorCedula && !citaPorCobrar && (
+                  <p className="text-[11px] text-emerald-700 mt-1">
+                    Es el paciente <b>{enlazadoPorCedula}</b>: la venta queda en su historia.
+                  </p>
+                )}
               </div>
               <div>
                 <label className="lbl">Email cliente</label>
@@ -2054,11 +2111,28 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                           {/* PARA CITAS FUTURAS (oct-2026): un servicio que el paciente deja
                               pagado queda como sesiones a su favor; al asignar la atención de
                               la próxima cita se gasta una («Sesión 2 de 5») y no se cobra otra vez. */}
-                          {esServicioLinea(item) && form.patient && (!citaPorCobrar || !modoReceta) && (
-                            <label className="mt-1 flex items-start gap-1.5 text-[11px] text-indigo-700 cursor-pointer">
+                          {/* Nov-2026: las opciones de la línea salen SIEMPRE, igual que al cobrar una
+                              cita. Necesitan un paciente (son sesiones y productos a su nombre): sin
+                              él se ven desactivadas y dicen cómo habilitarlas. */}
+                          {(() => {
+                            const paq = products.find((p) => String(p._id) === String(item.product))?.packageSessions || [];
+                            if (!esServicioLinea(item) || !paq.length) return null;
+                            const nombreDe = (id) => products.find((p) => String(p._id) === String(id?._id || id))?.name || 'servicio';
+                            return (
+                              <span className={`mt-1 block text-[11px] ${pacienteVenta ? 'text-indigo-700' : 'text-slate-400'}`}>
+                                Paquete: {paq.map((x) => `${Number(x.quantity) * Number(item.quantity || 1)} × ${nombreDe(x.product)}`).join(', ')}.
+                                {pacienteVenta ? ' La cita de hoy usa una; las demás quedan a su favor.' : ' Elige al paciente en el buscador para dejarle las sesiones.'}
+                              </span>
+                            );
+                          })()}
+                          {esServicioLinea(item) && (!citaPorCobrar || !modoReceta)
+                            && !(products.find((p) => String(p._id) === String(item.product))?.packageSessions || []).length && (
+                            <label className={`mt-1 flex items-start gap-1.5 text-[11px] ${pacienteVenta ? 'text-indigo-700 cursor-pointer' : 'text-slate-400 cursor-not-allowed'}`}
+                              title={pacienteVenta ? '' : 'Elige al paciente en el buscador de cliente para dejarle sesiones a su favor'}>
                               <input
                                 type="checkbox"
-                                checked={!!item.prepaid}
+                                disabled={!pacienteVenta}
+                                checked={!!item.prepaid && !!pacienteVenta}
                                 onChange={(e) => {
                                   const items = [...form.items];
                                   items[idx] = { ...items[idx], prepaid: e.target.checked };
@@ -2073,30 +2147,55 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                                     ? ` · ${usoEnCita.get(String(item.product)) ? `esta cita es 1 de ${item.quantity}, ` : ''}quedan ${sesionesFuturas(item)} a su favor`
                                     : ' · sube la cantidad: hoy se usa la que hay')
                                   : ` · quedan ${item.quantity} a su favor`)}
+                                {!pacienteVenta && ' · elige al paciente en el buscador para usarlo'}
                               </span>
                             </label>
                           )}
-                          {/* ¿SE LO LLEVA? (oct-2026). Lo que deja para aplicárselo aquí NO sale del
-                              inventario: queda a su nombre y sale el día que se le aplica. */}
+                          {/* ENTREGA (nov-2026), también para los COMPUESTOS:
+                              · Se lo lleva / Se lo aplica aquí → sale del inventario hoy.
+                              · Lo compra y lo deja en la clínica → se factura, NO sale hoy: queda a
+                                su nombre y sale (o salen sus componentes) el día que se le aplica. */}
                           {item.composite && (
                             <span className="mt-1 block text-[11px] text-slate-500">
-                              Sale del inventario: {(products.find((p) => String(p._id) === String(item.product))?.composition || [])
+                              {(pacienteVenta && item.delivery === 'en_clinica') ? 'Al aplicárselo saldrá' : 'Sale del inventario'}: {(products.find((p) => String(p._id) === String(item.product))?.composition || [])
                                 .map((c) => `${+(c.quantity * item.quantity).toFixed(4)} × ${c.productName}`).join(', ')}
                             </span>
                           )}
-                          {!esServicioLinea(item) && !item.composite && pacienteVenta && (
+                          {!esServicioLinea(item) && (
                             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
                               <select
-                                value={item.delivery || 'llevado'}
+                                value={!pacienteVenta && item.delivery === 'en_clinica' ? 'llevado' : (item.delivery || 'llevado')}
                                 onChange={(e) => setLinea(idx, { delivery: e.target.value })}
                                 className="input-sm w-auto"
-                                title="¿Se lo lleva o se lo aplica aquí después?"
+                                title="¿Qué hace con lo que compra?"
                               >
                                 <option value="llevado">Se lo lleva</option>
-                                <option value="en_clinica">No se lo lleva: se lo aplica aquí</option>
+                                <option value="aplicado">Se lo aplica aquí (hoy)</option>
+                                <option value="en_clinica" disabled={!pacienteVenta}>
+                                  Lo compra y lo deja en la clínica{pacienteVenta ? '' : ' (elige al paciente)'}
+                                </option>
                               </select>
-                              {item.delivery === 'en_clinica' && (
-                                <span className="text-amber-700">No sale del inventario hoy: queda a su nombre hasta que se le aplique.</span>
+                              {pacienteVenta && item.delivery === 'en_clinica' && (() => {
+                                const u = unidadGuardable(products.find((p) => String(p._id) === String(item.product)));
+                                const total = +(u.factor * Number(item.quantity || 0)).toFixed(4);
+                                return (
+                                  <span className="flex flex-wrap items-center gap-1.5 text-amber-700">
+                                    <span>Hoy se aplica</span>
+                                    <NumericInput
+                                      value={item.appliedNow ?? 0}
+                                      onChange={(e) => {
+                                        const n = Math.min(Math.max(0, Number(String(e.target.value).replace(',', '.')) || 0), total);
+                                        setLinea(idx, { appliedNow: n });
+                                      }}
+                                      className="w-14 px-1 py-0.5 border border-amber-300 rounded text-right text-xs bg-white"
+                                      title="Cuántas se aplican hoy (salen del inventario hoy)"
+                                    />
+                                    <span>de {total} {u.nombre}. El resto queda a su nombre y sale del inventario cuando se le aplique.</span>
+                                  </span>
+                                );
+                              })()}
+                              {!pacienteVenta && (
+                                <span className="text-slate-400">Para dejarlo guardado en la clínica, elige al paciente en el buscador.</span>
                               )}
                             </div>
                           )}
@@ -2111,23 +2210,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                             habitual darse cuenta al final de que va a precio corporativo. Solo
                             se ofrecen los precios de la lista del producto (el backend los valida). */}
                         <td className="py-2 text-right">
-                          {/* PRECIO VARIABLE (marcado en el inventario): viene el registrado y se
-                              teclea el real. Texto que solo admite números; el backend lo acepta
-                              solo porque el producto lo permite. */}
-                          {item.variablePrice ? (
-                            <NumericInput
-                              value={item.unitPrice}
-                              onChange={(e) => {
-                                const unitPrice = parseFloat(e.target.value) || 0;
-                                const items = [...form.items];
-                                items[idx] = { ...items[idx], unitPrice };
-                                setForm({ ...form, items });
-                              }}
-                              title="Precio variable: escribe el importe a cobrar"
-                              placeholder="0.00"
-                              className="w-24 px-2 py-1 border border-amber-300 bg-amber-50 rounded text-right text-sm outline-none focus:ring-2 focus:ring-amber-400"
-                            />
-                          ) : (item.priceList || []).length > 1 ? (
+                          {(item.priceList || []).length > 1 ? (
                             <select
                               value={Math.max(0, item.priceList.findIndex((p) => p.name === item.priceName && p.price === item.unitPrice))}
                               onChange={(e) => {
@@ -3057,7 +3140,10 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                         </span>
                       )}
                       {item.delivery === 'en_clinica' && (
-                        <span className="block text-[11px] text-amber-700">No se lo llevó: quedó guardado a su nombre para aplicárselo aquí</span>
+                        <span className="block text-[11px] text-amber-700">Lo compró y lo dejó en la clínica: quedó guardado a su nombre</span>
+                      )}
+                      {item.delivery === 'aplicado' && (
+                        <span className="block text-[11px] text-sky-700">Se lo aplicó aquí</span>
                       )}
                       {(item.linkedItems || []).length > 0 && (
                         <span className="block text-[11px] text-cyan-800">

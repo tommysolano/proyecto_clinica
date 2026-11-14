@@ -35,6 +35,9 @@ router.post('/transfer', requireRole('admin', 'contabilidad'), c.transferStock);
 router.get('/counts', verInventario, requireCap('inventory.view'), c.listCounts);
 router.post('/counts', verInventario, requireCap('count.start'), c.startCount);
 router.put('/counts/:id', verInventario, requireCap('count.edit'), c.updateCount);
+// Toma por Excel: se descarga lo que dice el sistema y se sube lo contado.
+router.get('/counts/:id/sheet.xlsx', verInventario, requireCap('inventory.view'), c.downloadCountSheet);
+router.post('/counts/:id/sheet', verInventario, requireCap('count.edit'), c.uploadMiddleware, c.uploadCountSheet);
 router.post('/counts/:id/confirm', verInventario, requireCap('count.confirm'), c.confirmCount);
 
 // Activos fijos

@@ -182,24 +182,13 @@ const INVENTORY_CATEGORY_POPULATE = {
 exports.getProducts = async (req, res) => {
   try {
     const { search, category, categoria, inventoryCategory, lowStock, bookable, includeDisabled } = req.query;
-    // Catálogo COMPARTIDO por toda la organización: un producto no pertenece a una
-    // sola sucursal. `availableInClinics` decide en qué sucursales se ofrece: vacío
-    // (o ausente) = disponible en TODAS; con clínicas = solo en esas. Por eso el
-    // listado se filtra por disponibilidad, no por la sucursal dueña (antes solo se
-    // veían los productos de la sucursal que los creó, ocultándolos en las demás).
+    // Catálogo COMPARTIDO por toda la empresa: un producto se ofrece en todas sus
+    // sucursales (nov-2026: se quitó «Disponible solo en estas clínicas»).
     const query = {
       active: true,
       // Cada empresa tiene su catálogo (oct-2026): el de las sucursales de su empresa.
       clinic: { $in: catalogClinics(req.clinicId) },
-      $and: [
-        {
-          $or: [
-            { availableInClinics: { $exists: false } },
-            { availableInClinics: { $size: 0 } },
-            { availableInClinics: req.clinicId },
-          ],
-        },
-      ],
+      $and: [],
     };
 
     if (search) {
@@ -283,13 +272,6 @@ exports.getSueroComponentes = async (req, res) => {
       disabled: { $ne: true },
       clinic: { $in: clinicas },
       $and: [
-        {
-          $or: [
-            { availableInClinics: { $exists: false } },
-            { availableInClinics: { $size: 0 } },
-            { availableInClinics: req.clinicId },
-          ],
-        },
         {
           $or: [
             { inventoryCategory: { $in: [...grupoDeCategoria.keys()] } },
@@ -414,6 +396,33 @@ const saneaVinculados = (body, selfId = null) => {
 };
 
 /**
+ * PAQUETE DE SESIONES (nov-2026): solo servicios, sin repetidos ni el propio servicio,
+ * cantidad entera >= 1, y cada sesión tiene que ser un servicio. Sin lista, no se toca.
+ */
+const saneaPaquete = async (body, selfId = null) => {
+  if (!Array.isArray(body.packageSessions)) return;
+  const { isValidObjectId } = require('mongoose');
+  if (body.category && body.category !== 'servicio') { body.packageSessions = []; return; }
+  const vistos = new Set();
+  const filas = body.packageSessions
+    .map((l) => ({ product: String(l?.product?._id || l?.product || ''), quantity: Math.round(Number(l?.quantity)) }))
+    .filter((l) => {
+      if (!l.product || !isValidObjectId(l.product) || l.product === String(selfId || '') || vistos.has(l.product)) return false;
+      vistos.add(l.product);
+      return true;
+    })
+    .map((l) => ({ ...l, quantity: Number.isFinite(l.quantity) && l.quantity >= 1 ? l.quantity : 1 }));
+  if (filas.length) {
+    const servicios = await Product.find({ _id: { $in: filas.map((f) => f.product) } }).select('category unlimited').lean();
+    const ok = new Set(servicios.filter((x) => x.category === 'servicio' || x.unlimited).map((x) => String(x._id)));
+    if (filas.some((f) => !ok.has(f.product))) {
+      throw Object.assign(new Error('El paquete de sesiones solo puede llevar servicios.'), { status: 400 });
+    }
+  }
+  body.packageSessions = filas;
+};
+
+/**
  * La ficha solo manda `taxRate`. La tarifa (`taxCategory`) y el código SRI se alinean con
  * él: si no, un producto importado como IVA_15 seguía cobrando IVA tras ponerle 0 %.
  * Exento / no objeto se respetan si la tasa sigue en 0.
@@ -446,9 +455,16 @@ exports.createProduct = async (req, res) => {
     }
 
     syncStockFromClinics(req.body);
+    // Nov-2026: la ficha ya no pide «Stock por clínica»; el saldo inicial queda en la
+    // sucursal que crea el producto (igual que hace la sincronización con Contífico).
+    if (!Array.isArray(req.body.stockByClinic) || !req.body.stockByClinic.length) {
+      const inicial = Number(req.body.stock) || 0;
+      req.body.stockByClinic = inicial > 0 && !req.body.unlimited ? [{ clinic: req.clinicId, stock: inicial }] : [];
+    }
     syncSalePrices(req.body);
     alineaIva(req.body);
     saneaVinculados(req.body);
+    await saneaPaquete(req.body);
     await validateIncludedComponents(req.clinicId, req.body);
     await require('../utils/composicion').saneaComposicion(req.body);
     // Valida/resuelve la categoría contable de inventario (obligatoria para insumos).
@@ -485,6 +501,11 @@ exports.updateProduct = async (req, res) => {
     syncSalePrices(req.body, existing);
     alineaIva(req.body, existing);
     saneaVinculados(req.body, existing._id);
+    if (Array.isArray(req.body.packageSessions)) {
+      const tmp = { category: req.body.category || existing.category, packageSessions: req.body.packageSessions };
+      await saneaPaquete(tmp, existing._id);
+      req.body.packageSessions = tmp.packageSessions;
+    }
     await validateIncludedComponents(req.clinicId, req.body);
     await require('../utils/composicion').saneaComposicion(req.body, existing._id);
     // Valida/resuelve la categoría contable si se envía; NO bloquea la edición de

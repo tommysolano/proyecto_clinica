@@ -113,6 +113,7 @@ import {
 import DateInput from '../components/DateInput';
 import AttachmentPreviewModal from '../components/AttachmentPreviewModal';
 import Modal from '../components/Modal';
+import CederAPacienteModal from '../components/CederAPacienteModal';
 import { inicioDeMiTurno } from '../utils/appointmentTurns';
 import { cargarPagina } from '../utils/lazyPage';
 import { edadGestacional, fechaProbableParto } from '../constants/gestacion';
@@ -7747,6 +7748,10 @@ function FacturasTab({ patientId }) {
   const [paquetes, setPaquetes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [abierto, setAbierto] = useState(null); // paquete con sus usos desplegados
+  // Ceder sesiones libres a otro paciente (nov-2026): caja o administración.
+  const { hasRole } = useAuth();
+  const puedeCeder = hasRole('admin', 'cajero');
+  const [cediendo, setCediendo] = useState(null);
 
   useEffect(() => {
     let vivo = true;
@@ -7806,7 +7811,11 @@ function FacturasTab({ patientId }) {
                   <tr className="md:border-t border-slate-100">
                     <td data-cell="principal" className="md:px-4 py-2.5 text-slate-800">
                       <span className="font-medium">{p.productName}</span>
-                      {p.programName && <span className="block text-[11px] text-slate-500">Programa: {p.programName}</span>}
+                      {p.programName && <span className="block text-[11px] text-slate-500">Paquete / programa: {p.programName}</span>}
+                      {p.cedidoPor && <span className="block text-[11px] text-indigo-700">Cedida por {p.cedidoPor.nombre}{p.cedidoPor.motivo ? ` · ${p.cedidoPor.motivo}` : ''}</span>}
+                      {(p.cesiones || []).map((c, k) => (
+                        <span key={k} className="block text-[11px] text-amber-700">Cedió {c.quantity} a {c.a}{c.motivo ? ` · ${c.motivo}` : ''}</span>
+                      ))}
                       {p.status === 'anulado' && <span className="ml-2 text-[10px] font-bold uppercase text-slate-500">Anulado</span>}
                     </td>
                     <td data-cell="detalle" className="md:px-4 py-2.5 text-xs text-slate-600">
@@ -7826,6 +7835,15 @@ function FacturasTab({ patientId }) {
                       </span>
                     </td>
                     <td data-cell="acciones" className="md:px-4 py-2.5 text-right">
+                      {puedeCeder && p.status === 'activo' && p.quedan > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setCediendo(p)}
+                          className="text-xs text-amber-700 hover:underline bg-transparent border-none cursor-pointer mr-3"
+                        >
+                          Ceder
+                        </button>
+                      )}
                       {p.usos.length > 0 && (
                         <button
                           type="button"
@@ -7856,6 +7874,17 @@ function FacturasTab({ patientId }) {
           </table>
         </section>
       )}
+
+      <CederAPacienteModal
+        isOpen={!!cediendo}
+        onClose={() => setCediendo(null)}
+        titulo={cediendo ? `Ceder sesiones de ${cediendo.productName}` : ''}
+        maximo={Number(cediendo?.quedan || 0)}
+        unidad="sesión(es)"
+        excluir={patientId}
+        url={cediendo ? `/patients/${patientId}/prepaid/${cediendo._id}/ceder` : ''}
+        onDone={(data) => Array.isArray(data) && setPaquetes(data)}
+      />
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         <table className="tbl tbl-cards">

@@ -600,3 +600,88 @@ test('E3) un centro de costo INACTIVO se rechaza', async () => {
   assert.equal(r.statusCode, 400);
   assert.ok(/inactivo/i.test(r.payload.message));
 });
+
+test('D9) toma por EXCEL: se descarga lo del sistema, se sube lo contado y la toma queda con los dos inventarios', async () => {
+  const ExcelJS = require('exceljs');
+  const { Writable } = require('node:stream');
+  const { clinicId, userId, A, prod, otro } = await tomaSetup();
+  await entrada(clinicId, userId, { product: prod, warehouse: A, qty: 10, cost: 5, date: d('2026-06-01') });
+  const pc = ok(await iniciar(clinicId, userId, { warehouse: String(A._id) }));
+
+  // Descarga: un res que junta los bytes del libro.
+  const chunks = [];
+  const res = new Writable({ write(c, _e, cb) { chunks.push(Buffer.from(c)); cb(); } });
+  res.setHeader = () => {};
+  res.status = () => res;
+  res.json = (p) => { throw new Error(JSON.stringify(p)); };
+  const fin = new Promise((resolve) => res.on('finish', resolve));
+  await ctrl.downloadCountSheet(H.mockReq(clinicId, userId, {}, { params: { id: String(pc._id) } }), res);
+  await fin;
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(Buffer.concat(chunks));
+  const ws = wb.getWorksheet('Toma fisica');
+  assert.ok(ws, 'la hoja de la toma existe');
+  const filas = {};
+  ws.eachRow((row, n) => { if (n > 1) filas[row.getCell(1).value] = n; });
+  assert.equal(ws.getRow(filas[prod.code]).getCell(5).value, 10, 'stock del sistema en la bodega');
+  assert.equal(ws.getRow(filas[prod.code]).getCell(6).value, null, 'lo no contado sale vacío');
+  assert.equal(wb.getWorksheet('Datos de la toma').getRow(1).getCell(2).value, pc.code);
+
+  // Quien cuenta llena «Stock físico» de un producto y deja vacío el otro.
+  ws.getRow(filas[prod.code]).getCell(6).value = 8;
+  ws.getRow(filas[prod.code]).getCell(8).value = 'dos rotos';
+  const buffer = Buffer.from(await wb.xlsx.writeBuffer());
+  const req = H.mockReq(clinicId, userId, {}, { params: { id: String(pc._id) } });
+  req.file = { buffer };
+  const r = ok(await run(ctrl.uploadCountSheet, req));
+  assert.equal(r.resumen.actualizados, 1);
+  assert.equal(r.resumen.sinContar, 1, 'el vacío no se toca');
+  const it = r.count.items.find((x) => String(x.product) === String(prod._id));
+  assert.equal(it.systemQty, 10);
+  assert.equal(it.countedQty, 8);
+  assert.equal(it.difference, -2);
+  assert.equal(it.notes, 'dos rotos');
+  assert.equal(r.count.items.find((x) => String(x.product) === String(otro._id)).counted, false);
+
+  // El Excel de otra toma se rechaza.
+  wb.getWorksheet('Datos de la toma').getRow(1).getCell(2).value = 'TF-99999';
+  const req2 = H.mockReq(clinicId, userId, {}, { params: { id: String(pc._id) } });
+  req2.file = { buffer: Buffer.from(await wb.xlsx.writeBuffer()) };
+  const r2 = await run(ctrl.uploadCountSheet, req2);
+  assert.equal(r2.statusCode, 400);
+
+  // Al confirmar se ajusta la bodega con lo contado.
+  ok(await confirmar(clinicId, userId, pc._id, { date: '2026-06-15' }));
+  const enA = await kardex.currentStock({ clinicId, product: prod._id, warehouse: A._id });
+  assert.equal(enA.qty, 8);
+});
+
+test('D10) existencias por bodega: los productos sin stock también salen, con 0', async () => {
+  const { clinicId, userId, A, prod, otro, servicio } = await tomaSetup();
+  await entrada(clinicId, userId, { product: prod, warehouse: A, qty: 4, cost: 5, date: d('2026-06-01') });
+  const filas = ok(await run(ctrl.warehouseStock, H.mockReq(clinicId, userId)));
+  const deOtro = filas.find((f) => String(f.product._id) === String(otro._id));
+  assert.ok(deOtro, 'el producto sin capas aparece');
+  assert.equal(deOtro.totalQty, 0);
+  assert.deepEqual(deOtro.warehouses, []);
+  assert.equal(filas.find((f) => String(f.product._id) === String(prod._id)).totalQty, 4);
+  assert.ok(!filas.some((f) => String(f.product._id) === String(servicio._id)), 'los servicios no son existencias');
+});
+
+test('D11) los productos COMPUESTOS no salen en existencias por bodega ni en la toma física; su producto real sí', async () => {
+  const { clinicId, userId, A } = await tomaSetup();
+  const frasco = await H.makeProduct(clinicId, { code: 'DMSO50', name: 'DMSO PLUS 50ML' });
+  const chico = await H.makeProduct(clinicId, { code: 'DMSO10', name: 'DMSO PLUS 10ML' });
+  await Product.updateOne({ _id: chico._id }, { $set: { isComposite: true, composition: [{ product: frasco._id, quantity: 0.2 }] } });
+  await entrada(clinicId, userId, { product: frasco, warehouse: A, qty: 3, cost: 10, date: d('2026-06-01') });
+  await entrada(clinicId, userId, { product: chico, warehouse: A, qty: 2, cost: 2, date: d('2026-06-01') }); // capa vieja
+
+  const filas = ok(await run(ctrl.warehouseStock, H.mockReq(clinicId, userId)));
+  assert.ok(filas.some((f) => String(f.product._id) === String(frasco._id)), 'el frasco real aparece');
+  assert.ok(!filas.some((f) => String(f.product._id) === String(chico._id)), 'el compuesto no aparece');
+
+  const pc = ok(await iniciar(clinicId, userId, { warehouse: String(A._id) }));
+  const ids = pc.items.map((i) => String(i.product));
+  assert.ok(ids.includes(String(frasco._id)));
+  assert.ok(!ids.includes(String(chico._id)), 'el compuesto no se cuenta en la toma');
+});

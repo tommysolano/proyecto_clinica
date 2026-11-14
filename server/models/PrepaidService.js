@@ -43,6 +43,27 @@ const prepaidServiceSchema = new mongoose.Schema(
     appointment: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', default: null },
     quantity: { type: Number, required: true, min: 1 },
     uses: { type: [useSchema], default: [] },
+    // CEDIDO desde otro paciente (nov-2026): de quién venía y por qué.
+    transferredFrom: {
+      patient: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', default: null },
+      ref: { type: mongoose.Schema.Types.ObjectId, default: null },
+      reason: { type: String, default: '' },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      at: { type: Date, default: null },
+    },
+    // Sesiones que este paciente CEDIÓ a otros (salen de su saldo).
+    transfers: {
+      type: [{
+        _id: false,
+        quantity: Number,
+        toPatient: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient' },
+        toPackage: { type: mongoose.Schema.Types.ObjectId },
+        reason: String,
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        at: Date,
+      }],
+      default: [],
+    },
     status: { type: String, enum: ['activo', 'anulado'], default: 'activo', index: true },
     voidedAt: { type: Date, default: null },
     // Revisión: cada uso la sube. Dos mostradores que asignan a la vez no pueden

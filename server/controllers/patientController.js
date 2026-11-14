@@ -830,6 +830,46 @@ exports.getPatientItems = async (req, res) => {
 };
 
 /**
+ * CEDER A OTRO PACIENTE (nov-2026): lo que dejó guardado en la clínica o sesiones libres de un
+ * paquete. Motivo obligatorio; queda anotado en los dos pacientes.
+ */
+exports.transferPatientItem = async (req, res) => {
+  try {
+    const Patient = require('../models/Patient');
+    const { cederItem, delPaciente } = require('../utils/itemsDelPaciente');
+    const destino = await Patient.findById(req.body?.toPatient).select('firstName lastName').lean();
+    if (!destino) return res.status(404).json({ message: 'Elige al paciente que lo recibe' });
+    const sucursales = await sucursalesDeEmpresaVisibles(req);
+    await cederItem({
+      itemId: req.params.itemId, fromPatient: req.params.id, toPatient: destino._id,
+      toPatientName: [destino.firstName, destino.lastName].filter(Boolean).join(' '),
+      quantity: req.body?.quantity, reason: req.body?.reason, userId: req.user._id, userName: req.user.name || '',
+      clinics: sucursales,
+    });
+    res.json({ items: await delPaciente(req.params.id, sucursales) });
+  } catch (error) {
+    res.status(error.status || 500).json({ message: error.status ? error.message : 'Error al ceder el ítem', error: error.message });
+  }
+};
+
+exports.transferPrepaid = async (req, res) => {
+  try {
+    const Patient = require('../models/Patient');
+    const { cederSesiones, paquetesDelPaciente } = require('../utils/sesionesPrepagadas');
+    const destino = await Patient.findById(req.body?.toPatient).select('_id').lean();
+    if (!destino) return res.status(404).json({ message: 'Elige al paciente que recibe las sesiones' });
+    const sucursales = await sucursalesDeEmpresaVisibles(req);
+    await cederSesiones({
+      packageId: req.params.packageId, fromPatient: req.params.id, toPatient: destino._id,
+      quantity: req.body?.quantity, reason: req.body?.reason, userId: req.user._id, sucursales,
+    });
+    res.json(await paquetesDelPaciente(req.params.id, sucursales));
+  } catch (error) {
+    res.status(error.status || 500).json({ message: error.status ? error.message : 'Error al ceder las sesiones', error: error.message });
+  }
+};
+
+/**
  * APLICAR lo que el paciente dejó guardado sin pasar por un cobro (vino solo a
  * ponérselo). Lo 'en_clinica' sale del inventario AHORA; lo 'llevado' solo se
  * marca como usado (lo trajo él: no hay nada que descontar).
@@ -860,14 +900,18 @@ exports.applyPatientItem = async (req, res) => {
       if (enClinica) {
         const product = await Product.findById(h.product).session(session);
         if (product) {
-          const mov = await itemsPaciente.salidaDeInventario({
-            clinicId: req.clinicId, product, quantity: qty,
-            reason: `Aplicado al paciente (comprado en ${h.saleNumber || 'una venta anterior'})`,
-            reference: h.saleNumber || '', sourceModel: 'PatientItem', sourceRef: h._id,
-            userId: req.user._id, session,
-          });
-          stockMoved = mov.stockMoved;
-          if (mov.aviso) avisos.push(mov.aviso);
+          // Sale el producto o, si es compuesto, sus componentes; más sus vinculados.
+          for (const s of await itemsPaciente.salidasAlAplicar(product, qty, session)) {
+            const mov = await itemsPaciente.salidaDeInventario({
+              clinicId: req.clinicId, product: s.product, quantity: s.quantity,
+              reason: `Aplicado al paciente: ${h.productName} (comprado en ${h.saleNumber || 'una venta anterior'})`,
+              reference: h.saleNumber || '', sourceModel: 'PatientItem', sourceRef: h._id,
+              userId: req.user._id, session,
+            });
+            if (String(s.product._id) === String(product._id)) stockMoved = mov.stockMoved;
+            else if (mov.stockMoved > 0 && !stockMoved) stockMoved = qty;
+            if (mov.aviso) avisos.push(mov.aviso);
+          }
         }
       }
       const hecho = await PatientItem.findOneAndUpdate(

@@ -1279,76 +1279,15 @@ async function crearCita(req, res) {
       }
     }
 
-    // Validar que los servicios elegidos estén disponibles en la clínica destino.
-    // Si un servicio está restringido (availableInClinics) a otra clínica, se rechaza.
-    const serviceIds = (Array.isArray(services) ? services : [])
-      .map((s) => (typeof s === 'string' ? s : s.product))
-      .filter(Boolean);
-    if (serviceIds.length > 0) {
-      const restricted = await Product.find({
-        _id: { $in: serviceIds },
-        availableInClinics: { $exists: true, $not: { $size: 0 } },
-      }).select('name availableInClinics');
-      for (const p of restricted) {
-        const allowed = (p.availableInClinics || []).some(
-          (c) => String(c) === String(targetClinicId)
-        );
-        if (!allowed) {
-          return res.status(400).json({
-            message: `El servicio "${p.name}" no está disponible en este consultorio médico.`,
-          });
-        }
-      }
-    }
-
-    // Validar límite de citas por horario para servicios con cupo.
-    // Aplica únicamente a productos de categoría 'servicio' o 'programa'.
-    // El cupo limita cuántas citas pueden coincidir en el mismo día + hora de inicio.
-    // OJO: el catálogo es compartido entre sucursales (el producto "pertenece" a la
-    // clínica que lo creó), así que NO se filtra por clinic — se resuelve por _id.
-    if (serviceIds.length > 0) {
-      const limited = await Product.find({
-        _id: { $in: serviceIds },
-        category: { $in: ['servicio', 'programa'] },
-        maxAppointmentsPerDay: { $gt: 0 },
-      }).select('name maxAppointmentsPerDay');
-      for (const prod of limited) {
-        const used = await Appointment.countDocuments({
-          clinic: targetClinicId,
-          date: localDate,
-          startTime,
-          'services.product': prod._id,
-          status: { $ne: 'cancelada' }, // una cita cancelada libera su cupo
-        });
-        if (used >= prod.maxAppointmentsPerDay) {
-          return res.status(400).json({
-            message: `Cupo agotado para el servicio "${prod.name}" en este horario (${startTime}). Máx. ${prod.maxAppointmentsPerDay} cita(s) simultáneas.`,
-          });
-        }
-      }
-    }
-
-    // ¿Es primera cita del paciente?
-    // Solo se considera "nuevo" si tiene servicios que NO estén marcados como
-    // excludeFromFirstVisit. Si todos los servicios son recurrentes, no es nuevo.
+    // Nov-2026: se quitaron del inventario «Disponible solo en estas clínicas», el «cupo
+    // máximo de citas por horario» y «no marcar paciente como nuevo»: ningún servicio
+    // restringe sucursal ni cupo, y la primera visita depende solo del paciente.
     //
     // «Sin rastro previo» ya no es «sin citas previas»: los pacientes que se
     // atendían en papel entraban como nuevos el día que se les agendaba la
     // primera cita, aunque su historia llevara años en la clínica (ver
     // utils/firstVisit.js).
-    let isFirstVisit = false;
-    if (await esPrimeraVisita(patient)) {
-      if (serviceIds.length === 0) {
-        isFirstVisit = true;
-      } else {
-        // Catálogo compartido entre sucursales: se resuelve por _id, sin filtrar por clinic.
-        const counted = await Product.countDocuments({
-          _id: { $in: serviceIds },
-          excludeFromFirstVisit: { $ne: true },
-        });
-        isFirstVisit = counted > 0;
-      }
-    }
+    const isFirstVisit = await esPrimeraVisita(patient);
 
     const servicesSnapshot = await buildServicesSnapshot(targetClinicId, services);
 
@@ -3232,11 +3171,6 @@ exports.updateCobroItems = async (req, res) => {
           _id: { $in: productIds },
           active: true,
           category: 'insumo',
-          $or: [
-            { availableInClinics: { $exists: false } },
-            { availableInClinics: { $size: 0 } },
-            { availableInClinics: apt.clinic },
-          ],
         }).select('_id name salePrice').lean()
       : [];
     const productsById = new Map(catalogProducts.map((product) => [String(product._id), product]));

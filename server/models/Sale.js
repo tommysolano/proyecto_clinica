@@ -65,6 +65,9 @@ const saleItemSchema = new mongoose.Schema({
   // SESIONES PREPAGADAS (oct-2026): este servicio se pagó para citas futuras y dejó
   // un paquete de sesiones del paciente (ver models/PrepaidService).
   prepaid: { type: Boolean, default: false },
+  // «Lo deja en la clínica» con una PARTE aplicada hoy (nov-2026): cuántas unidades guardables
+  // (las del producto, o sus ampollas si es un compuesto de un solo componente) se aplicaron.
+  appliedNow: { type: Number, default: 0 },
   // Bodega de la que SALIÓ este ítem (copiada de la cabecera de la venta al registrarla).
   // Es la que consume las capas FIFO y la que ve el kardex por bodega. Vacía = stock general
   // (ventas anteriores a las bodegas: no se les inventa una).
@@ -75,7 +78,7 @@ const saleItemSchema = new mongoose.Schema({
    * queda a su nombre (models/PatientItem). 'llevado' = se lo lleva. '' = ventas
    * anteriores (o sin paciente): como siempre, sale del inventario.
    */
-  delivery: { type: String, enum: ['', 'llevado', 'en_clinica'], default: '' },
+  delivery: { type: String, enum: ['', 'llevado', 'aplicado', 'en_clinica'], default: '' },
   // COMPUESTO con composición fija (29-10-2026): la línea no movió stock propio; salieron
   // sus componentes (linkedItems con `fromComposition`). Anular no le devuelve stock a él.
   composite: { type: Boolean, default: false },

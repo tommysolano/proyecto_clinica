@@ -133,6 +133,12 @@ async function crearDesdeVenta({ sale, items, productMap, userId, session }) {
         const qty = Math.round(Number(ps.quantity || 1) * Number(it.quantity || 1));
         if (ps.product && qty > 0) entradas.push({ product: idDe(ps.product), qty, program: prod });
       }
+    } else if (esServicio(prod) && (prod.packageSessions || []).length) {
+      // PAQUETE DE SESIONES (nov-2026): «2 DETOX PLUS» deja 2 sesiones de «DETOX PLUS».
+      for (const ps of prod.packageSessions) {
+        const qty = Math.round(Number(ps.quantity || 1) * Number(it.quantity || 1));
+        if (ps.product && qty > 0) entradas.push({ product: idDe(ps.product), qty, program: prod, paquete: idDe(prod._id) });
+      }
     } else if (it.prepaid && esServicio(prod)) {
       entradas.push({ product: String(prod._id), qty: Number(it.quantity) || 0, name: prod.name });
     }
@@ -150,6 +156,16 @@ async function crearDesdeVenta({ sale, items, productMap, userId, session }) {
       .lean();
     if (cita && !cita.isCanje && !cita.isCortesia) {
       deHoy = contar((await productosDeCitas([cita])).get(String(cita._id)) || []);
+      // La cita agendada con el PAQUETE mismo («2 DETOX PLUS») hoy usa una sesión de cada
+      // servicio del paquete; las demás quedan a su favor.
+      for (const [pid, veces] of [...deHoy.entries()]) {
+        const paquete = productMap.get(pid);
+        if (!paquete || !(paquete.packageSessions || []).length) continue;
+        for (const ps of paquete.packageSessions) {
+          const sid = idDe(ps.product);
+          deHoy.set(sid, (deHoy.get(sid) || 0) + veces);
+        }
+      }
     }
   }
 
@@ -199,6 +215,19 @@ async function usarEnCita(apt, userId) {
   const productos = (await productosDeCitas([apt])).get(aptId) || [];
   if (!productos.length) return [];
   const necesita = contar(productos);
+  // Una cita agendada con un PAQUETE («2 DETOX PLUS») gasta una sesión de cada servicio
+  // que el paquete incluye (nov-2026).
+  const Product = require('../models/Product');
+  const paquetes = await Product.find({ _id: { $in: [...necesita.keys()] }, 'packageSessions.0': { $exists: true } })
+    .select('packageSessions').lean();
+  for (const paq of paquetes) {
+    const veces = necesita.get(String(paq._id)) || 0;
+    necesita.delete(String(paq._id));
+    for (const ps of paq.packageSessions) {
+      const sid = idDe(ps.product);
+      necesita.set(sid, (necesita.get(sid) || 0) + veces);
+    }
+  }
 
   // Ya apartadas/usadas por esta cita.
   const conUso = await PrepaidService.find({ 'uses.appointment': apt._id, status: 'activo' }).lean();
@@ -358,6 +387,15 @@ async function enriquecerCitas(citas, { disponibles = false } = {}) {
 }
 
 /** Paquetes de un paciente (perfil): usadas (con su cita), apartadas y libres. */
+/** Nombres de pacientes por id (para mostrar cesiones). */
+async function nombresDePacientes(ids) {
+  const unicos = [...new Set(ids.map(idDe).filter(Boolean))];
+  if (!unicos.length) return new Map();
+  const Patient = require('../models/Patient');
+  const filas = await Patient.find({ _id: { $in: unicos } }).select('firstName lastName').lean();
+  return new Map(filas.map((x) => [String(x._id), [x.firstName, x.lastName].filter(Boolean).join(' ')]));
+}
+
 async function paquetesDelPaciente(patientId, sucursales) {
   const paquetes = await PrepaidService.find({
     patient: patientId,
@@ -370,6 +408,7 @@ async function paquetesDelPaciente(patientId, sucursales) {
     ? await Appointment.find({ _id: { $in: citaIds } }).select('clinic').populate('clinic', 'name').lean()
     : [];
   const sedeDe = new Map(citas.map((c) => [String(c._id), c.clinic?.name || '']));
+  const nombreDe = await nombresDePacientes(paquetes.flatMap((p) => [p.transferredFrom?.patient, ...(p.transfers || []).map((t) => t.toPatient)]));
   const fila = (u, extra) => ({
     appointment: u.appointment, date: u.cita.date, startTime: u.cita.startTime || '',
     clinic: sedeDe.get(String(u.appointment)) || '', ...extra,
@@ -389,6 +428,8 @@ async function paquetesDelPaciente(patientId, sucursales) {
       usadas: c.usadas.length,
       apartadas: c.apartadas.length,
       quedan: p.status === 'activo' ? libresDe(p, c) : 0,
+      cedidoPor: p.transferredFrom?.patient ? { nombre: nombreDe.get(idDe(p.transferredFrom.patient)) || 'otro paciente', motivo: p.transferredFrom.reason || '' } : null,
+      cesiones: (p.transfers || []).map((t) => ({ quantity: t.quantity, a: nombreDe.get(idDe(t.toPatient)) || 'otro paciente', motivo: t.reason || '', at: t.at })),
       usos: [
         ...c.usadas.map((u, i) => fila(u, { n: i + 1 })),
         ...c.apartadas.map((u) => fila(u, { apartada: true })),
@@ -397,7 +438,50 @@ async function paquetesDelPaciente(patientId, sucursales) {
   });
 }
 
+/**
+ * CEDER SESIONES A OTRO PACIENTE (nov-2026). Solo las LIBRES (ni usadas ni apartadas en una
+ * cita). Al que cede se le restan del paquete (queda anotado a quién y por qué); el que recibe
+ * tiene un paquete nuevo de la MISMA venta, que gasta en sus citas como si fuera suyo.
+ */
+async function cederSesiones({ packageId, fromPatient, toPatient, quantity, reason, userId, sucursales = null }) {
+  const n = Math.round(Number(quantity));
+  if (!(n >= 1)) throw Object.assign(new Error('Indica cuántas sesiones cede'), { status: 400 });
+  if (!String(reason || '').trim()) throw Object.assign(new Error('Escribe el motivo de la cesión'), { status: 400 });
+  if (String(fromPatient) === String(toPatient)) throw Object.assign(new Error('Elige a otro paciente'), { status: 400 });
+  const Patient = require('../models/Patient');
+  if (!(await Patient.exists({ _id: toPatient }))) throw Object.assign(new Error('El paciente que recibe no existe'), { status: 404 });
+  for (let intento = 0; intento < 4; intento += 1) {
+    const p = await PrepaidService.findOne({
+      _id: packageId, patient: fromPatient, status: 'activo',
+      ...(sucursales ? { clinic: { $in: sucursales } } : {}),
+    }).lean();
+    if (!p) throw Object.assign(new Error('Ese paquete no está a nombre del paciente'), { status: 404 });
+    const libres = libresDe(p, (await clasificarUsos([p])).get(String(p._id)));
+    if (n > libres) throw Object.assign(new Error(`Solo le quedan ${libres} sesión(es) libre(s) de «${p.productName}»`), { status: 400 });
+    const nuevoId = new (require('mongoose').Types.ObjectId)();
+    const hecho = await PrepaidService.findOneAndUpdate(
+      { _id: p._id, rev: p.rev || 0, status: 'activo' },
+      {
+        $inc: { quantity: -n, rev: 1 },
+        $push: { transfers: { quantity: n, toPatient, toPackage: nuevoId, reason: String(reason).trim(), by: userId, at: new Date() } },
+      },
+      { new: true },
+    );
+    if (!hecho) continue; // otro mostrador lo tocó a la vez: se vuelve a leer
+    // (Si el que cede se queda en 0, el paquete sigue en su historial con la cesión anotada.)
+    return PrepaidService.create({
+      _id: nuevoId,
+      clinic: p.clinic, patient: toPatient, product: p.product, productName: p.productName,
+      program: p.program, programName: p.programName, sale: p.sale, saleNumber: p.saleNumber,
+      quantity: n, uses: [], createdBy: userId,
+      transferredFrom: { patient: fromPatient, ref: p._id, reason: String(reason).trim(), by: userId, at: new Date() },
+    });
+  }
+  throw Object.assign(new Error('Alguien usó este paquete al mismo tiempo. Vuelve a intentarlo.'), { status: 409 });
+}
+
 module.exports = {
+  cederSesiones,
   crearDesdeVenta,
   usarEnCita,
   anularDeVenta,

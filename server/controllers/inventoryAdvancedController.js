@@ -375,7 +375,6 @@ exports.exportCategoryItems = async (req, res) => {
       { header: 'Categoría', key: 'category', width: 28 },
       { header: 'Unidad', key: 'unit', width: 15 },
       { header: 'Precio de venta activo', key: 'price', width: 20, money: true },
-      { header: 'Precio variable', key: 'variable', width: 16 },
       { header: 'Tarifa tributaria', key: 'taxCategory', width: 18 },
       { header: 'IVA (%)', key: 'taxRate', width: 12, number: true },
       { header: 'Precio incluye IVA', key: 'includesVat', width: 19 },
@@ -392,8 +391,6 @@ exports.exportCategoryItems = async (req, res) => {
       { header: 'Componentes por categoría', key: 'hasComponents', width: 25 },
       { header: 'Máximo de componentes', key: 'maxComponents', width: 23, number: true },
       { header: 'Categorías de componentes', key: 'componentCategories', width: 40 },
-      { header: 'Servicio de enfermería', key: 'nursingService', width: 22 },
-      { header: 'Máximo de citas por horario', key: 'maxAppointments', width: 25, number: true },
       { header: 'Ingreso diferido', key: 'deferredIncome', width: 19 },
       { header: 'Sesiones incluidas', key: 'sessionsIncluded', width: 19, number: true },
     ];
@@ -403,7 +400,7 @@ exports.exportCategoryItems = async (req, res) => {
       return {
         code: p.code, barcode: p.barcode, name: p.name, description: p.description,
         type: p.category, category: category.name, unit: p.unit, price: p.salePrice,
-        variable: yesNo(p.variablePrice), taxCategory: tax.taxCategory, taxRate: tax.taxRate,
+        taxCategory: tax.taxCategory, taxRate: tax.taxRate,
         includesVat: yesNo(p.priceIncludesVat !== false), taxCode: tax.taxCodeSri,
         discountType: p.discountType === 'percentage' ? 'Porcentaje' : p.discountType === 'amount' ? 'Monto por unidad' : 'Sin descuento',
         discountValue: p.discountValue || 0, stock: p.unlimited ? null : p.stock,
@@ -412,7 +409,6 @@ exports.exportCategoryItems = async (req, res) => {
         composite: yesNo(p.isComposite), hasComponents: yesNo(p.includedComponents?.enabled),
         maxComponents: p.includedComponents?.enabled ? p.includedComponents.maxQuantity : null,
         componentCategories: (p.includedComponents?.categories || []).map((c) => c.name || c.code || '').filter(Boolean).join(', '),
-        nursingService: yesNo(p.nursingService), maxAppointments: p.maxAppointmentsPerDay || 0,
         deferredIncome: yesNo(p.deferredIncome), sessionsIncluded: p.sessionsIncluded || 0,
         ...(costVisible ? { averageCost: p.averageCost } : {}),
       };
@@ -883,9 +879,31 @@ exports.warehouseStock = async (req, res) => {
         totalValue: { $sum: '$value' },
       } },
     ]);
+    // STOCK EN CERO TAMBIÉN (nov-2026): los productos inventariables del catálogo sin capas
+    // vivas no salían. Se agregan con 0 para que se vean (y se puedan buscar) en cada bodega.
+    const catalogo = sisterClinicsSync(req.clinicId, { includeInactive: true });
+    const inventariables = await Product.find({
+      clinic: { $in: (catalogo.length ? catalogo : [String(req.clinicId)]).map((id) => new mongoose.Types.ObjectId(id)) },
+      active: { $ne: false },
+      disabled: { $ne: true },
+      unlimited: { $ne: true },
+      category: { $nin: ['servicio', 'programa'] },
+      isComposite: { $ne: true },
+    }).select('_id').lean();
+    const conCapas = new Set(rows.map((r) => String(r._id)));
+    for (const p of inventariables) {
+      if (!conCapas.has(String(p._id))) rows.push({ _id: p._id, warehouses: [], totalQty: 0, totalValue: 0 });
+    }
     const productIds = rows.map((r) => r._id);
-    const products = await Product.find({ _id: { $in: productIds } }).select('code name unit category').lean();
+    const products = await Product.find({ _id: { $in: productIds } }).select('code name unit category barcode isComposite').lean();
     const prodMap = new Map(products.map((p) => [String(p._id), p]));
+    // PRODUCTOS COMPUESTOS FUERA (nov-2026): «DMSO PLUS 10ML» y «25ML» salen del frasco de
+    // 50ML (su composición fija); en la percha solo existe el de 50ML. En bodegas y tomas
+    // físicas se ve únicamente el producto real, para no contar tres veces lo mismo.
+    const compuestos = new Set(products.filter((p) => p.isComposite).map((p) => String(p._id)));
+    if (compuestos.size) {
+      for (let i = rows.length - 1; i >= 0; i--) if (compuestos.has(String(rows[i]._id))) rows.splice(i, 1);
+    }
     const warehouses = await Warehouse.find({ _id: { $in: rows.flatMap((r) => r.warehouses.map((w) => w.warehouse).filter(Boolean)) } })
       .select('code name').lean();
     const whMap = new Map(warehouses.map((w) => [String(w._id), w]));
@@ -1046,11 +1064,14 @@ exports.startCount = async (req, res) => {
     const count = await PhysicalCount.countDocuments({ clinic: req.clinicId });
     const code = `TF-${String(count + 1).padStart(5, '0')}`;
 
-    // Inventariables: nunca servicios ni ilimitados.
+    // Inventariables: nunca servicios ni ilimitados. Tampoco los productos COMPUESTOS
+    // (nov-2026): no existen en la percha, se arman con su composición fija (p. ej. el
+    // DMSO de 10ML sale del frasco de 50ML) y lo que se cuenta es ese producto real.
     const filtro = {
       clinic: req.clinicId,
       unlimited: { $ne: true },
       category: { $ne: 'servicio' },
+      isComposite: { $ne: true },
     };
     if (!includeInactive) filtro.active = true;
     if (cat) filtro.inventoryCategory = cat._id;
@@ -1119,6 +1140,143 @@ exports.updateCount = async (req, res) => {
     for (const k of ['description', 'notes']) if (req.body[k] !== undefined) pc[k] = req.body[k];
     await pc.save();
     res.json(countForRole(req, pc));
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
+/**
+ * TOMA FÍSICA POR EXCEL (nov-2026).
+ *
+ * Se descarga la hoja de la toma (lo que el sistema dice que hay en la bodega, congelado al
+ * iniciarla), la persona la imprime o la llena en el computador con lo que cuenta en la percha y
+ * la vuelve a subir. Quedan los DOS inventarios: «Stock sistema» (snapshot) y «Stock físico».
+ *
+ * La hoja NO lleva costos: quien cuenta cuenta unidades. La columna clave es «Código»; una
+ * celda de «Stock físico» vacía significa «no lo conté» y no toca ese producto.
+ */
+const COUNT_SHEET_NAME = 'Toma fisica';
+const COUNT_SHEET_ALIASES = {
+  code: ['Código', 'Codigo', 'Cod'],
+  counted: ['Stock físico', 'Stock fisico', 'Físico', 'Fisico', 'Contado', 'Cantidad contada'],
+  notes: ['Observación', 'Observacion', 'Observaciones', 'Notas'],
+};
+
+exports.downloadCountSheet = async (req, res) => {
+  try {
+    const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId })
+      .populate('warehouse', 'code name').lean();
+    if (!pc) return res.status(404).json({ message: 'Toma no encontrada' });
+    const productos = await Product.find({ _id: { $in: pc.items.map((it) => it.product) } }).select('unit').lean();
+    const unidad = new Map(productos.map((p) => [String(p._id), p.unit || '']));
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet(COUNT_SHEET_NAME, { views: [{ state: 'frozen', ySplit: 1 }] });
+    ws.columns = [
+      { header: 'Código', key: 'code', width: 16 },
+      { header: 'Código de barras', key: 'barcode', width: 18 },
+      { header: 'Producto', key: 'name', width: 46 },
+      { header: 'Unidad', key: 'unit', width: 12 },
+      { header: 'Stock sistema', key: 'system', width: 15 },
+      { header: 'Stock físico', key: 'counted', width: 15 },
+      { header: 'Diferencia', key: 'diff', width: 13 },
+      { header: 'Observación', key: 'notes', width: 40 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
+    const items = [...pc.items].sort((a, b) => String(a.productName || '').localeCompare(String(b.productName || '')));
+    items.forEach((it, i) => {
+      const r = i + 2;
+      const row = ws.addRow({
+        code: it.productCode || '',
+        barcode: it.barcode || '',
+        name: it.productName || '',
+        unit: unidad.get(String(it.product)) || '',
+        system: Number(it.systemQty) || 0,
+        // Lo ya contado (si se subió antes o se tecleó en pantalla) vuelve a salir; lo no
+        // contado sale vacío para que se note qué falta.
+        counted: it.counted ? Number(it.countedQty) || 0 : null,
+        diff: { formula: `IF(F${r}="","",F${r}-E${r})` },
+        notes: it.notes || '',
+      });
+      row.getCell('counted').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF9C3' } };
+    });
+
+    const info = wb.addWorksheet('Datos de la toma');
+    info.getColumn(1).width = 22;
+    info.getColumn(2).width = 90;
+    [
+      ['Toma', pc.code],
+      ['Bodega', pc.warehouse ? `${pc.warehouse.code} - ${pc.warehouse.name}` : ''],
+      ['Fecha', pc.date ? new Date(pc.date).toLocaleDateString('es-EC', { timeZone: 'America/Guayaquil' }) : ''],
+      ['Estado', pc.status],
+      [],
+      ['Cómo llenarla', 'Escribe en la columna amarilla «Stock físico» lo que cuentas en la bodega. Deja vacía la celda de lo que no contaste.'],
+      ['', '«Stock sistema» es lo que el sistema decía al iniciar la toma: no lo cambies, no se tiene en cuenta al subir.'],
+      ['', 'No cambies la columna «Código» ni el nombre de la hoja. Puedes escribir una observación por producto.'],
+      ['', 'Cuando termines, súbela en Bodegas → Toma física → «Subir Excel contado».'],
+    ].forEach((r) => info.addRow(r));
+    info.getColumn(1).font = { bold: true };
+
+    const nombre = `toma_${pc.code}_${(pc.warehouse?.code || 'bodega').replace(/[^\w-]+/g, '_')}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${nombre}"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
+};
+
+exports.uploadCountSheet = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'Adjunta el Excel de la toma' });
+    const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!pc) return res.status(404).json({ message: 'Toma no encontrada' });
+    if (pc.status !== 'BORRADOR') return res.status(400).json({ message: 'La toma ya está cerrada: no se puede cargar otro conteo.' });
+
+    const { loadWorkbookFull, findSheet, mapHeaders, rowsToObjects, parseNumber, cellValue, norm } = require('../utils/excelImport');
+    const wb = await loadWorkbookFull(req.file.buffer);
+    // Que no se suba el Excel de OTRA toma: el código va en la hoja de datos.
+    const info = findSheet(wb, 'Datos de la toma');
+    if (info) {
+      const codigo = String(cellValue(info.getRow(1).getCell(2).value) || '').trim();
+      if (codigo && codigo !== pc.code) {
+        return res.status(400).json({ message: `Este Excel es de la toma ${codigo}, no de la ${pc.code}.` });
+      }
+    }
+    const ws = findSheet(wb, COUNT_SHEET_NAME) || wb.worksheets[0];
+    const headers = mapHeaders(ws, COUNT_SHEET_ALIASES);
+    const claves = Object.values(headers);
+    if (!claves.includes('code') || !claves.includes('counted')) {
+      return res.status(400).json({ message: 'El Excel debe tener las columnas «Código» y «Stock físico» en la primera fila.' });
+    }
+
+    const porCodigo = new Map(pc.items.map((it) => [norm(it.productCode), it]));
+    const resumen = { actualizados: 0, sinContar: 0, noEncontrados: [], invalidos: [] };
+    for (const row of rowsToObjects(ws, headers)) {
+      const code = String(row.code ?? '').trim();
+      if (!code) continue;
+      const it = porCodigo.get(norm(code));
+      if (!it) { resumen.noEncontrados.push(code); continue; }
+      const raw = row.counted;
+      if (raw === null || raw === undefined || String(raw).trim() === '') {
+        resumen.sinContar += 1;
+        continue;
+      }
+      const contado = parseNumber(raw);
+      if (contado === null || contado < 0) { resumen.invalidos.push(`${code} (fila ${row.__row})`); continue; }
+      it.countedQty = kardex.round4(contado);
+      it.counted = true;
+      it.difference = kardex.round4(it.countedQty - it.systemQty);
+      it.adjustmentValue = kardex.round2(it.difference * it.unitCost);
+      if (row.notes !== undefined && row.notes !== null) it.notes = String(row.notes).trim();
+      resumen.actualizados += 1;
+    }
+    pc.markModified('items');
+    await pc.save();
+    await pc.populate([
+      { path: 'warehouse', select: 'code name' },
+      { path: 'category', select: 'code name' },
+      { path: 'responsible confirmedBy', select: 'name' },
+    ]);
+    res.json({ count: countForRole(req, pc), resumen });
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 

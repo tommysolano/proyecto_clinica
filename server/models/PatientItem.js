@@ -54,6 +54,14 @@ const patientItemSchema = new mongoose.Schema(
     saleNumber: { type: String, default: '' },
     date: { type: Date, default: Date.now },
     uses: { type: [useSchema], default: [] },
+    // CEDIDO desde otro paciente (nov-2026): de quién venía y por qué.
+    transferredFrom: {
+      patient: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', default: null },
+      ref: { type: mongoose.Schema.Types.ObjectId, default: null },
+      reason: { type: String, default: '' },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      at: { type: Date, default: null },
+    },
     status: { type: String, enum: ['activo', 'anulado'], default: 'activo', index: true },
     voidedAt: { type: Date, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

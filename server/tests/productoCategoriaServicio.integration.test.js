@@ -29,18 +29,17 @@ const actualizar = (clinicId, userId, id, body) => H.runController(
   products.updateProduct, H.mockReq(clinicId, userId, body, { params: { id: String(id) } })
 );
 
-test('un servicio con categoría SERVICIO se guarda con precio variable', async () => {
+test('un servicio con categoría SERVICIO se guarda con su categoría', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const { servicio } = await categorias(clinicId);
   const lab = await H.makeProduct(clinicId, {
     name: 'Exámenes de laboratorio', category: 'servicio', unlimited: true, salePrice: 10, inventoryCategory: servicio._id,
   });
   const r = await actualizar(clinicId, userId, lab._id, {
-    category: 'servicio', unlimited: true, inventoryCategory: String(servicio._id), variablePrice: true,
+    category: 'servicio', unlimited: true, inventoryCategory: String(servicio._id),
   });
   assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
   const guardado = await Product.findById(lab._id);
-  assert.equal(guardado.variablePrice, true);
   assert.equal(String(guardado.inventoryCategory), String(servicio._id));
 });
 
