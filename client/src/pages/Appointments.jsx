@@ -1166,6 +1166,14 @@ export default function Appointments() {
      * recortarlas por sede solo las esconde.
      */
     if (isDoctor) return;
+    /**
+     * NI ENFERMERÍA (nov-2026, Karla). El servidor ya le manda SOLO las citas de su sede de
+     * trabajo (la que eligió; ver `sedeDeEnfermeria` en appointmentController, la misma de
+     * sus avisos). Recortar aquí además por la sede de ESTA sesión era otro filtro invisible:
+     * con una sesión vieja de Central (abierta desde el navegador de Facebook) escondía las
+     * citas de Extensión que el servidor sí le enviaba, y la bandeja salía en cero.
+     */
+    if (isNurse) return;
     const propia = activeClinic?._id;
     if (!propia) return;
     setFilter((f) => (String(f.clinic) === String(propia) ? f : { ...f, clinic: propia }));
@@ -2057,7 +2065,26 @@ export default function Appointments() {
     const resto = new URLSearchParams(urlParams);
     resto.delete('cita');
     setUrlParams(resto, { replace: true });
-    openDetail(cita);
+    if (!isNurse) {
+      openDetail(cita);
+      return;
+    }
+    /**
+     * EL AVISO DE ENFERMERÍA LLEVA A ATENDER (nov-2026). Antes abría el detalle de solo
+     * lectura: Karla tocaba «Cita para enfermería» y veía los datos del paciente, pero no
+     * tenía ningún botón para atenderle. Ahora la agenda salta al DÍA de esa cita (la lista
+     * puede estar en otro) y abre el mismo modal de «Atender / Terminar» que el tap en la
+     * tarjeta; ese modal ya decide qué le toca (o dice que no hay nada pendiente para ella).
+     */
+    api.get(`/appointments/${cita}`)
+      .then((r) => {
+        const apt = { ...r.data, status: normalizeStatus(r.data.status) };
+        if (apt.date) setListDay(toYmd(new Date(apt.date)));
+        setView('list');
+        if (['pendiente', 'confirmada', 'asistida', 'completada'].includes(apt.status)) setNurseActionModal(apt);
+        else setDetailModal(apt);
+      })
+      .catch(() => toast.error('No se pudo abrir la cita del aviso'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlParams]);
 

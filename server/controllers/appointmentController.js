@@ -242,6 +242,26 @@ async function filtroAgendaDelDoctor(req) {
 }
 
 /**
+ * LA SEDE DE TRABAJO DE HOY DE UN ENFERMERO (nov-2026).
+ *
+ * Para quien está marcado «trabaja en todas las sucursales» es `User.activeClinicId`: la
+ * última sede que ELIGIÓ (se escribe en /auth/select-clinic). Es exactamente la que usa
+ * `notificarRol` para decidir a quién le suenan los avisos de enfermería, así que la agenda
+ * y la campana responden SIEMPRE lo mismo.
+ *
+ * Antes la agenda usaba la sede de la SESIÓN (el token). Con dos sesiones abiertas se
+ * separaban: Karla eligió Extensión por la mañana en un navegador y luego abrió el sistema
+ * desde el navegador interno de Facebook, con una sesión vieja de Central. Le sonaban los
+ * avisos de Extensión y su bandeja salía vacía. Sin sede activa guardada, o si ya no la
+ * alcanza, la de la sesión como siempre.
+ */
+function sedeDeEnfermeria(req) {
+  const activa = req.user?.worksInAllClinics && req.user?.activeClinicId ? String(req.user.activeClinicId) : null;
+  if (activa && (activa === String(req.clinicId) || alcanzaSucursal(req, activa))) return activa;
+  return req.clinicId;
+}
+
+/**
  * LA CONSULTA DE LA AGENDA, en un solo sitio.
  *
  * La usan DOS lectores: la lista completa (getAppointments, que luego puebla
@@ -317,7 +337,7 @@ async function construirQueryAgenda(req, {
    * cambia nada: ya era su sede.
    */
   if (req.role === 'enfermero' && req.clinicId) {
-    clinicScope = req.clinicId;
+    clinicScope = sedeDeEnfermeria(req);
   }
   const query = {};
   if (clinicScope !== null) query.clinic = clinicScope;

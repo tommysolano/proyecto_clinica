@@ -221,6 +221,24 @@ test('T9) la enfermera que rota ve SOLO las citas de la sede que eligió', async
   assert.deepEqual(agenda, [String(enCentral._id)], 'su sede activa es Central y ahí se queda');
 });
 
+/**
+ * DOS SESIONES, UNA SEDE (nov-2026). Karla eligió Extensión por la mañana (eso escribe
+ * `activeClinicId`, y con eso le suenan los avisos de Extensión) y luego abrió el sistema
+ * desde el navegador de Facebook, con una sesión vieja de Central: la bandeja le salía VACÍA
+ * mientras la campana le avisaba de pacientes esperando. La agenda va ahora por la misma
+ * sede que los avisos.
+ */
+test('T9b) con una sesión vieja de otra sede, la agenda sigue a la sede que eligió (la de los avisos)', async () => {
+  const { central, extension, enfRotativa } = await seed();
+  await citaDeEnfermeria(central, enfRotativa._id);
+  const enExtension = await citaDeEnfermeria(extension, null);
+  await User.updateOne({ _id: enfRotativa._id }, { $set: { activeClinicId: extension } });
+  const karla = await User.findById(enfRotativa._id);
+
+  const agenda = await agendaDe(karla, central); // token de Central
+  assert.deepEqual(agenda, [String(enExtension._id)], 'la sesión dice Central, pero hoy trabaja en Extensión');
+});
+
 test('T10) la enfermera de una sola sede sigue viendo solo la suya', async () => {
   const { central, extension } = await seed();
   const fija = await User.create({
