@@ -30,6 +30,8 @@ router.delete('/categories/:id', requireRole('admin'), c.deleteCategory);
 router.get('/kardex', verInventario, requireCap('inventory.view'), c.getKardex);
 router.get('/kardex.xlsx', verInventario, requireCap('inventory.export'), c.kardexExcel);
 router.get('/warehouse-stock', verInventario, requireCap('inventory.view'), c.warehouseStock);
+// Lo último contado en toma física por producto y bodega (se ve junto al stock del sistema).
+router.get('/physical-stock', verInventario, requireCap('inventory.view'), c.physicalStock);
 // Movimiento por fechas: sistema vs. toma física por corte, y rotación (nov-2026).
 router.get('/stock-history', verInventario, requireCap('inventory.view'), c.stockHistory);
 router.get('/transfers', verInventario, requireCap('inventory.view'), c.listTransfers);

@@ -41,6 +41,10 @@ const TYPE_ROLES = {
   // lista, que es justo lo que no pasó con las anteriores.
   appointment_assigned: ['admin', ...DOCTOR_LIKE_ROLES],
   appointment_nursing: ['admin', 'enfermero'],
+  // Solicitudes de traslado entre bodegas (nov-2026): la nueva la ve quien la atiende; la
+  // respuesta va dirigida a quien la pidió (campo `user`).
+  transfer_request_new: ['admin', 'contabilidad', 'asistente_contable'],
+  transfer_request_resolved: ['admin', 'contabilidad', 'asistente_contable', 'cajero'],
   // El aviso de prueba lo pide uno mismo desde la campana: lo ve cualquiera.
   push_test: VALID_ROLES,
 };

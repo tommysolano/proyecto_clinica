@@ -37,7 +37,6 @@ export default function Inventory() {
   const [trLoading, setTrLoading] = useState(true);
   const [clinicsList, setClinicsList] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
-  const [costCenters, setCostCenters] = useState([]);
   // Filtros del historial de traslados (el usuario pregunta "qué se movió y cuándo").
   const [trFilters, setTrFilters] = useState({ from: '', to: '', warehouse: '', q: '' });
   const [transferModal, setTransferModal] = useState(false);
@@ -152,7 +151,6 @@ export default function Inventory() {
   useEffect(() => {
     api.get('/clinics').then((r) => setClinicsList(r.data || [])).catch(() => {});
     api.get('/inventory-advanced/warehouses').then((r) => setWarehouses(r.data || [])).catch(() => {});
-    api.get('/cost-centers', { params: { active: true } }).then((r) => setCostCenters(r.data || [])).catch(() => {});
   }, []);
 
   // Product CRUD
@@ -572,7 +570,6 @@ export default function Inventory() {
         onDone={() => { fetchProducts(); if (tab === 'transfers') fetchTransfers(); if (tab === 'movements') fetchMovements(); }}
         warehouses={warehouses}
         products={products}
-        costCenters={costCenters}
       />
 
       {/* Product Modal (formulario completo reutilizable) */}

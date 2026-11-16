@@ -19,7 +19,6 @@ const sales = require('../controllers/saleController');
 const invoices = require('../controllers/invoiceController');
 const subledger = require('../controllers/subledgerController');
 const costCenters = require('../controllers/costCenterController');
-const { refreshCostCenters } = require('../services/contificoCostCenters');
 
 const Clinic = require('../models/Clinic');
 const CostCenter = require('../models/CostCenter');
@@ -138,40 +137,3 @@ test('en las rutas de solo lectura, una escritura sigue en la sucursal activa', 
   assert.equal(req.costCenterScope, undefined);
 });
 
-test('una compra sin centro en Contífico permanece sin centro aunque su asiento lo tenga', async () => {
-  const { central, ccLab } = await seedCompany();
-  const gz = (payload) => zlib.gzipSync(Buffer.from(JSON.stringify(payload)));
-  await Record.collection.insertOne({ clinic: central, entity: 'cost_center', externalId: 'LAB',
-    payloadCompressed: gz({ codigo: '5', nombre: 'CC LABORATORIO' }), checksum: 'x' });
-  const record = new ObjectId();
-  await Record.collection.insertOne({ _id: record, clinic: central, entity: 'document', externalId: 'DOC1', checksum: 'x',
-    payloadCompressed: gz({ descripcion: 'INVENTARIO LAB F/. 001-001-7', detalles: [{ centro_costo_id: null }, { centro_costo_id: null }] }) });
-  const date = new Date('2026-09-10T12:00:00Z');
-  await PurchaseInvoice.collection.insertOne(purchaseDoc(central, '001-001-7', null, {
-    sourceModel: 'ContificoRecord', sourceRef: record, total: 150,
-    items: [{ description: 'a', subtotal: 100, costCenter: null }, { description: 'b', subtotal: 50, costCenter: null }] }));
-  await Payable.collection.insertOne({ clinic: central, sourceModel: 'ContificoRecord', sourceRef: record,
-    issueDate: date, status: 'ABIERTO', balance: 150, total: 150, costCenter: null });
-  const line = (accountCode, debit, credit, costCenter = null) => ({ account: new ObjectId(), accountCode, debit, credit, costCenter });
-  await JournalEntry.collection.insertMany([
-    // Asiento de la compra: la glosa es la descripción del documento y el inventario lleva el centro.
-    { clinic: central, number: 'CTF-A', status: 'CONTABILIZADO', date, description: 'INVENTARIO LAB F/. 001-001-7',
-      lines: [line('1.1.3.6', 100, 0, ccLab), line('1.1.3.6', 50, 0, ccLab), line('2.1.3.1.1', 0, 150)] },
-    // El pago empieza por «Doc.» y no decide nada.
-    { clinic: central, number: 'CTF-B', status: 'CONTABILIZADO', date, description: 'Doc. 001-001-7, INVENTARIO LAB F/. 001-001-7',
-      lines: [line('2.1.3.1.1', 150, 0), line('1.1.1.3', 0, 150)] },
-  ]);
-
-  const range = { clinicId: central, from: new Date('2026-09-01T00:00:00Z'), to: new Date('2026-09-30T23:59:59Z') };
-  assert.equal((await refreshCostCenters({ ...range, commit: false })).purchases, 0);
-  const result = await refreshCostCenters(range);
-  assert.equal(result.purchases, 0);
-  assert.equal(result.payables, 0);
-  const purchase = await PurchaseInvoice.findOne({ sourceRef: record }).lean();
-  assert.equal(purchase.costCenter, null);
-  assert.deepEqual(purchase.items.map((item) => item.costCenter), [null, null]);
-  assert.equal((await Payable.findOne({ sourceRef: record }).lean()).costCenter, null);
-  // Idempotente: una segunda pasada no cambia nada.
-  const again = await refreshCostCenters(range);
-  assert.deepEqual([again.purchases, again.payables], [0, 0]);
-});

@@ -10,6 +10,7 @@ import DateInput from './DateInput';
 
 const fmt = (n) => Number(n || 0).toLocaleString('es-EC', { minimumFractionDigits: 0, maximumFractionDigits: 4 });
 const hoy = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' });
+const fechaCorta = (d) => (d ? new Date(d).toLocaleDateString('es-EC', { timeZone: 'America/Guayaquil', day: '2-digit', month: '2-digit', year: 'numeric' }) : '');
 const nuevaLinea = () => ({ key: `l${Math.random().toString(36).slice(2, 9)}`, product: '', quantity: '' });
 
 /**
@@ -21,7 +22,10 @@ const nuevaLinea = () => ({ key: `l${Math.random().toString(36).slice(2, 9)}`, p
  *
  * Debajo de cada línea se muestra lo que hay REALMENTE en la bodega de origen (de las
  * capas del kardex, vía `/inventory-advanced/warehouse-stock`), para no enviar a mano una
- * cantidad que el servidor va a rechazar.
+ * cantidad que el servidor va a rechazar, y lo último CONTADO en la toma física de esa bodega
+ * (`/inventory-advanced/physical-stock`).
+ *
+ * Sin centro de costo (nov-2026): un traslado no lo pide; el servidor usa el de cada bodega.
  */
 export default function TransferStockModal({
   isOpen,
@@ -29,16 +33,15 @@ export default function TransferStockModal({
   onDone,
   warehouses = [],
   products = [],
-  costCenters = [],
   defaultProduct = '',
 }) {
   const [fromWarehouse, setFromWarehouse] = useState('');
   const [toWarehouse, setToWarehouse] = useState('');
   const [date, setDate] = useState(hoy());
   const [reason, setReason] = useState('');
-  const [costCenter, setCostCenter] = useState('');
   const [lines, setLines] = useState([nuevaLinea()]);
   const [stock, setStock] = useState([]);
+  const [fisico, setFisico] = useState([]);
   const [saving, setSaving] = useState(false);
 
   const activas = useMemo(() => warehouses.filter((w) => w.active !== false), [warehouses]);
@@ -50,11 +53,13 @@ export default function TransferStockModal({
     setToWarehouse('');
     setDate(hoy());
     setReason('');
-    setCostCenter(principal?.costCenter?._id || principal?.costCenter || '');
     setLines([{ ...nuevaLinea(), product: defaultProduct || '' }]);
     api.get('/inventory-advanced/warehouse-stock')
       .then((r) => setStock(r.data || []))
       .catch(() => setStock([]));
+    api.get('/inventory-advanced/physical-stock')
+      .then((r) => setFisico(r.data || []))
+      .catch(() => setFisico([]));
   }, [isOpen, defaultProduct]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Existencia real del producto en la bodega de origen (null = todavía no se sabe). */
@@ -66,18 +71,10 @@ export default function TransferStockModal({
     return w?.qty || 0;
   };
 
-  const centroDeBodega = (id) => {
-    const w = warehouses.find((x) => String(x._id) === String(id));
-    return w?.costCenter?._id || w?.costCenter || '';
-  };
-  const centroEsperado = centroDeBodega(fromWarehouse);
-  const centroDistinto = !!centroEsperado && !!costCenter && String(centroEsperado) !== String(costCenter);
-  const nombreCentro = (id) => costCenters.find((c) => String(c._id) === String(id))?.name || '—';
-
-  // Al cambiar el origen se PROPONE su centro de costo, sin pisar uno ya elegido a mano.
-  const elegirOrigen = (id) => {
-    setFromWarehouse(id);
-    setCostCenter((actual) => actual || centroDeBodega(id));
+  /** Lo último contado en toma física del producto en la bodega de origen (null = nunca se contó). */
+  const contado = (productId) => {
+    if (!productId || !fromWarehouse) return null;
+    return fisico.find((f) => String(f.product) === String(productId) && String(f.warehouse) === String(fromWarehouse)) || null;
   };
 
   const setLinea = (key, campo, valor) =>
@@ -106,10 +103,6 @@ export default function TransferStockModal({
         return toast.error(`Solo hay ${fmt(hay)} de "${nombre}" en la bodega de origen`);
       }
     }
-    if (centroDistinto && !window.confirm(
-      `El centro de costo de la bodega es "${nombreCentro(centroEsperado)}" y elegiste `
-      + `"${nombreCentro(costCenter)}". El traslado se registrará con el que elegiste. ¿Continuar?`
-    )) return;
 
     setSaving(true);
     try {
@@ -118,7 +111,6 @@ export default function TransferStockModal({
         toWarehouse,
         date: date || undefined,
         reason,
-        costCenter: costCenter || undefined,
         items: llenas.map((l) => ({ product: l.product, quantity: Number(l.quantity) })),
       });
       const n = r.data?.lines || llenas.length;
@@ -142,7 +134,7 @@ export default function TransferStockModal({
       <form onSubmit={submit} className="space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Bodega origen" required>
-            <select required value={fromWarehouse} onChange={(e) => elegirOrigen(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+            <select required value={fromWarehouse} onChange={(e) => setFromWarehouse(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
               <option value="">Seleccione…</option>
               {activas.map((w) => <option key={w._id} value={w._id}>{w.code ? `${w.code} — ${w.name}` : w.name}</option>)}
             </select>
@@ -173,6 +165,7 @@ export default function TransferStockModal({
             {lines.map((l) => {
               const hay = disponible(l.product);
               const excede = hay != null && Number(l.quantity) > hay;
+              const toma = contado(l.product);
               return (
                 <div key={l.key} className="p-3 grid grid-cols-12 gap-2 items-start">
                   <div className="col-span-12 sm:col-span-7">
@@ -183,9 +176,17 @@ export default function TransferStockModal({
                       placeholder="Buscar producto…"
                     />
                     {l.product && fromWarehouse && (
-                      <p className={`text-[11px] mt-1 ${hay > 0 ? 'text-slate-500' : 'text-rose-600'}`}>
-                        Disponible en {nombreBodega(fromWarehouse)}: <b>{fmt(hay || 0)}</b>
-                      </p>
+                      <div className="text-[11px] mt-1 space-y-0.5">
+                        <p className={hay > 0 ? 'text-slate-500' : 'text-rose-600'}>
+                          Sistema en {nombreBodega(fromWarehouse)}: <b>{fmt(hay || 0)}</b>
+                        </p>
+                        <p className="text-slate-500">
+                          Toma física:{' '}
+                          {toma
+                            ? <><b>{fmt(toma.qty)}</b> <span className="text-slate-400">({toma.code} · {fechaCorta(toma.date)}{toma.status === 'BORRADOR' ? ' · sin confirmar' : ''})</span></>
+                            : <span className="text-slate-400">sin contar en esta bodega</span>}
+                        </p>
+                      </div>
                     )}
                   </div>
                   <div className="col-span-9 sm:col-span-4">
@@ -223,23 +224,7 @@ export default function TransferStockModal({
           <Field label="Fecha del traslado" hint="La fecha real del movimiento, no la de grabación.">
             <DateInput value={date} onChange={(e) => setDate(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
           </Field>
-          <Field label="Centro de costo">
-            <select value={costCenter} onChange={(e) => setCostCenter(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-              <option value="">Sin centro de costo</option>
-              {costCenters.map((c) => <option key={c._id} value={c._id}>{c.code} — {c.name}</option>)}
-            </select>
-          </Field>
         </div>
-
-        {/* El centro de la bodega es una PROPUESTA: si eliges otro, se avisa y se registra el elegido. */}
-        {centroDistinto && (
-          <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-            <b>Centro de costo distinto al de la bodega.</b><br />
-            Esperado (bodega {nombreBodega(fromWarehouse)}): <b>{nombreCentro(centroEsperado)}</b> ·
-            Seleccionado: <b>{nombreCentro(costCenter)}</b>.<br />
-            El traslado quedará registrado con el centro <b>seleccionado</b>. Confirma para continuar.
-          </div>
-        )}
 
         <Field label="Motivo">
           <input placeholder="Opcional (ej. reposición de farmacia)" value={reason} onChange={(e) => setReason(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />

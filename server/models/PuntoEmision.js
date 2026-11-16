@@ -39,6 +39,13 @@ const puntoEmisionSchema = new mongoose.Schema(
      * que ya factura en producción pasa a pruebas por la migración. Ver serieDelEmisor.
      */
     ambiente: { type: String, enum: ['1', '2'], default: undefined },
+    /**
+     * BODEGA DEL PUNTO (nov-2026): la bodega que atiende esta caja (p. ej. la de Laboratorio).
+     * El usuario del punto puede SOLICITAR traslados de ítems hacia ella; un administrador
+     * decide desde qué bodega salen y lo ejecuta (models/TransferRequest). Varios puntos pueden
+     * compartir bodega. Vacío = el punto no pide traslados.
+     */
+    bodega: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
   },
   { timestamps: true }
 );

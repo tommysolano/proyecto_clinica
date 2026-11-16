@@ -52,23 +52,7 @@ echo "==> 1/6 Trayendo el ultimo codigo de origin/$BRANCH"
 git fetch --all --prune
 git reset --hard "origin/$BRANCH"
 
-# La clave llega cifrada como secreto de GitHub Actions. Instalarla en el
-# .env privado del VPS antes de reiniciar PM2; nunca se guarda en Git ni en logs.
-if [ -n "${CONTIFICO_API_KEY:-}" ]; then
-  ENV_FILE="$APP_DIR/server/.env"
-  TMP_ENV="$(mktemp "$APP_DIR/server/.env.contifico.XXXXXX")"
-  if [ -f "$ENV_FILE" ]; then
-    awk '$0 !~ /^CONTIFICO_(API_KEY|AUTO_SYNC)=/' "$ENV_FILE" > "$TMP_ENV"
-  fi
-  if [ "$(id -u)" = "0" ]; then
-    if [ -f "$ENV_FILE" ]; then chown --reference="$ENV_FILE" "$TMP_ENV"; else chown clinica:clinica "$TMP_ENV"; fi
-  fi
-  printf 'CONTIFICO_API_KEY=%s\nCONTIFICO_AUTO_SYNC=1\n' "$CONTIFICO_API_KEY" >> "$TMP_ENV"
-  chmod 600 "$TMP_ENV"
-  mv "$TMP_ENV" "$ENV_FILE"
-  unset CONTIFICO_API_KEY
-  echo "--> Clave de Contífico configurada en el .env privado del VPS"
-fi
+# (nov-2026) Ya no se sincroniza con Contífico: la clave CONTIFICO_API_KEY ya no se instala.
 
 echo "==> 2/6 Instalando dependencias (server + client)"
 # AMPLIAR UN PARCHE YA EXISTENTE ROMPE EL DESPLIEGUE SI NO SE HACE NADA MAS.

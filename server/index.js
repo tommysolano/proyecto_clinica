@@ -198,6 +198,8 @@ app.use('/api/retention-rules', require('./routes/retentionRules'));
 app.use('/api/retention-vouchers', require('./routes/retentionVouchers'));
 app.use('/api/credit-debit-notes', require('./routes/creditDebitNotes'));
 app.use('/api/inventory-advanced', require('./routes/inventoryAdvanced'));
+// Solicitudes de traslado desde los puntos de emisión con bodega (nov-2026).
+app.use('/api/transfer-requests', require('./routes/transferRequests'));
 app.use('/api/accounting-reports', require('./routes/accountingReports'));
 app.use('/api/tax-declarations', require('./routes/taxDeclarations'));
 app.use('/api/sri-annexes', require('./routes/sriAnnexes'));
@@ -288,9 +290,8 @@ connectDB().then(() => {
   // paralelo con el líder real.
   function wireLeaderJobs() {
     const only = registry.leaderOnly;
-    // El mayor de Contífico alimenta los tres reportes financieros. Revisar
-    // periódicamente asientos completos y reproyectar solo ventanas con cambios.
-    require('./services/contificoFinancialSync').startFinancialSyncJob(only);
+    // (nov-2026) Ya NO se sincroniza con Contífico: el sistema es la única fuente. Los datos
+    // importados antes (ContificoRecord, asientos CTF-…) se conservan como historia.
     // Job: marcar automáticamente como "no asistió" las citas de días pasados.
     require('./utils/autoNoShow').startAutoNoShowJob();
     // Job: reanudar flujos de mensajes con pasos de espera vencidos (cada 60s).

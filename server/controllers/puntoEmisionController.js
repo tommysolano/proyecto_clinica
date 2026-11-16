@@ -145,6 +145,19 @@ async function validar(clinicId, body, actual) {
     data.usuario = usuarioId;
   }
 
+  // Bodega del punto (para pedir traslados): tiene que ser una bodega ACTIVA de la empresa.
+  if (body.bodega !== undefined) {
+    const bodegaId = body.bodega || null;
+    if (bodegaId) {
+      if (!mongoose.isValidObjectId(bodegaId)) throw httpError(400, 'La bodega elegida no es válida.');
+      const Warehouse = require('../models/Warehouse');
+      const w = await Warehouse.findOne({ _id: bodegaId, clinic: { $in: await sucursalesDeLaEmpresa(clinicId) } }).select('active').lean();
+      if (!w) throw httpError(400, 'La bodega elegida no es de esta empresa.');
+      if (w.active === false) throw httpError(400, 'La bodega elegida está inactiva.');
+    }
+    data.bodega = bodegaId;
+  }
+
   // Cambiar de dueño o desactivar con la caja abierta dejaría esa caja huérfana.
   const cambiaUsuario = actual && data.usuario !== undefined && String(actual.usuario || '') !== String(data.usuario || '');
   const desactiva = actual && actual.activo && data.activo === false;
@@ -184,15 +197,18 @@ async function validar(clinicId, body, actual) {
   return data;
 }
 
-const populatePunto = (q) => q.populate('usuario', USUARIO_FIELDS);
+const populatePunto = (q) => q.populate('usuario', USUARIO_FIELDS).populate('bodega', 'code name active');
 
 exports.list = async (req, res) => {
   try {
     const sri = await sucursalSri(req.clinicId);
-    const [puntos, usuarios, config] = await Promise.all([
+    const [puntos, usuarios, config, bodegas] = await Promise.all([
       populatePunto(PuntoEmision.find({ clinic: sri }).sort({ establecimiento: 1, codigo: 1 })),
       usuariosElegibles(req.clinicId),
       InvoicingConfig.findOne({ clinic: sri }).select('establecimiento puntoEmision secuencial creditNoteSequential direccionEstablecimiento ambiente'),
+      // Bodegas activas de la empresa, para asignarle una a cada punto (solicitudes de traslado).
+      sucursalesDeLaEmpresa(req.clinicId).then((clinicas) => require('../models/Warehouse')
+        .find({ clinic: { $in: clinicas }, active: { $ne: false } }).select('code name').sort({ code: 1 }).lean()),
     ]);
     const abiertas = await CashClosing.find({ status: 'ABIERTA', puntoEmision: { $in: puntos.map((p) => p._id) } })
       .select('puntoEmision openedAt').lean();
@@ -206,6 +222,7 @@ exports.list = async (req, res) => {
         ambienteHeredado: !p.ambiente,
       })),
       usuarios,
+      bodegas,
       legacy: config
         ? {
           establecimiento: config.establecimiento || '001',

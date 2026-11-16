@@ -59,6 +59,7 @@ const PatientDetail = pagina(() => import('./pages/PatientDetail'));
 const ScanReview = pagina(() => import('./pages/ScanReview'));
 const Appointments = pagina(() => import('./pages/Appointments'));
 const Inventory = pagina(() => import('./pages/Inventory'));
+const TransferRequests = pagina(() => import('./pages/TransferRequests'));
 const Sales = pagina(() => import('./pages/Sales'));
 const Invoices = pagina(() => import('./pages/Invoices'));
 const InvoicingConfig = pagina(() => import('./pages/InvoicingConfig'));
@@ -308,6 +309,16 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'contabilidad']}>
                       <Inventory />
+                    </RoleRoute>
+                  }
+                />
+                {/* Solicitudes de traslado: piden los usuarios con punto de emisión que tiene
+                    bodega; atienden admin y contabilidad (nov-2026). */}
+                <Route
+                  path="/transfer-requests"
+                  element={
+                    <RoleRoute roles={['admin', 'contabilidad', 'cajero']}>
+                      <TransferRequests />
                     </RoleRoute>
                   }
                 />

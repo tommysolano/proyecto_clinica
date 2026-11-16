@@ -9,7 +9,6 @@ const InventoryLayer = require('../models/InventoryLayer');
 const Product = require('../models/Product');
 const Sale = require('../models/Sale');
 const Record = require('../models/ContificoRecord');
-const { syncCostCenterCatalog } = require('../services/contificoFinancialSync');
 const { contificoSourceClinic } = require('../services/contificoSourceClinic');
 const { configure } = require('../scripts/configureCostCenterBranches');
 const { accountingScope } = require('../services/accountingScope');
@@ -111,19 +110,3 @@ test('centros y bodegas quedan en su sucursal; documentos de Contífico conserva
   assert.equal((await Sale.findById(noCenter.insertedId)).costCenter, null);
 });
 
-test('un centro nuevo de Contífico se crea en la empresa principal y conserva su fuente', async () => {
-  const main = await Company.create({ name: 'Principal', isDefault: true });
-  const other = await Company.create({ name: 'Otra empresa' });
-  const central = await Clinic.create({ name: 'Central', company: main._id });
-  await Clinic.create({ name: 'Central', company: other._id });
-  assert.equal(String((await contificoSourceClinic())._id), central.id);
-  const api = { listV1: async () => [{ id: 'source-8', codigo: '8', nombre: 'CC NUEVO', estado: 'A' }] };
-  assert.deepEqual(await syncCostCenterCatalog({ clinic: central, api }), { source: 1, created: 1 });
-  assert.deepEqual(await syncCostCenterCatalog({ clinic: central, api }), { source: 1, created: 0 });
-  const center = await CostCenter.findOne({ clinic: central._id, code: '8' });
-  assert.equal(center.name, 'CC NUEVO');
-  assert.equal((await Record.findOne({ clinic: central._id, entity: 'cost_center', externalId: 'source-8' })).projection.status,
-    'PROJECTED');
-  assert.deepEqual((await Clinic.findById(central._id)).accountingImportCostCenters.map(String), [center.id]);
-  assert.equal(await CostCenter.countDocuments({ code: '8' }), 1);
-});

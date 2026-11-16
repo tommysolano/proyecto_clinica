@@ -121,6 +121,7 @@ const MENU_GROUPS = [
       { path: '/inventory', label: 'Productos', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/inv-categories', label: 'Categorías', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/warehouses', label: 'Bodegas', roles: ['admin', 'contabilidad'] },
+      { path: '/transfer-requests', label: 'Solicitudes de traslado', roles: ['admin', 'contabilidad', 'cajero'] },
       { path: '/accounting/kardex', label: 'Kardex', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/inv-consolidated', label: 'Inv. Consolidado', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/counts', label: 'Tomas Físicas', roles: ['admin', 'contabilidad'] },

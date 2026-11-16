@@ -25,6 +25,8 @@ const TYPE_LINK = {
   template_check_failed: '/message-templates',
   whatsapp_quality_changed: '/call-center-config',
   whatsapp_qr_disconnected: '/call-center-config',
+  transfer_request_new: '/transfer-requests',
+  transfer_request_resolved: '/transfer-requests',
 };
 
 const SEVERITY_ICON = {

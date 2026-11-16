@@ -431,7 +431,6 @@ export default function Warehouses() {
         onDone={() => { loadStock(); loadTransfers(); }}
         warehouses={list}
         products={products}
-        costCenters={costCenters}
       />
 
       {/* Asiento / soporte contable del traslado */}

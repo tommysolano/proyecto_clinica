@@ -29,6 +29,8 @@ const EMPTY = {
   nombre: '',
   direccionEstablecimiento: '',
   usuario: '',
+  // Bodega que atiende la caja: su usuario puede pedir traslados hacia ella (nov-2026).
+  bodega: '',
   secuencialFactura: '',
   secuencialNotaCredito: '',
   // Ambiente del SRI del punto ('1' pruebas, '2' producción). Vacío a propósito al crear:
@@ -43,7 +45,7 @@ const EMPTY = {
  * Mientras no haya ninguno, la sucursal sigue facturando con la serie única de arriba.
  */
 export default function PuntosEmisionPanel({ canEdit }) {
-  const [data, setData] = useState({ puntos: [], usuarios: [], legacy: null });
+  const [data, setData] = useState({ puntos: [], usuarios: [], bodegas: [], legacy: null });
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // { punto|null }
   const [form, setForm] = useState(EMPTY);
@@ -52,7 +54,7 @@ export default function PuntosEmisionPanel({ canEdit }) {
   const load = async () => {
     try {
       const res = await api.get('/puntos-emision');
-      setData(res.data || { puntos: [], usuarios: [], legacy: null });
+      setData(res.data || { puntos: [], usuarios: [], bodegas: [], legacy: null });
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar los puntos de emisión');
     } finally {
@@ -63,6 +65,7 @@ export default function PuntosEmisionPanel({ canEdit }) {
   useEffect(() => { load(); }, []);
 
   const { puntos, usuarios, legacy } = data;
+  const bodegas = data.bodegas || [];
   const usuarioOcupado = new Map(puntos.filter((p) => p.usuario).map((p) => [String(p.usuario._id), p]));
 
   const abrirNuevo = () => {
@@ -88,6 +91,7 @@ export default function PuntosEmisionPanel({ canEdit }) {
       nombre: p.nombre || '',
       direccionEstablecimiento: p.direccionEstablecimiento || '',
       usuario: p.usuario?._id || '',
+      bodega: p.bodega?._id || '',
       secuencialFactura: p.secuencialFactura,
       secuencialNotaCredito: p.secuencialNotaCredito,
       // Un punto antiguo sin ambiente propio enseña el que usa hoy (el de la configuración).
@@ -108,6 +112,7 @@ export default function PuntosEmisionPanel({ canEdit }) {
       const body = {
         ...form,
         usuario: form.usuario || null,
+        bodega: form.bodega || null,
         secuencialFactura: form.secuencialFactura === '' ? undefined : Number(form.secuencialFactura),
         secuencialNotaCredito: form.secuencialNotaCredito === '' ? undefined : Number(form.secuencialNotaCredito),
       };
@@ -184,6 +189,7 @@ export default function PuntosEmisionPanel({ canEdit }) {
                 <th className="text-left px-3 py-2">Serie</th>
                 <th className="text-left px-3 py-2">Caja</th>
                 <th className="text-left px-3 py-2">Usuario</th>
+                <th className="text-left px-3 py-2">Bodega</th>
                 <th className="text-left px-3 py-2">Ambiente</th>
                 <th className="text-right px-3 py-2">Próx. factura</th>
                 <th className="text-right px-3 py-2">Próx. N/C</th>
@@ -201,6 +207,7 @@ export default function PuntosEmisionPanel({ canEdit }) {
                   {/* Móvil: la tarjeta tiene una sola franja de detalle; en escritorio, columnas. */}
                   <td data-cell="detalle" className="md:hidden text-slate-600">
                     {p.usuario ? p.usuario.name : <span className="text-amber-600">Sin asignar</span>}
+                    {p.bodega && <>{' · '}Bodega {p.bodega.name}</>}
                     {' · '}Próx. factura <span className="font-mono">{pad9(p.secuencialFactura)}</span>
                     {' · '}N/C <span className="font-mono">{pad9(p.secuencialNotaCredito)}</span>
                     {' · '}<AmbienteBadge ambiente={p.ambienteEfectivo || p.ambiente} heredado={p.ambienteHeredado} />
@@ -211,6 +218,9 @@ export default function PuntosEmisionPanel({ canEdit }) {
                   </td>
                   <td className="hidden md:table-cell md:px-3 md:py-2.5 text-sm">
                     {p.usuario ? <span className="text-slate-800">{p.usuario.name}</span> : <span className="text-amber-600">Sin asignar</span>}
+                  </td>
+                  <td className="hidden md:table-cell md:px-3 md:py-2.5 text-sm text-slate-700">
+                    {p.bodega ? `${p.bodega.code} — ${p.bodega.name}` : <span className="text-slate-400">—</span>}
                   </td>
                   <td className="hidden md:table-cell md:px-3 md:py-2.5 text-sm">
                     <AmbienteBadge ambiente={p.ambienteEfectivo || p.ambiente} heredado={p.ambienteHeredado} />
@@ -302,6 +312,17 @@ export default function PuntosEmisionPanel({ canEdit }) {
                 })}
               </select>
             </Campo>
+            <div className="sm:col-span-2">
+              <Campo label="Bodega del punto">
+                <select className="input" value={form.bodega} onChange={(e) => set('bodega', e.target.value)}>
+                  <option value="">— Sin bodega —</option>
+                  {bodegas.map((b) => <option key={b._id} value={b._id}>{b.code} — {b.name}</option>)}
+                </select>
+              </Campo>
+              <p className="text-xs text-slate-500 mt-1">
+                Opcional. El usuario de este punto podrá pedir traslados de ítems hacia esta bodega; un administrador escoge desde qué bodega salen.
+              </p>
+            </div>
             <div className="sm:col-span-2">
               <Campo label="Ambiente del SRI" required>
                 <select className="input" value={form.ambiente} onChange={(e) => set('ambiente', e.target.value)}>
