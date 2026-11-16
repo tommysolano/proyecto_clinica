@@ -134,6 +134,15 @@ function calcTotals(invoice) {
   let s0 = 0, s5 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0;
   for (const it of invoice.items || []) {
     const base = (it.quantity || 1) * (it.unitPrice || 0) - (it.discount || 0);
+    // El descuento es un MONTO en dólares (como en el XML del SRI), no un porcentaje. Un
+    // descuento mayor que cantidad × precio deja la línea en negativo y el asiento no cuadra.
+    if (base < -0.005) {
+      throw Object.assign(new Error(
+        `El descuento de la línea "${it.description || '(sin descripción)'}" ($${Number(it.discount).toFixed(2)}) `
+        + 'es mayor que cantidad × precio. El descuento va en dólares, no en porcentaje '
+        + '(para un producto bonificado, ponga como descuento el valor completo de la línea).'
+      ), { status: 400 });
+    }
     it.subtotal = base;
     if (it.ivaRate === 0) s0 += base;
     else if (it.ivaRate === 5) { s5 += base; it.ivaAmount = base * 0.05; iva += it.ivaAmount; }
@@ -707,6 +716,11 @@ async function postPurchaseJournal(inv, req, session, sourceAction = 'POST') {
       }
       continue;
     }
+    // Ítem sin valor (bonificación / producto sin cargo, o descuento del 100 %): entra al
+    // inventario con costo 0 pero no mueve dinero, así que NO lleva línea en el asiento.
+    // Antes se agregaba una línea con débito 0 y el asiento se rechazaba con el críptico
+    // «Una linea debe tener debito o credito».
+    if (!(Number(it.subtotal) > 0)) continue;
     const accountId = it.account;
     // Nunca omitir una línea sin cuenta en silencio: eso dejaba el asiento descuadrado y el
     // usuario veía el críptico "Asiento descuadrado" en vez de saber QUÉ línea falta configurar.
@@ -763,6 +777,12 @@ async function postPurchaseJournal(inv, req, session, sourceAction = 'POST') {
       lines.push({ account: accId, debit: 0, credit: +Number(r.amount).toFixed(2), description: `Ret ${r.type} ${r.code || ''}` });
     }
   }
+  // Por si quedó alguna línea en cero (p.ej. CxP totalmente retenida): no aporta nada al
+  // asiento y haría fallar la validación de líneas.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!(Number(lines[i].debit) > 0) && !(Number(lines[i].credit) > 0)) lines.splice(i, 1);
+  }
+  if (!lines.length) return; // factura sin valor alguno (todo bonificado): solo inventario
   const entry = await createEntry({
     clinicId: req.clinicId, date: inv.fechaEmision, description: `Compra ${inv.serie || ''}`,
     source: 'COMPRA', sourceRef: inv._id, sourceModel: 'PurchaseInvoice', sourceAction,

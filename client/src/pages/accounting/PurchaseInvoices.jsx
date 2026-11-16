@@ -624,6 +624,8 @@ export default function PurchaseInvoices() {
     if (!cleanItems.length) return fail('Agrega al menos una línea (producto, gasto o activo fijo)');
     for (const it of cleanItems) {
       if (it.lineType === 'INVENTARIO' && !it.product) return fail('En productos/inventario, selecciona el producto en cada línea');
+      // El descuento es un MONTO en $, no un %: si supera cantidad × precio la línea queda negativa.
+      if (lineBase(it) < -0.005) return fail(`El descuento de "${it.description || 'la línea'}" (${fmt(it.discount)}) es mayor que cantidad × precio (${fmt((Number(it.quantity) || 0) * (Number(it.unitPrice) || 0))}). El descuento va en dólares, no en porcentaje: para un producto bonificado pon el valor completo de la línea.`);
       if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.category)) return fail('En activos fijos, selecciona la categoría de activo fijo');
       if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.name || it.description)) return fail('El activo fijo necesita un nombre');
       if (it.lineType === 'GASTO') {
@@ -1225,7 +1227,7 @@ export default function PurchaseInvoices() {
                 <table className="w-full text-sm">
                   <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
                     <th className="py-1 pr-2">Producto</th><th className="py-1 px-2">Bodega</th>
-                    <th className="py-1 px-2 text-right">Cant.</th><th className="py-1 px-2 text-right">Precio</th><th className="py-1 px-2 text-right">Desc.</th><th className="py-1 px-2">IVA</th>
+                    <th className="py-1 px-2 text-right">Cant.</th><th className="py-1 px-2 text-right">Precio</th><th className="py-1 px-2 text-right" title="Descuento en dólares (no porcentaje)">Desc. $</th><th className="py-1 px-2">IVA</th>
                     <th className="py-1 px-2">Centro de costo</th><th className="py-1 px-2">Retención</th><th className="py-1 px-2 text-right">Total</th><th></th>
                   </tr></thead>
                   <tbody>
