@@ -86,7 +86,7 @@ test('el valor generado usa lo facturado (servicios) y, sin ventas, lo escrito',
   await Sale.updateOne({ _id: v._id }, { $set: { status: 'anulada' } });
 
   const mapa = await facturadoPorCita([nueva._id, anulada._id]);
-  assert.deepStrictEqual(mapa.get(String(nueva._id)), { servicios: 40, productos: 15, total: 55, ventas: 1 });
+  assert.deepStrictEqual(mapa.get(String(nueva._id)), { servicios: 40, serviciosSinIva: 40, productos: 15, total: 55, ventas: 1 });
   assert.strictEqual(mapa.has(String(anulada._id)), false);
 
   const r = await llamar(ctrl.doctorSummary, reqDe(sede._id, { query: { start: '2026-11-01', end: '2026-11-30', clinic: 'all' } }));
@@ -132,4 +132,43 @@ test('«gana desde»: antes de esa hora no paga; cuenta la hora en que atendió 
     body: { doctor: String(doctor._id), clinics: [String(sede._id)], amountType: 'fixed', value: 5, minStartTime: '25:99' },
   }));
   assert.strictEqual(mala.code, 400);
+});
+
+test('porcentaje «sin IVA»: descuenta el IVA real de la factura (y el del catálogo sin factura)', async () => {
+  const { sede, doctor, cita } = await escenario();
+  const Product = require('../models/Product');
+  const AppointmentServiceItem = require('../models/AppointmentServiceItem');
+  // Facturada: servicio de $100 + IVA 15 % = $115.
+  const conIva = await cita({ startTime: '09:00' });
+  await Sale.create({
+    clinic: sede._id, saleNumber: 'V-IVA15', appointment: conIva._id,
+    items: [{ product: new mongoose.Types.ObjectId(), productName: 'ESTETICA', category: 'servicio', quantity: 1, unitPrice: 115, taxRate: 15, taxCategory: 'IVA_15', taxBase: 100, taxAmount: 15, lineTotal: 115, subtotal: 100 }],
+    subtotal: 100, taxAmount: 15, total: 115, paymentMethod: 'efectivo', status: 'completada',
+  });
+  // Facturada con IVA 0 %: $40, no cambia.
+  const sinIva = await cita({ startTime: '10:00' });
+  await Sale.create({
+    clinic: sede._id, saleNumber: 'V-IVA0', appointment: sinIva._id,
+    items: [{ product: new mongoose.Types.ObjectId(), productName: 'CONSULTA', category: 'servicio', quantity: 1, unitPrice: 40, taxRate: 0, taxCategory: 'IVA_0', taxBase: 40, taxAmount: 0, lineTotal: 40, subtotal: 40 }],
+    subtotal: 40, taxAmount: 0, total: 40, paymentMethod: 'efectivo', status: 'completada',
+  });
+  // Antigua sin factura: $57,50 escritos de un servicio cuyo producto lleva IVA 15 % → base 50.
+  const prod = await Product.create({ clinic: sede._id, name: 'LASER', code: 'LAS-1', category: 'servicio', type: 'servicio', price: 57.5, salePrice: 57.5, taxRate: 15, taxCategory: 'IVA_15' });
+  const svc = await AppointmentServiceItem.create({ clinic: sede._id, name: 'LASER', slug: 'laser', product: prod._id });
+  await cita({ startTime: '11:00', agreedValue: 57.5, serviceItem: svc._id, serviceName: 'LASER' });
+
+  const ganado = async () => {
+    const r = await llamar(ctrl.doctorSummary, reqDe(sede._id, { query: { start: '2026-11-01', end: '2026-11-30', clinic: 'all' } }));
+    return r.payload.doctors.find((d) => d.doctorId === String(doctor._id)).patientCommission;
+  };
+  const guardar = (extra) => llamar(ctrl.saveDoctorPatientRule, reqDe(sede._id, { body: { doctor: String(doctor._id), clinics: [String(sede._id)], amountType: 'percent', value: 10, ...extra } }));
+
+  await guardar({});
+  assert.strictEqual((await ganado()).earned, 21.25, '10 % de 115 + 40 + 57,50');
+
+  const g = await guardar({ percentWithoutVat: true });
+  assert.strictEqual(g.code, 200, JSON.stringify(g.payload));
+  const pc = await ganado();
+  assert.strictEqual(pc.earned, 19, '10 % de 100 + 40 + 50');
+  assert.strictEqual(pc.percentWithoutVat, true);
 });

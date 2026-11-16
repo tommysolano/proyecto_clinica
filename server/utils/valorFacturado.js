@@ -31,17 +31,21 @@ async function facturadoPorCita(appointmentIds) {
   const out = new Map();
   if (!ids.length) return out;
   const ventas = await Sale.find({ appointment: { $in: ids }, status: 'completada' })
-    .select('appointment items.category items.lineTotal items.unitPrice items.quantity items.discount total')
+    .select('appointment items.category items.lineTotal items.unitPrice items.quantity items.discount items.taxAmount total')
     .lean();
   for (const v of ventas) {
     const k = String(v.appointment);
-    const fila = out.get(k) || { servicios: 0, productos: 0, total: 0, ventas: 0 };
+    const fila = out.get(k) || { servicios: 0, serviciosSinIva: 0, productos: 0, total: 0, ventas: 0 };
     let servicios = 0;
     let productos = 0;
+    // IVA de las líneas de servicio: lo que se descuenta para la comisión «sin IVA».
+    let ivaServicios = 0;
     for (const it of v.items || []) {
       // Sin categoría (líneas antiguas) cuenta como servicio: es el valor de la visita.
-      if (!it.category || SERVICIO.has(it.category)) servicios += importeLinea(it);
-      else productos += importeLinea(it);
+      if (!it.category || SERVICIO.has(it.category)) {
+        servicios += importeLinea(it);
+        ivaServicios += Number(it.taxAmount) || 0;
+      } else productos += importeLinea(it);
     }
     // El total de la venta manda (incluye IVA); las líneas solo reparten entre servicio y producto.
     const lineas = servicios + productos;
@@ -53,6 +57,7 @@ async function facturadoPorCita(appointmentIds) {
       servicios = total;
     }
     fila.servicios += servicios;
+    fila.serviciosSinIva += Math.max(0, servicios - ivaServicios);
     fila.productos += productos;
     fila.total += total;
     fila.ventas += 1;
@@ -60,6 +65,7 @@ async function facturadoPorCita(appointmentIds) {
   }
   for (const f of out.values()) {
     f.servicios = r2(f.servicios);
+    f.serviciosSinIva = r2(f.serviciosSinIva);
     f.productos = r2(f.productos);
     f.total = r2(f.total);
   }
@@ -70,11 +76,30 @@ async function facturadoPorCita(appointmentIds) {
  * Anota en cada cita (documento o lean) lo facturado en `_facturado` (o null si no tiene
  * ventas). Devuelve la misma lista para poder encadenar.
  */
-async function anotarFacturado(appts) {
+async function anotarFacturado(appts, { ivaCatalogo = false } = {}) {
   const lista = (appts || []).filter(Boolean);
   const mapa = await facturadoPorCita(lista.map((a) => a._id));
   for (const a of lista) a._facturado = mapa.get(String(a._id)) || null;
+  if (ivaCatalogo) await anotarIvaCatalogo(lista.filter((a) => !(a._facturado?.ventas > 0)));
   return appts;
+}
+
+/**
+ * IVA (%) del servicio principal de las citas SIN factura, según el producto del catálogo
+ * al que está ligado el servicio de agenda. Queda en `_ivaCatalogo` (0 si no se sabe).
+ * Solo lo pide quien necesita el valor sin IVA (comisiones por porcentaje).
+ */
+async function anotarIvaCatalogo(appts) {
+  const ids = [...new Set(appts.map((a) => a.serviceItem && String(a.serviceItem._id || a.serviceItem)).filter(Boolean))];
+  if (!ids.length) return;
+  const AppointmentServiceItem = require('../models/AppointmentServiceItem');
+  const Product = require('../models/Product');
+  const items = await AppointmentServiceItem.find({ _id: { $in: ids } }).select('product').lean();
+  const prodIds = items.map((s) => s.product).filter(Boolean);
+  const prods = prodIds.length ? await Product.find({ _id: { $in: prodIds } }).select('taxRate taxCategory').lean() : [];
+  const tasaPorProducto = new Map(prods.map((p) => [String(p._id), ['IVA_0', 'EXENTO', 'NO_OBJETO'].includes(p.taxCategory) ? 0 : Number(p.taxRate) || 0]));
+  const tasaPorServicio = new Map(items.map((s) => [String(s._id), tasaPorProducto.get(String(s.product)) || 0]));
+  for (const a of appts) a._ivaCatalogo = tasaPorServicio.get(String(a.serviceItem?._id || a.serviceItem)) || 0;
 }
 
 /**
@@ -88,6 +113,19 @@ function valorDeCita(appt) {
   if (appt?.agreedValue != null) return Number(appt.agreedValue) || 0;
   if (['abono', 'total'].includes(appt?.advancePayment)) return Number(appt.advanceAmount) || 0;
   return null;
+}
+
+/**
+ * VALOR DE LA CITA SIN IVA (nov-2026), para las comisiones por porcentaje «sin IVA»: con
+ * factura, lo facturado en servicios menos el IVA real de esas líneas; sin factura, el valor
+ * escrito sin el IVA del producto del catálogo (necesita `anotarFacturado(..., { ivaCatalogo: true })`).
+ */
+function valorDeCitaSinIva(appt) {
+  if (appt?._facturado && appt._facturado.ventas > 0) return appt._facturado.serviciosSinIva;
+  const valor = valorDeCita(appt);
+  if (valor == null) return null;
+  const tasa = Number(appt?._ivaCatalogo) || 0;
+  return tasa > 0 ? r2(valor / (1 + tasa / 100)) : valor;
 }
 
 /**
@@ -105,4 +143,4 @@ function valorProductosDeCita(appt) {
   return appt?.itemsValue != null ? Number(appt.itemsValue) || 0 : null;
 }
 
-module.exports = { facturadoPorCita, anotarFacturado, valorDeCita, totalFacturadoDeCita, valorProductosDeCita };
+module.exports = { facturadoPorCita, anotarFacturado, valorDeCita, valorDeCitaSinIva, totalFacturadoDeCita, valorProductosDeCita };

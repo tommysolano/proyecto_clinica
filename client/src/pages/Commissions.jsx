@@ -59,6 +59,10 @@ const RULE_ENDPOINT = {
   referral: '/commissions/doctor-referral-rule',
 };
 
+/** ¿La tarifa del editor paga por PORCENTAJE (la general o algún horario)? */
+const usaPorcentaje = (form, bands = form.timeBands) =>
+  form.amountType === 'percent' || (bands || []).some((b) => b.amountType === 'percent');
+
 /** Una cifra del doctor: etiqueta arriba, valor grande, explicación al pasar el ratón. */
 function Stat({ label, value, hint, tone = 'slate' }) {
   const tones = {
@@ -124,7 +128,7 @@ export default function Commissions() {
   const [versionTarifas, setVersionTarifas] = useState(0);
   const [loading, setLoading] = useState(false);
   const [commissionEditor, setCommissionEditor] = useState(null);
-  const [commissionForm, setCommissionForm] = useState({ amountType: 'fixed', value: '', firstTimeOnly: false, minStartTime: '', timeBands: [] });
+  const [commissionForm, setCommissionForm] = useState({ amountType: 'fixed', value: '', firstTimeOnly: false, minStartTime: '', percentWithoutVat: false, timeBands: [] });
   const [savingCommission, setSavingCommission] = useState(false);
   const [excludedEditor, setExcludedEditor] = useState(false);
   const [excludedServices, setExcludedServices] = useState([]);
@@ -323,6 +327,7 @@ export default function Commissions() {
       value: !current?.mixed && current?.value != null ? String(current.value) : '',
       firstTimeOnly: !!current?.firstTimeOnly,
       minStartTime: !current?.mixed ? current?.minStartTime || '' : '',
+      percentWithoutVat: !current?.mixed && !!current?.percentWithoutVat,
       timeBands: !current?.mixed
         ? (current?.timeBands || []).map((b) => ({ ...b, value: String(b.value) }))
         : [],
@@ -378,6 +383,8 @@ export default function Commissions() {
         amountType: commissionForm.amountType,
         value,
         timeBands,
+        // Solo tiene sentido si algún valor es porcentaje; con montos fijos se guarda apagado.
+        percentWithoutVat: usaPorcentaje(commissionForm, timeBands) && commissionForm.percentWithoutVat,
         ...(commissionEditor.scope !== 'referral' ? { minStartTime: commissionForm.minStartTime || '' } : {}),
         ...(commissionEditor.scope === 'service' ? { firstTimeOnly: commissionForm.firstTimeOnly } : {}),
       });
@@ -414,11 +421,12 @@ export default function Commissions() {
       ? `${Number(commission.value).toFixed(2)}%`
       : money(commission.value);
     const primera = commission.firstTimeOnly ? ' · solo 1ª vez' : '';
+    const sinIva = commission.percentWithoutVat ? ' sin IVA' : '';
     const desde = commission.minStartTime ? ` · desde ${commission.minStartTime}` : '';
     const n = commission.timeBands?.length || 0;
     const horarios = n ? ` · ${n} horario${n > 1 ? 's' : ''}` : '';
     const antes = commission.beforeTime ? ` · ${commission.beforeTime} antes de hora (sin comisión)` : '';
-    return `${label}${desde}${horarios}${primera}${commission.partial ? ' (parcial)' : ''} · ${ganado}${antes}`;
+    return `${label}${sinIva}${desde}${horarios}${primera}${commission.partial ? ' (parcial)' : ''} · ${ganado}${antes}`;
   };
 
   // ─── Ajustes ───
@@ -1341,10 +1349,30 @@ export default function Commissions() {
               />
               {commissionForm.amountType === 'percent' && (
                 <span className="block mt-1 text-xs text-slate-400">
-                  Se calcula sobre el valor total acordado de la cita. Un abono incluido en ese valor no se duplica.
+                  {commissionForm.percentWithoutVat
+                    ? 'Se calcula sobre lo cobrado por la cita SIN el IVA. Un abono incluido en ese valor no se duplica.'
+                    : 'Se calcula sobre el valor total cobrado de la cita (con IVA si lo lleva). Un abono incluido en ese valor no se duplica.'}
                 </span>
               )}
             </label>
+
+            {/* PORCENTAJE SIN IVA: cobrado 115 (100 + 15% IVA) → el % va sobre 100. */}
+            {usaPorcentaje(commissionForm) && (
+              <label className="flex items-start gap-2 text-sm text-slate-700 cursor-pointer bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  checked={commissionForm.percentWithoutVat}
+                  onChange={(e) => setCommissionForm({ ...commissionForm, percentWithoutVat: e.target.checked })}
+                  className="mt-0.5 accent-emerald-600"
+                />
+                <span>
+                  <b>Descontar el IVA</b> antes de calcular el porcentaje
+                  <span className="block text-xs text-slate-500 mt-0.5">
+                    Si el servicio vale $100 y se cobra $115 por el IVA, el porcentaje se calcula sobre $100. Se descuenta el IVA que realmente lleva la factura: los servicios con IVA 0% no cambian.
+                  </span>
+                </span>
+              </label>
+            )}
 
             {/* TARIFA POR HORARIO: el mismo servicio paga distinto según la hora
                 a la que empieza la cita (p. ej. mañana y tarde). */}

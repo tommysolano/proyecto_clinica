@@ -16,7 +16,7 @@ const Patient = require('../models/Patient');
 const { normalizePhone } = require('../utils/phoneNormalize');
 const { citasConHistoriaPrevia } = require('../utils/firstVisit');
 const { tipoSinCobroDelServicio } = require('../utils/appointmentValue');
-const { anotarFacturado, valorDeCita } = require('../utils/valorFacturado');
+const { anotarFacturado, valorDeCita, valorDeCitaSinIva } = require('../utils/valorFacturado');
 const {
   doctoresDeLaCita, filtroCitasConDoctor, enfermerosQueAtienden, filtroCitasConEnfermero,
   seguimientosDeSueroDelTurno,
@@ -162,6 +162,8 @@ const saveManagedDoctorRule = async (req, res, scope) => {
     const sinServicio = isPatientRule || (isReferralRule && !service);
     // «Solo la primera vez» es de las tarifas por servicio atendido.
     const firstTimeOnly = scope === 'service' && req.body?.firstTimeOnly === true;
+    // Porcentaje sobre el valor SIN IVA (solo cambia algo en las tarifas por porcentaje).
+    const percentWithoutVat = req.body?.percentWithoutVat === true;
     const rawValue = req.body?.value;
     const value = Number(rawValue);
     const clinicIds = [...new Set(
@@ -279,6 +281,7 @@ const saveManagedDoctorRule = async (req, res, scope) => {
             firstTimeOnly,
             timeBands,
             minStartTime,
+            percentWithoutVat,
             amountType,
             amount: amountType === 'fixed' ? value : 0,
             percent: amountType === 'percent' ? value : 0,
@@ -294,7 +297,7 @@ const saveManagedDoctorRule = async (req, res, scope) => {
       ).lean();
       saved.push(rule);
     }
-    res.json({ active: true, amountType, value, firstTimeOnly, timeBands, minStartTime, clinics: clinicIds, rules: saved });
+    res.json({ active: true, amountType, value, firstTimeOnly, timeBands, minStartTime, percentWithoutVat, clinics: clinicIds, rules: saved });
   } catch (e) {
     const status = e?.code === 11000 ? 409 : 500;
     res.status(status).json({
@@ -382,6 +385,14 @@ const normalizeServiceName = (value) => String(value || '')
 const appointmentPaymentValue = (appt) => num(valorDeCita(appt));
 
 /**
+ * Base sobre la que una tarifa de Comisiones > Doctores calcula su PORCENTAJE: lo pagado
+ * o, si la tarifa dice «sin IVA», lo pagado sin el IVA real de la factura (nov-2026).
+ */
+const baseDeRegla = (rule, appt) => (rule?.percentWithoutVat
+  ? num(valorDeCitaSinIva(appt))
+  : appointmentPaymentValue(appt));
+
+/**
  * Calcula, sobre la marcha, las comisiones devengadas en un rango de fechas a
  * partir de las citas (asistidas/completadas), ventas y derivaciones, según las
  * reglas activas. Devuelve la lista completa de detalles (sin filtrar) y las
@@ -427,7 +438,8 @@ async function computeCommissions(clinicId, startDate, endDate) {
     .populate('patient', 'firstName lastName')
     .populate({ path: 'referral', populate: { path: 'fromDoctor', select: 'name clinics' } });
   // Lo facturado de cada cita (valor de la cita desde la facturación electrónica).
-  await anotarFacturado(appts);
+  // Con el IVA del catálogo si alguna tarifa calcula su porcentaje sin IVA.
+  await anotarFacturado(appts, { ivaCatalogo: rules.some((r) => r.percentWithoutVat) });
 
   // Usuarios de la clínica (para targets por rol: admin / marketing).
   const clinicUsers = await User.find({ 'clinics.clinic': clinicId }).select('name clinics');
@@ -608,7 +620,8 @@ async function computeCommissions(clinicId, startDate, endDate) {
             detail.push({
               userId: String(performer._id), userName: performer.name, userRole: performerRole,
               ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
-              amount: calcAmount(cfg, svc.price), date: appt.date,
+              // Servicio de agenda con tarifa «sin IVA»: el porcentaje va sobre lo pagado sin IVA.
+              amount: calcAmount(cfg, svc.sourceType === 'appointment' && rule.percentWithoutVat ? baseDeRegla(rule, appt) : svc.price), date: appt.date,
               service: svc.name || '—', patient: patientName, source: 'cita atendida', apptId: String(appt._id),
             });
           }
@@ -643,7 +656,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
           detail.push({
             userId: String(performer._id), userName: performer.name, userRole: performerRole,
             ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
-            amount: calcAmount(cfg, paidValue), date: appt.date,
+            amount: calcAmount(cfg, baseDeRegla(rule, appt)), date: appt.date,
             service: 'Paciente atendido', patient: patientName, source: 'paciente atendido', apptId: String(appt._id),
           });
         }
@@ -684,7 +697,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
         detail.push({
           userId: String(fromDoc._id), userName: fromDoc.name, userRole: roleFor(fromDoc),
           ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
-          amount: calcAmount(cfgDeRegla(rule, appt), paidValue), date: appt.date,
+          amount: calcAmount(cfgDeRegla(rule, appt), baseDeRegla(rule, appt)), date: appt.date,
           service: appt.serviceName || appt.services?.[0]?.name || '—', patient: patientName, source: 'derivación', apptId: String(appt._id),
         });
       }
@@ -1337,7 +1350,8 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
     .filter((a) => a.referral?.fromDoctor?._id
       && (!doctoresFiltro.length || doctoresFiltro.includes(String(a.referral.fromDoctor._id))));
   // Valor de cada cita = lo facturado (o lo escrito en las anteriores a la facturación).
-  await anotarFacturado([...appts, ...derivadas]);
+  // `ivaCatalogo`: las tarifas «sin IVA» necesitan el IVA de las citas sin factura.
+  await anotarFacturado([...appts, ...derivadas], { ivaCatalogo: true });
 
   const doctores = new Map();
   for (const a of appts) {
@@ -1455,7 +1469,8 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
         const antes = antesDeHora(rule, appt, doctorId);
         agregar({
           ...comun, kind: 'servicio', ruleId: String(rule._id), serviceKey: svc.key, serviceName: svc.name,
-          amount: repetida || antes ? 0 : calcAmount(cfgDeRegla(rule, appt), pagado), repetida,
+          base: baseDeRegla(rule, appt),
+          amount: repetida || antes ? 0 : calcAmount(cfgDeRegla(rule, appt), baseDeRegla(rule, appt)), repetida,
           antesDeHora: antes ? rule.minStartTime : '',
           franja: etiquetaFranja(franjaDeRegla(rule, appt)),
         });
@@ -1470,7 +1485,8 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
           const antes = antesDeHora(rule, appt, doctorId);
           agregar({
             ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: serviciosDeCita(appt, catalogo).map((svc) => svc.name).join(', ') || '—',
-            amount: antes ? 0 : calcAmount(cfgDeRegla(rule, appt), pagado),
+            base: baseDeRegla(rule, appt),
+            amount: antes ? 0 : calcAmount(cfgDeRegla(rule, appt), baseDeRegla(rule, appt)),
             antesDeHora: antes ? rule.minStartTime : '',
             franja: etiquetaFranja(franjaDeRegla(rule, appt)),
           });
@@ -1497,13 +1513,13 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
     }
     if (!rule) rule = reglaBaseParaCita(doctorId, 'referral', clinicId);
     if (!rule) continue;
-    const pagado = appointmentPaymentValue(cita);
+    const base = baseDeRegla(rule, cita);
     agregar({
       doctorId, apptId: String(cita._id), date: cita.date, clinicId,
-      patient: nombrePaciente(cita.patient), base: pagado,
+      patient: nombrePaciente(cita.patient), base,
       kind: 'derivacion', ruleId: String(rule._id), porServicio: !!rule.appointmentService,
       serviceKey: svc.key, serviceName: svc.name, atendidaPor: cita.doctor?.name || '',
-      amount: calcAmount(cfgDeRegla(rule, cita), pagado),
+      amount: calcAmount(cfgDeRegla(rule, cita), base),
       franja: etiquetaFranja(franjaDeRegla(rule, cita)),
     });
   }
@@ -1545,7 +1561,7 @@ const resumenTarifa = (configs, earned, totalClinics, extra = {}) => {
     amountType: b.amountType || 'fixed',
     value: b.amountType === 'percent' ? num(b.percent) : num(b.amount),
   }));
-  const firma = (r) => `${r.amountType}:${r.amountType === 'percent' ? num(r.percent) : num(r.amount)}:${!!r.firstTimeOnly}:${r.minStartTime || ''}:${JSON.stringify(bandas(r))}`;
+  const firma = (r) => `${r.amountType}:${r.amountType === 'percent' ? num(r.percent) : num(r.amount)}:${!!r.firstTimeOnly}:${r.minStartTime || ''}:${!!r.percentWithoutVat}:${JSON.stringify(bandas(r))}`;
   const base = { earned: +num(earned).toFixed(2), configuredClinics: configs.length, totalClinics, ...extra };
   if (new Set(configs.map(firma)).size > 1) return { mixed: true, ...base };
   const first = configs[0];
@@ -1555,6 +1571,7 @@ const resumenTarifa = (configs, earned, totalClinics, extra = {}) => {
     value: first.amountType === 'percent' ? num(first.percent) : num(first.amount),
     firstTimeOnly: !!first.firstTimeOnly,
     minStartTime: first.minStartTime || '',
+    percentWithoutVat: !!first.percentWithoutVat,
     timeBands: bandas(first),
     partial: configs.length < totalClinics,
     ...base,

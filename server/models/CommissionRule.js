@@ -152,6 +152,13 @@ const commissionRuleSchema = new mongoose.Schema(
      * no consta, con la hora de la cita.
      */
     minStartTime: { type: String, default: '' },
+    /**
+     * PORCENTAJE SOBRE EL VALOR SIN IVA (nov-2026), reglas de Comisiones > Doctores. Si el
+     * servicio se cobró 115 (100 + IVA 15%), el porcentaje se calcula sobre 100. Se descuenta
+     * el IVA REAL de la factura (casi todos los servicios médicos van con IVA 0% y no
+     * cambian); sin factura, el IVA del producto del catálogo. No afecta a los montos fijos.
+     */
+    percentWithoutVat: { type: Boolean, default: false },
 
     // Agente de call center al que está ligado un usuario marketing. Sólo aplica
     // al trigger 'call_center_commission': el marketing gana en función de la
