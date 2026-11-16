@@ -283,7 +283,7 @@ async function resolveInventoryAccount(it, { clinicId, session, label = '' }) {
     cat = await InventoryCategory.findOne({ _id: it.inventoryCategory, clinic: clinicId }).select('name assetAccount').session(session || null);
   }
   if (!cat && it.product) {
-    const prod = await Product.findOne({ _id: it.product, clinic: clinicId }).select('inventoryCategory').session(session || null);
+    const prod = await Product.findOne({ _id: it.product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(clinicId) }).select('inventoryCategory').session(session || null);
     if (prod?.inventoryCategory) {
       cat = await InventoryCategory.findOne({ _id: prod.inventoryCategory, clinic: clinicId }).select('name assetAccount').session(session || null);
       if (cat) it.inventoryCategory = cat._id;
@@ -786,7 +786,7 @@ async function postInventoryEntries(inv, req, session) {
   }).session(session || null);
   for (const it of inv.items || []) {
     if (!it.product || !it.quantity || it.quantity <= 0) continue;
-    const prod = await Product.findOne({ _id: it.product, clinic: req.clinicId }).session(session || null);
+    const prod = await Product.findOne({ _id: it.product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) }).session(session || null);
     if (!prod || prod.unlimited || prod.category === 'servicio') continue;
     const qty = Number(it.quantity);
     const unitCost = Number(it.unitPrice) || 0;
@@ -1003,7 +1003,7 @@ async function revertInventoryEntries(inv, req, session) {
   }).session(session || null);
   // Recalcula stock/costo de los productos afectados desde las capas vivas.
   for (const productId of touched) {
-    const prod = await Product.findOne({ _id: productId, clinic: req.clinicId }).session(session || null);
+    const prod = await Product.findOne({ _id: productId, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) }).session(session || null);
     if (!prod) continue;
     const cur = await kardex.currentStock({ clinicId: req.clinicId, product: prod._id }, session);
     prod.stock = cur.qty;
@@ -1297,7 +1297,7 @@ async function purgePurchaseInvoices(clinicId, invoices, { force = false } = {})
 
   let recalced = 0;
   for (const pid of affected) {
-    const prod = await Product.findOne({ _id: pid, clinic: clinicId });
+    const prod = await Product.findOne({ _id: pid, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(clinicId) });
     if (!prod) continue;
     const cur = await kardex.currentStock({ clinicId, product: prod._id });
     prod.stock = cur.qty;

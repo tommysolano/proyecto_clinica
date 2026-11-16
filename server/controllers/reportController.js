@@ -462,7 +462,7 @@ exports.exportPatients = async (req, res) => {
 /* ============================== INVENTARIO ============================== */
 exports.exportInventory = async (req, res) => {
   try {
-    const products = await Product.find({ clinic: req.clinicId, active: true }).sort({
+    const products = await Product.find({ clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId), active: true }).sort({
       name: 1,
     });
     const wb = new ExcelJS.Workbook();

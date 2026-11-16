@@ -1273,7 +1273,7 @@ const enrichInterested = async (clinicId, items) => {
   if (!Array.isArray(items)) return [];
   const ids = items.map((i) => i.product).filter(Boolean);
   if (ids.length === 0) return items.map((i) => ({ product: i.product, name: i.name }));
-  const products = await Product.find({ _id: { $in: ids }, clinic: clinicId }).select('name salePrice');
+  const products = await Product.find({ _id: { $in: ids }, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(clinicId) }).select('name salePrice');
   const byId = new Map(products.map((p) => [String(p._id), p]));
   return items
     .filter((i) => i.product)
@@ -1287,7 +1287,7 @@ const sumInterestedValue = async (clinicId, items) => {
   if (!Array.isArray(items)) return 0;
   const ids = items.map((i) => i.product).filter(Boolean);
   if (ids.length === 0) return 0;
-  const products = await Product.find({ _id: { $in: ids }, clinic: clinicId }).select('salePrice');
+  const products = await Product.find({ _id: { $in: ids }, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(clinicId) }).select('salePrice');
   return products.reduce((s, p) => s + Number(p.salePrice || 0), 0);
 };
 
@@ -6388,7 +6388,7 @@ exports.createQuotationFromChat = async (req, res) => {
 
     const ids = items.map((i) => i.product).filter(Boolean);
     const products = ids.length
-      ? await Product.find({ _id: { $in: ids }, clinic: req.clinicId })
+      ? await Product.find({ _id: { $in: ids }, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) })
       : [];
     const byId = new Map(products.map((p) => [String(p._id), p]));
 

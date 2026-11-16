@@ -1589,7 +1589,7 @@ exports.advancesControl = async (req, res) => {
 };
 
 exports.inventoryReport = async (req, res) => {
-  const products = await Product.find({ clinic: req.clinicId, active: true });
+  const products = await Product.find({ clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId), active: true });
   const rows = products.map((p) => {
     // Costo unitario REAL: el promedio que calcula el kardex desde las compras. El antiguo
     // `purchasePrice` era un dato tecleado a mano que ya no se captura; se conserva como
@@ -1677,7 +1677,7 @@ exports.generalReport = async (req, res) => {
     ]);
 
     // Inventario valorizado
-    const products = await Product.find({ clinic: req.clinicId, active: true }).select('stock averageCost purchasePrice salePrice');
+    const products = await Product.find({ clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId), active: true }).select('stock averageCost purchasePrice salePrice');
     // Costo unitario del kardex (`averageCost`); `purchasePrice` solo como respaldo histórico.
     const inventory = products.reduce((acc, p) => ({
       valueAtCost: acc.valueAtCost + (p.stock || 0) * (Number(p.averageCost) || Number(p.purchasePrice) || 0),

@@ -138,7 +138,7 @@ exports.internalConsumption = async (req, res) => {
       const movements = [];
 
       for (const it of clean) {
-        const prod = await Product.findOne({ _id: it.product, clinic: req.clinicId }).populate('inventoryCategory', 'assetAccount').session(session);
+        const prod = await Product.findOne({ _id: it.product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) }).populate('inventoryCategory', 'assetAccount').session(session);
         if (!prod) throw Object.assign(new Error('Producto no encontrado'), { status: 400 });
         if (prod.unlimited || prod.category === 'servicio') {
           throw Object.assign(new Error(`"${prod.name}" es un servicio/ilimitado y no se puede consumir como insumo`), { status: 400 });
@@ -151,9 +151,9 @@ exports.internalConsumption = async (req, res) => {
         if (issue.shortfall > 0.00001) {
           cost = +(cost + issue.shortfall * Number(prod.averageCost || prod.purchasePrice || 0)).toFixed(2);
         }
-        await Product.updateOne({ _id: it.product, clinic: req.clinicId }, { $inc: { stock: -qty } }, { session });
+        await Product.updateOne({ _id: it.product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) }, { $inc: { stock: -qty } }, { session });
         const cur = await kardex.currentStock({ clinicId: req.clinicId, product: it.product }, session);
-        await Product.updateOne({ _id: it.product, clinic: req.clinicId }, { $set: { averageCost: cur.averageCost } }, { session });
+        await Product.updateOne({ _id: it.product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) }, { $set: { averageCost: cur.averageCost } }, { session });
 
         movements.push({
           clinic: req.clinicId,

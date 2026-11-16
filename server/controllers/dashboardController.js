@@ -58,7 +58,7 @@ exports.getDashboard = async (req, res) => {
       isClinician
         ? Promise.resolve([])
         : Product.find({
-            clinic: clinicId,
+            clinic: require('../utils/catalogoEmpresa').filtroCatalogo(clinicId),
             active: true,
             unlimited: { $ne: true },
             $expr: { $lte: ['$stock', '$minStock'] },
@@ -220,7 +220,7 @@ exports.getAccountingDashboard = async (req, res) => {
         { $group: { _id: '$items.description', total: { $sum: '$items.subtotal' } } },
         { $sort: { total: -1 } }, { $limit: 8 },
       ]),
-      Product.find({ clinic: clinicObjId, active: true, unlimited: { $ne: true }, $expr: { $lte: ['$stock', '$minStock'] } })
+      Product.find({ clinic: require('../utils/catalogoEmpresa').filtroCatalogo(clinicObjId), active: true, unlimited: { $ne: true }, $expr: { $lte: ['$stock', '$minStock'] } })
         .select('name code stock minStock').sort({ stock: 1 }).limit(50),
       Sale.aggregate([{ $match: sales({ createdAt: { $gte: startOfMonth, $lte: endOfMonth } }) }, { $group: { _id: null, total: { $sum: '$total' } } }]),
       Sale.aggregate([{ $match: sales({ createdAt: { $gte: startOfPrevMonth, $lte: endOfPrevMonth } }) }, { $group: { _id: null, total: { $sum: '$total' } } }]),

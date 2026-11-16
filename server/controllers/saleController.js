@@ -1427,7 +1427,7 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
     // producto de esta sucursal (como antes), para no pisarlo con el de otra sede.
     const cur = await kardex.currentStock({ clinicId, product: item.product }, session);
     await Product.updateOne(
-      { _id: item.product, clinic: clinicId },
+      { _id: item.product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(clinicId) },
       { $set: { averageCost: cur.averageCost } },
       { session }
     );
@@ -1460,7 +1460,7 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
       if (!(Number(l.stockMoved) > 0)) continue;
       await Product.updateOne({ _id: l.product }, { $inc: { stock: l.stockMoved } }, { session });
       const cur = await kardex.currentStock({ clinicId, product: l.product }, session);
-      await Product.updateOne({ _id: l.product, clinic: clinicId }, { $set: { averageCost: cur.averageCost } }, { session });
+      await Product.updateOne({ _id: l.product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(clinicId) }, { $set: { averageCost: cur.averageCost } }, { session });
       await InventoryMovement.create([{
         clinic: clinicId,
         product: l.product,

@@ -175,7 +175,7 @@ async function salidaDeInventario({
     cost = r2(cost + issue.shortfall * Number(fresco?.averageCost || fresco?.purchasePrice || 0));
   }
   const cur = await kardex.currentStock({ clinicId, product: product._id }, session);
-  await Product.updateOne({ _id: product._id, clinic: clinicId }, { $set: { averageCost: cur.averageCost } }, { session });
+  await Product.updateOne({ _id: product._id, clinic: require('./catalogoEmpresa').filtroCatalogo(clinicId) }, { $set: { averageCost: cur.averageCost } }, { session });
   await InventoryMovement.create([{
     clinic: clinicId,
     product: product._id,

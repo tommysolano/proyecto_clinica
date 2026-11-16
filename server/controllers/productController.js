@@ -618,7 +618,7 @@ exports.createMovement = async (req, res) => {
     const wh = warehouse || null;
 
     const movId = await runInTransaction(async (session) => {
-      const product = await Product.findOne({ _id: productId, clinic: req.clinicId }).session(session);
+      const product = await Product.findOne({ _id: productId, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) }).session(session);
       if (!product) throw Object.assign(new Error('Producto no encontrado'), { status: 404 });
       if (product.unlimited) throw Object.assign(new Error('Los productos/servicios ilimitados no manejan stock'), { status: 400 });
 

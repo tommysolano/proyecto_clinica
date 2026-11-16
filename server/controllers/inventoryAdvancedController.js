@@ -228,7 +228,7 @@ exports.importProductsExcel = async (req, res) => {
     const errors = [...rowErrors];
     if (products.length) {
       // Una sola consulta (usa el índice único { clinic, code }) para saber cuáles ya existen.
-      const existing = await Product.find({ clinic: req.clinicId, code: { $in: products.map((p) => p.code) } })
+      const existing = await Product.find({ clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId), code: { $in: products.map((p) => p.code) } })
         .select('code').lean();
       const existingCodes = new Set(existing.map((d) => d.code));
 
@@ -760,7 +760,7 @@ exports.transferStock = async (req, res) => {
 
       for (const linea of lineas) {
         const { product, quantity: qty } = linea;
-        const prod = await Product.findOne({ _id: product, clinic: req.clinicId }).session(session);
+        const prod = await Product.findOne({ _id: product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) }).session(session);
         if (!prod) throw Object.assign(new Error('Producto no encontrado'), { status: 404 });
 
         // Capas vivas en la bodega de origen, en orden FIFO.
@@ -1224,6 +1224,12 @@ exports.listTransfers = async (req, res) => {
 
 // ----- Toma física -----
 
+/** Sucursales cuyo catálogo comparte esta (la empresa); sin mapa de empresas, solo ella. */
+const catalogoDeEmpresa = (clinicId) => {
+  const ids = sisterClinicsSync(String(clinicId), { includeInactive: true });
+  return (ids.length ? ids : [String(clinicId)]).map((id) => new mongoose.Types.ObjectId(String(id)));
+};
+
 /**
  * Una toma sin permiso de costos viaja SIN importes: el contador físico cuenta unidades, no
  * necesita saber cuánto vale cada cosa. Se omite en el servidor, no en la pantalla.
@@ -1261,13 +1267,14 @@ exports.startCount = async (req, res) => {
       warehouse, category, description, notes, responsible, includeInactive,
     } = req.body;
     if (!warehouse) throw Object.assign(new Error('Indica la bodega: una toma física es de UNA bodega.'), { status: 400 });
+    await require('../utils/companies').ensureCompanyCache();
     const wh = await Warehouse.findOne({ _id: warehouse, clinic: req.clinicId });
     if (!wh) throw Object.assign(new Error('La bodega no existe en esta clínica'), { status: 404 });
     if (wh.active === false) throw Object.assign(new Error('La bodega está inactiva'), { status: 400 });
 
     let cat = null;
     if (category) {
-      cat = await InventoryCategory.findOne({ _id: category, clinic: req.clinicId });
+      cat = await InventoryCategory.findOne({ _id: category, clinic: { $in: catalogoDeEmpresa(req.clinicId) } });
       if (!cat) throw Object.assign(new Error('La categoría no existe en esta clínica'), { status: 404 });
     }
 
@@ -1278,8 +1285,10 @@ exports.startCount = async (req, res) => {
     // Inventariables: nunca servicios ni ilimitados. Tampoco los productos COMPUESTOS
     // (nov-2026): no existen en la percha, se arman con su composición fija (p. ej. el
     // DMSO de 10ML sale del frasco de 50ML) y lo que se cuenta es ese producto real.
+    // CATÁLOGO DE LA EMPRESA (nov-2026): el producto puede haberse creado desde otra sucursal
+    // (el DMSO PLUS 50ML y el COMPLEJO B 20ML se crearon en «Extensión») y es el mismo producto.
     const filtro = {
-      clinic: req.clinicId,
+      clinic: { $in: catalogoDeEmpresa(req.clinicId) },
       unlimited: { $ne: true },
       category: { $ne: 'servicio' },
       isComposite: { $ne: true },
@@ -1384,8 +1393,9 @@ const COUNT_SHEET_ALIASES = {
  */
 async function sincronizarToma(pc) {
   if (!pc || pc.status !== 'BORRADOR' || !pc.warehouse) return { agregados: 0, quitados: 0 };
+  await require('../utils/companies').ensureCompanyCache();
   const filtro = {
-    clinic: pc.clinic, active: true, unlimited: { $ne: true }, category: { $ne: 'servicio' },
+    clinic: { $in: catalogoDeEmpresa(pc.clinic) }, active: true, unlimited: { $ne: true }, category: { $ne: 'servicio' },
     isComposite: { $ne: true }, disabled: { $ne: true },
   };
   if (pc.category) filtro.inventoryCategory = pc.category;
@@ -1618,9 +1628,9 @@ exports.confirmCount = async (req, res) => {
         }, session);
         // `Product.stock` es el agregado global de apoyo: se mantiene coherente, pero NO es la
         // fuente de la decisión por bodega.
-        await Product.updateOne({ _id: it.product, clinic: req.clinicId }, { $inc: { stock: diff } }, { session });
+        await Product.updateOne({ _id: it.product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) }, { $inc: { stock: diff } }, { session });
         const global = await kardex.currentStock({ clinicId: req.clinicId, product: it.product }, session);
-        await Product.updateOne({ _id: it.product, clinic: req.clinicId }, { $set: { averageCost: global.averageCost } }, { session });
+        await Product.updateOne({ _id: it.product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) }, { $set: { averageCost: global.averageCost } }, { session });
 
         await InventoryMovement.create([{
           clinic: req.clinicId,
@@ -2081,7 +2091,7 @@ exports.importProducts = async (req, res) => {
         clean.categoria = category.name; // sincroniza legacy
       }
 
-      const exists = await Product.findOne({ clinic: req.clinicId, code: r.code });
+      const exists = await Product.findOne({ clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId), code: r.code });
       if (exists) {
         Object.assign(exists, clean);
         await exists.save(); updated++;

@@ -1677,7 +1677,7 @@ exports.addFollowUp = async (req, res) => {
     const productIds = items.map((it) => it.product).filter(Boolean);
     let productsById = {};
     if (productIds.length) {
-      const prods = await Product.find({ _id: { $in: productIds }, clinic: req.clinicId });
+      const prods = await Product.find({ _id: { $in: productIds }, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) });
       productsById = prods.reduce((acc, p) => {
         acc[String(p._id)] = p;
         return acc;
@@ -1756,7 +1756,7 @@ exports.addFollowUp = async (req, res) => {
       for (const it of hydratedItems) {
         if (!it.isComposite || !it.componentsUsed.length) continue;
         for (const comp of it.componentsUsed) {
-          const compProduct = await Product.findOne({ _id: comp.product, clinic: req.clinicId });
+          const compProduct = await Product.findOne({ _id: comp.product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) });
           if (!compProduct || compProduct.unlimited) continue;
           const qty = comp.quantity * Number(it.quantity || 1);
           compProduct.stock = Math.max(0, (compProduct.stock || 0) - qty);
@@ -2216,7 +2216,7 @@ exports.updateFollowUp = async (req, res) => {
     const productIds = items.map((it) => it.product).filter(Boolean);
     let productsById = {};
     if (productIds.length) {
-      const prods = await Product.find({ _id: { $in: productIds }, clinic: req.clinicId });
+      const prods = await Product.find({ _id: { $in: productIds }, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) });
       productsById = prods.reduce((acc, p) => { acc[String(p._id)] = p; return acc; }, {});
     }
     // Catálogo de servicios de la agenda, para derivaciones escogidas del buscador.
@@ -2304,7 +2304,7 @@ exports.updateFollowUp = async (req, res) => {
         const delta = (ahora.get(pid) || 0) - (antes.get(pid) || 0);
         if (!delta) continue;
         // eslint-disable-next-line no-await-in-loop
-        const prod = await Product.findOne({ _id: pid, clinic: req.clinicId });
+        const prod = await Product.findOne({ _id: pid, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) });
         if (!prod || prod.unlimited) continue;
         prod.stock = Math.max(0, (prod.stock || 0) - delta);
         // eslint-disable-next-line no-await-in-loop

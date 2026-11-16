@@ -758,3 +758,30 @@ test('D15) toma en borrador se pone al día: entra el producto real creado despu
   const r2 = ok(await run(ctrl.refreshCount, H.mockReq(clinicId, userId, {}, { params: { id: String(pc._id) } })));
   assert.equal(r2.cambios.quitados, 0);
 });
+
+test('D16) la toma cuenta productos del catálogo de la EMPRESA, aunque se hayan creado desde otra sucursal', async () => {
+  const Company = require('../models/Company');
+  const Clinic = require('../models/Clinic');
+  const companies = require('../utils/companies');
+  const { clinicId, userId, A } = await tomaSetup();
+  const empresa = await Company.create({ name: 'Shiluv', isDefault: true });
+  await Clinic.create({ _id: clinicId, name: 'Central', company: empresa._id });
+  const extension = await Clinic.create({ name: 'Extensión', company: empresa._id });
+  const ajena = await Clinic.create({ name: 'Otra empresa', company: (await Company.create({ name: 'Otra' }))._id });
+  companies.invalidateCompanyCache();
+  await companies.refreshCompanyCache();
+  try {
+    const dmso = await H.makeProduct(extension._id, { code: 'DMSO50', name: 'DMSO PLUS 50ML' });
+    const deOtra = await H.makeProduct(ajena._id, { code: 'AJENO', name: 'De otra empresa' });
+    const pc = ok(await iniciar(clinicId, userId, { warehouse: String(A._id) }));
+    const ids = pc.items.map((i) => String(i.product));
+    assert.ok(ids.includes(String(dmso._id)), 'el producto creado en Extensión entra en la toma de Central');
+    assert.ok(!ids.includes(String(deOtra._id)), 'el de otra empresa no');
+
+    const complejo = await H.makeProduct(extension._id, { code: 'CB20', name: 'COMPLEJO B 20ML' });
+    const r = ok(await run(ctrl.refreshCount, H.mockReq(clinicId, userId, {}, { params: { id: String(pc._id) } })));
+    assert.ok(r.count.items.some((i) => String(i.product) === String(complejo._id)), 'y al ponerla al día también');
+  } finally {
+    companies.invalidateCompanyCache();
+  }
+});
