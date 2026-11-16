@@ -14,6 +14,8 @@ const verInventario = requireRole('admin', 'contabilidad', 'cajero', 'enfermeria
 router.get('/warehouses', verInventario, requireCap('warehouse.view'), c.listWarehouses);
 router.post('/warehouses', requireRole('admin', 'contabilidad'), requireCap('warehouse.manage'), c.createWarehouse);
 router.put('/warehouses/:id', requireRole('admin', 'contabilidad'), requireCap('warehouse.manage'), c.updateWarehouse);
+// Inactivar / reactivar (nov-2026): no se inactiva con stock, si es la principal o si la usan puntos.
+router.post('/warehouses/:id/active', requireRole('admin', 'contabilidad'), requireCap('warehouse.manage'), c.setWarehouseActive);
 router.delete('/warehouses/:id', requireRole('admin'), c.deleteWarehouse);
 
 // Categorías

@@ -311,10 +311,55 @@ exports.createWarehouse = async (req, res) => {
     res.status(201).json(w);
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
+/**
+ * ¿Se puede INACTIVAR esta bodega? (nov-2026, como en Contífico). Una bodega inactiva no admite
+ * compras, ventas, traslados, movimientos ni tomas nuevas; por eso no se deja inactivar si
+ * todavía guarda algo que nadie podría ya mover. Devuelve el motivo, o null si se puede.
+ */
+async function motivoParaNoInactivar(w) {
+  if (w.isMain) return 'Es la bodega principal: marca otra como principal antes de inactivarla.';
+  const [conStock] = await InventoryLayer.aggregate([
+    { $match: { warehouse: w._id, qtyRemaining: { $gt: 0 } } },
+    { $group: { _id: '$product' } },
+    { $count: 'n' },
+  ]);
+  if (conStock?.n) return `Todavía tiene existencias de ${conStock.n} producto(s). Trasládalas a otra bodega (o ajústalas con una toma física) antes de inactivarla.`;
+  const PuntoEmision = require('../models/PuntoEmision');
+  const puntos = await PuntoEmision.find({ bodega: w._id, activo: { $ne: false } }).select('establecimiento codigo').lean();
+  if (puntos.length) return `La usan los puntos de emisión ${puntos.map((p) => `${p.establecimiento}-${p.codigo}`).join(', ')}: cámbiales la bodega antes de inactivarla.`;
+  const TransferRequest = require('../models/TransferRequest');
+  const pendientes = await TransferRequest.countDocuments({ status: 'PENDIENTE', $or: [{ toWarehouse: w._id }, { fromWarehouse: w._id }] });
+  if (pendientes) return `Tiene ${pendientes} solicitud(es) de traslado pendiente(s): atiéndelas o recházalas antes de inactivarla.`;
+  const enCurso = await PhysicalCount.countDocuments({ warehouse: w._id, status: 'BORRADOR' });
+  if (enCurso) return `Tiene ${enCurso} toma(s) física(s) en borrador: confírmalas o anúlalas antes de inactivarla.`;
+  return null;
+}
+
+/** Inactivar / reactivar una bodega. body: { active: boolean } */
+exports.setWarehouseActive = async (req, res) => {
+  try {
+    const w = await Warehouse.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!w) return res.status(404).json({ message: 'No encontrada' });
+    const activa = req.body.active !== false;
+    if (!activa && w.active !== false) {
+      const motivo = await motivoParaNoInactivar(w);
+      if (motivo) return res.status(400).json({ message: `No se puede inactivar ${w.code} — ${w.name}. ${motivo}` });
+    }
+    w.active = activa;
+    await w.save();
+    res.json(w);
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
 exports.updateWarehouse = async (req, res) => {
   try {
     const w = await Warehouse.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!w) return res.status(404).json({ message: 'No encontrada' });
+    // Inactivar desde el formulario pasa por las MISMAS comprobaciones que el botón.
+    if (req.body.active === false && w.active !== false) {
+      const motivo = await motivoParaNoInactivar(w);
+      if (motivo) return res.status(400).json({ message: `No se puede inactivar ${w.code} — ${w.name}. ${motivo}` });
+    }
     if (req.body.costCenter !== undefined) {
       req.body.costCenter = await validateWarehouseCostCenter(req.clinicId, req.body.costCenter);
     }
@@ -679,6 +724,10 @@ async function moverEntreBodegas({ clinicId, userId, fromWarehouse, toWarehouse,
     Warehouse.findOne({ _id: toWarehouse, clinic: clinicId }).session(session),
   ]);
   if (!fromWh || !toWh) throw Object.assign(new Error('Bodega no encontrada en esta clínica'), { status: 404 });
+  // Una bodega INACTIVA no recibe ni entrega traslados (nov-2026).
+  for (const w of [fromWh, toWh]) {
+    if (w.active === false) throw Object.assign(new Error(`La bodega "${w.name}" está inactiva: no se pueden hacer traslados con ella.`), { status: 400 });
+  }
 
   // Centro de costo: el de la bodega es una PROPUESTA. Si el usuario eligió otro (la UI le
   // avisa de la diferencia), se registra el que REALMENTE usó, que es lo que manda.
@@ -700,6 +749,10 @@ async function moverEntreBodegas({ clinicId, userId, fromWarehouse, toWarehouse,
     const { product, quantity: qty } = linea;
     const prod = await Product.findOne({ _id: product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(clinicId) }).session(session);
     if (!prod) throw Object.assign(new Error('Producto no encontrado'), { status: 404 });
+    // Un compuesto no tiene stock propio (sale de su producto base por su composición fija).
+    if (prod.isComposite) {
+      throw Object.assign(new Error(`"${prod.name}" es un producto compuesto: no tiene stock propio. Traslada su producto base.`), { status: 400 });
+    }
 
     // Capas vivas en la bodega de origen, en orden FIFO.
     const layers = await InventoryLayer.find({
@@ -1639,49 +1692,82 @@ exports.confirmCount = async (req, res) => {
       if (!wh) throw Object.assign(new Error('La bodega de la toma ya no existe'), { status: 400 });
       const costCenter = wh.costCenter || null;
 
+      /**
+       * EN BLOQUE (nov-2026). Antes cada producto con diferencia hacía 6–8 viajes a la base
+       * EN SERIE (mover capas, saldo de la bodega, saldo global, dos updates del producto y el
+       * movimiento). La TF-00001 tenía 103 diferencias: ~800 viajes dentro de UNA transacción,
+       * que MongoDB corta a los 60 s y reintenta — el botón se quedaba en «Ajustando…» para
+       * siempre y no se guardaba nada. Ahora: UNA lectura de las capas vivas de esos productos,
+       * el FIFO se calcula en memoria y se escribe todo agrupado (insertMany / bulkWrite).
+       * Mismas reglas que antes: sobrante = capa nueva en SU bodega al costo del snapshot;
+       * faltante = consume FIFO de SU bodega y se valora al costo real de lo que sale.
+       */
+      const conDiferencia = pc.items
+        .map((it) => ({ it, diff: kardex.round4((it.countedQty || 0) - (it.systemQty || 0)) }))
+        .filter((x) => Math.abs(x.diff) >= 0.00001);
+      const ajustes = conDiferencia.length;
       let positive = 0;
       let negative = 0;
-      let ajustes = 0;
-      for (const it of pc.items) {
-        const diff = kardex.round4((it.countedQty || 0) - (it.systemQty || 0));
-        if (Math.abs(diff) < 0.00001) continue;
-        ajustes += 1;
+      const productos = [...new Set(conDiferencia.map((x) => String(x.it.product)))];
+      // Capas vivas de esos productos en esta sucursal (todas las bodegas: el costo promedio
+      // global sale de aquí), en orden FIFO.
+      const capas = productos.length
+        ? await InventoryLayer.find({ clinic: req.clinicId, product: { $in: productos }, qtyRemaining: { $gt: 0 } })
+          .sort({ date: 1, createdAt: 1 }).session(session).lean()
+        : [];
+      const capasDe = new Map();
+      for (const l of capas) {
+        const k = String(l.product);
+        if (!capasDe.has(k)) capasDe.set(k, []);
+        capasDe.get(k).push(l);
+      }
+      const bodegaId = String(pc.warehouse);
+      const tocadas = new Map();   // _id → capa modificada
+      const nuevasCapas = [];
+      const movimientos = [];
+
+      for (const { it, diff } of conDiferencia) {
+        const pid = String(it.product);
+        const lista = capasDe.get(pid) || [];
         let layerConsumption = [];
         let costoReal = kardex.round4(it.unitCost || 0);
         let valor;
 
         if (diff > 0) {
-          // Sobrante: entra EN SU BODEGA, al costo del snapshot (el más reciente conocido).
-          await kardex.receiveStock({
-            clinicId: req.clinicId, product: it.product, warehouse: pc.warehouse,
-            quantity: diff, unitCost: costoReal, date,
-            sourceModel: 'PhysicalCount', sourceRef: pc._id, userId: req.user._id,
-          }, session);
+          const capa = {
+            _id: new mongoose.Types.ObjectId(),
+            clinic: req.clinicId, product: it.product, warehouse: pc.warehouse, costCenter: null,
+            lot: '', expiryDate: null, qtyInitial: diff, qtyRemaining: diff,
+            unitCost: kardex.round4(Math.max(0, costoReal)), date,
+            sourceModel: 'PhysicalCount', sourceRef: pc._id, createdBy: req.user._id,
+          };
+          nuevasCapas.push(capa);
+          lista.push(capa);
+          capasDe.set(pid, lista);
           valor = kardex.round2(diff * costoReal);
           positive += valor;
         } else {
-          // Faltante: consume capas FIFO DE SU BODEGA y se valora al costo REAL que sale.
-          const issue = await kardex.issueStock({
-            clinicId: req.clinicId, product: it.product, warehouse: pc.warehouse,
-            quantity: Math.abs(diff), allowNegative: true,
-          }, session);
-          layerConsumption = issue.consumption.map((c) => ({ layer: c.layerId, qty: c.qty, unitCost: c.unitCost }));
-          valor = kardex.round2(issue.totalCost);
+          const enLaBodega = lista.filter((l) => String(l.warehouse) === bodegaId && l.qtyRemaining > 0);
+          const { plan, totalCost } = kardex.planConsumption(enLaBodega, Math.abs(diff));
+          const porId = new Map(enLaBodega.map((l) => [String(l._id), l]));
+          for (const p of plan) {
+            const l = porId.get(String(p.layerId));
+            if (!l) continue;
+            l.qtyRemaining = kardex.round4(l.qtyRemaining - p.qty);
+            if (l.qtyRemaining <= 0.00001) { l.qtyRemaining = 0; l.exhausted = true; }
+            tocadas.set(String(l._id), l);
+          }
+          layerConsumption = plan.map((c) => ({ layer: c.layerId, qty: c.qty, unitCost: c.unitCost }));
+          valor = kardex.round2(totalCost);
           if (valor > 0) costoReal = kardex.round4(valor / Math.abs(diff));
           negative += valor;
         }
 
         // Existencias de la bodega DESPUÉS del ajuste (de las capas, no del stock global).
-        const enBodega = await kardex.currentStock({
-          clinicId: req.clinicId, product: it.product, warehouse: pc.warehouse,
-        }, session);
-        // `Product.stock` es el agregado global de apoyo: se mantiene coherente, pero NO es la
-        // fuente de la decisión por bodega.
-        await Product.updateOne({ _id: it.product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) }, { $inc: { stock: diff } }, { session });
-        const global = await kardex.currentStock({ clinicId: req.clinicId, product: it.product }, session);
-        await Product.updateOne({ _id: it.product, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) }, { $set: { averageCost: global.averageCost } }, { session });
-
-        await InventoryMovement.create([{
+        const saldoBodega = lista
+          .filter((l) => String(l.warehouse) === bodegaId && l.qtyRemaining > 0)
+          .reduce((s, l) => kardex.round4(s + l.qtyRemaining), 0);
+        movimientos.push({
           clinic: req.clinicId,
           product: it.product,
           type: diff > 0 ? 'entrada' : 'salida',
@@ -1692,18 +1778,44 @@ exports.confirmCount = async (req, res) => {
           quantity: Math.abs(diff),
           unitCost: costoReal,
           totalCost: kardex.round2(valor),
-          balanceAfter: enBodega.qty,
+          balanceAfter: saldoBodega,
           layerConsumption,
           reason: 'Ajuste por toma física',
           reference: pc.code,
           sourceModel: 'PhysicalCount',
           sourceRef: pc._id,
           createdBy: req.user._id,
-        }], { session });
+        });
 
         it.difference = diff;
         it.unitCost = costoReal;
         it.adjustmentValue = kardex.round2(diff > 0 ? valor : -valor);
+      }
+
+      if (tocadas.size) {
+        await InventoryLayer.bulkWrite([...tocadas.values()].map((l) => ({
+          updateOne: { filter: { _id: l._id }, update: { $set: { qtyRemaining: l.qtyRemaining, exhausted: !!l.exhausted } } },
+        })), { session });
+      }
+      if (nuevasCapas.length) await InventoryLayer.insertMany(nuevasCapas, { session });
+      if (movimientos.length) await InventoryMovement.insertMany(movimientos, { session });
+      // `Product.stock` es el agregado global de apoyo (se mantiene coherente, pero NO decide por
+      // bodega) y el costo promedio sale de las capas vivas de TODAS las bodegas tras el ajuste.
+      if (productos.length) {
+        const deltaDe = new Map();
+        for (const { it, diff } of conDiferencia) deltaDe.set(String(it.product), kardex.round4((deltaDe.get(String(it.product)) || 0) + diff));
+        const filtroCat = require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId);
+        await Product.bulkWrite(productos.map((pid) => {
+          const vivas = (capasDe.get(pid) || []).filter((l) => l.qtyRemaining > 0);
+          const qty = vivas.reduce((s, l) => kardex.round4(s + l.qtyRemaining), 0);
+          const value = vivas.reduce((s, l) => kardex.round2(s + l.qtyRemaining * l.unitCost), 0);
+          return {
+            updateOne: {
+              filter: { _id: pid, clinic: filtroCat },
+              update: { $inc: { stock: deltaDe.get(pid) || 0 }, $set: { averageCost: qty > 0 ? kardex.round4(value / qty) : 0 } },
+            },
+          };
+        }), { session });
       }
 
       if (!ajustes) {

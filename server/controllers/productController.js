@@ -616,6 +616,12 @@ exports.createMovement = async (req, res) => {
     if (!qty || qty <= 0) return res.status(400).json({ message: 'Cantidad inválida' });
     if (!['entrada', 'salida', 'ajuste'].includes(type)) return res.status(400).json({ message: 'Tipo inválido' });
     const wh = warehouse || null;
+    // Una bodega INACTIVA no admite movimientos nuevos (nov-2026, como en Contífico).
+    if (wh) {
+      const bodega = await require('../models/Warehouse').findById(wh).select('name active').lean();
+      if (!bodega) return res.status(400).json({ message: 'La bodega seleccionada no existe' });
+      if (bodega.active === false) return res.status(400).json({ message: `La bodega "${bodega.name}" está inactiva: no se pueden registrar movimientos en ella.` });
+    }
 
     const movId = await runInTransaction(async (session) => {
       const product = await Product.findOne({ _id: productId, clinic: require('../utils/catalogoEmpresa').filtroCatalogo(req.clinicId) }).session(session);

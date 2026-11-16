@@ -16,6 +16,7 @@ const ctrl = require('../controllers/inventoryAdvancedController');
 const svc = require('../services/kardexService');
 const kardex = require('../utils/kardex');
 const Warehouse = require('../models/Warehouse');
+const productCtrl = require('../controllers/productController');
 const CostCenter = require('../models/CostCenter');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
@@ -361,6 +362,90 @@ test('D5) diferencia NEGATIVA: consume FIFO de SU bodega y se valora al costo re
   assert.equal(String(mov.warehouse), String(A._id));
   const entry = await JournalEntry.findById(mov.journalEntry);
   assert.equal(entry.totalDebit, 30, 'la merma va al gasto por su costo real');
+});
+
+/**
+ * D17 (nov-2026): una toma con MUCHAS diferencias (la TF-00001 real tenía 103) se confirma de
+ * una vez. Antes eran ~8 viajes a la base por producto en serie dentro de una transacción que
+ * MongoDB corta a los 60 s: el botón se quedaba en «Ajustando…». Ahora va en bloque; aquí se
+ * comprueba que el resultado es el mismo producto a producto.
+ */
+test('D17) toma con muchas diferencias: cada producto queda con lo contado en SU bodega', async () => {
+  const { clinicId, userId, A, B } = await tomaSetup();
+  const N = 60;
+  const prods = [];
+  for (let i = 0; i < N; i++) {
+    const p = await H.makeProduct(clinicId, { code: `M${i}`, name: `Masivo ${i}` });
+    await entrada(clinicId, userId, { product: p, warehouse: A, qty: 5, cost: 2, date: d('2026-06-01') });
+    await entrada(clinicId, userId, { product: p, warehouse: A, qty: 5, cost: 4, date: d('2026-06-02') });
+    await entrada(clinicId, userId, { product: p, warehouse: B, qty: 3, cost: 9, date: d('2026-06-02') });
+    prods.push(p);
+  }
+  const pc = ok(await iniciar(clinicId, userId, { warehouse: String(A._id) }));
+  // Pares: sobra 3 (13); impares: faltan 7 (3).
+  const contado = (i) => (i % 2 === 0 ? 13 : 3);
+  ok(await run(ctrl.updateCount, H.mockReq(clinicId, userId, {
+    items: prods.map((p, i) => ({ product: String(p._id), countedQty: contado(i) })),
+  }, { params: { id: String(pc._id) } })));
+  const antes = new Map((await Product.find({ _id: { $in: prods.map((p) => p._id) } }).lean()).map((p) => [String(p._id), p.stock]));
+
+  ok(await confirmar(clinicId, userId, pc._id, { date: '2026-06-15' }));
+
+  for (let i = 0; i < N; i++) {
+    const p = prods[i];
+    const enA = await kardex.currentStock({ clinicId, product: p._id, warehouse: A._id });
+    const enB = await kardex.currentStock({ clinicId, product: p._id, warehouse: B._id });
+    const global = await kardex.currentStock({ clinicId, product: p._id });
+    const prod = await Product.findById(p._id).lean();
+    assert.equal(enA.qty, contado(i), `${p.name}: la bodega queda con lo contado`);
+    assert.equal(enB.qty, 3, `${p.name}: la otra bodega no se toca`);
+    assert.equal(prod.stock, antes.get(String(p._id)) + (contado(i) - 10), `${p.name}: Product.stock se mueve por la diferencia`);
+    assert.equal(prod.averageCost, global.averageCost, `${p.name}: costo promedio = el de las capas vivas`);
+    const mov = await InventoryMovement.findOne({ clinic: clinicId, sourceModel: 'PhysicalCount', product: p._id }).lean();
+    assert.equal(mov.balanceAfter, contado(i), `${p.name}: el movimiento guarda el saldo de la bodega`);
+    // Faltante de 7 en A: FIFO 5×2 + 2×4 = 18. Sobrante de 3 al costo del snapshot.
+    if (i % 2 === 1) assert.equal(mov.totalCost, 18, `${p.name}: faltante al costo real FIFO`);
+  }
+  assert.equal(await InventoryMovement.countDocuments({ clinic: clinicId, sourceModel: 'PhysicalCount' }), N);
+  assert.equal((await PhysicalCount.findById(pc._id)).status, 'CONFIRMADO');
+  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
+});
+
+test('D18) inactivar bodega: no con stock ni la principal; inactiva no admite traslados ni movimientos', async () => {
+  const { clinicId, userId, A, B, prod } = await tomaSetup();
+  const setActive = (w, active) => run(ctrl.setWarehouseActive, H.mockReq(clinicId, userId, { active }, { params: { id: String(w._id) } }));
+  await Warehouse.updateOne({ _id: A._id }, { $set: { isMain: true } });
+  await entrada(clinicId, userId, { product: prod, warehouse: B, qty: 4, cost: 5, date: d('2026-06-01') });
+
+  const principal = await setActive(A, false);
+  assert.equal(principal.statusCode, 400);
+  assert.match(principal.payload.message, /principal/);
+  const conStock = await setActive(B, false);
+  assert.equal(conStock.statusCode, 400);
+  assert.match(conStock.payload.message, /existencias de 1 producto/);
+
+  // Vaciada (traslado a A), ya se puede inactivar.
+  ok(await run(ctrl.transferStock, H.mockReq(clinicId, userId, {
+    fromWarehouse: String(B._id), toWarehouse: String(A._id), items: [{ product: String(prod._id), quantity: 4 }],
+  })));
+  const ya = await setActive(B, false);
+  assert.equal(ya.statusCode, 200, JSON.stringify(ya.payload));
+  assert.equal((await Warehouse.findById(B._id)).active, false);
+
+  // Inactiva: ni traslados hacia ella ni movimientos manuales.
+  const tr = await run(ctrl.transferStock, H.mockReq(clinicId, userId, {
+    fromWarehouse: String(A._id), toWarehouse: String(B._id), items: [{ product: String(prod._id), quantity: 1 }],
+  }));
+  assert.equal(tr.statusCode, 400);
+  assert.match(tr.payload.message, /inactiva/);
+  const mov = await run(productCtrl.createMovement, H.mockReq(clinicId, userId, {
+    product: String(prod._id), type: 'entrada', quantity: 1, unitCost: 5, warehouse: String(B._id),
+  }));
+  assert.equal(mov.statusCode, 400);
+  assert.match(mov.payload.message, /inactiva/);
+
+  // Y se reactiva sin condiciones.
+  assert.equal((await setActive(B, true)).statusCode, 200);
 });
 
 test('D6) doble confirmación bloqueada y período cerrado respetado', async () => {

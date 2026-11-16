@@ -11,6 +11,13 @@ import DateInput from './DateInput';
 const fmt = (n) => Number(n || 0).toLocaleString('es-EC', { minimumFractionDigits: 0, maximumFractionDigits: 4 });
 const hoy = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' });
 const fechaCorta = (d) => (d ? new Date(d).toLocaleDateString('es-EC', { timeZone: 'America/Guayaquil', day: '2-digit', month: '2-digit', year: 'numeric' }) : '');
+/**
+ * Solo se trasladan productos con stock FÍSICO propio (nov-2026). Un COMPUESTO (p. ej. «ACIDO
+ * ALPHALIPOICO 10ML», que sale del frasco de 50 ml por su composición fija) no tiene capas
+ * propias: salía en el buscador con «Sistema 0» y «sin contar» en todas las bodegas. Lo que se
+ * traslada es su producto base. Tampoco servicios, ilimitados ni inhabilitados.
+ */
+const esTrasladable = (p) => !p.isComposite && !p.unlimited && !p.disabled && !['servicio', 'programa'].includes(p.category);
 const nuevaLinea = () => ({ key: `l${Math.random().toString(36).slice(2, 9)}`, product: '', quantity: '' });
 
 /**
@@ -171,6 +178,7 @@ export default function TransferStockModal({
                   <div className="col-span-12 sm:col-span-7">
                     <ProductSelect
                       products={products}
+                      filter={esTrasladable}
                       value={l.product}
                       onChange={(v) => setLinea(l.key, 'product', v)}
                       placeholder="Buscar producto…"

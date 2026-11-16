@@ -124,6 +124,23 @@ export default function Warehouses() {
       toast.error(/E11000|duplicate key/i.test(msg) ? 'Ya existe una bodega con ese código.' : msg);
     }
   };
+  /**
+   * INACTIVAR / ACTIVAR (nov-2026, como en Contífico). Inactiva = no admite compras, ventas,
+   * traslados, movimientos ni tomas nuevas, pero su historia sigue en el kardex. El servidor
+   * no la deja inactivar si aún tiene stock, es la principal o la usan puntos de emisión.
+   */
+  const toggleActive = async (w) => {
+    const activar = w.active === false;
+    if (!confirm(activar
+      ? `¿Activar la bodega ${w.code} — ${w.name}?`
+      : `¿Inactivar la bodega ${w.code} — ${w.name}?\n\nNo se podrán registrar compras, ventas, traslados ni tomas físicas en ella. Su historial se conserva.`)) return;
+    try {
+      await api.post(`/inventory-advanced/warehouses/${w._id}/active`, { active: activar });
+      toast.success(activar ? 'Bodega activada' : 'Bodega inactivada');
+      loadWarehouses();
+    } catch (e) { toast.error(e.response?.data?.message || 'No se pudo cambiar el estado', { duration: 8000 }); }
+  };
+
   const remove = async (w) => {
     if (!confirm('¿Eliminar la bodega? (las existencias quedarán sin bodega asignada)')) return;
     try { await api.delete(`/inventory-advanced/warehouses/${w._id}`); loadWarehouses(); }
@@ -189,8 +206,15 @@ export default function Warehouses() {
                         isMain: !!w.isMain, active: w.active !== false,
                       });
                       setShow(true);
-                    }} className="text-blue-600"><HiOutlinePencilSquare className="w-4 h-4" /></button>
-                    <button onClick={() => remove(w)} className="text-rose-600"><HiOutlineTrash className="w-4 h-4" /></button>
+                    }} className="text-blue-600" title="Editar"><HiOutlinePencilSquare className="w-4 h-4" /></button>
+                    <button
+                      onClick={() => toggleActive(w)}
+                      title={w.active === false ? 'Activar la bodega' : 'Inactivar la bodega'}
+                      className={`text-xs font-medium px-2 py-0.5 rounded-lg border ${w.active === false ? 'text-emerald-700 border-emerald-200 bg-emerald-50' : 'text-amber-700 border-amber-200 bg-amber-50'}`}
+                    >
+                      {w.active === false ? 'Activar' : 'Inactivar'}
+                    </button>
+                    <button onClick={() => remove(w)} className="text-rose-600" title="Eliminar"><HiOutlineTrash className="w-4 h-4" /></button>
                   </td>
                 </tr>
               ))}
@@ -418,7 +442,7 @@ export default function Warehouses() {
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isMain} onChange={(e) => setForm({ ...form, isMain: e.target.checked })} /> Principal (bodega por defecto al registrar movimientos)</label>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.active !== false} onChange={(e) => setForm({ ...form, active: e.target.checked })} />
-            Bodega activa (una bodega inactiva no admite tomas físicas nuevas)
+            Bodega activa (una inactiva no admite compras, ventas, traslados, movimientos ni tomas físicas nuevas)
           </label>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>
