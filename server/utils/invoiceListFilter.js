@@ -10,6 +10,7 @@
  *     existieran los puntos (sin enlace), por su establecimiento y punto («001-002»).
  *   · `q`: número de factura (completo «001-002-000003344» o solo el secuencial
  *     «3344»), cliente (por palabras, sin tildes) o su identificación.
+ *   · `product` (id de producto/servicio): facturas cuya VENTA lleva ese ítem.
  */
 const mongoose = require('mongoose');
 const PuntoEmision = require('../models/PuntoEmision');
@@ -33,6 +34,17 @@ async function invoiceListFilter(query = {}) {
     and.push({ createdAt: { ...(desde ? { $gte: desde } : {}), ...(hasta ? { $lte: hasta } : {}) } });
   }
   if (query.estado) and.push({ estado: String(query.estado) });
+
+  if (query.product) {
+    if (!mongoose.Types.ObjectId.isValid(query.product)) {
+      and.push({ _id: null });
+    } else {
+      // La factura no guarda el id del producto (solo el código en su XML): se va por la venta.
+      const Sale = require('../models/Sale');
+      const ventas = await Sale.distinct('_id', { 'items.product': new mongoose.Types.ObjectId(query.product) });
+      and.push({ sale: { $in: ventas } });
+    }
+  }
 
   if (query.puntoEmision) {
     if (!mongoose.Types.ObjectId.isValid(query.puntoEmision)) {

@@ -182,6 +182,84 @@ exports.getSale = async (req, res) => {
 };
 
 /**
+ * DETALLE COMPLETO de una venta y su factura (página «Detalle de factura», nov-2026).
+ *
+ * Contabilidad necesitaba ver de una vez QUÉ se vendió, CÓMO se pagó (cada método del pago
+ * dividido, con el banco, la tarjeta, el lote/voucher…), la factura con su bitácora del SRI,
+ * los cobros posteriores de un saldo a crédito y las notas de crédito. Antes eso estaba
+ * repartido entre la pestaña Ventas y el modal de Facturas.
+ *
+ * `:id` puede ser el de la VENTA o el de la FACTURA (los enlaces de Facturas, reportes y
+ * libro mayor apuntan a uno u otro): si no es una venta, se busca la factura y se usa su venta.
+ */
+exports.getSaleDetail = async (req, res) => {
+  try {
+    const Invoice = require('../models/Invoice');
+    const Payment = require('../models/Payment');
+    const CreditDebitNote = require('../models/CreditDebitNote');
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ message: 'Venta no encontrada' });
+
+    let saleId = req.params.id;
+    let facturaSuelta = null;
+    if (!(await Sale.exists({ _id: saleId, ...scopedDocuments(req) }))) {
+      facturaSuelta = await Invoice.findOne({ _id: req.params.id, ...scopedDocuments(req) })
+        .select('-xmlFirmado -xmlAutorizado -xmlAnulacion').populate('puntoEmision', 'establecimiento codigo nombre').lean();
+      if (!facturaSuelta) return res.status(404).json({ message: 'Venta o factura no encontrada' });
+      saleId = facturaSuelta.sale;
+    }
+
+    const sale = saleId ? await Sale.findOne({ _id: saleId })
+      .populate('patient', 'firstName lastName cedula address phone email')
+      .populate('items.product', 'name code category categoria')
+      .populate('items.warehouse', 'name')
+      .populate('items.linkedItems.warehouse', 'name')
+      .populate('createdBy', 'name').populate('cashier', 'name').populate('callCenter', 'name')
+      .populate('doctor', 'name').populate('nurse', 'name').populate('recommendedBy', 'name')
+      .populate('bankAccount', 'name bank accountNumber').populate('creditCard', 'name brand type')
+      .populate('payments.bankAccount', 'name bank accountNumber')
+      .populate('payments.creditCard', 'name brand type')
+      .populate('warehouse', 'name').populate('costCenter', 'code name')
+      .populate('puntoEmision', 'establecimiento codigo nombre')
+      .populate('appointment', 'date startTime status')
+      .lean() : null;
+
+    // Todas las facturas de la venta (una no autorizada y su reemisión, por ejemplo).
+    const facturas = sale
+      ? await Invoice.find({ sale: sale._id }).select('-xmlFirmado -xmlAutorizado -xmlAnulacion')
+        .populate('puntoEmision', 'establecimiento codigo nombre').populate('anuladaBy', 'name')
+        .sort({ createdAt: 1 }).lean()
+      : [facturaSuelta];
+    const invoiceIds = facturas.map((f) => f._id);
+
+    // Cobros posteriores (saldo a crédito) aplicados a la venta o a su factura.
+    const cobros = sale || invoiceIds.length ? await Payment.find({
+      type: 'COBRO',
+      applications: { $elemMatch: { $or: [
+        ...(sale ? [{ docModel: 'Sale', docRef: sale._id }] : []),
+        { docModel: 'Invoice', docRef: { $in: invoiceIds } },
+      ] } },
+    }).populate('bankAccount', 'name bank accountNumber').populate('createdBy', 'name').sort({ date: 1 }).lean() : [];
+    const ids = new Set([String(sale?._id || ''), ...invoiceIds.map(String)]);
+    const cobrosVista = cobros.map((p) => ({
+      _id: p._id, number: p.number, date: p.date, method: p.method, status: p.status,
+      bankAccount: p.bankAccount, reference: p.reference, checkNumber: p.checkNumber,
+      createdBy: p.createdBy?.name || '', total: p.total,
+      amount: (p.applications || []).filter((a) => ids.has(String(a.docRef))).reduce((s, a) => s + (Number(a.amount) || 0), 0),
+    }));
+
+    const notas = invoiceIds.length ? await CreditDebitNote.find({ refModel: 'Invoice', refDoc: { $in: invoiceIds } })
+      .select('kind direction estab ptoEmi secuencial serie fechaEmision motivo subtotal iva total estado status refDoc')
+      .sort({ fechaEmision: 1 }).lean() : [];
+
+    res.json({ sale, invoices: facturas, cobros: cobrosVista, notas });
+  } catch (error) {
+    console.error('[sales/detalle]', error);
+    res.status(500).json({ message: 'Error al obtener el detalle de la venta' });
+  }
+};
+
+/**
  * Crea una venta. Valida stock por ítem (no permite si stock insuficiente para
  * productos no-servicio) y descuenta de forma atómica usando $inc condicional.
  */

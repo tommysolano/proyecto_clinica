@@ -3,8 +3,8 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineCube, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineArrowsRightLeft, HiOutlineChevronDown, HiOutlineChevronRight, HiOutlineDocumentText, HiOutlineMagnifyingGlass } from 'react-icons/hi2';
-import { fmt } from './_utils';
+import { HiOutlinePlus, HiOutlineCube, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineArrowsRightLeft, HiOutlineDocumentText, HiOutlineMagnifyingGlass } from 'react-icons/hi2';
+import { fmt, fmtDate } from './_utils';
 import AccountSelect from '../../components/AccountSelect';
 import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import TransferStockModal from '../../components/TransferStockModal';
@@ -26,7 +26,8 @@ export default function Warehouses() {
   const [transfers, setTransfers] = useState([]);
   const [products, setProducts] = useState([]);
   const [loadingStock, setLoadingStock] = useState(false);
-  const [expanded, setExpanded] = useState({});
+  // Lo último CONTADO de cada producto en cada bodega (toma física): [{ product, warehouse, qty, date, code }]
+  const [fisico, setFisico] = useState([]);
   // Existencias: '' = todas las bodegas (vista por producto); un id = solo esa bodega.
   const [bodegaSel, setBodegaSel] = useState('');
   const [busq, setBusq] = useState('');
@@ -53,7 +54,14 @@ export default function Warehouses() {
   };
   const loadStock = async () => {
     setLoadingStock(true);
-    try { const r = await api.get('/inventory-advanced/warehouse-stock'); setStock(r.data || []); }
+    try {
+      const [r, f] = await Promise.all([
+        api.get('/inventory-advanced/warehouse-stock'),
+        api.get('/inventory-advanced/physical-stock').catch(() => ({ data: [] })),
+      ]);
+      setStock(r.data || []);
+      setFisico(f.data || []);
+    }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
     finally { setLoadingStock(false); }
   };
@@ -73,38 +81,60 @@ export default function Warehouses() {
     if (tab === 'transfers') { loadStock(); loadTransfers(); }
   }, [tab]);
 
-  /** Totales POR BODEGA: unidades, valor y cuántos productos tienen existencias en ella. */
+  /** Totales POR BODEGA: unidades y cuántos productos tienen existencias en ella. */
   const resumenBodegas = useMemo(() => {
     const acc = new Map();
-    list.filter((w) => w.active !== false).forEach((w) => acc.set(String(w._id), { warehouse: w, qty: 0, value: 0, productos: 0 }));
+    list.filter((w) => w.active !== false).forEach((w) => acc.set(String(w._id), { warehouse: w, qty: 0, productos: 0 }));
     for (const s of stock) {
       for (const w of s.warehouses) {
         const k = claveBodega(w.warehouse);
-        if (!acc.has(k)) acc.set(k, { warehouse: w.warehouse, qty: 0, value: 0, productos: 0 });
+        if (!acc.has(k)) acc.set(k, { warehouse: w.warehouse, qty: 0, productos: 0 });
         const r = acc.get(k);
         r.qty += Number(w.qty) || 0;
-        r.value += Number(w.value) || 0;
         if (Number(w.qty)) r.productos += 1;
       }
     }
     return [...acc.entries()]
-      .map(([key, r]) => ({ key, ...r, qty: +r.qty.toFixed(4), value: +r.value.toFixed(2) }))
+      .map(([key, r]) => ({ key, ...r, qty: +r.qty.toFixed(4) }))
       .sort((a, b) => (b.warehouse?.isMain ? 1 : 0) - (a.warehouse?.isMain ? 1 : 0)
         || String(a.warehouse?.code || '~').localeCompare(String(b.warehouse?.code || '~')));
   }, [list, stock]);
 
-  const stockVisible = useMemo(() => {
+  /**
+   * MATRIZ DE EXISTENCIAS (nov-2026, a pedido de contabilidad): una fila por producto con TODO a
+   * la vista, sin desplegables — stock del sistema y de la toma física en total y por cada
+   * bodega. «Física» es lo último que se contó de ese producto en esa bodega (su toma más
+   * reciente); el total físico suma solo las bodegas donde se contó.
+   */
+  const fisicoPorClave = useMemo(() => {
+    const m = new Map();
+    for (const f of fisico) m.set(`${f.product}|${f.warehouse}`, f);
+    return m;
+  }, [fisico]);
+  // Columnas: la bodega elegida, o todas las del resumen (activas + las que aún tienen stock).
+  const columnas = useMemo(() => (bodegaSel ? resumenBodegas.filter((r) => r.key === bodegaSel) : resumenBodegas), [resumenBodegas, bodegaSel]);
+  const filas = useMemo(() => {
     const t = busq.trim().toLowerCase();
-    return stock.filter((s) => !t || `${s.product.name || ''} ${s.product.code || ''} ${s.product.barcode || ''}`.toLowerCase().includes(t));
-  }, [stock, busq]);
-  // Filas de UNA bodega: TODOS los productos inventariables, con 0 los que no tienen
-  // existencias en ella (los usuarios necesitan verlos para saber que se acabaron).
-  const filasBodega = useMemo(() => (bodegaSel
-    ? stockVisible.map((s) => ({
-      product: s.product,
-      linea: s.warehouses.find((w) => claveBodega(w.warehouse) === bodegaSel) || { qty: 0, value: 0 },
-    }))
-    : []), [stockVisible, bodegaSel]);
+    return stock
+      .filter((s) => !t || `${s.product.name || ''} ${s.product.code || ''} ${s.product.barcode || ''}`.toLowerCase().includes(t))
+      .map((s) => {
+        const porBodega = columnas.map((c) => {
+          const sis = s.warehouses.find((w) => claveBodega(w.warehouse) === c.key);
+          const fis = c.key === SIN_BODEGA ? null : fisicoPorClave.get(`${s.product._id}|${c.key}`) || null;
+          return { key: c.key, sistema: Number(sis?.qty) || 0, fisico: fis };
+        });
+        const contadas = porBodega.filter((b) => b.fisico);
+        return {
+          product: s.product,
+          porBodega,
+          sistema: +porBodega.reduce((a, b) => a + b.sistema, 0).toFixed(4),
+          fisico: contadas.length ? +contadas.reduce((a, b) => a + (Number(b.fisico.qty) || 0), 0).toFixed(4) : null,
+          contadas: contadas.length,
+          // El total físico se compara con el sistema de las MISMAS bodegas contadas (no con todo).
+          sistemaContadas: +contadas.reduce((a, b) => a + b.sistema, 0).toFixed(4),
+        };
+      });
+  }, [stock, busq, columnas, fisicoPorClave]);
 
   // --- CRUD bodega ---
   const submit = async (e) => {
@@ -231,7 +261,7 @@ export default function Warehouses() {
             <p className={`text-[11px] uppercase m-0 ${bodegaSel === '' ? 'text-emerald-100' : 'text-slate-500'}`}>Todas las bodegas</p>
             <p className="text-xl font-bold font-mono m-0">{fmt(resumenBodegas.reduce((s, r) => s + r.qty, 0))}</p>
             <p className={`text-[11px] m-0 ${bodegaSel === '' ? 'text-emerald-100' : 'text-slate-500'}`}>
-              unidades · ${fmt(resumenBodegas.reduce((s, r) => s + r.value, 0))} · {stock.length} productos
+              unidades · {stock.length} productos
             </p>
           </button>
           {resumenBodegas.map((r) => {
@@ -245,7 +275,7 @@ export default function Warehouses() {
                     {r.warehouse?.isMain && <span className="ml-1 text-emerald-700 font-semibold">(principal)</span>}
                   </p>
                   <p className={`text-xl font-bold font-mono m-0 ${r.qty < 0 ? 'text-rose-700' : 'text-slate-800'}`}>{fmt(r.qty)}</p>
-                  <p className="text-[11px] text-slate-500 m-0">unidades · ${fmt(r.value)} · {r.productos} productos con stock</p>
+                  <p className="text-[11px] text-slate-500 m-0">unidades · {r.productos} productos con stock</p>
                 </button>
                 {r.warehouse?._id && (
                   <button onClick={() => { setBodegaToma(String(r.warehouse._id)); setTab('count'); }}
@@ -261,9 +291,6 @@ export default function Warehouses() {
 
       {tab === 'stock' && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-          <p className="px-3 py-2 text-xs text-amber-800 bg-amber-50 border-b border-amber-100">
-            El valor es estimado con el costo registrado en nuestro sistema. El stock por bodega de Contífico informa cantidades, pero no costos por bodega.
-          </p>
           <div className="px-3 py-2 border-b border-slate-100 flex flex-wrap items-center gap-2">
             <div className="flex-1 min-w-[200px] flex items-center gap-2 border border-slate-200 rounded-lg px-3 py-1.5 bg-white focus-within:ring-2 focus-within:ring-emerald-500">
               <HiOutlineMagnifyingGlass className="w-4 h-4 text-slate-400 shrink-0" />
@@ -271,9 +298,7 @@ export default function Warehouses() {
                 placeholder="Buscar ítem por nombre, código o código de barras…"
                 className="flex-1 min-w-0 border-none outline-none text-sm bg-transparent" />
             </div>
-            <span className="text-xs text-slate-500">
-              {bodegaSel ? filasBodega.length : stockVisible.length} ítem(s)
-            </span>
+            <span className="text-xs text-slate-500">{filas.length} ítem(s)</span>
             {bodegaSel && (
               <span className="text-xs text-slate-600">
                 Mostrando solo: <b>{resumenBodegas.find((r) => r.key === bodegaSel)?.warehouse?.name || 'Sin bodega'}</b>
@@ -281,78 +306,71 @@ export default function Warehouses() {
               </span>
             )}
           </div>
-          {bodegaSel ? (
-            <table className="tbl">
-              <thead className="bg-emerald-50 text-xs uppercase"><tr>
-                <th className="px-3 py-2 text-left">Código</th>
-                <th className="px-3 py-2 text-left">Producto</th>
-                <th className="px-3 py-2 text-right">Stock en la bodega</th>
-                <th className="px-3 py-2 text-right">Valor estimado</th>
-              </tr></thead>
+          <p className="px-3 py-1.5 text-[11px] text-slate-500 border-b border-slate-100">
+            <b>Sistema</b>: existencias del kardex hoy. <b>Física</b>: lo último que se contó en una toma física
+            (pasa el cursor para ver cuál y cuándo); <span className="text-amber-700 font-medium">en ámbar</span> si no coincide con el sistema; «—» si nunca se contó.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="tbl text-sm min-w-max">
+              <thead className="bg-emerald-50 text-xs uppercase text-emerald-800">
+                <tr>
+                  <th rowSpan={2} className="px-3 py-2 text-left sticky left-0 z-10 bg-emerald-50 min-w-[220px] border-r border-emerald-100">Producto</th>
+                  {!bodegaSel && <th colSpan={2} className="px-3 py-1.5 text-center border-r border-emerald-100">Total</th>}
+                  {columnas.map((c) => (
+                    <th key={c.key} colSpan={2} className="px-3 py-1.5 text-center border-r border-emerald-100 whitespace-nowrap normal-case font-semibold" title={c.warehouse?.name || 'Sin bodega'}>
+                      {c.warehouse ? <><span className="font-mono">{c.warehouse.code}</span> · {c.warehouse.name}</> : 'Sin bodega'}
+                    </th>
+                  ))}
+                </tr>
+                <tr className="text-[10px]">
+                  {[...(bodegaSel ? [] : ['total']), ...columnas.map((c) => c.key)].map((k) => (
+                    <Fragment key={k}>
+                      <th className="px-3 py-1 text-right">Sistema</th>
+                      <th className="px-3 py-1 text-right border-r border-emerald-100">Física</th>
+                    </Fragment>
+                  ))}
+                </tr>
+              </thead>
               <tbody>
-                {loadingStock && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-500">Cargando...</td></tr>}
-                {!loadingStock && filasBodega.length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-500">{busq.trim() ? 'Ningún ítem coincide con la búsqueda.' : 'No hay ítems inventariables.'}</td></tr>}
-                {filasBodega.map(({ product, linea }) => (
-                  <tr key={product._id} className="border-t hover:bg-slate-50">
-                    <td className="px-3 py-2 font-mono text-xs">{product.code}</td>
-                    <td className="px-3 py-2 font-medium">{product.name}</td>
-                    <td className={`px-3 py-2 text-right font-mono ${linea.qty < 0 ? 'text-rose-700 font-semibold' : ''}`}>{fmt(linea.qty)}</td>
-                    <td className={`px-3 py-2 text-right font-mono ${linea.value < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>${fmt(linea.value)}</td>
-                  </tr>
-                ))}
+                {loadingStock && <tr><td colSpan={99} className="px-3 py-6 text-center text-slate-500">Cargando...</td></tr>}
+                {!loadingStock && filas.length === 0 && (
+                  <tr><td colSpan={99} className="px-3 py-6 text-center text-slate-500">
+                    {busq.trim() ? 'Ningún ítem coincide con la búsqueda.' : 'No hay ítems inventariables.'}
+                  </td></tr>
+                )}
+                {!loadingStock && filas.map((f) => {
+                  const celdaFisica = (fis, sistema, extraTitle = '') => {
+                    if (fis == null) return <td className="px-3 py-2 text-right font-mono text-slate-300 border-r border-slate-100">—</td>;
+                    const qty = typeof fis === 'object' ? Number(fis.qty) || 0 : fis;
+                    const difiere = Math.abs(qty - sistema) > 0.0001;
+                    const title = typeof fis === 'object' ? `Toma ${fis.code || ''} del ${fmtDate(fis.date)}` : extraTitle;
+                    return <td title={title} className={`px-3 py-2 text-right font-mono border-r border-slate-100 ${difiere ? 'text-amber-700 font-semibold bg-amber-50/60' : 'text-slate-700'}`}>{fmt(qty)}</td>;
+                  };
+                  const celdaSistema = (q) => <td className={`px-3 py-2 text-right font-mono ${q < 0 ? 'text-rose-700 font-semibold' : q === 0 ? 'text-slate-400' : ''}`}>{fmt(q)}</td>;
+                  return (
+                    <tr key={f.product._id} className="border-t hover:bg-slate-50">
+                      <td className="px-3 py-2 sticky left-0 bg-white border-r border-slate-100 max-w-[280px]">
+                        <div className="font-medium text-slate-800 truncate" title={f.product.name}>{f.product.name}</div>
+                        <div className="text-[11px] text-slate-400 font-mono">{f.product.code}</div>
+                      </td>
+                      {!bodegaSel && (
+                        <>
+                          {celdaSistema(f.sistema)}
+                          {celdaFisica(f.fisico, f.sistemaContadas, `Suma de lo contado en ${f.contadas} bodega(s); en esas bodegas el sistema dice ${fmt(f.sistemaContadas)}`)}
+                        </>
+                      )}
+                      {f.porBodega.map((b) => (
+                        <Fragment key={b.key}>
+                          {celdaSistema(b.sistema)}
+                          {celdaFisica(b.fisico, b.sistema)}
+                        </Fragment>
+                      ))}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
-          ) : (
-          <table className="tbl">
-            <thead className="bg-emerald-50 text-xs uppercase"><tr>
-              <th className="w-8"></th>
-              <th className="px-3 py-2 text-left">Código</th>
-              <th className="px-3 py-2 text-left">Producto</th>
-              <th className="px-3 py-2 text-right">Stock total</th>
-              <th className="px-3 py-2 text-right">Valor estimado</th>
-              <th className="px-3 py-2 text-left">Bodegas</th>
-            </tr></thead>
-            <tbody>
-              {loadingStock && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-500">Cargando...</td></tr>}
-              {!loadingStock && stock.length === 0 && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-500">Aún no hay existencias con capas de inventario. Registra entradas (con bodega) en Inventario o compras.</td></tr>}
-              {stockVisible.map((s) => {
-                const isOpen = !!expanded[s.product._id];
-                return (
-                  <Fragment key={s.product._id}>
-                    <tr className="border-t hover:bg-slate-50">
-                      <td className="px-2 py-2 text-center"><button onClick={() => setExpanded({ ...expanded, [s.product._id]: !isOpen })} className="text-slate-500">{isOpen ? <HiOutlineChevronDown /> : <HiOutlineChevronRight />}</button></td>
-                      <td className="px-3 py-2 font-mono text-xs">{s.product.code}</td>
-                      <td className="px-3 py-2 font-medium">{s.product.name}</td>
-                      <td className={`px-3 py-2 text-right font-mono ${s.totalQty < 0 ? 'text-rose-700 font-semibold' : ''}`}>{fmt(s.totalQty)}</td>
-                      <td className={`px-3 py-2 text-right font-mono ${s.totalValue < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>${fmt(s.totalValue)}</td>
-                      <td className="px-3 py-2 text-xs text-slate-600">
-                        {s.warehouses.length
-                          ? s.warehouses.map((w) => `${w.warehouse?.name || 'Sin bodega'} (${fmt(w.qty)})`).join(', ')
-                          : <span className="text-slate-400">Sin existencias</span>}
-                      </td>
-                    </tr>
-                    {isOpen && (
-                      <tr className="bg-slate-50/70"><td></td><td colSpan={5} className="px-3 py-2">
-                        <table className="tbl text-xs">
-                          <thead className="text-slate-500"><tr><th className="px-2 py-1 text-left">Bodega</th><th className="px-2 py-1 text-right">Stock</th><th className="px-2 py-1 text-right">Valor estimado</th></tr></thead>
-                          <tbody>
-                            {s.warehouses.map((w, i) => (
-                              <tr key={i} className="border-t border-slate-200">
-                                <td className="px-2 py-1">{w.warehouse ? `${w.warehouse.code} - ${w.warehouse.name}` : 'Sin bodega'}</td>
-                                <td className={`px-2 py-1 text-right font-mono ${w.qty < 0 ? 'text-rose-700 font-semibold' : ''}`}>{fmt(w.qty)}</td>
-                                <td className={`px-2 py-1 text-right font-mono ${w.value < 0 ? 'text-rose-700' : ''}`}>${fmt(w.value)}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </td></tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-          )}
+          </div>
         </div>
       )}
 

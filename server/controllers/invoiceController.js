@@ -436,9 +436,6 @@ exports.bulkPdf = async (req, res) => {
   try {
     const { startDate, endDate, estado, patient, client } = req.query;
     const query = { ...scopedDocuments(req), estado: estado || 'AUTORIZADO' };
-    if (startDate && endDate) {
-      query.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999') };
-    }
     // Mismo buscador que la lista de Ventas: por palabras sueltas y sin tildes.
     if (client && String(client).trim()) {
       const porNombre = require('../utils/nameSearch').nameSearchFilter(client, ['razonSocialComprador', 'identificacionComprador']);
@@ -448,6 +445,12 @@ exports.bulkPdf = async (req, res) => {
       const saleIds = await Sale.find({ ...scopedDocuments(req), patient }).distinct('_id');
       query.sale = { $in: saleIds };
     }
+    // Desde la lista de Facturas (nov-2026): las mismas fechas (días completos en hora de
+    // Ecuador, cada una por separado), buscador, caja y producto/servicio que se ven.
+    const extra = await invoiceListFilter({
+      startDate, endDate, q: req.query.q, puntoEmision: req.query.puntoEmision, product: req.query.product,
+    });
+    if (extra.$and) query.$and = [...(query.$and || []), ...extra.$and];
     // Desde Ventas el cajero descarga solo sus facturas (lo mismo que ve en la lista).
     const delCajero = await require('../utils/soloDelCajero').filtroFacturasDelCajero(req);
     if (delCajero) query.$and = [...(query.$and || []), delCajero];

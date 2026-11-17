@@ -49,6 +49,8 @@ router.post('/counts/:id/refresh', verInventario, requireCap('inventory.view'), 
 router.get('/counts/:id/sheet.xlsx',verInventario, requireCap('inventory.view'), c.downloadCountSheet);
 router.post('/counts/:id/sheet', verInventario, requireCap('count.edit'), c.uploadMiddleware, c.uploadCountSheet);
 router.post('/counts/:id/confirm', verInventario, requireCap('count.confirm'), c.confirmCount);
+// Eliminar un BORRADOR (no movió nada todavía). Quien puede confirmar tomas, puede descartarlas.
+router.delete('/counts/:id', verInventario, requireCap('count.confirm'), c.deleteCount);
 
 // Activos fijos
 router.get('/assets', requireRole('admin', 'contabilidad'), c.listAssets);

@@ -62,6 +62,8 @@ const Inventory = pagina(() => import('./pages/Inventory'));
 const TransferRequests = pagina(() => import('./pages/TransferRequests'));
 const Sales = pagina(() => import('./pages/Sales'));
 const Invoices = pagina(() => import('./pages/Invoices'));
+const VentaDetalle = pagina(() => import('./pages/VentaDetalle'));
+const PurchaseInvoiceDetail = pagina(() => import('./pages/accounting/PurchaseInvoiceDetail'));
 const InvoicingConfig = pagina(() => import('./pages/InvoicingConfig'));
 const Users = pagina(() => import('./pages/Users'));
 const AdminConfig = pagina(() => import('./pages/AdminConfig'));
@@ -155,18 +157,32 @@ const RetentionVouchers = pagina(() => import('./pages/accounting/RetentionVouch
 const AccountingHealth = pagina(() => import('./pages/accounting/AccountingHealth'));
 const Profitability = pagina(() => import('./pages/accounting/Profitability'));
 
+/**
+ * FACTURACIÓN (nov-2026): una sola lista, la de facturas. La pestaña «Ventas» era casi lo
+ * mismo y se retiró; lo que solo estaba allí vive ahora en la página de detalle
+ * (/ventas/:id: pagos, cobro del saldo, asientos, facturar) y en la propia lista (Excel, ZIP).
+ *
+ * /sales queda para el FORMULARIO de nueva venta (botón «Nueva venta» y `?cita=` de la
+ * agenda), montado sobre la lista de facturas. Los enlaces viejos `/sales?doc=<venta>`
+ * (libro mayor, caja, reportes) se redirigen al detalle.
+ */
 function Facturacion() {
   const location = useLocation();
   const navigate = useNavigate();
-  const ventas = location.pathname === '/sales';
+  const params = new URLSearchParams(location.search);
+  if (location.pathname === '/sales') {
+    const doc = params.get('doc');
+    if (doc) return <Navigate to={`/ventas/${doc}`} replace />;
+    if (!params.get('cita') && !location.state?.abrirNueva) return <Navigate to="/invoices" replace />;
+  }
+  const formulario = location.pathname === '/sales';
+  const volver = () => navigate('/invoices', { replace: true });
   return (
-    <div className="space-y-4">
-      <nav aria-label="Secciones de facturación" className="flex gap-2 border-b border-slate-200">
-        <button type="button" onClick={() => navigate('/invoices')} aria-current={!ventas ? 'page' : undefined} className={`px-4 py-2 text-sm font-semibold ${!ventas ? 'border-b-2 border-emerald-600 text-emerald-700' : 'text-slate-500'}`}>Facturas</button>
-        <button type="button" onClick={() => navigate('/sales')} aria-current={ventas ? 'page' : undefined} className={`px-4 py-2 text-sm font-semibold ${ventas ? 'border-b-2 border-emerald-600 text-emerald-700' : 'text-slate-500'}`}>Ventas</button>
-      </nav>
-      {ventas ? <Sales abrirNueva={!!location.state?.abrirNueva} /> : <Invoices onNewSale={() => navigate('/sales', { state: { abrirNueva: true } })} />}
-    </div>
+    <>
+      <Invoices onNewSale={() => navigate('/sales', { state: { abrirNueva: true } })} />
+      {/* Con `?cita=` el propio formulario se abre al cargar la cita (como antes). */}
+      {formulario && <Sales soloFormulario abrirNueva={!params.get('cita')} onCerrar={volver} onCobrado={volver} />}
+    </>
   );
 }
 
@@ -337,6 +353,26 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'cajero', 'contabilidad']}>
                       <Facturacion />
+                    </RoleRoute>
+                  }
+                />
+
+                {/* Detalle completo de una factura/venta (se abre en pestaña nueva). */}
+                <Route
+                  path="/ventas/:id"
+                  element={
+                    <RoleRoute roles={['admin', 'cajero', 'contabilidad']}>
+                      <VentaDetalle />
+                    </RoleRoute>
+                  }
+                />
+
+                {/* Detalle de una compra (se abre en pestaña nueva desde Compras). */}
+                <Route
+                  path="/accounting/purchases/:id"
+                  element={
+                    <RoleRoute roles={['admin', 'contabilidad']}>
+                      <PurchaseInvoiceDetail />
                     </RoleRoute>
                   }
                 />

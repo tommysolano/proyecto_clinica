@@ -4,8 +4,9 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import {
   HiOutlineArrowDownTray, HiOutlineArrowUpTray, HiOutlinePlus, HiOutlineMagnifyingGlass,
-  HiOutlineArrowTopRightOnSquare,
+  HiOutlineArrowTopRightOnSquare, HiOutlineTrash,
 } from 'react-icons/hi2';
+import { useAuth } from '../../context/AuthContext';
 import { fmt, fmtDate, today } from './_utils';
 import { downloadFile } from '../../utils/download';
 
@@ -37,6 +38,9 @@ const estado = (it) => {
 
 export default function WarehouseCountPanel({ warehouses, initialWarehouse = '' }) {
   const activas = warehouses.filter((w) => w.active !== false);
+  // Descartar un borrador es de quien puede confirmar tomas (admin, contabilidad y su asistente).
+  const { hasRole } = useAuth();
+  const puedeEliminar = hasRole('admin', 'contabilidad');
   const [bodega, setBodega] = useState(initialWarehouse || '');
   const [counts, setCounts] = useState([]);
   const [tomaId, setTomaId] = useState('');
@@ -45,6 +49,15 @@ export default function WarehouseCountPanel({ warehouses, initialWarehouse = '' 
   const [busy, setBusy] = useState(false);
   const [resumenCarga, setResumenCarga] = useState(null);
   const fileRef = useRef(null);
+  // Toma de UNA categoría (nov-2026): la toma y su Excel traen solo los productos de esa
+  // categoría, así que los demás no se pueden tocar. Vacía = toda la bodega.
+  const [categorias, setCategorias] = useState([]);
+  const [categoria, setCategoria] = useState('');
+  useEffect(() => {
+    api.get('/inventory-advanced/categories', { params: { kind: 'INVENTARIO' } })
+      .then((r) => setCategorias((r.data || []).filter((c) => c.active !== false)))
+      .catch(() => setCategorias([]));
+  }, []);
 
   useEffect(() => { if (initialWarehouse) setBodega(initialWarehouse); }, [initialWarehouse]);
   useEffect(() => {
@@ -97,12 +110,14 @@ export default function WarehouseCountPanel({ warehouses, initialWarehouse = '' 
     if (!bodega || busy) return;
     setBusy(true);
     try {
+      const nombreCat = categorias.find((c) => c._id === categoria)?.name || '';
       const r = await api.post('/inventory-advanced/counts', {
-        warehouse: bodega, date: today(), description: `Toma física ${nombreBodega}`,
+        warehouse: bodega, category: categoria || undefined, date: today(),
+        description: `Toma física ${nombreBodega}${nombreCat ? ` · ${nombreCat}` : ''}`,
       });
       setCounts((prev) => [r.data, ...prev]);
       setTomaId(r.data._id);
-      toast.success(`Toma ${r.data.code} iniciada: el stock del sistema quedó congelado.`);
+      toast.success(`Toma ${r.data.code} iniciada${nombreCat ? ` (solo ${nombreCat}: ${r.data.items?.length || 0} productos)` : ''}: el stock del sistema quedó congelado.`);
     } catch (e) { toast.error(e.response?.data?.message || 'No se pudo iniciar la toma'); }
     finally { setBusy(false); }
   };
@@ -133,6 +148,22 @@ export default function WarehouseCountPanel({ warehouses, initialWarehouse = '' 
       setBusy(false);
       if (fileRef.current) fileRef.current.value = '';
     }
+  };
+
+  // Eliminar el BORRADOR: no movió nada todavía (el ajuste ocurre al confirmar).
+  const eliminarBorrador = async () => {
+    if (!toma || busy) return;
+    const contados = (toma.items || []).filter((it) => it.counted).length;
+    if (!window.confirm(`¿Eliminar el borrador ${toma.code}?${contados ? ` Se perderá lo contado de ${contados} producto(s).` : ''} El inventario no cambia.`)) return;
+    setBusy(true);
+    try {
+      await api.delete(`/inventory-advanced/counts/${toma._id}`);
+      setCounts((prev) => prev.filter((c) => c._id !== toma._id));
+      setTomaId('');
+      setResumenCarga(null);
+      toast.success(`Borrador ${toma.code} eliminado.`);
+    } catch (e) { toast.error(e.response?.data?.message || 'No se pudo eliminar el borrador'); }
+    finally { setBusy(false); }
   };
 
   const items = useMemo(() => toma?.items || [], [toma]);
@@ -176,13 +207,23 @@ export default function WarehouseCountPanel({ warehouses, initialWarehouse = '' 
               {activas.map((w) => <option key={w._id} value={w._id}>{w.code} — {w.name}</option>)}
             </select>
           </label>
+          {!enCurso && (
+            <label className="text-sm">
+              <span className="block text-xs text-slate-500 mb-1">Categoría a contar</span>
+              <select value={categoria} onChange={(e) => setCategoria(e.target.value)}
+                className="border border-slate-200 rounded-xl px-3 py-2 min-w-[200px]">
+                <option value="">Todas (toda la bodega)</option>
+                {categorias.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
+              </select>
+            </label>
+          )}
           {deLaBodega.length > 0 && (
             <label className="text-sm">
               <span className="block text-xs text-slate-500 mb-1">Toma</span>
               <select value={tomaId} onChange={(e) => { setTomaId(e.target.value); setResumenCarga(null); }}
                 className="border border-slate-200 rounded-xl px-3 py-2">
                 {deLaBodega.map((c) => (
-                  <option key={c._id} value={c._id}>{c.code} · {fmtDate(c.date)} · {c.status}</option>
+                  <option key={c._id} value={c._id}>{c.code} · {c.category?.name || 'Toda la bodega'} · {fmtDate(c.date)} · {c.status}</option>
                 ))}
               </select>
             </label>
@@ -212,12 +253,18 @@ export default function WarehouseCountPanel({ warehouses, initialWarehouse = '' 
                   className="px-4 py-2 bg-slate-100 text-slate-700 rounded-xl flex items-center gap-2 no-underline">
                   <HiOutlineArrowTopRightOnSquare /> Revisar y confirmar
                 </Link>
+                {puedeEliminar && (
+                  <button onClick={eliminarBorrador} disabled={busy}
+                    className="px-4 py-2 bg-white border border-rose-200 text-rose-600 rounded-xl flex items-center gap-2 hover:bg-rose-50 disabled:opacity-50">
+                    <HiOutlineTrash /> Eliminar borrador
+                  </button>
+                )}
               </>
             )}
           </div>
         </div>
         <p className="text-xs text-slate-500">
-          1) <b>Inicia la toma</b>: el sistema congela cuánto dice que hay en la bodega.
+          1) <b>Inicia la toma</b> (de toda la bodega o de una sola categoría: entonces el Excel trae solo esos productos y los demás no se tocan): el sistema congela cuánto dice que hay.
           2) <b>Descarga el Excel</b> y llena la columna amarilla «Stock físico» con lo que cuentas.
           3) <b>Súbelo</b>: aquí verás lo del sistema junto a lo contado.
           El stock no cambia hasta que contabilidad <b>confirme</b> la toma.
@@ -268,7 +315,7 @@ export default function WarehouseCountPanel({ warehouses, initialWarehouse = '' 
                 <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar producto o código…"
                   className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm" />
               </div>
-              <span className="text-xs text-slate-500">{toma.code} · {fmtDate(toma.date)} · {toma.status}</span>
+              <span className="text-xs text-slate-500">{toma.code} · {toma.category?.name ? <b>{toma.category.name}</b> : 'Toda la bodega'} · {fmtDate(toma.date)} · {toma.status}</span>
             </div>
             <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
               <table className="tbl tbl-cards text-sm">

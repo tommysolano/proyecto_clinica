@@ -154,15 +154,29 @@ const priceListOf = (product) => (
 const r2 = (n) => +Number(n || 0).toFixed(2);
 /**
  * DESCUENTO DE LA LÍNEA: por defecto el del PRODUCTO (inventario). Desde el 29-10-2026 el
- * cajero lo puede cambiar al cobrar (`manualDiscount`, en $); si lo cambia, la venta exige
- * el motivo. Espejo de server/utils/productDiscount.js (`descuentoAlCobrar`).
+ * cajero lo puede cambiar al cobrar (`manualDiscount`); si lo cambia, la venta exige el motivo.
+ * Espejo de server/utils/productDiscount.js (`descuentoAlCobrar`).
+ *
+ * Desde nov-2026 el cajero escribe el PORCENTAJE (100 = sin cargo): `manualDiscount` guarda
+ * el %, y aquí se convierte a dólares sobre cantidad × precio, que es lo que viaja al servidor
+ * y a la factura. Así sigue a la cantidad y al precio si cambian después.
  */
 const descuentoDeLinea = (item) => {
   if (item?.manualDiscount !== undefined && item?.manualDiscount !== null && item?.manualDiscount !== '') {
     const bruto = Math.max(r2(Number(item.unitPrice || 0) * Number(item.quantity || 0)), 0);
-    return Math.min(Math.max(r2(item.manualDiscount), 0), bruto);
+    const pct = Math.min(Math.max(Number(item.manualDiscount) || 0, 0), 100);
+    return Math.min(r2(bruto * pct / 100), bruto);
   }
   return item?.automaticDiscount ?? descuentoDelProducto(item);
+};
+/** % que se muestra en la casilla cuando el cajero no lo ha tocado (el del producto). */
+const pctDescuentoAutomatico = (item) => {
+  if (item?.discountType === 'percentage' && Number(item.discountValue) > 0 && !item.appliedDiscounts?.length) {
+    return Math.min(Number(item.discountValue), 100);
+  }
+  const bruto = r2(Number(item?.unitPrice || 0) * Number(item?.quantity || 0));
+  const d = Number(item?.automaticDiscount) || 0;
+  return bruto > 0 && d > 0 ? r2((d / bruto) * 100) : '';
 };
 const descuentoDelProducto = (item) => {
   const valor = Number(item?.discountValue) || 0;
@@ -266,8 +280,12 @@ const activePriceOf = (product) => {
  *   onCobrado(venta) al registrar la venta (venta = null si se continúa sin
  *                  cobrar un canje);
  *   onCerrar()     al cerrar sin cobrar.
+ *
+ * `soloFormulario` (nov-2026): Facturación ya no tiene la pestaña «Ventas»; la página monta
+ * solo el formulario de NUEVA VENTA (mismo flujo que antes, incluida la cita por `?cita=`)
+ * y avisa con onCobrado / onCerrar para volver a la lista de facturas.
  */
-export default function Sales({ embebido = false, citaId = null, itemsIniciales = null, onCobrado, onCerrar, abrirNueva = false } = {}) {
+export default function Sales({ soloFormulario = false, embebido = false, citaId = null, itemsIniciales = null, onCobrado, onCerrar, abrirNueva = false } = {}) {
   const { hasRole } = useAuth();
   const [journalSale, setJournalSale] = useState(null); // venta cuyos asientos se consultan (solo lectura)
   const canCreate = hasRole('admin', 'cajero', 'contabilidad');
@@ -429,7 +447,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   // pisaba la lista con resultados de un texto que ya no está.
   const busquedaRef = useRef(0);
   const fetchSales = async () => {
-    if (!canViewHistory || embebido) { setLoading(false); return; }
+    if (!canViewHistory || embebido || soloFormulario) { setLoading(false); return; }
     const mia = ++busquedaRef.current;
     try {
       const params = {};
@@ -1145,7 +1163,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
   /** Cerrar el formulario: incrustado, se le avisa a la agenda. */
   const cerrarVenta = () => {
     setModalOpen(false);
-    if (embebido) onCerrar?.();
+    if (embebido || soloFormulario) onCerrar?.();
   };
 
   /**
@@ -1495,7 +1513,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
       // si falla, la venta queda registrada y se puede facturar luego).
       if (facturarAlGuardar && puedeFacturarAqui && res.data?._id) emitirFactura(res.data);
       // Incrustada en la agenda: la agenda sigue (asignar doctor/enfermero).
-      if (embebido) onCobrado?.(res.data);
+      if (embebido || soloFormulario) onCobrado?.(res.data);
     } catch (err) {
       const data = err.response?.data;
       if (data?.code === 'DISCOUNT_CHANGED') {
@@ -2095,7 +2113,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                       <th className="text-left py-2">Producto</th>
                       <th className="text-right py-2">Precio</th>
                       <th className="text-center py-2">Cant.</th>
-                      <th className="text-right py-2">Descuento $</th>
+                      <th className="text-right py-2" title="Descuento en porcentaje (100 = sin cargo)">Descuento %</th>
                       {form.patient && treatments.length > 0 && (
                         <th className="text-left py-2 pl-2">Tratamiento</th>
                       )}
@@ -2242,13 +2260,21 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
                         {/* Viene el descuento del producto (inventario); el cajero lo puede cambiar
                             y entonces tiene que escribir el motivo abajo. */}
                         <td className="py-2 text-right">
-                          <NumericInput
-                            value={item.manualDiscount ?? (item.automaticDiscount || '')}
-                            onChange={(e) => setLinea(idx, { manualDiscount: e.target.value })}
-                            title="Descuento de la línea en dólares"
-                            placeholder="0.00"
-                            className="w-20 px-2 py-1 border border-slate-300 rounded text-right text-sm text-rose-600 outline-none"
-                          />
+                          <div className="inline-flex items-center gap-1">
+                            <NumericInput
+                              min="0" max="100"
+                              value={item.manualDiscount ?? pctDescuentoAutomatico(item)}
+                              onChange={(e) => setLinea(idx, { manualDiscount: e.target.value })}
+                              title="Descuento de la línea en PORCENTAJE (100 = sin cargo)"
+                              aria-label="Descuento en porcentaje"
+                              placeholder="0"
+                              className="w-16 px-2 py-1 border border-slate-300 rounded text-right text-sm text-rose-600 outline-none"
+                            />
+                            <span className="text-xs text-slate-500">%</span>
+                          </div>
+                          {descuentoDeLinea(item) > 0 && (
+                            <span className="block text-[10px] text-rose-500 font-mono">-${descuentoDeLinea(item).toFixed(2)}</span>
+                          )}
                           {item.discountType === 'percentage' && descuentoDelProducto(item) > 0 && (
                             <span className="block text-[10px] text-slate-400">Producto: {Number(item.discountValue)}%</span>
                           )}
@@ -2791,7 +2817,7 @@ export default function Sales({ embebido = false, citaId = null, itemsIniciales 
     </>
   );
 
-  if (embebido) return modalesDeVenta;
+  if (embebido || soloFormulario) return modalesDeVenta;
 
   return (
     <div className="space-y-6">

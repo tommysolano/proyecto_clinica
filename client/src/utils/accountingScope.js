@@ -38,7 +38,7 @@ const OWN_SUCURSAL = ['/accounting/cash', '/accounting/cash-deposits', '/account
   '/accounting/credit-card-batches', '/accounting/card-settlements'];
 
 export function isAccountingPath(pathname) {
-  if (pathname === '/sales' || pathname === '/invoices') return true;
+  if (pathname === '/sales' || pathname === '/invoices' || pathname.startsWith('/ventas/')) return true;
   if (!pathname.startsWith('/accounting/')) return false;
   return !OWN_SUCURSAL.includes(pathname);
 }

@@ -275,23 +275,22 @@ exports.importProductsExcel = async (req, res) => {
 };
 
 // ----- Bodegas -----
+/**
+ * LAS BODEGAS SON DE LA EMPRESA (nov-2026, regla del usuario): se ven TODAS desde cualquier
+ * sucursal, igual que el catálogo de productos (utils/catalogoEmpresa). Antes se filtraban por
+ * `clinic: req.clinicId` con un respaldo por centro de costo: las 6 bodegas se crearon desde
+ * Central, así que Extensión solo veía la de su centro y Odontología/Dermazen ninguna.
+ */
+const bodegasDeLaEmpresa = (clinicId) => require('../utils/catalogoEmpresa').filtroCatalogo(clinicId);
+
 exports.listWarehouses = async (req, res) => {
-  const filter = { clinic: req.clinicId };
+  const filter = { clinic: bodegasDeLaEmpresa(req.clinicId) };
   if (req.query.active !== undefined) filter.active = req.query.active !== 'false';
   if (req.query.costCenter) filter.costCenter = req.query.costCenter;
-  let items = await Warehouse.find(filter)
+  const items = await Warehouse.find(filter)
     .populate('chartAccount', 'code name')
     .populate('costCenter', 'code name active')
     .sort({ code: 1 });
-  if (!items.length) {
-    const clinic = await require('../models/Clinic').findById(req.clinicId).select('accountingCostCenter').lean();
-    if (clinic?.accountingCostCenter && (!req.query.costCenter
-      || String(req.query.costCenter) === String(clinic.accountingCostCenter))) {
-      items = await Warehouse.find({ costCenter: clinic.accountingCostCenter,
-        ...(filter.active === undefined ? {} : { active: filter.active }) })
-        .populate('chartAccount', 'code name').populate('costCenter', 'code name active').sort({ code: 1 });
-    }
-  }
   res.json(items);
 };
 
@@ -338,7 +337,7 @@ async function motivoParaNoInactivar(w) {
 /** Inactivar / reactivar una bodega. body: { active: boolean } */
 exports.setWarehouseActive = async (req, res) => {
   try {
-    const w = await Warehouse.findOne({ _id: req.params.id, clinic: req.clinicId });
+    const w = await Warehouse.findOne({ _id: req.params.id, clinic: bodegasDeLaEmpresa(req.clinicId) });
     if (!w) return res.status(404).json({ message: 'No encontrada' });
     const activa = req.body.active !== false;
     if (!activa && w.active !== false) {
@@ -353,7 +352,7 @@ exports.setWarehouseActive = async (req, res) => {
 
 exports.updateWarehouse = async (req, res) => {
   try {
-    const w = await Warehouse.findOne({ _id: req.params.id, clinic: req.clinicId });
+    const w = await Warehouse.findOne({ _id: req.params.id, clinic: bodegasDeLaEmpresa(req.clinicId) });
     if (!w) return res.status(404).json({ message: 'No encontrada' });
     // Inactivar desde el formulario pasa por las MISMAS comprobaciones que el botón.
     if (req.body.active === false && w.active !== false) {
@@ -361,13 +360,15 @@ exports.updateWarehouse = async (req, res) => {
       if (motivo) return res.status(400).json({ message: `No se puede inactivar ${w.code} — ${w.name}. ${motivo}` });
     }
     if (req.body.costCenter !== undefined) {
-      req.body.costCenter = await validateWarehouseCostCenter(req.clinicId, req.body.costCenter);
+      // El centro se valida contra la sucursal DUEÑA de la bodega (se puede editar desde otra).
+      req.body.costCenter = await validateWarehouseCostCenter(w.clinic, req.body.costCenter);
     }
+    delete req.body.clinic; // la bodega no cambia de dueña al editarla desde otra sucursal
     Object.assign(w, req.body); await w.save(); res.json(w);
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 exports.deleteWarehouse = async (req, res) => {
-  const w = await Warehouse.findOne({ _id: req.params.id, clinic: req.clinicId });
+  const w = await Warehouse.findOne({ _id: req.params.id, clinic: bodegasDeLaEmpresa(req.clinicId) });
   if (!w) return res.status(404).json({ message: 'No encontrada' });
   await w.deleteOne(); res.json({ message: 'Eliminada' });
 };
@@ -719,11 +720,17 @@ exports.kardexExcel = async (req, res) => {
  */
 async function moverEntreBodegas({ clinicId, userId, fromWarehouse, toWarehouse, lineas, fecha, reason, idemKey = null, costCenter = null }, session) {
   let entryCreated = false;
+  // Bodegas de la EMPRESA (nov-2026): el traslado se puede pedir desde cualquier sucursal.
   const [fromWh, toWh] = await Promise.all([
-    Warehouse.findOne({ _id: fromWarehouse, clinic: clinicId }).session(session),
-    Warehouse.findOne({ _id: toWarehouse, clinic: clinicId }).session(session),
+    Warehouse.findOne({ _id: fromWarehouse, clinic: bodegasDeLaEmpresa(clinicId) }).session(session),
+    Warehouse.findOne({ _id: toWarehouse, clinic: bodegasDeLaEmpresa(clinicId) }).session(session),
   ]);
-  if (!fromWh || !toWh) throw Object.assign(new Error('Bodega no encontrada en esta clínica'), { status: 404 });
+  if (!fromWh || !toWh) throw Object.assign(new Error('Bodega no encontrada en la empresa'), { status: 404 });
+  if (String(fromWh.clinic) !== String(toWh.clinic)) {
+    throw Object.assign(new Error('Las dos bodegas deben llevar la misma contabilidad (sucursal dueña) para trasladar entre ellas.'), { status: 400 });
+  }
+  // Las capas, el kardex y el asiento del traslado son de la sucursal DUEÑA de las bodegas.
+  clinicId = fromWh.clinic;
   // Una bodega INACTIVA no recibe ni entrega traslados (nov-2026).
   for (const w of [fromWh, toWh]) {
     if (w.active === false) throw Object.assign(new Error(`La bodega "${w.name}" está inactiva: no se pueden hacer traslados con ella.`), { status: 400 });
@@ -967,15 +974,13 @@ exports.moverEntreBodegas = moverEntreBodegas;
 exports.warehouseStock = async (req, res) => {
   try {
     // Los deficit historicos no son disponibilidad FIFO, pero deben verse en el reporte.
-    const clinics = req.companyClinicIds?.length ? req.companyClinicIds
-      : req.userClinicId && String(req.userClinicId) !== String(req.clinicId)
-        ? [req.clinicId, req.userClinicId] : [req.clinicId];
-    const match = { clinic: { $in: clinics.map((id) => new (require('mongoose').Types.ObjectId)(id)) },
-      qtyRemaining: { $ne: 0 } };
+    // Las bodegas son de la EMPRESA (nov-2026): sus existencias se ven desde cualquier sucursal.
+    // Antes se recortaba a la sucursal y, en las ligadas a un centro, a las bodegas de ese
+    // centro: la página de Bodegas listaba todas pero mostraba las demás en cero.
+    const match = { clinic: bodegasDeLaEmpresa(req.clinicId), qtyRemaining: { $ne: 0 } };
     if (req.query.warehouse) match.warehouse = new (require('mongoose').Types.ObjectId)(req.query.warehouse);
-    // Sucursal ligada a un centro (middleware/accountingScope): las bodegas de su centro.
-    else if (req.costCenterScope) {
-      match.warehouse = { $in: await Warehouse.find({ costCenter: req.costCenterScope }).distinct('_id') };
+    else if (req.query.costCenter) {
+      match.warehouse = { $in: await Warehouse.find({ costCenter: req.query.costCenter }).distinct('_id') };
     }
     const rows = await InventoryLayer.aggregate([
       { $match: match },
@@ -1043,10 +1048,8 @@ exports.warehouseStock = async (req, res) => {
  */
 exports.physicalStock = async (req, res) => {
   try {
-    const clinics = (req.companyClinicIds?.length ? req.companyClinicIds
-      : req.userClinicId && String(req.userClinicId) !== String(req.clinicId) ? [req.clinicId, req.userClinicId] : [req.clinicId])
-      .map((id) => new mongoose.Types.ObjectId(String(id)));
-    const filtro = { clinic: { $in: clinics }, status: { $ne: 'ANULADO' }, warehouse: { $ne: null } };
+    // Bodegas de la EMPRESA (nov-2026): lo contado se ve desde cualquier sucursal, como sus existencias.
+    const filtro = { clinic: bodegasDeLaEmpresa(req.clinicId), status: { $ne: 'ANULADO' }, warehouse: { $ne: null } };
     if (req.query.warehouse && mongoose.isValidObjectId(req.query.warehouse)) filtro.warehouse = req.query.warehouse;
     const tomas = await PhysicalCount.find(filtro)
       .select('code date status warehouse items.product items.countedQty items.counted')
@@ -1251,7 +1254,8 @@ exports.stockHistory = async (req, res) => {
  */
 exports.listTransfers = async (req, res) => {
   try {
-    const filtro = { clinic: req.clinicId, type: 'traslado', toWarehouse: { $ne: null } };
+    // Traslados entre bodegas de la EMPRESA (nov-2026): se ven desde cualquier sucursal.
+    const filtro = { clinic: bodegasDeLaEmpresa(req.clinicId), type: 'traslado', toWarehouse: { $ne: null } };
     // La fecha que vale es la FUNCIONAL del documento; las filas viejas no la tienen y
     // caen en `createdAt` (misma regla que usa el kardex).
     const desde = kardexService.parseLocalDate(req.query.from);
@@ -1381,8 +1385,7 @@ exports.startCount = async (req, res) => {
     }
 
     const fecha = kardexService.parseLocalDate(req.body.date) || new Date();
-    const count = await PhysicalCount.countDocuments({ clinic: req.clinicId });
-    const code = `TF-${String(count + 1).padStart(5, '0')}`;
+    const code = await siguienteCodigoToma(req.clinicId);
 
     // Inventariables: nunca servicios ni ilimitados. Tampoco los productos COMPUESTOS
     // (nov-2026): no existen en la percha, se arman con su composición fija (p. ej. el
@@ -1437,6 +1440,8 @@ exports.startCount = async (req, res) => {
       snapshotBy: req.user._id,
       createdBy: req.user._id,
     });
+    // Con nombres, como en la lista: la pantalla muestra la bodega y la categoría de la toma.
+    await pc.populate([{ path: 'warehouse', select: 'code name' }, { path: 'category', select: 'code name' }]);
     res.status(201).json(countForRole(req, pc));
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
@@ -1524,6 +1529,36 @@ async function sincronizarToma(pc) {
   return { agregados: nuevos.length, quitados };
 }
 
+/**
+ * Código de la siguiente toma (TF-00001…). Va por el NÚMERO MÁS ALTO usado, no por cuántas hay:
+ * desde que un borrador se puede eliminar (nov-2026), contar repetiría un código y el índice
+ * único (clinic, code) rechazaría la toma nueva.
+ */
+async function siguienteCodigoToma(clinicId) {
+  const codigos = await PhysicalCount.find({ clinic: clinicId }).select('code').lean();
+  const max = codigos.reduce((m, c) => Math.max(m, Number(String(c.code || '').match(/(\d+)\s*$/)?.[1]) || 0), 0);
+  return `TF-${String(max + 1).padStart(5, '0')}`;
+}
+
+/**
+ * ELIMINAR UN BORRADOR de toma física (nov-2026). Un borrador no ha movido nada: ni capas, ni
+ * kardex, ni asiento (todo eso ocurre al CONFIRMAR), así que se puede borrar de verdad. Una toma
+ * confirmada no: su ajuste ya está en el inventario y en la contabilidad.
+ */
+exports.deleteCount = async (req, res) => {
+  try {
+    const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!pc) return res.status(404).json({ message: 'Toma no encontrada' });
+    if (pc.status !== 'BORRADOR') {
+      return res.status(400).json({ message: `La toma ${pc.code} está ${pc.status.toLowerCase()}: solo se puede eliminar un borrador.` });
+    }
+    // Borrado condicionado al estado: si alguien la confirma a la vez, no se borra.
+    const r = await PhysicalCount.deleteOne({ _id: pc._id, status: 'BORRADOR' });
+    if (!r.deletedCount) return res.status(409).json({ message: 'La toma cambió de estado mientras se eliminaba. Recarga la página.' });
+    res.json({ ok: true, code: pc.code });
+  } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
+};
+
 exports.refreshCount = async (req, res) => {
   try {
     const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId });
@@ -1543,7 +1578,7 @@ exports.downloadCountSheet = async (req, res) => {
     const doc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!doc) return res.status(404).json({ message: 'Toma no encontrada' });
     await sincronizarToma(doc);
-    const pc = await PhysicalCount.findById(doc._id).populate('warehouse', 'code name').lean();
+    const pc = await PhysicalCount.findById(doc._id).populate('warehouse', 'code name').populate('category', 'name').lean();
     const productos = await Product.find({ _id: { $in: pc.items.map((it) => it.product) } }).select('unit').lean();
     const unidad = new Map(productos.map((p) => [String(p._id), p.unit || '']));
 
@@ -1585,6 +1620,8 @@ exports.downloadCountSheet = async (req, res) => {
     [
       ['Toma', pc.code],
       ['Bodega', pc.warehouse ? `${pc.warehouse.code} - ${pc.warehouse.name}` : ''],
+      // Toma de UNA categoría (nov-2026): la hoja solo trae sus productos.
+      ['Categoría', pc.category?.name || 'Todas'],
       ['Fecha', pc.date ? new Date(pc.date).toLocaleDateString('es-EC', { timeZone: 'America/Guayaquil' }) : ''],
       ['Estado', pc.status],
       [],

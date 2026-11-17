@@ -257,8 +257,13 @@ export default function SalesReports() {
             {(data?.documents || []).slice(0, visibleDocuments).map((doc) => (
               <tr key={doc.id} className="border-t">
                 <td className="px-3 py-2 whitespace-nowrap">{new Date(doc.date).toLocaleDateString('es-EC', { timeZone: 'America/Guayaquil' })}</td>
-                <td className="px-3 py-2 font-mono text-xs">{doc.invoiceNumber || 'Sin factura vinculada'}</td>
-                <td className="px-3 py-2 text-xs">{doc.saleNumber || '—'}</td>
+                <td className="px-3 py-2 font-mono text-xs whitespace-nowrap">
+                  {/* El número abre el detalle completo de la factura en una pestaña nueva. */}
+                  {doc.invoiceNumber
+                    ? <a href={`/ventas/${doc.id}`} target="_blank" rel="noopener" title="Ver el detalle completo (pestaña nueva)" className="text-sky-700 hover:underline">{doc.invoiceNumber}</a>
+                    : 'Sin factura vinculada'}
+                </td>
+                <td className="px-3 py-2 text-xs">{doc.saleNumber ? <a href={`/ventas/${doc.id}`} target="_blank" rel="noopener" className="hover:underline">{doc.saleNumber}</a> : '—'}</td>
                 <td className="px-3 py-2">{doc.client || '—'}</td>
                 <td className="px-3 py-2 text-xs">{doc.status === 'anulada' ? 'Venta anulada' : 'Completada'}{doc.invoiceStatus ? ` · SRI: ${doc.invoiceStatus}` : ''}</td>
                 <td className="px-3 py-2 text-right font-mono">${fmt(doc.total)}</td>

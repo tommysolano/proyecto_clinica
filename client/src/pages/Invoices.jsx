@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import PageHeader, { EmptyState } from '../components/PageHeader';
+import ProductAutocomplete from '../components/ProductAutocomplete';
 import { useAuth } from '../context/AuthContext';
 import useDocDeepLink from '../hooks/useDocDeepLink';
 import { fmtDate, fmtDateTime } from '../utils/date';
@@ -11,7 +13,6 @@ import {
   HiOutlineDocumentText,
   HiOutlineArrowPath,
   HiOutlineXMark,
-  HiOutlineEye,
   HiOutlineDocumentArrowDown,
   HiOutlineArrowDownTray,
   HiOutlineSignal,
@@ -22,7 +23,13 @@ import Paginador from '../components/Paginador';
 
 // Facturas por página (el servidor pagina; antes solo llegaban las 50 últimas).
 const POR_PAGINA = 50;
-const FILTRO_VACIO = { startDate: '', endDate: '', estado: '', puntoEmision: '', q: '' };
+const FILTRO_VACIO = { startDate: '', endDate: '', estado: '', puntoEmision: '', product: '', q: '' };
+
+/**
+ * Detalle completo de la factura en una PESTAÑA NUEVA (nov-2026): se abre con el número de
+ * la factura (antes era un ojo que abría un modal sin lo vendido ni cómo se pagó).
+ */
+const urlDetalleFactura = (inv) => `/ventas/${inv?.sale?._id || inv?.sale || inv?._id}`;
 
 const ESTADO_STYLES = {
   AUTORIZADO: 'bg-emerald-100 text-emerald-700',
@@ -49,23 +56,17 @@ const ESTADO_LABEL = {
 
 // Estados no finales: la factura sigue en juego y puede reintentarse.
 const PENDING_ESTADOS = ['EN_COLA', 'RECIBIDA', 'EN_PROCESO', 'ERROR', 'DEVUELTA', 'NO_AUTORIZADO'];
-const EMAIL_ESTADOS = { NO_CONFIGURADO: 'Envío automático no configurado', SIN_CORREO: 'Sin correo del comprador', PENDIENTE: 'Pendiente de envío', ENVIANDO: 'Enviando', ENVIADO: 'Enviado', ERROR: 'Error de envío' };
-
-// ¿El SRI autorizó en un día calendario distinto al de emisión? En ese caso se
-// mantiene la fecha de emisión original y se muestra una advertencia.
-function autorizadaOtroDia(inv) {
-  if (!inv?.fechaAutorizacion || !inv?.fechaEmision) return false;
-  const [dd, mm, yyyy] = String(inv.fechaEmision).split('/');
-  if (!dd || !mm || !yyyy) return false;
-  const aut = new Date(inv.fechaAutorizacion);
-  // Fecha de autorización en hora de Ecuador (UTC-5, sin horario de verano).
-  const ec = new Date(aut.getTime() - 5 * 60 * 60 * 1000);
-  const autKey = `${String(ec.getUTCDate()).padStart(2, '0')}/${String(ec.getUTCMonth() + 1).padStart(2, '0')}/${ec.getUTCFullYear()}`;
-  return autKey !== `${dd.padStart(2, '0')}/${mm.padStart(2, '0')}/${yyyy}`;
-}
 
 export default function Invoices({ onNewSale }) {
   const { hasRole } = useAuth();
+  const navigate = useNavigate();
+  // Productos/servicios para el filtro, también los inhabilitados: se siguen viendo sus
+  // facturas pasadas (catálogo cacheado por api/axios).
+  const [products, setProducts] = useState([]);
+  useEffect(() => {
+    api.get('/products', { params: { includeDisabled: true } }).then((r) => setProducts(Array.isArray(r.data) ? r.data : r.data?.products || [])).catch(() => {});
+  }, []);
+  const [descargandoZip, setDescargandoZip] = useState(false);
   const canRetry = hasRole('admin', 'cajero', 'contabilidad');
   const canAnular = hasRole('admin', 'contabilidad');
 
@@ -91,7 +92,6 @@ export default function Invoices({ onNewSale }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const [detail, setDetail] = useState(null);
   const [anularTarget, setAnularTarget] = useState(null);
   const [motivo, setMotivo] = useState('');
   const [anularVenta, setAnularVenta] = useState(true);
@@ -190,19 +190,6 @@ export default function Invoices({ onNewSale }) {
     }
   };
 
-  const enviarCorreo = async (inv) => {
-    const email = window.prompt('Correo al que se enviará la factura:', inv.emailDelivery?.recipient || inv.emailComprador || '');
-    if (email === null) return;
-    setBusyId(inv._id);
-    try {
-      const res = await api.post(`/invoices/${inv._id}/email`, { email });
-      setDetail((d) => ({ ...d, emailDelivery: res.data.emailDelivery }));
-      toast.success('Factura programada para envío por correo');
-      load();
-    } catch (err) { toast.error(err.response?.data?.message || 'No se pudo programar el envío'); }
-    finally { setBusyId(null); }
-  };
-
   const submitAnular = async () => {
     if (!motivo || motivo.trim().length < 10) {
       toast.error('El motivo debe tener al menos 10 caracteres');
@@ -226,17 +213,21 @@ export default function Invoices({ onNewSale }) {
     }
   };
 
-  const verDetalle = async (inv) => {
+  // Deep-link desde reportes SRI (venta → factura): /invoices?doc=<idFactura> va al detalle
+  // (la página resuelve la venta a partir de la factura).
+  useDocDeepLink((id) => navigate(`/ventas/${id}`, { replace: true }));
+
+  // ZIP con los RIDE autorizados de lo que se está mirando (estaba en la pestaña Ventas).
+  const descargarZip = async () => {
+    setDescargandoZip(true);
     try {
-      const res = await api.get(`/invoices/${inv._id}`);
-      setDetail(res.data);
+      await downloadFile('/invoices/bulk-pdf', { params: { ...paramsFiltro(), estado: undefined }, filename: `facturas_${Date.now()}.zip` });
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al cargar detalle');
+      toast.error(err.message || 'Error al descargar las facturas');
+    } finally {
+      setDescargandoZip(false);
     }
   };
-
-  // Deep-link desde reportes SRI (venta → factura): /invoices?doc=<idFactura> abre el detalle.
-  useDocDeepLink((id) => verDetalle({ _id: id }));
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
@@ -265,6 +256,14 @@ export default function Invoices({ onNewSale }) {
           className="btn-secondary"
         >
           <HiOutlineArrowDownTray className="w-4 h-4" /> Exportar Excel
+        </button>
+        <button
+          onClick={descargarZip}
+          disabled={descargandoZip}
+          className="btn-secondary disabled:opacity-50"
+          title="Descarga en un ZIP los PDF (RIDE) de las facturas autorizadas del filtro (máx. 300)"
+        >
+          <HiOutlineDocumentArrowDown className="w-4 h-4" /> {descargandoZip ? 'Generando…' : 'Descargar RIDE (ZIP)'}
         </button>
       </PageHeader>
 
@@ -305,7 +304,7 @@ export default function Invoices({ onNewSale }) {
       )}
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4 space-y-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <label className="text-xs font-medium text-slate-600 sm:col-span-2">
             Buscar
             <input
@@ -315,6 +314,16 @@ export default function Invoices({ onNewSale }) {
               className="w-full mt-1 px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
             />
           </label>
+          <div className="text-xs font-medium text-slate-600 sm:col-span-2">
+            Producto / servicio
+            <ProductAutocomplete
+              products={products}
+              value={filter.product}
+              onSelect={(p) => cambiarFiltro({ product: p?._id || '' })}
+              placeholder="Facturas que lo incluyen…"
+              className="mt-1"
+            />
+          </div>
           <label className="text-xs font-medium text-slate-600">
             Desde
             <DateInput
@@ -417,7 +426,9 @@ export default function Invoices({ onNewSale }) {
                 const isFinal = inv.estado === 'AUTORIZADO' || inv.estado === 'ANULADA';
                 return (
                   <tr key={inv._id} className="border-t border-emerald-50 hover:bg-emerald-50/30">
-                    <td className="px-5 py-3 font-mono text-xs text-slate-700">{num}</td>
+                    <td className="px-5 py-3 font-mono text-xs whitespace-nowrap">
+                      <a href={urlDetalleFactura(inv)} target="_blank" rel="noopener" title="Ver el detalle completo (pestaña nueva)" className="text-sky-700 hover:underline">{num}</a>
+                    </td>
                     <td className="px-5 py-3 text-slate-800">
                       {inv.razonSocialComprador}
                       <p className="text-xs text-slate-400">{inv.identificacionComprador}</p>
@@ -457,13 +468,6 @@ export default function Invoices({ onNewSale }) {
                       )}
                     </td>
                     <td className="px-5 py-3 text-right">
-                      <button
-                        onClick={() => verDetalle(inv)}
-                        className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer"
-                        title="Ver detalle"
-                      >
-                        <HiOutlineEye className="w-4 h-4" />
-                      </button>
                       {inv.estado === 'AUTORIZADO' && (
                         <button
                           onClick={() => verPdf(inv)}
@@ -506,119 +510,6 @@ export default function Invoices({ onNewSale }) {
       </div>
 
       {pagination && invoices.length > 0 && <Paginador pagination={pagination} onPage={irAPagina} unidad="facturas" />}
-
-      {/* Detail Modal */}
-      <Modal
-        isOpen={!!detail}
-        onClose={() => setDetail(null)}
-        title="Detalle de factura"
-        size="lg"
-      >
-        {detail && (
-          <div className="space-y-4 text-sm">
-            {autorizadaOtroDia(detail) && (
-              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
-                <strong>Advertencia administrativa:</strong> esta factura se emitió el{' '}
-                {detail.fechaEmision} y el SRI la autorizó otro día ({fmtDateTime(detail.fechaAutorizacion)}).
-                Se conserva la fecha de emisión original. Verifique que la autorización esté dentro del
-                plazo permitido por el SRI.
-              </div>
-            )}
-            <div className="grid grid-cols-2 gap-3">
-              <Item label="N° Factura" value={`${detail.estab}-${detail.ptoEmi}-${detail.secuencial}`} />
-              <Item label="Estado" value={ESTADO_LABEL[detail.estado] || detail.estado} />
-              {detail.proximoReintento && PENDING_ESTADOS.includes(detail.estado) && (
-                <Item label="Próximo reintento" value={fmtDateTime(detail.proximoReintento)} />
-              )}
-              {detail.reintentos > 0 && (
-                <Item label="Reintentos" value={String(detail.reintentos)} />
-              )}
-              <Item label="Clave de acceso" value={detail.claveAcceso} mono />
-              <Item label="Ambiente" value={detail.ambiente === '2' ? 'Producción' : 'Pruebas'} />
-              <Item label="Fecha emisión" value={detail.fechaEmision} />
-              <Item
-                label="Fecha autorización"
-                value={
-                  detail.fechaAutorizacion
-                    ? fmtDateTime(detail.fechaAutorizacion)
-                    : '—'
-                }
-              />
-              <Item label="Cliente" value={detail.razonSocialComprador} />
-              <Item label="Identificación" value={detail.identificacionComprador} />
-              <Item label="Email" value={detail.emailComprador || '—'} />
-              <Item label="Envío por correo" value={EMAIL_ESTADOS[detail.emailDelivery?.status] || 'No programado'} />
-              <Item label="Teléfono" value={detail.telefonoComprador || '—'} />
-              {detail.sale?.patient && (
-                <Item
-                  label="Paciente registrado"
-                  value={`${detail.sale.patient.firstName} ${detail.sale.patient.lastName} — ${detail.sale.patient.cedula}${detail.sale.isFirstVisit ? ' (Nuevo)' : ''}`}
-                />
-              )}
-            </div>
-            {detail.emailDelivery?.recipient && <p className="text-xs text-slate-600">Destinatario del envío: {detail.emailDelivery.recipient}</p>}
-            {detail.emailDelivery?.error && <p className="text-xs text-amber-700">{detail.emailDelivery.error}</p>}
-            {detail.estado === 'AUTORIZADO' && canRetry && !['PENDIENTE', 'ENVIANDO'].includes(detail.emailDelivery?.status) && (
-              <button type="button" disabled={busyId === detail._id} onClick={() => enviarCorreo(detail)} className="px-3 py-2 border border-emerald-300 text-emerald-700 rounded-lg text-xs disabled:opacity-50">{detail.emailDelivery?.status === 'ENVIADO' ? 'Enviar nuevamente por correo' : 'Enviar factura por correo'}</button>
-            )}
-            <div className="grid grid-cols-3 gap-3 pt-2 border-t border-slate-100">
-              <Item
-                label="Subtotal sin imp."
-                value={`$${Number(detail.totalSinImpuestos || 0).toFixed(2)}`}
-              />
-              <Item label="IVA" value={`$${Number(detail.totalImpuesto || 0).toFixed(2)}`} />
-              <Item
-                label="Total"
-                value={`$${Number(detail.importeTotal || 0).toFixed(2)}`}
-                strong
-              />
-            </div>
-            {detail.errorUltimo && (
-              <div className="bg-red-50 text-red-700 rounded-xl p-3 text-xs">
-                <strong>Último error:</strong> {detail.errorUltimo}
-              </div>
-            )}
-            {detail.mensajesSri?.length > 0 && (
-              <div className="bg-amber-50 rounded-xl p-3 text-xs space-y-1">
-                <p className="font-semibold text-amber-800">Mensajes SRI</p>
-                {detail.mensajesSri.map((m, i) => (
-                  <div key={i} className="text-amber-700">
-                    <strong>{m.identificador}</strong> ({m.tipo}): {m.mensaje}
-                    {m.informacionAdicional && <> — {m.informacionAdicional}</>}
-                  </div>
-                ))}
-              </div>
-            )}
-            {detail.motivoAnulacion && (
-              <div className="bg-slate-100 rounded-xl p-3 text-xs">
-                <strong>Anulación:</strong> {detail.motivoAnulacion}
-                {detail.anuladaAt && (
-                  <p className="text-slate-500 mt-1">
-                    {fmtDateTime(detail.anuladaAt)}
-                  </p>
-                )}
-              </div>
-            )}
-            {detail.intentos?.length > 0 && (
-              <div className="bg-slate-50 rounded-xl p-3 text-xs space-y-1 border border-slate-100">
-                <p className="font-semibold text-slate-600">Bitácora de envíos al SRI</p>
-                <div className="max-h-48 overflow-y-auto space-y-1">
-                  {[...detail.intentos].reverse().map((it, i) => (
-                    <div key={i} className="flex items-start gap-2 text-slate-600">
-                      <span className="text-slate-400 shrink-0">{fmtDateTime(it.at)}</span>
-                      <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 shrink-0">
-                        {it.tipo}
-                      </span>
-                      <span className="font-medium">{it.estado}</span>
-                      {it.mensaje && <span className="text-slate-400">— {it.mensaje}</span>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </Modal>
 
       {/* Anular Modal */}
       <Modal
@@ -675,21 +566,6 @@ export default function Invoices({ onNewSale }) {
           </div>
         </div>
       </Modal>
-    </div>
-  );
-}
-
-function Item({ label, value, mono, strong }) {
-  return (
-    <div>
-      <p className="text-xs uppercase font-semibold text-slate-500">{label}</p>
-      <p
-        className={`mt-0.5 ${mono ? 'font-mono text-xs break-all' : 'text-slate-800'} ${
-          strong ? 'font-bold text-emerald-700 text-lg' : ''
-        }`}
-      >
-        {value || '—'}
-      </p>
     </div>
   );
 }

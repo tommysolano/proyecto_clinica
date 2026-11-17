@@ -285,7 +285,7 @@ export default function SalesDetailReport({ rango, categories, products }) {
                           </td>
                           <td className="px-2 py-2">{fmtDate(d.date)}</td>
                           <td className="px-2 py-2 font-mono">{d.numero}</td>
-                          <td className="px-2 py-2 font-mono">{d.factura || '—'}</td>
+                          <td className="px-2 py-2 font-mono">{d.factura ? <a href={`/ventas/${d.id}`} target="_blank" rel="noopener" title="Ver el detalle completo (pestaña nueva)" className="text-sky-700 hover:underline">{d.factura}</a> : '—'}</td>
                           <td className="px-2 py-2">{d.cliente}</td>
                           <td className="px-2 py-2">{d.identificacion || '—'}</td>
                           <td className="px-2 py-2 text-slate-600">{d.costCenterName || '—'}</td>

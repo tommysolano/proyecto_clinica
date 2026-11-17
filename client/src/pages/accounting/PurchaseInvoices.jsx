@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark, HiOutlineTrash, HiOutlineExclamationTriangle, HiOutlineCube, HiOutlineBanknotes, HiOutlineBuildingOffice2, HiOutlineCheck, HiOutlineEllipsisVertical, HiOutlinePencilSquare, HiOutlineListBullet, HiOutlineBookOpen, HiOutlineReceiptPercent, HiOutlineNoSymbol, HiOutlineArrowPath } from 'react-icons/hi2';
+import { payStatus, PAY_METHOD_LABEL, DOC_TYPE_LABEL, CORREGIBLES, retencionEmitida } from './_purchaseLabels';
 import { fmt, fmtDate, today, RET_ESTADO_LABEL, retVoucherNumber } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import JournalEntryViewModal from '../../components/JournalEntryViewModal';
@@ -66,45 +67,19 @@ const makeItem = (lineType) => ({
 const lineBase = (it) => +(((it.quantity || 0) * (it.unitPrice || 0)) - (it.discount || 0)).toFixed(2);
 
 /**
- * Estado de PAGO de una factura de compra (abonado / saldo / etiqueta).
- *
- * Antes la lista solo mostraba REGISTRADA o PAGADA: una factura de $300 con un abono de $50 se
- * veía idéntica a una intacta. Aquí se deriva lo que falta:
- *
- *     neto a pagar = total − retenciones     (la retención no se le paga al proveedor)
- *     abonado      = neto − saldo
- *
- * `balance` es el saldo que mantiene el backend en cada pago. Un abono parcial ⇒ "ABONADA".
+ * DESCUENTO EN PORCENTAJE (nov-2026). El usuario escribe el % (100 = bonificado) y la línea
+ * guarda el descuento en DÓLARES, que es lo que llevan el XML del SRI, el servidor y el asiento.
+ * `_descPct` solo vive en el formulario (no viaja: ver buildItemsPayload): si el usuario puso
+ * un %, al cambiar cantidad o precio el descuento se recalcula. Las líneas cargadas (XML o una
+ * compra guardada) muestran el % equivalente sin tocar su valor en dólares.
  */
-const payStatus = (p) => {
-  const neto = +(Number(p.total || 0) - Number(p.retentionTotal || 0)).toFixed(2);
-  const saldo = +Number(p.balance ?? neto).toFixed(2);
-  const abonado = +Math.max(0, neto - saldo).toFixed(2);
-  const parcial = p.status === 'REGISTRADA' && abonado > 0.005 && saldo > 0.005;
-  const label = p.status === 'POR_AUTORIZAR' ? 'POR CONTABILIZAR' : parcial ? 'ABONADA' : p.status;
-  const badgeClass = p.status === 'POR_AUTORIZAR' ? 'bg-amber-100 text-amber-700'
-    : p.status === 'ANULADA' ? 'bg-rose-100 text-rose-700'
-    : p.status === 'PAGADA' ? 'bg-sky-100 text-sky-700'
-    : parcial ? 'bg-indigo-100 text-indigo-700'
-    : 'bg-emerald-100 text-emerald-700';
-  return { neto, saldo, abonado, parcial, label, badgeClass };
+const descuentoPorPct = (it, pct) => +(((Number(it.quantity) || 0) * (Number(it.unitPrice) || 0) * pct) / 100).toFixed(2);
+const pctDeLinea = (it) => {
+  if (it._descPct != null) return it._descPct;
+  const bruto = (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0);
+  return bruto > 0 && Number(it.discount) > 0 ? +((Number(it.discount) / bruto) * 100).toFixed(2) : 0;
 };
 
-const PAY_METHOD_LABEL = { EFECTIVO: 'Efectivo', TRANSFERENCIA: 'Transferencia', CHEQUE: 'Cheque', TARJETA: 'Tarjeta', DEPOSITO: 'Depósito', OTRO: 'Otro' };
-
-// El tipo de comprobante va como subtítulo de la serie (no como columna propia):
-// en el 95 % de las filas dice «FACTURA» y solo gastaba ancho.
-const DOC_TYPE_LABEL = {
-  FACTURA: 'Factura', NOTA_VENTA: 'Nota de venta', LIQUIDACION: 'Liquidación de compra',
-  NOTA_DEBITO_REC: 'Nota de débito', NOTA_CREDITO_REC: 'Nota de crédito',
-  ANTICIPO_PROVEEDOR: 'Anticipo a proveedor',
-};
-
-// Estados en los que una compra ya contabilizada admite corrección. Que esté PAGADA
-// no la vuelve intocable: los abonos se conservan y el saldo se recalcula. Lo que sí
-// la congela es haber emitido el comprobante de retención (documento fiscal del SRI).
-const CORREGIBLES = ['REGISTRADA', 'PAGADA'];
-const retencionEmitida = (p) => !!p?.retentionVoucher || !!String(p?.retentionNumber || '').trim();
 
 // Vencimiento = fecha de emisión + días de crédito (YYYY-MM-DD).
 const addDays = (dateStr, days) => {
@@ -273,7 +248,16 @@ export default function PurchaseInvoices() {
   }));
 
   // ---- Manipulación de líneas por _uid ----
-  const setItem = (u, patch) => setForm((f) => ({ ...f, items: f.items.map((it) => (it._uid === u ? { ...it, ...patch } : it)) }));
+  const setItem = (u, patch) => setForm((f) => ({
+    ...f,
+    items: f.items.map((it) => {
+      if (it._uid !== u) return it;
+      const next = { ...it, ...patch };
+      // Descuento puesto en %: sigue a la cantidad y al precio.
+      if (next._descPct != null && ('quantity' in patch || 'unitPrice' in patch)) next.discount = descuentoPorPct(next, next._descPct);
+      return next;
+    }),
+  }));
 
   /**
    * Al elegir la BODEGA de una línea se PROPONE su centro de costo. Es una propuesta:
@@ -625,7 +609,7 @@ export default function PurchaseInvoices() {
     for (const it of cleanItems) {
       if (it.lineType === 'INVENTARIO' && !it.product) return fail('En productos/inventario, selecciona el producto en cada línea');
       // El descuento es un MONTO en $, no un %: si supera cantidad × precio la línea queda negativa.
-      if (lineBase(it) < -0.005) return fail(`El descuento de "${it.description || 'la línea'}" (${fmt(it.discount)}) es mayor que cantidad × precio (${fmt((Number(it.quantity) || 0) * (Number(it.unitPrice) || 0))}). El descuento va en dólares, no en porcentaje: para un producto bonificado pon el valor completo de la línea.`);
+      if (lineBase(it) < -0.005) return fail(`El descuento de "${it.description || 'la línea'}" (${fmt(it.discount)}) es mayor que cantidad × precio (${fmt((Number(it.quantity) || 0) * (Number(it.unitPrice) || 0))}). Supera el 100 %: para un producto bonificado pon 100 en «Desc. %».`);
       if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.category)) return fail('En activos fijos, selecciona la categoría de activo fijo');
       if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.name || it.description)) return fail('El activo fijo necesita un nombre');
       if (it.lineType === 'GASTO') {
@@ -1018,7 +1002,7 @@ export default function PurchaseInvoices() {
               <tr key={p._id} className={`border-t ${anulada ? 'text-slate-400' : ''}`}>
                 {/* Serie + tipo en una sola celda, sin partir el número en 3 líneas. */}
                 <td className="px-3 py-2 whitespace-nowrap">
-                  <div className={`font-mono text-xs ${anulada ? 'line-through' : 'text-slate-700'}`}>{p.serie}</div>
+                  <a href={`/accounting/purchases/${p._id}`} target="_blank" rel="noopener" title="Ver la factura completa (pestaña nueva)" className={`font-mono text-xs hover:underline ${anulada ? 'line-through' : 'text-sky-700'}`}>{p.serie || '(sin número)'}</a>
                   <div className="text-[10px] text-slate-400">{DOC_TYPE_LABEL[p.docType] || p.docType}{p.importedFromXml ? ' · XML' : ''}</div>
                 </td>
                 <td className="px-3 py-2 whitespace-nowrap">{fmtDate(p.fechaEmision)}</td>
@@ -1227,7 +1211,7 @@ export default function PurchaseInvoices() {
                 <table className="w-full text-sm">
                   <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
                     <th className="py-1 pr-2">Producto</th><th className="py-1 px-2">Bodega</th>
-                    <th className="py-1 px-2 text-right">Cant.</th><th className="py-1 px-2 text-right">Precio</th><th className="py-1 px-2 text-right" title="Descuento en dólares (no porcentaje)">Desc. $</th><th className="py-1 px-2">IVA</th>
+                    <th className="py-1 px-2 text-right">Cant.</th><th className="py-1 px-2 text-right">Precio</th><th className="py-1 px-2 text-right" title="Descuento en porcentaje (100 = bonificado). Debajo se ve su valor en dólares.">Desc. %</th><th className="py-1 px-2">IVA</th>
                     <th className="py-1 px-2">Centro de costo</th><th className="py-1 px-2">Retención</th><th className="py-1 px-2 text-right">Total</th><th></th>
                   </tr></thead>
                   <tbody>
@@ -1250,7 +1234,18 @@ export default function PurchaseInvoices() {
                           <td className="py-1.5 px-2 min-w-[140px]"><SearchableSelect options={[{ _id: '', name: 'General' }, ...warehouses.filter((w) => w.active !== false)]} value={it.warehouse} onChange={(v) => onPickWarehouse(it._uid, v)} getLabel={(w) => w.name} getSearchText={(w) => `${w.name} ${w.code || ''}`} renderOption={(w) => (<span className="block">{w.name}{w.code ? <span className="block text-[11px] text-slate-400 font-mono">{w.code}</span> : null}</span>)} placeholder="General" searchPlaceholder="Buscar bodega…" size="sm" menuMinWidth={320} wrapOptions /></td>
                           <td className="py-1.5 px-2 w-20"><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(it._uid, { quantity: +e.target.value })} className={`${inputCls} text-right`} /></td>
                           <td className="py-1.5 px-2 w-24"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value })} className={`${inputCls} text-right`} /></td>
-                          <td className="py-1.5 px-2 w-20"><NumericInput step="0.01" value={it.discount} onChange={(e) => setItem(it._uid, { discount: +e.target.value })} className={`${inputCls} text-right`} /></td>
+                          <td className="py-1.5 px-2 w-20">
+                            <NumericInput
+                              step="0.01" min="0" max="100" aria-label="Descuento en porcentaje"
+                              value={pctDeLinea(it)}
+                              onChange={(e) => {
+                                const pct = Math.min(100, Math.max(0, Number(e.target.value) || 0));
+                                setItem(it._uid, { _descPct: pct, discount: descuentoPorPct(it, pct) });
+                              }}
+                              className={`${inputCls} text-right`}
+                            />
+                            {Number(it.discount) > 0 && <div className="text-[10px] text-slate-400 text-right font-mono mt-0.5">-${fmt(it.discount)}</div>}
+                          </td>
                           <td className="py-1.5 px-2 w-20"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></td>
                           <td className="py-1.5 px-2 min-w-[130px]"><SearchableSelect options={costCenters} value={it.costCenter} onChange={(v) => setItem(it._uid, { costCenter: v })} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear size="sm" /></td>
                           <td className="py-1.5 px-2">{retCell(it)}</td>

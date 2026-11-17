@@ -1,5 +1,5 @@
 const router = require('express').Router();
-const { getSales, getSale, createSale, cancelSale, collectSale, previewDiscounts } = require('../controllers/saleController');
+const { getSales, getSale, getSaleDetail, createSale, cancelSale, collectSale, previewDiscounts } = require('../controllers/saleController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
@@ -9,6 +9,7 @@ router.use(require('../middleware/accountingScope')({ reads: true }));
 // registró, cobró o facturó (utils/soloDelCajero).
 router.get('/', requireRole('admin', 'contabilidad', 'cajero'), getSales);
 router.post('/discount-preview', requireRole('admin', 'contabilidad', 'cajero'), previewDiscounts);
+router.get('/:id/detalle', requireRole('admin', 'contabilidad', 'cajero'), getSaleDetail);
 router.get('/:id', requireRole('admin', 'contabilidad', 'cajero'), getSale);
 router.post('/', requireRole('admin', 'cajero', 'contabilidad'), createSale);
 router.post('/:id/collect', requireRole('admin', 'contabilidad', 'cajero'), collectSale);

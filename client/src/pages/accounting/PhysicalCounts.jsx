@@ -7,8 +7,9 @@ import Field from '../../components/Field';
 import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import {
   HiOutlinePlus, HiOutlineClipboardDocumentCheck, HiOutlineCheck, HiOutlineDocumentText,
-  HiOutlineMagnifyingGlass,
+  HiOutlineMagnifyingGlass, HiOutlineTrash,
 } from 'react-icons/hi2';
+import { useAuth } from '../../context/AuthContext';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import DateInput from '../../components/DateInput';
@@ -166,6 +167,22 @@ export default function PhysicalCounts() {
   }, [selected, busqueda]);
 
   const esBorrador = selected?.status === 'BORRADOR';
+  // Descartar un borrador: solo quien puede confirmar (admin, contabilidad y su asistente).
+  const { hasRole } = useAuth();
+  const puedeEliminar = hasRole('admin', 'contabilidad');
+  const eliminarBorrador = async () => {
+    if (!selected || busy) return;
+    const contados = (selected.items || []).filter((it) => it.counted).length;
+    if (!window.confirm(`¿Eliminar el borrador ${selected.code}?${contados ? ` Se perderá lo contado de ${contados} producto(s).` : ''} El inventario no cambia.`)) return;
+    setBusy(true);
+    try {
+      await api.delete(`/inventory-advanced/counts/${selected._id}`);
+      toast.success(`Borrador ${selected.code} eliminado.`);
+      setSelected(null);
+      load();
+    } catch (e) { toast.error(e.response?.data?.message || 'No se pudo eliminar el borrador'); }
+    finally { setBusy(false); }
+  };
 
   return (
     <div className="space-y-4">
@@ -237,6 +254,12 @@ export default function PhysicalCounts() {
                       className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1">
                       <HiOutlineCheck /> Confirmar
                     </button>
+                    {puedeEliminar && (
+                      <button onClick={eliminarBorrador} disabled={busy}
+                        className="px-3 py-1.5 bg-white border border-rose-200 text-rose-600 rounded-lg text-sm flex items-center gap-1 hover:bg-rose-50 disabled:opacity-50">
+                        <HiOutlineTrash className="w-4 h-4" /> Eliminar borrador
+                      </button>
+                    )}
                   </>
                 )}
               </div>

@@ -85,3 +85,23 @@ test('las fechas son días completos y funcionan por separado', async () => {
   assert.equal((await listar(clinicId, userId, { endDate: ymd(hoy) })).total, 7);
   assert.equal((await listar(clinicId, userId, { startDate: ymd(manana) })).total, 0);
 });
+
+test('filtra por producto/servicio vendido (nov-2026)', async () => {
+  const { clinicId, userId } = await seed();
+  const Sale = require('../models/Sale');
+  const hemograma = new mongoose.Types.ObjectId();
+  const consulta = new mongoose.Types.ObjectId();
+  const linea = (product) => ({ product, productName: 'x', quantity: 1, unitPrice: 10, subtotal: 10 });
+  const [conHemograma, soloConsulta] = [new mongoose.Types.ObjectId(), new mongoose.Types.ObjectId()];
+  await Sale.collection.insertMany([
+    { _id: conHemograma, clinic: clinicId, items: [linea(consulta), linea(hemograma)], subtotal: 20, taxAmount: 0, total: 20 },
+    { _id: soloConsulta, clinic: clinicId, items: [linea(consulta)], subtotal: 10, taxAmount: 0, total: 10 },
+  ]);
+  await Invoice.collection.updateOne({ clinic: clinicId, secuencial: '3341' }, { $set: { sale: conHemograma } });
+  await Invoice.collection.updateOne({ clinic: clinicId, secuencial: '3342' }, { $set: { sale: soloConsulta } });
+
+  const r = await listar(clinicId, userId, { product: String(hemograma) });
+  assert.deepEqual(r.invoices.map((i) => i.secuencial), ['3341']);
+  assert.equal((await listar(clinicId, userId, { product: String(consulta) })).total, 2);
+  assert.equal((await listar(clinicId, userId, { product: 'no-es-un-id' })).total, 0, 'un id inválido no trae todo');
+});

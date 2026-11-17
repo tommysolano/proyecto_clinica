@@ -139,8 +139,7 @@ function calcTotals(invoice) {
     if (base < -0.005) {
       throw Object.assign(new Error(
         `El descuento de la línea "${it.description || '(sin descripción)'}" ($${Number(it.discount).toFixed(2)}) `
-        + 'es mayor que cantidad × precio. El descuento va en dólares, no en porcentaje '
-        + '(para un producto bonificado, ponga como descuento el valor completo de la línea).'
+        + 'es mayor que cantidad × precio (más del 100 %). Para un producto bonificado use un descuento del 100 %.'
       ), { status: 400 });
     }
     it.subtotal = base;
@@ -621,11 +620,21 @@ exports.list = async (req, res) => {
 };
 
 exports.get = async (req, res) => {
-  const p = await PurchaseInvoice.findOne({ _id: req.params.id, ...scopedDocuments(req, 'items.costCenter') })
+  let q = PurchaseInvoice.findOne({ _id: req.params.id, ...scopedDocuments(req, 'items.costCenter') })
     .populate('supplier').populate('items.account', 'code name').populate('items.product', 'name code')
     // Encabezado del comprobante de retención emitido (número, autorización/estado, fecha, periodo):
     // la contadora quiere verlo en el modal ANTES de los porcentajes, como en su sistema anterior.
     .populate('retentionVoucher', 'estab ptoEmi secuencial serie fechaEmision periodoFiscal estado numeroAutorizacion totalRetenido retentions');
+  // `?view=1` = vista de SOLO LECTURA («Ver factura»): nombres en vez de ids para mostrarlos.
+  // Va aparte porque el formulario de edición reenvía lo que recibe y esos campos (usuarios,
+  // bodegas…) deben seguir llegándole como ids.
+  if (req.query.view) {
+    q = q.populate('costCenter', 'code name').populate('items.costCenter', 'code name')
+      .populate('items.warehouse', 'name').populate('items.inventoryCategory', 'name')
+      .populate('items.accountSplits.account', 'code name').populate('retentions.account', 'code name')
+      .populate('createdBy', 'name').populate('authorizedBy', 'name');
+  }
+  const p = await q;
   if (!p) return res.status(404).json({ message: 'No encontrada' });
   res.json(p);
 };
