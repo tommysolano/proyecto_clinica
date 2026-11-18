@@ -133,7 +133,11 @@ async function openPayableForInvoice(inv, sup, req, session) {
 function calcTotals(invoice) {
   let s0 = 0, s5 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0;
   for (const it of invoice.items || []) {
-    const base = (it.quantity || 1) * (it.unitPrice || 0) - (it.discount || 0);
+    // Redondeado a centavos (como el precioTotalSinImpuesto del SRI): 3 × 10,40 − 31,20 da
+    // 3,5e-15 en coma flotante, la línea «bonificada» pasaba el filtro `> 0` del asiento y
+    // luego se redondeaba a 0,00 → «Una linea debe tener debito o credito».
+    let base = +((it.quantity || 1) * (it.unitPrice || 0) - (it.discount || 0)).toFixed(2);
+    if (Object.is(base, -0)) base = 0;
     // El descuento es un MONTO en dólares (como en el XML del SRI), no un porcentaje. Un
     // descuento mayor que cantidad × precio deja la línea en negativo y el asiento no cuadra.
     if (base < -0.005) {
@@ -729,7 +733,8 @@ async function postPurchaseJournal(inv, req, session, sourceAction = 'POST') {
     // inventario con costo 0 pero no mueve dinero, así que NO lleva línea en el asiento.
     // Antes se agregaba una línea con débito 0 y el asiento se rechazaba con el críptico
     // «Una linea debe tener debito o credito».
-    if (!(Number(it.subtotal) > 0)) continue;
+    // Se compara YA redondeado: un residuo de coma flotante (3,5e-15) no es un valor.
+    if (!(+(Number(it.subtotal) || 0).toFixed(2) > 0)) continue;
     const accountId = it.account;
     // Nunca omitir una línea sin cuenta en silencio: eso dejaba el asiento descuadrado y el
     // usuario veía el críptico "Asiento descuadrado" en vez de saber QUÉ línea falta configurar.
@@ -739,7 +744,7 @@ async function postPurchaseJournal(inv, req, session, sourceAction = 'POST') {
         + 'Revise su categoría (inventario/activo) o asígnele una cuenta de gasto antes de guardar la factura.'
       ), { status: 400 });
     }
-    lines.push({ account: accountId, debit: it.subtotal, credit: 0, description: it.description, costCenter: it.costCenter || inv.costCenter || null });
+    lines.push({ account: accountId, debit: +Number(it.subtotal).toFixed(2), credit: 0, description: it.description, costCenter: it.costCenter || inv.costCenter || null });
   }
   if (inv.iva > 0) {
     // IVA con derecho a crédito tributario (deducible) vs IVA no recuperable que se carga al gasto.

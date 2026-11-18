@@ -359,3 +359,23 @@ test('authorize sigue siendo ESTRICTO: inventario sin categoría no se puede aut
   assert.match(r.payload.message, /categoría contable/i);
   assert.equal((await PurchaseInvoice.findById(inv._id)).status, 'POR_AUTORIZAR', 'sigue pendiente (no se contabilizó)');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regresión 18-11-2026: 3 × 10,40 − 31,20 (descuento 100 %) da 3,5e-15 en coma flotante;
+// la línea bonificada pasaba como «con valor» y el asiento se rechazaba con
+// «Una linea debe tener debito o credito».
+test('producto bonificado al 100 % con residuo de coma flotante: registra y cuadra', async () => {
+  const { clinicId, userId, invCat } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  const prod = await makeInvProduct(clinicId, invCat);
+  const items = [
+    { ...invLine(prod._id, 9, 10.4), discount: 0 },
+    { ...invLine(prod._id, 3, 10.4), discount: 31.2 },
+  ];
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: H.docDate(), items }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  assert.equal(r.payload.total, 93.6);
+  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.01'), 93.6);
+  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
+  assert.equal((await Product.findById(prod._id)).stock, 12);
+});

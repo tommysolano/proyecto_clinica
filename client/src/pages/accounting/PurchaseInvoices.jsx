@@ -1232,9 +1232,9 @@ export default function PurchaseInvoices() {
                             {missing && <div className="text-[11px] text-rose-600 flex items-center gap-1 mt-1"><HiOutlineExclamationTriangle className="w-3.5 h-3.5" /> {cat ? 'La categoría del producto no tiene cuenta de inventario' : 'El producto no tiene categoría contable'}</div>}
                           </td>
                           <td className="py-1.5 px-2 min-w-[140px]"><SearchableSelect options={[{ _id: '', name: 'General' }, ...warehouses.filter((w) => w.active !== false)]} value={it.warehouse} onChange={(v) => onPickWarehouse(it._uid, v)} getLabel={(w) => w.name} getSearchText={(w) => `${w.name} ${w.code || ''}`} renderOption={(w) => (<span className="block">{w.name}{w.code ? <span className="block text-[11px] text-slate-400 font-mono">{w.code}</span> : null}</span>)} placeholder="General" searchPlaceholder="Buscar bodega…" size="sm" menuMinWidth={320} wrapOptions /></td>
-                          <td className="py-1.5 px-2 w-20"><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(it._uid, { quantity: +e.target.value })} className={`${inputCls} text-right`} /></td>
-                          <td className="py-1.5 px-2 w-24"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value })} className={`${inputCls} text-right`} /></td>
-                          <td className="py-1.5 px-2 w-20">
+                          <td className="py-1.5 px-2 min-w-[80px]"><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(it._uid, { quantity: +e.target.value })} className={`${inputCls} text-right`} /></td>
+                          <td className="py-1.5 px-2 min-w-[100px]"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value })} className={`${inputCls} text-right`} /></td>
+                          <td className="py-1.5 px-2 min-w-[90px]">
                             <NumericInput
                               step="0.01" min="0" max="100" aria-label="Descuento en porcentaje"
                               value={pctDeLinea(it)}
@@ -1246,10 +1246,10 @@ export default function PurchaseInvoices() {
                             />
                             {Number(it.discount) > 0 && <div className="text-[10px] text-slate-400 text-right font-mono mt-0.5">-${fmt(it.discount)}</div>}
                           </td>
-                          <td className="py-1.5 px-2 w-20"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></td>
+                          <td className="py-1.5 px-2 min-w-[110px]"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></td>
                           <td className="py-1.5 px-2 min-w-[130px]"><SearchableSelect options={costCenters} value={it.costCenter} onChange={(v) => setItem(it._uid, { costCenter: v })} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear size="sm" /></td>
                           <td className="py-1.5 px-2">{retCell(it)}</td>
-                          <td className="py-1.5 px-2 text-right font-mono text-slate-700 w-24">{fmt(lineBase(it))}</td>
+                          <td className="py-1.5 px-2 text-right font-mono text-slate-700 min-w-[90px] whitespace-nowrap">{fmt(lineBase(it))}</td>
                           <td className="py-1.5 pl-1"><button type="button" onClick={() => removeItem(it._uid)} className="text-rose-500 hover:text-rose-600"><HiOutlineXMark className="w-4 h-4" /></button></td>
                         </tr>
                       );
@@ -1302,7 +1302,7 @@ export default function PurchaseInvoices() {
                             </td>
                             <td className="py-1.5 px-2 min-w-[160px]"><input value={it.description} onChange={(e) => setItem(it._uid, { description: e.target.value })} placeholder="Detalle del gasto" className={inputCls} /></td>
                             <td className="py-1.5 px-2 w-24"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value, quantity: 1 })} className={`${inputCls} text-right`} /></td>
-                            <td className="py-1.5 px-2 w-20"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></td>
+                            <td className="py-1.5 px-2 min-w-[110px]"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></td>
                             <td className="py-1.5 px-2 min-w-[130px]"><SearchableSelect options={costCenters} value={it.costCenter} onChange={(v) => setItem(it._uid, { costCenter: v })} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear size="sm" /></td>
                             <td className="py-1.5 px-2">{retCell(it)}</td>
                             <td className="py-1.5 pl-1">
