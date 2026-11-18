@@ -10,6 +10,7 @@ const CallCenterRate = require('../models/CallCenterRate');
 const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const ClinicalRecord = require('../models/ClinicalRecord');
 const Sale = require('../models/Sale');
+const Product = require('../models/Product');
 const Referral = require('../models/Referral');
 const Conversation = require('../models/Conversation');
 const Patient = require('../models/Patient');
@@ -532,6 +533,14 @@ async function computeCommissions(clinicId, startDate, endDate) {
     }
     const services = [...legacyServices, ...agendaServices];
     const serviciosCita = serviciosDeCita(appt, catalogoExclusiones, { soloCobrables: true });
+    // Cada servicio de agenda vale lo pagado por ÉL, no toda la visita (nov-2026, ver basesPorServicio).
+    const basesCon = basesPorServicio(appt, serviciosCita, catalogoExclusiones);
+    const basesSin = basesPorServicio(appt, serviciosCita, catalogoExclusiones, { sinIva: true });
+    for (const svc of agendaServices) {
+      const key = normalizeServiceName(svc.name !== '—' ? svc.name : catalogoExclusiones.nombrePorId.get(svc.appointmentService || ''));
+      svc.price = basesCon.has(key) ? basesCon.get(key) : paidValue;
+      svc.priceSinIva = basesSin.has(key) ? basesSin.get(key) : num(valorDeCitaSinIva(appt));
+    }
     const soloExcluidos = (doctor) => serviciosCita.length > 0 && serviciosCita.every((svc) => servicioExcluido(svc, catalogoExclusiones, doctor?._id));
     const excluidoEnReporte = (svc, doctor) => servicioExcluido({
       id: svc.appointmentService || catalogoExclusiones.idPorNombre.get(svc.normalizedName || normalizeServiceName(svc.name)),
@@ -621,7 +630,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
               userId: String(performer._id), userName: performer.name, userRole: performerRole,
               ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
               // Servicio de agenda con tarifa «sin IVA»: el porcentaje va sobre lo pagado sin IVA.
-              amount: calcAmount(cfg, svc.sourceType === 'appointment' && rule.percentWithoutVat ? baseDeRegla(rule, appt) : svc.price), date: appt.date,
+              amount: calcAmount(cfg, svc.sourceType === 'appointment' && rule.percentWithoutVat ? svc.priceSinIva : svc.price), date: appt.date,
               service: svc.name || '—', patient: patientName, source: 'cita atendida', apptId: String(appt._id),
             });
           }
@@ -1092,13 +1101,76 @@ const ordenCita = (x, y) =>
 
 /** Catálogo de servicios de agenda: nombre por id e id por nombre normalizado. */
 async function catalogoServicios() {
-  const items = await AppointmentServiceItem.find({}).select('name excludedCommissionDoctors').lean();
+  const items = await AppointmentServiceItem.find({}).select('name excludedCommissionDoctors product').lean();
+  const prodIds = [...new Set(items.map((s) => s.product && String(s.product)).filter(Boolean))];
+  const prods = prodIds.length ? await Product.find({ _id: { $in: prodIds } }).select('salePrice').lean() : [];
+  const precioProducto = new Map(prods.map((p) => [String(p._id), num(p.salePrice)]));
   return {
     nombrePorId: new Map(items.map((s) => [String(s._id), s.name])),
+    // Producto de inventario de cada servicio de agenda y su precio de lista: con ellos se
+    // reparte el valor de una visita de varios servicios (ver basesPorServicio).
+    productoPorId: new Map(items.filter((s) => s.product).map((s) => [String(s._id), String(s.product)])),
+    precioPorId: new Map(items.filter((s) => s.product).map((s) => [String(s._id), precioProducto.get(String(s.product)) || 0])),
     idPorNombre: new Map(items.map((s) => [normalizeServiceName(s.name), String(s._id)])),
     excludedDoctorsById: new Map(items.map((s) => [String(s._id), new Set((s.excludedCommissionDoctors || []).map(String))])),
   };
 }
+
+/**
+ * BASE DE CADA SERVICIO DE UNA VISITA (nov-2026).
+ *
+ * El porcentaje de una tarifa POR SERVICIO va sobre lo que se pagó por ESE servicio, no
+ * sobre toda la visita. Antes se usaba el valor completo de la cita: una visita «ECO 360 +
+ * Consulta por seguimiento» de $23 pagaba el 30 % de la consulta sobre los $23 ($6,90), y
+ * «Mujer sana 360 + Plan vital femenino» de $58 pagaba el 20 % del plan sobre $58 ($11,60
+ * en vez de $5,80). Con un solo servicio no cambia nada.
+ *
+ * Reparto: con factura, la línea facturada del producto de cada servicio; lo que no se
+ * puede emparejar con una línea (y las citas sin factura, con el valor escrito) se reparte
+ * por el precio de lista de cada servicio o, si alguno no tiene precio, a partes iguales.
+ *
+ * Devuelve Map<svc.key, base> sobre la base de la regla (con o sin IVA).
+ */
+const basesPorServicio = (appt, servicios, catalogo, { sinIva = false } = {}) => {
+  const total = num(sinIva ? valorDeCitaSinIva(appt) : valorDeCita(appt));
+  const out = new Map();
+  if (servicios.length <= 1) {
+    for (const s of servicios) out.set(s.key, total);
+    return out;
+  }
+  const fact = appt?._facturado;
+  const lineas = fact?.ventas > 0 ? (fact.porProducto || {}) : null;
+  let restante = total;
+  const sinLinea = [];
+  const usados = new Set();
+  for (const s of servicios) {
+    const prod = s.id && catalogo.productoPorId?.get(s.id);
+    const linea = lineas && prod && !usados.has(prod) ? lineas[prod] : null;
+    if (linea) {
+      usados.add(prod);
+      const v = num(sinIva ? linea.sinIva : linea.importe);
+      out.set(s.key, v);
+      restante -= v;
+    } else sinLinea.push(s);
+  }
+  restante = Math.max(0, restante);
+  if (sinLinea.length) {
+    const pesos = sinLinea.map((s) => (s.id && catalogo.precioPorId?.get(s.id)) || 0);
+    const suma = pesos.reduce((a, b) => a + b, 0);
+    const conPrecio = pesos.every((p) => p > 0);
+    sinLinea.forEach((s, i) => {
+      const parte = conPrecio && suma > 0 ? pesos[i] / suma : 1 / sinLinea.length;
+      out.set(s.key, +(restante * parte).toFixed(2));
+    });
+  }
+  return out;
+};
+
+/** Base del porcentaje de la tarifa `rule` para el servicio `svc` de la cita. */
+const baseDeServicio = (rule, appt, svc, servicios, catalogo) => {
+  if (servicios.length <= 1) return baseDeRegla(rule, appt);
+  return num(basesPorServicio(appt, servicios, catalogo, { sinIva: !!rule?.percentWithoutVat }).get(svc.key));
+};
 
 const servicioExcluido = (svc, catalogo, doctorId) => !!svc.id && !!doctorId && !!catalogo.excludedDoctorsById.get(String(svc.id))?.has(String(doctorId));
 
@@ -1467,10 +1539,12 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
         // «Gana desde»: atendido antes de esa hora, la tarifa no paga (y la cita sigue
         // cubierta: la base por paciente no la reemplaza).
         const antes = antesDeHora(rule, appt, doctorId);
+        // Lo pagado por ESTE servicio, no por toda la visita (ver basesPorServicio).
+        const base = baseDeServicio(rule, appt, svc, servicios, catalogo);
         agregar({
           ...comun, kind: 'servicio', ruleId: String(rule._id), serviceKey: svc.key, serviceName: svc.name,
-          base: baseDeRegla(rule, appt),
-          amount: repetida || antes ? 0 : calcAmount(cfgDeRegla(rule, appt), baseDeRegla(rule, appt)), repetida,
+          base,
+          amount: repetida || antes ? 0 : calcAmount(cfgDeRegla(rule, appt), base), repetida,
           antesDeHora: antes ? rule.minStartTime : '',
           franja: etiquetaFranja(franjaDeRegla(rule, appt)),
         });
@@ -1513,7 +1587,8 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
     }
     if (!rule) rule = reglaBaseParaCita(doctorId, 'referral', clinicId);
     if (!rule) continue;
-    const base = baseDeRegla(rule, cita);
+    // Tarifa por servicio derivado: sobre lo pagado por ese servicio, no por toda la visita.
+    const base = rule.appointmentService ? baseDeServicio(rule, cita, svc, todosServicios, catalogo) : baseDeRegla(rule, cita);
     agregar({
       doctorId, apptId: String(cita._id), date: cita.date, clinicId,
       patient: nombrePaciente(cita.patient), base,
@@ -3242,3 +3317,6 @@ exports.doctorReportPdf = async (req, res) => {
     res.status(500).json({ message: 'Error al generar el PDF de comisiones', error: error.message });
   }
 };
+
+// Para auditorías y tests: el núcleo del cálculo de Comisiones > Doctores.
+exports._calcularComisionesDoctores = (...args) => calcularComisionesDoctores(...args);

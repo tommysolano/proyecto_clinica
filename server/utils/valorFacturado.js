@@ -31,11 +31,11 @@ async function facturadoPorCita(appointmentIds) {
   const out = new Map();
   if (!ids.length) return out;
   const ventas = await Sale.find({ appointment: { $in: ids }, status: 'completada' })
-    .select('appointment items.category items.lineTotal items.unitPrice items.quantity items.discount items.taxAmount total')
+    .select('appointment items.product items.category items.lineTotal items.unitPrice items.quantity items.discount items.taxAmount total')
     .lean();
   for (const v of ventas) {
     const k = String(v.appointment);
-    const fila = out.get(k) || { servicios: 0, serviciosSinIva: 0, productos: 0, total: 0, ventas: 0 };
+    const fila = out.get(k) || { servicios: 0, serviciosSinIva: 0, productos: 0, total: 0, ventas: 0, porProducto: {} };
     let servicios = 0;
     let productos = 0;
     // IVA de las líneas de servicio: lo que se descuenta para la comisión «sin IVA».
@@ -45,6 +45,15 @@ async function facturadoPorCita(appointmentIds) {
       if (!it.category || SERVICIO.has(it.category)) {
         servicios += importeLinea(it);
         ivaServicios += Number(it.taxAmount) || 0;
+        // Lo facturado de CADA servicio (nov-2026): el porcentaje de comisión de un
+        // servicio va sobre SU línea, no sobre toda la visita (ver basesPorServicio).
+        if (it.product) {
+          const pid = String(it.product);
+          const pp = fila.porProducto[pid] || { importe: 0, sinIva: 0 };
+          pp.importe += importeLinea(it);
+          pp.sinIva += Math.max(0, importeLinea(it) - (Number(it.taxAmount) || 0));
+          fila.porProducto[pid] = pp;
+        }
       } else productos += importeLinea(it);
     }
     // El total de la venta manda (incluye IVA); las líneas solo reparten entre servicio y producto.
@@ -68,6 +77,10 @@ async function facturadoPorCita(appointmentIds) {
     f.serviciosSinIva = r2(f.serviciosSinIva);
     f.productos = r2(f.productos);
     f.total = r2(f.total);
+    for (const pp of Object.values(f.porProducto)) {
+      pp.importe = r2(pp.importe);
+      pp.sinIva = r2(pp.sinIva);
+    }
   }
   return out;
 }

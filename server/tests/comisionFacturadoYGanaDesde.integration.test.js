@@ -86,7 +86,10 @@ test('el valor generado usa lo facturado (servicios) y, sin ventas, lo escrito',
   await Sale.updateOne({ _id: v._id }, { $set: { status: 'anulada' } });
 
   const mapa = await facturadoPorCita([nueva._id, anulada._id]);
-  assert.deepStrictEqual(mapa.get(String(nueva._id)), { servicios: 40, serviciosSinIva: 40, productos: 15, total: 55, ventas: 1 });
+  const { porProducto, ...facturado } = mapa.get(String(nueva._id));
+  assert.deepStrictEqual(facturado, { servicios: 40, serviciosSinIva: 40, productos: 15, total: 55, ventas: 1 });
+  // Solo las líneas de servicio quedan por producto (base del % de cada servicio).
+  assert.deepStrictEqual(Object.values(porProducto).map((p) => p.importe), [40]);
   assert.strictEqual(mapa.has(String(anulada._id)), false);
 
   const r = await llamar(ctrl.doctorSummary, reqDe(sede._id, { query: { start: '2026-11-01', end: '2026-11-30', clinic: 'all' } }));
