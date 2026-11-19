@@ -177,3 +177,30 @@ test('cortesía o canje de un solo servicio en una cita con varios servicios', a
   assert.strictEqual(l[consulta.name], undefined);
   assert.strictEqual(l[eco.name].amount, 1.5);
 });
+
+test('Vital Femenino antiguo y plan sin valor usan el precio del producto de su empresa', async () => {
+  const { sede, doctor, cita } = await escenario();
+  const company = new mongoose.Types.ObjectId();
+  const nombre = 'PLAN VITAL FEMENINO (ECOGRAFIA DE MAMAS - CONTROL HORMONAL - BIORESONANCIA )';
+  const p = await Product.collection.insertOne({ name: nombre, code: 'PLAN', salePrice: 29, clinic: sede._id, taxCategory: 'IVA_0' });
+  const plan = await AppointmentServiceItem.create({ clinic: sede._id, company, name: nombre, slug: nombre.toLowerCase(), product: p.insertedId });
+  const antiguo = await AppointmentServiceItem.create({ clinic: sede._id, company, name: 'Vital Femenino', slug: 'vital femenino' });
+  for (const s of [antiguo, plan]) await CommissionRule.create({
+    clinic: sede._id, name: `Tarifa ${s.name}`, managedFromDoctorCommissions: true,
+    doctorCommissionScope: 'service', doctorServiceDoctor: doctor._id, appointmentService: s._id,
+    targetType: 'user', users: [doctor._id], active: true, amountType: 'percent', percent: 20,
+  });
+  const a = await cita({ date: new Date('2026-10-03T17:00:00Z'), serviceItem: antiguo._id, serviceName: antiguo.name, additionalServices: [], agreedValue: null });
+  const b = await cita({ date: new Date('2026-10-31T17:00:00Z'), serviceItem: plan._id, serviceName: plan.name, additionalServices: [], agreedValue: null });
+  const calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-10-01', end: '2026-10-31' });
+  for (const apt of [a, b]) {
+    const linea = calc.lineas.find((l) => l.apptId === String(apt._id));
+    assert.strictEqual(linea.base, 29);
+    assert.strictEqual(linea.amount, 5.8);
+  }
+  let payload;
+  await ctrl.report({ clinicId: sede._id, query: { start: '2026-10-01', end: '2026-10-31', user: String(doctor._id) } }, {
+    json: (p) => { payload = p; }, status: (s) => ({ json: (p) => { throw new Error(`${s}: ${JSON.stringify(p)}`); } }),
+  });
+  assert.strictEqual(payload.total, 11.6);
+});

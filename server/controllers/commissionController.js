@@ -1115,16 +1115,27 @@ const ordenCita = (x, y) =>
 
 /** Catálogo de servicios de agenda: nombre por id e id por nombre normalizado. */
 async function catalogoServicios() {
-  const items = await AppointmentServiceItem.find({}).select('name excludedCommissionDoctors product').lean();
+  const items = await AppointmentServiceItem.find({}).select('name company excludedCommissionDoctors product').lean();
   const prodIds = [...new Set(items.map((s) => s.product && String(s.product)).filter(Boolean))];
   const prods = prodIds.length ? await Product.find({ _id: { $in: prodIds } }).select('salePrice taxRate taxCategory priceIncludesVat').lean() : [];
   const precioProducto = new Map(prods.filter((p) => p.salePrice != null).map((p) => [String(p._id), p]));
+  const precioPorId = new Map(items.filter((s) => s.product && precioProducto.has(String(s.product))).map((s) => [String(s._id), precioProducto.get(String(s.product))]));
+  // «Vital Femenino» es el nombre antiguo de agenda del plan. Se usa el precio
+  // del producto de su propia empresa solo cuando existe una única coincidencia.
+  for (const s of items) {
+    if (s.product || !s.company || normalizeServiceName(s.name) !== 'vital femenino') continue;
+    const candidatos = items.filter((otro) => String(otro.company || '') === String(s.company)
+      && /^plan vital femenino(?:\s*\(|$)/.test(normalizeServiceName(otro.name))
+      && otro.product && precioProducto.has(String(otro.product)));
+    const productos = new Set(candidatos.map((otro) => String(otro.product)));
+    if (productos.size === 1) precioPorId.set(String(s._id), precioProducto.get([...productos][0]));
+  }
   return {
     nombrePorId: new Map(items.map((s) => [String(s._id), s.name])),
     // Producto de inventario de cada servicio de agenda y su precio de lista: con ellos se
     // reparte el valor de una visita de varios servicios (ver basesPorServicio).
     productoPorId: new Map(items.filter((s) => s.product).map((s) => [String(s._id), String(s.product)])),
-    precioPorId: new Map(items.filter((s) => s.product && precioProducto.has(String(s.product))).map((s) => [String(s._id), precioProducto.get(String(s.product))])),
+    precioPorId,
     idPorNombre: new Map(items.map((s) => [normalizeServiceName(s.name), String(s._id)])),
     excludedDoctorsById: new Map(items.map((s) => [String(s._id), new Set((s.excludedCommissionDoctors || []).map(String))])),
   };
@@ -1139,8 +1150,8 @@ async function catalogoServicios() {
  * «Mujer sana 360 + Plan vital femenino» de $58 pagaba el 20 % del plan sobre $58 ($11,60
  * en vez de $5,80). Con un solo servicio no cambia nada.
  *
- * Antes del inicio de la facturación electrónica se usa el precio de inventario de cada
- * servicio, sin repartir el importe global de la cita. Después, con factura, se usa la línea
+ * Para Rosi, antes de la facturación electrónica y en citas posteriores sin venta ni valor,
+ * se usa el precio de inventario de cada servicio. Después, con factura, se usa la línea
  * facturada del producto de cada servicio; lo que no se
  * puede emparejar con una línea (y las citas sin factura, con el valor escrito) se reparte
  * por el precio de lista de cada servicio o, si alguno no tiene precio, a partes iguales.
@@ -1152,7 +1163,8 @@ const basesPorServicio = (appt, servicios, catalogo, { sinIva = false, paraRosi 
   const out = new Map();
   // Las fechas de la agenda son fechas de calendario almacenadas en UTC.
   const dia = new Date(appt.date).toISOString().slice(0, 10);
-  const historica = paraRosi && dia <= '2026-10-29';
+  const historica = paraRosi && (dia <= '2026-10-29'
+    || (!(appt?._facturado?.ventas > 0) && valorDeCita(appt) == null));
   const todos = serviciosDeCita(appt, catalogo);
   const tienePlan = todos.some((s) => /\bplan vital (?:femenino|masculino)\b/.test(s.key));
   const precioDe = (s) => {
