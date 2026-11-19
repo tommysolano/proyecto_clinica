@@ -20,6 +20,7 @@ const forge = require('node-forge');
 const H = require('./_integrationHelpers');
 
 process.env.INVOICE_ENCRYPTION_KEY = process.env.INVOICE_ENCRYPTION_KEY || 'clave-de-pruebas-muy-larga-123456';
+process.env.PUBLIC_API_URL = 'https://clinica.example/api';
 
 const ClinicalRecord = require('../models/ClinicalRecord');
 const Clinic = require('../models/Clinic');
@@ -29,6 +30,8 @@ const userCtrl = require('../controllers/userController');
 const recordCtrl = require('../controllers/clinicalRecordController');
 const { decrypt } = require('../modules/invoicing/ec/crypto');
 const { USER_CERTS_DIR, rutaCertificado } = require('../utils/pdfSignature');
+const SignedDocumentVerification = require('../models/SignedDocumentVerification');
+const crypto = require('crypto');
 
 // El PDF de verdad lo genera puppeteer; aquí se sustituye por un PDF mínimo
 // pero VÁLIDO, porque la firma sí se ejecuta de verdad sobre él.
@@ -224,6 +227,25 @@ test('la receta sale FIRMADA con el certificado del médico', async () => {
   // Y el recuadro visible, que es lo único que se ve en papel.
   assert.match(htmlCapturado, /FIRMADO ELECTRÓNICAMENTE POR/);
   assert.match(htmlCapturado, /JUAN PEREZ MEDICO/);
+  assert.match(htmlCapturado, /class="firma-e__qr" src="data:image\/png;base64,/);
+  const registro = await SignedDocumentVerification.findOne().lean();
+  assert.equal(registro.sha256, crypto.createHash('sha256').update(r.payload).digest('hex'));
+  assert.equal(registro.tipo, 'receta');
+  const qrEsperado = await require('qrcode').toDataURL(
+    `https://clinica.example/api/verificar-documento/${registro.token}`,
+    { errorCorrectionLevel: 'M', margin: 2, width: 300 },
+  );
+  assert.ok(htmlCapturado.includes(qrEsperado), 'el QR apunta al registro del PDF emitido');
+  const app = require('express')();
+  app.use('/api/verificar-documento', require('../routes/signedDocumentVerification'));
+  const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
+  try {
+    const base = `http://127.0.0.1:${server.address().port}/api/verificar-documento/`;
+    const pagina = await fetch(base + registro.token);
+    assert.equal(pagina.status, 200);
+    assert.match(await pagina.text(), new RegExp(registro.sha256));
+    assert.equal((await fetch(base + '0'.repeat(48))).status, 404);
+  } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
 test('firma el médico que ATENDIÓ, aunque el PDF lo imprima recepción', async () => {
@@ -238,6 +260,38 @@ test('firma el médico que ATENDIÓ, aunque el PDF lo imprima recepción', async
   assert.match(r.payload.toString('latin1'), /adbe\.pkcs7\.detached/);
 });
 
+test('el formulario HCU 002 incluye un QR y registra el PDF firmado', async () => {
+  const { clinicId, patient, doctor } = await seed();
+  await subirCert(doctor, hacerP12({ password: 'clave123' }), 'clave123');
+  const followUpId = await crearSeguimiento(clinicId, doctor, patient);
+  const state = { statusCode: 200, headers: {} };
+  const res = {
+    status: (c) => { state.statusCode = c; return res; },
+    json: (p) => { state.payload = p; return res; },
+    setHeader: (n, v) => { state.headers[n] = v; return res; },
+    end: (b) => { state.payload = b; return res; },
+  };
+  await recordCtrl.printMspForm(H.mockReq(clinicId, doctor._id, {}, {
+    role: 'doctor', params: { patientId: String(patient._id), followUpId },
+  }), res);
+  assert.equal(state.statusCode, 200, JSON.stringify(state.payload));
+  assert.equal(state.headers['X-Firma-Electronica'], 'si');
+  assert.match(htmlCapturado, /class="firma-e__qr" src="data:image\/png;base64,/);
+  const registro = await SignedDocumentVerification.findOne().lean();
+  assert.equal(registro.tipo, 'hcu002');
+  assert.equal(registro.sha256, crypto.createHash('sha256').update(state.payload).digest('hex'));
+});
+
+test('si falla la firma no se entrega un PDF con QR ni se registra', async () => {
+  const { clinicId, patient, doctor } = await seed();
+  await subirCert(doctor, hacerP12({ password: 'clave123' }), 'clave123');
+  const followUpId = await crearSeguimiento(clinicId, doctor, patient);
+  fs.writeFileSync(rutaCertificado(doctor._id), 'certificado dañado');
+  const r = await imprimirReceta(clinicId, doctor, 'doctor', patient, followUpId);
+  assert.equal(r.statusCode, 500);
+  assert.equal(await SignedDocumentVerification.countDocuments(), 0);
+});
+
 test('sin certificado la receta se emite igual, pero sin firma ni promesas', async () => {
   const { clinicId, patient, doctor } = await seed();
   const followUpId = await crearSeguimiento(clinicId, doctor, patient);
@@ -250,6 +304,8 @@ test('sin certificado la receta se emite igual, pero sin firma ni promesas', asy
   // Aparece el nombre, pero NO se dice que esté firmado.
   assert.match(htmlCapturado, /Dra\. Salas/);
   assert.doesNotMatch(htmlCapturado, /FIRMADO ELECTRÓNICAMENTE POR/);
+  assert.doesNotMatch(htmlCapturado, /class="firma-e__qr"/);
+  assert.equal(await SignedDocumentVerification.countDocuments(), 0);
 });
 
 test('un certificado que caducó después de subirlo deja de firmar', async () => {

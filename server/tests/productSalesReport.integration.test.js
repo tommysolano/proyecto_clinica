@@ -10,6 +10,11 @@ const H = require('./_integrationHelpers');
 const sale = require('../controllers/saleController');
 const reports = require('../controllers/salesReportsController');
 const Sale = require('../models/Sale');
+const Clinic = require('../models/Clinic');
+const Company = require('../models/Company');
+const CostCenter = require('../models/CostCenter');
+const { invalidateCompanyCache } = require('../utils/companies');
+const accountingScope = require('../middleware/accountingScope');
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -75,4 +80,53 @@ test('con IVA: subtotal IVA + IVA = total de las líneas del producto', async ()
   assert.equal(d.general.iva, 3);
   assert.equal(d.general.total, 23);
   assert.equal(d.cobros.total, 23);
+});
+
+test('el detalle abre consolidado desde cualquier sucursal y respeta el centro elegido', async () => {
+  const { clinicId: central, userId } = await H.seedClinic();
+  const { ObjectId } = H.mongoose.Types;
+  const lab = new ObjectId();
+  const ajena = new ObjectId();
+  const empresa = await Company.create({ name: 'Empresa' });
+  const otraEmpresa = await Company.create({ name: 'Otra empresa' });
+  const ccCentral = new ObjectId();
+  const ccLab = new ObjectId();
+  await CostCenter.collection.insertMany([
+    { _id: ccCentral, clinic: central, code: '01', name: 'Central' },
+    { _id: ccLab, clinic: central, code: '02', name: 'Laboratorio' },
+  ]);
+  await Clinic.collection.insertMany([
+    { _id: central, name: 'Central', company: empresa._id, accountingCostCenter: ccCentral },
+    { _id: lab, name: 'Laboratorio', company: empresa._id, accountingCostCenter: ccLab, accountingDataClinic: central },
+    { _id: ajena, name: 'Otra empresa', company: otraEmpresa._id },
+  ]);
+  invalidateCompanyCache();
+  const producto = await H.makeProduct(central, { category: 'servicio', unlimited: true });
+  const venta = (clinic, costCenter, amount) => ({
+    clinic, costCenter, status: 'completada', total: amount, createdAt: new Date(),
+    items: [{ product: producto._id, productName: producto.name, quantity: 1, taxBase: amount, lineTotal: amount, taxAmount: 0 }],
+    payments: [{ method: 'efectivo', amount }],
+  });
+  await Sale.collection.insertMany([
+    venta(central, ccCentral, 10), venta(central, ccLab, 20),
+    venta(lab, ccLab, 30), venta(lab, null, 40), venta(ajena, ccLab, 500),
+  ]);
+
+  const consultar = async (clinic, costCenter) => {
+    const req = H.mockReq(String(clinic), userId, {}, { query: {
+      product: String(producto._id), ...(costCenter ? { costCenter: String(costCenter) } : {}),
+    } });
+    req.method = 'GET'; req.path = '/product';
+    await new Promise((resolve, reject) => accountingScope()(req, {}, (err) => err ? reject(err) : resolve()));
+    const out = await H.runController(reports.productReport, req);
+    assert.equal(out.statusCode, 200, JSON.stringify(out.payload));
+    return out.payload;
+  };
+  for (const clinic of [central, lab]) {
+    const total = await consultar(clinic);
+    assert.equal(total.general.total, 100, 'incluye ambas sucursales y las ventas sin centro, no otra empresa');
+    assert.equal(total.documentos.total, 4);
+    assert.equal((await consultar(clinic, ccCentral)).general.total, 10);
+    assert.equal((await consultar(clinic, ccLab)).general.total, 50);
+  }
 });

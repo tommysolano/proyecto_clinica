@@ -376,6 +376,8 @@ const normalizeServiceName = (value) => String(value || '')
   .toLowerCase()
   .replace(/\s+/g, ' ')
   .trim();
+// La excepción solicitada corresponde únicamente a esta profesional.
+const esRosiEcheverria = (user) => normalizeServiceName(user?.name) === 'rosi echeverria';
 
 /**
  * Importe monetario representado por la columna Pago de una cita: lo FACTURADO (servicios)
@@ -497,7 +499,6 @@ async function computeCommissions(clinicId, startDate, endDate) {
   for (const appt of appts) {
     // Una cita de CANJE no genera comisión para nadie (sep-2026): el paciente no
     // pagó, se cambió por otra cosa. Ver también calcularComisionesDoctores.
-    // La CORTESÍA (oct-2026) igual: se regaló, no entró dinero.
     if (appt.isCanje || appt.isCortesia) continue;
     const isCompleted = appt.status === 'completada';
     const isAttended = appt.status === 'asistida' || isCompleted;
@@ -526,13 +527,13 @@ async function computeCommissions(clinicId, startDate, endDate) {
         sourceType: 'appointment',
       });
     };
-    // El servicio que fue canje/cortesía por su cuenta (oct-2026) no comisiona.
     if (!tipoSinCobroDelServicio(appt, appt.serviceItem)) addAgendaService(appt.serviceItem, appt.serviceName);
     for (const extra of appt.additionalServices || []) {
       if (!tipoSinCobroDelServicio(appt, extra.serviceItem)) addAgendaService(extra.serviceItem, extra.name);
     }
     const services = [...legacyServices, ...agendaServices];
     const serviciosCita = serviciosDeCita(appt, catalogoExclusiones, { soloCobrables: true });
+    const serviciosRosi = serviciosCita;
     // Cada servicio de agenda vale lo pagado por ÉL, no toda la visita (nov-2026, ver basesPorServicio).
     const basesCon = basesPorServicio(appt, serviciosCita, catalogoExclusiones);
     const basesSin = basesPorServicio(appt, serviciosCita, catalogoExclusiones, { sinIva: true });
@@ -541,7 +542,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
       svc.price = basesCon.has(key) ? basesCon.get(key) : paidValue;
       svc.priceSinIva = basesSin.has(key) ? basesSin.get(key) : num(valorDeCitaSinIva(appt));
     }
-    const soloExcluidos = (doctor) => serviciosCita.length > 0 && serviciosCita.every((svc) => servicioExcluido(svc, catalogoExclusiones, doctor?._id));
+    const soloExcluidos = (doctor) => !esRosiEcheverria(doctor) && serviciosCita.length > 0 && serviciosCita.every((svc) => servicioExcluido(svc, catalogoExclusiones, doctor?._id));
     const excluidoEnReporte = (svc, doctor) => servicioExcluido({
       id: svc.appointmentService || catalogoExclusiones.idPorNombre.get(svc.normalizedName || normalizeServiceName(svc.name)),
     }, catalogoExclusiones, doctor?._id);
@@ -575,8 +576,6 @@ async function computeCommissions(clinicId, startDate, endDate) {
     // ── Comisiones por SERVICIO de la cita (doctor/enfermero atiende; admin) ──
     for (const svc of services) {
       for (const rule of rules) {
-        if (rule.patientScope === 'new' && !appt.isFirstVisit) continue;
-        if (!inSchedule(rule, appt)) continue;
 
         // La regla base por paciente se evalúa una sola vez después de los
         // servicios, donde también se aplica la prioridad anti-doble-pago. Las
@@ -602,6 +601,9 @@ async function computeCommissions(clinicId, startDate, endDate) {
         }
 
         if (hasTrigger(rule, 'admin_service')) {
+          if (rule.patientScope === 'new' && !appt.isFirstVisit) continue;
+          if (!inSchedule(rule, appt)) continue;
+          if (appt.isCortesia || (svc.appointmentService && tipoSinCobroDelServicio(appt, svc.appointmentService) === 'cortesia')) continue;
           if (!isCompleted) continue;
           const targets =
             rule.targetType === 'user'
@@ -619,18 +621,23 @@ async function computeCommissions(clinicId, startDate, endDate) {
         // `if` aparte, no `else if`: una regla puede llevar VARIAS condiciones y pagar
         // por las dos (p. ej. al admin por servicio atendido y al doctor que lo atiende).
         if (hasTrigger(rule, 'appointment_performed')) {
-          if (!isCompleted) continue;
-          // Tarifa de «solo la primera vez» y el paciente ya lo había recibido: no paga.
-          if (rule.firstTimeOnly && !esPrimeraVez(appt, svc.normalizedName || normalizeServiceName(svc.name))) continue;
           for (const performer of performers) {
+            const rosi = esRosiEcheverria(performer);
+            if (!isCompleted && !rosi) continue;
+            if (!rosi && rule.patientScope === 'new' && !appt.isFirstVisit) continue;
+            if (appt.isCortesia || (svc.appointmentService && tipoSinCobroDelServicio(appt, svc.appointmentService) === 'cortesia')) continue;
+            if (!rosi && (!inSchedule(rule, appt) || (rule.firstTimeOnly && !esPrimeraVez(appt, svc.normalizedName || normalizeServiceName(svc.name))))) continue;
             const performerRole = roleFor(performer);
             if (!matchTarget(rule, performer, performerRole)) continue;
-            if (esDoctor(performer) && excluidoEnReporte(svc, performer)) continue;
+            if (!rosi && esDoctor(performer) && excluidoEnReporte(svc, performer)) continue;
+            const key = normalizeServiceName(svc.name !== '—' ? svc.name : catalogoExclusiones.nombrePorId.get(svc.appointmentService || ''));
+            const baseRosi = rosi && svc.sourceType === 'appointment'
+              ? basesPorServicio(appt, serviciosRosi, catalogoExclusiones, { sinIva: !!rule.percentWithoutVat, paraRosi: true }).get(key) : null;
             detail.push({
               userId: String(performer._id), userName: performer.name, userRole: performerRole,
               ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
               // Servicio de agenda con tarifa «sin IVA»: el porcentaje va sobre lo pagado sin IVA.
-              amount: calcAmount(cfg, svc.sourceType === 'appointment' && rule.percentWithoutVat ? svc.priceSinIva : svc.price), date: appt.date,
+              amount: calcAmount(cfg, baseRosi != null ? baseRosi : (svc.sourceType === 'appointment' && rule.percentWithoutVat ? svc.priceSinIva : svc.price)), date: appt.date,
               service: svc.name || '—', patient: patientName, source: 'cita atendida', apptId: String(appt._id),
             });
           }
@@ -642,30 +649,33 @@ async function computeCommissions(clinicId, startDate, endDate) {
     // solamente si para ese doctor no aplica ninguna comisión de servicio en
     // esta misma cita. Así una configuración de servicio reemplaza a la base en
     // vez de sumarse a ella.
-    if (isCompleted) {
+    if (isAttended) {
       const patientRules = rules.filter((r) =>
         r.managedFromDoctorCommissions && r.doctorCommissionScope === 'patient'
       );
       for (const performer of performers) {
+        const rosi = esRosiEcheverria(performer);
+        if (!isCompleted && !rosi) continue;
         const performerRole = roleFor(performer);
         if (esDoctor(performer) && soloExcluidos(performer)) continue;
         const hasSpecificServiceCommission = rules.some((r) =>
           esAlcance(r, 'service')
           && !!r.appointmentService
           && matchTarget(r, performer, performerRole)
-          && inSchedule(r, appt)
-          && agendaServices.some((svc) => (!esDoctor(performer) || !excluidoEnReporte(svc, performer)) && matchesAppointmentService(r, svc))
+          && (rosi || inSchedule(r, appt))
+          && agendaServices.some((svc) => (rosi || (!appt.isCortesia && tipoSinCobroDelServicio(appt, svc.appointmentService) !== 'cortesia')) && (rosi || !esDoctor(performer) || !excluidoEnReporte(svc, performer)) && matchesAppointmentService(r, svc))
         );
         if (hasSpecificServiceCommission) continue;
 
         for (const rule of patientRules) {
-          if (rule.patientScope === 'new' && !appt.isFirstVisit) continue;
-          if (!inSchedule(rule, appt) || !matchTarget(rule, performer, performerRole)) continue;
+          if (!rosi && rule.patientScope === 'new' && !appt.isFirstVisit) continue;
+          if ((!rosi && !inSchedule(rule, appt)) || !matchTarget(rule, performer, performerRole)) continue;
           const cfg = cfgDeRegla(rule, appt);
+          const base = baseDeRegla(rule, appt);
           detail.push({
             userId: String(performer._id), userName: performer.name, userRole: performerRole,
             ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
-            amount: calcAmount(cfg, baseDeRegla(rule, appt)), date: appt.date,
+            amount: calcAmount(cfg, base), date: appt.date,
             service: 'Paciente atendido', patient: patientName, source: 'paciente atendido', apptId: String(appt._id),
           });
         }
@@ -673,7 +683,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
     }
 
     // ── Comisión del CALL CENTER: una vez por cita (no por servicio) ──
-    if (isAttended) {
+    if (isAttended && !appt.isCortesia) {
       for (const rule of rules) {
         if (!hasTrigger(rule, 'appointment_created')) continue;
         if (rule.patientScope === 'new' && !appt.isFirstVisit) continue;
@@ -696,24 +706,28 @@ async function computeCommissions(clinicId, startDate, endDate) {
 
     // ── Tarifa de DERIVACIÓN de Comisiones > Doctores: la del servicio derivado
     // si existe, si no la base del doctor. Sobre lo que pagó el paciente. ──
-    if (isCompleted && appt.referral?.fromDoctor && !soloExcluidos(appt.referral.fromDoctor)) {
+    if (isAttended && appt.referral?.fromDoctor && (isCompleted || esRosiEcheverria(appt.referral.fromDoctor)) && !soloExcluidos(appt.referral.fromDoctor)) {
       const fromDoc = appt.referral.fromDoctor;
+      const rosi = esRosiEcheverria(fromDoc);
       const propias = rules.filter((r) => esAlcance(r, 'referral')
         && String(r.doctorServiceDoctor) === String(fromDoc._id));
-      const rule = propias.find((r) => r.appointmentService && agendaServices.some((svc) => !excluidoEnReporte(svc, fromDoc) && matchesAppointmentService(r, svc)))
+      const rule = propias.find((r) => r.appointmentService && agendaServices.some((svc) => (rosi || !excluidoEnReporte(svc, fromDoc)) && matchesAppointmentService(r, svc)))
         || propias.find((r) => !r.appointmentService);
       if (rule) {
+        const servicio = rosi && rule.appointmentService && serviciosRosi.find((s) => s.id === String(rule.appointmentService)
+          || s.key === appointmentServiceNameById.get(String(rule.appointmentService)));
+        const base = servicio ? baseDeServicio(rule, appt, servicio, serviciosRosi, catalogoExclusiones, true) : baseDeRegla(rule, appt);
         detail.push({
           userId: String(fromDoc._id), userName: fromDoc.name, userRole: roleFor(fromDoc),
           ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
-          amount: calcAmount(cfgDeRegla(rule, appt), baseDeRegla(rule, appt)), date: appt.date,
+          amount: calcAmount(cfgDeRegla(rule, appt), base), date: appt.date,
           service: appt.serviceName || appt.services?.[0]?.name || '—', patient: patientName, source: 'derivación', apptId: String(appt._id),
         });
       }
     }
 
     // ── Comisión por DERIVACIÓN: una vez por cita derivada completada ──
-    if (isCompleted && appt.origin === 'referral' && appt.referral?.fromDoctor && !soloExcluidos(appt.referral.fromDoctor)) {
+    if (isCompleted && !appt.isCortesia && appt.origin === 'referral' && appt.referral?.fromDoctor && !soloExcluidos(appt.referral.fromDoctor)) {
       const fromDoc = appt.referral.fromDoctor;
       const fromRole = roleFor(fromDoc);
       for (const rule of rules) {
@@ -1103,14 +1117,14 @@ const ordenCita = (x, y) =>
 async function catalogoServicios() {
   const items = await AppointmentServiceItem.find({}).select('name excludedCommissionDoctors product').lean();
   const prodIds = [...new Set(items.map((s) => s.product && String(s.product)).filter(Boolean))];
-  const prods = prodIds.length ? await Product.find({ _id: { $in: prodIds } }).select('salePrice').lean() : [];
-  const precioProducto = new Map(prods.map((p) => [String(p._id), num(p.salePrice)]));
+  const prods = prodIds.length ? await Product.find({ _id: { $in: prodIds } }).select('salePrice taxRate taxCategory priceIncludesVat').lean() : [];
+  const precioProducto = new Map(prods.filter((p) => p.salePrice != null).map((p) => [String(p._id), p]));
   return {
     nombrePorId: new Map(items.map((s) => [String(s._id), s.name])),
     // Producto de inventario de cada servicio de agenda y su precio de lista: con ellos se
     // reparte el valor de una visita de varios servicios (ver basesPorServicio).
     productoPorId: new Map(items.filter((s) => s.product).map((s) => [String(s._id), String(s.product)])),
-    precioPorId: new Map(items.filter((s) => s.product).map((s) => [String(s._id), precioProducto.get(String(s.product)) || 0])),
+    precioPorId: new Map(items.filter((s) => s.product && precioProducto.has(String(s.product))).map((s) => [String(s._id), precioProducto.get(String(s.product))])),
     idPorNombre: new Map(items.map((s) => [normalizeServiceName(s.name), String(s._id)])),
     excludedDoctorsById: new Map(items.map((s) => [String(s._id), new Set((s.excludedCommissionDoctors || []).map(String))])),
   };
@@ -1125,17 +1139,45 @@ async function catalogoServicios() {
  * «Mujer sana 360 + Plan vital femenino» de $58 pagaba el 20 % del plan sobre $58 ($11,60
  * en vez de $5,80). Con un solo servicio no cambia nada.
  *
- * Reparto: con factura, la línea facturada del producto de cada servicio; lo que no se
+ * Antes del inicio de la facturación electrónica se usa el precio de inventario de cada
+ * servicio, sin repartir el importe global de la cita. Después, con factura, se usa la línea
+ * facturada del producto de cada servicio; lo que no se
  * puede emparejar con una línea (y las citas sin factura, con el valor escrito) se reparte
  * por el precio de lista de cada servicio o, si alguno no tiene precio, a partes iguales.
  *
  * Devuelve Map<svc.key, base> sobre la base de la regla (con o sin IVA).
  */
-const basesPorServicio = (appt, servicios, catalogo, { sinIva = false } = {}) => {
+const basesPorServicio = (appt, servicios, catalogo, { sinIva = false, paraRosi = false } = {}) => {
   const total = num(sinIva ? valorDeCitaSinIva(appt) : valorDeCita(appt));
   const out = new Map();
+  // Las fechas de la agenda son fechas de calendario almacenadas en UTC.
+  const dia = new Date(appt.date).toISOString().slice(0, 10);
+  const historica = paraRosi && dia <= '2026-10-29';
+  const todos = serviciosDeCita(appt, catalogo);
+  const tienePlan = todos.some((s) => /\bplan vital (?:femenino|masculino)\b/.test(s.key));
+  const precioDe = (s) => {
+    const p = s.id && catalogo.precioPorId?.get(s.id);
+    const bioConPlan = paraRosi && tienePlan && /\bbio[\s-]*scan+er\b/.test(s.key);
+    if (!p && !bioConPlan) return null;
+    const precio = bioConPlan ? 15 : Number(p.salePrice);
+    const tasa = p && !['IVA_0', 'EXENTO', 'NO_OBJETO'].includes(p.taxCategory) ? Number(p.taxRate) || 0 : 0;
+    return sinIva && p?.priceIncludesVat !== false && tasa > 0
+      ? +(precio / (1 + tasa / 100)).toFixed(2) : precio;
+  };
+  if (historica) {
+    const precios = servicios.map(precioDe);
+    // Una cita antigua sin vínculo con inventario conserva el cálculo anterior.
+    if (historica && precios.every((p) => p != null)) {
+      servicios.forEach((s, i) => out.set(s.key, precios[i]));
+      return out;
+    }
+    // No se pierde el precio conocido si otro servicio antiguo carece de vínculo.
+    servicios.forEach((s, i) => {
+      if (precios[i] != null) out.set(s.key, precios[i]);
+    });
+  }
   if (servicios.length <= 1) {
-    for (const s of servicios) out.set(s.key, total);
+    for (const s of servicios) if (!out.has(s.key)) out.set(s.key, paraRosi && precioDe(s) != null && tienePlan && /\bbio[\s-]*scan+er\b/.test(s.key) ? precioDe(s) : total);
     return out;
   }
   const fact = appt?._facturado;
@@ -1144,8 +1186,16 @@ const basesPorServicio = (appt, servicios, catalogo, { sinIva = false } = {}) =>
   const sinLinea = [];
   const usados = new Set();
   for (const s of servicios) {
+    if (out.has(s.key)) { restante -= out.get(s.key); continue; }
     const prod = s.id && catalogo.productoPorId?.get(s.id);
     const linea = lineas && prod && !usados.has(prod) ? lineas[prod] : null;
+    if (paraRosi && tienePlan && /\bbio[\s-]*scan+er\b/.test(s.key)) {
+      const v = precioDe(s);
+      out.set(s.key, v);
+      restante -= v;
+      if (prod && linea) usados.add(prod);
+      continue;
+    }
     if (linea) {
       usados.add(prod);
       const v = num(sinIva ? linea.sinIva : linea.importe);
@@ -1155,7 +1205,7 @@ const basesPorServicio = (appt, servicios, catalogo, { sinIva = false } = {}) =>
   }
   restante = Math.max(0, restante);
   if (sinLinea.length) {
-    const pesos = sinLinea.map((s) => (s.id && catalogo.precioPorId?.get(s.id)) || 0);
+    const pesos = sinLinea.map((s) => Number(s.id && catalogo.precioPorId?.get(s.id)?.salePrice) || 0);
     const suma = pesos.reduce((a, b) => a + b, 0);
     const conPrecio = pesos.every((p) => p > 0);
     sinLinea.forEach((s, i) => {
@@ -1167,9 +1217,8 @@ const basesPorServicio = (appt, servicios, catalogo, { sinIva = false } = {}) =>
 };
 
 /** Base del porcentaje de la tarifa `rule` para el servicio `svc` de la cita. */
-const baseDeServicio = (rule, appt, svc, servicios, catalogo) => {
-  if (servicios.length <= 1) return baseDeRegla(rule, appt);
-  return num(basesPorServicio(appt, servicios, catalogo, { sinIva: !!rule?.percentWithoutVat }).get(svc.key));
+const baseDeServicio = (rule, appt, svc, servicios, catalogo, paraRosi = false) => {
+  return num(basesPorServicio(appt, servicios, catalogo, { sinIva: !!rule?.percentWithoutVat, paraRosi }).get(svc.key));
 };
 
 const servicioExcluido = (svc, catalogo, doctorId) => !!svc.id && !!doctorId && !!catalogo.excludedDoctorsById.get(String(svc.id))?.has(String(doctorId));
@@ -1193,7 +1242,8 @@ const serviciosDeCita = (appt, catalogo, { soloCobrables = false } = {}) => {
     ...(appt.additionalServices || [])
       .filter((s) => cobra(s.serviceItem))
       .map((s) => ({ id: s.serviceItem ? idDe(s.serviceItem) : null, name: s.name })),
-    ...(appt.services || []).map((s) => ({ id: null, name: s.name })),
+    ...(appt.services || []).map((s) => ({ id: catalogo.idPorNombre.get(normalizeServiceName(s.name)) || null, name: s.name }))
+      .filter((s) => cobra(s.id)),
   ];
   const out = [];
   const vistos = new Set();
@@ -1523,6 +1573,7 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
     const pagado = appointmentPaymentValue(appt);
     // Cada doctor que atendió la cita cobra con SUS tarifas (no solo el último).
     for (const doc of doctoresQueCuentan(appt, doctoresFiltro, area)) {
+      const rosi = area === 'doctor' && esRosiEcheverria(doc);
       const doctorId = idDe(doc);
       const comun = {
         doctorId, apptId: String(appt._id), date: appt.date, clinicId,
@@ -1530,17 +1581,17 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
       };
       let cubierta = false;
       const servicios = serviciosDeCita(appt, catalogo, { soloCobrables: true });
-      const permitidos = area === 'doctor' ? servicios.filter((svc) => !servicioExcluido(svc, catalogo, doctorId)) : servicios;
+      const permitidos = area === 'doctor' && !rosi ? servicios.filter((svc) => !servicioExcluido(svc, catalogo, doctorId)) : servicios;
       for (const svc of permitidos) {
         const rule = reglaServicioParaCita(doctorId, clinicId, svc);
         if (!rule) continue;
         cubierta = true;
-        const repetida = !!rule.firstTimeOnly && !esPrimeraVez(appt, svc.key);
+        const repetida = !rosi && !!rule.firstTimeOnly && !esPrimeraVez(appt, svc.key);
         // «Gana desde»: atendido antes de esa hora, la tarifa no paga (y la cita sigue
         // cubierta: la base por paciente no la reemplaza).
-        const antes = antesDeHora(rule, appt, doctorId);
+        const antes = !rosi && antesDeHora(rule, appt, doctorId);
         // Lo pagado por ESTE servicio, no por toda la visita (ver basesPorServicio).
-        const base = baseDeServicio(rule, appt, svc, servicios, catalogo);
+        const base = baseDeServicio(rule, appt, svc, servicios, catalogo, rosi);
         agregar({
           ...comun, kind: 'servicio', ruleId: String(rule._id), serviceKey: svc.key, serviceName: svc.name,
           base,
@@ -1556,11 +1607,12 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
       if (!cubierta && (!servicios.length || permitidos.length)) {
         const rule = reglaBaseParaCita(doctorId, 'patient', clinicId);
         if (rule) {
-          const antes = antesDeHora(rule, appt, doctorId);
+          const antes = !rosi && antesDeHora(rule, appt, doctorId);
+          const basePaciente = baseDeRegla(rule, appt);
           agregar({
             ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: serviciosDeCita(appt, catalogo).map((svc) => svc.name).join(', ') || '—',
-            base: baseDeRegla(rule, appt),
-            amount: antes ? 0 : calcAmount(cfgDeRegla(rule, appt), baseDeRegla(rule, appt)),
+            base: basePaciente,
+            amount: antes ? 0 : calcAmount(cfgDeRegla(rule, appt), basePaciente),
             antesDeHora: antes ? rule.minStartTime : '',
             franja: etiquetaFranja(franjaDeRegla(rule, appt)),
           });
@@ -1571,11 +1623,12 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
 
   for (const cita of derivadas) {
     // Tampoco paga la derivación cuya cita derivada fue de canje.
+    const rosi = esRosiEcheverria(cita.referral.fromDoctor);
     if (cita.isCanje || cita.isCortesia) continue;
     const doctorId = String(cita.referral.fromDoctor._id);
     const clinicId = idDe(cita.clinic);
     const todosServicios = serviciosDeCita(cita, catalogo, { soloCobrables: true });
-    const svcs = todosServicios.filter((svc) => !servicioExcluido(svc, catalogo, doctorId));
+    const svcs = rosi ? todosServicios : todosServicios.filter((svc) => !servicioExcluido(svc, catalogo, doctorId));
     if (todosServicios.length && !svcs.length) continue;
     const reglasDeriva = reglasDe(doctorId, 'referral', clinicId);
     let rule = null;
@@ -1588,7 +1641,7 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
     if (!rule) rule = reglaBaseParaCita(doctorId, 'referral', clinicId);
     if (!rule) continue;
     // Tarifa por servicio derivado: sobre lo pagado por ese servicio, no por toda la visita.
-    const base = rule.appointmentService ? baseDeServicio(rule, cita, svc, todosServicios, catalogo) : baseDeRegla(rule, cita);
+    const base = rule.appointmentService ? baseDeServicio(rule, cita, svc, todosServicios, catalogo, rosi) : baseDeRegla(rule, cita);
     agregar({
       doctorId, apptId: String(cita._id), date: cita.date, clinicId,
       patient: nombrePaciente(cita.patient), base,

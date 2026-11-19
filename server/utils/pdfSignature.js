@@ -147,7 +147,7 @@ function identidadEnReceta(user, paraReceta) {
  * Lo pide SOLO la receta; la hoja MSP la llama sin esa opción, y ahí sale su
  * nombre completo pase lo que pase.
  */
-function bloqueFirmaHtml(user, { esc = (s) => String(s ?? ''), paraReceta = false } = {}) {
+function bloqueFirmaHtml(user, { esc = (s) => String(s ?? ''), paraReceta = false, qr = '' } = {}) {
   const { nombre, especialidad, oculto } = identidadEnReceta(user, paraReceta);
   const estado = user ? estadoFirma(user) : { ok: false };
 
@@ -172,22 +172,22 @@ function bloqueFirmaHtml(user, { esc = (s) => String(s ?? ''), paraReceta = fals
    * firma criptográfica es suya y no la toca nada de esto.
    */
   if (oculto) {
-    return `<div class="firma-e">
+    return `<div class="firma-e">${qr ? `<img class="firma-e__qr" src="${qr}" alt="QR de verificación" />` : ''}<div class="firma-e__texto">
       <div class="firma-e__tit">FIRMADO ELECTRÓNICAMENTE</div>
       <div class="firma-e__meta">Validez de la firma comprobable en el propio archivo PDF.</div>
-    </div>`;
+    </div></div>`;
   }
 
   // Con alias manda el alias; si no, el nombre del certificado (que es el legal).
   const cn = paraReceta && nombre !== (user?.name || '') ? nombre : (info.commonName || nombre);
-  return `<div class="firma-e">
+  return `<div class="firma-e">${qr ? `<img class="firma-e__qr" src="${qr}" alt="QR de verificación" />` : ''}<div class="firma-e__texto">
     <div class="firma-e__tit">FIRMADO ELECTRÓNICAMENTE POR</div>
     <div class="firma-e__nombre">${esc(cn)}</div>
     ${especialidad ? `<div class="firma-e__sub">${esc(especialidad)}</div>` : ''}
     ${info.serialNumber ? `<div class="firma-e__meta">Certificado n.º ${esc(info.serialNumber)}</div>` : ''}
     ${emisor ? `<div class="firma-e__meta">Emisor: ${esc(emisor)}</div>` : ''}
     <div class="firma-e__meta">Validez de la firma comprobable en el propio archivo PDF.</div>
-  </div>`;
+  </div></div>`;
 }
 
 /** Estilos del recuadro. Se inyectan en el <style> de cada plantilla. */
@@ -199,6 +199,8 @@ const FIRMA_CSS = `
   .firma-e__nombre { font-size:11px; font-weight:bold; margin-top:2px; }
   .firma-e__sub { font-size:9px; color:#475569; }
   .firma-e__meta { font-size:7px; color:#64748b; margin-top:1px; }
+  .firma-e__qr { width:20mm; height:20mm; float:left; margin-right:6px; }
+  .firma-e__texto { overflow:hidden; }
 `;
 
 module.exports = {

@@ -12,7 +12,7 @@ import { fmt, startOfMonth, endOfMonth } from './_utils';
 
 /**
  * REPORTE DE VENTAS DE UN PRODUCTO (nov-2026), como el de Contífico. Se abre en una pestaña nueva
- * al hacer clic en un ítem de Bodegas → Existencias (?product=…&costCenter=…).
+ * al hacer clic en un ítem de Bodegas → Existencias (?product=…).
  *  - Resumen general y gráfico por producto/categoría/cliente: lo vendido DEL producto (sus líneas).
  *  - Resumen de cobros, documentos y gráfico por hora: los documentos completos que lo incluyen.
  */
@@ -72,7 +72,7 @@ export default function ProductSalesReport() {
   useEffect(() => {
     api.get('/products', { params: { includeDisabled: 'true' } }).then((r) => setProducts(r.data || [])).catch(() => {});
     api.get('/inventory-advanced/categories', { params: { catalog: 'company' } }).then((r) => setCategorias(r.data || [])).catch(() => {});
-    api.get('/cost-centers').then((r) => setCentros(r.data || [])).catch(() => {});
+    api.get('/cost-centers', { params: { scope: 'company' } }).then((r) => setCentros(r.data || [])).catch(() => {});
   }, []);
 
   const query = (f) => Object.fromEntries(Object.entries(f).filter(([, v]) => v !== '' && v != null));

@@ -40,7 +40,7 @@ test.beforeEach(async () => {
 async function escenario() {
   const sede = await Clinic.create({ name: 'Matriz', nombreComercial: 'Matriz', active: true });
   const doctor = await User.create({
-    name: 'Dra. Prueba', email: `dra${Date.now()}@test.com`, password: '123456',
+    name: 'Rosi Echeverria', email: `dra${Date.now()}@test.com`, password: '123456',
     clinics: [{ clinic: sede._id, role: 'doctor' }],
   });
   const paciente = await Patient.create({ clinic: sede._id, firstName: 'Ana', lastName: 'P' });
@@ -67,23 +67,22 @@ async function escenario() {
 }
 
 const lineasDe = async (sede) => {
-  const calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-10-01', end: '2026-10-31' });
+  const calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-10-01', end: '2026-11-30' });
   return Object.fromEntries(calc.lineas.map((l) => [l.serviceName, l]));
 };
 
-test('sin factura: el valor escrito se reparte por el precio de lista de cada servicio', async () => {
+test('antes de la facturación: cada servicio usa su precio de inventario', async () => {
   const { sede, cita } = await escenario();
   await cita({ agreedValue: 23 });
   const l = await lineasDe(sede);
   assert.strictEqual(l['ECO 360'].amount, 1.5);
-  // 23 × 12 / (15 + 12) = 10,22 → 30 % = 3,07 (antes 30 % × 23 = 6,90)
-  assert.strictEqual(l['CONSULTA POR SEGUIMIENTO'].base, 10.22);
-  assert.strictEqual(l['CONSULTA POR SEGUIMIENTO'].amount, 3.07);
+  assert.strictEqual(l['CONSULTA POR SEGUIMIENTO'].base, 12);
+  assert.strictEqual(l['CONSULTA POR SEGUIMIENTO'].amount, 3.6);
 });
 
 test('con factura: el porcentaje va sobre la línea facturada del servicio', async () => {
   const { sede, eco, consulta, cita } = await escenario();
-  const apt = await cita({});
+  const apt = await cita({ date: new Date('2026-11-03T15:00:00Z') });
   const [ecoItem, consultaItem] = await Promise.all([
     AppointmentServiceItem.findById(eco._id).lean(),
     AppointmentServiceItem.findById(consulta._id).lean(),
@@ -101,9 +100,80 @@ test('con factura: el porcentaje va sobre la línea facturada del servicio', asy
   assert.strictEqual(l['CONSULTA POR SEGUIMIENTO'].amount, 3);
 });
 
-test('un solo servicio: el porcentaje sigue yendo sobre toda la visita', async () => {
+test('un solo servicio histórico: el porcentaje usa el precio de inventario', async () => {
   const { sede, consulta, cita } = await escenario();
   await cita({ serviceItem: consulta._id, serviceName: consulta.name, additionalServices: [], agreedValue: 15 });
   const l = await lineasDe(sede);
-  assert.strictEqual(l['CONSULTA POR SEGUIMIENTO'].amount, 4.5);
+  assert.strictEqual(l['CONSULTA POR SEGUIMIENTO'].amount, 3.6);
+});
+
+test('plan vital y bio scaner usan sus precios propios, incluido el descuento del scaner', async () => {
+  const { sede, doctor, cita } = await escenario();
+  const crear = async (name, price) => {
+    const p = await Product.collection.insertOne({ name, code: name, salePrice: price, clinic: sede._id, taxCategory: 'IVA_0' });
+    return AppointmentServiceItem.create({ clinic: sede._id, name, slug: name.toLowerCase(), product: p.insertedId });
+  };
+  const femenino = await crear('PLAN VITAL FEMENINO', 29);
+  const masculino = await crear('PLAN VITAL MASCULINO', 29);
+  const bio = await crear('BIO SCANER COMPUTARIZADO', 30);
+  for (const s of [femenino, masculino, bio]) await CommissionRule.create({
+    clinic: sede._id, name: s.name, managedFromDoctorCommissions: true, doctorCommissionScope: 'service',
+    doctorServiceDoctor: doctor._id, appointmentService: s._id, targetType: 'user', users: [doctor._id],
+    active: true, amountType: 'percent', percent: 20,
+  });
+  const caso = async (plan, adicionales, extra = {}) => {
+    await Appointment.deleteMany({});
+    await cita({ serviceItem: plan._id, serviceName: plan.name,
+      additionalServices: adicionales.map((s) => ({ serviceItem: s._id, name: s.name })),
+      agreedValue: 100, ...extra });
+    return lineasDe(sede);
+  };
+  for (const plan of [femenino, masculino]) {
+    const l = await caso(plan, [bio]);
+    assert.strictEqual(l[plan.name].amount, 5.8);
+    assert.strictEqual(l[bio.name].base, 15);
+    assert.strictEqual(l[bio.name].amount, 3);
+  }
+  const solo = await caso(bio, []);
+  assert.strictEqual(solo[bio.name].base, 30);
+  assert.strictEqual(solo[bio.name].amount, 6);
+  const canje = await caso(femenino, [bio], { isCanje: true });
+  assert.deepStrictEqual(canje, {});
+});
+
+test('Rosi excluye canjes y cortesías y respeta las condiciones de los demás doctores', async () => {
+  const { sede, doctor, consulta, cita } = await escenario();
+  const otro = await User.create({ name: 'Otra Doctora', email: 'otra@test.com', password: '123456', clinics: [{ clinic: sede._id, role: 'doctor' }] });
+  await AppointmentServiceItem.updateOne({ _id: consulta._id }, { $addToSet: { excludedCommissionDoctors: { $each: [doctor._id, otro._id] } } });
+  await CommissionRule.updateOne({ doctorServiceDoctor: doctor._id, appointmentService: consulta._id }, { $set: { firstTimeOnly: true, minStartTime: '12:00' } });
+  await CommissionRule.create({ clinic: sede._id, name: 'Otra consulta', managedFromDoctorCommissions: true,
+    doctorCommissionScope: 'service', doctorServiceDoctor: otro._id, appointmentService: consulta._id,
+    targetType: 'user', users: [otro._id], active: true, amountType: 'percent', percent: 30 });
+  const datos = { serviceItem: consulta._id, serviceName: consulta.name, additionalServices: [], agreedValue: 25 };
+  await cita(datos);
+  await cita({ ...datos, isCortesia: true, agreedValue: 0 });
+  await cita({ ...datos, isCanje: true, agreedValue: 0 });
+  await cita({ ...datos, doctor: otro._id });
+  const calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-10-01', end: '2026-10-31' });
+  const propias = calc.lineas.filter((l) => l.doctorId === String(doctor._id));
+  assert.deepStrictEqual(propias.map((l) => l.amount), [3.6]);
+  assert.strictEqual(calc.lineas.filter((l) => l.doctorId === String(otro._id)).length, 0);
+  let payload;
+  await ctrl.report({ clinicId: sede._id, query: { start: '2026-10-01', end: '2026-10-31', user: String(doctor._id) } }, {
+    json: (p) => { payload = p; }, status: (s) => ({ json: (p) => { throw new Error(`${s}: ${JSON.stringify(p)}`); } }),
+  });
+  assert.strictEqual(payload.total, 3.6, 'contabilización y PDF usan el mismo importe');
+});
+
+test('cortesía o canje de un solo servicio en una cita con varios servicios', async () => {
+  const { sede, consulta, eco, cita } = await escenario();
+  await cita({ agreedValue: 15, noChargeServices: [{ serviceItem: consulta._id, kind: 'cortesia' }] });
+  let l = await lineasDe(sede);
+  assert.strictEqual(l[consulta.name], undefined);
+  assert.strictEqual(l[eco.name].amount, 1.5);
+  await Appointment.deleteMany({});
+  await cita({ agreedValue: 15, noChargeServices: [{ serviceItem: consulta._id, kind: 'canje' }] });
+  l = await lineasDe(sede);
+  assert.strictEqual(l[consulta.name], undefined);
+  assert.strictEqual(l[eco.name].amount, 1.5);
 });

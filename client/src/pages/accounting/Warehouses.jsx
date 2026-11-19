@@ -112,12 +112,9 @@ export default function Warehouses() {
     return m;
   }, [fisico]);
   // Columnas: la bodega elegida, o todas las del resumen (activas + las que aún tienen stock).
-  /** Reporte de ventas del producto en pestaña nueva; con una bodega elegida, filtrado por su centro de costo. */
+  /** El reporte abre consolidado; sus propios filtros permiten elegir un centro. */
   const abrirReporteProducto = (productId) => {
     const qs = new URLSearchParams({ product: String(productId) });
-    const bodega = bodegaSel ? list.find((w) => String(w._id) === String(bodegaSel)) : null;
-    const centro = bodega?.costCenter?._id || bodega?.costCenter;
-    if (centro) qs.set('costCenter', String(centro));
     window.open(`/accounting/product-sales?${qs.toString()}`, '_blank', 'noopener');
   };
   const columnas = useMemo(() => (bodegaSel ? resumenBodegas.filter((r) => r.key === bodegaSel) : resumenBodegas), [resumenBodegas, bodegaSel]);

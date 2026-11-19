@@ -1266,7 +1266,7 @@ export default function Commissions() {
       <Modal isOpen={!!excludedEditor} onClose={() => !savingExcluded && setExcludedEditor(false)} title={`Servicios sin comisión · ${excludedEditor?.name || ''}`}>
         <div className="space-y-3">
           <p className="text-sm text-slate-600">Los servicios marcados no generan comisión para este doctor, incluida la base por paciente y la de derivación. Si hay otros servicios permitidos en la cita, se calculan sus comisiones. Este ajuste también afecta los cálculos de períodos anteriores.</p>
-          <p className="text-xs text-slate-500">Las comisiones porcentuales de servicios permitidos siguen calculándose sobre el valor total de la cita, porque la agenda no registra un importe separado por servicio.</p>
+          <p className="text-xs text-slate-500">Las comisiones porcentuales se calculan por servicio. Para Rosi Echeverria se aplica la excepción acordada: sus servicios con tarifa comisionan en las citas atendidas, salvo canjes y cortesías.</p>
           <input value={excludedSearch} onChange={(e) => setExcludedSearch(e.target.value)} placeholder="Buscar servicio" className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
           <div className="max-h-96 overflow-y-auto divide-y divide-slate-100">
             {excludedServices.filter((s) => s.name.toLocaleLowerCase().includes(excludedSearch.toLocaleLowerCase())).map((service) => (

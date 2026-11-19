@@ -63,6 +63,7 @@ const {
 } = require('../constants/scoreMama');
 const { specialtyFollowUpHtml } = require('../utils/specialtyFollowUpPrint');
 const { firmarPdfConUsuario, bloqueFirmaHtml, FIRMA_CSS } = require('../utils/pdfSignature');
+const { prepararVerificacion, registrarVerificacion } = require('../utils/signedDocumentVerification');
 const { describeCie10 } = require('../utils/cie10Catalog');
 const { emitToClinic, emitToUser, emitToRole } = require('../realtime');
 const { canReq } = require('../utils/permissions');
@@ -3031,6 +3032,7 @@ exports.printFollowUp = async (req, res) => {
     // Quien firma es EL AUTOR de la consulta, no quien pulsa imprimir: la receta
     // es del médico que atendió, aunque el PDF lo saque recepción.
     const autor = fu.createdBy || null;
+    const verificacion = await prepararVerificacion(autor);
     // Y por lo mismo, los rótulos salen del rol CON EL QUE SE ESCRIBIÓ: la hoja
     // del terapeuta dice «Suplemento / Natural / Homeopático» y «Coaching de
     // cambio de hábitos» la imprima quien la imprima.
@@ -3177,7 +3179,7 @@ exports.printFollowUp = async (req, res) => {
     utils/pdfSignature.
   -->
   <div class="sign">
-    ${bloqueFirmaHtml(autor, { esc: escHtml, paraReceta: true })}
+    ${bloqueFirmaHtml(autor, { esc: escHtml, paraReceta: true, qr: verificacion?.qr })}
   </div>
 
   <div class="footer">Documento generado el ${new Date().toLocaleString('es-EC')}</div>
@@ -3208,6 +3210,10 @@ exports.printFollowUp = async (req, res) => {
       reason: 'Receta médica / Indicaciones',
       location: clinic?.nombreComercial || clinic?.name || '',
     });
+    if (verificacion) {
+      if (!firmado) throw new Error('No se pudo firmar el documento; no se generó el QR de verificación.');
+      await registrarVerificacion(verificacion, pdfFinal, 'receta');
+    }
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('X-Firma-Electronica', firmado ? 'si' : 'no');
@@ -3326,6 +3332,7 @@ exports.printMspForm = async (req, res) => {
     }
 
     const doc = fu.createdBy || {};
+    const verificacion = await prepararVerificacion(doc);
 
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
 <style>
@@ -3463,7 +3470,7 @@ exports.printMspForm = async (req, res) => {
       <td>${fmtDate(fu.fecha)}</td>
       <td>${val(doc.name)}${doc.specialty ? `<br/><span style="font-size:7px;color:#555">${esc(doc.specialty)}</span>` : ''}</td>
       <td>${val(doc.cedula)}</td>
-      <td>${bloqueFirmaHtml(doc, { esc })}</td>
+      <td>${bloqueFirmaHtml(doc, { esc, qr: verificacion?.qr })}</td>
     </tr>
   </table>
 
@@ -3493,6 +3500,10 @@ exports.printMspForm = async (req, res) => {
       reason: 'Consulta externa · HCU-form.002',
       location: clinic?.nombreComercial || clinic?.name || '',
     });
+    if (verificacion) {
+      if (!firmado) throw new Error('No se pudo firmar el documento; no se generó el QR de verificación.');
+      await registrarVerificacion(verificacion, pdfFinal, 'hcu002');
+    }
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('X-Firma-Electronica', firmado ? 'si' : 'no');

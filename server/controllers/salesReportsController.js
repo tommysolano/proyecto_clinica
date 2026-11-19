@@ -171,8 +171,9 @@ async function catalogoEmpresa(req) {
 async function datosReporteProducto(req) {
   const { buildProductSalesReport } = require('../services/productSalesReport');
   const clinicas = await catalogoEmpresa(req);
-  // Quien está en una sucursal ligada a un centro solo ve lo de su centro (como el resto del reporte).
-  const base = req.costCenterScope ? alcanceVentas(req) : { clinic: { $in: clinicas.map(oid) } };
+  // El detalle del producto siempre abre consolidado para la empresa. Solo el
+  // filtro explícito del reporte debe limitarlo a un centro de costo.
+  const base = { clinic: { $in: clinicas.map(oid) } };
   const data = await buildProductSalesReport(base, req.query, clinicas);
   const Product = require('../models/Product');
   const CostCenter = require('../models/CostCenter');
