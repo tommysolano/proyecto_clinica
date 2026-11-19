@@ -244,8 +244,9 @@ exports.mine = async (req, res) => {
   try {
     const usaPuntos = await sucursalUsaPuntos(req.clinicId);
     const punto = usaPuntos ? await puntoDelUsuario(req.clinicId, req.user._id) : null;
-    // Con punto, el cobro exige caja abierta (ver assertCajaAbiertaParaFacturar).
-    const cajaAbierta = punto ? await cajaAbiertaDelUsuario(req.clinicId, req.user._id) : null;
+    // Con punto, el cobro exige caja abierta (ver assertCajaAbiertaParaFacturar). La caja es
+    // del punto: abierta en cualquier sucursal de la empresa, vale aquí también.
+    const cajaAbierta = punto ? await cajaAbiertaDelUsuario(req.clinicId, req.user._id, punto) : null;
     res.json({ usaPuntos, punto, cajaAbierta });
   } catch (e) {
     res.status(500).json({ message: e.message });

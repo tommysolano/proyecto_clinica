@@ -6,10 +6,39 @@ const Sale = require('../models/Sale');
 require('../models/BankAccount'); // populate('payments.bankAccount') en el detalle
 const { createEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
-const { puntoRequerido, puntoDelUsuario, sucursalUsaPuntos } = require('../services/puntoEmision');
-const { clinicsOfCompanySync } = require('../utils/companies');
+const {
+  puntoRequerido, puntoDelUsuario, sucursalUsaPuntos, filtroCajaAbierta,
+} = require('../services/puntoEmision');
+const { clinicsOfCompanySync, ensureCompanyCache, sisterClinicsSync } = require('../utils/companies');
 
 const oid = (v) => new mongoose.Types.ObjectId(v);
+
+/**
+ * LA CAJA ES DEL PUNTO DE EMISIÓN (19-11-2026): el punto vale en toda la empresa, así que su
+ * caja junta lo que el usuario cobra desde cualquier sucursal. Sucursales que abarca una caja:
+ * con punto, todas las de la empresa de la sucursal donde se abrió; sin punto, solo esa.
+ */
+const sucursalesDeLaCaja = async (closing) => {
+  const clinic = String(closing.clinic?._id || closing.clinic);
+  if (!closing.puntoEmision) return [clinic];
+  await ensureCompanyCache();
+  const hermanas = sisterClinicsSync(clinic, { includeInactive: true }).map(String);
+  return hermanas.includes(clinic) ? hermanas : [clinic, ...hermanas];
+};
+
+/** Sucursales de la empresa de la sucursal activa (la propia incluida). */
+const sucursalesEmpresa = async (clinicId) => {
+  await ensureCompanyCache();
+  const hermanas = sisterClinicsSync(clinicId, { includeInactive: true }).map(String);
+  return hermanas.includes(String(clinicId)) ? hermanas : [String(clinicId), ...hermanas];
+};
+
+/** Caja ABIERTA del usuario actual: con punto, la de su punto en cualquier sucursal. */
+const miCajaAbierta = async (req, session = null) => {
+  const punto = await puntoDelUsuario(req.clinicId, req.user._id);
+  const q = CashClosing.findOne(filtroCajaAbierta(req.clinicId, req.user._id, punto)).sort({ openedAt: -1 });
+  return session ? q.session(session) : q;
+};
 
 /**
  * Ven las cajas de todos y de todas las sucursales (nov-2026): el super administrador,
@@ -38,9 +67,9 @@ const clinicasVisibles = (req) => {
 const localDate = (ymd, time) => new Date(`${String(ymd).slice(0, 10)}T${time}`);
 
 /** Neto de movimientos de caja (ingresos - egresos) de una sesión abierta. */
-const cashMovementsNet = async (clinicId, cashSessionId) => {
+const cashMovementsNet = async (cashSessionId) => {
   const rows = await CashMovement.aggregate([
-    { $match: { clinic: oid(clinicId), cashSession: oid(cashSessionId), voided: false } },
+    { $match: { cashSession: oid(cashSessionId), voided: false } },
     { $group: { _id: '$type', total: { $sum: '$amount' } } },
   ]);
   let net = 0;
@@ -58,14 +87,24 @@ const cashMovementsNet = async (clinicId, cashSessionId) => {
  * varias cajas abiertas a la vez comparten la cuenta Caja, y sin el filtro cada una vería el
  * efectivo de las demás.
  */
-const cajaLedgerNet = async (clinicId, start, end, session = null, createdBy = null) => {
-  const caja = await getAccount(clinicId, 'caja', session ? { session } : {});
-  const match = { clinic: oid(clinicId), status: 'CONTABILIZADO', date: { $gte: start, $lte: end } };
+const cajaLedgerNet = async (clinicIds, start, end, session = null, createdBy = null) => {
+  const ids = (Array.isArray(clinicIds) ? clinicIds : [clinicIds]).map(String);
+  // La cuenta Caja de cada sucursal que abarca la caja (con punto, toda la empresa).
+  const cuentas = [];
+  for (const id of ids) {
+    try {
+      const caja = await getAccount(id, 'caja', session ? { session } : {});
+      if (caja?._id && !cuentas.some((c) => String(c) === String(caja._id))) cuentas.push(caja._id);
+    } catch (e) {
+      if (ids.length === 1) throw e; // una sucursal hermana sin cuenta Caja no aporta efectivo
+    }
+  }
+  const match = { clinic: { $in: ids.map(oid) }, status: 'CONTABILIZADO', date: { $gte: start, $lte: end } };
   if (createdBy) match.createdBy = oid(createdBy);
   const pipeline = [
     { $match: match },
     { $unwind: '$lines' },
-    { $match: { 'lines.account': caja._id } },
+    { $match: { 'lines.account': { $in: cuentas } } },
     { $group: { _id: null, debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
   ];
   const agg = session
@@ -85,8 +124,9 @@ const dayRange = (dateStr) => {
  * Agrega las ventas (por método de pago) en un rango de fechas. Con `puntoEmision` solo
  * cuenta las ventas registradas desde ese punto de venta (caja por punto).
  */
-const salesByMethod = async (clinicId, start, end, puntoEmision = null) => {
-  const match = { clinic: oid(clinicId), status: 'completada', createdAt: { $gte: start, $lte: end } };
+const salesByMethod = async (clinicIds, start, end, puntoEmision = null) => {
+  const ids = Array.isArray(clinicIds) ? clinicIds : [clinicIds];
+  const match = { clinic: { $in: ids.map(oid) }, status: 'completada', createdAt: { $gte: start, $lte: end } };
   if (puntoEmision) match.puntoEmision = oid(puntoEmision);
   // El desglose por método sale de `payments` (pago dividido: una venta puede
   // sumar a varios métodos). Ventas antiguas sin `payments` se interpretan como un
@@ -123,9 +163,11 @@ const salesByMethod = async (clinicId, start, end, puntoEmision = null) => {
  * las ventas de ese punto y los asientos de Caja de quien la abrió; si no (caja única de la
  * sucursal, modo anterior), todo lo de la sucursal.
  */
-const resumenSesion = async (clinicId, closing, end, session = null) => {
+const resumenSesion = async (closing, end, session = null) => {
   const punto = closing.puntoEmision?._id || closing.puntoEmision || null;
   const duenio = punto ? (closing.openedBy?._id || closing.openedBy) : null;
+  // Con punto, lo cobrado desde cualquier sucursal de la empresa (la caja es del punto).
+  const clinicId = await sucursalesDeLaCaja(closing);
   const { byMethod, salesCount, totalSales } = await salesByMethod(clinicId, closing.openedAt, end, punto);
   // Efectivo esperado = fondo inicial + neto de la cuenta Caja en el mayor
   // (incluye ventas de contado, cobros de crédito en efectivo, gastos de caja
@@ -142,14 +184,15 @@ exports.current = async (req, res) => {
   try {
     const usaPuntos = await sucursalUsaPuntos(req.clinicId);
     const miPunto = usaPuntos ? await puntoDelUsuario(req.clinicId, req.user._id) : null;
-    const open = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA', openedBy: req.user._id })
+    // Con punto, su caja es la del punto aunque se haya abierto desde otra sucursal.
+    const open = await CashClosing.findOne(filtroCajaAbierta(req.clinicId, req.user._id, miPunto))
       .populate('openedBy', 'name')
       .populate('puntoEmision', PUNTO_FIELDS)
       .sort({ openedAt: -1 });
     if (!open) return res.json({ open: null, usaPuntos, miPunto });
     const now = new Date();
-    const live = await resumenSesion(req.clinicId, open, now);
-    const movementsNet = await cashMovementsNet(req.clinicId, open._id);
+    const live = await resumenSesion(open, now);
+    const movementsNet = await cashMovementsNet(open._id);
     res.json({ open, live: { ...live, movementsNet }, usaPuntos, miPunto });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
@@ -160,12 +203,13 @@ exports.current = async (req, res) => {
  */
 exports.open = async (req, res) => {
   try {
-    const existing = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA', openedBy: req.user._id });
-    if (existing) return res.status(400).json({ message: 'Ya tienes una caja abierta. Ciérrala antes de abrir otra.' });
     const punto = await puntoRequerido(req.clinicId, req.user._id);
+    // Con punto, una sola caja abierta por punto en TODAS las sucursales de la empresa.
+    const existing = await CashClosing.findOne(filtroCajaAbierta(req.clinicId, req.user._id, punto));
+    if (existing) return res.status(400).json({ message: 'Ya tienes una caja abierta. Ciérrala antes de abrir otra.' });
     if (punto) {
       // El punto pudo cambiar de dueño con una caja aún abierta por el anterior.
-      const delPunto = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA', puntoEmision: punto._id })
+      const delPunto = await CashClosing.findOne({ status: 'ABIERTA', puntoEmision: punto._id })
         .populate('openedBy', 'name');
       if (delPunto) {
         return res.status(400).json({
@@ -225,6 +269,8 @@ exports.list = async (req, res) => {
     // Cajero y admin manejan SU caja: solo ven sus propias sesiones (ver soloPropias).
     if (soloPropias(req)) {
       filter.$or = [{ openedBy: req.user._id }, { closedBy: req.user._id }];
+      // Sus cajas son de su punto, no de la sucursal: las ve desde cualquier sucursal de la empresa.
+      if (!req.query.clinic) filter.clinic = { $in: await sucursalesEmpresa(req.clinicId) };
     }
     if (req.query.startDate || req.query.endDate) {
       filter.date = {};
@@ -271,7 +317,9 @@ exports.detail = async (req, res) => {
       ? String(req.query.add).split(',').map((s) => s.trim()).filter((s) => mongoose.isValidObjectId(s))
       : [];
     const ids = [...new Set([String(req.params.id), ...extra])];
-    const found = await CashClosing.find({ _id: { $in: ids }, clinic: { $in: clinicasVisibles(req) } })
+    // Cajero/admin ven sus cajas (de su punto) desde cualquier sucursal de la empresa.
+    const clinicasDetalle = soloPropias(req) ? [...new Set([...clinicasVisibles(req), ...(await sucursalesEmpresa(req.clinicId))])] : clinicasVisibles(req);
+    const found = await CashClosing.find({ _id: { $in: ids }, clinic: { $in: clinicasDetalle } })
       .populate('closedBy', 'name')
       .populate('openedBy', 'name')
       .populate('puntoEmision', PUNTO_FIELDS)
@@ -293,11 +341,13 @@ exports.detail = async (req, res) => {
       const w = ventanaDeCaja(c);
       if (!start || w.start < start) start = w.start;
       if (!end || w.end > end) end = w.end;
-      const match = { clinic: c.clinic?._id || c.clinic, createdAt: { $gte: w.start, $lte: w.end } };
+      // Con punto, la caja junta lo cobrado desde cualquier sucursal de la empresa.
+      const match = { clinic: { $in: await sucursalesDeLaCaja(c) }, createdAt: { $gte: w.start, $lte: w.end } };
       if (c.puntoEmision?._id) match.puntoEmision = c.puntoEmision._id;
       const rows = await Sale.find(match)
-        .select('saleNumber clientName clientCedula patient items subtotal discountTotal taxAmount total paymentMethod payments status invoice createdAt createdBy cashier doctor recommendedBy discountReason')
+        .select('clinic saleNumber clientName clientCedula patient items subtotal discountTotal taxAmount total paymentMethod payments status invoice createdAt createdBy cashier doctor recommendedBy discountReason')
         .populate('invoice', 'estab ptoEmi secuencial estado')
+        .populate('clinic', 'name')
         .populate('payments.bankAccount', 'name')
         .populate('createdBy', 'name')
         .populate('doctor', 'name')
@@ -384,8 +434,10 @@ exports.detail = async (req, res) => {
       sumar(bySeller, String(s.createdBy?._id || 'x'), s.createdBy?.name || 'Sin registrar', s.total || 0);
       if (s.doctor) sumar(byDoctor, String(s.doctor._id), s.doctor.name, s.total || 0);
 
-      const clinicKey = String(s._closing.clinic?._id || s._closing.clinic);
-      if (!byClinic.has(clinicKey)) byClinic.set(clinicKey, fila(s._closing.clinic?.name || 'Sucursal'));
+      // Por la sucursal donde se cobró (la caja de un punto puede cobrar en varias).
+      const sucursalVenta = s.clinic?._id ? s.clinic : s._closing.clinic;
+      const clinicKey = String(sucursalVenta?._id || sucursalVenta);
+      if (!byClinic.has(clinicKey)) byClinic.set(clinicKey, fila(sucursalVenta?.name || 'Sucursal'));
       sumarCobro(byClinic.get(clinicKey), s);
       sumarCobro(porCaja.get(String(s._closing._id)), s);
     }
@@ -436,7 +488,7 @@ exports.detail = async (req, res) => {
         _id: s._id,
         saleNumber: s.saleNumber,
         createdAt: s.createdAt,
-        clinic: s._closing.clinic?.name || '',
+        clinic: s.clinic?.name || s._closing.clinic?.name || '',
         clientName: s.clientName,
         clientCedula: s.clientCedula,
         status: s.status,
@@ -547,7 +599,11 @@ exports.close = async (req, res) => {
   try {
     {
       const closingId = await runInTransaction(async (session) => {
-        const closing = await CashClosing.findOne({ _id: req.params.id, clinic: req.clinicId, status: 'ABIERTA' }).session(session);
+        // La caja de un punto se cierra desde cualquier sucursal de la empresa.
+        const closing = await CashClosing.findOne({ _id: req.params.id, clinic: { $in: await sucursalesEmpresa(req.clinicId) }, status: 'ABIERTA' }).session(session);
+        if (closing && !closing.puntoEmision && String(closing.clinic) !== String(req.clinicId)) {
+          throw Object.assign(new Error('Caja abierta no encontrada'), { status: 404 });
+        }
         if (!closing) throw Object.assign(new Error('Caja abierta no encontrada'), { status: 404 });
         // El cajero solo cierra SU caja; admin/contabilidad pueden cerrar la de otro.
         if (req.role === 'cajero' && !req.user.isSuperAdmin && String(closing.openedBy) !== String(req.user._id)) {
@@ -556,7 +612,7 @@ exports.close = async (req, res) => {
 
         const closedAt = new Date();
         const countedCash = Number(req.body.countedCash) || 0;
-        const { byMethod, salesCount, totalSales, expectedCash } = await resumenSesion(req.clinicId, closing, closedAt, session);
+        const { byMethod, salesCount, totalSales, expectedCash } = await resumenSesion(closing, closedAt, session);
         const difference = +(countedCash - expectedCash).toFixed(2);
 
         closing.closedAt = closedAt;
@@ -574,7 +630,8 @@ exports.close = async (req, res) => {
         // El ajuste es del cajón de quien abrió la caja: con puntos se le atribuye a él (si lo
         // firmara el admin que cierra, aparecería en la caja abierta del admin).
         const ajusteUser = closing.puntoEmision ? closing.openedBy : req.user._id;
-        const { entry } = await postDifferenceEntry(req.clinicId, closing, ajusteUser, session);
+        // El ajuste va en la sucursal donde se abrió la caja.
+        const { entry } = await postDifferenceEntry(closing.clinic, closing, ajusteUser, session);
         if (entry) closing.journalEntry = entry._id;
         await closing.save({ session });
         return closing._id;
@@ -646,7 +703,7 @@ exports.addMovement = async (req, res) => {
   try {
     const ChartOfAccount = require('../models/ChartOfAccount');
     const movementId = await runInTransaction(async (session) => {
-      const open = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA', openedBy: req.user._id }).session(session);
+      const open = await miCajaAbierta(req, session);
       if (!open) throw Object.assign(new Error('No tienes una caja abierta'), { status: 400 });
 
       const { type, description } = req.body;
@@ -722,11 +779,12 @@ exports.listMovements = async (req, res) => {
   try {
     let sessionId = req.query.session;
     if (!sessionId) {
-      const open = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA', openedBy: req.user._id }).select('_id');
+      const open = await miCajaAbierta(req);
       sessionId = open?._id;
     }
     if (!sessionId) return res.json([]);
-    const items = await CashMovement.find({ clinic: req.clinicId, cashSession: sessionId })
+    // Los movimientos de la caja de un punto pueden haberse registrado desde otra sucursal.
+    const items = await CashMovement.find({ clinic: { $in: await sucursalesEmpresa(req.clinicId) }, cashSession: sessionId })
       .sort({ date: -1 })
       .populate('counterpartAccount', 'code name')
       .populate('bankAccount', 'name');

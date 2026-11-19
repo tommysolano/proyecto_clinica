@@ -65,11 +65,29 @@ async function puntoRequerido(clinicId, userId) {
 const MSG_CAJA_CERRADA =
   'No puedes facturar hasta tener la caja abierta. Abre tu caja en Caja (Apertura/Cierre) y vuelve a intentarlo.';
 
-/** ¿El usuario tiene una caja ABIERTA en esta sucursal? */
-async function cajaAbiertaDelUsuario(clinicId, userId) {
+/**
+ * LA CAJA ES DEL PUNTO DE EMISIÓN, NO DE LA SUCURSAL (19-11-2026). El punto vale en toda la
+ * empresa, así que su caja también: abierta en una sucursal, es la MISMA caja al entrar por
+ * otra sucursal (se ve, se cobra y se cierra desde cualquiera). Antes cada sucursal buscaba
+ * «su» caja, ofrecía abrir otra y el mismo punto quedaba con dos cajas abiertas (Jeniffer,
+ * 003-001, en Extensión y Laboratorio).
+ *
+ * Filtro de la caja ABIERTA del usuario: con punto, la de su punto (en cualquier sucursal) o,
+ * por compatibilidad, una suya sin punto en esta sucursal; sin punto, la suya de esta sucursal.
+ */
+function filtroCajaAbierta(clinicId, userId, punto) {
+  if (punto?._id) {
+    return { status: 'ABIERTA', openedBy: userId, $or: [{ puntoEmision: punto._id }, { clinic: clinicId, puntoEmision: null }] };
+  }
+  return { clinic: clinicId, status: 'ABIERTA', openedBy: userId };
+}
+
+/** ¿El usuario tiene su caja ABIERTA? (con punto, en cualquier sucursal; ver filtroCajaAbierta). */
+async function cajaAbiertaDelUsuario(clinicId, userId, punto) {
   if (!clinicId || !userId) return false;
+  const p = punto === undefined ? await puntoDelUsuario(clinicId, userId) : punto;
   const CashClosing = require('../models/CashClosing');
-  return !!(await CashClosing.exists({ clinic: clinicId, status: 'ABIERTA', openedBy: userId }));
+  return !!(await CashClosing.exists(filtroCajaAbierta(clinicId, userId, p)));
 }
 
 /**
@@ -81,7 +99,7 @@ async function cajaAbiertaDelUsuario(clinicId, userId) {
 async function assertCajaAbiertaParaFacturar(clinicId, userId, punto) {
   const p = punto === undefined ? await puntoDelUsuario(clinicId, userId) : punto;
   if (!p) return;
-  if (!(await cajaAbiertaDelUsuario(clinicId, userId))) throw httpError(409, MSG_CAJA_CERRADA, 'CAJA_CERRADA');
+  if (!(await cajaAbiertaDelUsuario(clinicId, userId, p))) throw httpError(409, MSG_CAJA_CERRADA, 'CAJA_CERRADA');
 }
 
 /** Ambiente del SRI de un punto: el suyo o, si no lo tiene definido, el de la configuración. */
@@ -183,6 +201,7 @@ module.exports = {
   MSG_SIN_PUNTO,
   MSG_CAJA_CERRADA,
   cajaAbiertaDelUsuario,
+  filtroCajaAbierta,
   assertCajaAbiertaParaFacturar,
   sucursalSri,
   configDeEmpresa,

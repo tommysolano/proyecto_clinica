@@ -23,6 +23,9 @@ router.delete('/presets/:id', requireRole('admin', 'contabilidad'), c.removePres
 
 // Reportes (motor único: pantalla y Excel salen del mismo servicio).
 router.get('/summary', c.summary);
+// Reporte de UN producto (estilo Contífico): se abre desde Bodegas → Existencias.
+router.get('/product', c.productReport);
+router.get('/product.xlsx', requireRole('admin', 'contabilidad'), c.productReportExcel);
 router.get('/report', c.report);
 // La exportación es una acción sensible (se lleva la información fuera): admin/contabilidad.
 router.get('/report.xlsx', requireRole('admin', 'contabilidad'), c.exportReportExcel);

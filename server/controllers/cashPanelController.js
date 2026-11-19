@@ -10,6 +10,7 @@ const { getAccount } = require('../utils/accountMap');
 const {
   construirPanel, listarSalidas, cuentasDeCaja, periodoDe, diaLocal, hoyYmd,
 } = require('../services/cashPanel');
+const { filtroCajaAbierta, puntoDelUsuario } = require('../services/puntoEmision');
 
 /**
  * CAJA E INGRESOS (oct-2026) — la página que el contador conocía de micartaonline.
@@ -170,7 +171,8 @@ exports.crearVale = async (req, res) => {
       // La caja escogida en la página (super admin / contabilidad) o la propia abierta.
       const abierta = req.caja
         ? { _id: req.caja._id }
-        : await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA', openedBy: req.user._id })
+        // Con punto, su caja es la del punto aunque se haya abierto desde otra sucursal.
+        : await CashClosing.findOne(filtroCajaAbierta(req.clinicId, req.user._id, await puntoDelUsuario(req.clinicId, req.user._id)))
           .select('_id').session(session);
       const { operadorDeCaja } = require('../middleware/cajaSeleccionada');
       const entry = await createEntry({

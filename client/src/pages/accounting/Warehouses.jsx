@@ -112,6 +112,14 @@ export default function Warehouses() {
     return m;
   }, [fisico]);
   // Columnas: la bodega elegida, o todas las del resumen (activas + las que aún tienen stock).
+  /** Reporte de ventas del producto en pestaña nueva; con una bodega elegida, filtrado por su centro de costo. */
+  const abrirReporteProducto = (productId) => {
+    const qs = new URLSearchParams({ product: String(productId) });
+    const bodega = bodegaSel ? list.find((w) => String(w._id) === String(bodegaSel)) : null;
+    const centro = bodega?.costCenter?._id || bodega?.costCenter;
+    if (centro) qs.set('costCenter', String(centro));
+    window.open(`/accounting/product-sales?${qs.toString()}`, '_blank', 'noopener');
+  };
   const columnas = useMemo(() => (bodegaSel ? resumenBodegas.filter((r) => r.key === bodegaSel) : resumenBodegas), [resumenBodegas, bodegaSel]);
   const filas = useMemo(() => {
     const t = busq.trim().toLowerCase();
@@ -350,8 +358,16 @@ export default function Warehouses() {
                   return (
                     <tr key={f.product._id} className="border-t hover:bg-slate-50">
                       <td className="px-3 py-2 sticky left-0 bg-white border-r border-slate-100 max-w-[280px]">
-                        <div className="font-medium text-slate-800 truncate" title={f.product.name}>{f.product.name}</div>
-                        <div className="text-[11px] text-slate-400 font-mono">{f.product.code}</div>
+                        {/* Clic: reporte de ventas del producto en una pestaña nueva (como en Contífico). */}
+                        <button
+                          type="button"
+                          onClick={() => abrirReporteProducto(f.product._id)}
+                          title="Ver el reporte de ventas de este producto (pestaña nueva)"
+                          className="block w-full text-left bg-transparent border-none p-0 cursor-pointer group"
+                        >
+                          <div className="font-medium text-slate-800 truncate group-hover:text-sky-700 group-hover:underline" title={f.product.name}>{f.product.name}</div>
+                          <div className="text-[11px] text-slate-400 font-mono">{f.product.code}</div>
+                        </button>
                       </td>
                       {!bodegaSel && (
                         <>

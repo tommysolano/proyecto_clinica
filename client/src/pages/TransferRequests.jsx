@@ -168,6 +168,7 @@ export default function TransferRequests() {
                     <span className="whitespace-nowrap text-slate-600">
                       Pedido <b>{fmt(it.quantity)}</b>
                       {it.approvedQty != null && <> · trasladado <b className={it.approvedQty < it.quantity ? 'text-amber-700' : 'text-emerald-700'}>{fmt(it.approvedQty)}</b></>}
+                      {it.fromWarehouse && <span className="text-sky-700"> · desde {bodegaTxt(it.fromWarehouse)}</span>}
                     </span>
                   </li>
                 ))}
@@ -293,12 +294,16 @@ function NuevaSolicitudModal({ isOpen, onClose, bodega, products, onDone }) {
 /**
  * Atender: escoger la bodega de ORIGEN viendo, por cada ítem, cuánto hay en cada bodega (sistema)
  * y lo último contado en la toma física; ajustar cantidades; aprobar (traslada) o rechazar.
+ * Además de la bodega principal, cada ítem puede salir de OTRA bodega (nov-2026): un ítem que no
+ * está en la principal pero sí en otra. Se hace un traslado por bodega de origen.
  */
 function AtenderModal({ solicitud, onClose, onDone }) {
   const [warehouses, setWarehouses] = useState([]);
   const [stock, setStock] = useState([]);
   const [fisico, setFisico] = useState([]);
   const [origen, setOrigen] = useState('');
+  // Bodega propia de cada ítem ('' = la principal).
+  const [origenItem, setOrigenItem] = useState({});
   const [cant, setCant] = useState({});
   const [date, setDate] = useState(hoy());
   const [note, setNote] = useState('');
@@ -308,6 +313,7 @@ function AtenderModal({ solicitud, onClose, onDone }) {
   useEffect(() => {
     if (!solicitud) return;
     setOrigen('');
+    setOrigenItem({});
     setDate(hoy());
     setNote('');
     setRechazando(false);
@@ -330,18 +336,28 @@ function AtenderModal({ solicitud, onClose, onDone }) {
     .map((w) => ({ w, qty: sistema(productId, w._id) }))
     .filter((x) => x.qty > 0);
 
+  /** Bodega de la que sale el ítem: la suya si se escogió una, si no la principal. */
+  const origenDe = (pid) => origenItem[pid] || origen;
+  const nombreBodega = (whId) => bodegaTxt(origenes.find((w) => String(w._id) === String(whId)));
+
   if (!solicitud) return null;
 
   const aprobar = async () => {
     if (!origen) return toast.error('Escoge la bodega de origen');
-    const lineas = solicitud.items.map((it) => ({ product: String(it.product), quantity: Number(cant[String(it.product)] || 0) }));
+    const lineas = solicitud.items.map((it) => {
+      const pid = String(it.product);
+      const linea = { product: pid, quantity: Number(cant[pid] || 0) };
+      if (origenItem[pid] && origenItem[pid] !== origen) linea.fromWarehouse = origenItem[pid];
+      return linea;
+    });
     if (lineas.some((l) => !Number.isFinite(l.quantity) || l.quantity < 0)) return toast.error('Revisa las cantidades');
     if (!lineas.some((l) => l.quantity > 0)) return toast.error('Todas las cantidades están en cero: si no se va a atender, recházala');
     for (const l of lineas) {
-      const hay = sistema(l.product, origen);
+      const desde = l.fromWarehouse || origen;
+      const hay = sistema(l.product, desde);
       if (l.quantity > hay) {
         const nombre = solicitud.items.find((i) => String(i.product) === l.product)?.productName || 'un producto';
-        return toast.error(`Solo hay ${fmt(hay)} de "${nombre}" en la bodega de origen`);
+        return toast.error(`Solo hay ${fmt(hay)} de "${nombre}" en ${nombreBodega(desde)}`);
       }
     }
     setSaving(true);
@@ -380,18 +396,21 @@ function AtenderModal({ solicitud, onClose, onDone }) {
           {solicitud.notes && <span className="block text-xs italic text-slate-500 mt-0.5">«{solicitud.notes}»</span>}
         </p>
 
-        <Field label="¿Desde qué bodega sale?" required>
+        <Field label="¿Desde qué bodega sale? (principal)" required>
           <select value={origen} onChange={(e) => setOrigen(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
             <option value="">Seleccione…</option>
             {origenes.map((w) => <option key={w._id} value={w._id}>{bodegaTxt(w)}</option>)}
           </select>
+          {origen && <p className="text-[11px] text-slate-500 mt-1">Si un ítem no está en esta bodega, escoge en ese ítem otra bodega de la que salga.</p>}
         </Field>
 
         <div className="border border-slate-200 rounded-xl divide-y divide-slate-100">
           {solicitud.items.map((it) => {
             const pid = String(it.product);
-            const hay = origen ? sistema(pid, origen) : null;
-            const toma = origen ? contado(pid, origen) : null;
+            const desde = origenDe(pid);
+            const propia = !!origenItem[pid] && origenItem[pid] !== origen;
+            const hay = desde ? sistema(pid, desde) : null;
+            const toma = desde ? contado(pid, desde) : null;
             const q = Number(cant[pid] || 0);
             const excede = hay != null && q > hay;
             const otras = dondeHay(pid);
@@ -402,7 +421,36 @@ function AtenderModal({ solicitud, onClose, onDone }) {
                   <p className="text-xs text-slate-500">Pedido: <b>{fmt(it.quantity)}</b></p>
                   {origen ? (
                     <div className="text-[11px] mt-0.5 space-y-0.5">
-                      <p className={hay > 0 ? 'text-slate-500' : 'text-rose-600'}>Sistema en origen: <b>{fmt(hay)}</b></p>
+                      <div className="flex items-center gap-1.5 flex-wrap mt-1">
+                        <span className="text-slate-500">Sale de:</span>
+                        <select
+                          value={origenItem[pid] || ''}
+                          onChange={(e) => setOrigenItem((o) => ({ ...o, [pid]: e.target.value }))}
+                          className={`border rounded-lg px-2 py-1 text-[11px] max-w-full ${propia ? 'border-sky-300 bg-sky-50 text-sky-800' : 'border-slate-200'}`}
+                        >
+                          <option value="">Bodega principal ({fmt(sistema(pid, origen))})</option>
+                          {origenes.filter((w) => String(w._id) !== String(origen)).map((w) => (
+                            <option key={w._id} value={w._id}>{bodegaTxt(w)} ({fmt(sistema(pid, w._id))})</option>
+                          ))}
+                        </select>
+                      </div>
+                      {/* No alcanza en la bodega escogida: atajo a las bodegas donde sí hay. */}
+                      {hay < Number(it.quantity) && otras.some((x) => String(x.w._id) !== String(desde)) && (
+                        <p className="text-slate-500">
+                          Hay en:{' '}
+                          {otras.filter((x) => String(x.w._id) !== String(desde)).map((x) => (
+                            <button
+                              key={x.w._id}
+                              type="button"
+                              onClick={() => setOrigenItem((o) => ({ ...o, [pid]: String(x.w._id) === String(origen) ? '' : String(x.w._id) }))}
+                              className="mr-1.5 px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200 cursor-pointer hover:bg-sky-100"
+                            >
+                              {x.w.code || x.w.name} · {fmt(x.qty)}
+                            </button>
+                          ))}
+                        </p>
+                      )}
+                      <p className={hay > 0 ? 'text-slate-500' : 'text-rose-600'}>Sistema en {propia ? nombreBodega(desde) : 'origen'}: <b>{fmt(hay)}</b></p>
                       <p className="text-slate-500">
                         Toma física:{' '}
                         {toma

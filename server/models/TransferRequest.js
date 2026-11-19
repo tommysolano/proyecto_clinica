@@ -20,6 +20,9 @@ const itemSchema = new mongoose.Schema(
     productName: String,
     quantity: { type: Number, required: true, min: 0 },       // lo pedido
     approvedQty: { type: Number, default: null },             // lo que se trasladó (al aprobar)
+    // Bodega de la que salió ESTE ítem (nov-2026): el administrador puede sacar ítems sueltos de
+    // otra bodega distinta de la principal (`fromWarehouse` de la solicitud). null = la principal.
+    fromWarehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
   },
   { _id: false }
 );
@@ -40,6 +43,8 @@ const transferRequestSchema = new mongoose.Schema(
     resolvedAt: { type: Date, default: null },
     resolutionNote: { type: String, trim: true, maxlength: 500, default: '' },
     transferGroup: { type: mongoose.Schema.Types.ObjectId, default: null },
+    // Un traslado por cada bodega de origen (si hubo ítems de varias bodegas).
+    transferGroups: { type: [mongoose.Schema.Types.ObjectId], default: [] },
   },
   { timestamps: true }
 );

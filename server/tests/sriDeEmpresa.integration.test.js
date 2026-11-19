@@ -90,3 +90,57 @@ test('el punto de la empresa vale en todas sus sucursales y la venta sale con é
   // Otra empresa no ve ese punto.
   assert.equal(await svc.puntoDelUsuario(norteId, jeniffer._id), null);
 });
+
+// 19-11-2026: Jeniffer (punto 003-001) abrió caja en Extensión y otra en Laboratorio. La caja es
+// del PUNTO, no de la sucursal: desde cualquier sucursal ve la misma caja, cobra en ella y la cierra.
+test('la caja del punto es la misma desde todas las sucursales de la empresa', async () => {
+  const { centralId, labId, jeniffer } = await seed();
+  const cashClosing = require('../controllers/cashClosingController');
+  await H.runController(puntosCtrl.create, H.mockReq(labId, null, {
+    establecimiento: '003', codigo: '001', nombre: 'Caja principal', usuario: String(jeniffer._id), ambiente: '1',
+  }));
+  const comoJen = (clinic, body = {}, extra = {}) => {
+    const r = H.mockReq(clinic, jeniffer._id, body, { role: 'admin', ...extra });
+    r.user = { ...jeniffer.toObject(), _id: jeniffer._id };
+    return r;
+  };
+
+  const abierta = await H.runController(cashClosing.open, comoJen(labId, { openingBalance: 10 }));
+  assert.equal(abierta.statusCode, 201);
+
+  // Entra por Central: ve su caja abierta (la misma), no se le ofrece abrir otra.
+  const desdeCentral = await H.runController(cashClosing.current, comoJen(centralId));
+  assert.equal(String(desdeCentral.payload.open?._id), String(abierta.payload._id));
+  const segunda = await H.runController(cashClosing.open, comoJen(centralId, { openingBalance: 0 }));
+  assert.equal(segunda.statusCode, 400);
+  assert.equal(await CashClosing.countDocuments({ status: 'ABIERTA' }), 1);
+
+  // Cobra en las dos sucursales: todo cae en su única caja.
+  const mio = await H.runController(puntosCtrl.mine, comoJen(centralId));
+  assert.equal(mio.payload.cajaAbierta, true);
+  await assert.doesNotReject(svc.assertCajaAbiertaParaFacturar(centralId, jeniffer._id));
+  const vender = async (clinic, precio) => {
+    const prod = await H.makeProduct(clinic, { category: 'servicio', unlimited: true, salePrice: precio, taxCategory: 'IVA_0', taxRate: 0, priceIncludesVat: false });
+    const v = await H.runController(sales.createSale, comoJen(clinic, { items: [{ product: String(prod._id), quantity: 1, unitPrice: precio }], payments: [{ method: 'efectivo', amount: precio }] }));
+    assert.equal(v.statusCode, 201, JSON.stringify(v.payload));
+  };
+  await vender(labId, 25);
+  await vender(centralId, 40);
+  const vivo = await H.runController(cashClosing.current, comoJen(centralId));
+  assert.equal(vivo.payload.live.totalSales, 65, 'ventas de Laboratorio y de Central en la misma caja');
+  assert.equal(vivo.payload.live.expectedCash, 75, 'fondo 10 + 65 en efectivo');
+
+  // La cierra desde Central, cuadrada.
+  const cierre = await H.runController(cashClosing.close, comoJen(centralId, { countedCash: 75 }, { params: { id: String(abierta.payload._id) } }));
+  assert.equal(cierre.statusCode, 200, JSON.stringify(cierre.payload));
+  assert.equal(cierre.payload.difference, 0);
+  assert.equal(cierre.payload.salesCount, 2);
+
+  // El detalle (desde cualquier sucursal) muestra las dos ventas con su sucursal.
+  const det = await H.runController(cashClosing.detail, comoJen(centralId, {}, { params: { id: String(abierta.payload._id) } }));
+  assert.equal(det.statusCode, 200, JSON.stringify(det.payload));
+  assert.deepEqual(det.payload.sales.map((s) => s.clinic).sort(), ['Central', 'Laboratorio']);
+
+  // Ya cerrada, la siguiente se abre desde cualquier sucursal.
+  assert.equal((await H.runController(cashClosing.open, comoJen(centralId, { openingBalance: 0 }))).statusCode, 201);
+});

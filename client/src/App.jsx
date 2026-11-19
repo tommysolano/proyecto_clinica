@@ -60,6 +60,7 @@ const ScanReview = pagina(() => import('./pages/ScanReview'));
 const Appointments = pagina(() => import('./pages/Appointments'));
 const Inventory = pagina(() => import('./pages/Inventory'));
 const TransferRequests = pagina(() => import('./pages/TransferRequests'));
+const MiBodega = pagina(() => import('./pages/MiBodega'));
 const Sales = pagina(() => import('./pages/Sales'));
 const Invoices = pagina(() => import('./pages/Invoices'));
 const VentaDetalle = pagina(() => import('./pages/VentaDetalle'));
@@ -145,6 +146,7 @@ const Checks = pagina(() => import('./pages/accounting/Checks'));
 const CreditCards = pagina(() => import('./pages/accounting/CreditCards'));
 const CardSettlements = pagina(() => import('./pages/accounting/CardSettlements'));
 const SalesReports = pagina(() => import('./pages/accounting/SalesReports'));
+const ProductSalesReport = pagina(() => import('./pages/accounting/ProductSalesReport'));
 const CashClosing = pagina(() => import('./pages/accounting/CashClosing'));
 const CashClosingDetail = pagina(() => import('./pages/accounting/CashClosingDetail'));
 const CashIncome = pagina(() => import('./pages/accounting/CashIncome'));
@@ -335,6 +337,15 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'contabilidad', 'cajero']}>
                       <TransferRequests />
+                    </RoleRoute>
+                  }
+                />
+                {/* Mi bodega: la del punto de emisión del usuario (sistema vs toma física). */}
+                <Route
+                  path="/my-warehouse"
+                  element={
+                    <RoleRoute roles={['admin', 'contabilidad', 'cajero']}>
+                      <MiBodega />
                     </RoleRoute>
                   }
                 />
@@ -723,6 +734,8 @@ function AppRoutes() {
                   ['credit-card-batches', CreditCardBatches],
                   ['card-settlements', CardSettlements],
                   ['sales-reports', SalesReports],
+                  // Reporte de ventas de UN producto (se abre desde Bodegas → Existencias).
+                  ['product-sales', ProductSalesReport],
                   ['audit-logs', AuditLogs],
                 ].map(([path, Comp]) => (
                   <Route

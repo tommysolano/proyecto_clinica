@@ -9,6 +9,8 @@ router.use(auth, requireClinic);
 const conPunto = requireRole('admin', 'contabilidad', 'cajero');
 
 router.get('/context', conPunto, c.context);
+// Mi bodega: la del punto del usuario (el controlador exige que su punto tenga bodega).
+router.get('/my-warehouse', conPunto, c.myWarehouse);
 router.get('/', conPunto, c.list);
 router.post('/', conPunto, c.create);
 router.post('/:id/approve', requireRole('admin', 'contabilidad'), c.approve);

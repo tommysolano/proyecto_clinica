@@ -119,3 +119,79 @@ test('rechazar pide motivo; retirar solo la propia pendiente; sin bodega no se p
   assert.match(sinBodega.payload.message, /no tiene una bodega asignada/);
   assert.equal((await H.runController(ctrl.context, comoCajero())).payload.canRequest, false);
 });
+
+// Nov-2026: un ítem está en la bodega principal y otro solo en otra bodega. El administrador
+// escoge la principal y saca el otro ítem de la bodega donde sí hay: un traslado por origen.
+test('ítems sueltos desde otra bodega: un traslado por bodega de origen, todo o nada', async () => {
+  const { clinicId, adminId, matriz, lab, gasas, comoCajero, comoAdmin } = await setup();
+  const centro = await Warehouse.create({ clinic: clinicId, code: 'BOD006', name: 'Centro' });
+  const jarabe = await H.makeProduct(clinicId, { name: 'Jarabe', code: 'P2', category: 'insumo', purchasePrice: 2 });
+  await H.runController(productCtrl.createMovement, H.mockReq(clinicId, adminId, {
+    product: String(jarabe._id), type: 'entrada', quantity: 8, unitCost: 2, warehouse: String(centro._id),
+  }));
+  const pedir = async () => (await H.runController(ctrl.create, comoCajero({ items: [
+    { product: String(gasas._id), quantity: 4 }, { product: String(jarabe._id), quantity: 5 },
+  ] }))).payload;
+
+  // Si el ítem suelto sale de una bodega sin stock, no se mueve NADA (tampoco lo de la principal).
+  const s1 = await pedir();
+  const mal = await H.runController(ctrl.approve, comoAdmin({
+    fromWarehouse: String(matriz._id),
+    items: [{ product: String(gasas._id), quantity: 4 }, { product: String(jarabe._id), quantity: 5, fromWarehouse: String(matriz._id) }],
+  }, { params: { id: String(s1._id) } }));
+  assert.equal(mal.statusCode, 400);
+  assert.deepEqual(await stockEn(clinicId, adminId, gasas._id), { Matriz: 10 });
+  assert.equal((await TransferRequest.findById(s1._id)).status, 'PENDIENTE');
+
+  // Gasas de la principal (Matriz) y Jarabe de Centro.
+  const ap = await H.runController(ctrl.approve, comoAdmin({
+    fromWarehouse: String(matriz._id),
+    items: [{ product: String(gasas._id), quantity: 4 }, { product: String(jarabe._id), quantity: 5, fromWarehouse: String(centro._id) }],
+  }, { params: { id: String(s1._id) } }));
+  assert.equal(ap.statusCode, 200, JSON.stringify(ap.payload));
+  assert.deepEqual(await stockEn(clinicId, adminId, gasas._id), { Matriz: 6, Laboratorio: 4 });
+  assert.deepEqual(await stockEn(clinicId, adminId, jarabe._id), { Centro: 3, Laboratorio: 5 });
+  assert.equal(ap.payload.transferGroups.length, 2, 'un traslado por bodega de origen');
+  const porProducto = Object.fromEntries(ap.payload.items.map((i) => [i.productName, i.fromWarehouse?.name || null]));
+  assert.deepEqual(porProducto, { Gasas: null, Jarabe: 'Centro' }, 'null = salió de la principal');
+
+  // La bodega destino no vale como origen de un ítem.
+  const s2 = await pedir();
+  const aDestino = await H.runController(ctrl.approve, comoAdmin({
+    fromWarehouse: String(matriz._id), items: [{ product: String(jarabe._id), quantity: 1, fromWarehouse: String(lab._id) }],
+  }, { params: { id: String(s2._id) } }));
+  assert.equal(aDestino.statusCode, 400);
+});
+
+// Nov-2026: «Mi bodega» — el usuario del punto ve su bodega en tiempo real: sistema vs toma física.
+test('mi bodega: stock del sistema y última toma física de la bodega del punto', async () => {
+  const { clinicId, adminId, matriz, lab, gasas, comoCajero, comoAdmin } = await setup();
+  const PhysicalCount = require('../models/PhysicalCount');
+
+  // Antes de recibir nada: la bodega está vacía (con ?todos=1 aparece Gasas en cero).
+  let r = await H.runController(ctrl.myWarehouse, comoCajero());
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  assert.equal(r.payload.bodega.name, 'Laboratorio');
+  assert.deepEqual(r.payload.items, []);
+  r = await H.runController(ctrl.myWarehouse, comoCajero({}, { query: { todos: '1' } }));
+  assert.deepEqual(r.payload.items.map((i) => [i.name, i.sistema, i.fisico]), [['Gasas', 0, null]]);
+
+  // Le trasladan 4 y en la toma física de su bodega se contaron 3.
+  const sol = (await H.runController(ctrl.create, comoCajero({ items: [{ product: String(gasas._id), quantity: 4 }] }))).payload;
+  await H.runController(ctrl.approve, comoAdmin({ fromWarehouse: String(matriz._id) }, { params: { id: String(sol._id) } }));
+  await PhysicalCount.create({
+    clinic: clinicId, code: 'TF-00001', warehouse: lab._id, date: new Date(), status: 'CONFIRMADO', createdBy: adminId,
+    items: [{ product: gasas._id, countedQty: 3, counted: true }],
+  });
+  r = await H.runController(ctrl.myWarehouse, comoCajero());
+  const fila = r.payload.items[0];
+  assert.equal(fila.name, 'Gasas');
+  assert.equal(fila.sistema, 4, 'lo de su bodega, no lo de Matriz');
+  assert.equal(fila.fisico.qty, 3);
+  assert.equal(fila.fisico.code, 'TF-00001');
+  assert.equal(fila.diferencia, -1);
+
+  // Sin bodega en su punto no hay «Mi bodega».
+  const sinBodega = await H.runController(ctrl.myWarehouse, comoAdmin());
+  assert.equal(sinBodega.statusCode, 404);
+});

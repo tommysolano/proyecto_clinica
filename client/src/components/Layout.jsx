@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import api from '../api/axios';
 import { roleSatisfies, ROLE_LABELS, isRestrictedAssistantPage } from '../utils/roles';
 import NotificationBell from './NotificationBell';
 import AccountingScopeSwitch from './AccountingScopeSwitch';
@@ -121,6 +122,8 @@ const MENU_GROUPS = [
       { path: '/inventory', label: 'Productos', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/inv-categories', label: 'Categorías', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/warehouses', label: 'Bodegas', roles: ['admin', 'contabilidad'] },
+      // Solo para quien tiene un punto de emisión con bodega (ver tieneMiBodega).
+      { path: '/my-warehouse', label: 'Mi bodega', roles: ['admin', 'contabilidad', 'cajero'], miBodega: true },
       { path: '/transfer-requests', label: 'Solicitudes de traslado', roles: ['admin', 'contabilidad', 'cajero'] },
       { path: '/accounting/kardex', label: 'Kardex', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/inv-consolidated', label: 'Inv. Consolidado', roles: ['admin', 'contabilidad'] },
@@ -369,8 +372,23 @@ export default function Layout({ children }) {
     }
   };
 
+  // «Mi bodega» solo aparece si el punto de emisión del usuario tiene bodega (nov-2026).
+  const [tieneMiBodega, setTieneMiBodega] = useState(false);
+  useEffect(() => {
+    let vivo = true;
+    if (!user || !(user.isSuperAdmin || roleSatisfies(role, ['admin', 'contabilidad', 'cajero']))) {
+      setTieneMiBodega(false);
+      return undefined;
+    }
+    api.get('/transfer-requests/context')
+      .then((r) => { if (vivo) setTieneMiBodega(!!r.data?.canRequest); })
+      .catch(() => { if (vivo) setTieneMiBodega(false); });
+    return () => { vivo = false; };
+  }, [user, role, activeClinic?._id]);
+
   // ¿El usuario puede ver este ítem del menú?
   const canSee = (item) => {
+    if (item.miBodega && !tieneMiBodega) return false;
     if (item.superOnly) return !!user?.isSuperAdmin;
     if (user?.isSuperAdmin) return true;
     if (!role) return false;
@@ -388,7 +406,7 @@ export default function Layout({ children }) {
   const searchItems = [
     { path: '/', label: 'Dashboard', group: 'Inicio', roles: ALL_ROLES },
     ...MENU_GROUPS.flatMap((g) =>
-      g.items.map((it) => ({ path: it.path, label: it.label, group: g.label, alias: g.alias || '', roles: it.roles, superOnly: it.superOnly }))
+      g.items.map((it) => ({ path: it.path, label: it.label, group: g.label, alias: g.alias || '', roles: it.roles, superOnly: it.superOnly, miBodega: it.miBodega }))
     ),
     { path: '/settings', label: 'Configuración de Cuenta', group: 'Mi Cuenta', roles: ALL_ROLES },
   ].filter(canSee);

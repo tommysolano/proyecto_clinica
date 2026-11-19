@@ -69,17 +69,23 @@ exports.removeCategory = async (req, res) => {
   res.json({ ok: true });
 };
 
+/**
+ * Alcance de las ventas que ve el reporte: toda la empresa («Toda la empresa»), la sucursal ligada
+ * a un centro (sus ventas de ese centro + las de la sucursal del usuario) o la sucursal activa.
+ */
+const alcanceVentas = (req) => (req.companyClinicIds?.length
+  ? { clinic: { $in: req.companyClinicIds.map(oid) } }
+  : req.userClinicId && String(req.userClinicId) !== String(req.clinicId)
+    ? { $or: [{ clinic: oid(req.clinicId), ...centerMatch(req) },
+      { clinic: oid(req.userClinicId) }] }
+    : { clinic: oid(req.clinicId), ...centerMatch(req) });
+
 /* ============================== RESUMEN ============================== */
 exports.summary = async (req, res) => {
   try {
     const range = dateRange(req);
     const productIds = await resolveProductIds(req);
-    const baseMatch = req.companyClinicIds?.length
-      ? { clinic: { $in: req.companyClinicIds.map(oid) } }
-      : req.userClinicId && String(req.userClinicId) !== String(req.clinicId)
-        ? { $or: [{ clinic: oid(req.clinicId), ...centerMatch(req) },
-          { clinic: oid(req.userClinicId) }] }
-        : { clinic: oid(req.clinicId), ...centerMatch(req) };
+    const baseMatch = alcanceVentas(req);
     if (range) baseMatch.createdAt = range;
     if (productIds.length) baseMatch['items.product'] = { $in: productIds.map(oid) };
 
@@ -144,6 +150,102 @@ exports.summary = async (req, res) => {
       documents,
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/* ============================== REPORTE DE UN PRODUCTO (estilo Contífico) ============================== */
+
+/** Catálogo de la empresa (para resolver los productos de una categoría). */
+async function catalogoEmpresa(req) {
+  const { ensureCompanyCache, sisterClinicsSync } = require('../utils/companies');
+  await ensureCompanyCache();
+  const ids = sisterClinicsSync(String(req.clinicId), { includeInactive: true });
+  return ids.length ? ids : [String(req.clinicId)];
+}
+
+/**
+ * GET /sales-reports/product — lo vendido de un producto (o categoría) con sus cobros, documentos,
+ * gráfico por hora y por producto/categoría/cliente. Ver services/productSalesReport.
+ * Las ventas son las de la EMPRESA (el producto se vende en todas sus sucursales); el filtro de
+ * centro de costo acota a una sucursal/centro.
+ */
+async function datosReporteProducto(req) {
+  const { buildProductSalesReport } = require('../services/productSalesReport');
+  const clinicas = await catalogoEmpresa(req);
+  // Quien está en una sucursal ligada a un centro solo ve lo de su centro (como el resto del reporte).
+  const base = req.costCenterScope ? alcanceVentas(req) : { clinic: { $in: clinicas.map(oid) } };
+  const data = await buildProductSalesReport(base, req.query, clinicas);
+  const Product = require('../models/Product');
+  const CostCenter = require('../models/CostCenter');
+  const InventoryCategory = require('../models/InventoryCategory');
+  const ids = String(req.query.product || '').split(',').filter((s) => mongoose.isValidObjectId(s));
+  const [productos, centro, categoria] = await Promise.all([
+    ids.length ? Product.find({ _id: { $in: ids } }).select('code name').lean() : [],
+    req.query.costCenter && mongoose.isValidObjectId(req.query.costCenter) ? CostCenter.findById(req.query.costCenter).select('code name').lean() : null,
+    req.query.category && mongoose.isValidObjectId(req.query.category) ? InventoryCategory.findById(req.query.category).select('name').lean() : null,
+  ]);
+  return { ...data, filtros: { productos, centro, categoria } };
+}
+
+exports.productReport = async (req, res) => {
+  try {
+    res.json(await datosReporteProducto(req));
+  } catch (e) { fail(res, e); }
+};
+
+/** Excel del reporte del producto: resumen (las tres tablas) y detalle por documento. */
+exports.productReportExcel = async (req, res) => {
+  try {
+    const XL = require('../utils/excelReport');
+    const d = await datosReporteProducto(req);
+    const quien = d.filtros.productos.map((p) => `${p.code ? `${p.code} - ` : ''}${p.name}`).join(', ')
+      || (d.filtros.categoria ? `Categoría ${d.filtros.categoria.name}` : 'Todos los productos');
+    const meta = [
+      ['Producto', quien],
+      ['Período', XL.periodLabel(req.query)],
+      ['Centro de costo', d.filtros.centro ? `${d.filtros.centro.code || ''} ${d.filtros.centro.name}`.trim() : 'Todos'],
+      ...(req.query.client ? [['Cliente', req.query.client]] : []),
+    ];
+    const wb = XL.newWorkbook();
+    XL.addKeyValueSheet(wb, {
+      title: 'Resumen',
+      meta,
+      sections: [
+        { title: 'Resumen general (líneas del producto)', rows: [
+          ['Cantidad vendida', d.general.cantidad], ['Subtotal 0', d.general.subtotal0], ['Subtotal IVA', d.general.subtotalIva],
+          ['IVA', d.general.iva], ['Descuento', d.general.descuento], ['Notas de crédito', d.general.notasCredito],
+        ], total: ['TOTAL', d.general.total] },
+        { title: 'Resumen de cobros (documentos que incluyen el producto)', rows: [
+          ['Efectivo', d.cobros.efectivo], ['Tarjeta', d.cobros.tarjeta], ['Transferencia', d.cobros.transferencia],
+          ['Anticipos', d.cobros.anticipo], ['Crédito (por cobrar)', d.cobros.credito], ['Otras formas de cobro', d.cobros.otros],
+          ['Pendiente de cobro', d.cobros.pendiente], ['Cobrado', d.cobros.cobrado],
+        ], total: ['Total', d.cobros.total] },
+        { title: 'Cantidad de documentos', rows: [
+          ['Cobrados', d.documentos.cobrados], ['Pendientes', d.documentos.pendientes], ['Anulados', d.documentos.anulados],
+          ['Total', d.documentos.total], ['Promedio por documento emitido', d.documentos.promedio],
+        ] },
+      ],
+    });
+    XL.addSheet(wb, {
+      title: 'Documentos',
+      meta,
+      columns: [
+        { header: 'Fecha', key: 'fecha', width: 20 }, { header: 'Venta', key: 'venta' }, { header: 'Factura', key: 'factura', width: 22 },
+        { header: 'Cliente', key: 'cliente', width: 30 }, { header: 'Identificación', key: 'cedula' }, { header: 'Sucursal', key: 'sucursal', width: 20 },
+        { header: 'Vendedor', key: 'vendedor', width: 22 }, { header: 'Cantidad', key: 'cantidad' },
+        { header: 'Valor del producto', key: 'valorProducto', money: true }, { header: 'Total documento', key: 'totalDocumento', money: true },
+        { header: 'Cobro', key: 'pagos', width: 36 }, { header: 'Estado', key: 'estado' },
+      ],
+      rows: d.detalle.map((x) => ({
+        ...x,
+        fecha: new Date(x.fecha).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' }),
+        pagos: x.pagos.map((p) => `${p.method}: ${Number(p.amount || 0).toFixed(2)}`).join(' + '),
+      })),
+    });
+    await XL.sendWorkbook(res, wb, 'reporte_ventas_producto.xlsx');
+  } catch (e) {
+    if (res.headersSent) return res.end();
+    fail(res, e);
+  }
 };
 
 /* ============================== REPORTE DETALLADO (motor único) ============================== */

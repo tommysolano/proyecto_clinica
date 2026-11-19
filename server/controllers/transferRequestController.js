@@ -46,6 +46,7 @@ async function puntoConBodega(req) {
 const POPULATE = [
   { path: 'toWarehouse', select: 'code name' },
   { path: 'fromWarehouse', select: 'code name' },
+  { path: 'items.fromWarehouse', select: 'code name' },
   { path: 'requestedBy', select: 'name' },
   { path: 'resolvedBy', select: 'name' },
   { path: 'puntoEmision', select: 'establecimiento codigo nombre' },
@@ -62,6 +63,75 @@ exports.context = async (req, res) => {
       canRequest: !!bodega,
       punto: punto ? { _id: punto._id, serie: `${punto.establecimiento}-${punto.codigo}`, nombre: punto.nombre } : null,
       bodega: bodega ? { _id: bodega._id, code: bodega.code, name: bodega.name } : null,
+    });
+  } catch (e) { fail(res, e); }
+};
+
+/**
+ * MI BODEGA (nov-2026): la bodega del punto de emisión del usuario, en tiempo real. Por producto:
+ * lo que dice el SISTEMA (capas vivas del kardex en esa bodega) y lo último contado en una TOMA
+ * FÍSICA de esa bodega, con la diferencia. Solo cantidades (sin costos).
+ * Lista los productos con stock o con conteo en la bodega; con ?todos=1, también los
+ * inventariables del catálogo que están en cero.
+ */
+exports.myWarehouse = async (req, res) => {
+  try {
+    const punto = await puntoConBodega(req);
+    const bodega = punto?.bodega && punto.bodega.active !== false ? punto.bodega : null;
+    if (!bodega) throw httpError(404, 'Tu punto de emisión no tiene una bodega asignada.');
+    const InventoryLayer = require('../models/InventoryLayer');
+    const PhysicalCount = require('../models/PhysicalCount');
+
+    const capas = await InventoryLayer.aggregate([
+      { $match: { clinic: bodega.clinic, warehouse: bodega._id, qtyRemaining: { $ne: 0 } } },
+      { $group: { _id: '$product', qty: { $sum: '$qtyRemaining' } } },
+    ]);
+    const sistema = new Map(capas.map((c) => [String(c._id), kardex.round4(c.qty)]));
+
+    // Lo último contado de cada producto en esta bodega (tomas no anuladas, la más reciente manda).
+    const tomas = await PhysicalCount.find({ warehouse: bodega._id, status: { $ne: 'ANULADO' } })
+      .select('code date status items.product items.countedQty items.counted')
+      .sort({ date: -1, createdAt: -1 })
+      .limit(100)
+      .lean();
+    const fisico = new Map();
+    for (const t of tomas) {
+      for (const it of t.items || []) {
+        if (!it.counted || fisico.has(String(it.product))) continue;
+        fisico.set(String(it.product), { qty: kardex.round4(Number(it.countedQty) || 0), date: t.date, code: t.code, status: t.status });
+      }
+    }
+
+    const { filtroCatalogo } = require('../utils/catalogoEmpresa');
+    const filtroProd = { clinic: filtroCatalogo(req.clinicId) };
+    if (req.query.todos === '1') {
+      Object.assign(filtroProd, {
+        active: { $ne: false }, disabled: { $ne: true }, unlimited: { $ne: true },
+        category: { $nin: ['servicio', 'programa'] }, isComposite: { $ne: true },
+      });
+    } else {
+      filtroProd._id = { $in: [...new Set([...sistema.keys(), ...fisico.keys()])].map((id) => new mongoose.Types.ObjectId(id)) };
+    }
+    const productos = await Product.find(filtroProd).select('code name category inventoryCategory').populate('inventoryCategory', 'name').lean();
+
+    const items = productos.map((p) => {
+      const id = String(p._id);
+      const sis = sistema.get(id) || 0;
+      const toma = fisico.get(id) || null;
+      return {
+        product: id, code: p.code || '', name: p.name || '',
+        category: p.inventoryCategory?.name || p.category || '',
+        sistema: sis,
+        fisico: toma,
+        diferencia: toma ? kardex.round4(toma.qty - sis) : null,
+      };
+    }).sort((a, b) => a.name.localeCompare(b.name, 'es'));
+
+    res.json({
+      bodega: { _id: bodega._id, code: bodega.code, name: bodega.name },
+      punto: { serie: `${punto.establecimiento}-${punto.codigo}`, nombre: punto.nombre },
+      actualizado: new Date(),
+      items,
     });
   } catch (e) { fail(res, e); }
 };
@@ -166,8 +236,12 @@ async function avisarSolicitante(sol, aprobada, nombreQuien) {
 }
 
 /**
- * Aprobar = ejecutar el traslado. body: { fromWarehouse, items: [{ product, quantity }], date?, note? }
+ * Aprobar = ejecutar el traslado.
+ * body: { fromWarehouse, items: [{ product, quantity, fromWarehouse? }], date?, note? }
  * `items` es opcional: sin él se traslada exactamente lo pedido. Una cantidad 0 deja fuera esa línea.
+ * `fromWarehouse` es la bodega PRINCIPAL; cada ítem puede salir de otra (nov-2026: un ítem que no
+ * está en la principal pero sí en otra bodega). Se hace un traslado por bodega de origen, todos en
+ * la misma transacción: o se trasladan todos o ninguno.
  */
 exports.approve = async (req, res) => {
   try {
@@ -178,23 +252,35 @@ exports.approve = async (req, res) => {
 
     const { fromWarehouse } = req.body;
     if (!fromWarehouse || !mongoose.isValidObjectId(fromWarehouse)) throw httpError(400, 'Escoge la bodega desde la que sale el traslado');
-    if (String(fromWarehouse) === String(sol.toWarehouse)) throw httpError(400, 'La bodega de origen no puede ser la misma que la de destino');
-    const origen = await Warehouse.findOne({ _id: fromWarehouse, clinic: sol.clinic }).select('active name').lean();
-    if (!origen) throw httpError(400, 'La bodega de origen no es de la misma sucursal que la bodega destino');
-    if (origen.active === false) throw httpError(400, `La bodega ${origen.name} está inactiva`);
 
-    // Cantidades a trasladar: las que diga quien aprueba (solo de productos pedidos) o las pedidas.
+    // Cantidades (y bodega de cada ítem) que diga quien aprueba, solo de productos pedidos.
     const ajustes = new Map((Array.isArray(req.body.items) ? req.body.items : [])
       .filter((i) => i?.product)
-      .map((i) => [String(i.product), kardex.round4(i.quantity)]));
-    const lineas = [];
+      .map((i) => [String(i.product), i]));
+    const porOrigen = new Map(); // bodega de origen → líneas
     for (const it of sol.items) {
-      const qty = ajustes.has(String(it.product)) ? ajustes.get(String(it.product)) : kardex.round4(it.quantity);
+      const aj = ajustes.get(String(it.product));
+      const qty = aj && aj.quantity !== undefined ? kardex.round4(aj.quantity) : kardex.round4(it.quantity);
       if (!Number.isFinite(qty) || qty < 0) throw httpError(400, `La cantidad de "${it.productName}" no es válida`);
+      const propia = aj?.fromWarehouse && String(aj.fromWarehouse) !== String(fromWarehouse) ? String(aj.fromWarehouse) : null;
+      if (propia && !mongoose.isValidObjectId(propia)) throw httpError(400, `La bodega de "${it.productName}" no es válida`);
       it.approvedQty = qty;
-      if (qty > 0) lineas.push({ product: String(it.product), quantity: qty });
+      it.fromWarehouse = qty > 0 ? propia : null;
+      if (qty > 0) {
+        const o = propia || String(fromWarehouse);
+        if (!porOrigen.has(o)) porOrigen.set(o, []);
+        porOrigen.get(o).push({ product: String(it.product), quantity: qty });
+      }
     }
-    if (!lineas.length) throw httpError(400, 'No hay nada que trasladar: todas las cantidades están en cero. Si no se va a atender, recházala.');
+    if (!porOrigen.size) throw httpError(400, 'No hay nada que trasladar: todas las cantidades están en cero. Si no se va a atender, recházala.');
+
+    // Cada bodega de origen (la principal y las de ítems sueltos) se valida igual.
+    for (const o of new Set([String(fromWarehouse), ...porOrigen.keys()])) {
+      if (o === String(sol.toWarehouse)) throw httpError(400, 'La bodega de origen no puede ser la misma que la de destino');
+      const origen = await Warehouse.findOne({ _id: o, clinic: sol.clinic }).select('active name').lean();
+      if (!origen) throw httpError(400, 'La bodega de origen no es de la misma sucursal que la bodega destino');
+      if (origen.active === false) throw httpError(400, `La bodega ${origen.name} está inactiva`);
+    }
 
     const fecha = kardexService.parseLocalDate(req.body.date) || new Date();
     const resolutionNote = String(req.body.note || '').trim().slice(0, 500);
@@ -207,13 +293,18 @@ exports.approve = async (req, res) => {
         { session, new: true }
       );
       if (!reclamada) throw httpError(409, 'Otra persona ya atendió esta solicitud');
-      const r = await moverEntreBodegas({
-        clinicId: sol.clinic, userId: req.user._id, fromWarehouse, toWarehouse: sol.toWarehouse,
-        lineas, fecha, reason: `Solicitud ${sol.code}${sol.notes ? ` — ${sol.notes}` : ''}`,
-      }, session);
+      // Un traslado por bodega de origen; si a una le falta stock, no se mueve nada.
+      const grupos = [];
+      for (const [origenId, lineas] of porOrigen) {
+        const r = await moverEntreBodegas({
+          clinicId: sol.clinic, userId: req.user._id, fromWarehouse: origenId, toWarehouse: sol.toWarehouse,
+          lineas, fecha, reason: `Solicitud ${sol.code}${sol.notes ? ` — ${sol.notes}` : ''}`,
+        }, session);
+        grupos.push(r.transferGroup);
+      }
       await TransferRequest.updateOne(
         { _id: sol._id },
-        { $set: { transferGroup: r.transferGroup, items: sol.items.map((i) => i.toObject()) } },
+        { $set: { transferGroup: grupos[0], transferGroups: grupos, items: sol.items.map((i) => i.toObject()) } },
         { session }
       );
     });
