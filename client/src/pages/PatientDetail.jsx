@@ -3522,18 +3522,27 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false, cita
     }
   };
 
-  const printFollowUp = async (fuId) => {
+  const openClinicalPdf = async (path, errorText) => {
+    // Abrir durante el clic: Safari y otros navegadores bloquean window.open
+    // después de esperar la petición del PDF.
+    const tab = window.open('', '_blank');
+    if (!tab) {
+      toast.error('Permite las ventanas emergentes para abrir el PDF.');
+      return;
+    }
     try {
-      const res = await api.get(
-        `/clinical-records/${patientId}/follow-ups/${fuId}/print`,
-        { responseType: 'blob' }
-      );
+      const res = await api.get(path, { responseType: 'blob' });
       const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      window.open(url, '_blank');
+      tab.location.href = url;
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al imprimir');
+      tab.close();
+      toast.error(err.response?.data?.message || errorText);
     }
   };
+
+  const printFollowUp = (fuId) => openClinicalPdf(
+    `/clinical-records/${patientId}/follow-ups/${fuId}/print`, 'Error al imprimir'
+  );
 
   const downloadFollowUpPdf = async (fuId) => {
     try {
@@ -3547,33 +3556,18 @@ function SeguimientosTab({ patientId, appointmentId, comoTerapeuta = false, cita
   };
 
   // Abre la hoja oficial MSP HCU-form.002 (anamnesis + examen físico).
-  const openMspForm = async (fuId) => {
-    try {
-      const res = await api.get(
-        `/clinical-records/${patientId}/follow-ups/${fuId}/msp`,
-        { responseType: 'blob' }
-      );
-      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      window.open(url, '_blank');
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al generar el formulario MSP');
-    }
-  };
+  const openMspForm = (fuId) => openClinicalPdf(
+    `/clinical-records/${patientId}/follow-ups/${fuId}/msp`, 'Error al generar el formulario MSP'
+  );
 
   /**
    * Historia clínica COMPLETA en la hoja oficial MSP HCU-form.005 (Evolución y
    * prescripciones): todas las consultas en orden, con lo que se recetó y lo que
    * enfermería aplicó de verdad.
    */
-  const openHcu005 = async () => {
-    try {
-      const res = await api.get(`/clinical-records/${patientId}/hcu005`, { responseType: 'blob' });
-      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      window.open(url, '_blank');
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al generar la historia clínica');
-    }
-  };
+  const openHcu005 = () => openClinicalPdf(
+    `/clinical-records/${patientId}/hcu005`, 'Error al generar la historia clínica'
+  );
 
   if (loading) return <div className="text-slate-500 text-sm">Cargando...</div>;
   if (!record) return null;

@@ -54,7 +54,9 @@ require.cache[rutaPuppeteer] = {
     launch: async () => ({
       newPage: async () => ({
         setContent: async (html) => { htmlCapturado = html; },
-        pdf: async () => pdfMinimo(),
+        // Puppeteer devuelve Uint8Array, no Buffer. La prueba debe usar el mismo
+        // contrato para detectar incompatibilidades con la biblioteca de firma.
+        pdf: async () => new Uint8Array(await pdfMinimo()),
       }),
       close: async () => {},
     }),

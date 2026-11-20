@@ -76,8 +76,9 @@ function estadoFirma(user) {
  * el llamador sabe si se firmó por `firmado`.
  */
 async function firmarPdfConUsuario(pdfBuffer, user, { reason, location, contactInfo } = {}) {
+  const pdfBytes = Buffer.isBuffer(pdfBuffer) ? pdfBuffer : Buffer.from(pdfBuffer);
   const estado = estadoFirma(user);
-  if (!estado.ok) return { pdf: pdfBuffer, firmado: false, motivo: estado.motivo };
+  if (!estado.ok) return { pdf: pdfBytes, firmado: false, motivo: estado.motivo };
 
   try {
     const { SignPdf } = require('@signpdf/signpdf');
@@ -88,7 +89,8 @@ async function firmarPdfConUsuario(pdfBuffer, user, { reason, location, contactI
     const password = decrypt(user.signatureCert.password);
 
     const conHueco = plainAddPlaceholder({
-      pdfBuffer,
+      // Puppeteer devuelve Uint8Array; signpdf exige un Buffer de Node.
+      pdfBuffer: pdfBytes,
       reason: reason || 'Documento clínico',
       contactInfo: contactInfo || user.email || '',
       name: user.signatureCert.info?.commonName || user.name || '',
@@ -101,7 +103,7 @@ async function firmarPdfConUsuario(pdfBuffer, user, { reason, location, contactI
     // Contraseña que ya no descifra, .p12 corrupto, clave sin permisos… Se
     // devuelve el PDF sin firmar antes que negarle el documento al paciente.
     console.warn(`No se pudo firmar el PDF de ${user?._id}:`, e.message);
-    return { pdf: pdfBuffer, firmado: false, motivo: 'ERROR_FIRMA' };
+    return { pdf: pdfBytes, firmado: false, motivo: 'ERROR_FIRMA' };
   }
 }
 

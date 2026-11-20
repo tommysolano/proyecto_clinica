@@ -63,6 +63,7 @@ const {
 } = require('../constants/scoreMama');
 const { specialtyFollowUpHtml } = require('../utils/specialtyFollowUpPrint');
 const { firmarPdfConUsuario, bloqueFirmaHtml, FIRMA_CSS } = require('../utils/pdfSignature');
+const { renderClinicalPdf } = require('../utils/renderClinicalPdf');
 const { prepararVerificacion, registrarVerificacion } = require('../utils/signedDocumentVerification');
 const { describeCie10 } = require('../utils/cie10Catalog');
 const { emitToClinic, emitToUser, emitToRole } = require('../realtime');
@@ -3185,18 +3186,10 @@ exports.printFollowUp = async (req, res) => {
   <div class="footer">Documento generado el ${new Date().toLocaleString('es-EC')}</div>
 </body></html>`;
 
-    const puppeteer = require('puppeteer');
-    const browser = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-    const pdf = await page.pdf({
+    const pdf = await renderClinicalPdf(html, {
       format: 'A4',
       margin: { top: '15mm', bottom: '15mm', left: '12mm', right: '12mm' },
     });
-    await browser.close();
 
     /**
      * FIRMA ELECTRÓNICA de la receta, con el certificado del médico que atendió.
@@ -3478,19 +3471,11 @@ exports.printMspForm = async (req, res) => {
   <div class="foot">Generado el ${new Date().toLocaleString('es-EC')}</div>
 </body></html>`;
 
-    const puppeteer = require('puppeteer');
-    const browser = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-    const pdf = await page.pdf({
+    const pdf = await renderClinicalPdf(html, {
       format: 'A4',
       margin: { top: '10mm', bottom: '10mm', left: '8mm', right: '8mm' },
       printBackground: true,
     });
-    await browser.close();
 
     // La hoja 002 es UNA consulta con UN profesional responsable (bloque K), así
     // que se firma con su certificado igual que la receta. La 005 NO se firma:
@@ -3806,14 +3791,7 @@ exports.printHcu005 = async (req, res) => {
   <div class="foot">Generado el ${new Date().toLocaleString('es-EC')} · ${seguimientos.length} atencion${seguimientos.length === 1 ? '' : 'es'}</div>
 </body></html>`;
 
-    const puppeteer = require('puppeteer');
-    const browser = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-    const pdf = await page.pdf({
+    const pdf = await renderClinicalPdf(html, {
       format: 'A4',
       landscape: true,
       margin: { top: '10mm', bottom: '14mm', left: '8mm', right: '8mm' },
@@ -3825,7 +3803,6 @@ exports.printHcu005 = async (req, res) => {
         '<div style="width:100%;font-size:8px;color:#444;padding:0 10mm;text-align:right">' +
         'N.º hoja <span class="pageNumber"></span> de <span class="totalPages"></span></div>',
     });
-    await browser.close();
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="HCU005_${patientId}.pdf"`);
