@@ -77,6 +77,7 @@ test('Cloud sendMedia: un DOCUMENTO se sube por id y viaja con su nombre de arch
 test('metaUploadMime: los TEXTOS no soportados por Meta (CSV, JSON, XML…) se degradan a text/plain', () => {
   // Imagen/video/audio y documentos ya soportados: intactos.
   assert.equal(wa.metaUploadMime('image/png'), 'image/png');
+  assert.equal(wa.metaUploadMime('audio/ogg'), 'audio/ogg; codecs=opus');
   assert.equal(wa.metaUploadMime('application/pdf'), 'application/pdf');
   assert.equal(wa.metaUploadMime('application/vnd.ms-excel'), 'application/vnd.ms-excel');
   // Textos que Meta rechaza (#100) → text/plain.
@@ -87,6 +88,49 @@ test('metaUploadMime: los TEXTOS no soportados por Meta (CSV, JSON, XML…) se d
   assert.equal(wa.metaUploadMime('application/xml'), 'text/plain');
   // Binario exótico: se deja como está (Meta lo rechazará y el envío será fallido, no "enviado").
   assert.equal(wa.metaUploadMime('application/zip'), 'application/zip');
+});
+
+test('Cloud audio: reconvierte, especifica Opus y no reutiliza una subida antigua', async () => {
+  const { spawnSync } = require('child_process');
+  const { resolveFfmpegPath } = require('../utils/audioTranscode');
+  const gen = spawnSync(resolveFfmpegPath(), [
+    '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1',
+    '-c:a', 'libopus', '-f', 'ogg', 'pipe:1',
+  ]);
+  assert.equal(gen.status, 0, String(gen.stderr));
+  const { clinicId } = await H.seedClinic();
+  const audio = await ChatGalleryImage.create({
+    clinic: clinicId, name: 'voz.ogg', mimeType: 'audio/ogg',
+    dataUrl: `data:audio/ogg;base64,${gen.stdout.toString('base64')}`,
+    metaMediaIds: { '123': { id: 'MEDIA_ANTERIOR', at: new Date() } },
+  });
+  const calls = [];
+  const original = global.fetch;
+  global.fetch = async (url, opts) => {
+    calls.push({ url: String(url), opts });
+    if (String(url).endsWith('/media')) return { ok: true, json: async () => ({ id: 'MEDIA_NUEVA' }) };
+    return { ok: true, json: async () => ({ messages: [{ id: 'wamid.AUDIO' }] }) };
+  };
+  try {
+    const r = await wa.sendMedia(creds, '593999999999', `https://x/api/public/media/${audio._id}`, '', 'audio');
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(calls[0].opts.body.get('type'), 'audio/ogg; codecs=opus');
+    assert.equal(calls[0].opts.body.get('file').type, 'audio/ogg; codecs=opus');
+    assert.equal(JSON.parse(calls[1].opts.body).audio.id, 'MEDIA_NUEVA');
+  } finally { global.fetch = original; }
+});
+
+test('Cloud audio: no envia ni sube archivos dañados etiquetados como Ogg', async () => {
+  await H.seedClinic();
+  let called = false;
+  const original = global.fetch;
+  global.fetch = async () => { called = true; throw new Error('No debe llamar a Meta'); };
+  try {
+    const r = await wa.sendMedia(creds, '593999999999', 'data:audio/ogg;base64,bm8gZXMgYXVkaW8=', '', 'audio');
+    assert.equal(r.ok, false);
+    assert.equal(r.errorCode, 'audio_invalid');
+    assert.equal(called, false);
+  } finally { global.fetch = original; }
 });
 
 test('Cloud sendMedia: un CSV se sube como text/plain (Meta lo acepta) pero conserva su nombre .csv', async () => {

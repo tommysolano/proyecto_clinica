@@ -106,8 +106,8 @@ async function probeAudioDurationSec(ffmpeg, audioPath, timeoutMs = 15000) {
  *     y Meta la rechazaba al bajarla (error 131053 "Media upload error").
  * De ahí el "los audios funcionan pero a veces fallan": fallaban por navegador.
  *
- * Si no hay ffmpeg, un ogg se acepta tal cual (con la cabecera ya saneada) para no
- * bloquear el envío; cualquier otro formato sí necesita conversión.
+ * Si no se puede convertir, se rechaza: una etiqueta Ogg no demuestra que el
+ * archivo contenga Opus válido ni que pueda reproducirse en el teléfono.
  *
  * Se usan ficheros temporales en vez de pipes porque ffmpeg necesita una entrada
  * "buscable" para leer la cabecera de WebM de forma fiable.
@@ -118,12 +118,8 @@ async function toWhatsappVoiceBuffer(buffer, mimeType) {
     return { ok: false, error: 'El audio no es válido' };
   }
   mimeType = cleanMimeType;
-  // Cabecera saneada (sin `;codecs=…`): es lo que se guarda si no hay conversión.
-  const asIs = { ok: true, buffer, mimeType };
-
   const ffmpeg = resolveFfmpegPath();
   if (!ffmpeg) {
-    if (isOggOpus(mimeType)) return asIs;
     return { ok: false, error: 'No se puede convertir el audio en este servidor (falta ffmpeg).' };
   }
 
@@ -136,30 +132,20 @@ async function toWhatsappVoiceBuffer(buffer, mimeType) {
   try {
     await fs.promises.writeFile(inPath, buffer);
     // -vn: descarta cualquier pista de video (WebM puede traer una vacía).
-    // MISMA RECETA que una nota de voz de la app oficial (16 kHz mono, VOIP,
-    // tramas de 60 ms): con ella el teléfono del destinatario muestra la
-    // DURACIÓN correcta — con 48 kHz y sin el resto, los clientes de WhatsApp
-    // la estiman mal y un audio de 5 segundos se veía de "4 minutos".
+    // Voz mono con Opus y tramas de 20 ms; la duración se mide del archivo final.
     const r = await runFfmpeg(ffmpeg, [
       '-y', '-i', inPath,
       '-vn', '-ac', '1', '-ar', '16000',
       '-c:a', 'libopus', '-b:a', '32k',
-      '-compression_level', '10', '-frame_duration', '60', '-application', 'voip',
+      '-compression_level', '10', '-frame_duration', '20', '-application', 'voip',
       '-map_metadata', '-1',
       '-f', 'ogg', outPath,
     ]);
     if (!r.ok) {
-      // Un ogg que no se pudo reconvertir se envía como vino: ya es el formato que
-      // WhatsApp entiende y es mejor que dejar al agente sin poder mandar la nota.
-      if (isOggOpus(mimeType)) {
-        console.warn('[audio] no se pudo normalizar un ogg, se envía tal cual: %s', r.error);
-        return asIs;
-      }
       return { ok: false, error: `No se pudo convertir el audio: ${r.error}` };
     }
     const out = await fs.promises.readFile(outPath);
     if (!out.length) {
-      if (isOggOpus(mimeType)) return asIs;
       return { ok: false, error: 'No se pudo convertir el audio (la conversión quedó vacía).' };
     }
     // La DURACIÓN REAL del fichero que se guarda: la lee ffmpeg del contenedor
@@ -173,7 +159,6 @@ async function toWhatsappVoiceBuffer(buffer, mimeType) {
       duration,
     };
   } catch (e) {
-    if (isOggOpus(mimeType)) return asIs;
     return { ok: false, error: `No se pudo convertir el audio: ${e.message}` };
   } finally {
     fs.promises.unlink(inPath).catch(() => {});

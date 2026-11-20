@@ -161,6 +161,7 @@ const TEXT_LIKE_MIME = /^(text\/|application\/(csv|json|x-ndjson|xml|xhtml\+xml|
  */
 function metaUploadMime(mimeType) {
   const m = String(mimeType || '').split(';')[0].trim().toLowerCase() || 'application/octet-stream';
+  if (m === 'audio/ogg') return 'audio/ogg; codecs=opus';
   if (m.startsWith('image/') || m.startsWith('video/') || m.startsWith('audio/')) return m;
   if (META_DOC_MIME.has(m)) return m;
   if (TEXT_LIKE_MIME.test(m)) return 'text/plain';
@@ -295,6 +296,16 @@ async function sendMedia(creds, to, url, caption, type = 'image', contextMessage
     byteMime = parsed.mimeType;
   }
 
+  // Normaliza también audios guardados antes de la conversión al subirlos. Un
+  // MIME Ogg por sí solo no garantiza que los bytes sean Opus reproducible.
+  if (buffer && kind === 'audio') {
+    const audio = await require('./audioTranscode').toWhatsappVoiceBuffer(buffer, byteMime);
+    if (!audio.ok) return { ok: false, errorCode: 'audio_invalid', error: audio.error };
+    buffer = audio.buffer;
+    byteMime = audio.mimeType;
+    if (buffer.length > 15 * 1024 * 1024) return { ok: false, errorCode: 'audio_too_large', error: 'El audio convertido supera el tamaño permitido por WhatsApp.' };
+  }
+
   // Red de seguridad para los videos guardados ANTES de que las subidas se
   // normalizaran (ver utils/videoTranscode): Meta acepta un MP4 con pista HEVC
   // —devuelve media id y 200— y solo lo rechaza al entregarlo, por webhook, con
@@ -313,7 +324,7 @@ async function sendMedia(creds, to, url, caption, type = 'image', contextMessage
   if (buffer) {
     // Primero el caché: si este adjunto ya se subió a ESTA cuenta, Meta ya tiene
     // los bytes y el mensaje sale directo por media id (ver arriba).
-    let mediaId = selfHosted
+    let mediaId = selfHosted && kind !== 'audio'
       ? await mediaIdDeCache(selfHosted[1], creds.phoneNumberId)
       : null;
     if (mediaId) {
@@ -327,7 +338,7 @@ async function sendMedia(creds, to, url, caption, type = 'image', contextMessage
         return { ok: false, status: up.status, errorCode: 'media_upload_failed', error: up.error || 'No se pudo subir el archivo a WhatsApp.', data: up.data };
       }
       mediaId = up.id;
-      if (selfHosted) guardarMediaIdEnCache(selfHosted[1], creds.phoneNumberId, mediaId);
+      if (selfHosted && kind !== 'audio') guardarMediaIdEnCache(selfHosted[1], creds.phoneNumberId, mediaId);
       console.log('[wa-cloud sendMedia] subida OK id=%s kind=%s mime=%s bytes=%d', up.id, kind, byteMime, buffer.length);
     }
     media = { id: mediaId };

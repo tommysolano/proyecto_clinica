@@ -26,6 +26,18 @@ async function seedOut(clinicId, externalId, deliveryStatus = 'sent') {
   });
 }
 
+test('error 131053 de audio indica el problema de audio, no de video', async () => {
+  const { clinicId } = await H.seedClinic();
+  const msg = await seedOut(clinicId, 'wamid.AUDIO', 'sent');
+  msg.mediaType = 'audio';
+  await msg.save();
+  await messaging.updateMessageStatus({ clinicId, externalId: 'wamid.AUDIO', status: 'failed',
+    errorCode: '131053', errorMessage: 'Mensaje de video H.265' });
+  const fresh = await Message.findById(msg._id).lean();
+  assert.match(fresh.errorMessage, /audio/i);
+  assert.doesNotMatch(fresh.errorMessage, /video|H\.265/i);
+});
+
 test('un "sent" tardío NO retrocede un mensaje ya "read"', async () => {
   const { clinicId } = await H.seedClinic();
   const msg = await seedOut(clinicId, 'wamid.A', 'sent');

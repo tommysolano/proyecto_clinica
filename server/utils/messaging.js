@@ -1541,7 +1541,9 @@ async function updateMessageStatus({
   }
   msg.statusTimestamps = currentTimestamps;
   if (errorCode) msg.errorCode = String(errorCode);
-  if (errorMessage) msg.errorMessage = String(errorMessage);
+  if (String(errorCode) === '131053' && msg.mediaType === 'audio') {
+    msg.errorMessage = 'WhatsApp no pudo procesar el audio y el contacto no lo recibió. Intenta reenviarlo; si vuelve a fallar, graba una nota nueva.';
+  } else if (errorMessage) msg.errorMessage = String(errorMessage);
   await msg.save();
 
   emitToCallCenter('chat:message:status', {

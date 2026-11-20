@@ -70,6 +70,21 @@ test('al guardar un audio se mide su duración real', async () => {
   assert.equal(img.duration, undefined);
 });
 
+test('normaliza audio real y rechaza un Ogg dañado aunque tenga el MIME correcto', async () => {
+  const { toWhatsappVoiceBuffer } = require('../utils/audioTranscode');
+  const converted = await toWhatsappVoiceBuffer(await notaDeVoz(3), 'audio/ogg');
+  assert.equal(converted.ok, true);
+  assert.equal(converted.mimeType, 'audio/ogg');
+  assert.ok(converted.duration >= 2.9 && converted.duration <= 3.2);
+  const output = path.join(tmpDir, 'salida-normalizada.ogg');
+  await fs.writeFile(output, converted.buffer);
+  const ffmpeg = resolveFfmpegPath();
+  const decoded = spawnSync(ffmpeg, ['-v', 'error', '-i', output, '-f', 'null', '-']);
+  assert.equal(decoded.status, 0, String(decoded.stderr));
+  const bad = await toWhatsappVoiceBuffer(Buffer.from('no es audio'), 'audio/ogg');
+  assert.equal(bad.ok, false);
+});
+
 test('el endpoint público sirve el FINAL del audio cuando se le pide', async () => {
   const buffer = await notaDeVoz(2);
   const stored = await chatMedia.storeBufferMedia({

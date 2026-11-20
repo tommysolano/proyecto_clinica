@@ -3079,6 +3079,13 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
     if (!b64) {
       return { ok: false, errorCode: 'qr_media_unreadable', error: `No se pudo leer ${what} para enviarlo.` };
     }
+    if (isVoice) {
+      const audio = await require('./audioTranscode').toWhatsappVoiceBuffer(Buffer.from(b64, 'base64'), mime);
+      if (!audio.ok) return { ok: false, errorCode: 'audio_invalid', error: audio.error };
+      if (audio.buffer.length > 15 * 1024 * 1024) return { ok: false, errorCode: 'audio_too_large', error: 'El audio convertido supera el tamaño permitido por WhatsApp.' };
+      mime = audio.mimeType;
+      b64 = audio.buffer.toString('base64');
+    }
     const { MessageMedia } = require('whatsapp-web.js');
     // El 3er argumento es el NOMBRE del archivo: un documento debe llevar el suyo
     // real (contrato.pdf) para que el contacto lo vea y lo pueda abrir.
