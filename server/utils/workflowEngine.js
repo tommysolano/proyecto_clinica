@@ -2566,53 +2566,45 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
   // referral.source_id → adId. Se usa el del mensaje y no conv.attribution para que
   // el trigger dispare solo al llegar desde el anuncio (no en cada mensaje posterior).
   const msgAdId = String(referral?.adId || '').trim();
-  // Título del anuncio (headline). Meta lo manda en referral.headline; `campaign`
-  // es el fallback (headline||body) que guarda el webhook.
-  const msgAdText = String(referral?.headline || referral?.campaign || '').toLowerCase();
 
-  // El ID configurado es el del Administrador de Anuncios. Meta puede mandar en
-  // el referral el ID del anuncio O el de su publicación efectiva; Marketing API
-  // resuelve ambos como aliases para que el ID se configure una sola vez.
-  const configuredAdIds = [...new Set(workflows
-    .flatMap((wf) => getAllChatTriggers(wf))
-    .filter((tr) => tr?.type === 'ctwa_ad')
-    .flatMap((tr) => String(tr.adFilter || '').split(','))
-    .map((id) => id.trim())
-    .filter(Boolean))];
-  let configuredAdAliases = new Map(configuredAdIds.map((id) => [id, new Set([id])]));
-  if (msgAdId && configuredAdIds.some((id) => id !== msgAdId)) {
-    try {
-      configuredAdAliases = await require('./metaAds').resolveAdAliases(configuredAdIds);
-    } catch {
-      /* matching exacto disponible como respaldo */
+  // El ID exacto prevalece; solo si no existe se prueban equivalencias.
+  const idsOf = (tr) => String(tr?.adFilter || '').split(',').map((id) => id.trim()).filter(Boolean);
+  const audienceMatches = (tr) => !(tr.audience === 'new' && patient) && !(tr.audience === 'existing' && !patient);
+  let selectedAdFlow = null;
+  let adDecision = '';
+  if (msgAdId) {
+    const collect = (predicate) => workflows.flatMap((wf) =>
+      matchingFlows(wf, (tr) => tr?.type === 'ctwa_ad' && predicate(tr))
+        .map((flow) => ({ wf, flow })));
+    let candidates = collect((tr) => idsOf(tr).includes(msgAdId));
+    let method = 'ID exacto';
+    let aliases = new Map();
+    if (!candidates.length) {
+      const ids = [...new Set(workflows.flatMap((wf) => getAllChatTriggers(wf))
+        .filter((tr) => tr?.type === 'ctwa_ad').flatMap(idsOf))];
+      try { aliases = await require('./metaAds').resolveAdAliases(ids); } catch { /* sin equivalencias */ }
+      candidates = collect((tr) => idsOf(tr).some((id) => aliases.get(id)?.has(msgAdId)));
+      method = 'equivalencia de Meta';
+    }
+    if (candidates.length === 1) {
+      const candidate = candidates[0];
+      const eligible = matchingFlows(candidate.wf, (tr) => tr?.type === 'ctwa_ad' && audienceMatches(tr) &&
+        (method === 'ID exacto' ? idsOf(tr).includes(msgAdId) : idsOf(tr).some((id) => aliases.get(id)?.has(msgAdId))))
+        .some((flow) => flow.startNodeId === candidate.flow.startNodeId);
+      if (eligible) selectedAdFlow = candidate;
+      adDecision = eligible ? `Anuncio ${msgAdId}: coincidencia única por ${method}.`
+        : `Anuncio ${msgAdId}: el flujo asignado no coincide con la audiencia; no se envió una respuesta.`;
+    } else if (candidates.length > 1) {
+      adDecision = `Anuncio ${msgAdId}: conflicto entre ${candidates.map(({ wf, flow }) => `${wf.name} (${flow.startNodeId || 'flujo principal'})`).join(', ')}. No se ejecutó ningún flujo de anuncio.`;
+    } else {
+      adDecision = `Anuncio ${msgAdId}: ningún flujo coincide por ID. No se ejecuto una respuesta automática de anuncio; revisa su asignación.`;
     }
   }
-
   const matchesChat = (tr) => {
-    if (!tr || !types.includes(tr.type)) return false;
+    if (!tr || !types.includes(tr.type) || !audienceMatches(tr)) return false;
+    if (msgAdId || tr.type === 'ctwa_ad') return false;
     if (tr.type === 'new_conversation' && !isNew) return false;
     if (tr.type === 'keyword' && !keywordMatchesTrigger(tr, text)) return false;
-    if (tr.type === 'ctwa_ad') {
-      if (!msgAdId) return false; // este mensaje no vino de un anuncio
-      const wantedIds = String(tr.adFilter || '')
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const wantedText = String(tr.adTextFilter || '')
-        .split(',')
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean);
-      // Si hay algún filtro, el mensaje debe casar por ID O por texto del título.
-      // Si no hay ninguno → cualquier anuncio dispara.
-      if (wantedIds.length || wantedText.length) {
-        const idOk = wantedIds.some((id) => configuredAdAliases.get(id)?.has(msgAdId));
-        const textOk = wantedText.some((t) => msgAdText.includes(t));
-        if (!idOk && !textOk) return false;
-      }
-    }
-    // Audiencia: new = sin paciente vinculado, existing = con paciente.
-    if (tr.audience === 'new' && patient) return false;
-    if (tr.audience === 'existing' && !patient) return false;
     return true;
   };
 
@@ -2645,7 +2637,9 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
   let enrolled = 0;
   for (const wf of workflows) {
     // Cada flujo (nodo trigger) de chat que coincida se inscribe por separado.
-    const flows = matchingFlows(wf, matchesChat);
+    const flows = msgAdId
+      ? (selectedAdFlow && String(selectedAdFlow.wf._id) === String(wf._id) ? [selectedAdFlow.flow] : [])
+      : matchingFlows(wf, matchesChat);
     if (!flows.length) {
       // Solo interesa el rastro de "no coincidió" para workflows del MISMO tipo de
       // disparo que este mensaje (p.ej. si vino de anuncio, los ctwa_ad que no
@@ -2698,7 +2692,7 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
         if (e.code === 11000) continue;
         throw e;
       }
-      trace(wf, traceType, 'enrolled', 'Inscripción creada desde el chat; los pasos y resultados quedan en "Inscritos" → registro de ejecución.');
+      trace(wf, traceType, 'enrolled', msgAdId ? adDecision : 'Inscripción creada desde el chat.');
       // eslint-disable-next-line no-await-in-loop
       await Workflow.updateOne({ _id: wf._id }, { $inc: { 'stats.enrolled': 1 } });
       // eslint-disable-next-line no-await-in-loop
@@ -2719,7 +2713,7 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
       eventType: traceType,
       detail:
         traceType === 'ctwa_ad'
-          ? `El mensaje llegó desde el anuncio ${msgAdId} (título: "${msgAdText || '—'}"), pero no coincidió con el/los anuncios ni con el/los texto(s) del disparador (o la audiencia no encajó). Si configuraste el ID del Administrador de Anuncios, verifica la conexión de Marketing API para que el sistema resuelva automáticamente sus aliases.`
+          ? (selectedAdFlow ? `${adDecision} Asignado a ${selectedAdFlow.wf.name}; los demas flujos no se ejecutaron.` : adDecision)
           : 'El mensaje llegó pero el disparador de chat no coincidió (audiencia o palabra clave).',
     });
   }

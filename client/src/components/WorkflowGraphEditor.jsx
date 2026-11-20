@@ -2668,18 +2668,7 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [], me
       )}
       {trigger.type === 'ctwa_ad' && (
         <div className="text-sm">
-          <span className="text-slate-600 block mb-1">Respaldo: el título contiene (opcional)</span>
-          <input
-            value={trigger.adTextFilter || ''}
-            onChange={(e) => set({ adTextFilter: e.target.value })}
-            placeholder="ej. Profilaxis  (varios separados por coma)"
-            className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm"
-          />
-          <span className="text-[11px] text-slate-400 block mt-1 mb-3">
-            Coincidencia adicional por <b>título</b>, útil si varias versiones del anuncio conservan
-            el mismo nombre. Puedes escribir varios textos separados por coma.
-          </span>
-          <span className="text-slate-600 block mb-1">Anuncio de Meta (opcional, vacío = cualquiera)</span>
+          <span className="text-slate-600 block mb-1">IDs de anuncios de Meta</span>
           <AdIdsInput
             value={trigger.adFilter || ''}
             onChange={(v) => set({ adFilter: v })}
@@ -2689,10 +2678,9 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [], me
             <span className="text-[11px] text-amber-600 block mt-1">{metaAdsNotice}</span>
           )}
           <span className="text-[11px] text-slate-500 block mt-1">
-            Guarda el <b>ID del Administrador de Anuncios una sola vez</b>. Con Marketing API el sistema
-            reconoce automáticamente el ID del anuncio y el de su publicación/creativo aunque Meta entregue
-            una variante distinta en WhatsApp. También puedes pegar el ID manualmente. Si ambos filtros quedan
-            vacíos, dispara con cualquier anuncio.
+            Asigna cada ID a un único flujo activo. El ID exacto tiene prioridad; una equivalencia
+            solo se usa si es inequívoca. Los títulos y filtros vacíos no activan respuestas.
+            Si hay conflicto, el contacto queda para atención manual.
           </span>
         </div>
       )}

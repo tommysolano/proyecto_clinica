@@ -307,44 +307,76 @@ test('Trigger "mensaje desde anuncio" (ctwa_ad) con VARIOS IDs: dispara con cual
   assert.equal(r3.enrolled, 0, 'un mensaje sin anuncio no debía disparar el ctwa_ad');
 });
 
-test('Trigger "mensaje desde anuncio" (ctwa_ad) SIN filtro: dispara con cualquier anuncio', async () => {
+test('Anuncios: filtro vacio o titulo no activan mensajes sin ID asignado', async () => {
   const Conversation = require('../models/Conversation');
   const clinic = await Clinic.create({ name: 'Principal' });
-  const wf = await ctwaWorkflow(clinic._id, ''); // vacío = cualquier anuncio
-
+  await ctwaWorkflow(clinic._id, '');
+  await ctwaWorkflow(clinic._id, '', 'Profilaxis');
   const conv = await Conversation.create({ clinic: clinic._id, phone: '593990000004', channel: 'whatsapp' });
-  const r = await workflowEngine.enrollForChatMessage({
-    clinicId: clinic._id, conversation: conv, patient: null,
-    phone: conv.phone, text: 'Hola', isNew: true,
-    referral: { adId: 'cualquier_id_de_anuncio' },
-  });
-  assert.equal(r.enrolled, 1, 'sin filtro, cualquier anuncio debía disparar el flujo');
-  assert.ok(await WorkflowEnrollment.findOne({ workflow: wf._id, conversation: conv._id }));
+  const result = await workflowEngine.enrollForChatMessage({ clinicId: clinic._id, conversation: conv,
+    text: 'Hola', isNew: true, referral: { adId: 'desconocido', headline: 'Profilaxis' } });
+  assert.equal(result.enrolled, 0);
+  assert.equal(await WorkflowEnrollment.countDocuments({ conversation: conv._id }), 0);
 });
 
-test('Trigger "mensaje desde anuncio" (ctwa_ad) por TÍTULO del anuncio (sobrevive al cambio de ID)', async () => {
+test('Anuncios: ID exacto prevalece sobre texto, comodin y disparador general', async () => {
   const Conversation = require('../models/Conversation');
   const clinic = await Clinic.create({ name: 'Principal' });
-  // Filtra por texto "Profilaxis" (ID vacío): debe disparar sin importar el source_id.
-  const wf = await ctwaWorkflow(clinic._id, '', 'Profilaxis');
+  const correct = await ctwaWorkflow(clinic._id, 'profilaxis');
+  await ctwaWorkflow(clinic._id, 'densitometria', 'profilaxis');
+  await ctwaWorkflow(clinic._id, '');
+  await graphWorkflow(clinic._id, { triggerType: 'inbound_message' });
+  const conv = await Conversation.create({ clinic: clinic._id, phone: '593990000010', channel: 'whatsapp' });
+  const result = await workflowEngine.enrollForChatMessage({ clinicId: clinic._id, conversation: conv,
+    text: 'Hola', isNew: true, referral: { adId: 'profilaxis', headline: 'profilaxis' } });
+  assert.equal(result.enrolled, 1);
+  const enrollments = await WorkflowEnrollment.find({ conversation: conv._id });
+  assert.equal(enrollments.length, 1);
+  assert.equal(String(enrollments[0].workflow), String(correct._id));
+});
 
-  // Anuncio con un ID nunca visto pero cuyo título contiene "Profilaxis" → inscribe.
-  const conv1 = await Conversation.create({ clinic: clinic._id, phone: '593990000010', channel: 'whatsapp' });
-  const r1 = await workflowEngine.enrollForChatMessage({
-    clinicId: clinic._id, conversation: conv1, patient: null,
-    phone: conv1.phone, text: 'Hola', isNew: true,
-    referral: { adId: '52577706872785', headline: 'Agendar Profilaxis🦶' },
-  });
-  assert.equal(r1.enrolled, 1, 'el título contiene "Profilaxis" → debía disparar aunque el ID sea nuevo');
+test('Anuncios: ID duplicado bloquea respuestas y deja rastro', async () => {
+  const Conversation = require('../models/Conversation');
+  const TriggerEvent = require('../models/WorkflowTriggerEvent');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  await ctwaWorkflow(clinic._id, 'compartido');
+  await ctwaWorkflow(clinic._id, 'compartido');
+  const conv = await Conversation.create({ clinic: clinic._id, phone: '593990000011', channel: 'whatsapp' });
+  const result = await workflowEngine.enrollForChatMessage({ clinicId: clinic._id, conversation: conv,
+    text: 'Hola', isNew: true, referral: { adId: 'compartido' } });
+  assert.equal(result.enrolled, 0);
+  const event = await waitFor(() => TriggerEvent.findOne({ eventType: 'ctwa_ad', decision: 'no_match', detail: /compartido/ }));
+  assert.match(event.detail, /conflicto/i);
+});
 
-  // Anuncio cuyo título NO contiene el texto → no inscribe.
-  const conv2 = await Conversation.create({ clinic: clinic._id, phone: '593990000011', channel: 'whatsapp' });
-  const r2 = await workflowEngine.enrollForChatMessage({
-    clinicId: clinic._id, conversation: conv2, patient: null,
-    phone: conv2.phone, text: 'Hola', isNew: true,
-    referral: { adId: '999', headline: 'Blanqueamiento dental' },
-  });
-  assert.equal(r2.enrolled, 0, 'un anuncio de otro tema no debía disparar el flujo');
+test('Anuncios: equivalencia compartida no elige una automatizacion arbitraria', async () => {
+  const Conversation = require('../models/Conversation');
+  const config = require('../models/CallCenterWhatsappConfig');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  await ctwaWorkflow(clinic._id, 'unique-alias-a');
+  await ctwaWorkflow(clinic._id, 'unique-alias-b');
+  await config.create({ singleton: 'main', marketingApi: { enabled: true, accessToken: 'test-token' } });
+  const original = global.fetch;
+  global.fetch = async (url) => ({ ok: true, json: async () => ({ id: String(url).includes('unique-alias-a') ? 'unique-alias-a' : 'unique-alias-b', creative: { effective_object_story_id: 'page_shared-post' } }) });
+  try {
+    const conv = await Conversation.create({ clinic: clinic._id, phone: '593990000019', channel: 'whatsapp' });
+    const result = await workflowEngine.enrollForChatMessage({ clinicId: clinic._id, conversation: conv, referral: { adId: 'shared-post' }, isNew: true });
+    assert.equal(result.enrolled, 0);
+  } finally { global.fetch = original; }
+});
+
+test('Guardar o activar flujo rechaza un ID ya usado por otra automatizacion activa', async () => {
+  const ctrl = require('../controllers/workflowController');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  await ctwaWorkflow(clinic._id, 'id-usado');
+  const user = new H.mongoose.Types.ObjectId();
+  const tr = { type: 'ctwa_ad', adFilter: 'id-usado', audience: 'all' };
+  const result = await H.runController(ctrl.create, H.mockReq(clinic._id, user, { name: 'Duplicado', active: true, trigger: tr, triggers: [tr] }));
+  assert.equal(result.statusCode, 400);
+  assert.match(result.payload.message, /id-usado/);
+  const paused = await Workflow.create({ clinic: clinic._id, name: 'Pausado', active: false, trigger: tr, triggers: [tr] });
+  const activation = await H.runController(ctrl.update, H.mockReq(clinic._id, user, { active: true }, { params: { id: String(paused._id) } }));
+  assert.equal(activation.statusCode, 400);
 });
 
 test('Trigger Ads: el ID del Ads Manager se guarda una vez y reconoce el source_id de su publicación', async () => {

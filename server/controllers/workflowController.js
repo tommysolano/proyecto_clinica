@@ -78,6 +78,32 @@ function workflowButtonsError(body = {}) {
 // ─────────── Carpetas (anidadas, tipo Windows) ───────────
 // Rutas con '/' ("Citas/Recordatorios"): carpetas dentro de carpetas. El registro
 // persiste la carpeta aunque esté vacía. Lógica compartida en utils/folderCrud.
+function adFlows(wf) {
+  const nodes = (wf.nodes || []).filter((n) => n.type === 'trigger');
+  const fallback = wf.triggers?.length ? wf.triggers : (wf.trigger?.type ? [wf.trigger] : []);
+  return (nodes.length ? nodes.map((n) => n.data?.triggers?.length ? n.data.triggers : fallback) : [fallback])
+    .filter((triggers) => triggers.some((t) => t?.type === 'ctwa_ad'))
+    .map((triggers) => [...new Set(triggers.filter((t) => t?.type === 'ctwa_ad')
+      .flatMap((t) => String(t.adFilter || '').split(',').map((v) => v.trim()).filter(Boolean)))]);
+}
+async function adAssignmentError(wf, clinicId, excludeId) {
+  if (!wf.active) return '';
+  const flows = adFlows(wf);
+  if (flows.some((ids) => !ids.length)) return 'Cada flujo activo de anuncio necesita al menos un ID. El título y el filtro vacío ya no activan mensajes.';
+  const seen = new Set();
+  for (const ids of flows) for (const id of ids) {
+    if (seen.has(id)) return `El ID ${id} está asignado a más de un flujo de esta automatización.`;
+    seen.add(id);
+  }
+  if (!seen.size) return '';
+  const others = await Workflow.find({ clinic: clinicId, active: true, ...(excludeId ? { _id: { $ne: excludeId } } : {}) })
+    .select('name nodes.type nodes.data.triggers trigger triggers').lean();
+  for (const other of others) for (const ids of adFlows(other)) for (const id of ids) {
+    if (seen.has(id)) return `El ID ${id} ya está asignado a la automatización activa "${other.name}".`;
+  }
+  return '';
+}
+
 const wfFolders = makeFolderCrud({
   FolderModel: WorkflowFolder,
   ItemModel: Workflow,
@@ -144,6 +170,8 @@ exports.create = async (req, res) => {
     const buttonError = workflowButtonsError(req.body);
     if (buttonError) return res.status(400).json({ message: buttonError });
     const payload = sanitizeWorkflowPayload(req.body);
+    const adError = await adAssignmentError(payload, req.clinicId);
+    if (adError) return res.status(400).json({ message: adError });
     const wf = await Workflow.create({
       ...payload,
       folder: normFolderPath(req.body.folder) || 'General',
@@ -197,6 +225,10 @@ exports.update = async (req, res) => {
     const buttonError = workflowButtonsError(req.body);
     if (buttonError) return res.status(400).json({ message: buttonError });
     const update = sanitizeWorkflowPayload(req.body);
+    const existing = await Workflow.findOne({ _id: req.params.id, clinic: req.clinicId }).lean();
+    if (!existing) return res.status(404).json({ message: 'Workflow no encontrado' });
+    const adError = await adAssignmentError({ ...existing, ...update }, req.clinicId, existing._id);
+    if (adError) return res.status(400).json({ message: adError });
     delete update.clinic;
     delete update._id;
     delete update.stats;
