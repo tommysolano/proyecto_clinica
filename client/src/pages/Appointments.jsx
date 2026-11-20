@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, Fragment, lazy, Suspense } from '
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import api from '../api/axios';
+import useDebounce from '../hooks/useDebounce';
 import useAltaPaciente from '../components/useAltaPaciente';
 import Modal from '../components/Modal';
 import { downloadFile } from '../utils/download';
@@ -875,6 +876,7 @@ export default function Appointments() {
     // 'aplazado' (suero pendiente). Vacío = todas.
     serumStatus: '',
   });
+  const patientQueryDebounced = useDebounce(filter.patientQuery, 300);
   /**
    * BANDEJAS POR ESTADO: pendientes → en atención → finalizadas.
    *
@@ -1003,13 +1005,24 @@ export default function Appointments() {
       // Parámetros que comparten las dos lecturas.
       const baseParams = {};
       if (filter.isFirstVisit) baseParams.isFirstVisit = filter.isFirstVisit;
-      if (filter.patientQuery && filter.patientQuery.trim()) baseParams.q = filter.patientQuery.trim();
+      if (patientQueryDebounced.trim()) baseParams.q = patientQueryDebounced.trim();
       if (filter.status) baseParams.status = filter.status;
       // Filtros de servicio (VARIOS) y de doctor: en la lista se re-aplican en
       // el navegador, pero en el calendario son los que cuentan, así que
       // viajan al servidor (el endpoint los acepta separados por coma).
       if (filter.services?.length) baseParams.service = filter.services.join(',');
       if (filter.doctor) baseParams.doctor = filter.doctor;
+      const firstBlockDay = view === 'calendar'
+        ? toYmd(new Date(calMonth.getFullYear(), calMonth.getMonth(), 1)) : listDay;
+      const lastBlockDay = view === 'calendar'
+        ? toYmd(new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0)) : listDay;
+      if (!isNurse) {
+        api.get('/time-blocks', { params: { startDate: firstBlockDay, endDate: lastBlockDay, clinic: 'all' } })
+          .then((res) => { if (miTurno === peticionRef.current) setBloquesDia(res.data || []); })
+          .catch(() => { if (miTurno === peticionRef.current) setBloquesDia([]); });
+      } else {
+        setBloquesDia([]);
+      }
       if (view === 'calendar') {
         /**
          * EL CALENDARIO NO NECESITA LAS CITAS, solo sus CONTEOS.
@@ -1037,23 +1050,6 @@ export default function Appointments() {
         // Llegó tarde: ya hay otra petición más nueva en marcha.
         if (miTurno !== peticionRef.current) return;
         setCalResumen(res.data || []);
-        // BLOQUEOS DEL PERÍODO (también en calendario): para el banner de
-        // bloqueos activos y los marcadores por día. Antes solo la vista lista
-        // los pedía y en calendario un bloqueo nuevo era invisible.
-        // A ENFERMERÍA NO LE IMPORTAN (sep-2026): ella no agenda, no le toca
-        // decidir dónde cabe una cita — los avisos de bloqueo eran ruido.
-        if (!isNurse) {
-          try {
-            const rb = await api.get('/time-blocks', {
-              params: { startDate: toYmd(first), endDate: toYmd(last), clinic: 'all' },
-            });
-            if (miTurno === peticionRef.current) setBloquesDia(rb.data || []);
-          } catch {
-            if (miTurno === peticionRef.current) setBloquesDia([]);
-          }
-        } else if (miTurno === peticionRef.current) {
-          setBloquesDia([]);
-        }
         return;
       }
       // Lista = un solo día (navegable por flechas).
@@ -1071,22 +1067,6 @@ export default function Appointments() {
         status: normalizeStatus(a.status),
       }));
       setAppointments(list);
-      // BLOQUEOS DEL DÍA: los recuadros de la vista por día (mismo refresco
-      // que las citas, sockets incluidos). clinic=all: el día puede tener
-      // citas de varias sedes y cada bloqueo es de SU sucursal.
-      // A ENFERMERÍA tampoco: los avisos de bloqueo son cosa de quien agenda.
-      if (!isNurse) {
-        try {
-          const rb = await api.get('/time-blocks', {
-            params: { startDate: listDay, endDate: listDay, clinic: 'all' },
-          });
-          if (miTurno === peticionRef.current) setBloquesDia(rb.data || []);
-        } catch {
-          if (miTurno === peticionRef.current) setBloquesDia([]);
-        }
-      } else if (miTurno === peticionRef.current) {
-        setBloquesDia([]);
-      }
     } catch (err) {
       if (miTurno !== peticionRef.current) return;
       // Con el MOTIVO (oct-2026): un «Error al cargar citas» a secas no dejaba
@@ -1265,7 +1245,7 @@ export default function Appointments() {
   useEffect(() => {
     fetchAppointments();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, filter, calMonth, listDay]);
+  }, [view, filter.status, filter.isFirstVisit, filter.services, filter.doctor, filter.clinic, patientQueryDebounced, calMonth, listDay]);
 
   // La lista carga solo un día y el calendario solo un mes. Esta búsqueda
   // consulta todas las fechas, con el mismo alcance de turnos del doctor.
@@ -3188,9 +3168,9 @@ export default function Appointments() {
       // seis columnas no caben, y arrastrar de lado escondía justo el estado y
       // los botones. El contenedor pierde el marco ahí porque cada tarjeta trae
       // el suyo.
-      <div className="md:bg-white md:rounded-2xl md:shadow-md md:shadow-slate-200/60 md:border md:border-emerald-100 overflow-hidden">
+      <div className="appointments-table-container md:bg-white md:rounded-2xl md:shadow-md md:shadow-slate-200/60 md:border md:border-emerald-100 overflow-hidden">
         <div className="md:overflow-x-auto">
-          <table className="tbl tbl-cards">
+          <table className="tbl tbl-cards appointments-table">
             <thead>
               <tr className="bg-emerald-50/50 border-b border-emerald-100">
                 <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">

@@ -597,6 +597,8 @@ const appointmentSchema = new mongoose.Schema(
 // la colección de citas de la clínica en cada carga de la agenda.
 appointmentSchema.index({ clinic: 1, 'turns.user': 1, date: 1 });
 appointmentSchema.index({ clinic: 1, 'turns.kind': 1, 'turns.status': 1, date: 1 });
+// La agenda unificada consulta por fecha incluso sin filtro de sucursal.
+appointmentSchema.index({ date: 1, startTime: 1 });
 
 // «¿Este paciente ha venido alguna vez?» (`utils/firstVisit.js`) se pregunta en
 // CADA agendamiento y va sin sucursal —nuevo se es para la clínica, no para la

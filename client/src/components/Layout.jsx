@@ -747,7 +747,7 @@ export default function Layout({ children }) {
           <div
             key={`${location.pathname}|${scopeVersion}`}
             className={`page-enter mx-auto w-full ${
-              isChatsPage ? 'max-w-none h-full' : 'max-w-screen-xl'
+              isChatsPage ? 'max-w-none h-full' : location.pathname === '/appointments' ? 'max-w-none' : 'max-w-screen-xl'
             }`}
           >
             {children}

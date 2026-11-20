@@ -310,3 +310,42 @@ thead th { letter-spacing: 0.02em; }
   color: #94a3b8;
   pointer-events: none;
 }
+
+/* La lista de citas se adapta al ancho disponible, incluida la barra lateral. */
+.appointments-table-container { container: appointments / inline-size; }
+
+@container appointments (min-width: 851px) {
+  .appointments-table { table-layout: fixed; }
+  .appointments-table th:nth-child(1) { width: 10%; }
+  .appointments-table th:nth-child(2) { width: 11%; }
+  .appointments-table th:nth-child(3) { width: 19%; }
+  .appointments-table th:nth-child(4) { width: 37%; }
+  .appointments-table th:nth-child(5) { width: 14%; }
+  .appointments-table th:nth-child(6) { width: 9%; }
+  .appointments-table th, .appointments-table td { padding-left: 0.75rem; padding-right: 0.75rem; }
+  .appointments-table td { overflow-wrap: anywhere; }
+}
+
+@container appointments (max-width: 850px) {
+  .appointments-table thead { display: none; }
+  .appointments-table, .appointments-table tbody { display: block; }
+  .appointments-table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "hora estado" "princ princ" "det det" "acc acc";
+    gap: 0 0.5rem;
+    margin-bottom: 0.5rem;
+    padding: 0.75rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.75rem;
+    background: white;
+  }
+  .appointments-table tbody td { display: block; border: 0; padding: 0; min-width: 0; overflow-wrap: anywhere; }
+  .appointments-table td[data-cell='fecha'] { display: none; }
+  .appointments-table td[data-cell='hora'] { grid-area: hora; }
+  .appointments-table td[data-cell='estado'] { grid-area: estado; text-align: right; }
+  .appointments-table td[data-cell='principal'] { grid-area: princ; margin-top: 0.25rem; }
+  .appointments-table td[data-cell='detalle'] { grid-area: det; margin-top: 0.25rem; }
+  .appointments-table td[data-cell='acciones'] { grid-area: acc; display: flex; justify-content: flex-end; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #f1f5f9; }
+  .appointments-table tbody tr:has(> td[colspan]) { display: block; border: 0; padding: 0; background: transparent; }
+}

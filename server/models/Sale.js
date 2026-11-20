@@ -262,6 +262,8 @@ saleSchema.index(
 // Mismo motivo que en Appointment: 'firstVisit' pregunta si el paciente ya compró
 // aquí alguna vez, sin filtrar por sucursal, en cada agendamiento.
 saleSchema.index({ patient: 1 });
+// Cobros de las citas visibles en la agenda.
+saleSchema.index({ appointment: 1, status: 1, createdAt: 1 });
 
 // Generar saleNumber por clínica
 saleSchema.pre('save', async function (next) {
