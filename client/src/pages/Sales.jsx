@@ -326,18 +326,39 @@ export default function Sales({ soloFormulario = false, embebido = false, citaId
     ? `${miPunto.punto.establecimiento}-${miPunto.punto.codigo}${miPunto.punto.nombre ? ` (${miPunto.punto.nombre})` : ''}`
     : '';
 
+  // ¿Ya se sabe si quien cobra tiene caja (punto)? ¿El cajero tocó la casilla a mano?
+  // Nov-2026: la casilla arrancaba desmarcada hasta que respondía /puntos-emision/mio; si
+  // esa consulta tardaba (cobro desde la agenda, que monta el formulario de cero) o fallaba
+  // (se tragaba el error), la venta se guardaba SIN FACTURA y sin aviso.
+  const miPuntoCargadoRef = useRef(false);
+  const facturaTocadaRef = useRef(false);
+  const cargarMiPunto = () => api.get('/puntos-emision/mio').then((r) => {
+    const d = r.data || { usaPuntos: false, punto: null };
+    setMiPunto(d);
+    miPuntoCargadoRef.current = true;
+    // Quien tiene su propia caja factura al cobrar; el resto, como antes, desde el historial.
+    if (!facturaTocadaRef.current) setFacturarAlGuardar(!!d.punto && canInvoice);
+    return d;
+  });
+
   useEffect(() => {
     if (!canCreate) return;
-    api.get('/puntos-emision/mio')
-      .then((r) => {
-        const d = r.data || { usaPuntos: false, punto: null };
-        setMiPunto(d);
-        // Quien tiene su propia caja factura al cobrar; el resto, como antes, desde el historial.
-        setFacturarAlGuardar(!!d.punto && canInvoice);
-      })
-      .catch(() => {});
+    // Un reintento si la primera consulta falla (red lenta).
+    cargarMiPunto().catch(() => cargarMiPunto().catch(() => {}));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** ¿Se emite la factura de la venta recién guardada? Si aún no se sabía la caja, se pregunta ahora. */
+  const decidirFacturar = async () => {
+    if (facturaTocadaRef.current || miPuntoCargadoRef.current) return facturarAlGuardar && puedeFacturarAqui;
+    try {
+      const d = await cargarMiPunto();
+      return canInvoice && !!d.punto;
+    } catch {
+      toast.error('No se pudo comprobar tu caja: la venta quedó registrada SIN FACTURA. Factúrala desde el historial de ventas.', { duration: 15000 });
+      return false;
+    }
+  };
 
   // Al abrir el cobro se relee el punto: su secuencial avanza con cada factura (de esta caja o
   // de otra pestaña) y el cajero ve en el modal el número que llevará la factura.
@@ -1511,7 +1532,7 @@ export default function Sales({ soloFormulario = false, embebido = false, citaId
       fetchProducts();
       // Factura electrónica desde el punto de venta de quien cobra (no bloquea la venta:
       // si falla, la venta queda registrada y se puede facturar luego).
-      if (facturarAlGuardar && puedeFacturarAqui && res.data?._id) emitirFactura(res.data);
+      if (res.data?._id && (await decidirFacturar())) emitirFactura(res.data);
       // Incrustada en la agenda: la agenda sigue (asignar doctor/enfermero).
       if (embebido || soloFormulario) onCobrado?.(res.data);
     } catch (err) {
@@ -1617,7 +1638,7 @@ export default function Sales({ soloFormulario = false, embebido = false, citaId
       // falló (era la firma electrónica); el servidor lo manda en `error`.
       const d = err.response?.data;
       const motivo = d?.error && d?.message ? `${d.message}: ${d.error}` : d?.message;
-      toast.error(motivo || 'Error al facturar', { duration: 10000 });
+      toast.error(`La venta ${sale.saleNumber || ''} quedó SIN FACTURA. ${motivo || 'Error al facturar'}. Factúrala desde el historial de ventas.`, { duration: 20000 });
     } finally {
       setInvoicingId(null);
     }
@@ -2730,7 +2751,7 @@ export default function Sales({ soloFormulario = false, embebido = false, citaId
                     type="checkbox"
                     className="w-4 h-4"
                     checked={facturarAlGuardar}
-                    onChange={(e) => setFacturarAlGuardar(e.target.checked)}
+                    onChange={(e) => { facturaTocadaRef.current = true; setFacturarAlGuardar(e.target.checked); }}
                   />
                   <span>
                     Emitir factura electrónica al cobrar · serie{' '}

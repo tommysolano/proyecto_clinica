@@ -100,7 +100,17 @@ const cajaLedgerNet = async (clinicIds, start, end, session = null, createdBy = 
     }
   }
   const match = { clinic: { $in: ids.map(oid) }, status: 'CONTABILIZADO', date: { $gte: start, $lte: end } };
-  if (createdBy) match.createdBy = oid(createdBy);
+  if (createdBy) {
+    // También las REVERSIONES de asientos del dueño de la caja, las haga quien las haga
+    // (nov-2026: una venta en efectivo anulada por contabilidad seguía sumando en el
+    // «efectivo esperado» de la cajera, porque la reversión la había registrado otro).
+    let propios = JournalEntry.distinct('_id', {
+      clinic: { $in: ids.map(oid) }, createdBy: oid(createdBy), isReversed: true, 'lines.account': { $in: cuentas },
+    });
+    if (session) propios = propios.session(session);
+    const reversados = await propios;
+    match.$or = [{ createdBy: oid(createdBy) }, { reverses: { $in: reversados } }];
+  }
   const pipeline = [
     { $match: match },
     { $unwind: '$lines' },

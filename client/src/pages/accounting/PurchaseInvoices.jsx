@@ -93,11 +93,13 @@ const addDays = (dateStr, days) => {
 // N° de comprobante como un solo campo ("001-001-000000123") en vez de tres campos
 // técnicos (establecimiento / punto de emisión / secuencial). Se parte al guardar
 // para conservar el payload que espera el backend (estab/ptoEmi/secuencial + serie).
-const joinComprobante = (estab, ptoEmi, secuencial) =>
-  [estab, ptoEmi, secuencial].some((x) => x != null && x !== '') ? `${estab || ''}-${ptoEmi || ''}-${secuencial || ''}` : '';
+const joinComprobante = (estab, ptoEmi, secuencial) => {
+  const digits = `${estab || ''}${ptoEmi || ''}${secuencial || ''}`;
+  return digits.slice(0, 3) + (digits.length >= 3 ? '-' : '') + digits.slice(3, 6) + (digits.length >= 6 ? '-' : '') + digits.slice(6);
+};
 const parseComprobante = (v) => {
-  const [estab = '', ptoEmi = '', secuencial = ''] = String(v || '').split('-').map((s) => s.trim());
-  return { estab, ptoEmi, secuencial };
+  const digits = String(v || '').replace(/\D/g, '').slice(0, 15);
+  return { estab: digits.slice(0, 3), ptoEmi: digits.slice(3, 6), secuencial: digits.slice(6) };
 };
 
 export default function PurchaseInvoices() {
@@ -1124,8 +1126,17 @@ export default function PurchaseInvoices() {
               <Field label="Proveedor" required className="col-span-2 md:col-span-3">
                 <SearchableSelect options={suppliers} value={form.supplier} onChange={onSelectSupplier} getLabel={(s) => `${s.ruc} - ${s.razonSocial}`} getSearchText={(s) => `${s.ruc} ${s.razonSocial} ${s.nombreComercial || ''}`} placeholder="Seleccione un proveedor…" searchPlaceholder="Buscar por RUC o nombre…" />
               </Field>
-              <Field label="N° de comprobante" required className="col-span-2 md:col-span-2" hint="Formato 001-001-000000123">
-                <input required placeholder="001-001-000000123" value={joinComprobante(form.estab, form.ptoEmi, form.secuencial) || form.serie || ''} onChange={(e) => setForm((f) => ({ ...f, ...parseComprobante(e.target.value), serie: '' }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono" />
+              <Field label="N° de comprobante" required className="col-span-2 md:col-span-2" hint="Formato: 3 dígitos - 3 dígitos - 9 dígitos">
+                <input required inputMode="numeric" placeholder="___-___-_________" value={joinComprobante(form.estab, form.ptoEmi, form.secuencial) || form.serie || ''} onChange={(e) => {
+                  let value = e.target.value;
+                  const previous = joinComprobante(form.estab, form.ptoEmi, form.secuencial) || form.serie || '';
+                  const cursor = e.target.selectionStart;
+                  if (e.nativeEvent.inputType === 'deleteContentBackward' && previous.length === value.length + 1 && previous[cursor] === '-') {
+                    value = value.slice(0, Math.max(0, cursor - 1)) + value.slice(cursor);
+                  }
+                  setForm((f) => ({ ...f, ...parseComprobante(value), serie: '' }));
+                }} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono" />
+                <p className="text-[11px] text-slate-500 mt-1">{`${form.estab || ''}${form.ptoEmi || ''}${form.secuencial || ''}`.replace(/\D/g, '').length} de 15 dígitos</p>
               </Field>
               <Field label="Tipo">
                 <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white">
@@ -1159,11 +1170,13 @@ export default function PurchaseInvoices() {
                 hint="En factura electrónica es la clave de acceso (49 dígitos)."
               >
                 <input
-                  placeholder="Clave de acceso / autorización"
+                  placeholder="Ingrese hasta 49 dígitos"
+                  inputMode="numeric"
                   value={form.autorizacion || ''}
-                  onChange={(e) => setForm({ ...form, autorizacion: e.target.value.replace(/\s+/g, '') })}
+                  onChange={(e) => setForm({ ...form, autorizacion: e.target.value.replace(/\D/g, '').slice(0, 49) })}
                   className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono"
                 />
+                <p className="text-[11px] text-slate-500 mt-1">{(form.autorizacion || '').length} de 49 dígitos</p>
                 {!!form.autorizacion && ![10, 37, 49].includes(form.autorizacion.length) && (
                   <p className="text-[11px] text-amber-700 mt-1">
                     Tiene {form.autorizacion.length} caracteres; lo habitual son 49 (electrónica) o 10 (preimpresa).
