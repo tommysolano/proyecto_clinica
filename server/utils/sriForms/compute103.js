@@ -48,11 +48,12 @@ async function compute103({ clinicId, range }) {
   const { start, end } = range;
   const warnings = [];
 
-  const compras = await PurchaseInvoice.find({
+  // Solo comprobantes del SRI (nov-2026): sin DNA ni anticipos a proveedor.
+  const compras = await PurchaseInvoice.find({ $and: [{
     clinic: clinicId,
     status: { $ne: 'ANULADA' },
     fechaEmision: { $gte: start, $lte: end },
-  }).populate('supplier', 'razonSocial ruc').lean();
+  }, require('../comprobantesSri').FILTRO_COMPROBANTE_SRI] }).populate('supplier', 'razonSocial ruc').lean();
 
   // ── Retenciones de renta por código (fuente única: cabecera) + no sujetos (332)
   const byCode = new Map();

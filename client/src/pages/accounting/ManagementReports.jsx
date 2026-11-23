@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineChartBar } from 'react-icons/hi2';
@@ -35,11 +36,17 @@ const TABS = [
   { key: 'INV', label: 'Inventario valorizado', url: '/accounting-reports/inventory', xlsx: '/accounting-reports/inventory.xlsx', file: 'inventario_valorizado' },
 ];
 
+/** Pestañas que ve el asistente contable (nov-2026); la API le bloquea las demás. */
+const ASSISTANT_REPORT_TABS = new Set(['PERIODO', 'ANT']);
+
 const AGING_LABELS = { POR_VENCER: 'Por vencer', VENCIDO_30: '1-30', VENCIDO_60: '31-60', VENCIDO_90: '61-90', VENCIDO_120: '91-120', VENCIDO_MAS_120: '> 120' };
 
 export default function ManagementReports() {
   const navigate = useNavigate();
-  const [tab, setTab] = useState('GENERAL');
+  const { user, role } = useAuth();
+  const esAsistente = role === 'asistente_contable' && !user?.isSuperAdmin;
+  const tabs = esAsistente ? TABS.filter((t) => ASSISTANT_REPORT_TABS.has(t.key)) : TABS;
+  const [tab, setTab] = useState(tabs[0].key);
   const [granularity, setGranularity] = useState('month');
   const [startDate, setStart] = useState(startOfMonth());
   const [endDate, setEnd] = useState(today());
@@ -49,7 +56,7 @@ export default function ManagementReports() {
   // Fila de un reporte de ventas abierta en detalle (qué ventas la componen).
   const [drill, setDrill] = useState(null);
 
-  const current = TABS.find((t) => t.key === tab);
+  const current = tabs.find((t) => t.key === tab);
 
   const load = async () => {
     try {
@@ -270,13 +277,26 @@ export default function ManagementReports() {
     // ANTICIPOS: uno por uno (a quién, con qué documento, cuándo y cuánto).
     if (tab === 'ANT') {
       const antRows = Array.isArray(data.rows) ? data.rows : [];
+      const saldosPac = Array.isArray(data.saldosPacientes) ? data.saldosPacientes : [];
       return (
         <div className="space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <Stat title="Anticipos DE clientes" value={`$${fmt(data.totals?.clientes)}`} color="text-amber-600" />
             <Stat title="Anticipos A proveedores" value={`$${fmt(data.totals?.proveedores)}`} />
+            <Stat title="Saldos a favor de pacientes (hoy)" value={`$${fmt(data.totals?.saldosPacientes)}`} color="text-sky-700" />
             <Stat title="Movimientos" value={antRows.length} />
           </div>
+          {/* Nov-2026: lo que cada paciente tiene HOY a su favor en toda la empresa (pagó de más
+              y aún no lo usó), sin importar el rango de fechas. Clic abre su ficha. */}
+          <ReportBlock title="Saldos a favor por paciente — toda la empresa, a la fecha (pulsa una fila para abrir el paciente)">
+            <Table
+              head={['Paciente', 'Cédula', 'Último movimiento', 'Saldo a favor']}
+              align={['left', 'left', 'left', 'right']}
+              rows={saldosPac.map((s) => [s.paciente, s.cedula, fmtDate(s.ultimo), `$${fmt(s.saldo)}`])}
+              onRowClick={(i) => navigate(`/patients/${saldosPac[i].patientId}`)}
+              empty="Ningún paciente tiene saldo a favor."
+            />
+          </ReportBlock>
           <ReportBlock title="Detalle de anticipos (pulsa una fila para abrir su documento)">
             <Table
               head={['Fecha', 'Tipo', 'Persona', 'Documento', 'Concepto', 'Cuenta', 'Monto']}
@@ -404,7 +424,7 @@ export default function ManagementReports() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineChartBar className="text-emerald-600" /> Reportes Gerenciales</h1>
       <div className="flex gap-2 flex-wrap">
-        {TABS.map((t) => <button key={t.key} onClick={() => { setTab(t.key); setData(null); }} className={`px-3 py-2 rounded-lg text-xs ${tab === t.key ? 'bg-emerald-600 text-white' : 'bg-white border'}`}>{t.label}</button>)}
+        {tabs.map((t) => <button key={t.key} onClick={() => { setTab(t.key); setData(null); }} className={`px-3 py-2 rounded-lg text-xs ${tab === t.key ? 'bg-emerald-600 text-white' : 'bg-white border'}`}>{t.label}</button>)}
       </div>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end flex-wrap">
         <div><label className="text-xs text-slate-500 block">Desde</label><DateInput value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>

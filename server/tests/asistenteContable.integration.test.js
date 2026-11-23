@@ -49,7 +49,8 @@ test('bloquea las API restringidas y conserva las usadas en compras y reportes p
     ['/api/retention-vouchers/123/retry', 'POST'], ['/api/budgets/execution', 'GET'],
     ['/api/cash-flow/projection.xlsx', 'GET'], ['/api/accounting-health', 'GET'], ['/api/audit-logs', 'GET'],
     ['/api/accounting-reports/income-statement.xlsx', 'GET'], ['/api/accounting-reports/general', 'GET'],
-    ['/api/accounting-reports/sales/by-period.xlsx', 'GET'], ['/api/accounting-reports/supercias/balance-sheet.txt', 'GET'],
+    ['/api/accounting-reports/sales/by-product.xlsx', 'GET'], ['/api/accounting-reports/supercias/balance-sheet.txt', 'GET'],
+    ['/api/accounting-reports/ar-aging', 'GET'], ['/api/accounting-reports/inventory.xlsx', 'GET'],
   ];
   for (const [url, method] of blocked) assert.equal(restrictedAssistantApi(url, method), true, `${method} ${url}`);
   const allowed = [
@@ -58,6 +59,9 @@ test('bloquea las API restringidas y conserva las usadas en compras y reportes p
     ['/api/journal-entries', 'GET'], ['/api/journal-entries/123', 'GET'],
     ['/api/accounting-reports/sri/form-104', 'GET'], ['/api/accounting-reports/profitability/by-doctor', 'GET'],
     ['/api/accounting-reports/collections/by-cashier', 'GET'], ['/api/accounting-reports/sales/drilldown.xlsx', 'GET'],
+    // Nov-2026: Anticipos (saldos a favor) y Ventas por período (bases por tarifa).
+    ['/api/accounting-reports/advances', 'GET'], ['/api/accounting-reports/advances.xlsx', 'GET'],
+    ['/api/accounting-reports/sales/by-period', 'GET'], ['/api/accounting-reports/sales/by-period.xlsx', 'GET'],
   ];
   for (const [url, method] of allowed) assert.equal(restrictedAssistantApi(url, method), false, `${method} ${url}`);
 });

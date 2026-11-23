@@ -68,6 +68,12 @@ function textoDeVenta(sale) {
     lineas.push(`• ${nom} × ${it.quantity}${tipo ? ` (${tipo})` : ''}`);
   }
   lineas.push(`Total: ${dinero(sale.total)}`);
+  // Saldo a favor (nov-2026): sin esto nadie se enteraba de que el paciente dejó dinero.
+  const conSaldo = (sale.payments || []).filter((p) => p.method === 'anticipo').reduce((t, p) => t + (Number(p.amount) || 0), 0);
+  if (conSaldo > 0.005) lineas.push(`Pagado con saldo a favor: ${dinero(conSaldo)}`);
+  if (Number(sale.advanceCreated) > 0.005) {
+    lineas.push(`Pagó ${dinero(Number(sale.total) + Number(sale.advanceCreated))}: quedan ${dinero(sale.advanceCreated)} A FAVOR del paciente`);
+  }
   if (anulada) lineas.push(`Anulada el ${fechaHora(sale.updatedAt)}`);
   return lineas.join('\n');
 }
@@ -78,7 +84,7 @@ async function registrarVenta(saleOrId, userId, { fechaOriginal = false, lanzar 
     const Sale = require('../models/Sale');
     const id = saleOrId?._id || saleOrId;
     const sale = await Sale.findById(id)
-      .select('clinic patient status items total createdAt updatedAt createdBy')
+      .select('clinic patient status items total payments advanceCreated createdAt updatedAt createdBy')
       .populate('items.product', 'name category')
       .lean();
     if (!sale?.patient) return;

@@ -160,11 +160,12 @@ async function compute104({ clinicId, range, editable = {} }) {
   const n415 = pos(b405 - remNc0); remNc0 = Math.max(0, r2(remNc0 - b405));
 
   // ── Compras
-  const compras = await PurchaseInvoice.find({
+  // Solo comprobantes del SRI (nov-2026): sin DNA ni anticipos a proveedor.
+  const compras = await PurchaseInvoice.find({ $and: [{
     clinic: clinicId,
     status: { $ne: 'ANULADA' },
     fechaEmision: { $gte: start, $lte: end },
-  }).lean();
+  }, require('../comprobantesSri').FILTRO_COMPROBANTE_SRI] }).lean();
 
   const c = {
     g500: 0, g501: 0, g540: 0, g502: 0, b507: 0, b508: 0, b531: 0, b532: 0,

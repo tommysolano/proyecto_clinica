@@ -726,10 +726,13 @@ exports.bulkTag = async (req, res) => {
 exports.getSaldoAFavor = async (req, res) => {
   try {
     const PatientCredit = require('../models/PatientCredit');
-    const { saldoDisponible } = require('../utils/saldoAFavor');
+    const { saldoDisponible, sucursalesDelSaldo } = require('../utils/saldoAFavor');
+    // De toda la EMPRESA (nov-2026): el paciente paga de más en una sede y lo usa en otra.
+    const sedes = await sucursalesDelSaldo(req.clinicId);
     const [saldo, movimientos] = await Promise.all([
       saldoDisponible(req.clinicId, req.params.id),
-      PatientCredit.find({ clinic: req.clinicId, patient: req.params.id })
+      PatientCredit.find({ clinic: { $in: sedes }, patient: req.params.id })
+        .populate('clinic', 'name')
         .populate('sale', 'saleNumber total')
         .populate('payment', 'number total')
         .populate('createdBy', 'name')
@@ -772,7 +775,7 @@ exports.getPatientInvoices = async (req, res) => {
       patient: req.params.id,
       ...(sucursales ? { clinic: { $in: sucursales } } : {}),
     })
-      .select('saleNumber createdAt total discountTotal status clinic items.productName items.quantity items.discount items.prepaid invoice clientName clientCedula')
+      .select('saleNumber createdAt total discountTotal status clinic items.productName items.quantity items.discount items.prepaid invoice clientName clientCedula payments advanceCreated')
       .populate('clinic', 'name')
       .populate('invoice', 'estab ptoEmi secuencial estado importeTotal fechaEmision claveAcceso')
       .sort({ createdAt: -1 })
@@ -789,6 +792,14 @@ exports.getPatientInvoices = async (req, res) => {
       clientName: v.clientName,
       clientCedula: v.clientCedula,
       items: (v.items || []).map((i) => ({ name: i.productName, quantity: i.quantity, discount: i.discount || 0, prepaid: !!i.prepaid })),
+      // Saldo a favor (nov-2026): lo que pagó de más (queda a su favor) y lo que pagó con su saldo.
+      aFavor: Number(v.advanceCreated) || 0,
+      pagado: +(v.payments || [])
+        .filter((p) => p.method !== 'anticipo' && p.method !== 'credito')
+        .reduce((s, p) => s + (Number(p.amount) || 0), 0).toFixed(2),
+      conSaldo: +(v.payments || [])
+        .filter((p) => p.method === 'anticipo')
+        .reduce((s, p) => s + (Number(p.amount) || 0), 0).toFixed(2),
       invoice: v.invoice
         ? {
             _id: v.invoice._id,

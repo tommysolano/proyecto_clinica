@@ -19,9 +19,11 @@ function restrictedAssistantApi(url, method = 'GET') {
   }
   if (/^\/api\/journal-entries\/(ledger|trial-balance)(\.xlsx)?$/.test(path)) return true;
   if (under('/api/accounting-reports')) {
-    // Reportes SRI, rentabilidad, cobros y el detalle de ventas siguen disponibles.
+    // Reportes SRI, rentabilidad, cobros y el detalle de ventas siguen disponibles. Nov-2026:
+    // también Anticipos (saldos a favor de pacientes) y Ventas por período (bases por tarifa).
     return !['/api/accounting-reports/sri', '/api/accounting-reports/profitability',
-      '/api/accounting-reports/collections', '/api/accounting-reports/sales/drilldown']
+      '/api/accounting-reports/collections', '/api/accounting-reports/sales/drilldown',
+      '/api/accounting-reports/advances', '/api/accounting-reports/sales/by-period']
       .some((allowed) => path === allowed || path.startsWith(`${allowed}/`) || path === `${allowed}.xlsx`);
   }
   return false;

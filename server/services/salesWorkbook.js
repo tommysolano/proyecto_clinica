@@ -127,6 +127,11 @@ function addSalesSheet(wb, sales, { title = 'Ventas' } = {}) {
   ws.columns = SALES_COLUMNS;
   sales.forEach((s) => ws.addRow(salesSheetRow(s)));
   MONEY_KEYS.forEach((k) => { ws.getColumn(k).numFmt = MONEY; });
+  // Nov-2026 (contador): fila de totales; las anuladas no suman.
+  require('../utils/excelReport').agregarFilaTotales(ws, MONEY_KEYS, {
+    label: 'TOTALES (sin anuladas)',
+    excluir: (row) => /anulad/i.test(String(row.getCell('status').value || '')),
+  });
   ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
   ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF047857' } };
   ws.getRow(1).alignment = { vertical: 'middle', horizontal: 'left' };

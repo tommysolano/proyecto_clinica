@@ -469,6 +469,13 @@ if ! ( cd "$APP_DIR/server" && node scripts/preciosContificoConIvaOnce.js --comm
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/preciosContificoConIvaOnce.js --commit'"
 fi
 
+# Observaciones de las compras con SALDO A FAVOR (23-11-2026): la constancia automatica ahora
+# dice cuanto quedo a favor o cuanto se pago con el saldo; se reescriben las ya existentes.
+if ! ( cd "$APP_DIR/server" && node scripts/observacionesSaldoAFavorOnce.js --commit ); then
+  echo "ADVERTENCIA: no se pudieron reescribir las observaciones de saldo a favor. Reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/observacionesSaldoAFavorOnce.js --commit'"
+fi
+
 # Catalogo de SERVICIOS DE AGENDA, enlazado con los productos de tipo SERVICIO
 # del inventario (oct-2026). Es idempotente (casa por slug antes de crear), asi
 # que puede correr en cada despliegue sin duplicar nada. Si falla no pasa nada

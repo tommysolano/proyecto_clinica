@@ -11,19 +11,46 @@ const PatientCredit = require('../models/PatientCredit');
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
-/** Saldo disponible del paciente en la sucursal. */
+/**
+ * Sucursales en las que vale el saldo: las de la EMPRESA de `clinicId` (nov-2026). Antes el
+ * saldo era de la sede donde se cobró y en las demás el paciente aparecía con $0: pagó de más
+ * en Extensión y en Central nadie lo veía ni se lo descontaba. El plan de cuentas es de la
+ * empresa, así que el anticipo (2.1.01.03) se puede consumir desde cualquier sede.
+ */
+async function sucursalesDelSaldo(clinicId) {
+  const { sucursalesDeLaEmpresa } = require('./sesionesPrepagadas');
+  const empresa = await sucursalesDeLaEmpresa(clinicId);
+  const ids = empresa && empresa.length ? empresa.map(String) : [String(clinicId)];
+  if (!ids.includes(String(clinicId))) ids.push(String(clinicId));
+  return ids.map((id) => new mongoose.Types.ObjectId(id));
+}
+
+/** Saldo disponible del paciente en la empresa de la sucursal. */
 async function saldoDisponible(clinicId, patientId, { session = null } = {}) {
   if (!clinicId || !patientId) return 0;
   const [fila] = await PatientCredit.aggregate([
     {
       $match: {
-        clinic: new mongoose.Types.ObjectId(String(clinicId)),
+        clinic: { $in: await sucursalesDelSaldo(clinicId) },
         patient: new mongoose.Types.ObjectId(String(patientId)),
       },
     },
     { $group: { _id: null, saldo: { $sum: '$amount' } } },
   ]).session(session);
   return r2(fila?.saldo || 0);
+}
+
+/**
+ * Pacientes con saldo a favor en la empresa de `clinicId`: [{ patient, saldo, ultimo }],
+ * de mayor a menor. Para el reporte del contador.
+ */
+async function saldosPorPaciente(clinicId) {
+  return PatientCredit.aggregate([
+    { $match: { clinic: { $in: await sucursalesDelSaldo(clinicId) } } },
+    { $group: { _id: '$patient', saldo: { $sum: '$amount' }, ultimo: { $max: '$date' }, movimientos: { $sum: 1 } } },
+    { $match: { saldo: { $gt: 0.005 } } },
+    { $sort: { saldo: -1 } },
+  ]);
 }
 
 async function registrar(datos, { session = null } = {}) {
@@ -81,4 +108,4 @@ async function revertirDe({ clinicId, filtro, userId, date = new Date(), session
   return creados;
 }
 
-module.exports = { saldoDisponible, registrar, revertirDe, r2 };
+module.exports = { saldoDisponible, saldosPorPaciente, sucursalesDelSaldo, registrar, revertirDe, r2 };

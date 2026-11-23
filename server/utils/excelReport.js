@@ -21,6 +21,9 @@ const ExcelJS = require('exceljs');
 const MONEY_FORMAT = '"$"#,##0.00';
 const HEADER_FILL = 'FFD1FAE5';   // emerald-100: mismo verde de las tablas de la app
 const TOTAL_FILL = 'FFF1F5F9';    // slate-100
+/** Columnas de dinero que NO se suman solas (ver addSheet). */
+// «Base 15%» o «Subtotal otra tarifa» SÍ se suman: solo se excluyen las que empiezan por «Tarifa».
+const NO_SUMABLE = /saldo|precio|unitario|promedio|^tarifa|porcentaje|margen/i;
 
 /** Nuevo libro con los metadatos del sistema. */
 function newWorkbook() {
@@ -90,7 +93,24 @@ const xlsDate = (d) => {
  * @param {Array}    [opts.notes]  líneas de texto al final (advertencias, notas del reporte)
  * @returns {ExcelJS.Worksheet}
  */
-function addSheet(wb, { title, columns, rows = [], meta = [], totals = null, totalsLabel = 'TOTALES', notes = [] }) {
+function addSheet(wb, { title, columns, rows = [], meta = [], totals = null, totalsLabel = 'TOTALES', notes = [], autoTotals = true }) {
+  // Nov-2026, pedido del contador: TODO Excel con la suma de sus columnas de dinero. Si el
+  // reporte no trae totales propios, se suman aquí las columnas `money` (y las `sum: true`).
+  // No se suman las que no tienen sentido sumadas: saldos acumulados, precios y costos
+  // unitarios, promedios, tarifas y porcentajes (o las marcadas `sum: false`). Los reportes
+  // jerárquicos (árbol de cuentas) y las hojas de concepto/valor pasan `autoTotals: false`.
+  // Si el reporte trae totales propios, se respetan y solo se completan las columnas que dejó vacías.
+  if (autoTotals && rows.length) {
+    const sumables = columns.filter((c) => c.sum === true
+      || (c.money && c.sum !== false && !NO_SUMABLE.test(String(c.header || ''))));
+    const faltan = sumables.filter((c) => !totals || totals[c.key] == null);
+    if (faltan.length) {
+      totals = { ...(totals || {}) };
+      for (const c of faltan) {
+        totals[c.key] = +rows.reduce((t, r) => t + (Number(r[c.key]) || 0), 0).toFixed(2);
+      }
+    }
+  }
   // Excel limita el nombre de hoja a 31 caracteres y prohíbe : \ / ? * [ ]
   const safeTitle = String(title || 'Hoja').replace(/[:\\/?*[\]]/g, '-').slice(0, 31);
   const ws = wb.addWorksheet(safeTitle);
@@ -159,6 +179,25 @@ function addSheet(wb, { title, columns, rows = [], meta = [], totals = null, tot
   return ws;
 }
 
+/**
+ * Fila de TOTALES para una hoja armada a mano con ExcelJS (`ws.columns` con `key`). Suma las
+ * columnas `keys` de las filas de datos ya escritas, salvo las que `excluir(row)` descarte
+ * (p. ej. las anuladas), y pone `label` en la primera columna.
+ */
+function agregarFilaTotales(ws, keys, { label = 'TOTALES', excluir = null } = {}) {
+  const sumas = Object.fromEntries(keys.map((k) => [k, 0]));
+  ws.eachRow((row, n) => {
+    if (n === 1) return;
+    if (excluir && excluir(row)) return;
+    for (const k of keys) sumas[k] += Number(row.getCell(k).value) || 0;
+  });
+  const primera = ws.columns[0].key;
+  const fila = ws.addRow({ [primera]: label, ...Object.fromEntries(keys.map((k) => [k, +sumas[k].toFixed(2)])) });
+  fila.font = { bold: true };
+  fila.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: TOTAL_FILL } };
+  return fila;
+}
+
 /** Hoja de pares etiqueta/valor (estados financieros, indicadores, resúmenes). */
 function addKeyValueSheet(wb, { title, meta = [], sections = [], notes = [] }) {
   const rows = [];
@@ -177,6 +216,7 @@ function addKeyValueSheet(wb, { title, meta = [], sections = [], notes = [] }) {
     ],
     rows,
     notes,
+    autoTotals: false,
   });
   // Resalta títulos de sección y totales (se localizan por el texto ya escrito).
   const offset = meta.length ? meta.length + 2 : 1;
@@ -229,6 +269,7 @@ module.exports = {
   newWorkbook,
   addSheet,
   addKeyValueSheet,
+  agregarFilaTotales,
   sendWorkbook,
   captureJson,
   excelHandler,

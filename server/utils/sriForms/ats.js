@@ -196,10 +196,11 @@ async function buildAts({ clinicId, range, models }) {
   // ── COMPRAS ───────────────────────────────────────────────────────────────
   // Una fila por comprobante recibido, con su detalle de retenciones y el comprobante de
   // retención emitido (el SRI cruza ese número contra el 103).
-  const comprasDocs = await PurchaseInvoice.find({
+  // Solo comprobantes del SRI (nov-2026): sin DNA ni anticipos a proveedor.
+  const comprasDocs = await PurchaseInvoice.find({ $and: [{
     clinic: clinicId,
     status: { $nin: ['ANULADA', 'POR_AUTORIZAR'] },
-  }).populate('supplier', 'ruc razonSocial tipoIdentificacion').lean();
+  }, require('../comprobantesSri').FILTRO_COMPROBANTE_SRI] }).populate('supplier', 'ruc razonSocial tipoIdentificacion').lean();
 
   const comprasPeriodo = comprasDocs.filter((p) => inRange(purchaseFiscalDate(p), range.start, range.end));
 

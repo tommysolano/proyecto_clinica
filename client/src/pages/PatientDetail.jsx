@@ -5382,7 +5382,7 @@ function SaldoAFavorChip({ patientId }) {
                 <span className="font-medium text-slate-800">{TIPO_SALDO[m.type] || m.type}</span>
                 <span className="text-slate-500"> · {fmtDateTime(m.date)}</span>
                 <span className="block text-slate-500 truncate">
-                  {m.description}{m.createdBy?.name ? ` · ${m.createdBy.name}` : ''}
+                  {m.description}{m.clinic?.name ? ` · ${m.clinic.name}` : ''}{m.createdBy?.name ? ` · ${m.createdBy.name}` : ''}
                 </span>
               </span>
               <span className={`shrink-0 font-mono font-semibold ${m.amount >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
@@ -7746,18 +7746,23 @@ function FacturasTab({ patientId }) {
   const { hasRole } = useAuth();
   const puedeCeder = hasRole('admin', 'cajero');
   const [cediendo, setCediendo] = useState(null);
+  // Saldo a favor del paciente en la empresa (nov-2026): antes solo estaba en un chip de la cabecera.
+  const [saldo, setSaldo] = useState(null);
 
   useEffect(() => {
     let vivo = true;
     (async () => {
       try {
-        const [f, p] = await Promise.all([
+        const [f, p, s] = await Promise.all([
           api.get(`/patients/${patientId}/facturas`),
           api.get(`/patients/${patientId}/prepaid`).catch(() => ({ data: [] })),
+          // Solo caja, administración y contabilidad lo leen; al resto no se le muestra.
+          api.get(`/patients/${patientId}/saldo-a-favor`).catch(() => ({ data: null })),
         ]);
         if (!vivo) return;
         setVentas(Array.isArray(f.data) ? f.data : []);
         setPaquetes(Array.isArray(p.data) ? p.data : []);
+        setSaldo(s.data);
       } catch (err) {
         toast.error(err.response?.data?.message || 'Error al cargar facturas');
       } finally {
@@ -7781,6 +7786,32 @@ function FacturasTab({ patientId }) {
 
   return (
     <div className="space-y-5">
+      {saldo && (saldo.saldo > 0.005 || (saldo.movimientos || []).length > 0) && (
+        <section className={`rounded-xl border overflow-hidden ${saldo.saldo > 0.005 ? 'border-sky-200 bg-sky-50/60' : 'border-slate-200 bg-white'}`}>
+          <header className="px-4 py-2.5 flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-sm font-semibold text-sky-900 m-0">
+              Saldo a favor: <span className="font-mono">${Number(saldo.saldo || 0).toFixed(2)}</span>
+            </h3>
+            <p className="text-[11px] text-sky-800 m-0">
+              Lo que pagó de más. Se descuenta al cobrar con la forma de pago «Saldo a favor», en cualquier sucursal.
+            </p>
+          </header>
+          <ul className="m-0 p-0 list-none divide-y divide-slate-100 bg-white border-t border-sky-100">
+            {(saldo.movimientos || []).slice(0, 10).map((m) => (
+              <li key={m._id} className="flex items-center justify-between gap-3 px-4 py-2 text-xs">
+                <span className="min-w-0">
+                  <span className="font-medium text-slate-800">{TIPO_SALDO[m.type] || m.type}</span>
+                  <span className="text-slate-500"> · {fmtDateTime(m.date)}{m.clinic?.name ? ` · ${m.clinic.name}` : ''}</span>
+                  <span className="block text-slate-500 truncate">{m.description}</span>
+                </span>
+                <span className={`shrink-0 font-mono font-semibold ${m.amount >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
+                  {m.amount >= 0 ? '+' : '−'}${Math.abs(m.amount).toFixed(2)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {paquetes.length > 0 && (
         <section className="bg-white rounded-xl border border-indigo-200 overflow-hidden">
           <header className="px-4 py-2.5 bg-indigo-50 border-b border-indigo-100">
@@ -7925,6 +7956,14 @@ function FacturasTab({ patientId }) {
                   ${Number(v.total || 0).toFixed(2)}
                   {v.discountTotal > 0 && (
                     <span className="block text-[11px] text-rose-600">Descuento -${Number(v.discountTotal).toFixed(2)}</span>
+                  )}
+                  {v.aFavor > 0.005 && (
+                    <span className="block text-[11px] text-sky-700">
+                      Pagó ${Number(v.pagado || 0).toFixed(2)} · ${Number(v.aFavor).toFixed(2)} a su favor
+                    </span>
+                  )}
+                  {v.conSaldo > 0.005 && (
+                    <span className="block text-[11px] text-sky-700">Con saldo a favor ${Number(v.conSaldo).toFixed(2)}</span>
                   )}
                 </td>
                 <td data-cell="estado" className="md:px-4 py-2.5">

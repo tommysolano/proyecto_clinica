@@ -11,7 +11,9 @@
 export const DOCTOR_SPECIALTY_ROLES = ['ginecologia', 'podologia', 'odontologia', 'odontologia_neurofocal', 'cosmetologia', 'cardiologia', 'terapeuta'];
 
 const ASSISTANT_RESTRICTED_PAGES = new Set([
-  'financial-reports', 'management-reports', 'audit-logs', 'account-mapping', 'retention-rules',
+  // 'management-reports' ya no (nov-2026): el asistente entra, pero solo ve las pestañas de
+  // ASSISTANT_REPORT_TABS (la API bloquea el resto, middleware/asistenteContable.js).
+  'financial-reports', 'audit-logs', 'account-mapping', 'retention-rules',
   'periods', 'ledger', 'trial-balance', 'period-balances', 'deferred-income', 'retention-vouchers',
   'budgets', 'cash-flow', 'accounting-health',
 ].map((page) => `/accounting/${page}`));

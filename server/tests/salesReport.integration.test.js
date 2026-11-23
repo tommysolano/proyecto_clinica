@@ -69,8 +69,13 @@ async function excelDe(handler, req) {
 const filasDe = (ws) => {
   const cab = ws.getRow(1).values;
   const out = [];
-  ws.eachRow((row, i) => { if (i > 1) out.push(row); });
-  return { col: (h) => cab.indexOf(h), filas: out };
+  let totales = null;
+  // La última fila es la de TOTALES (nov-2026): no es un documento.
+  ws.eachRow((row, i) => {
+    if (i <= 1) return;
+    if (/^TOTALES/.test(String(row.getCell(1).value || ''))) totales = row; else out.push(row);
+  });
+  return { col: (h) => cab.indexOf(h), filas: out, totales };
 };
 
 // ══════════════════════ BLOQUE H · MÉTODOS DE PAGO ══════════════════════
@@ -345,6 +350,7 @@ test('K1) el Excel tiene las 4 hojas y CONCILIA con la API', async () => {
   assert.equal(ventas.filas.length, api.documentos.length);
   const totalExcel = ventas.filas.reduce((s, r) => s + Number(r.getCell(ventas.col('Total')).value || 0), 0);
   assert.equal(+totalExcel.toFixed(2), api.resumen.total, 'Σ Ventas.total = total general');
+  assert.equal(Number(ventas.totales.getCell(ventas.col('Total')).value), api.resumen.total, 'la fila TOTALES cuadra');
 
   const det = filasDe(wb.getWorksheet('Detalle'));
   assert.equal(det.filas.length, api.detalle.length);

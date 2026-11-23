@@ -584,6 +584,26 @@ exports.list = async (req, res) => {
   if (supplier) filter.supplier = supplier;
   if (status) filter.status = status;
   if (docType) filter.docType = docType;
+  // N° de comprobante (nov-2026, contador): «217», «000000217» o «006-006-000000217», con o
+  // sin guiones. Con 10+ dígitos se busca la serie completa; con menos, el secuencial.
+  const numero = String(req.query.numero || '').replace(/\D/g, '');
+  if (numero) {
+    filter.$and.push(numero.length > 9
+      ? { serie: new RegExp(numero.split('').join('-?')) }
+      : { $or: [{ secuencial: new RegExp(`^0*${numero}$`) }, { serie: new RegExp(`-0*${numero}$`) }] });
+  }
+  // Estado de PAGO: pendiente (sin abonos), abonada (pago parcial) o pagada. Las anuladas no
+  // entran en ninguno. Neto a pagar = total − retenciones; abonado = neto − saldo.
+  const abonado = { $subtract: [{ $subtract: ['$total', { $ifNull: ['$retentionTotal', 0] }] }, { $ifNull: ['$balance', 0] }] };
+  if (req.query.pago === 'PAGADA') {
+    filter.$and.push({ status: { $ne: 'ANULADA' } }, { $or: [{ status: 'PAGADA' }, { balance: { $lte: 0.005 } }] });
+  } else if (req.query.pago === 'PENDIENTE') {
+    filter.$and.push({ status: { $nin: ['ANULADA', 'PAGADA'] } }, { balance: { $gt: 0.005 } }, { $expr: { $lte: [abonado, 0.005] } });
+  } else if (req.query.pago === 'ABONADA') {
+    filter.$and.push({ status: { $nin: ['ANULADA', 'PAGADA'] } }, { balance: { $gt: 0.005 } }, { $expr: { $gt: [abonado, 0.005] } });
+  } else if (req.query.pago === 'POR_PAGAR') {
+    filter.$and.push({ status: { $nin: ['ANULADA', 'PAGADA'] } }, { balance: { $gt: 0.005 } });
+  }
   if (startDate || endDate) {
     // DÍAS ENTEROS en hora local (oct-2026, filtro «desde / hasta» de Compras):
     // `new Date('2026-10-05')` es la medianoche UTC —las 19:00 del día anterior en

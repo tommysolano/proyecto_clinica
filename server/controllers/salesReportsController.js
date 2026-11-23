@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const ExcelJS = require('exceljs');
+const XL = require('../utils/excelReport');
 const Sale = require('../models/Sale');
 require('../models/Invoice');
 const ServiceCategory = require('../models/ServiceCategory');
@@ -196,7 +197,7 @@ exports.productReport = async (req, res) => {
 /** Excel del reporte del producto: resumen (las tres tablas) y detalle por documento. */
 exports.productReportExcel = async (req, res) => {
   try {
-    const XL = require('../utils/excelReport');
+
     const d = await datosReporteProducto(req);
     const quien = d.filtros.productos.map((p) => `${p.code ? `${p.code} - ` : ''}${p.name}`).join(', ')
       || (d.filtros.categoria ? `Categoría ${d.filtros.categoria.name}` : 'Todos los productos');
@@ -265,6 +266,21 @@ exports.report = async (req, res) => {
 
 /* ============================== EXCEL CONCILIABLE (4 hojas) ============================== */
 const MONEY = '"$"#,##0.00';
+/**
+ * Base de una LÍNEA en su columna fiscal según su tarifa (nov-2026, contador): 0% / 5% /
+ * 15% (y la histórica 12%) / no objeto / exento. Las demás columnas van en 0.
+ */
+const baseDeLinea = (tarifa, base) => {
+  const v = Math.round((Number(base) || 0) * 100) / 100;
+  const t = String(tarifa || '');
+  const out = { b0: 0, b5: 0, b15: 0, bNo: 0, bEx: 0 };
+  if (/exento/i.test(t)) out.bEx = v;
+  else if (/no objeto/i.test(t)) out.bNo = v;
+  else if (parseFloat(t) === 5) out.b5 = v;
+  else if (parseFloat(t) > 0) out.b15 = v;
+  else out.b0 = v;
+  return out;
+};
 const head = (ws, argb = 'FF047857') => {
   ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
   ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb } };
@@ -289,10 +305,10 @@ exports.exportReportExcel = async (req, res) => {
       { header: 'Autorización', key: 'aut', width: 22 },
       { header: 'Cliente', key: 'cliente', width: 28 },
       { header: 'Identificación', key: 'ident', width: 16 },
-      { header: 'Subtotal 0%', key: 's0', width: 13 },
-      { header: 'Subtotal 15%', key: 's15', width: 13 },
-      { header: 'Subtotal 5%', key: 's5', width: 12 },
-      { header: 'Subtotal otra tarifa', key: 'sOtra', width: 14 },
+      { header: 'Base 0%', key: 's0', width: 13 },
+      { header: 'Base 15%', key: 's15', width: 13 },
+      { header: 'Base 5%', key: 's5', width: 12 },
+      { header: 'Base otra tarifa', key: 'sOtra', width: 14 },
       { header: 'Exento de IVA', key: 'sEx', width: 13 },
       { header: 'No objeto de IVA', key: 'sNo', width: 14 },
       { header: 'Descuento', key: 'desc', width: 12 },
@@ -321,6 +337,10 @@ exports.exportReportExcel = async (req, res) => {
     }
     ['s0', 's15', 's5', 'sOtra', 'sEx', 'sNo', 'desc', 'sub', 'iva', 'total', 'cobrado', 'saldo']
       .forEach((k) => { ws.getColumn(k).numFmt = MONEY; });
+    // Nov-2026 (contador): fila de totales en todas las hojas; las anuladas no suman.
+    const anulada = (row) => /anulad/i.test(String(row.getCell('estado').value || ''));
+    XL.agregarFilaTotales(ws, ['s0', 's15', 's5', 'sOtra', 'sEx', 'sNo', 'desc', 'sub', 'iva', 'total', 'cobrado', 'saldo'],
+      { label: 'TOTALES (sin anuladas)', excluir: anulada });
 
     // ── Detalle: una fila por línea (el total del documento NO se repite) ────────────────
     const wd = wb.addWorksheet('Detalle');
@@ -334,9 +354,15 @@ exports.exportReportExcel = async (req, res) => {
       { header: 'Precio', key: 'precio', width: 12 },
       { header: 'Descuento', key: 'desc', width: 12 },
       { header: 'Tarifa IVA', key: 'tarifa', width: 11 },
+      { header: 'Base 0%', key: 'b0', width: 12 },
+      { header: 'Base 5%', key: 'b5', width: 12 },
+      { header: 'Base 15%', key: 'b15', width: 12 },
+      { header: 'No objeto de IVA', key: 'bNo', width: 14 },
+      { header: 'Exento de IVA', key: 'bEx', width: 13 },
       { header: 'Subtotal sin impuestos', key: 'sub', width: 16 },
       { header: 'IVA', key: 'iva', width: 12 },
       { header: 'Total línea', key: 'total', width: 13 },
+      { header: 'Estado', key: 'estado', width: 12 },
     ];
     head(wd, 'FF0369A1');
     for (const l of data.detalle) {
@@ -344,9 +370,12 @@ exports.exportReportExcel = async (req, res) => {
         factura: l.factura || `Sin factura (${l.venta})`, cat: l.categoria || '(sin categoría)', tipo: l.tipo,
         cod: l.codigo, prod: l.producto, qty: l.cantidad, precio: l.precio,
         desc: l.descuento, tarifa: l.tarifa, sub: l.subtotal, iva: l.iva, total: l.totalLinea,
+        ...baseDeLinea(l.tarifa, l.subtotal), estado: l.estado,
       });
     }
-    ['precio', 'desc', 'sub', 'iva', 'total'].forEach((k) => { wd.getColumn(k).numFmt = MONEY; });
+    ['precio', 'desc', 'b0', 'b5', 'b15', 'bNo', 'bEx', 'sub', 'iva', 'total'].forEach((k) => { wd.getColumn(k).numFmt = MONEY; });
+    XL.agregarFilaTotales(wd, ['qty', 'desc', 'b0', 'b5', 'b15', 'bNo', 'bEx', 'sub', 'iva', 'total'],
+      { label: 'TOTALES (sin anuladas)', excluir: anulada });
 
     // ── Pagos: una fila por pago real (la CxC no es un pago) ─────────────────────────────
     const wp = wb.addWorksheet('Pagos');
@@ -374,6 +403,7 @@ exports.exportReportExcel = async (req, res) => {
       });
     }
     wp.getColumn('importe').numFmt = MONEY;
+    XL.agregarFilaTotales(wp, ['importe']);
 
     // ── Resumen: totales por categoría, ítem, método y centro de costo ───────────────────
     const wr = wb.addWorksheet('Resumen');
@@ -573,6 +603,11 @@ exports.exportExcel = async (req, res) => {
       { header: 'P. Unitario', key: 'unit', width: 12 },
       { header: 'Descuento', key: 'disc', width: 12 },
       { header: 'Tarifa IVA', key: 'tarifa', width: 11 },
+      { header: 'Base 0%', key: 'b0', width: 12 },
+      { header: 'Base 5%', key: 'b5', width: 12 },
+      { header: 'Base 15%', key: 'b15', width: 12 },
+      { header: 'No objeto de IVA', key: 'bNo', width: 14 },
+      { header: 'Exento de IVA', key: 'bEx', width: 13 },
       { header: 'Subtotal sin impuestos', key: 'sub', width: 16 },
       { header: 'IVA', key: 'iva', width: 11 },
       { header: 'Total', key: 'total', width: 12 },
@@ -591,12 +626,14 @@ exports.exportExcel = async (req, res) => {
           client: s.clientName, service: it.productName, code: it.productCode,
           qty: it.quantity, unit: it.unitPrice, disc: it.discount || 0,
           tarifa: it.taxCategory === 'EXENTO' ? 'Exento' : it.taxCategory === 'NO_OBJETO' ? 'No objeto' : `${Number(it.taxRate || 0)}%`,
+          ...baseDeLinea(it.taxCategory === 'EXENTO' ? 'Exento' : it.taxCategory === 'NO_OBJETO' ? 'No objeto' : `${Number(it.taxRate || 0)}%`, it.taxBase ?? it.subtotal),
           sub: it.taxBase ?? it.subtotal, iva: it.taxAmount || 0, total: it.lineTotal || it.subtotal,
           method: metodos || s.paymentMethod,
         });
       }
     }
-    ['unit', 'disc', 'sub', 'iva', 'total'].forEach((k) => { ws.getColumn(k).numFmt = MONEY; });
+    ['unit', 'disc', 'b0', 'b5', 'b15', 'bNo', 'bEx', 'sub', 'iva', 'total'].forEach((k) => { ws.getColumn(k).numFmt = MONEY; });
+    XL.agregarFilaTotales(ws, ['qty', 'disc', 'b0', 'b5', 'b15', 'bNo', 'bEx', 'sub', 'iva', 'total']);
 
     // Hoja 2: Resumen por servicio
     const ws2 = wb.addWorksheet('Resumen por servicio');
@@ -614,6 +651,8 @@ exports.exportExcel = async (req, res) => {
       agg[k].qty += it.quantity; agg[k].total += Number(it.lineTotal || it.subtotal || 0);
     }
     Object.values(agg).sort((a, b) => b.total - a.total).forEach((r) => ws2.addRow(r));
+    ws2.getColumn('total').numFmt = MONEY;
+    XL.agregarFilaTotales(ws2, ['qty', 'total']);
 
     [ws, ws2].forEach((w) => {
       w.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };

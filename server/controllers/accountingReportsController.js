@@ -72,7 +72,9 @@ async function countPendingSalesInRange(clinicId, start, end) {
 
 /** Compras (no anuladas) cuya fecha de emisión (Date) cae en [start, end]. */
 function purchasesInRangeQuery(clinicId, start, end) {
-  return { clinic: clinicId, status: { $ne: 'ANULADA' }, docType: { $ne: 'ANTICIPO_PROVEEDOR' }, fechaEmision: { $gte: start, $lte: end } };
+  // Solo comprobantes del SRI (nov-2026): sin DNA ni anticipos (utils/comprobantesSri).
+  const { FILTRO_COMPROBANTE_SRI } = require('../utils/comprobantesSri');
+  return { $and: [{ clinic: clinicId, status: { $ne: 'ANULADA' }, fechaEmision: { $gte: start, $lte: end } }, FILTRO_COMPROBANTE_SRI] };
 }
 
 /** Objeto período serializable para las respuestas (etiqueta + metadatos). */
@@ -980,6 +982,25 @@ exports.salesByPeriod = async (req, res) => {
       { $group: { _id: groupId, count: { $sum: 1 }, subtotal: { $sum: { $subtract: ['$total', { $ifNull: ['$taxAmount', 0] }] } }, tax: { $sum: '$taxAmount' }, total: { $sum: '$total' } } },
       { $sort: { _id: 1 } },
     ]);
+    // Bases por tarifa de cada período (nov-2026, contador): 0% / 5% / 15% / no objeto / exento.
+    // Misma clave de agrupación que arriba, así cada base cae en la misma fila.
+    const { breakdownFromSale } = require('../utils/invoiceTaxBreakdown');
+    const { fiscalDeVenta } = require('../utils/columnasFiscales');
+    const ventas = await Sale.aggregate([
+      { $match: match },
+      { $project: { _k: groupId, items: 1, subtotal0: 1, subtotalExento: 1, subtotalNoObjeto: 1, taxableSubtotal: 1, taxAmount: 1, total: 1 } },
+    ]);
+    const bases = new Map();
+    for (const v of ventas) {
+      const f = fiscalDeVenta({ taxBreakdown: breakdownFromSale(v), total: v.total, taxAmount: v.taxAmount });
+      const b = bases.get(v._k) || { base0: 0, base5: 0, base15: 0, baseNoObjeto: 0, baseExento: 0 };
+      for (const k of Object.keys(b)) b[k] += f[k];
+      bases.set(v._k, b);
+    }
+    for (const r of rows) {
+      const b = bases.get(r._id) || {};
+      for (const k of ['base0', 'base5', 'base15', 'baseNoObjeto', 'baseExento']) r[k] = +(Number(b[k]) || 0).toFixed(2);
+    }
     res.json(rows);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
@@ -1512,6 +1533,31 @@ exports.accountsPayableAging = async (req, res) => {
  * (movimiento bancario, cobro/pago, factura de compra o venta) en una sola consulta
  * por modelo, no una por fila.
  */
+/**
+ * SALDOS A FAVOR POR PACIENTE (nov-2026): lo que cada paciente pagó de más y aún no usó, en
+ * toda la empresa (models/PatientCredit). El contador no tenía dónde verlo por persona.
+ */
+async function saldosAFavorDePacientes(clinicId) {
+  const { saldosPorPaciente } = require('../utils/saldoAFavor');
+  const filas = await saldosPorPaciente(clinicId);
+  if (!filas.length) return [];
+  const Patient = require('../models/Patient');
+  const pacientes = await Patient.find({ _id: { $in: filas.map((f) => f._id) } })
+    .select('firstName lastName cedula').lean();
+  const porId = new Map(pacientes.map((p) => [String(p._id), p]));
+  return filas.map((f) => {
+    const p = porId.get(String(f._id)) || {};
+    return {
+      patientId: f._id,
+      paciente: `${p.firstName || ''} ${p.lastName || ''}`.trim() || '(paciente eliminado)',
+      cedula: p.cedula || '',
+      saldo: +Number(f.saldo).toFixed(2),
+      ultimo: f.ultimo,
+      movimientos: f.movimientos,
+    };
+  });
+}
+
 exports.advancesControl = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
@@ -1580,9 +1626,16 @@ exports.advancesControl = async (req, res) => {
       (acc, r) => ({ ...acc, [r.tipo === 'CLIENTE' ? 'clientes' : 'proveedores']: acc[r.tipo === 'CLIENTE' ? 'clientes' : 'proveedores'] + r.monto }),
       { clientes: 0, proveedores: 0 }
     );
+    const saldosPacientes = await saldosAFavorDePacientes(req.clinicId);
     res.json({
       rows,
-      totals: { clientes: +totals.clientes.toFixed(2), proveedores: +totals.proveedores.toFixed(2) },
+      totals: {
+        clientes: +totals.clientes.toFixed(2),
+        proveedores: +totals.proveedores.toFixed(2),
+        saldosPacientes: +saldosPacientes.reduce((t, s) => t + s.saldo, 0).toFixed(2),
+      },
+      // Lo que cada paciente tiene HOY a su favor en la empresa, sin importar el rango de fechas.
+      saldosPacientes,
       accounts: cuentas.map((a) => ({ code: a.code, name: a.name })),
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -2009,44 +2062,46 @@ exports.cashFlowExcel = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-/** Compras y ventas (esquema SRI) en Excel. */
-exports.purchaseSalesExcel = async (req, res) => {
-  try {
-    const data = await new Promise((resolve) => { exports.purchaseSalesList(req, { json: resolve, status: () => ({ json: resolve }) }); });
-    const wb = new ExcelJS.Workbook();
-    const wv = wb.addWorksheet('Ventas');
-    wv.columns = [
-      { header: 'Fecha', key: 'date', width: 14 }, { header: 'Comprobante', key: 'doc', width: 22 },
-      { header: 'RUC/CI Cliente', key: 'id', width: 16 }, { header: 'Cliente', key: 'name', width: 30 },
-      { header: 'Base 0%', key: 'base0', width: 12 }, { header: 'Base 15%', key: 'baseGrav', width: 12 },
-      { header: 'IVA', key: 'iva', width: 12 }, { header: 'Total', key: 'total', width: 14 },
-    ];
-    wv.getRow(1).font = { bold: true };
-    (data.ventas || []).forEach((v) => {
-      const tb = v.taxBreakdown || {};
-      wv.addRow({
-        date: v.fechaEmision || (v.createdAt ? new Date(v.createdAt).toLocaleDateString('es-EC') : ''),
-        doc: `${v.estab || ''}-${v.ptoEmi || ''}-${v.secuencial || ''}`,
-        id: v.identificacionComprador, name: v.razonSocialComprador,
-        base0: tb.base0 || 0, baseGrav: tb.baseGravada || 0, iva: tb.iva ?? v.totalImpuesto ?? 0, total: v.importeTotal || 0,
-      });
-    });
-    const wc = wb.addWorksheet('Compras');
-    wc.columns = [
-      { header: 'Fecha', key: 'date', width: 14 }, { header: 'Serie', key: 'serie', width: 20 },
-      { header: 'RUC Proveedor', key: 'ruc', width: 16 }, { header: 'Proveedor', key: 'name', width: 30 },
-      { header: 'Subtotal', key: 'sub', width: 14 }, { header: 'IVA', key: 'iva', width: 12 }, { header: 'Total', key: 'total', width: 14 },
-    ];
-    wc.getRow(1).font = { bold: true };
-    (data.compras || []).forEach((c) => wc.addRow({
-      date: c.fechaEmision ? new Date(c.fechaEmision).toLocaleDateString('es-EC') : '',
+/**
+ * Compras y ventas (esquema SRI) en Excel. Nov-2026: con el desglose fiscal completo
+ * (Base 0% / 5% / 15% / No objeto / Exento / Subtotal / IVA / Total) y fila de totales.
+ */
+exports.purchaseSalesExcel = XL.excelHandler(async (req, res) => {
+  const { COLUMNAS_FISCALES, fiscalDeVenta, fiscalDeCompra } = require('../utils/columnasFiscales');
+  const data = await XL.captureJson(exports.purchaseSalesList, req);
+  const wb = XL.newWorkbook();
+  const periodo = ['Período', XL.periodLabel(req.query)];
+  XL.addSheet(wb, {
+    title: 'Ventas',
+    meta: [['Reporte', 'Ventas (esquema SRI)'], periodo],
+    columns: [
+      { header: 'Fecha', key: 'date', width: 12 }, { header: 'Comprobante', key: 'doc', width: 22 },
+      { header: 'RUC/CI Cliente', key: 'id', width: 16 }, { header: 'Cliente', key: 'name', width: 34 },
+      ...COLUMNAS_FISCALES,
+    ],
+    rows: (data.ventas || []).map((v) => ({
+      date: v.fechaEmision || (v.createdAt ? XL.xlsDate(v.createdAt) : ''),
+      doc: `${v.estab || ''}-${v.ptoEmi || ''}-${v.secuencial || ''}`,
+      id: v.identificacionComprador, name: v.razonSocialComprador,
+      ...fiscalDeVenta(v),
+    })),
+  });
+  XL.addSheet(wb, {
+    title: 'Compras',
+    meta: [['Reporte', 'Compras (esquema SRI)'], periodo],
+    columns: [
+      { header: 'Fecha', key: 'date', width: 12 }, { header: 'Serie', key: 'serie', width: 22 },
+      { header: 'RUC Proveedor', key: 'ruc', width: 16 }, { header: 'Proveedor', key: 'name', width: 34 },
+      ...COLUMNAS_FISCALES,
+    ],
+    rows: (data.compras || []).map((c) => ({
+      date: c.fechaEmision ? XL.xlsDate(c.fechaEmision) : '',
       serie: c.serie, ruc: c.supplier?.ruc, name: c.supplier?.razonSocial,
-      sub: c.subtotal || 0, iva: c.iva || 0, total: c.total || 0,
-    }));
-    [wv, wc].forEach((ws) => ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } });
-    await sendWorkbook(res, wb, `compras_ventas_${Date.now()}.xlsx`);
-  } catch (e) { res.status(500).json({ message: e.message }); }
-};
+      ...fiscalDeCompra(c),
+    })),
+  });
+  await XL.sendWorkbook(res, wb, `compras_ventas_${Date.now()}.xlsx`);
+});
 
 // ---------- Reportes SRI ----------
 exports.purchaseSalesList = async (req, res) => {
@@ -2788,6 +2843,7 @@ exports.incomeStatementExcel = XL.excelHandler(async (req, res) => {
     columns: accountTreeColumnsWith(columns),
     rows: flattenAccountTree(d.tree, 0, [], columns),
     notes: ['Cuentas jerárquicas: los grupos muestran el subtotal de sus cuentas hijas.'],
+    autoTotals: false, // sumar el árbol contaría cada cuenta dos veces (la hija y su grupo)
   });
 
   // Hoja con la lectura por columna: ventas, costos, gastos, utilidad y margen de
@@ -3031,6 +3087,25 @@ exports.advancesExcel = XL.excelHandler(async (req, res) => {
       persona: r.persona, documento: r.documento, concepto: r.concepto,
       cuenta: `${r.cuenta?.code || ''} ${r.cuenta?.name || ''}`.trim(),
       monto: r.monto,
+    })),
+  });
+  XL.addSheet(wb, {
+    title: 'Saldos a favor pacientes',
+    meta: [
+      ['Reporte', 'Saldos a favor de pacientes (toda la empresa, a la fecha)'],
+      ['Total', d.totals?.saldosPacientes || 0],
+    ],
+    columns: [
+      { header: 'Paciente', key: 'paciente', width: 36 },
+      { header: 'Cédula', key: 'cedula', width: 16 },
+      { header: 'Último movimiento', key: 'ultimo', width: 18 },
+      { header: 'Saldo a favor', key: 'saldo', width: 16, money: true },
+    ],
+    rows: (d.saldosPacientes || []).map((s) => ({
+      paciente: s.paciente,
+      cedula: s.cedula,
+      ultimo: s.ultimo ? new Date(s.ultimo).toLocaleDateString('es-EC') : '',
+      saldo: s.saldo,
     })),
   });
   await XL.sendWorkbook(res, wb, `anticipos_${Date.now()}.xlsx`);
@@ -3324,6 +3399,11 @@ const SALES_SUBREPORTS = {
     columns: [
       { header: 'Período', key: '_id', width: 18 },
       { header: 'N° ventas', key: 'count', width: 14, number: true },
+      { header: 'Base 0%', key: 'base0', width: 13, money: true },
+      { header: 'Base 5%', key: 'base5', width: 13, money: true },
+      { header: 'Base 15%', key: 'base15', width: 13, money: true },
+      { header: 'No objeto de IVA', key: 'baseNoObjeto', width: 15, money: true },
+      { header: 'Exento de IVA', key: 'baseExento', width: 14, money: true },
       { header: 'Subtotal', key: 'subtotal', width: 16, money: true },
       { header: 'IVA', key: 'tax', width: 16, money: true },
       { header: 'Total', key: 'total', width: 18, money: true },

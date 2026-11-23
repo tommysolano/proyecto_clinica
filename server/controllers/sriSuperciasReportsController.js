@@ -153,12 +153,11 @@ exports.form104Xml = async (req, res) => {
       { base: 0, base0: 0, baseGravada: 0, iva: 0 }
     );
 
-    const compras = await PurchaseInvoice.find({
+    const compras = await PurchaseInvoice.find({ $and: [{
       clinic: req.clinicId,
       status: { $ne: 'ANULADA' },
-      docType: { $ne: 'ANTICIPO_PROVEEDOR' },
       fechaEmision: { $gte: start, $lte: end },
-    });
+    }, require('../utils/comprobantesSri').FILTRO_COMPROBANTE_SRI] }); // sin DNA ni anticipos
     const c = compras.reduce(
       (acc, p) => {
         acc.base += p.subtotal || 0;
@@ -222,12 +221,11 @@ exports.form103Xml = async (req, res) => {
     const start = range.start;
     const end = range.end;
     const clinic = await Clinic.findById(req.clinicId);
-    const compras = await PurchaseInvoice.find({
+    const compras = await PurchaseInvoice.find({ $and: [{
       clinic: req.clinicId,
       status: { $ne: 'ANULADA' },
-      docType: { $ne: 'ANTICIPO_PROVEEDOR' },
       fechaEmision: { $gte: start, $lte: end },
-    });
+    }, require('../utils/comprobantesSri').FILTRO_COMPROBANTE_SRI] }); // sin DNA ni anticipos
     const byCode = {};
     for (const p of compras) {
       for (const r of p.retentions || []) {

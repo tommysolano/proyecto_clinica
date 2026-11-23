@@ -227,5 +227,5 @@ test('D7 · Reportes de Ventas descarga el MISMO Excel que la pantalla de Ventas
   // El filtro por producto del reporte SÍ acota la planilla (es lo que se está mirando).
   const soloBotox = await excelDe(salesReports.exportSalesSheetExcel,
     H.mockReq(clinicId, userId, {}, { query: { ...query, products: String(botox._id) } }));
-  assert.equal(plano(soloBotox).length, 2, 'cabecera + la única venta con Botox');
+  assert.equal(plano(soloBotox).length, 3, 'cabecera + la única venta con Botox + TOTALES');
 });

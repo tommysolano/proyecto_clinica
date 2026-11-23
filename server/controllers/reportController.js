@@ -270,6 +270,7 @@ exports.exportAppointments = async (req, res) => {
       });
     });
     ws.getColumn('totalServ').numFmt = '"$"#,##0.00';
+    require('../utils/excelReport').agregarFilaTotales(ws, ['totalServ']);
     styleHeader(ws);
 
     // Hoja de comisiones agrupadas
@@ -320,6 +321,11 @@ exports.exportAppointments = async (req, res) => {
       wsCom.addRow(row)
     );
     wsCom.getColumn('amount').numFmt = '"$"#,##0.00';
+    // Cada cita cuenta para su doctor Y para el call center que la agendó: el total es el de doctores.
+    require('../utils/excelReport').agregarFilaTotales(wsCom, ['count', 'news', 'amount'], {
+      label: 'TOTAL (doctores)',
+      excluir: (row) => row.getCell('role').value === 'call_center',
+    });
     styleHeader(wsCom);
 
     await sendWorkbook(res, wb, `citas_${Date.now()}.xlsx`);
@@ -396,6 +402,11 @@ exports.exportInvoices = async (req, res) => {
     });
     CLAVES_DESGLOSE.forEach((k) => {
       ws.getColumn(k).numFmt = '"$"#,##0.00';
+    });
+    // Nov-2026 (contador): totales sin las facturas sin validez (anuladas, no autorizadas, devueltas).
+    require('../utils/excelReport').agregarFilaTotales(ws, CLAVES_DESGLOSE, {
+      label: 'TOTALES (válidas)',
+      excluir: (row) => /ANULAD|NO_AUTORIZ|DEVUELT/i.test(String(row.getCell('estado').value || '')),
     });
     styleHeader(ws);
 
@@ -553,6 +564,7 @@ exports.exportSalesByItem = async (req, res) => {
       })
     );
     ws.getColumn('rev').numFmt = '"$"#,##0.00';
+    require('../utils/excelReport').agregarFilaTotales(ws, ['qty', 'count', 'rev']);
     styleHeader(ws);
     await sendWorkbook(res, wb, `ventas_por_item_${Date.now()}.xlsx`);
   } catch (error) {

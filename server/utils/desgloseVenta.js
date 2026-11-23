@@ -67,10 +67,10 @@ function facturaDeVenta(sale, invoice) {
 
 /** Columnas del desglose, en el orden en que las lee el contador. */
 const COLUMNAS_DESGLOSE = [
-  { header: 'Subtotal 0%', key: 'base0', width: 13 },
-  { header: 'Subtotal 15%', key: 'base15', width: 13 },
-  { header: 'Subtotal 5%', key: 'base5', width: 12 },
-  { header: 'Subtotal otra tarifa', key: 'baseOtraTarifa', width: 14 },
+  { header: 'Base 0%', key: 'base0', width: 13 },
+  { header: 'Base 15%', key: 'base15', width: 13 },
+  { header: 'Base 5%', key: 'base5', width: 12 },
+  { header: 'Base otra tarifa', key: 'baseOtraTarifa', width: 14 },
   { header: 'Exento de IVA', key: 'exento', width: 13 },
   { header: 'No objeto de IVA', key: 'noObjeto', width: 14 },
   { header: 'Descuento', key: 'descuento', width: 12 },

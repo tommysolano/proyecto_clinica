@@ -131,6 +131,11 @@ export default function PurchaseInvoices() {
   const [editId, setEditId] = useState(null); // factura REGISTRADA en edición
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  // Más filtros (nov-2026, contador): proveedor, N° de comprobante, tipo y estado de pago.
+  const [supplierFilter, setSupplierFilter] = useState('');
+  const [numeroFilter, setNumeroFilter] = useState('');
+  const [docTypeFilter, setDocTypeFilter] = useState('');
+  const [pagoFilter, setPagoFilter] = useState('');
   /**
    * FILTRO POR FECHA DE EMISIÓN (oct-2026, a pedido del contador): «desde» y
    * «hasta». Si solo se pone «desde», la lista llega hasta HOY.
@@ -169,6 +174,10 @@ export default function PurchaseInvoices() {
         params: {
           q: search || undefined,
           status: statusFilter || undefined,
+          supplier: supplierFilter || undefined,
+          numero: numeroFilter || undefined,
+          docType: docTypeFilter || undefined,
+          pago: pagoFilter || undefined,
           startDate: desde || undefined,
           // Sin «hasta», hasta la fecha actual.
           endDate: hasta || (desde ? todayEc() : undefined),
@@ -212,9 +221,9 @@ export default function PurchaseInvoices() {
     load();
   }, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setPage(1); }, [search, statusFilter, sort, desde, hasta]);
+  useEffect(() => { setPage(1); }, [search, statusFilter, sort, desde, hasta, supplierFilter, numeroFilter, docTypeFilter, pagoFilter]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); }, [search, statusFilter, sort, page, desde, hasta]);
+  useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); }, [search, statusFilter, sort, page, desde, hasta, supplierFilter, numeroFilter, docTypeFilter, pagoFilter]);
 
   // Cuentas recurrentes del proveedor: sugiere/autocompleta la cuenta de GASTO.
   useEffect(() => {
@@ -954,6 +963,26 @@ export default function PurchaseInvoices() {
           <option value="PAGADA">Pagada</option>
           <option value="ANULADA">Anulada</option>
         </select>
+        <select aria-label="Filtrar por estado de pago" value={pagoFilter} onChange={(e) => setPagoFilter(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
+          <option value="">Pagadas y por pagar</option>
+          <option value="POR_PAGAR">Por pagar (con saldo)</option>
+          <option value="PENDIENTE">Sin ningún pago</option>
+          <option value="ABONADA">Con abono parcial</option>
+          <option value="PAGADA">Pagadas</option>
+        </select>
+        <select aria-label="Filtrar por tipo de comprobante" value={docTypeFilter} onChange={(e) => setDocTypeFilter(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
+          <option value="">Todos los tipos</option>
+          {Object.entries(DOC_TYPE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+        <input aria-label="Filtrar por número de comprobante" placeholder="N° de comprobante" inputMode="numeric" value={numeroFilter} onChange={(e) => setNumeroFilter(e.target.value)} className="w-44 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono" />
+        <div className="min-w-[240px]">
+          <SearchableSelect options={suppliers} value={supplierFilter} onChange={(v) => setSupplierFilter(v || '')} getLabel={(s) => `${s.ruc} - ${s.razonSocial}`} getSearchText={(s) => `${s.ruc} ${s.razonSocial} ${s.nombreComercial || ''}`} placeholder="Todos los proveedores" searchPlaceholder="Buscar por RUC o nombre…" allowClear />
+        </div>
+        {(supplierFilter || numeroFilter || docTypeFilter || pagoFilter || statusFilter || search) && (
+          <button type="button" onClick={() => { setSupplierFilter(''); setNumeroFilter(''); setDocTypeFilter(''); setPagoFilter(''); setStatusFilter(''); setSearch(''); }} className="text-xs text-emerald-700 hover:underline bg-transparent border-none cursor-pointer">
+            Quitar filtros
+          </button>
+        )}
         <div className="flex items-center gap-2 flex-wrap">
           <label className="flex items-center gap-1.5 text-xs text-slate-500">
             Desde
@@ -1070,7 +1099,7 @@ export default function PurchaseInvoices() {
             })}
             {!list.length && (
               <tr><td colSpan={11} className="px-3 py-12 text-center text-slate-400 text-sm">
-                {search || statusFilter || desde || hasta ? 'Ninguna compra coincide con la búsqueda.' : 'Todavía no hay compras registradas.'}
+                {search || statusFilter || desde || hasta || supplierFilter || numeroFilter || docTypeFilter || pagoFilter ? 'Ninguna compra coincide con la búsqueda.' : 'Todavía no hay compras registradas.'}
               </td></tr>
             )}
           </tbody>

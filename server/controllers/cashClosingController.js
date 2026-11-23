@@ -6,6 +6,8 @@ const Sale = require('../models/Sale');
 require('../models/BankAccount'); // populate('payments.bankAccount') en el detalle
 const { createEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
+const { breakdownFromSale } = require('../utils/invoiceTaxBreakdown');
+const { COLUMNAS_FISCALES, fiscalDeVenta } = require('../utils/columnasFiscales');
 const {
   puntoRequerido, puntoDelUsuario, sucursalUsaPuntos, filtroCajaAbierta,
 } = require('../services/puntoEmision');
@@ -519,6 +521,8 @@ exports.detail = async (req, res) => {
         recommendedBy: s.recommendedBy?.name || '',
         discountReason: s.discountReason || '',
         items: (s.items || []).map((it) => ({ name: it.productName, type: TIPO_ITEM[it.category] || 'producto', qty: it.quantity, unitPrice: it.unitPrice, discount: it.discount || 0, total: it.lineTotal })),
+        // Bases por tarifa (nov-2026, contador): 0% / 5% / 15% / no objeto / exento.
+        fiscal: fiscalDeVenta({ taxBreakdown: breakdownFromSale(s), total: s.total, taxAmount: s.taxAmount }),
       })),
       movements,
     });
@@ -541,11 +545,13 @@ exports.invoicesExcel = async (req, res) => {
       identificacion: sale.clientCedula,
       pagos: sale.payments.map((p) => `${p.method}${p.cardType ? ` ${p.cardType}` : ''}${p.bank ? ` ${p.bank}` : ''}: $${Number(p.amount || 0).toFixed(2)}`).join(' + '),
       vendedor: sale.seller,
-      subtotal: sale.subtotal,
       descuento: sale.discount,
-      iva: sale.tax,
-      total: sale.total,
+      ...sale.fiscal,
     }));
+    // Totales sin las anuladas (salen en la lista para revisar su estado, pero no suman).
+    const vigentes = rows.filter((r) => r.estadoVenta !== 'anulada');
+    const totals = Object.fromEntries(['descuento', ...COLUMNAS_FISCALES.map((c) => c.key)]
+      .map((k) => [k, +vigentes.reduce((t, r) => t + (Number(r[k]) || 0), 0).toFixed(2)]));
     const wb = XL.newWorkbook();
     XL.addSheet(wb, {
       title: 'Facturas', rows,
@@ -556,10 +562,12 @@ exports.invoicesExcel = async (req, res) => {
         { header: 'Estado factura', key: 'estadoFactura' }, { header: 'Estado venta', key: 'estadoVenta' },
         { header: 'Cliente', key: 'cliente', width: 30 }, { header: 'Identificación', key: 'identificacion' },
         { header: 'Medios de pago', key: 'pagos', width: 45 }, { header: 'Registró', key: 'vendedor', width: 24 },
-        { header: 'Subtotal', key: 'subtotal', money: true }, { header: 'Descuento', key: 'descuento', money: true },
-        { header: 'IVA', key: 'iva', money: true }, { header: 'Total', key: 'total', money: true },
+        { header: 'Descuento', key: 'descuento', money: true },
+        ...COLUMNAS_FISCALES,
       ],
-      notes: ['Incluye las facturas vinculadas a las ventas del detalle, también las anuladas; revise sus estados.'],
+      totals,
+      totalsLabel: 'TOTALES (sin anuladas)',
+      notes: ['Incluye las facturas vinculadas a las ventas del detalle, también las anuladas; revise sus estados. Los totales no suman las anuladas.'],
     });
     await XL.sendWorkbook(res, wb, `facturas_caja_${req.params.id}.xlsx`);
   } catch (e) { res.status(e.status || 500).json({ message: e.message }); }

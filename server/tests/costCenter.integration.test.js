@@ -403,8 +403,9 @@ test('16) el EXCEL usa el mismo filtro y concilia con la API', async () => {
   const wb = await excelDe(reports.exportReportExcel, H.mockReq(s.clinicId, s.userId, {}, { query }));
   const ws = wb.getWorksheet('Ventas');
 
-  // Cabecera + 1 documento (el otro centro NO está en el archivo).
-  assert.equal(ws.rowCount, 2, 'el Excel trae los mismos documentos que la API');
+  // Cabecera + 1 documento (el otro centro NO está en el archivo) + fila de TOTALES (nov-2026).
+  assert.equal(ws.rowCount, 3, 'el Excel trae los mismos documentos que la API');
+  assert.match(String(ws.getRow(3).getCell(1).value), /^TOTALES/);
   assert.equal(api.documentos.length, 1);
   const fila = ws.getRow(2).values;
   assert.ok(fila.includes('CC-ES - Estética'), 'con el nombre del centro');
