@@ -86,6 +86,7 @@ exports.emitFromPurchase = async (req, res) => {
     const inv = await PurchaseInvoice.findOne({ _id: req.params.purchaseId, clinic: req.clinicId });
     if (!inv) return res.status(404).json({ message: 'Compra no encontrada' });
     if (inv.status === 'ANULADA') return res.status(400).json({ message: 'La compra está anulada' });
+    if (inv.docType === 'NO_AUTORIZADO') return res.status(400).json({ message: 'Un documento no autorizado no admite comprobante de retención' });
     if (!inv.retentions?.length || !(inv.retentionTotal > 0)) {
       return res.status(400).json({ message: 'La compra no tiene retenciones que declarar' });
     }

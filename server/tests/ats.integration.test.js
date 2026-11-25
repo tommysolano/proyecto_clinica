@@ -246,3 +246,155 @@ test('avisa ANTES de generar el XML cuando falta un dato que el SRI exige', asyn
   assert.equal(forzado.statusCode, 200);
   assert.match(String(forzado.payload), /<iva>/);
 });
+
+// ───────────── Corregir la autorización desde el ATS (nov-2026) ─────────────
+test('el aviso identifica la compra (proveedor, tipo, fecha) y la autorización se corrige sin recontabilizar', async () => {
+  const { clinicId, userId, gasto } = await setup();
+  const { year, month } = periodoActual();
+  const PurchaseInvoice = require('../models/PurchaseInvoice');
+  const sup = await H.makeSupplier(clinicId, { ruc: '0912345678001', razonSocial: 'PROVEEDOR SIN AUT' });
+  const creada = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: H.docDate(0), serie: '001-001-000000066', autorizacion: '',
+    items: [{ description: 'Insumos', lineType: 'GASTO', quantity: 1, unitPrice: 50, ivaRate: 15, subtotal: 50, account: gasto._id }],
+  }));
+  const compraId = String(creada.payload._id);
+  const antes = await PurchaseInvoice.findById(compraId).lean();
+
+  const q = { query: { periodType: 'MONTHLY', year, month } };
+  const prev = await H.runController(reports.atsPreview, H.mockReq(clinicId, userId, {}, q));
+  const obs = prev.payload.observaciones.find((o) => o.campo === 'autorizacion');
+  assert.ok(obs, JSON.stringify(prev.payload.observaciones));
+  assert.equal(obs.compraId, compraId, 'el aviso lleva el id de la compra para corregirla');
+  // La serie sola se repite entre proveedores: el texto debe decir de quién es.
+  assert.match(obs.texto, /PROVEEDOR SIN AUT/);
+  assert.match(obs.texto, /Factura 001-001-000000066/);
+
+  // Longitud inválida ⇒ 400 y no se guarda.
+  const mala = await H.runController(purchase.updateSriData, H.mockReq(clinicId, userId, { autorizacion: '12345' }, { params: { id: compraId } }));
+  assert.equal(mala.statusCode, 400);
+
+  // Aunque tenga retención emitida (la edición completa lo prohíbe), la autorización se corrige.
+  await PurchaseInvoice.updateOne({ _id: compraId }, { $set: { retentionNumber: '001-001-000000009' } });
+  const clave = '0101202601091234567800110010010000000661234567811';
+  const ok = await H.runController(purchase.updateSriData, H.mockReq(clinicId, userId, { autorizacion: clave }, { params: { id: compraId } }));
+  assert.equal(ok.statusCode, 200, JSON.stringify(ok.payload));
+
+  const despues = await PurchaseInvoice.findById(compraId).lean();
+  assert.equal(despues.autorizacion, clave);
+  assert.equal(String(despues.journalEntry), String(antes.journalEntry), 'no se reversa ni se recrea el asiento');
+  assert.equal(despues.total, antes.total);
+
+  const post = await H.runController(reports.atsPreview, H.mockReq(clinicId, userId, {}, q));
+  assert.ok(!post.payload.observaciones.some((o) => o.compraId === compraId && o.campo === 'autorizacion'), 'el aviso desaparece');
+  assert.equal(post.payload.compras.find((c) => c._id === compraId).autorizacion, clave, 'el XML usa la nueva autorización');
+
+  // Una clave de acceso (49) no puede repetirse en otra compra.
+  const otra = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: H.docDate(0), serie: '001-001-000000067', autorizacion: '',
+    items: [{ description: 'Insumos', lineType: 'GASTO', quantity: 1, unitPrice: 10, ivaRate: 15, subtotal: 10, account: gasto._id }],
+  }));
+  const dup = await H.runController(purchase.updateSriData, H.mockReq(clinicId, userId, { autorizacion: clave }, { params: { id: String(otra.payload._id) } }));
+  assert.equal(dup.statusCode, 409);
+});
+
+// ───── Compra de OTRO centro de costo: el ATS la incluye, Compras avisa (nov-2026) ─────
+test('una compra de otro centro no sale en el listado del centro, pero se avisa y se abre por id', async () => {
+  const { clinicId, userId, gasto } = await setup();
+  const PurchaseInvoice = require('../models/PurchaseInvoice');
+  const mongoose = require('mongoose');
+  const sup = await H.makeSupplier(clinicId, { ruc: '0912345678001', razonSocial: 'LABORATORIO PROV' });
+  const creada = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: H.docDate(0), serie: '001-001-000002739',
+    autorizacion: '1133293678',
+    items: [{ description: 'Reactivos', lineType: 'GASTO', quantity: 1, unitPrice: 79, ivaRate: 0, subtotal: 79, account: gasto._id }],
+  }));
+  const id = creada.payload._id;
+  const ccCentral = new mongoose.Types.ObjectId();
+  const ccLab = new mongoose.Types.ObjectId();
+  await PurchaseInvoice.updateOne({ _id: id }, { $set: { costCenter: ccLab, 'items.$[].costCenter': ccLab } });
+
+  // Sucursal ligada a CC CENTRAL buscando la serie de una compra de Laboratorio.
+  const reqCentral = (extra) => Object.assign(H.mockReq(clinicId, userId, {}, extra), { costCenterScope: ccCentral, userClinicId: clinicId });
+  const lista = await H.runController(purchase.list, reqCentral({ query: { q: '001-001-000002739' } }));
+  assert.equal(lista.payload.total, 0, 'el listado del centro no la muestra');
+  assert.equal(lista.payload.otrosCentros, 1, 'pero avisa que existe en otro centro');
+
+  const porNumero = await H.runController(purchase.list, reqCentral({ query: { numero: '2739' } }));
+  assert.equal(porNumero.payload.otrosCentros, 1);
+
+  // Sin búsqueda no se calcula (consulta extra innecesaria).
+  const sinBusqueda = await H.runController(purchase.list, reqCentral({ query: {} }));
+  assert.equal(sinBusqueda.payload.otrosCentros, 0);
+
+  // El detalle por id se abre igual (lo enlaza el ATS).
+  const det = await H.runController(purchase.get, reqCentral({ params: { id: String(id) } }));
+  assert.equal(det.statusCode || 200, 200, JSON.stringify(det.payload));
+  assert.equal(String(det.payload._id), String(id));
+});
+
+// ───── Documento NO AUTORIZADO: se contabiliza pero no entra a ningún reporte del SRI (nov-2026) ─────
+test('un documento no autorizado se contabiliza, no lleva autorización ni retención y no sale en ATS/103/104', async () => {
+  const { clinicId, userId, gasto } = await setup();
+  const { year, month } = periodoActual();
+  const PurchaseInvoice = require('../models/PurchaseInvoice');
+  const { compute103 } = require('../utils/sriForms/compute103');
+  const { compute104 } = require('../utils/sriForms/compute104');
+  const sup = await H.makeSupplier(clinicId, { ruc: '0912345678001', razonSocial: 'PROVEEDOR RECIBO' });
+  const linea = { description: 'Movilización', lineType: 'GASTO', quantity: 1, unitPrice: 40, ivaRate: 0, subtotal: 40, account: gasto._id };
+
+  // La autorización que llegue se descarta: este documento no la tiene.
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, docType: 'NO_AUTORIZADO', fechaEmision: H.docDate(0), serie: 'REC-0045', autorizacion: '1234567890', items: [linea],
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  const inv = await PurchaseInvoice.findById(r.payload._id).lean();
+  assert.equal(inv.docType, 'NO_AUTORIZADO');
+  assert.equal(inv.autorizacion, '');
+  assert.ok(inv.journalEntry, 'sí se contabiliza');
+  assert.equal(inv.balance, 40, 'queda por pagar');
+
+  // Aunque su número tenga forma de serie del SRI, el tipo lo deja fuera.
+  await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, docType: 'NO_AUTORIZADO', fechaEmision: H.docDate(0), serie: '001-001-000000999', items: [linea],
+  }));
+
+  const q = { query: { periodType: 'MONTHLY', year, month } };
+  const prev = await H.runController(reports.atsPreview, H.mockReq(clinicId, userId, {}, q));
+  assert.equal(prev.payload.compras.length, 0, 'no entra al ATS');
+  assert.equal((prev.payload.observaciones || []).length, 0, 'ni genera avisos de autorización');
+
+  const start = new Date(year, month - 1, 1);
+  const end = new Date(year, month, 0, 23, 59, 59, 999);
+  const f103 = await compute103({ clinicId, range: { start, end, year, month } });
+  assert.equal(f103.totals.comprasBase, 0, 'no entra al 103');
+  const f104 = await compute104({ clinicId, range: { start, end, year, month } });
+  assert.equal(f104.totals.comprasBase, 0, 'no entra al 104');
+
+  // Retención: no se admite.
+  const conRet = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, docType: 'NO_AUTORIZADO', fechaEmision: H.docDate(0), serie: 'REC-0046',
+    items: [{ ...linea, retentions: [{ code: '332', type: 'RENTA' }] }],
+  }));
+  assert.equal(conRet.statusCode, 400, JSON.stringify(conRet.payload));
+  assert.match(conRet.payload.message, /no admite retenciones/);
+});
+
+test('una compra importada se puede reclasificar como documento no autorizado sin recontabilizarla', async () => {
+  const { clinicId, userId, gasto } = await setup();
+  const PurchaseInvoice = require('../models/PurchaseInvoice');
+  const sup = await H.makeSupplier(clinicId, { ruc: '0912345678001', razonSocial: 'PROVEEDOR DNA' });
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, docType: 'NOTA_DEBITO_REC', fechaEmision: H.docDate(0), serie: 'SO274785',
+    items: [{ description: 'Gasto', lineType: 'GASTO', quantity: 1, unitPrice: 20, ivaRate: 0, subtotal: 20, account: gasto._id }],
+  }));
+  const id = String(r.payload._id);
+  await PurchaseInvoice.updateOne({ _id: id }, { $set: { sourceModel: 'ContificoRecord', journalEntry: null, status: 'PAGADA', balance: 0, paid: true } });
+  const d = (await PurchaseInvoice.findById(id)).toObject();
+  const body = { ...JSON.parse(JSON.stringify(d)), docType: 'NO_AUTORIZADO', fechaEmision: new Date(String(d.fechaEmision.toISOString()).slice(0, 10)).toISOString() };
+  const ed = await H.runController(purchase.update, H.mockReq(clinicId, userId, body, { params: { id } }));
+  assert.equal(ed.statusCode || 200, 200, JSON.stringify(ed.payload));
+  const inv = await PurchaseInvoice.findById(id).lean();
+  assert.equal(inv.docType, 'NO_AUTORIZADO');
+  assert.equal(inv.journalEntry, null, 'sin asiento nuevo');
+  assert.equal(inv.status, 'PAGADA');
+});

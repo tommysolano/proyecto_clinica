@@ -242,7 +242,7 @@ export default function SriReports() {
           {tab === 'VC' && <PurchasesSales data={data} />}
           {tab === 'F104' && <Form104 data={data} />}
           {tab === 'F103' && <RetentionTable title="Retenciones en la fuente (Form. 103)" data={data} cols={[['code', 'Código'], ['description', 'Descripción'], ['base', 'Base', true], ['amount', 'Valor retenido', true]]} />}
-          {tab === 'ATS' && <AtsPreview data={data} />}
+          {tab === 'ATS' && <AtsPreview data={data} onReload={load} />}
           {tab === 'RET' && <RetentionTable title="Retenciones recibidas" data={data} cols={[['type', 'Tipo'], ['sriCode', 'Código SRI'], ['count', '# Comprob.'], ['base', 'Base', true], ['value', 'Valor', true]]} />}
           {tab === 'RDEP' && <Rdep data={data} />}
         </div>
@@ -374,7 +374,66 @@ function Form104({ data }) {
  * por establecimiento y anulados) para revisarlo antes de generar el XML. Es lo mismo que
  * lleva el archivo, con los códigos del SRI a la vista para poder cotejarlos.
  */
-function AtsPreview({ data }) {
+/**
+ * Una observación del ATS. Si falta la AUTORIZACIÓN se corrige aquí mismo (PATCH
+ * /purchase-invoices/:id/datos-sri, que no recontabiliza nada) y el ATS se regenera. El resto
+ * de observaciones (RUC del proveedor, retención sin emitir…) abren la compra en otra pestaña.
+ */
+function AtsObservacion({ obs, onSaved }) {
+  const [valor, setValor] = useState('');
+  const [saving, setSaving] = useState(false);
+  const editable = obs.campo === 'autorizacion' && obs.compraId;
+  const len = valor.length;
+  const valido = [10, 37, 49].includes(len);
+
+  const guardar = async () => {
+    if (!valido || saving) return;
+    setSaving(true);
+    try {
+      await api.patch(`/purchase-invoices/${obs.compraId}/datos-sri`, { autorizacion: valor });
+      toast.success(`Autorización guardada en ${obs.serie}`);
+      onSaved?.();
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'No se pudo guardar la autorización');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <li className="py-1.5">
+      <div>{obs.texto}</div>
+      {obs.compraId && (
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <span className="text-[11px] text-amber-700" title="En Compras, esta compra aparece al elegir este centro o «Toda la empresa» en el selector de Contabilidad.">
+            Centro: <b>{obs.centroCosto || 'sin centro de costo'}</b>
+          </span>
+          {editable && (
+            <>
+              <input
+                value={valor}
+                onChange={(e) => setValor(e.target.value.replace(/\D/g, '').slice(0, 49))}
+                onKeyDown={(e) => { if (e.key === 'Enter') guardar(); }}
+                placeholder="N° de autorización (10 o 49 dígitos)"
+                inputMode="numeric"
+                className="border border-amber-300 bg-white rounded-lg px-2 py-1 font-mono text-[11px] w-full sm:w-[26rem]"
+              />
+              <span className={`text-[11px] ${len && !valido ? 'text-rose-600' : 'text-amber-700'}`}>{len} díg.</span>
+              <button
+                onClick={guardar}
+                disabled={!valido || saving}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ${valido && !saving ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+              >{saving ? 'Guardando…' : 'Guardar'}</button>
+            </>
+          )}
+          <Link to={`/accounting/purchases/${obs.compraId}`} target="_blank" rel="noopener noreferrer" className="text-[11px] text-indigo-700 hover:underline">
+            Ver compra
+          </Link>
+        </div>
+      )}
+    </li>
+  );
+}
+
+function AtsPreview({ data, onReload }) {
   const compras = data?.compras || [];
   const ventas = data?.ventas || [];
   const anulados = data?.anulados || [];
@@ -383,6 +442,8 @@ function AtsPreview({ data }) {
   const pending = data?.salesPending || 0;
   const inf = data?.informante || {};
   const errores = data?.errores || [];
+  // Backend viejo (sin `observaciones`): se muestran los textos como antes.
+  const observaciones = data?.observaciones || errores.map((texto) => ({ texto }));
 
   return (
     <>
@@ -400,11 +461,14 @@ function AtsPreview({ data }) {
             </div>
           ))}
         </div>
-        {errores.length > 0 && (
+        {observaciones.length > 0 && (
           <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-            <b>{errores.length} dato(s) que el SRI rechazaría:</b>
-            <ul className="list-disc ml-5 mt-1 space-y-0.5 max-h-40 overflow-y-auto">
-              {errores.map((e, i) => <li key={i}>{e}</li>)}
+            <b>{observaciones.length} dato(s) que el SRI rechazaría:</b>
+            {observaciones.some((o) => o.campo === 'autorizacion') && (
+              <span className="ml-1">la autorización se puede escribir aquí mismo; se guarda en la compra sin tocar su asiento.</span>
+            )}
+            <ul className="list-disc ml-5 mt-1 divide-y divide-amber-200 max-h-96 overflow-y-auto">
+              {observaciones.map((o, i) => <AtsObservacion key={`${o.compraId || 'inf'}-${o.campo || ''}-${i}`} obs={o} onSaved={onReload} />)}
             </ul>
           </div>
         )}
@@ -416,7 +480,9 @@ function AtsPreview({ data }) {
             <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Comprobante</th>
             <th className="px-2 py-1 text-center" title="Código de sustento (tabla 5 del SRI)">Sust.</th>
             <th className="px-2 py-1 text-center" title="Tipo de identificación: 01 RUC, 02 cédula, 03 pasaporte">Tipo ID</th>
-            <th className="px-2 py-1 text-left">Proveedor</th><th className="px-2 py-1 text-left">Identificación</th>
+            <th className="px-2 py-1 text-left">Proveedor</th>
+            <th className="px-2 py-1 text-left" title="El ATS es por RUC: incluye todos los centros. El listado de Compras de cada sucursal muestra solo el suyo.">Centro</th>
+            <th className="px-2 py-1 text-left">Identificación</th>
             <th className="px-2 py-1 text-right">Base gravada</th><th className="px-2 py-1 text-right">Base 0%</th>
             <th className="px-2 py-1 text-right">IVA</th><th className="px-2 py-1 text-right">Ret. IVA</th>
             <th className="px-2 py-1 text-right">Ret. Renta</th><th className="px-2 py-1 text-left">N° retención</th>
@@ -430,6 +496,7 @@ function AtsPreview({ data }) {
                 <td className="px-2 py-1 text-center font-mono">{c.codSustento}</td>
                 <td className="px-2 py-1 text-center font-mono">{c.tpIdProv}</td>
                 <td className="px-2 py-1">{c._proveedor || '—'}</td>
+                <td className="px-2 py-1 whitespace-nowrap text-slate-500">{c._centroCosto || <span className="text-amber-600">sin centro</span>}</td>
                 <td className="px-2 py-1 font-mono">{c.idProv || <span className="text-rose-600">falta</span>}</td>
                 <td className="px-2 py-1 text-right font-mono">{fmt(c.baseImpGrav)}</td>
                 <td className="px-2 py-1 text-right font-mono">{fmt(c.baseImponible)}</td>
@@ -440,10 +507,10 @@ function AtsPreview({ data }) {
                 <td className="px-2 py-1 text-right font-mono">{fmt(c._total)}</td>
               </tr>
             ))}
-            {compras.length === 0 && <tr><td colSpan={13} className="px-2 py-4 text-center text-slate-400">Sin compras en el período.</td></tr>}
+            {compras.length === 0 && <tr><td colSpan={14} className="px-2 py-4 text-center text-slate-400">Sin compras en el período.</td></tr>}
           </tbody>
           {compras.length > 0 && <tfoot className="bg-slate-100 font-bold"><tr>
-            <td colSpan={6} className="px-2 py-1 text-right">TOTALES</td>
+            <td colSpan={7} className="px-2 py-1 text-right">TOTALES</td>
             <td className="px-2 py-1 text-right font-mono">{fmt(t.comprasBaseGrav)}</td>
             <td className="px-2 py-1 text-right font-mono">{fmt(t.comprasBase0)}</td>
             <td className="px-2 py-1 text-right font-mono">{fmt(t.comprasIva)}</td>

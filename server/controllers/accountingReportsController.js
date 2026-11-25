@@ -2687,6 +2687,7 @@ exports.atsExcel = XL.excelHandler(async (req, res) => {
       { header: 'Tipo ID', key: 'tpIdProv', width: 8 },
       { header: 'RUC / Cédula', key: 'idProv', width: 16 },
       { header: 'Proveedor', key: '_proveedor', width: 34 },
+      { header: 'Centro de costo', key: '_centroCosto', width: 22 },
       { header: 'Autorización', key: 'autorizacion', width: 26 },
       { header: 'Base no grava IVA', key: 'baseNoGraIva', width: 16, money: true },
       { header: 'Base 0%', key: 'baseImponible', width: 14, money: true },

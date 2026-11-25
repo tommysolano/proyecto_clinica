@@ -33,7 +33,7 @@ export const PAY_METHOD_LABEL = { EFECTIVO: 'Efectivo', TRANSFERENCIA: 'Transfer
 export const DOC_TYPE_LABEL = {
   FACTURA: 'Factura', NOTA_VENTA: 'Nota de venta', LIQUIDACION: 'Liquidación de compra',
   NOTA_DEBITO_REC: 'Nota de débito', NOTA_CREDITO_REC: 'Nota de crédito',
-  ANTICIPO_PROVEEDOR: 'Anticipo a proveedor',
+  ANTICIPO_PROVEEDOR: 'Anticipo a proveedor', NO_AUTORIZADO: 'Documento no autorizado',
 };
 
 // Estados en los que una compra ya contabilizada admite corrección. Que esté PAGADA

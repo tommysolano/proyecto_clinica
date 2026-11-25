@@ -20,4 +20,5 @@ test('los DNA y los anticipos a proveedor NO entran', () => {
   assert.equal(esComprobanteSri({ docType: 'NOTA_DEBITO_REC', serie: '202602000001' }), false);
   assert.equal(esComprobanteSri({ docType: 'NOTA_DEBITO_REC', serie: '0002410' }), false);
   assert.equal(esComprobanteSri({ docType: 'ANTICIPO_PROVEEDOR', serie: '001-001-000000010' }), false);
+  assert.equal(esComprobanteSri({ docType: 'NO_AUTORIZADO', serie: '001-001-000000010' }), false, 'documento no autorizado');
 });

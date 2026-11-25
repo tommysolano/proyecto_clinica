@@ -18,6 +18,9 @@ import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../../utils/id
 import { vatRateOptions } from '../../constants/vatRates';
 import DateInput from '../../components/DateInput';
 import { todayEc } from '../../utils/date';
+import { setCompanyScope } from '../../utils/accountingScope';
+
+const BUSQUEDA_HANDOFF = 'compras:busqueda-tras-cambiar-alcance';
 
 const PAGE_SIZE = 100;
 // Cuentas elegibles como destino de una línea de compra: gasto, costo, inventario o activo.
@@ -102,6 +105,23 @@ const parseComprobante = (v) => {
   return { estab: digits.slice(0, 3), ptoEmi: digits.slice(3, 6), secuencial: digits.slice(6) };
 };
 
+/**
+ * Cambio de tipo en el formulario. «Documento no autorizado» usa un número LIBRE (va en
+ * `serie`) y no lleva autorización; al volver a un tipo del SRI se rearma el 001-001-….
+ */
+const cambiarTipoDoc = (f, docType) => {
+  const eraNoAut = f.docType === 'NO_AUTORIZADO';
+  const esNoAut = docType === 'NO_AUTORIZADO';
+  if (esNoAut && !eraNoAut) {
+    return { ...f, docType, serie: (f.secuencial ? joinComprobante(f.estab, f.ptoEmi, f.secuencial) : f.serie) || '', estab: '', ptoEmi: '', secuencial: '', autorizacion: '', claveAcceso: '' };
+  }
+  if (eraNoAut && !esNoAut) {
+    const partes = /^\d{3}-?\d{3}-?\d{1,9}$/.test(String(f.serie || '').trim()) ? parseComprobante(f.serie) : { estab: '001', ptoEmi: '001', secuencial: '' };
+    return { ...f, docType, ...partes, serie: '' };
+  }
+  return { ...f, docType };
+};
+
 export default function PurchaseInvoices() {
   const { hasRole } = useAuth();
   const [list, setList] = useState([]);
@@ -129,11 +149,17 @@ export default function PurchaseInvoices() {
   const [form, setForm] = useState(EMPTY);
   const [authorizeId, setAuthorizeId] = useState(null);
   const [editId, setEditId] = useState(null); // factura REGISTRADA en edición
-  const [search, setSearch] = useState('');
+  // Búsqueda que viene de «Ver en Toda la empresa»: cambiar el alcance vuelve a montar la
+  // pantalla y, sin esto, el contador perdía lo que había escrito.
+  const [handoff] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem(BUSQUEDA_HANDOFF) || 'null') || {}; } catch { return {}; }
+  });
+  useEffect(() => { try { sessionStorage.removeItem(BUSQUEDA_HANDOFF); } catch { /* sin almacenamiento */ } }, []);
+  const [search, setSearch] = useState(handoff.search || '');
   const [statusFilter, setStatusFilter] = useState('');
   // Más filtros (nov-2026, contador): proveedor, N° de comprobante, tipo y estado de pago.
   const [supplierFilter, setSupplierFilter] = useState('');
-  const [numeroFilter, setNumeroFilter] = useState('');
+  const [numeroFilter, setNumeroFilter] = useState(handoff.numero || '');
   const [docTypeFilter, setDocTypeFilter] = useState('');
   const [pagoFilter, setPagoFilter] = useState('');
   /**
@@ -145,6 +171,9 @@ export default function PurchaseInvoices() {
   const [sort, setSort] = useState('fecha_desc');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  // Compras que coinciden con la búsqueda pero son de OTRO centro de costo (el listado de la
+  // sucursal solo muestra el suyo; el ATS las incluye todas).
+  const [otrosCentros, setOtrosCentros] = useState(0);
   const [pendingTotal, setPendingTotal] = useState(0); // total real de "por autorizar" (todas las páginas)
   const [newProductItemUid, setNewProductItemUid] = useState(null); // línea que dispara "Nuevo producto"
   const [journalInv, setJournalInv] = useState(null); // factura cuyos asientos se consultan (solo lectura)
@@ -187,6 +216,7 @@ export default function PurchaseInvoices() {
       if (reqId !== reqRef.current) return;
       setList(r.data?.items || r.data || []);
       setTotal(r.data?.total ?? (r.data?.items?.length || 0));
+      setOtrosCentros(Number(r.data?.otrosCentros) || 0);
       loadPendingCount();
     } catch (e) { if (reqId === reqRef.current) toast.error(e.response?.data?.message || 'Error'); }
   };
@@ -611,12 +641,17 @@ export default function PurchaseInvoices() {
     if (authorizeId && !form.costCenter) return fail('Selecciona el centro de costo de la factura para contabilizarla');
     // El N° de comprobante ahora es un solo campo (001-001-000000123): exige el secuencial
     // salvo que la factura ya traiga una serie (documentos importados/editados).
-    if (!form.serie && !(form.secuencial || '').trim()) return fail('Ingresa el N° de comprobante (formato 001-001-000000123)');
+    const noAutorizado = form.docType === 'NO_AUTORIZADO';
+    if (noAutorizado && !String(form.serie || '').trim()) return fail('Ingresa el número del documento');
+    if (!noAutorizado && !form.serie && !(form.secuencial || '').trim()) return fail('Ingresa el N° de comprobante (formato 001-001-000000123)');
     if (!form.fechaEmision) return fail('Ingresa la fecha de emisión del comprobante');
     // Ignora líneas placeholder totalmente vacías (p.ej. la línea inicial de una sección
     // recién activada que no se llegó a usar) para no bloquear el guardado.
     const cleanItems = form.items.filter(lineHasData);
     if (!cleanItems.length) return fail('Agrega al menos una línea (producto, gasto o activo fijo)');
+    if (noAutorizado && cleanItems.some((it) => lineRetList(it).some((r) => r.rule || r.code))) {
+      return fail('Un documento no autorizado no admite retenciones: quítalas de las líneas.');
+    }
     for (const it of cleanItems) {
       if (it.lineType === 'INVENTARIO' && !it.product) return fail('En productos/inventario, selecciona el producto en cada línea');
       // El descuento es un MONTO en $, no un %: si supera cantidad × precio la línea queda negativa.
@@ -644,10 +679,13 @@ export default function PurchaseInvoices() {
    */
   const enviar = async (extra = {}, okMsg = 'Guardada') => {
     try {
-      const serie = form.serie || `${form.estab}-${form.ptoEmi}-${form.secuencial}`;
+      const noAutorizado = form.docType === 'NO_AUTORIZADO';
+      const serie = noAutorizado ? String(form.serie || '').trim() : (form.serie || `${form.estab}-${form.ptoEmi}-${form.secuencial}`);
       const items = buildItemsPayload(form.items.filter(lineHasData));
       await sendInvoice({
         ...form, items, serie,
+        // Documento no autorizado: número libre, sin autorización ni partes de serie del SRI.
+        ...(noAutorizado ? { estab: '', ptoEmi: '', secuencial: '', autorizacion: '', claveAcceso: '' } : {}),
         costCenter: form.costCenter || null,
         fechaVencimiento: form.fechaVencimiento || null,
         fechaEmision: new Date(form.fechaEmision),
@@ -1105,6 +1143,22 @@ export default function PurchaseInvoices() {
           </tbody>
         </table>
        </div>
+        {otrosCentros > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 border-t border-amber-200 bg-amber-50 text-sm text-amber-900">
+            <span>
+              Hay <b>{otrosCentros}</b> compra(s) más que coinciden con la búsqueda en <b>otros centros de costo</b> (o sin centro).
+              {' '}El ATS y los formularios del SRI sí las incluyen, porque se declaran por RUC.
+            </span>
+            <button
+              onClick={() => {
+                try { sessionStorage.setItem(BUSQUEDA_HANDOFF, JSON.stringify({ search, numero: numeroFilter })); } catch { /* sin almacenamiento */ }
+                setCompanyScope(true);
+              }}
+              className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-semibold">
+              Ver en «Toda la empresa»
+            </button>
+          </div>
+        )}
         {/* El pie queda FUERA del scroll horizontal: si no, el contador y la
             paginación se iban de la vista al desplazar la tabla. */}
         <div className="flex items-center justify-between gap-3 px-3 py-2.5 border-t border-slate-100 text-sm text-slate-600">
@@ -1155,6 +1209,13 @@ export default function PurchaseInvoices() {
               <Field label="Proveedor" required className="col-span-2 md:col-span-3">
                 <SearchableSelect options={suppliers} value={form.supplier} onChange={onSelectSupplier} getLabel={(s) => `${s.ruc} - ${s.razonSocial}`} getSearchText={(s) => `${s.ruc} ${s.razonSocial} ${s.nombreComercial || ''}`} placeholder="Seleccione un proveedor…" searchPlaceholder="Buscar por RUC o nombre…" />
               </Field>
+              {form.docType === 'NO_AUTORIZADO' ? (
+              <Field label="N° de documento" required className="col-span-2 md:col-span-2" hint="Número libre (recibo, documento interno…). No sigue el formato del SRI.">
+                <input required placeholder="Ej.: REC-0045" maxLength={40} value={form.serie || ''}
+                  onChange={(e) => setForm((f) => ({ ...f, serie: e.target.value, estab: '', ptoEmi: '', secuencial: '' }))}
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono" />
+              </Field>
+              ) : (
               <Field label="N° de comprobante" required className="col-span-2 md:col-span-2" hint="Formato: 3 dígitos - 3 dígitos - 9 dígitos">
                 <input required inputMode="numeric" placeholder="___-___-_________" value={joinComprobante(form.estab, form.ptoEmi, form.secuencial) || form.serie || ''} onChange={(e) => {
                   let value = e.target.value;
@@ -1167,9 +1228,10 @@ export default function PurchaseInvoices() {
                 }} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono" />
                 <p className="text-[11px] text-slate-500 mt-1">{`${form.estab || ''}${form.ptoEmi || ''}${form.secuencial || ''}`.replace(/\D/g, '').length} de 15 dígitos</p>
               </Field>
+              )}
               <Field label="Tipo">
-                <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white">
-                  <option value="FACTURA">Factura</option><option value="NOTA_VENTA">Nota de venta</option><option value="LIQUIDACION">Liquidación</option><option value="NOTA_DEBITO_REC">Nota débito</option><option value="NOTA_CREDITO_REC">Nota crédito</option>
+                <select value={form.docType} onChange={(e) => setForm((f) => cambiarTipoDoc(f, e.target.value))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white">
+                  <option value="FACTURA">Factura</option><option value="NOTA_VENTA">Nota de venta</option><option value="LIQUIDACION">Liquidación</option><option value="NOTA_DEBITO_REC">Nota débito</option><option value="NOTA_CREDITO_REC">Nota crédito</option><option value="NO_AUTORIZADO">No autorizado</option>
                 </select>
               </Field>
               {/* Fecha de emisión: la del comprobante del PROVEEDOR. Admite fechas pasadas
@@ -1181,7 +1243,7 @@ export default function PurchaseInvoices() {
                   onChange={(e) => setForm((f) => ({ ...f, fechaEmision: e.target.value, fechaVencimiento: f.creditDays ? addDays(e.target.value, f.creditDays) : f.fechaVencimiento }))}
                   className={`w-full border rounded-xl px-3 py-2.5 text-sm ${emisionFutura ? 'border-amber-300 bg-amber-50' : 'border-slate-200'}`}
                 />
-                {emisionMesAnterior && <p className="text-[11px] text-amber-700 mt-1">Comprobante de un mes anterior: entrará en el IVA y el ATS de <b>ese</b> mes. Si el período ya está cerrado, el sistema lo rechazará.</p>}
+                {emisionMesAnterior && form.docType !== 'NO_AUTORIZADO' && <p className="text-[11px] text-amber-700 mt-1">Comprobante de un mes anterior: entrará en el IVA y el ATS de <b>ese</b> mes. Si el período ya está cerrado, el sistema lo rechazará.</p>}
                 {emisionFutura && <p className="text-[11px] text-amber-700 mt-1">La fecha es posterior a hoy. Verifica que sea la del comprobante.</p>}
               </Field>
               <Field label="Días de crédito"><NumericInput value={form.creditDays} onChange={(e) => setForm((f) => ({ ...f, creditDays: +e.target.value, fechaVencimiento: +e.target.value > 0 ? addDays(f.fechaEmision, +e.target.value) : '' }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-right" /></Field>
@@ -1193,6 +1255,11 @@ export default function PurchaseInvoices() {
                   «datos adicionales» y en la práctica nadie lo llenaba). En comprobantes
                   electrónicos es la clave de acceso de 49 dígitos; al importar el XML
                   llega solo. */}
+              {form.docType === 'NO_AUTORIZADO' ? (
+              <div className="col-span-2 md:col-span-3 self-end rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-800">
+                <b>Documento no autorizado:</b> no lleva n° de autorización ni retención, y <b>no entra en ningún reporte del SRI</b> (ATS, 103, 104, compras SRI). Sí se contabiliza y queda por pagar como cualquier compra.
+              </div>
+              ) : (
               <Field
                 label="N° de autorización SRI"
                 className="col-span-2 md:col-span-3"
@@ -1212,6 +1279,7 @@ export default function PurchaseInvoices() {
                   </p>
                 )}
               </Field>
+              )}
               <Field label="Observación (factura)" className="col-span-2 md:col-span-3"><input placeholder="Descripción general de la factura (opcional)" value={form.notes || ''} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
             </div>
             {/* Campos SRI menos usados: ocultos por defecto para no saturar la pantalla. */}

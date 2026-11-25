@@ -12,6 +12,8 @@ router.get('/:id', requireRole('admin', 'contabilidad'), c.get);
 router.get('/:id/payments', requireRole('admin', 'contabilidad'), c.payments);
 router.post('/', requireRole('admin', 'contabilidad'), c.create);
 router.put('/:id', requireRole('admin', 'contabilidad'), c.update);
+// Solo autorización / clave de acceso (desde el ATS): no recontabiliza nada.
+router.patch('/:id/datos-sri', requireRole('admin', 'contabilidad'), c.updateSriData);
 router.post('/:id/void', requireRole('admin', 'contabilidad'), c.void);
 router.delete('/:id', requireRole('admin', 'contabilidad'), c.remove);
 router.post('/:id/authorize', requireRole('admin', 'contabilidad'), c.authorize);

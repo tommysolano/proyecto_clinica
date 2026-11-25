@@ -99,7 +99,8 @@ exports.recurringAccounts = async (req, res) => {
  * corregido a mano o venir del backfill). Una fecha EXPLÍCITA de la compra sí se propaga:
  * es el dato que el usuario acaba de pactar.
  */
-async function openPayableForInvoice(inv, sup, req, session) {
+// `applied`: solo al CREAR la CxP (una compra ya pagada fuera del sistema que se edita).
+async function openPayableForInvoice(inv, sup, req, session, { applied = 0 } = {}) {
   const payable = +(Number(inv.total || 0) - Number(inv.retentionTotal || 0)).toFixed(2);
   if (payable <= 0) return;
   const provAcc = sup?.defaultPayableAccount
@@ -126,6 +127,7 @@ async function openPayableForInvoice(inv, sup, req, session) {
     issueDate: inv.fechaEmision || new Date(),
     dueDate: due,
     total: payable,
+    applied: Math.min(payable, Math.max(0, Number(applied) || 0)),
     account: provAcc,
   }, { session });
 }
@@ -215,6 +217,101 @@ function assertEditable(inv) {
  * Reparte el neto a pagar entre lo ya abonado y el saldo, y deja el estado coherente.
  * `calcTotals` no sabe de pagos: siempre deja el saldo completo.
  */
+/**
+ * COMPRA IMPORTADA DE CONTÍFICO SIN ASIENTO PROPIO.
+ *
+ * Su compra (gasto contra Proveedores) y su pago (Proveedores contra Banco) ya están en los
+ * asientos importados (CTF-…), y no tiene CxP en el sistema. La edición completa la trataba
+ * como una compra nueva: creaba OTRO asiento de compra y abría una CxP por el total. Pasó el
+ * 24-11-2026 con 7 notas de venta a las que solo se les completó la autorización: gasto
+ * duplicado y compras ya pagadas que volvieron a «por pagar».
+ *
+ * En estas compras solo se pueden cambiar los datos del comprobante (no mueven importes);
+ * cambiar importes, cuentas, proveedor o fecha se bloquea con un mensaje claro.
+ */
+const esImportadaSinAsiento = (inv) => inv?.sourceModel === 'ContificoRecord' && !inv.journalEntry;
+
+/** Campos de la compra que NO afectan asiento, inventario ni cartera. */
+const CAMPOS_DATOS_COMPROBANTE = ['docType', 'autorizacion', 'claveAcceso', 'estab', 'ptoEmi', 'secuencial', 'serie',
+  'notes', 'fechaVencimiento', 'creditDays', 'paymentMethodSri', 'fechaRegistro'];
+
+/** Tipos cuyo cambio sí altera cifras (la NC resta en el 103/104; el anticipo no es compra). */
+const TIPOS_CON_EFECTO = ['NOTA_CREDITO_REC', 'ANTICIPO_PROVEEDOR'];
+
+/**
+ * DOCUMENTO NO AUTORIZADO (nov-2026, contador). Comprobante sin autorización del SRI (recibos,
+ * DNA…): se contabiliza como cualquier compra, pero NO tiene n° de autorización y NO entra en
+ * ningún reporte del SRI (queda fuera de FILTRO_COMPROBANTE_SRI por su tipo). Tampoco admite
+ * retención: un comprobante de retención exige un comprobante de venta autorizado.
+ * Normaliza el body (sin autorización ni clave de acceso) o lanza 400.
+ */
+function prepararNoAutorizado(body, inv = null) {
+  const tipo = body?.docType || inv?.docType;
+  if (tipo !== 'NO_AUTORIZADO') return;
+  body.autorizacion = '';
+  body.claveAcceso = '';
+  const items = Array.isArray(body.items) ? body.items : (inv?.items || []);
+  const conRetencion = items.some((it) => (it?.retentions || []).some((r) => r && (r.rule || r.code))
+    || (it?.retention && (it.retention.rule || it.retention.code)))
+    || (Array.isArray(body.retentions) && body.retentions.some((r) => r && (r.rule || r.code || Number(r.amount) > 0)));
+  if (conRetencion || inv?.retentionVoucher || Number(inv?.retentionTotal || 0) > 0.005) {
+    throw Object.assign(new Error('Un documento no autorizado no admite retenciones: quítalas o registra el comprobante con su tipo autorizado.'), { status: 400 });
+  }
+}
+exports._prepararNoAutorizado = prepararNoAutorizado;
+
+const diaEc = (d) => {
+  const x = d instanceof Date ? d : new Date(d);
+  return Number.isNaN(x.getTime()) ? '' : x.toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' });
+};
+
+/**
+ * ¿Qué cambios CONTABLES trae el body respecto de la compra guardada? Devuelve la lista de
+ * lo que cambia (vacía = solo datos del comprobante). Compara totales recalculados y la
+ * «firma» de las líneas (cuenta, tipo, producto, centro, retenciones), no el JSON crudo:
+ * el formulario reenvía las líneas con otra forma aunque nadie las haya tocado.
+ */
+function cambiosContables(inv, body) {
+  const cambios = [];
+  if (body.supplier && String(body.supplier?._id || body.supplier) !== String(inv.supplier)) cambios.push('proveedor');
+  // El tipo no mueve el asiento (factura ↔ nota de venta ↔ no autorizado), salvo NC/anticipo.
+  if (body.docType && body.docType !== inv.docType
+    && (TIPOS_CON_EFECTO.includes(body.docType) || TIPOS_CON_EFECTO.includes(inv.docType))) cambios.push('tipo de documento');
+  // Misma normalización en los dos lados (el formulario recorta la fecha UTC guardada).
+  if (body.fechaEmision && diaEc(invoiceDate(body.fechaEmision)) !== diaEc(invoiceDate(inv.fechaEmision))) cambios.push('fecha de emisión');
+  if (Array.isArray(body.items)) {
+    // Se comparan los DOS recalculados (guardado vs. enviado): los totales guardados de una
+    // importación pueden traer redondeos de Contífico que el recálculo no reproduce, y eso
+    // no es un cambio del usuario.
+    const orig = PurchaseInvoice.hydrate(inv.toObject());
+    calcTotals(orig);
+    const sim = PurchaseInvoice.hydrate(inv.toObject());
+    sim.items = body.items;
+    calcTotals(sim);
+    for (const k of ['subtotal', 'iva', 'total']) {
+      if (Math.abs(Number(sim[k] || 0) - Number(orig[k] || 0)) > 0.01) { cambios.push('importes'); break; }
+    }
+    const ccDefecto = String(body.costCenter || inv.costCenter || '');
+    // Igual que lo que manda el formulario: cuenta y distribución solo en GASTO, producto solo
+    // en INVENTARIO, y la retención singular antigua envuelta como arreglo.
+    const firma = (items) => (items || []).map((it) => {
+      const tipo = it.lineType || 'GASTO';
+      const rets = (it.retentions?.length ? it.retentions : (it.retention ? [it.retention] : []))
+        .map((r) => String(r.rule || r.code || '')).filter(Boolean).sort().join(',');
+      return [
+        tipo,
+        tipo === 'GASTO' ? String(it.account || '') : '',
+        tipo === 'INVENTARIO' ? String(it.product || '') : '',
+        String(it.costCenter || ccDefecto),
+        tipo === 'GASTO' ? (it.accountSplits || []).map((s) => `${s.account}:${Number(s.amount || 0).toFixed(2)}`).sort().join(',') : '',
+        rets,
+      ].join('|');
+    }).sort().join('\n');
+    if (firma(sim.items) !== firma(orig.items)) cambios.push('cuentas, centro de costo o retenciones de las líneas');
+  }
+  return [...new Set(cambios)];
+}
+
 function aplicarAbonado(inv, abonado) {
   const neto = +(Number(inv.total || 0) - Number(inv.retentionTotal || 0)).toFixed(2);
   inv.balance = +Math.max(0, neto - Number(abonado || 0)).toFixed(2);
@@ -577,6 +674,7 @@ async function findDuplicatePurchaseInvoice({ clinicId, supplier, serie, claveAc
   return PurchaseInvoice.findOne(q).session(session || null);
 }
 exports._findDuplicatePurchaseInvoice = findDuplicatePurchaseInvoice;
+exports._cambiosContables = cambiosContables;
 
 exports.list = async (req, res) => {
   const { startDate, endDate, supplier, status, docType, q, sort = 'fecha_desc', page = 1, limit = 20 } = req.query;
@@ -640,11 +738,28 @@ exports.list = async (req, res) => {
   const items = await PurchaseInvoice.find(filter)
     .populate('supplier', 'ruc razonSocial')
     .sort(sortBy).skip((page - 1) * limit).limit(parseInt(limit));
-  res.json({ items, total, pages: Math.ceil(total / limit), currentPage: parseInt(page) });
+  /**
+   * Compras que coinciden con la BÚSQUEDA pero quedan fuera por el centro de costo de la
+   * sucursal (nov-2026). El listado de Central solo muestra CC CENTRAL, pero el ATS y los
+   * formularios del SRI son por RUC e incluyen todos los centros (Laboratorio, Extensión…)
+   * y las compras sin centro. El contador buscaba una compra que el ATS observaba y
+   * «no existía»: ahora se le dice cuántas hay en otros centros para que cambie a
+   * «Toda la empresa». Solo se calcula al buscar algo concreto (es una consulta extra).
+   */
+  let otrosCentros = 0;
+  if ((q || numero) && req.costCenterScope && !req.companyClinicIds?.length) {
+    const sinCentro = { ...filter, $and: [{ clinic: req.clinicId }, ...filter.$and.slice(1)] };
+    otrosCentros = Math.max(0, (await PurchaseInvoice.countDocuments(sinCentro)) - total);
+  }
+  res.json({ items, total, pages: Math.ceil(total / limit), currentPage: parseInt(page), otrosCentros });
 };
 
 exports.get = async (req, res) => {
-  let q = PurchaseInvoice.findOne({ _id: req.params.id, ...scopedDocuments(req, 'items.costCenter') })
+  // Por id se abre la compra aunque sea de OTRO centro de costo de la misma sucursal contable:
+  // el ATS (que es por RUC) enlaza compras de Laboratorio, Extensión o sin centro, y con el
+  // filtro de centro de la sucursal el detalle respondía 404. El centro filtra LISTADOS; no
+  // es una barrera de acceso (el selector «Toda la empresa» ya las muestra a los mismos roles).
+  let q = PurchaseInvoice.findOne({ _id: req.params.id, $or: [scopedDocuments(req, 'items.costCenter'), { clinic: req.clinicId }] })
     .populate('supplier').populate('items.account', 'code name').populate('items.product', 'name code')
     // Encabezado del comprobante de retención emitido (número, autorización/estado, fecha, periodo):
     // la contadora quiere verlo en el modal ANTES de los porcentajes, como en su sistema anterior.
@@ -665,6 +780,7 @@ exports.get = async (req, res) => {
 
 exports.create = async (req, res) => {
   try {
+    prepararNoAutorizado(req.body);
     // Bloqueo de doble registro: si ya existe el mismo comprobante (activo) se evita
     // registrarlo otra vez (no se crea asiento, CxP, inventario ni activo fijo).
     //  - POR_AUTORIZAR (ya importado): se devuelve esa factura para completarla/autorizarla.
@@ -924,17 +1040,44 @@ exports.update = async (req, res) => {
         const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
         if (!inv) throw Object.assign(new Error('No encontrada'), { status: 404 });
         assertEditable(inv);
+        prepararNoAutorizado(req.body, inv);
+        // Importada de Contífico sin asiento propio: solo datos del comprobante (ver
+        // esImportadaSinAsiento). No se reversa ni se crea asiento, inventario ni CxP.
+        if (esImportadaSinAsiento(inv)) {
+          const cambios = cambiosContables(inv, req.body);
+          if (cambios.length) {
+            throw Object.assign(new Error(
+              `Esta compra viene de Contífico y su contabilidad (compra y pago) está en los asientos importados. `
+              + `Cambiar ${cambios.join(', ')} crearía un asiento duplicado y la volvería a dejar por pagar. `
+              + 'Solo se pueden corregir los datos del comprobante (autorización, número, vencimiento, notas); '
+              + 'para ajustar importes registre un asiento manual de ajuste.'
+            ), { status: 409, payload: { code: 'COMPRA_IMPORTADA_SIN_ASIENTO', cambios } });
+          }
+          for (const k of CAMPOS_DATOS_COMPROBANTE) {
+            if (Object.prototype.hasOwnProperty.call(req.body, k)) inv[k] = req.body[k];
+          }
+          await inv.save({ session });
+          return inv._id;
+        }
         /**
          * Lo YA ABONADO a esta compra. La edición recalcula los totales desde cero
          * (`calcTotals` deja `balance = total − retención`), y sin esto una factura
          * PAGADA volvía a aparecer con todo su saldo pendiente: los pagos seguían en
          * el banco pero la compra se mostraba sin abonar. El dato vive en la CxP del
          * subledger (`applied`), que es la que los pagos van aplicando.
+         *
+         * Sin CxP (compras importadas de Contífico, cuyo pago está en el asiento importado)
+         * lo abonado se deduce de su saldo guardado: una compra PAGADA con saldo 0 sigue
+         * pagada tras la edición, y su CxP nace ya aplicada.
          */
         const cxpPrevia = await Payable.findOne({
           clinic: req.clinicId, sourceModel: 'PurchaseInvoice', sourceRef: inv._id,
         }).session(session);
-        const abonado = Math.max(0, Number(cxpPrevia?.applied || 0));
+        const netoPrevio = Number(inv.total || 0) - Number(inv.retentionTotal || 0);
+        const abonadoSinCxp = inv.balance == null
+          ? (inv.status === 'PAGADA' ? netoPrevio : 0)
+          : netoPrevio - Number(inv.balance || 0);
+        const abonado = Math.max(0, +Number(cxpPrevia ? cxpPrevia.applied || 0 : abonadoSinCxp).toFixed(2));
         // Edición SIEMPRE estricta (regla de la contadora): ya no hay "ruta tolerante" para
         // documentos legacy. Editar una compra vieja también exige la categoría contable; si el
         // producto no la tiene, se bloquea con un mensaje que guía a configurarla (en vez de caer
@@ -990,12 +1133,80 @@ exports.update = async (req, res) => {
         await postInventoryEntries(inv, req, session);
         await syncFixedAssetsForInvoice(inv, req, session);
         const supForPayable = await Supplier.findById(inv.supplier).session(session);
-        await openPayableForInvoice(inv, supForPayable, req, session);
+        // Sin CxP previa, la nueva nace con lo ya abonado (si no, una compra pagada fuera del
+        // sistema aparecería «por pagar» en la cartera aunque la compra diga PAGADA).
+        await openPayableForInvoice(inv, supForPayable, req, session, cxpPrevia ? {} : { applied: abonado });
         return inv._id;
       });
       const inv = await PurchaseInvoice.findById(invoiceId);
       return res.json(inv);
     }
+  } catch (e) { sendError(res, e); }
+};
+
+/**
+ * Corrige SOLO los datos de identificación SRI de una compra (hoy: el número de
+ * autorización / clave de acceso), sin pasar por la edición completa.
+ *
+ * Lo pidió el contador desde el ATS (nov-2026): para completar la autorización de un
+ * comprobante tenía que abrir la compra en Compras y guardarla entera, y eso REVERSA y
+ * vuelve a crear el asiento, el inventario, la CxP y las retenciones por un dato que no
+ * mueve ni un centavo. Además una compra con retención emitida no se puede editar, así que
+ * esos casos no tenían arreglo. La autorización no interviene en ningún importe, así que:
+ *   · no toca asiento, inventario, CxP ni retenciones;
+ *   · vale aunque la compra tenga comprobante de retención emitido;
+ *   · vale aunque el período esté cerrado (no cambia saldos, solo el anexo).
+ * El cambio queda en la auditoría con el valor anterior y el nuevo.
+ */
+exports.updateSriData = async (req, res) => {
+  try {
+    const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!inv) throw Object.assign(new Error('No encontrada'), { status: 404 });
+    if (inv.status === 'ANULADA') throw Object.assign(new Error('Una compra anulada no se puede modificar'), { status: 400 });
+
+    const nueva = String(req.body?.autorizacion || '').replace(/\s+/g, '');
+    if (!/^\d+$/.test(nueva)) {
+      throw Object.assign(new Error('La autorización solo puede tener números.'), { status: 400 });
+    }
+    // 10 = preimpresa (notas de venta, facturas físicas), 37 = electrónica antigua, 49 = clave de acceso.
+    if (![10, 37, 49].includes(nueva.length)) {
+      throw Object.assign(new Error(`La autorización tiene ${nueva.length} dígitos; debe tener 10 (preimpresa), 37 o 49 (electrónica).`), { status: 400 });
+    }
+    // Una clave de acceso de 49 dígitos identifica UN comprobante: no puede repetirse. La
+    // autorización preimpresa (10) sí se repite entre documentos del mismo talonario.
+    if (nueva.length === 49) {
+      const dup = await PurchaseInvoice.findOne({
+        _id: { $ne: inv._id }, status: { $ne: 'ANULADA' },
+        $or: [{ autorizacion: nueva }, { claveAcceso: nueva }],
+      }).select('serie clinic').lean();
+      if (dup) {
+        throw Object.assign(new Error(`Esa clave de acceso ya está registrada en la compra ${dup.serie || dup._id}.`), { status: 409 });
+      }
+    }
+
+    const antes = { autorizacion: inv.autorizacion || '', claveAcceso: inv.claveAcceso || '' };
+    inv.autorizacion = nueva;
+    if (nueva.length === 49 && !inv.claveAcceso) inv.claveAcceso = nueva;
+    await inv.save();
+
+    const AuditLog = require('../models/AuditLog');
+    await AuditLog.create({
+      clinic: inv.clinic,
+      user: req.user._id,
+      userName: req.user.name || req.user.email,
+      role: req.user.role,
+      action: 'UPDATE',
+      entity: 'purchase-invoices',
+      entityId: String(inv._id),
+      description: `Corrigió la autorización de la compra ${inv.serie || ''} desde el ATS: «${antes.autorizacion || 'vacía'}» → «${nueva}».`,
+      method: 'PATCH',
+      path: req.originalUrl || '',
+      before: antes,
+      after: { autorizacion: inv.autorizacion, claveAcceso: inv.claveAcceso || '' },
+      success: true,
+    }).catch(() => {});
+
+    res.json({ _id: inv._id, serie: inv.serie, autorizacion: inv.autorizacion, claveAcceso: inv.claveAcceso || '' });
   } catch (e) { sendError(res, e); }
 };
 
@@ -1563,6 +1774,7 @@ exports.authorize = async (req, res) => {
         if ((inv.importedFromTxt || inv.importedFromXml) && (inv.sriTotals?.total == null)) {
           inv.sriTotals = { subtotal: inv.subtotal, iva: inv.iva, total: inv.total };
         }
+        prepararNoAutorizado(req.body || {}, inv);
         if (req.body && Object.keys(req.body).length) {
           // El snapshot del SRI y su aceptación los controla el servidor (no se pisan por body).
           const { status, clinic, journalEntry, sriTotals, sriMismatchAccepted, ...rest } = req.body;

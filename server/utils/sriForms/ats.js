@@ -169,6 +169,9 @@ const esc = (s) => String(s == null ? '' : s)
  */
 async function buildAts({ clinicId, range, models }) {
   const { Invoice, PurchaseInvoice, Clinic, RetentionVoucher, InvoicingConfig } = models;
+  // Registra el modelo para el populate del centro de costo de cada compra (en scripts y
+  // tests no siempre está cargado y el populate fallaría con MissingSchemaError).
+  require('../../models/CostCenter');
 
   const [clinic, config] = await Promise.all([
     Clinic.findById(clinicId).lean(),
@@ -200,7 +203,7 @@ async function buildAts({ clinicId, range, models }) {
   const comprasDocs = await PurchaseInvoice.find({ $and: [{
     clinic: clinicId,
     status: { $nin: ['ANULADA', 'POR_AUTORIZAR'] },
-  }, require('../comprobantesSri').FILTRO_COMPROBANTE_SRI] }).populate('supplier', 'ruc razonSocial tipoIdentificacion').lean();
+  }, require('../comprobantesSri').FILTRO_COMPROBANTE_SRI] }).populate('supplier', 'ruc razonSocial tipoIdentificacion').populate('costCenter', 'code name').lean();
 
   const comprasPeriodo = comprasDocs.filter((p) => inRange(purchaseFiscalDate(p), range.start, range.end));
 
@@ -272,6 +275,9 @@ async function buildAts({ clinicId, range, models }) {
       // Campos de apoyo para la pantalla y el Excel (NO van al XML).
       _serie: p.serie || [p.estab, p.ptoEmi, p.secuencial].filter(Boolean).join('-'),
       _proveedor: sup.razonSocial || '',
+      // Centro de costo: el ATS es por RUC (todos los centros), pero el listado de Compras de
+      // cada sucursal solo muestra el suyo. Se indica para que el contador sepa dónde buscarla.
+      _centroCosto: p.costCenter?.name || '',
       _total: r2(p.total),
       _retIva: retIva,
       _retRenta: retRenta,
@@ -384,17 +390,29 @@ async function buildAts({ clinicId, range, models }) {
   // ── VALIDACIONES ──────────────────────────────────────────────────────────
   // El SRI rechaza el anexo por datos faltantes, no por importes. Se avisan ANTES de que el
   // contador suba el archivo y le rebote, con el documento concreto que hay que corregir.
+  //
+  // `errores` (texto) lo consumen el Excel y el 409 del XML. `observaciones` es la misma
+  // lista con la compra y el campo afectados, para que la pantalla del ATS permita
+  // corregirlos ahí mismo (p. ej. escribir la autorización) sin ir a Compras.
   const errores = [];
-  if (!/^\d{13}$/.test(informante.ruc)) errores.push('El RUC del informante no es válido (debe tener 13 dígitos). Configúrelo en Facturación.');
-  if (!informante.razonSocial) errores.push('Falta la razón social del informante.');
+  const observaciones = [];
+  const avisar = (texto, extra = {}) => { errores.push(texto); observaciones.push({ texto, ...extra }); };
+  if (!/^\d{13}$/.test(informante.ruc)) avisar('El RUC del informante no es válido (debe tener 13 dígitos). Configúrelo en Facturación.', { campo: 'informante' });
+  if (!informante.razonSocial) avisar('Falta la razón social del informante.', { campo: 'informante' });
+  // La serie SOLA no identifica la compra: cada proveedor numera desde 001-001-000000001,
+  // así que hay decenas de «001-001-000000066». Sin proveedor ni fecha, el contador abría
+  // otra compra con la misma serie, veía su autorización y creía que el aviso era falso.
+  const NOMBRE_TIPO = { '01': 'Factura', '02': 'Nota de venta', '03': 'Liquidación', '04': 'Nota de crédito', '05': 'Nota de débito' };
   for (const c of compras) {
+    const ref = { compraId: c._id, serie: c._serie, proveedor: c._proveedor, idProv: c.idProv, centroCosto: c._centroCosto, tipoComprobante: c.tipoComprobante, fechaEmision: c.fechaEmision, total: c._total };
+    const doc = `${NOMBRE_TIPO[c.tipoComprobante] || 'Compra'} ${c._serie} de ${c._proveedor || 'proveedor sin nombre'} (${c.fechaEmision})`;
     if (!/^\d{10}$|^\d{13}$/.test(c.idProv) && c.tpIdProv !== '03') {
-      errores.push(`Compra ${c._serie}: la identificación del proveedor (${c.idProv || 'vacía'}) no es válida.`);
+      avisar(`${doc}: la identificación del proveedor (${c.idProv || 'vacía'}) no es válida.`, { ...ref, campo: 'proveedor' });
     }
-    if (!c.autorizacion) errores.push(`Compra ${c._serie}: falta el número de autorización / clave de acceso.`);
-    if (!c.secuencial || /^0+$/.test(c.secuencial)) errores.push(`Compra ${c._serie}: falta el secuencial del comprobante.`);
+    if (!c.autorizacion) avisar(`${doc}: falta el número de autorización / clave de acceso.`, { ...ref, campo: 'autorizacion' });
+    if (!c.secuencial || /^0+$/.test(c.secuencial)) avisar(`${doc}: falta el secuencial del comprobante.`, { ...ref, campo: 'secuencial' });
     if (c._retRenta > 0 && !c.autRetencion1) {
-      errores.push(`Compra ${c._serie}: tiene retención en la fuente pero no se emitió el comprobante de retención.`);
+      avisar(`${doc}: tiene retención en la fuente pero no se emitió el comprobante de retención.`, { ...ref, campo: 'retencion' });
     }
   }
 
@@ -407,6 +425,7 @@ async function buildAts({ clinicId, range, models }) {
     anulados,
     totals,
     errores,
+    observaciones,
   };
 }
 
