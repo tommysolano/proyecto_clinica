@@ -1652,11 +1652,12 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
         patient: nombrePaciente(appt.patient), base: pagado,
       };
       let cubierta = false;
+      const sinTarifa = [];
       const servicios = serviciosDeCita(appt, catalogo, { soloCobrables: true });
       const permitidos = area === 'doctor' && !rosi ? servicios.filter((svc) => !servicioExcluido(svc, catalogo, doctorId)) : servicios;
       for (const svc of permitidos) {
         const rule = reglaServicioParaCita(doctorId, clinicId, svc);
-        if (!rule) continue;
+        if (!rule) { sinTarifa.push(svc); continue; }
         cubierta = true;
         const repetida = !rosi && !!rule.firstTimeOnly && !esPrimeraVez(appt, svc.key);
         // «Gana desde»: atendido antes de esa hora, la tarifa no paga (y la cita sigue
@@ -1676,13 +1677,19 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
       // mismo: una tarifa de servicio REEMPLAZA a la base, no se suma. Un servicio
       // de «solo primera vez» repetido también cubre la cita (paga cero): si no,
       // la base pagaría justo lo que la regla dice que ya no se paga.
-      if (!cubierta && (!servicios.length || permitidos.length)) {
-        const rule = reglaBaseParaCita(doctorId, 'patient', clinicId);
+      const reglaPaciente = reglaBaseParaCita(doctorId, 'patient', clinicId);
+      const complementar = cubierta && sinTarifa.length && reglaPaciente?.patientRateForUnconfiguredServices
+        && cfgDeRegla(reglaPaciente, appt).amountType === 'percent';
+      if ((!cubierta && (!servicios.length || permitidos.length)) || complementar) {
+        const rule = reglaPaciente;
         if (rule) {
           const antes = !rosi && antesDeHora(rule, appt, doctorId);
-          const basePaciente = basePacienteConPrepago(rule, appt);
+          const bases = complementar ? basesPorServicio(appt, servicios, catalogo, { sinIva: !!rule.percentWithoutVat, paraRosi: rosi }) : null;
+          const basePaciente = complementar
+            ? sinTarifa.reduce((total, svc) => total + num(bases.get(svc.key)), 0)
+            : basePacienteConPrepago(rule, appt);
           agregar({
-            ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: serviciosDeCita(appt, catalogo).map((svc) => svc.name).join(', ') || '—',
+            ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: (complementar ? sinTarifa : serviciosDeCita(appt, catalogo)).map((svc) => svc.name).join(', ') || '—',
             base: basePaciente,
             amount: antes ? 0 : calcAmount(cfgDeRegla(rule, appt), basePaciente),
             antesDeHora: antes ? rule.minStartTime : '',

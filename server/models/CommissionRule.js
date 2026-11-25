@@ -136,6 +136,9 @@ const commissionRuleSchema = new mongoose.Schema(
     // derivación que no tenga una propia. Una derivación que el paciente no se
     // hizo no paga nada: no hay cita realizada que la devengue.
     doctorCommissionScope: { type: String, enum: ['patient', 'service', 'referral'], default: 'service' },
+    // Aplicar la tarifa porcentual base a los servicios sin tarifa propia en
+    // una visita que también incluye servicios con tarifas específicas.
+    patientRateForUnconfiguredServices: { type: Boolean, default: false },
     /**
      * SOLO LA PRIMERA VEZ (sep-2026). Hay servicios que pagan comisión cuando el
      * paciente los recibe por primera vez y nunca más: si vuelve a hacérselo, el

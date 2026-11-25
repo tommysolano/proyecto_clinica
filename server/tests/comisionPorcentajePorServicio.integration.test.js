@@ -111,6 +111,30 @@ test('la tarifa por paciente acredita el valor de cada sesión prepagada', async
   assert.deepStrictEqual(calc.lineas.map((l) => l.amount), [2.5, 2.5]);
 });
 
+test('tarifa base complementaria paga servicios sin tarifa propia y respeta las tarifas específicas', async () => {
+  const { sede, doctor, eco, consulta, cita } = await escenario();
+  await User.updateOne({ _id: doctor._id }, { name: 'Domenica Prueba' });
+  await CommissionRule.deleteOne({ appointmentService: eco._id });
+  await CommissionRule.updateOne({ appointmentService: consulta._id }, { percent: 5 });
+  await CommissionRule.create({ clinic: sede._id, name: 'Paciente', managedFromDoctorCommissions: true,
+    doctorCommissionScope: 'patient', doctorServiceDoctor: doctor._id, targetType: 'user', users: [doctor._id], active: true,
+    amountType: 'percent', percent: 10, patientRateForUnconfiguredServices: true });
+  const a = await cita({ date: new Date('2026-11-03T15:00:00Z') });
+  await Sale.create({ clinic: sede._id, saleNumber: 'MIX-1', appointment: a._id,
+    items: [
+      { product: eco.product, productName: eco.name, category: 'servicio', quantity: 1, unitPrice: 29, lineTotal: 29, subtotal: 29 },
+      { product: consulta.product, productName: consulta.name, category: 'servicio', quantity: 1, unitPrice: 69, lineTotal: 69, subtotal: 69 },
+    ], subtotal: 98, taxAmount: 0, total: 98, paymentMethod: 'efectivo', status: 'completada' });
+  const calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-11-01', end: '2026-11-30' });
+  assert.equal(calc.lineas.find((l) => l.kind === 'servicio').amount, 3.45);
+  assert.equal(calc.lineas.find((l) => l.kind === 'paciente').amount, 2.9);
+  await CommissionRule.create({ clinic: sede._id, name: 'Exento', managedFromDoctorCommissions: true,
+    doctorCommissionScope: 'service', doctorServiceDoctor: doctor._id, appointmentService: eco._id,
+    targetType: 'user', users: [doctor._id], active: true, amountType: 'fixed', amount: 0 });
+  const exenta = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-11-01', end: '2026-11-30' });
+  assert.equal(exenta.lineas.reduce((sum, l) => sum + l.amount, 0), 3.45);
+});
+
 test('antes de la facturación: cada servicio usa su precio de inventario', async () => {
   const { sede, cita } = await escenario();
   await cita({ agreedValue: 23 });
