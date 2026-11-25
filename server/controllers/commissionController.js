@@ -10,6 +10,7 @@ const CallCenterRate = require('../models/CallCenterRate');
 const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const ClinicalRecord = require('../models/ClinicalRecord');
 const Sale = require('../models/Sale');
+const PrepaidService = require('../models/PrepaidService');
 const Product = require('../models/Product');
 const Referral = require('../models/Referral');
 const Conversation = require('../models/Conversation');
@@ -394,6 +395,17 @@ const appointmentPaymentValue = (appt) => num(valorDeCita(appt));
 const baseDeRegla = (rule, appt) => (rule?.percentWithoutVat
   ? num(valorDeCitaSinIva(appt))
   : appointmentPaymentValue(appt));
+
+// La tarifa por paciente también debe reconocer cada sesión usada, en vez del
+// importe total vendido en la primera cita o cero en las siguientes.
+const basePacienteConPrepago = (rule, appt) => {
+  let base = baseDeRegla(rule, appt);
+  for (const p of Object.values(appt._basesPrepagadas || {})) {
+    base += (rule?.percentWithoutVat ? p.sinIva : p.importe)
+      - (rule?.percentWithoutVat ? p.ventaEnCitaSinIva : p.ventaEnCita);
+  }
+  return Math.max(0, base);
+};
 
 /**
  * Calcula, sobre la marcha, las comisiones devengadas en un rango de fechas a
@@ -1176,16 +1188,23 @@ const basesPorServicio = (appt, servicios, catalogo, { sinIva = false, paraRosi 
     return sinIva && p?.priceIncludesVat !== false && tasa > 0
       ? +(precio / (1 + tasa / 100)).toFixed(2) : precio;
   };
+  // Una sesión usada tiene su propia parte de la venta original, incluso cuando
+  // esa venta se hizo en esta misma cita. No volver a atribuirle el paquete entero.
+  for (const s of servicios) {
+    const producto = s.id && catalogo.productoPorId.get(s.id);
+    const prepago = producto && appt._basesPrepagadas?.[producto];
+    if (prepago) out.set(s.key, sinIva ? prepago.sinIva : prepago.importe);
+  }
   if (historica) {
     const precios = servicios.map(precioDe);
     // Una cita antigua sin vínculo con inventario conserva el cálculo anterior.
     if (historica && precios.every((p) => p != null)) {
-      servicios.forEach((s, i) => out.set(s.key, precios[i]));
+      servicios.forEach((s, i) => { if (!out.has(s.key)) out.set(s.key, precios[i]); });
       return out;
     }
     // No se pierde el precio conocido si otro servicio antiguo carece de vínculo.
     servicios.forEach((s, i) => {
-      if (precios[i] != null) out.set(s.key, precios[i]);
+      if (precios[i] != null && !out.has(s.key)) out.set(s.key, precios[i]);
     });
   }
   if (servicios.length <= 1) {
@@ -1198,8 +1217,13 @@ const basesPorServicio = (appt, servicios, catalogo, { sinIva = false, paraRosi 
   const sinLinea = [];
   const usados = new Set();
   for (const s of servicios) {
-    if (out.has(s.key)) { restante -= out.get(s.key); continue; }
     const prod = s.id && catalogo.productoPorId?.get(s.id);
+    if (out.has(s.key)) {
+      // Una venta del paquete en esta cita ya está incluida íntegra en total.
+      const original = prod && appt._basesPrepagadas?.[prod];
+      restante -= (sinIva ? original?.ventaEnCitaSinIva : original?.ventaEnCita) || 0;
+      continue;
+    }
     const linea = lineas && prod && !usados.has(prod) ? lineas[prod] : null;
     if (paraRosi && tienePlan && /\bbio[\s-]*scan+er\b/.test(s.key)) {
       const v = precioDe(s);
@@ -1227,6 +1251,41 @@ const basesPorServicio = (appt, servicios, catalogo, { sinIva = false, paraRosi 
   }
   return out;
 };
+
+/** Vincula usos registrados con el importe unitario realmente vendido. */
+async function anotarBasesPrepagadas(appts) {
+  const ids = appts.map((a) => a._id);
+  if (!ids.length) return;
+  const paquetes = await PrepaidService.find({ status: 'activo', 'uses.appointment': { $in: ids } }).lean();
+  if (!paquetes.length) return;
+  const ventas = await Sale.find({ _id: { $in: paquetes.map((p) => p.sale) }, status: 'completada' }).lean();
+  const ventaPorId = new Map(ventas.map((v) => [idDe(v), v]));
+  const porCita = new Map(appts.map((a) => [idDe(a), a]));
+  for (const p of paquetes) {
+    const venta = ventaPorId.get(idDe(p.sale));
+    // Los programas con varios servicios no tienen un reparto monetario guardado.
+    // No se inventa un precio para ellos.
+    if (!venta || p.program) continue;
+    const items = (venta.items || []).filter((i) => idDe(i.product) === idDe(p.product) && i.prepaid);
+    const cantidad = items.reduce((n, i) => n + num(i.quantity), 0);
+    if (!cantidad) continue;
+    const importe = items.reduce((n, i) => n + (i.lineTotal != null ? num(i.lineTotal) : num(i.unitPrice) * num(i.quantity) - num(i.discount)), 0);
+    const iva = items.reduce((n, i) => n + num(i.taxAmount), 0);
+    for (const uso of p.uses || []) {
+      const a = porCita.get(idDe(uso.appointment));
+      if (!a) continue;
+      a._basesPrepagadas ||= {};
+      const anterior = a._basesPrepagadas[idDe(p.product)] || { importe: 0, sinIva: 0, ventaEnCita: 0, ventaEnCitaSinIva: 0 };
+      anterior.importe += importe / cantidad;
+      anterior.sinIva += Math.max(0, importe - iva) / cantidad;
+      if (idDe(venta.appointment) === idDe(a)) {
+        anterior.ventaEnCita = importe;
+        anterior.ventaEnCitaSinIva = Math.max(0, importe - iva);
+      }
+      a._basesPrepagadas[idDe(p.product)] = anterior;
+    }
+  }
+}
 
 /** Base del porcentaje de la tarifa `rule` para el servicio `svc` de la cita. */
 const baseDeServicio = (rule, appt, svc, servicios, catalogo, paraRosi = false) => {
@@ -1486,6 +1545,7 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
   // Valor de cada cita = lo facturado (o lo escrito en las anteriores a la facturación).
   // `ivaCatalogo`: las tarifas «sin IVA» necesitan el IVA de las citas sin factura.
   await anotarFacturado([...appts, ...derivadas], { ivaCatalogo: true });
+  await anotarBasesPrepagadas([...appts, ...derivadas]);
 
   const doctores = new Map();
   for (const a of appts) {
@@ -1620,7 +1680,7 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
         const rule = reglaBaseParaCita(doctorId, 'patient', clinicId);
         if (rule) {
           const antes = !rosi && antesDeHora(rule, appt, doctorId);
-          const basePaciente = baseDeRegla(rule, appt);
+          const basePaciente = basePacienteConPrepago(rule, appt);
           agregar({
             ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: serviciosDeCita(appt, catalogo).map((svc) => svc.name).join(', ') || '—',
             base: basePaciente,

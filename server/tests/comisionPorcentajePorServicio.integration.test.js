@@ -20,6 +20,7 @@ const Patient = require('../models/Patient');
 const Product = require('../models/Product');
 const User = require('../models/User');
 const Sale = require('../models/Sale');
+const PrepaidService = require('../models/PrepaidService');
 const CommissionRule = require('../models/CommissionRule');
 const ctrl = require('../controllers/commissionController');
 
@@ -70,6 +71,45 @@ const lineasDe = async (sede) => {
   const calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-10-01', end: '2026-11-30' });
   return Object.fromEntries(calc.lineas.map((l) => [l.serviceName, l]));
 };
+
+test('distribuye la venta prepagada por sesión y conserva el servicio adicional cobrado', async () => {
+  const { sede, doctor, eco, consulta, cita } = await escenario();
+  await User.updateOne({ _id: doctor._id }, { name: 'Domenica Prueba' });
+  await CommissionRule.updateOne({ appointmentService: eco._id }, { amountType: 'percent', percent: 10 });
+  const primera = await cita({ date: new Date('2026-11-01T15:00:00Z'), additionalServices: [] });
+  const segunda = await cita({ date: new Date('2026-11-02T15:00:00Z') });
+  const venta = await Sale.create({
+    clinic: sede._id, saleNumber: 'PRE-1', appointment: primera._id,
+    items: [{ product: eco.product, productName: eco.name, category: 'servicio', prepaid: true, quantity: 4, unitPrice: 25, lineTotal: 100, subtotal: 100 }],
+    subtotal: 100, taxAmount: 0, total: 100, paymentMethod: 'efectivo', status: 'completada',
+  });
+  await PrepaidService.create({ clinic: sede._id, patient: primera.patient, product: eco.product, sale: venta._id, quantity: 4,
+    uses: [{ appointment: primera._id }, { appointment: segunda._id }] });
+  await Sale.create({ clinic: sede._id, saleNumber: 'EXTRA-1', appointment: segunda._id,
+    items: [{ product: consulta.product, productName: consulta.name, category: 'servicio', quantity: 1, unitPrice: 10, lineTotal: 10, subtotal: 10 }],
+    subtotal: 10, taxAmount: 0, total: 10, paymentMethod: 'efectivo', status: 'completada' });
+  const calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-11-01', end: '2026-11-30' });
+  const linea = (apt, service) => calc.lineas.find((l) => l.apptId === String(apt._id) && l.serviceName === service.name);
+  assert.equal(linea(primera, eco).amount, 2.5);
+  assert.equal(linea(segunda, eco).amount, 2.5);
+  assert.equal(linea(segunda, consulta).amount, 3);
+});
+
+test('la tarifa por paciente acredita el valor de cada sesión prepagada', async () => {
+  const { sede, doctor, eco, cita } = await escenario();
+  await User.updateOne({ _id: doctor._id }, { name: 'Domenica Prueba' });
+  await CommissionRule.deleteMany({ doctorServiceDoctor: doctor._id });
+  await CommissionRule.create({ clinic: sede._id, name: 'Paciente', managedFromDoctorCommissions: true,
+    doctorCommissionScope: 'patient', doctorServiceDoctor: doctor._id, targetType: 'user', users: [doctor._id], active: true, amountType: 'percent', percent: 10 });
+  const a = await cita({ date: new Date('2026-11-01T15:00:00Z'), additionalServices: [] });
+  const b = await cita({ date: new Date('2026-11-02T15:00:00Z'), additionalServices: [] });
+  const v = await Sale.create({ clinic: sede._id, saleNumber: 'PRE-2', appointment: a._id,
+    items: [{ product: eco.product, productName: eco.name, category: 'servicio', prepaid: true, quantity: 4, unitPrice: 25, lineTotal: 100, subtotal: 100 }],
+    subtotal: 100, taxAmount: 0, total: 100, paymentMethod: 'efectivo', status: 'completada' });
+  await PrepaidService.create({ clinic: sede._id, patient: a.patient, product: eco.product, sale: v._id, quantity: 4, uses: [{ appointment: a._id }, { appointment: b._id }] });
+  const calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-11-01', end: '2026-11-30' });
+  assert.deepStrictEqual(calc.lineas.map((l) => l.amount), [2.5, 2.5]);
+});
 
 test('antes de la facturación: cada servicio usa su precio de inventario', async () => {
   const { sede, cita } = await escenario();
