@@ -12,6 +12,7 @@ const ClinicalRecord = require('../models/ClinicalRecord');
 const Sale = require('../models/Sale');
 const PrepaidService = require('../models/PrepaidService');
 const CommissionPrepaidAllocation = require('../models/CommissionPrepaidAllocation');
+const CommissionBaseOverride = require('../models/CommissionBaseOverride');
 const Product = require('../models/Product');
 const Referral = require('../models/Referral');
 const Conversation = require('../models/Conversation');
@@ -1576,7 +1577,7 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
   const doctorIds = [...doctores.keys()];
   const clinicIds = [...new Set([...appts, ...derivadas].map((a) => idDe(a.clinic)).filter(Boolean))];
 
-  const [reglas, ajustes, pagos] = await Promise.all([
+  const [reglas, ajustes, pagos, correccionesBase] = await Promise.all([
     /**
      * TODAS las tarifas del doctor, no solo las de las sucursales con citas en
      * el período (oct-2026): si una sede no tiene tarifa para un servicio, se
@@ -1601,7 +1602,9 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
           .sort({ start: 1 })
           .lean()
       : [],
+    doctorIds.length ? CommissionBaseOverride.find({ appointment: { $in: appts.map((a) => a._id) }, doctor: { $in: doctorIds } }).lean() : [],
   ]);
+  const baseCorregida = new Map(correccionesBase.map((c) => [`${idDe(c.appointment)}|${idDe(c.doctor)}`, c.base]));
 
   const reglasDe = (doctorId, scope, clinicId) => reglas.filter((r) =>
     String(r.doctorServiceDoctor) === doctorId
@@ -1703,9 +1706,11 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
         if (rule) {
           const antes = !rosi && antesDeHora(rule, appt, doctorId);
           const bases = complementar ? basesPorServicio(appt, servicios, catalogo, { sinIva: !!rule.percentWithoutVat, paraRosi: rosi }) : null;
-          const basePaciente = complementar
+          let basePaciente = complementar
             ? sinTarifa.reduce((total, svc) => total + num(bases.get(svc.key)), 0)
             : basePacienteConPrepago(rule, appt);
+          const correccion = baseCorregida.get(`${idDe(appt)}|${doctorId}`);
+          if (!complementar && correccion != null) basePaciente = correccion;
           agregar({
             ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: (complementar ? sinTarifa : serviciosDeCita(appt, catalogo)).map((svc) => svc.name).join(', ') || '—',
             base: basePaciente,

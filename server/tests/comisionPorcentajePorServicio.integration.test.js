@@ -22,6 +22,7 @@ const User = require('../models/User');
 const Sale = require('../models/Sale');
 const PrepaidService = require('../models/PrepaidService');
 const CommissionPrepaidAllocation = require('../models/CommissionPrepaidAllocation');
+const CommissionBaseOverride = require('../models/CommissionBaseOverride');
 const CommissionRule = require('../models/CommissionRule');
 const ctrl = require('../controllers/commissionController');
 
@@ -128,6 +129,19 @@ test('una sesión histórica conciliada usa el valor unitario de su venta', asyn
   await Sale.updateOne({ _id: v._id }, { status: 'anulada' });
   calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-11-01', end: '2026-11-30' });
   assert.equal(calc.lineas[0].amount, 0);
+});
+
+test('una corrección de base cambia la comisión sin cambiar el valor de la cita', async () => {
+  const { sede, doctor, eco, cita } = await escenario();
+  await User.updateOne({ _id: doctor._id }, { name: 'Domenica Prueba' });
+  await CommissionRule.deleteMany({ doctorServiceDoctor: doctor._id });
+  await CommissionRule.create({ clinic: sede._id, name: 'Paciente', managedFromDoctorCommissions: true,
+    doctorCommissionScope: 'patient', doctorServiceDoctor: doctor._id, targetType: 'user', users: [doctor._id], active: true, amountType: 'percent', percent: 10 });
+  const a = await cita({ serviceItem: eco._id, serviceName: eco.name, additionalServices: [], agreedValue: 58 });
+  await CommissionBaseOverride.create({ appointment: a._id, doctor: doctor._id, base: 29, reason: 'Valor del servicio confirmado' });
+  const calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-10-01', end: '2026-10-31' });
+  assert.equal(calc.lineas[0].amount, 2.9);
+  assert.equal((await Appointment.findById(a._id)).agreedValue, 58);
 });
 
 test('tarifa base complementaria paga servicios sin tarifa propia y respeta las tarifas específicas', async () => {
