@@ -144,6 +144,21 @@ test('una corrección de base cambia la comisión sin cambiar el valor de la cit
   assert.equal((await Appointment.findById(a._id)).agreedValue, 58);
 });
 
+test('la base corregida también aplica al servicio con tarifa base en una cita mixta', async () => {
+  const { sede, doctor, eco, consulta, cita } = await escenario();
+  await User.updateOne({ _id: doctor._id }, { name: 'Domenica Prueba' });
+  await CommissionRule.deleteOne({ appointmentService: eco._id });
+  await CommissionRule.updateOne({ appointmentService: consulta._id }, { amountType: 'fixed', amount: 0 });
+  await CommissionRule.create({ clinic: sede._id, name: 'Paciente', managedFromDoctorCommissions: true,
+    doctorCommissionScope: 'patient', doctorServiceDoctor: doctor._id, targetType: 'user', users: [doctor._id], active: true,
+    amountType: 'percent', percent: 10, patientRateForUnconfiguredServices: true });
+  const a = await cita({ agreedValue: 19 });
+  await CommissionBaseOverride.create({ appointment: a._id, doctor: doctor._id, base: 19, reason: 'Importe de ecografía confirmado' });
+  const calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-10-01', end: '2026-10-31' });
+  assert.equal(calc.lineas.find((l) => l.kind === 'paciente').amount, 1.9);
+  assert.equal(calc.lineas.find((l) => l.kind === 'servicio').amount, 0);
+});
+
 test('tarifa base complementaria paga servicios sin tarifa propia y respeta las tarifas específicas', async () => {
   const { sede, doctor, eco, consulta, cita } = await escenario();
   await User.updateOne({ _id: doctor._id }, { name: 'Domenica Prueba' });

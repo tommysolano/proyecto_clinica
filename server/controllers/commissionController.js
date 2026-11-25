@@ -1710,7 +1710,7 @@ async function calcularComisionesDoctores(clinicIdSesion, params = {}) {
             ? sinTarifa.reduce((total, svc) => total + num(bases.get(svc.key)), 0)
             : basePacienteConPrepago(rule, appt);
           const correccion = baseCorregida.get(`${idDe(appt)}|${doctorId}`);
-          if (!complementar && correccion != null) basePaciente = correccion;
+          if (correccion != null) basePaciente = correccion;
           agregar({
             ...comun, kind: 'paciente', ruleId: String(rule._id), serviceKey: '', serviceName: (complementar ? sinTarifa : serviciosDeCita(appt, catalogo)).map((svc) => svc.name).join(', ') || '—',
             base: basePaciente,
