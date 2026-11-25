@@ -317,7 +317,6 @@ export default function Sales({ soloFormulario = false, embebido = false, citaId
   // Punto de venta (caja) del usuario: de él sale la serie de sus facturas. Con puntos en la
   // sucursal, quien no tiene uno no puede facturar.
   const [miPunto, setMiPunto] = useState({ usaPuntos: false, punto: null });
-  const [facturarAlGuardar, setFacturarAlGuardar] = useState(false);
   const puedeFacturarAqui = canInvoice && (!miPunto.usaPuntos || !!miPunto.punto);
   // Quien factura electrónicamente (tiene punto) no cobra ni factura con la caja cerrada.
   const cajaCerrada = !!miPunto.punto && miPunto.cajaAbierta === false;
@@ -326,18 +325,12 @@ export default function Sales({ soloFormulario = false, embebido = false, citaId
     ? `${miPunto.punto.establecimiento}-${miPunto.punto.codigo}${miPunto.punto.nombre ? ` (${miPunto.punto.nombre})` : ''}`
     : '';
 
-  // ¿Ya se sabe si quien cobra tiene caja (punto)? ¿El cajero tocó la casilla a mano?
-  // Nov-2026: la casilla arrancaba desmarcada hasta que respondía /puntos-emision/mio; si
-  // esa consulta tardaba (cobro desde la agenda, que monta el formulario de cero) o fallaba
-  // (se tragaba el error), la venta se guardaba SIN FACTURA y sin aviso.
+  // Si todavía no se conoce el punto, se vuelve a consultar al registrar la venta.
   const miPuntoCargadoRef = useRef(false);
-  const facturaTocadaRef = useRef(false);
   const cargarMiPunto = () => api.get('/puntos-emision/mio').then((r) => {
     const d = r.data || { usaPuntos: false, punto: null };
     setMiPunto(d);
     miPuntoCargadoRef.current = true;
-    // Quien tiene su propia caja factura al cobrar; el resto, como antes, desde el historial.
-    if (!facturaTocadaRef.current) setFacturarAlGuardar(!!d.punto && canInvoice);
     return d;
   });
 
@@ -350,7 +343,8 @@ export default function Sales({ soloFormulario = false, embebido = false, citaId
 
   /** ¿Se emite la factura de la venta recién guardada? Si aún no se sabía la caja, se pregunta ahora. */
   const decidirFacturar = async () => {
-    if (facturaTocadaRef.current || miPuntoCargadoRef.current) return facturarAlGuardar && puedeFacturarAqui;
+    if (!canInvoice) return false;
+    if (miPuntoCargadoRef.current) return !!miPunto.punto;
     try {
       const d = await cargarMiPunto();
       return canInvoice && !!d.punto;
@@ -1532,7 +1526,7 @@ export default function Sales({ soloFormulario = false, embebido = false, citaId
       fetchProducts();
       // Factura electrónica desde el punto de venta de quien cobra (no bloquea la venta:
       // si falla, la venta queda registrada y se puede facturar luego).
-      if (res.data?._id && (await decidirFacturar())) emitirFactura(res.data);
+      if (res.data?._id && (await decidirFacturar())) await emitirFactura(res.data);
       // Incrustada en la agenda: la agenda sigue (asignar doctor/enfermero).
       if (embebido || soloFormulario) onCobrado?.(res.data);
     } catch (err) {
@@ -2746,15 +2740,9 @@ export default function Sales({ soloFormulario = false, embebido = false, citaId
             )}
             {canInvoice && (miPunto.usaPuntos || miPunto.punto) && !cajaCerrada && (
               puedeFacturarAqui ? (
-                <label className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50/50 px-4 py-3 text-sm text-slate-700 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4"
-                    checked={facturarAlGuardar}
-                    onChange={(e) => { facturaTocadaRef.current = true; setFacturarAlGuardar(e.target.checked); }}
-                  />
+                <div className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50/50 px-4 py-3 text-sm text-slate-700">
                   <span>
-                    Emitir factura electrónica al cobrar · serie{' '}
+                    Se emitirá la factura electrónica al cobrar · serie{' '}
                     <b className="font-mono">{miPunto.punto.establecimiento}-{miPunto.punto.codigo}</b>
                     {miPunto.punto.nombre ? ` (${miPunto.punto.nombre})` : ''}
                     {/* El número de la factura que se va a emitir, bien visible (nov-2026:
@@ -2765,7 +2753,7 @@ export default function Sales({ soloFormulario = false, embebido = false, citaId
                       </span>
                     )}
                   </span>
-                </label>
+                </div>
               ) : (
                 <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 m-0">
                   No tienes un punto de emisión (caja) asignado: la venta se registra, pero no podrás facturarla.

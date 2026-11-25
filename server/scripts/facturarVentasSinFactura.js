@@ -4,9 +4,8 @@
  *
  * ─── POR QUÉ ───────────────────────────────────────────────────────────────────────
  * La factura electrónica NO se emite en la misma petición que la venta: el navegador
- * registra la venta y, si la casilla «Emitir factura electrónica al cobrar» está marcada,
- * hace una SEGUNDA petición (POST /invoices/from-sale/:id). Si esa segunda petición no
- * sale o falla antes de crear la factura (casilla desmarcada, red caída, pestaña cerrada,
+ * registra la venta y hace una SEGUNDA petición (POST /invoices/from-sale/:id).
+ * Si esa segunda petición no sale o falla antes de crear la factura (red caída, pestaña cerrada,
  * /puntos-emision/mio que no cargó…), la venta queda cobrada y «Sin factura».
  *
  * ─── QUÉ HACE ──────────────────────────────────────────────────────────────────────
@@ -102,7 +101,11 @@ async function main() {
       }
       if (!commit) continue;
 
-      const elegidas = ventas.filter((v) => (soloPunto ? soloPunto === serie : soloVentas.includes(v.saleNumber)));
+      const elegidas = ventas.filter((v) =>
+        (!soloPunto || soloPunto === serie) &&
+        (!soloVentas.length || soloVentas.includes(v.saleNumber)) &&
+        (!v.puntoEmision || String(v.puntoEmision) === String(p._id))
+      );
       for (const v of elegidas) {
         if (!v.puntoEmision) {
           // eslint-disable-next-line no-await-in-loop
