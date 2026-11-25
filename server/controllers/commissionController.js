@@ -11,6 +11,7 @@ const AppointmentServiceItem = require('../models/AppointmentServiceItem');
 const ClinicalRecord = require('../models/ClinicalRecord');
 const Sale = require('../models/Sale');
 const PrepaidService = require('../models/PrepaidService');
+const CommissionPrepaidAllocation = require('../models/CommissionPrepaidAllocation');
 const Product = require('../models/Product');
 const Referral = require('../models/Referral');
 const Conversation = require('../models/Conversation');
@@ -1257,8 +1258,9 @@ async function anotarBasesPrepagadas(appts) {
   const ids = appts.map((a) => a._id);
   if (!ids.length) return;
   const paquetes = await PrepaidService.find({ status: 'activo', 'uses.appointment': { $in: ids } }).lean();
-  if (!paquetes.length) return;
-  const ventas = await Sale.find({ _id: { $in: paquetes.map((p) => p.sale) }, status: 'completada' }).lean();
+  const conciliaciones = await CommissionPrepaidAllocation.find({ appointment: { $in: ids } }).lean();
+  if (!paquetes.length && !conciliaciones.length) return;
+  const ventas = await Sale.find({ _id: { $in: [...paquetes.map((p) => p.sale), ...conciliaciones.map((p) => p.sale)] }, status: 'completada' }).lean();
   const ventaPorId = new Map(ventas.map((v) => [idDe(v), v]));
   const porCita = new Map(appts.map((a) => [idDe(a), a]));
   for (const p of paquetes) {
@@ -1284,6 +1286,22 @@ async function anotarBasesPrepagadas(appts) {
       }
       a._basesPrepagadas[idDe(p.product)] = anterior;
     }
+  }
+  for (const c of conciliaciones) {
+    const a = porCita.get(idDe(c.appointment));
+    const venta = ventaPorId.get(idDe(c.sale));
+    if (!a || !venta || idDe(venta.patient) !== idDe(a.patient)) continue;
+    const productos = (venta.items || []).filter((i) => idDe(i.product) === idDe(c.product));
+    const cantidad = productos.reduce((n, i) => n + num(i.quantity), 0);
+    if (!cantidad || !productos.length) continue;
+    const importe = productos.reduce((n, i) => n + (i.lineTotal != null ? num(i.lineTotal) : num(i.unitPrice) * num(i.quantity) - num(i.discount)), 0);
+    const iva = productos.reduce((n, i) => n + num(i.taxAmount), 0);
+    a._basesPrepagadas ||= {};
+    // Un uso operativo ya vinculado tiene prioridad; no contar la sesión dos veces.
+    if (!a._basesPrepagadas[idDe(c.product)]) a._basesPrepagadas[idDe(c.product)] = {
+      importe: importe / cantidad, sinIva: Math.max(0, importe - iva) / cantidad,
+      ventaEnCita: 0, ventaEnCitaSinIva: 0,
+    };
   }
 }
 

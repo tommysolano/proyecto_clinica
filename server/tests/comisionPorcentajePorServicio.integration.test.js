@@ -21,6 +21,7 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const Sale = require('../models/Sale');
 const PrepaidService = require('../models/PrepaidService');
+const CommissionPrepaidAllocation = require('../models/CommissionPrepaidAllocation');
 const CommissionRule = require('../models/CommissionRule');
 const ctrl = require('../controllers/commissionController');
 
@@ -109,6 +110,24 @@ test('la tarifa por paciente acredita el valor de cada sesión prepagada', async
   await PrepaidService.create({ clinic: sede._id, patient: a.patient, product: eco.product, sale: v._id, quantity: 4, uses: [{ appointment: a._id }, { appointment: b._id }] });
   const calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-11-01', end: '2026-11-30' });
   assert.deepStrictEqual(calc.lineas.map((l) => l.amount), [2.5, 2.5]);
+});
+
+test('una sesión histórica conciliada usa el valor unitario de su venta', async () => {
+  const { sede, doctor, eco, cita } = await escenario();
+  await User.updateOne({ _id: doctor._id }, { name: 'Domenica Prueba' });
+  await CommissionRule.deleteMany({ doctorServiceDoctor: doctor._id });
+  await CommissionRule.create({ clinic: sede._id, name: 'Paciente', managedFromDoctorCommissions: true,
+    doctorCommissionScope: 'patient', doctorServiceDoctor: doctor._id, targetType: 'user', users: [doctor._id], active: true, amountType: 'percent', percent: 10 });
+  const a = await cita({ date: new Date('2026-11-02T15:00:00Z'), additionalServices: [] });
+  const v = await Sale.create({ clinic: sede._id, patient: a.patient, saleNumber: 'HIST-1',
+    items: [{ product: eco.product, productName: eco.name, category: 'servicio', quantity: 4, unitPrice: 25, lineTotal: 100, subtotal: 100 }],
+    subtotal: 100, taxAmount: 0, total: 100, paymentMethod: 'efectivo', status: 'completada' });
+  await CommissionPrepaidAllocation.create({ appointment: a._id, sale: v._id, product: eco.product });
+  let calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-11-01', end: '2026-11-30' });
+  assert.equal(calc.lineas[0].amount, 2.5);
+  await Sale.updateOne({ _id: v._id }, { status: 'anulada' });
+  calc = await ctrl._calcularComisionesDoctores(sede._id, { start: '2026-11-01', end: '2026-11-30' });
+  assert.equal(calc.lineas[0].amount, 0);
 });
 
 test('tarifa base complementaria paga servicios sin tarifa propia y respeta las tarifas específicas', async () => {
